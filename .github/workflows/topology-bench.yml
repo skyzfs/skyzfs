@@ -5,7 +5,10 @@ name: topology-bench
 # two-volume split (WAL thin without an origin, on a cold origin, and
 # hydrated from its origin) / bcache writearound / Open CAS
 # write-invalidate, each under postgres pgbench on a dm-thin volume
-# with a read-only external origin. All the logic is `tests/bench/topology-bench.sh`,
+# with a read-only external origin; plus the ZFS exploration (zfs,
+# zfs-plain, zfs-l2arc): one pool on a no-read-before-write device over
+# a delayed image of the same database, the stand-in for ZFS on a
+# userspace block backend. All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
 # the runner's loop-on-virtual-disk I/O is throttled and noisy, so the
 # numbers here establish shapes and ratios, not absolutes.
@@ -36,8 +39,8 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas"
-        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc"
+        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc"
       workloads:
         description: "space-separated subset of: tpcb select update"
         default: "tpcb select"
@@ -77,7 +80,7 @@ on:
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
-  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas' }}
+  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc' }}
   TB_WORKLOADS: ${{ inputs.workloads || 'tpcb select' }}
   TB_SCALE: ${{ inputs.scale || '100' }}
   TB_DURATION: ${{ inputs.duration || '120' }}
@@ -133,11 +136,23 @@ jobs:
           # cloud kernels; harmless when already present.
           sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
           sudo systemctl stop postgresql 2>/dev/null || true
-          for m in dm_thin_pool dm_cache dm_cache_smq dm_delay bcache; do
+          for m in dm_thin_pool dm_cache dm_cache_smq dm_delay dm_snapshot bcache; do
             sudo modprobe "$m" || echo "::warning::modprobe $m failed"
           done
           sudo mkdir -p "$TB_WORK"
           uname -r; df -h "$TB_WORK"; free -m
+
+      - name: Install ZFS
+        if: startsWith(matrix.topology, 'zfs')
+        run: |
+          sudo apt-get install -y --no-install-recommends zfsutils-linux
+          # Ubuntu kernels ship zfs.ko prebuilt; fall back to DKMS on a
+          # kernel flavour that does not.
+          sudo modprobe zfs || {
+            sudo apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" zfs-dkms
+            sudo modprobe zfs
+          }
+          zfs version
 
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas'
@@ -165,9 +180,12 @@ jobs:
           sudo dmsetup ls --tree || true
           sudo losetup -a || true
           ls /sys/block | grep -E 'bcache|cas' || true
+          sudo zpool status -v 2>/dev/null || true
+          sudo zfs list -t all 2>/dev/null || true
+          sudo tail -40 /proc/spl/kstat/zfs/dbgmsg 2>/dev/null || true
           sudo tail -50 "$TB_WORK/pg.log" 2>/dev/null || true
           # The interesting kernel lines are the ones BEFORE a trace.
-          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|WARN|BUG|Call Trace|error' | tail -120 || true
+          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
 
       - name: Upload results
         if: always()

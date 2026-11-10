@@ -18,7 +18,7 @@
 #                  amplification each topology adds on top of the pool
 #   cache reads    hits served from the cache device
 #
-# Topologies (TB_TOPOLOGIES, space-separated; default runs all five):
+# Topologies (TB_TOPOLOGIES, space-separated; default runs all):
 #
 #   nocache   fs → thin. The floor: no cache, every miss is an origin read.
 #   baseline  fs → dm-cache(writethrough, smq) → thin. The shipped §7.1
@@ -45,6 +45,35 @@
 #             write-invalidate, the true write-around; needs casadm built
 #             with CAS_EXT_EXP=1) → thin.
 #
+# ZFS topologies. The exploration these model is "ZFS on a userspace
+# block backend" (a ublk device served by a node-local daemon with a
+# local write log and S3 behind it): the pool's one vdev is a device
+# whose written blocks are local and whose never-written blocks cost an
+# origin round trip, with NO read-before-write at any granularity. The
+# stand-in is a transient dm-snapshot with a chunk of one ZFS sector
+# (1 << ashift) over a read-only, delayed image of an exported pool
+# that carries the same pgbench database: a write that covers a whole
+# chunk never reads the origin (dm-snap's io_overwrites_chunk path),
+# and with chunk == ashift every ZFS write does. PGDATA and pg_wal are
+# two datasets of the one pool.
+#
+#   zfs       recordsize 8k, lz4, full_page_writes off (safe on a
+#             filesystem whose record writes are atomic), wal_recycle
+#             and wal_init_zero off. The configuration one would deploy.
+#   zfs-plain zfs with compression off and full_page_writes on: the
+#             control that separates the copy-on-write layout from the
+#             two savings pgbench's very compressible rows flatter.
+#   zfs-l2arc zfs plus an L2ARC device of TB_CACHE_PCT: the counterpart
+#             of baseline's dm-cache, a flash read cache that is not on
+#             the write path.
+#
+# For these rows `origin` is the delayed pool image, `pool` is the
+# dm-snapshot's COW device (the local flash every vdev write lands on),
+# `fs` is the vdev itself and `cache` is the L2ARC device. The ARC is
+# not charged to postgres's cgroup, so with TB_MEM_LIMIT set it is
+# capped at TB_MEM_LIMIT minus shared_buffers — what the page cache
+# gets in the other topologies.
+#
 # Usage (manual, as root, on the NVMe you want to measure):
 #
 #   sudo TB_WORK=/nvme/topology-bench tests/bench/topology-bench.sh
@@ -58,7 +87,8 @@
 #                           put this on the disk under test
 #                           (default /var/tmp/topology-bench)
 #   TB_TOPOLOGIES="..."     subset of: nocache baseline twovol twovol-origin
-#                           twovol-hydrated bcache opencas
+#                           twovol-hydrated bcache opencas zfs zfs-plain
+#                           zfs-l2arc
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -88,13 +118,32 @@
 #                           image sizes derived from it
 #   TB_VOL_GB / TB_POOL_GB / TB_WAL_GB   sizes (defaults derived from
 #                           scale and TB_MAX_WAL_GB; images are sparse)
+#   TB_ZFS_RECORDSIZE=8k    recordsize of the PGDATA dataset. Above 8k a
+#                           page write is a partial-record write, which
+#                           reads the record first when it is not in the ARC
+#   TB_ZFS_WAL_RECORDSIZE=128k  recordsize of the pg_wal dataset
+#   TB_ZFS_COMPRESSION=lz4  compression (zfs-plain forces off)
+#   TB_ZFS_FPW=off          full_page_writes (zfs-plain forces on)
+#   TB_ZFS_ASHIFT=12        pool ashift; also the dm-snapshot chunk
+#   TB_ZFS_GB=              pool size (default 2x TB_VOL_GB: copy-on-write
+#                           needs free space, and the window snapshot pins
+#                           what the window overwrites)
+#   TB_ZFS_ARC_MB=          ARC cap (default TB_MEM_LIMIT - shared_buffers;
+#                           uncapped when TB_MEM_LIMIT is unset)
+#   TB_ZFS_WINDOW_SNAPSHOT=1  snapshot both datasets at the start of each
+#                           measured window, so `written@` at the end is
+#                           the live bytes born in the window: what one
+#                           upload per window would have to carry. 0 skips
+#                           it (the snapshot pins every overwritten block
+#                           for the window).
 #   TB_PG_USER=postgres     unprivileged user postgres runs as
 #   TB_KEEP=1               leave the stack up on failure for inspection
 #   TB_REUSE_ORIGIN=1       keep an existing origin image (same scale)
 #
 # Needs root, device-mapper (dm-thin-pool, dm-cache, dm-delay when a
 # delay is set), losetup, mkfs.ext4, python3, a PostgreSQL server with
-# pgbench; bcache-tools for the bcache topology; casadm for opencas.
+# pgbench; bcache-tools for the bcache topology; casadm for opencas;
+# zfsutils (zpool, zfs, the zfs module) and dm-snapshot for the zfs ones.
 set -euo pipefail
 
 # GNU dd as "$DD" (`gnudd` on ubuntu-26.04, plain `dd` before it): the
@@ -115,7 +164,8 @@ summarize() { # dir -> summary.md on stdout (all *.json under dir, any depth)
 import glob, json, os, sys
 out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
-order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas']
+order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
+         'zfs', 'zfs-plain', 'zfs-l2arc']
 runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99))
 print('## topology-bench\n')
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
@@ -150,6 +200,34 @@ for r, d, c, flash in rows:
     ampt = per / base_txn[r['workload']] if base_txn.get(r['workload']) else float('nan')
     print(f"| {r['workload']} | {r['topology']} | {txn} | {d['pool']['write_mb'] / k if txn else float('nan'):.1f} | "
           f"{c.get('write_mb', 0) / k if txn else float('nan'):.1f} | {per:.1f} | {ampt:.2f} |")
+# ZFS rows: the vdev is the device a userspace backend would serve, so
+# split what reached it. `first-touch` is the growth of the dm-snapshot
+# COW store: bytes written to LBAs never written since the stage (ZFS
+# rewriting an LBA it freed, or the reused ZIL region, does not grow
+# it). `live at end` is `written@` against a snapshot taken at window
+# start: the blocks born in the window and still referenced, which is
+# what one upload per window carries when the uploader knows what was
+# freed. The gap between vdev writes and that is dead versions.
+zrows = [(r, d) for r, d, c, flash in rows if r.get('zfs')]
+if zrows:
+    MB = 1 << 20
+    print('\nZFS rows, per 1000 transactions: what reached the vdev, and how much of it one upload per window would carry:\n')
+    print('| workload | topology | vdev write MB/ktxn | first-touch LBA MB/ktxn | live at end MB/ktxn | ZIL MB/ktxn | vdev read MB | ARC hit % | L2ARC hit % of ARC misses |')
+    print('|---|---|---|---|---|---|---|---|---|')
+    for r, d in zrows:
+        z = r['zfs']; dl = z.get('delta', {}); af = z.get('after', {})
+        txn = r['pg'].get('xact_commit', 0) or 0
+        k = txn / 1000 if txn else float('nan')
+        zil = sum(dl.get(f'zil.zil_itx_metaslab_{cls}_alloc', dl.get(f'zil.zil_itx_metaslab_{cls}_bytes', 0))
+                  for cls in ('normal', 'slog')) / MB
+        live = af.get('window.written_bytes')
+        hits = dl.get('arc.hits', 0); miss = dl.get('arc.misses', 0) + dl.get('arc.iohits', 0)
+        l2h = dl.get('arc.l2_hits', 0); l2m = dl.get('arc.l2_misses', 0)
+        print(f"| {r['workload']} | {r['topology']} | {d['fs']['write_mb'] / k:.1f} | "
+              f"{dl.get('cow.allocated_bytes', 0) / MB / k:.1f} | "
+              f"{'n/a' if live is None else format(live / MB / k, '.1f')} | {zil / k:.1f} | {d['fs']['read_mb']:.0f} | "
+              f"{100 * hits / (hits + miss) if hits + miss else float('nan'):.1f} | "
+              f"{100 * l2h / (l2h + l2m) if l2h + l2m else float('nan'):.1f} |")
 PY
 }
 if [ "${1:-}" = summarize ]; then
@@ -158,7 +236,7 @@ if [ "${1:-}" = summarize ]; then
 fi
 
 WORK=${TB_WORK:-/var/tmp/topology-bench}
-TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas"}
+TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc"}
 WORKLOADS=${TB_WORKLOADS:-"tpcb select"}
 SCALE=${TB_SCALE:-100}
 CLIENTS=${TB_CLIENTS:-8}
@@ -188,19 +266,49 @@ VOL_GB=${TB_VOL_GB:-$(( (SCALE * 16 + 1023) / 1024 + MAX_WAL_GB + 1 ))}
 WAL_GB=${TB_WAL_GB:-$(( MAX_WAL_GB + 1 ))}
 POOL_GB=${TB_POOL_GB:-$(( VOL_GB + WAL_GB + 1 ))}
 
+# ZFS topologies. The pool is twice the ext4 volume: copy-on-write needs
+# free space to turn over in, and the per-window snapshot pins every
+# block the window overwrites.
+ZFS_POOL=tbzpool
+ZFS_RECORDSIZE=${TB_ZFS_RECORDSIZE:-8k}
+ZFS_WAL_RECORDSIZE=${TB_ZFS_WAL_RECORDSIZE:-128k}
+ZFS_COMPRESSION=${TB_ZFS_COMPRESSION:-lz4}
+ZFS_FPW=${TB_ZFS_FPW:-off}
+ZFS_ASHIFT=${TB_ZFS_ASHIFT:-12}
+ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 ))}
+ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
+to_mb() { # "1G" | "256MB" | "512M" | bytes -> MiB
+    python3 -c '
+import re, sys
+m = re.fullmatch(r"(\d+)\s*([kmg]?)b?", sys.argv[1].strip().lower())
+if not m: sys.exit("cannot parse size: " + sys.argv[1])
+n = int(m.group(1))
+print({"": n >> 20, "k": n >> 10, "m": n, "g": n << 10}[m.group(2)])' "$1"
+}
+ZFS_ARC_MB=${TB_ZFS_ARC_MB:-}
+
 if [ $(( CACHE_BLOCK_KB % 32 )) -ne 0 ] || [ "$CACHE_BLOCK_KB" -lt 32 ]; then
     echo "TB_CACHE_BLOCK_KB must be a multiple of 32 (dm-cache minimum)" >&2; exit 64
 fi
 
+ANY_THIN=""; ANY_ZFS=""
 # shellcheck disable=SC2086  # TB_TOPOLOGIES is a space-separated list by contract
 for t in $TOPOLOGIES; do
     case $t in
-        nocache|baseline|twovol|twovol-origin|twovol-hydrated) ;;
-        bcache) need make-bcache ;;
-        opencas) need casadm ;;
+        nocache|baseline|twovol|twovol-origin|twovol-hydrated) ANY_THIN=1 ;;
+        bcache) need make-bcache; ANY_THIN=1 ;;
+        opencas) need casadm; ANY_THIN=1 ;;
+        zfs|zfs-plain|zfs-l2arc) need zpool zfs tar; ANY_ZFS=1 ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
+if [ -n "$ANY_ZFS" ] && [ -z "$ZFS_ARC_MB" ] && [ -n "$MEM_LIMIT" ] && [ "$MEM_LIMIT" != max ]; then
+    # The ARC is kernel memory outside postgres's cgroup. Give it what
+    # the page cache can have in the other topologies: the cap minus
+    # shared_buffers. 64 MiB is the module's own floor for zfs_arc_max.
+    ZFS_ARC_MB=$(( $(to_mb "$MEM_LIMIT") - $(to_mb "$SHARED_BUFFERS") ))
+    [ "$ZFS_ARC_MB" -lt 64 ] && ZFS_ARC_MB=64
+fi
 
 # Debian/Ubuntu keep server binaries out of PATH (pg_wrapper covers
 # clients only); pick the newest cluster's bin dir there.
@@ -215,7 +323,15 @@ id -u "$PG_USER" >/dev/null 2>&1 || useradd -r -s /bin/bash -d "$WORK" "$PG_USER
 
 mkdir -p "$OUT" "$WORK"
 # Preflight: origins fully written + pool worst case + cache + slack.
-NEED_MB=$(( (VOL_GB + WAL_GB + POOL_GB) * 1024 + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
+# The per-topology images are deleted between topologies, so the worst
+# case is the larger of the thin pool and the ZFS pair (the pool image,
+# and a COW store that copy-on-write can sweep across the whole vdev).
+STACK_MB=0
+[ -n "$ANY_THIN" ] && STACK_MB=$(( POOL_GB * 1024 ))
+if [ -n "$ANY_ZFS" ] && [ $(( ZFS_GB * 2 * 1024 + 64 )) -gt "$STACK_MB" ]; then
+    STACK_MB=$(( ZFS_GB * 2 * 1024 + 64 ))
+fi
+NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
 AVAIL_MB=$(df -Pm "$WORK" | awk 'NR==2 {print $4}')
 if [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
     echo "not enough space under $WORK: ${AVAIL_MB} MiB free, worst case needs ${NEED_MB} MiB" \
@@ -236,6 +352,10 @@ fi
 
 for m in dm_thin_pool dm_cache dm_cache_smq; do modprobe "$m" 2>/dev/null || true; done
 [ "$ORIGIN_DELAY_MS" -gt 0 ] && { modprobe dm_delay 2>/dev/null || true; }
+if [ -n "$ANY_ZFS" ]; then
+    for m in dm_snapshot zfs; do modprobe "$m" 2>/dev/null || true; done
+    [ -r /proc/spl/kstat/zfs/arcstats ] || { echo "the zfs kernel module is not loaded (modprobe zfs)" >&2; exit 64; }
+fi
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 as_pg() { su -s /bin/bash "$PG_USER" -c "$*"; }
@@ -273,6 +393,8 @@ ORIGIN_LOOP=""; POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""
 ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
+ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""
+STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
 # ---------------------------------------------------------- teardown
@@ -286,6 +408,21 @@ teardown_topology() {
     set +e
     stop_pg
     umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
+    umount "$WORK/mnt-src" 2>/dev/null
+    if [ -n "$ZFS_UP" ]; then
+        # The pool is scratch: if it will not export, destroy it rather
+        # than leave an imported pool holding the dm devices below.
+        zpool export -f "$ZFS_POOL" 2>/dev/null || zpool destroy -f "$ZFS_POOL" 2>/dev/null \
+            || log "WARNING: pool $ZFS_POOL is still imported"
+        ZFS_UP=""
+    fi
+    if [ -n "$ZFS_ARC_SAVED" ]; then
+        # shellcheck disable=SC2086  # "min max", two words on purpose
+        set -- $ZFS_ARC_SAVED
+        echo "$2" > /sys/module/zfs/parameters/zfs_arc_max 2>/dev/null
+        echo "$1" > /sys/module/zfs/parameters/zfs_arc_min 2>/dev/null
+        ZFS_ARC_SAVED=""
+    fi
     if [ -n "$CAS_STARTED" ]; then
         casadm --stop-cache --cache-id 1 >/dev/null 2>&1 || casadm --stop-cache --cache-id 1 --no-data-flush >/dev/null 2>&1
         CAS_STARTED=""
@@ -296,11 +433,17 @@ teardown_topology() {
         wait_gone "$BCACHE_DEV" 30 || log "WARNING: $BCACHE_DEV did not go away"
         BCACHE_DEV=""; BCACHE_CSET=""
     fi
-    for d in tb-rcache tb-cmeta tb-cdata tb-bback tb-ccache tb-wal tb-data tb-pool tb-tdata tb-tmeta; do
+    for d in tb-rcache tb-cmeta tb-cdata tb-bback tb-ccache tb-wal tb-data tb-pool tb-tdata tb-tmeta \
+             tb-zdev tb-zorigin; do
         dmsetup remove "$d" 2>/dev/null
     done
-    for l in "$POOL_LOOP" "$CACHE_LOOP" "$BSB_LOOP"; do [ -n "$l" ] && losetup -d "$l" 2>/dev/null; done
+    for l in "$POOL_LOOP" "$CACHE_LOOP" "$BSB_LOOP" "$ZORIGIN_LOOP" "$ZSRC_LOOP"; do
+        [ -n "$l" ] && losetup -d "$l" 2>/dev/null
+    done
+    # The ZFS origin is per topology (its properties differ), and big.
+    rm -f "$WORK/zfs-origin.img"
     POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""
+    ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""
     [ "$errexit" = 1 ] && set -e
     return 0
 }
@@ -319,7 +462,7 @@ teardown_all() {
     [ -n "$CGROUP" ] && rmdir "$CGROUP" 2>/dev/null
     if [ "$rc" -ne 0 ]; then
         log "topology-bench FAILED (rc=$rc) — recent kernel messages:"
-        dmesg 2>/dev/null | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|WARN|BUG|Call Trace|error' | tail -40 >&2
+        dmesg 2>/dev/null | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -40 >&2
     fi
     exit "$rc"
 }
@@ -476,6 +619,105 @@ build_cache_dev() {
     log "cache device: ${bytes} MiB ($CACHE_PCT% of the database) on $CACHE_LOOP"
 }
 
+# ------------------------------------------------------- ZFS stack
+attach_loop_ro() {
+    losetup --find --show --read-only --direct-io=on "$1" 2>/dev/null || losetup --find --show --read-only "$1"
+}
+arcstat() { awk -v k="$1" '$1 == k { print $3 }' /proc/spl/kstat/zfs/arcstats; }
+zfs_cap_arc() {
+    [ -n "$ZFS_ARC_MB" ] || { log "ARC uncapped (no TB_MEM_LIMIT / TB_ZFS_ARC_MB): c_max=$(( $(arcstat c_max) >> 20 )) MiB"; return 0; }
+    local p=/sys/module/zfs/parameters
+    ZFS_ARC_SAVED="$(cat $p/zfs_arc_min) $(cat $p/zfs_arc_max)"
+    # Lower the floor first: zfs_arc_max is ignored unless it is above
+    # arc_c_min, which defaults to 1/32 of RAM.
+    echo $(( 32 << 20 )) > $p/zfs_arc_min 2>/dev/null || true
+    echo $(( ZFS_ARC_MB << 20 )) > $p/zfs_arc_max 2>/dev/null || true
+    local got=$(( $(arcstat c_max) >> 20 ))
+    [ "$got" = "$ZFS_ARC_MB" ] || log "WARNING: asked for a ${ZFS_ARC_MB} MiB ARC, the module reports c_max=${got} MiB"
+    log "ARC capped: c_max=${got} MiB (TB_MEM_LIMIT=${MEM_LIMIT:-unset} - shared_buffers=$SHARED_BUFFERS)"
+}
+build_zfs_origin() { # compression full_page_writes: an exported pool image holding the database
+    local comp=$1 fpw=$2 img="$WORK/zfs-origin.img" srcmnt="$WORK/mnt-src"
+    log "building ZFS origin: ${ZFS_GB}G pool, ashift=$ZFS_ASHIFT recordsize=$ZFS_RECORDSIZE (wal $ZFS_WAL_RECORDSIZE) compression=$comp full_page_writes=$fpw ($(zfs version 2>/dev/null | tr '\n' ' '))"
+    zpool export -f "$ZFS_POOL" 2>/dev/null || true   # a previous run's leftover
+    mkimage "$img" "$(mb $((ZFS_GB * 1024)))"
+    ZORIGIN_LOOP=$(attach_loop "$img")
+    zpool create -f -o ashift="$ZFS_ASHIFT" -o cachefile=none \
+        -O mountpoint=none -O atime=off -O xattr=sa -O redundant_metadata=most \
+        -O compression="$comp" -O recordsize="$ZFS_RECORDSIZE" "$ZFS_POOL" "$ZORIGIN_LOOP"
+    ZFS_UP=1
+    zfs create -o mountpoint="$MNT" "$ZFS_POOL/data"
+    zfs create -o mountpoint="$MNT_WAL" -o recordsize="$ZFS_WAL_RECORDSIZE" "$ZFS_POOL/wal"
+    # The same database the other topologies run, copied from the ext4
+    # origin image through a second read-only loop (the first is claimed
+    # by the dm-delay). pg_wal goes to its own dataset.
+    ZSRC_LOOP=$(attach_loop_ro "$WORK/origin.img")
+    mkdir -p "$srcmnt"
+    mount -o ro,noload "$ZSRC_LOOP" "$srcmnt"
+    install -d -o "$PG_USER" -m 700 "$PGDATA"
+    tar -C "$srcmnt/data" --exclude=./pg_wal -cf - . | tar -C "$PGDATA" -xpf -
+    cp -a "$srcmnt/data/pg_wal" "$MNT_WAL/pg_wal"
+    ln -s "$MNT_WAL/pg_wal" "$PGDATA/pg_wal"
+    chown -h "$PG_USER" "$PGDATA/pg_wal"
+    umount "$srcmnt"
+    losetup -d "$ZSRC_LOOP"; ZSRC_LOOP=""
+    # Later lines win. wal_recycle/wal_init_zero off is the setting for
+    # any copy-on-write filesystem: a recycled segment is a file of old
+    # records to overwrite in place, which is exactly what CoW cannot do.
+    cat >> "$PGDATA/postgresql.conf" <<EOF
+full_page_writes = $fpw
+wal_init_zero = off
+wal_recycle = off
+EOF
+    zpool sync "$ZFS_POOL"
+    log "ZFS origin datasets (name used logicalused ratio): $(zfs list -H -o name,used,logicalused,compressratio -r "$ZFS_POOL" | tr '\t\n' ' ;')"
+    zpool export "$ZFS_POOL"; ZFS_UP=""
+    losetup -d "$ZORIGIN_LOOP"; ZORIGIN_LOOP=""
+}
+build_zfs_stack() { # the pool on a no-read-before-write device over the delayed origin image
+    ZORIGIN_LOOP=$(attach_loop_ro "$WORK/zfs-origin.img")
+    local odev=$ZORIGIN_LOOP sect chunk
+    sect=$(sectors "$ZORIGIN_LOOP")
+    if [ "$ORIGIN_DELAY_MS" -gt 0 ]; then
+        dmsetup create --readonly tb-zorigin --table \
+            "0 $sect delay $ZORIGIN_LOOP 0 $ORIGIN_DELAY_MS $ZORIGIN_LOOP 0 0"
+        odev=/dev/mapper/tb-zorigin
+    fi
+    # The COW store is local flash. Transient ("N"): no on-disk
+    # exception metadata, so a flush is the data device's flush alone.
+    # Sized to the whole vdev because copy-on-write can sweep it.
+    mkimage "$WORK/pool.img" "$(mb $((ZFS_GB * 1024 + 64)))"
+    POOL_LOOP=$(attach_loop "$WORK/pool.img")
+    chunk=$(( (1 << ZFS_ASHIFT) / 512 ))
+    dmsetup create tb-zdev --table "0 $sect snapshot $odev $POOL_LOOP N $chunk"
+    STAT_ORIGIN=$(basename "$ZORIGIN_LOOP"); STAT_POOL=$(basename "$POOL_LOOP")
+    zfs_cap_arc
+    local t0; t0=$(date +%s%N)
+    zpool import -N -o cachefile=none -d /dev/mapper/tb-zdev "$ZFS_POOL"
+    ZFS_UP=1
+    log "zpool import over the ${ORIGIN_DELAY_MS} ms origin took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+    FS_DEV=/dev/mapper/tb-zdev
+}
+zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg key n"
+    awk 'NR > 2 { print "zfsc zil." $1, $3 }' /proc/spl/kstat/zfs/zil
+    awk 'NR > 2 && $1 ~ /^(hits|iohits|misses|l2_hits|l2_misses|l2_read_bytes|l2_write_bytes)$/ { print "zfsc arc." $1, $3 }
+         NR > 2 && $1 ~ /^(size|c_max|compressed_size|uncompressed_size|l2_size|l2_asize)$/ { print "zfsg arc." $1, $3 }' \
+        /proc/spl/kstat/zfs/arcstats
+    # Growth of the COW store = bytes written to LBAs never written
+    # since the stage. dm-snapshot status: <allocated>/<total> sectors.
+    echo "zfsc cow.allocated_bytes $(dmsetup status tb-zdev | awk '{ split($4, a, "/"); print a[1] * 512 }')"
+    echo "zfsg pool.allocated $(zpool get -Hp -o value allocated "$ZFS_POOL")"
+    echo "zfsg pool.fragmentation $(zpool get -Hp -o value fragmentation "$ZFS_POOL" | tr -dc '0-9')"
+    if [ -n "$ZFS_WIN" ]; then
+        local w=0 ds
+        for ds in data wal; do
+            w=$(( w + $(zfs get -Hp -o value "written@$ZFS_WIN" "$ZFS_POOL/$ds") ))
+        done
+        echo "zfsg window.written_bytes $w"
+    fi
+    echo "zfsinfo $(zfs list -H -o name,used,logicalused,compressratio -r "$ZFS_POOL" | tr '\t\n' ' ;')"
+}
+
 # ------------------------------------------------------- topologies
 topo_nocache() { FS_DEV=/dev/mapper/tb-data; }
 
@@ -571,15 +813,26 @@ topo_opencas() {
     FS_DEV=/dev/cas1-1
 }
 
+topo_zfs() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_stack; }
+topo_zfs_plain() { build_zfs_origin off on; build_zfs_stack; }
+topo_zfs_l2arc() {
+    topo_zfs
+    build_cache_dev
+    # Kernel defaults for the feed (l2arc_write_max, l2arc_noprefetch):
+    # record-only, like dm-cache's migration_threshold above.
+    zpool add -f "$ZFS_POOL" cache "$CACHE_LOOP"
+    log "l2arc: $CACHE_LOOP write_max=$(cat /sys/module/zfs/parameters/l2arc_write_max) noprefetch=$(cat /sys/module/zfs/parameters/l2arc_noprefetch)"
+}
+
 # --------------------------------------------------------- measuring
 diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
 }
 snapshot() { # file
     {
-        echo "dev origin $(diskstats_line "$(basename "$ORIGIN_LOOP")")"
+        echo "dev origin $(diskstats_line "${STAT_ORIGIN:-$(basename "$ORIGIN_LOOP")}")"
         echo "dev walorigin $(diskstats_line "$(basename "$WAL_ORIGIN_LOOP")")"
-        echo "dev pool $(diskstats_line "$(dm_blk tb-tdata)")"
+        echo "dev pool $(diskstats_line "${STAT_POOL:-$(dm_blk tb-tdata)}")"
         [ -n "$TWO_VOL" ] && echo "dev wal $(diskstats_line "$(dm_blk tb-wal)")"
         [ -n "$CACHE_LOOP" ] && echo "dev cache $(diskstats_line "$(basename "$CACHE_LOOP")")"
         echo "dev fs $(diskstats_line "$(basename "$(readlink -f "$FS_DEV")")")"
@@ -593,6 +846,7 @@ snapshot() { # file
             baseline|twovol*) echo "dmcache $(dmsetup status tb-rcache)" ;;
             bcache) echo "bcache $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_hits") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_misses") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_bypass_hits") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_bypass_misses")" ;;
             opencas) casadm --stats --cache-id 1 --core-id 1 --output-format csv 2>/dev/null | sed 's/^/cas /' ;;
+            zfs*) zfs_stats ;;
         esac
     } > "$1"
 }
@@ -608,21 +862,35 @@ run_workload() { # topology workload
     log "$tag: warm-up ${WARMUP}s"
     as_pg "'$PGBENCH' -h '$SOCK' -T $WARMUP -c $CLIENTS -j $JOBS -b $builtin bench" >/dev/null 2>&1
     sync; sleep 2
+    if [ -n "$ZFS_UP" ] && [ "$ZFS_WINDOW_SNAPSHOT" = 1 ]; then
+        # One atomic snapshot of both datasets marks the window's start;
+        # `written@` at the end is then the live bytes born in it.
+        ZFS_WIN="tb-$wl"
+        zfs snapshot -r "$ZFS_POOL@$ZFS_WIN"
+    fi
     snapshot "$OUT/$tag.before"
     log "$tag: measuring ${DURATION}s"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
     sync; sleep 2
     snapshot "$OUT/$tag.after"
+    if [ -n "$ZFS_WIN" ]; then
+        zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
+        ZFS_WIN=""
+    fi
     python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" > "$OUT/$tag.json" <<'PY'
 import json, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
 def load(p):
     dev, pg, other = {}, {}, {}
+    zc[p], zg[p] = {}, {}
     for line in open(p):
         f = line.split()
         if not f: continue
         if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:7]]
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
+        elif f[0] in ('zfsc', 'zfsg'):
+            if len(f) > 2 and f[2].isdigit(): (zc if f[0] == 'zfsc' else zg)[p][f[1]] = int(f[2])
         else: other.setdefault(f[0], []).append(line.strip())
     return dev, pg, other
 bd, bp, bo = load(base + '.before'); ad, ap, ao = load(base + '.after')
@@ -641,6 +909,9 @@ txt = open(base + '.pgbench').read()
 m = re.search(r'tps = ([\d.]+)', txt); r['tps'] = float(m.group(1)) if m else None
 m = re.search(r'latency average = ([\d.]+)', txt); r['latency_ms'] = float(m.group(1)) if m else None
 r['cache_stats'] = {'before': bo, 'after': ao}
+if zc[base + '.after'] or zg[base + '.after']:
+    zb, za = zc[base + '.before'], zc[base + '.after']
+    r['zfs'] = {'delta': {k: za[k] - zb.get(k, 0) for k in za}, 'after': zg[base + '.after']}
 print(json.dumps(r, indent=1))
 PY
     log "$tag: tps=$(python3 -c "import json;print(json.load(open('$OUT/$tag.json'))['tps'])")"
@@ -650,10 +921,25 @@ PY
     # can be answered from the job log without the artifact.
     grep -E '^(dmcache|bcache|cas)' "$OUT/$tag.before" | sed "s/^/[$tag before] /" >&2 || true
     grep -E '^(dmcache|bcache|cas)' "$OUT/$tag.after" | sed "s/^/[$tag after] /" >&2 || true
+    if [ -n "$ZFS_UP" ]; then
+        log "$tag: $(python3 -c "
+import json
+z = json.load(open('$OUT/$tag.json'))['zfs']; d = z['delta']; a = z['after']; MB = 1 << 20
+zil = sum(d.get(f'zil.zil_itx_metaslab_{c}_alloc', d.get(f'zil.zil_itx_metaslab_{c}_bytes', 0)) for c in ('normal', 'slog'))
+print(f\"zfs first-touch={d.get('cow.allocated_bytes', 0) / MB:.0f}MB live-at-end={a.get('window.written_bytes', 0) / MB:.0f}MB \"
+      f\"zil={zil / MB:.0f}MB commits={d.get('zil.zil_commit_count', 0)} arc hits={d.get('arc.hits', 0)} misses={d.get('arc.misses', 0)} \"
+      f\"l2 hits={d.get('arc.l2_hits', 0)} l2 written={d.get('arc.l2_write_bytes', 0) / MB:.0f}MB arc size={a.get('arc.size', 0) / MB:.0f}MB\")")"
+        grep -E '^zfsinfo' "$OUT/$tag.after" | sed "s/^/[$tag after] /" >&2 || true
+    fi
 }
 
 mount_and_start() {
-    mount -o noatime "$FS_DEV" "$MNT"
+    if [ -n "$ZFS_UP" ]; then
+        zfs mount "$ZFS_POOL/data"
+        zfs mount "$ZFS_POOL/wal"
+    else
+        mount -o noatime "$FS_DEV" "$MNT"
+    fi
     if [ -n "$WAL_FROM_ORIGIN" ]; then
         # The WAL volume already carries pg_wal (its origin is a
         # snapshot of it); drop the data volume's copy and point at it.
@@ -673,7 +959,9 @@ prepare_origin
 # shellcheck disable=SC2086  # space-separated lists by contract
 for TOPO in $TOPOLOGIES; do
     log "==== topology: $TOPO"
-    build_pool
+    # The ZFS topologies bring their own stack; everything else sits on
+    # a thin volume over the ext4 origin.
+    case $TOPO in zfs*) ;; *) build_pool ;; esac
     "topo_${TOPO//-/_}"
     mount_and_start
     # shellcheck disable=SC2086
