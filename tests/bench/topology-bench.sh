@@ -153,6 +153,12 @@
 #                           it (the snapshot pins every overwritten block
 #                           for the window).
 #   TB_ZFS_SLOG_MB=1024     size of zfs-slog's log device
+#   TB_ZFS_SLOG_PREALLOC=0  1 writes the log device's image through once
+#                           before use. The image is a sparse file, so the
+#                           first write to each block also allocates it in
+#                           the host filesystem, and the flush behind an
+#                           fsync then commits that filesystem's journal —
+#                           a cost a real flash partition does not have
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -424,6 +430,7 @@ ZFS_ASHIFT=${TB_ZFS_ASHIFT:-12}
 ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 ))}
 ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
 ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
+ZFS_SLOG_PREALLOC=${TB_ZFS_SLOG_PREALLOC:-0}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
@@ -1123,9 +1130,13 @@ topo_zfs_slog() {
     # never on the vdev. A cut of the vdev then holds the last synced
     # transaction group, not the fsynced tail.
     mkimage "$WORK/slog.img" "$(mb "$ZFS_SLOG_MB")"
+    if [ "$ZFS_SLOG_PREALLOC" = 1 ]; then
+        dd if=/dev/zero of="$WORK/slog.img" bs=1M count="$ZFS_SLOG_MB" \
+            oflag=direct conv=notrunc,fsync status=none
+    fi
     SLOG_LOOP=$(attach_loop "$WORK/slog.img")
     zpool add -f "$ZFS_POOL" log "$SLOG_LOOP"
-    log "slog: ${ZFS_SLOG_MB} MiB on $SLOG_LOOP"
+    log "slog: ${ZFS_SLOG_MB} MiB on $SLOG_LOOP$([ "$ZFS_SLOG_PREALLOC" = 1 ] && echo ', written through once')"
 }
 
 # ------------------------------------------- snapshots in the window
