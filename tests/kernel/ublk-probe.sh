@@ -80,10 +80,10 @@ ublk_field() { # "daemon pid" | "state": from `ublk list`
 }
 pool_errors() { # read/write/checksum error counters of every vdev, summed, plus the scan line
     lim 60 zpool status -p "$POOL" > "$OUT/status.tmp" 2>&1 || { echo "zpool status failed"; return; }
-    awk '$2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|REMOVED)$/ && NF >= 5 { e += $3 + $4 + $5 }
+    awk '$2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|REMOVED)$/ && NF >= 5 { r += $3; w += $4; c += $5 }
          /scan:/ { sub(/^ *scan: */, ""); scan = $0 }
          /^errors:/ { sub(/^errors: */, ""); err = $0 }
-         END { printf "vdev errors %d, %s, %s", e, scan, err }' "$OUT/status.tmp"
+         END { printf "vdev errors %d (read %d, write %d, checksum %d), %s, %s", r + w + c, r, w, c, scan, err }' "$OUT/status.tmp"
 }
 cleanup() {
     set +e
@@ -349,7 +349,21 @@ PY
         # fault is injected inside ZFS, so these flushes never reach the
         # device: the trace then shows whether ZFS went on to write.
         step "a failing flush (zinject)"
-        if try zinject_flush 30 zinject -d "$BDEV" -e io -T flush "$POOL"; then
+        if command -v zinject >/dev/null; then
+            rec zinject_from "$(dpkg -S "$(command -v zinject)" 2>/dev/null | cut -d: -f1)"
+        else
+            # Not in zfsutils-linux on every release; the test package has it.
+            apt-get install -y --no-install-recommends zfs-test > "$OUT/apt-zfs-test.log" 2>&1
+            hash -r
+            ZINJECT=$(command -v zinject || find /usr/sbin /usr/libexec /usr/lib/zfs-linux /usr/share/zfs -name zinject -type f 2>/dev/null | head -n 1)
+            if [ -n "$ZINJECT" ]; then
+                PATH=$PATH:$(dirname "$ZINJECT")
+                rec zinject_from "$ZINJECT, after installing zfs-test"
+            else
+                rec zinject_from "not found: not in zfsutils-linux, and zfs-test did not provide it ($(tail -n 1 "$OUT/apt-zfs-test.log"))"
+            fi
+        fi
+        if command -v zinject >/dev/null && try zinject_flush 30 zinject -d "$BDEV" -e io -T flush "$POOL"; then
             lim 30 zinject > "$OUT/zinject-list.log" 2>&1
             read -r traced delta rc <<< "$(sync_with_flush_count injected)"
             rec zinject_sync "zpool sync with every flush failing: rc $rc$([ "$rc" = 124 ] && echo ' (TIMEOUT)'); $traced flush requests reached the device, diskstats +$delta"
@@ -437,7 +451,7 @@ kill_test() { # prefix, then `ublk add` arguments: kill -9 the server while ZFS 
         rec "${p}_verify" "FAILED: $(tail -n 1 "$OUT/$p-verify.log")"
     fi
     KT_SUMMARY="flags $names; failed writes ${failed:-0}; $scrub; earlier files $verify"
-    [ "${failed:-0}" = 0 ] && [ "$verify" = ok ] && case "$scrub" in "vdev errors 0,"*"with 0 errors"*) true ;; *) false ;; esac
+    [ "${failed:-0}" = 0 ] && [ "$verify" = ok ] && case "$scrub" in "vdev errors 0 "*"with 0 errors"*) true ;; *) false ;; esac
 }
 if [ -n "$POOL_OK" ]; then
     # Recovery is chosen when the device is added, so each run replaces
