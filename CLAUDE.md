@@ -70,6 +70,13 @@ Codex, and other people can take part.
 The lead's own changes to the design document and this guide go
 straight to `zfs-topology`.
 
+The design is also open for outside review as a documents-only pull
+request into `main`, from the branch `skyzfs-design-docs`
+(skyzfs/skyzfs#2). The lead copies `docs/skyzfs-design.md` and
+`docs/skynbd-postgres-study.md` to that branch whenever they change and
+answers its comments. Nobody else pushes there, and the user decides
+when it merges.
+
 ## Easy to miss
 
 - **No kernel features in cloud containers.** There is no ublk, ZFS,
@@ -78,12 +85,27 @@ straight to `zfs-topology`.
 - **The workspace needs two system packages to build**, because of
   `skynbd-agent`:
   `apt-get update && apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev`.
+- **Run `rustup update stable` before the local gates.** CI installs the
+  current stable toolchain, and a container's can be months older. A
+  newer clippy has lints an older one does not, so "clean locally" on
+  an old toolchain is not clean in CI.
 - **CI coverage.** `ci.yml`, `coverage.yml` and `e2e.yml` run on `main`
-  and on every pull request, whatever its base. A push to a role branch
-  with no pull request open is not covered by them.
-- **The benchmark's push trigger.** A push to any branch but `main` that
-  touches `topology-bench.sh`, `tests/lib/gnu-dd.sh` or the workflow
-  starts thirteen runner jobs. Cancel the run if you did not want it.
+  and on every pull request, whatever its base. `skyzfs-ci.yml` runs
+  shellcheck, fmt, clippy and the workspace tests on the pushes those
+  miss: a merge into `zfs-topology`, and a push to a `skyzfs-*` branch
+  that has no pull request open. On a `skyzfs-*` branch a newer push
+  cancels the run of the older one, and a cold build takes over ten
+  minutes, so let a run finish before pushing again when you need it
+  green.
+- **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
+  that touches `tests/kernel/` or the workflow, and by dispatch. It
+  fails when a property the design depends on does not hold on the
+  runner (`pin_*` lines in its summary).
+- **The benchmark runs by dispatch only** on `zfs-topology` and
+  `skyzfs-*` branches: dispatch `topology-bench.yml` with the branch as
+  the ref. A push no longer starts it there. On any other branch but
+  `main`, a push that touches `topology-bench.sh`, `tests/lib/gnu-dd.sh`
+  or the workflow still starts thirteen runner jobs.
 - **Runner noise.** Two GitHub runner VMs differ by more than most
   effects being measured. Compare configurations only on one runner (the
   workflow's `sequence` input), and say how many runs a number rests on.
