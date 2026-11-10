@@ -1,0 +1,76 @@
+name: skyzfs-kernel-probe
+
+# What the kernels we can test on give SkyZFS (design §4.2, M1): does
+# ublk_drv load, which ublk feature flags does the kernel report, does
+# ZFS install and load, can a ublk server serve a file as /dev/ublkbN,
+# and does a pool on that device create, scrub, export, import and
+# survive a killed server. One job per runner image; a fan-in job
+# renders the table of kernel against flag. All the logic is
+# `tests/kernel/ublk-probe.sh` and `tests/kernel/ublk-flags.py`.
+#
+# Record-only: a failed step is a finding in the table, not a red job.
+on:
+  workflow_dispatch:
+    inputs:
+      ublksrv_ref:
+        description: "ublk-org/ublksrv git ref to build (empty: its default branch)"
+        default: ""
+  # workflow_dispatch is only offered once the file is on the default
+  # branch. Until then, a push to the testing branch that touches the
+  # probe runs it.
+  push:
+    branches: [skyzfs-testing]
+    paths:
+      - tests/kernel/**
+      - .github/workflows/skyzfs-kernel-probe.yml
+
+jobs:
+  probe:
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-26.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Probe
+        # The ref goes in a file: ubuntu-26.04's sudo-rs does not carry
+        # the environment through.
+        env:
+          UBLKSRV_REF: ${{ inputs.ublksrv_ref }}
+        run: |
+          [[ $UBLKSRV_REF =~ ^[A-Za-z0-9._/-]*$ ]] || { echo "::error::bad ublksrv ref"; exit 64; }
+          printf 'export UBLKSRV_REF=%q\n' "$UBLKSRV_REF" > "$RUNNER_TEMP/probe.env"
+          sudo bash -c '. "$1" && exec tests/kernel/ublk-probe.sh "$2" /mnt/ublk-probe' \
+            probe "$RUNNER_TEMP/probe.env" "$PWD/probe-out"
+      - name: This kernel
+        if: always()
+        run: python3 tests/kernel/ublk-flags.py probe-out >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: kernel-probe-${{ matrix.image }}
+          path: probe-out/
+          retention-days: 90
+
+  summary:
+    name: kernel against flag
+    needs: probe
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: kernel-probe-*
+          path: all
+      - name: Render
+        run: |
+          python3 tests/kernel/ublk-flags.py --history all/* | tee summary.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: kernel-probe-summary
+          path: summary.md
+          retention-days: 90
