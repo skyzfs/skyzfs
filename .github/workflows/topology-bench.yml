@@ -9,7 +9,9 @@ name: topology-bench
 # zfs-plain, zfs-l2arc, zfs-slog, zfs-slog-l2arc, zfs-slog-rcache): one pool on a
 # no-read-before-write device over
 # a delayed image of the same database, the stand-in for ZFS on a
-# userspace block backend. All the logic is `tests/bench/topology-bench.sh`,
+# userspace block backend; and, by request only, zfs-ublk (the pool on
+# a ublk device served by the reference server) with its control
+# zfs-loop. All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
 # the runner's loop-on-virtual-disk I/O is throttled and noisy, so the
 # numbers here establish shapes and ratios, not absolutes.
@@ -42,7 +44,7 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache zfs-loop zfs-ublk"
         default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
       workloads:
         description: "space-separated subset of: tpcb select update"
@@ -98,6 +100,9 @@ on:
       opencas_ref:
         description: "Open CAS Linux git ref to build (only when topologies include opencas)"
         default: "v26.03.4"
+      ublksrv_ref:
+        description: "ublk-org/ublksrv git ref to build (only when topologies include zfs-ublk); empty: its default branch"
+        default: ""
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
@@ -120,6 +125,7 @@ env:
   TB_SEQUENCE: ${{ inputs.sequence || '' }}
   TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
   OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
+  UBLKSRV_REF: ${{ inputs.ublksrv_ref || '' }}
 
 jobs:
   plan:
@@ -186,6 +192,14 @@ jobs:
           }
           sudo zfs version
 
+      - name: Build the ublk reference server
+        if: matrix.topology == 'zfs-ublk' || contains(inputs.sequence, 'zfs-ublk')
+        run: |
+          [[ $UBLKSRV_REF =~ ^[A-Za-z0-9._/-]*$ ]] || { echo "::error::bad ublksrv ref"; exit 64; }
+          sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          sudo modprobe ublk_drv
+          sudo ublk features || true
+
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
         run: |
@@ -245,11 +259,12 @@ jobs:
           sudo losetup -a || true
           ls /sys/block | grep -E 'bcache|cas' || true
           sudo zpool status -v 2>/dev/null || true
+          sudo ublk list 2>/dev/null || true
           sudo zfs list -t all 2>/dev/null || true
           sudo tail -40 /proc/spl/kstat/zfs/dbgmsg 2>/dev/null || true
           sudo tail -50 "$TB_WORK/pg.log" 2>/dev/null || true
           # The interesting kernel lines are the ones BEFORE a trace.
-          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
+          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|ublk|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
 
       - name: Upload results
         if: always()
