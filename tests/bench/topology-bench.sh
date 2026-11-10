@@ -177,6 +177,17 @@
 #                           twovol snapshots both volumes in one bracket.
 #   TB_SNAP_INTERVAL=60     seconds between snapshots
 #   TB_SNAP_KEEP=2          snapshots retained; older ones are deleted
+#   TB_ZFS_PROPS=           dataset properties for the ZFS topologies,
+#                           comma-separated, set on the pool root (and so
+#                           inherited) or on one dataset with a data: or wal:
+#                           prefix: "sync=disabled", "wal:logbias=throughput"
+#   TB_PG_CONF=             postgresql.conf settings for this run, comma-
+#                           separated name=value ("synchronous_commit=off")
+#   TB_FSYNC_TEST=1         run pg_test_fsync on the WAL filesystem before the
+#                           workloads: the commit path with nothing else
+#                           running (about 35 s per topology; 0 skips it)
+#   TB_LABEL=               tag appended to the topology name in the results,
+#                           for runs of one topology under different settings
 #   TB_PG_USER=postgres     unprivileged user postgres runs as
 #   TB_KEEP=1               leave the stack up on failure for inspection
 #   TB_REUSE_ORIGIN=1       keep an existing origin image (same scale)
@@ -209,9 +220,9 @@ order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'b
          'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache']
 modes = ['none', 'sync', 'suspend', 'freeze', 'zfs']
 def mode(r): return r.get('snap', {}).get('mode', 'none')
-def label(r): return r['topology'] + ('' if mode(r) == 'none' else ' +' + mode(r))
+def label(r): return r.get('label', r['topology']) + ('' if mode(r) == 'none' else ' +' + mode(r))
 runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99,
-                         modes.index(mode(r)) if mode(r) in modes else 99))
+                         r.get('label', ''), modes.index(mode(r)) if mode(r) in modes else 99))
 print('## topology-bench\n')
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
       '`flash write` = pool + cache (+ ZFS log) device writes; '
@@ -274,6 +285,50 @@ if zrows:
               f"{'n/a' if live is None else format(live / MB / k, '.1f')} | {zil / k:.1f} | {d['fs']['read_mb']:.0f} | "
               f"{100 * hits / (hits + miss) if hits + miss else float('nan'):.1f} | "
               f"{100 * l2h / (l2h + l2m) if l2h + l2m else float('nan'):.1f} |")
+# Where the time goes: postgres's own I/O timers, the commit path
+# measured alone, and the CPU. Runs that predate these counters are
+# skipped.
+drows = [(r, d) for r, d, c, flash in rows if r.get('diag')]
+if drows:
+    def pgsum(r, obj, k): return sum(v for n, v in r['pg'].items() if n.startswith(f'io_{obj}_') and n.endswith('_' + k))
+    def nf(v, f='.2f'): return 'n/a' if v is None else format(v, f)
+    print('\nWhere the time goes. `WAL sync ms` is postgres\'s own timer per WAL fsync; '
+          '`8k sync alone` is pg_test_fsync fdatasync on the WAL filesystem before the run; '
+          'CPU is the share of all CPUs over the window:\n')
+    print('| workload | topology | tps | p50 ms | WAL syncs/s | txn per WAL sync | WAL sync ms | 8k sync alone ms | rel reads/txn | rel read ms | CPU user/sys/iowait/idle % | ctx switches/txn | CPU s by thread |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    for r, d in drows:
+        g = r['diag']; txn = r['pg'].get('xact_commit', 0) or 0; dur = r['duration_s']
+        wf = pgsum(r, 'wal', 'fsyncs') or r['pg'].get('walstat_sync', 0)
+        wus = pgsum(r, 'wal', 'fsync_us') or r['pg'].get('walstat_sync_us', 0)
+        rr = pgsum(r, 'relation', 'reads'); rus = pgsum(r, 'relation', 'read_us')
+        cp = g.get('cpu_pct', {})
+        top = ', '.join(f'{k} {v:.0f}' for k, v in list(g.get('cpu_s_by_thread', {}).items())[:6])
+        ft = r.get('fsync_test_us', {}).get('fdatasync')
+        print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(r.get('latency', {}).get('p50_ms'))} | "
+              f"{nf(wf / dur if wf else None, '.0f')} | {nf(txn / wf if wf else None)} | {nf(wus / wf / 1000 if wf else None, '.3f')} | "
+              f"{nf(ft / 1000 if ft else None, '.3f')} | {nf(rr / txn if txn else None)} | {nf(rus / rr / 1000 if rr else None, '.3f')} | "
+              f"{cp.get('user', 0):.0f}/{cp.get('system', 0):.0f}/{cp.get('iowait', 0):.0f}/{cp.get('idle', 0):.0f} | "
+              f"{nf(g.get('ctxt', 0) / txn if txn else None, '.1f')} | {top} |")
+    zd = [(r, d) for r, d in drows if r.get('zfs')]
+    if zd:
+        MB = 1 << 20
+        print('\nZFS rows: the intent log and the transaction groups. ZIL payload by dataset separates WAL commits '
+              'from data-file fsyncs; `tx delayed` counts transactions the write throttle or the ARC made wait:\n')
+        print('| workload | topology | ZIL commits/s | txn per ZIL commit | ZIL payload MB/ktxn, wal / data | txgs | txg sync ms mean / max | dirty MB per txg | tx delayed | ARC throttles |')
+        print('|---|---|---|---|---|---|---|---|---|---|')
+        for r, d in zd:
+            z = r['zfs']; dl = z['delta']; tx = z.get('txg', {})
+            txn = r['pg'].get('xact_commit', 0) or 0; k = txn / 1000 if txn else float('nan'); dur = r['duration_s']
+            zc = dl.get('zil.zil_commit_count', 0)
+            def pay(ds): return sum(dl.get(f'ds.{ds}.zil_itx_{t}_bytes', 0) for t in ('copied', 'needcopy', 'indirect')) / MB
+            delayed = sum(dl.get('dmutx.' + n, 0) for n in ('dmu_tx_delay', 'dmu_tx_dirty_delay', 'dmu_tx_dirty_throttle',
+                                                             'dmu_tx_dirty_over_max', 'dmu_tx_memory_reserve',
+                                                             'dmu_tx_memory_reclaim', 'dmu_tx_wrlog_delay'))
+            print(f"| {r['workload']} | {label(r)} | {zc / dur:.0f} | {nf(txn / zc if zc else None)} | "
+                  f"{pay('wal') / k:.1f} / {pay('data') / k:.1f} | {tx.get('n', 0)} | "
+                  f"{nf(tx.get('sync_ms_mean'), '.0f')} / {nf(tx.get('sync_ms_max'), '.0f')} | {nf(tx.get('dirty_mb_mean'), '.0f')} | "
+                  f"{delayed} | {dl.get('arc.memory_throttle_count', 0)} |")
 # Snapshots during the window. Phases of one topology ran on the same
 # stack and machine, in the order listed, so `vs none` compares like
 # with like; rows of different topologies are different machines.
@@ -371,6 +426,10 @@ ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
 ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
+ZFS_PROPS=${TB_ZFS_PROPS:-}
+PG_CONF=${TB_PG_CONF:-}
+FSYNC_TEST=${TB_FSYNC_TEST:-1}
+LABEL=${TB_LABEL:-}
 to_mb() { # "1G" | "256MB" | "512M" | bytes -> MiB
     python3 -c '
 import re, sys
@@ -443,6 +502,36 @@ mkdir -p "$MNT" "$MNT_WAL" "$SOCK"
 chown "$PG_USER" "$SOCK" "$WORK"
 PGDATA="$MNT/data"
 CGROUP=""
+# postgres's own I/O timers, as "name value" rows. One file for every
+# server version: a statement that names a column this version lacks
+# fails by itself and the rest still run. pg_stat_io carries WAL rows
+# from 18; before that pg_stat_wal has the sync counters.
+cat > "$WORK/io-stats.sql" <<'SQL'
+select 'io_' || object || '_' || grp || '_' || k, v::bigint
+from (select replace(object, ' ', '') as object,
+             case when backend_type = 'client backend' then 'backend'
+                  when backend_type in ('checkpointer', 'background writer') then 'bg'
+                  else 'other' end as grp,
+             sum(reads) as reads, sum(read_time) * 1000 as read_us,
+             sum(writes) as writes, sum(write_time) * 1000 as write_us,
+             sum(extends) as extends, sum(extend_time) * 1000 as extend_us,
+             sum(fsyncs) as fsyncs, sum(fsync_time) * 1000 as fsync_us
+      from pg_stat_io where object in ('relation', 'wal') group by 1, 2) s
+     cross join lateral (values ('reads', reads), ('read_us', read_us), ('writes', writes),
+                                ('write_us', write_us), ('extends', extends), ('extend_us', extend_us),
+                                ('fsyncs', fsyncs), ('fsync_us', fsync_us)) t(k, v)
+where v is not null;
+select 'walstat_sync', wal_sync from pg_stat_wal;
+select 'walstat_sync_us', (wal_sync_time * 1000)::bigint from pg_stat_wal;
+select 'walstat_write', wal_write from pg_stat_wal;
+select 'walstat_write_us', (wal_write_time * 1000)::bigint from pg_stat_wal;
+select 'ckpt_' || k, v::bigint
+from pg_stat_checkpointer,
+     lateral (values ('timed', num_timed::float8), ('requested', num_requested::float8),
+                     ('write_ms', write_time), ('sync_ms', sync_time),
+                     ('buffers', buffers_written::float8)) t(k, v);
+SQL
+chmod 644 "$WORK/io-stats.sql"
 if [ -n "$MEM_LIMIT" ]; then
     [ -f /sys/fs/cgroup/cgroup.controllers ] || { echo "TB_MEM_LIMIT needs cgroup v2 at /sys/fs/cgroup" >&2; exit 64; }
     CGROUP=/sys/fs/cgroup/topology-bench
@@ -750,14 +839,29 @@ zfs_cap_arc() {
     [ "$got" = "$ZFS_ARC_MB" ] || log "WARNING: asked for a ${ZFS_ARC_MB} MiB ARC, the module reports c_max=${got} MiB"
     log "ARC capped: c_max=${got} MiB (TB_MEM_LIMIT=${MEM_LIMIT:-unset} - shared_buffers=$SHARED_BUFFERS)"
 }
-zfs_set_params() { # TB_ZFS_PARAMS: "name=value ..." module parameters, saved for teardown
-    local kv name p
+zfs_param_set() { # name value: set a zfs module parameter, saving the old value for teardown
+    local p=/sys/module/zfs/parameters/$1
+    [ -e "$p" ] || return 1
+    ZFS_PARAMS_SAVED="$ZFS_PARAMS_SAVED $1=$(cat "$p")"
+    echo "$2" > "$p"
+}
+zfs_set_params() { # TB_ZFS_PARAMS: "name=value ..." module parameters
+    local kv
+    # Keep every transaction group of a window in the txgs kstat.
+    zfs_param_set zfs_txg_history 1000 || true
     for kv in $ZFS_PARAMS; do
-        name=${kv%%=*}; p=/sys/module/zfs/parameters/$name
-        [ -e "$p" ] || { echo "TB_ZFS_PARAMS: no such zfs module parameter: $name" >&2; return 1; }
-        ZFS_PARAMS_SAVED="$ZFS_PARAMS_SAVED $name=$(cat "$p")"
-        echo "${kv#*=}" > "$p"
-        log "zfs parameter $name: ${ZFS_PARAMS_SAVED##* } -> $(cat "$p")"
+        zfs_param_set "${kv%%=*}" "${kv#*=}" \
+            || { echo "TB_ZFS_PARAMS: no such zfs module parameter: ${kv%%=*}" >&2; return 1; }
+        log "zfs parameter ${ZFS_PARAMS_SAVED##* } -> $(cat "/sys/module/zfs/parameters/${kv%%=*}")"
+    done
+}
+zfs_set_props() { # TB_ZFS_PROPS: "[data:|wal:]property=value,..."
+    local kv ds
+    for kv in ${ZFS_PROPS//,/ }; do
+        ds=$ZFS_POOL
+        case $kv in data:*|wal:*) ds=$ZFS_POOL/${kv%%:*}; kv=${kv#*:} ;; esac
+        zfs set "$kv" "$ds"
+        log "zfs property $kv on $ds"
     done
 }
 l2arc_params() { # the feed's settings, for the log
@@ -858,13 +962,27 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     zpool import -N -o cachefile=none -d /dev/mapper/tb-zdev "$ZFS_POOL"
     ZFS_UP=1
     log "zpool import over the ${ORIGIN_DELAY_MS} ms origin took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+    zfs_set_props
     FS_DEV=/dev/mapper/tb-zdev
 }
 zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg key n"
     awk 'NR > 2 { print "zfsc zil." $1, $3 }' /proc/spl/kstat/zfs/zil
-    awk 'NR > 2 && $1 ~ /^(hits|iohits|misses|l2_hits|l2_misses|l2_read_bytes|l2_write_bytes)$/ { print "zfsc arc." $1, $3 }
-         NR > 2 && $1 ~ /^(size|c_max|compressed_size|uncompressed_size|l2_size|l2_asize)$/ { print "zfsg arc." $1, $3 }' \
+    awk 'NR > 2 && $1 ~ /^(hits|iohits|misses|l2_hits|l2_misses|l2_read_bytes|l2_write_bytes|memory_throttle_count)$/ { print "zfsc arc." $1, $3 }
+         NR > 2 && $1 ~ /^(size|c_max|compressed_size|uncompressed_size|l2_size|l2_asize|anon_size)$/ { print "zfsg arc." $1, $3 }' \
         /proc/spl/kstat/zfs/arcstats
+    # Transactions that were made to wait, and why.
+    awk 'NR > 2 { print "zfsc dmutx." $1, $3 }' /proc/spl/kstat/zfs/dmu_tx 2>/dev/null
+    # Per-dataset counters: ZIL bytes by dataset tell WAL commits from
+    # the checkpointer's fsync of data files.
+    local f
+    for f in "/proc/spl/kstat/zfs/$ZFS_POOL"/objset-*; do
+        [ -r "$f" ] || continue
+        awk 'NR > 2 && $1 == "dataset_name" { n = $3; sub(/.*\//, "", n) }
+             NR > 2 && $1 != "dataset_name" && $3 ~ /^[0-9]+$/ { v[$1] = $3 }
+             END { if (n != "" && n !~ /@/) for (k in v) print "zfsc ds." n "." k, v[k] }' "$f"
+    done
+    # Completed transaction groups: txg ndirty nwritten otime qtime wtime stime (bytes, ns).
+    awk '$3 == "C" { print "zfstxg", $1, $4, $6, $9, $10, $11, $12 }' "/proc/spl/kstat/zfs/$ZFS_POOL/txgs" 2>/dev/null
     # Growth of the COW store = bytes written to LBAs never written
     # since the stage. dm-snapshot status: <allocated>/<total> sectors.
     echo "zfsc cow.allocated_bytes $(dmsetup status tb-zdev | awk '{ split($4, a, "/"); print a[1] * 512 }')"
@@ -1079,8 +1197,48 @@ snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file 
 diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
 }
+diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
+    awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
+         $1 == "ctxt" { print "cpu ctxt", $2 }' /proc/stat
+    # CPU ticks by thread name (kernel threads included). A process's
+    # reaped children are in its cutime/cstime: postgres backends land
+    # on the postmaster, pgbench on the shell that ran it.
+    python3 - <<'PY' || true
+import collections, glob, re
+c = collections.Counter()
+def parse(path):
+    s = open(path).read()
+    return s[s.index('(') + 1:s.rindex(')')], s[s.rindex(')') + 2:].split()
+def norm(comm):
+    return (re.sub(r'[-_]?\d+$', '', re.split(r'[/:]', comm)[0]) or comm).replace(' ', '_')
+for p in glob.glob('/proc/[0-9]*'):
+    try:
+        for t in glob.glob(p + '/task/[0-9]*/stat'):
+            comm, f = parse(t)
+            c[norm(comm)] += int(f[11]) + int(f[12])
+        comm, f = parse(p + '/stat')
+        c[norm(comm) + '(reaped)'] += int(f[13]) + int(f[14])
+    except (OSError, ValueError, IndexError):
+        pass
+for k, v in c.most_common():
+    if v: print('thr', k, v)
+PY
+    as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
+}
+fsync_test() { # the commit path with nothing else running: pg_test_fsync on the WAL filesystem
+    rm -f "$OUT/$TOPO.fsync"
+    if [ "$FSYNC_TEST" != 1 ] || [ ! -x "$PG_BIN/pg_test_fsync" ]; then return 0; fi
+    local d
+    d=$(dirname "$(readlink -f "$PGDATA/pg_wal")")/tb-fsync
+    mkdir -p "$d"; chown "$PG_USER" "$d"
+    as_pg "'$PG_BIN/pg_test_fsync' -s 2 -f '$d/test'" > "$OUT/$TOPO.fsync" 2>&1 || true
+    rm -f "$d/test"; rmdir "$d" 2>/dev/null || true
+    log "$TOPO: one 8 kB write + sync on the WAL filesystem: $(awk '/one 8kB write/ { on = 1; next } /^Compare/ { on = 0 } on && /usecs\/op/ { printf "%s=%sus ", $1, $(NF - 1) }' "$OUT/$TOPO.fsync")"
+}
 snapshot() { # file
     {
+        diag_stats
+        [ -n "$POOL_LOOP" ] && echo "dev poolloop $(diskstats_line "$(basename "$POOL_LOOP")")"
         echo "dev origin $(diskstats_line "${STAT_ORIGIN:-$(basename "$ORIGIN_LOOP")}")"
         echo "dev walorigin $(diskstats_line "$(basename "$WAL_ORIGIN_LOOP")")"
         echo "dev pool $(diskstats_line "${STAT_POOL:-$(dm_blk tb-tdata)}")"
@@ -1150,19 +1308,25 @@ run_workload() { # topology workload [snapshot mode]
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
         ZFS_WIN=""
     fi
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" > "$OUT/$tag.json" <<'PY'
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
+fsync_file, run_label = sys.argv[8], sys.argv[9]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
+cpu, thr, txgs = {}, {}, {}
 def load(p):
     dev, pg, other = {}, {}, {}
     zc[p], zg[p] = {}, {}
+    cpu[p], thr[p], txgs[p] = {}, {}, {}
     for line in open(p):
         f = line.split()
         if not f: continue
         if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:7]]
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
+        elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
+        elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
+        elif f[0] == 'zfstxg' and len(f) >= 8: txgs[p][int(f[1])] = [int(x) for x in f[2:8]]
         elif f[0] in ('zfsc', 'zfsg'):
             if len(f) > 2 and f[2].isdigit(): (zc if f[0] == 'zfsc' else zg)[p][f[1]] = int(f[2])
         else: other.setdefault(f[0], []).append(line.strip())
@@ -1170,6 +1334,7 @@ def load(p):
 bd, bp, bo = load(base + '.before'); ad, ap, ao = load(base + '.after')
 MB = 1 << 20
 r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {}}
+if run_label: r['label'] = f'{topo} [{run_label}]'
 for name in ad:
     d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
@@ -1210,6 +1375,45 @@ if lats:
 if zc[base + '.after'] or zg[base + '.after']:
     zb, za = zc[base + '.before'], zc[base + '.after']
     r['zfs'] = {'delta': {k: za[k] - zb.get(k, 0) for k in za}, 'after': zg[base + '.after']}
+    # Transaction groups completed inside the window.
+    new = [v for k, v in txgs[base + '.after'].items() if k not in txgs[base + '.before']]
+    if new:
+        ms = lambda i: [v[i] / 1e6 for v in new]
+        r['zfs']['txg'] = {'n': len(new), 'dirty_mb_mean': sum(v[0] for v in new) / len(new) / MB,
+                           'written_mb': sum(v[1] for v in new) / MB,
+                           'open_ms_mean': sum(ms(2)) / len(new), 'sync_ms_mean': sum(ms(5)) / len(new),
+                           'sync_ms_max': max(ms(5)), 'wait_ms_max': max(ms(4))}
+# Where the time went. CPU as shares of all CPUs over the window, CPU
+# seconds by thread name, context switches.
+HZ = 100
+diag = {}
+cb, ca = cpu[base + '.before'], cpu[base + '.after']
+if 'total' in ca and 'total' in cb:
+    d = [a - b for a, b in zip(ca['total'], cb['total'])]; tot = sum(d) or 1
+    diag['cpu_pct'] = {'user': 100 * (d[0] + d[1]) / tot, 'system': 100 * (d[2] + d[5] + d[6]) / tot,
+                       'idle': 100 * d[3] / tot, 'iowait': 100 * d[4] / tot, 'steal': 100 * d[7] / tot}
+    diag['cpu_s_total'] = tot / HZ
+if 'ctxt' in ca and 'ctxt' in cb: diag['ctxt'] = ca['ctxt'][0] - cb['ctxt'][0]
+tb, ta = thr[base + '.before'], thr[base + '.after']
+by = collections.Counter()
+for k, v in ta.items():
+    dv = v - tb.get(k, 0)
+    if dv <= 0: continue
+    name = k.replace('(reaped)', '')
+    # pgbench and the helpers of this script all end up as some shell's children.
+    if name in ('su', 'bash', 'sh', 'sudo', 'pgbench', 'python', 'runuser', 'awk', 'sed'): name = 'pgbench+harness'
+    by[name] += dv / HZ
+diag['cpu_s_by_thread'] = dict(by.most_common(20))
+r['diag'] = diag
+# pg_test_fsync, first table: one 8 kB write per sync, by wal_sync_method.
+if os.path.exists(fsync_file):
+    on, ft = False, {}
+    for line in open(fsync_file):
+        if 'one 8kB write' in line: on = True; continue
+        if line.startswith('Compare'): on = False
+        m = re.match(r'\s+(\S+)\s+([\d.]+) ops/sec\s+(\d+) usecs/op', line)
+        if on and m: ft[m.group(1)] = int(m.group(3))
+    if ft: r['fsync_test_us'] = ft
 print(json.dumps(r, indent=1))
 PY
     rm -f "$plog".*
@@ -1250,6 +1454,13 @@ mount_and_start() {
         mkdir -p "$MNT_WAL/pg_wal"; chown "$PG_USER" "$MNT_WAL/pg_wal"; chmod 700 "$MNT_WAL/pg_wal"
         as_pg "mv '$PGDATA/pg_wal/'* '$MNT_WAL/pg_wal/' && rmdir '$PGDATA/pg_wal' && ln -s '$MNT_WAL/pg_wal' '$PGDATA/pg_wal'"
     fi
+    # Per-run settings; later lines win over what the origin carries.
+    local kv
+    {
+        echo "track_wal_io_timing = on"
+        for kv in ${PG_CONF//,/ }; do echo "${kv%%=*} = ${kv#*=}"; done
+    } >> "$PGDATA/postgresql.conf"
+    [ -z "$PG_CONF" ] || log "postgresql.conf for this run: $PG_CONF"
     rm -f "$PGDATA/postmaster.pid"
     start_pg
 }
@@ -1264,6 +1475,7 @@ for TOPO in $TOPOLOGIES; do
     case $TOPO in zfs*) ;; *) build_pool ;; esac
     "topo_${TOPO//-/_}"
     mount_and_start
+    fsync_test
     # One phase per snapshot mode, on this one stack. The ZFS stacks
     # have a single mechanism, so every mode but none collapses to it.
     PHASES=""

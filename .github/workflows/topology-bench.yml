@@ -87,6 +87,9 @@ on:
       zfs_params:
         description: "zfs module parameters for the ZFS topologies, name=value separated by spaces (e.g. l2arc_noprefetch=0 l2arc_headroom=0)"
         default: ""
+      sequence:
+        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. Replaces the per-topology matrix when set"
+        default: ""
       cas_mode:
         description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
         default: "wi"
@@ -112,6 +115,7 @@ env:
   TB_SNAP_KEEP: ${{ inputs.snap_keep || '2' }}
   TB_ZFS_RECORDSIZE: ${{ inputs.zfs_recordsize || '8k' }}
   TB_ZFS_PARAMS: ${{ inputs.zfs_params || '' }}
+  TB_SEQUENCE: ${{ inputs.sequence || '' }}
   TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
   OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
 
@@ -124,13 +128,18 @@ jobs:
     steps:
       - id: m
         run: |
-          echo "topologies=$(echo "$TB_TOPOLOGIES" | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          # A sequence is one job: its whole point is one machine.
+          if [ -n "$TB_SEQUENCE" ]; then
+            echo 'topologies=["sequence"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "topologies=$(echo "$TB_TOPOLOGIES" | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+          fi
 
   bench:
     name: ${{ matrix.topology }}
     needs: plan
     runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -164,7 +173,7 @@ jobs:
           uname -r; df -h "$TB_WORK"; free -m
 
       - name: Install ZFS
-        if: startsWith(matrix.topology, 'zfs')
+        if: startsWith(matrix.topology, 'zfs') || contains(inputs.sequence, 'zfs')
         run: |
           sudo apt-get install -y --no-install-recommends zfsutils-linux
           # Ubuntu kernels ship zfs.ko prebuilt; fall back to DKMS on a
@@ -176,7 +185,7 @@ jobs:
           sudo zfs version
 
       - name: Build Open CAS (casadm with write-invalidate enabled)
-        if: matrix.topology == 'opencas'
+        if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
         run: |
           sudo apt-get install -y --no-install-recommends \
             git make gcc "linux-headers-$(uname -r)" libelf-dev python3-setuptools
@@ -202,7 +211,30 @@ jobs:
           export TB_TOPOLOGIES="${{ matrix.topology }}"
           export -p | grep -E '^declare -x (TB_[A-Z0-9_]+|PATH)=' > "$RUNNER_TEMP/tb.env"
           cat "$RUNNER_TEMP/tb.env"
-          sudo bash -c '. "$1" && exec tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env"
+          if [ -z "$TB_SEQUENCE" ]; then
+            sudo bash -c '. "$1" && exec tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env"
+            exit
+          fi
+          # One machine, several configurations. Each entry is a label
+          # and TB_* assignments; they are passed to env as arguments,
+          # never evaluated, and each entry gets its own output
+          # directory so equal topology names do not collide.
+          IFS=';' read -ra entries <<< "$TB_SEQUENCE"
+          i=0
+          for e in "${entries[@]}"; do
+            i=$((i + 1))
+            label=${e%%|*}; assigns=${e#*|}
+            [[ $label =~ ^[A-Za-z0-9\ ._=,+-]*$ ]] || { echo "::error::bad sequence label: $label"; exit 64; }
+            args=()
+            for a in $assigns; do
+              [[ $a =~ ^TB_[A-Z0-9_]+=[A-Za-z0-9_.,:=+-]*$ ]] || { echo "::error::bad sequence assignment: $a"; exit 64; }
+              args+=("$a")
+            done
+            echo "::group::sequence $i: $label ($assigns)"
+            sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
+              "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}"
+            echo "::endgroup::"
+          done
 
       - name: Evidence on failure
         if: failure()
