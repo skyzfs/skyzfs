@@ -379,7 +379,7 @@ impl MemTarget {
     fn write_record(&self, offset: u64, data: &[u8], skip: usize, take: usize) -> Record {
         let first = offset / BLOCK_SIZE;
         let effects = data
-            .chunks_exact(BLOCK_USIZE)
+            .chunks(BLOCK_USIZE)
             .enumerate()
             .skip(skip)
             .take(take)
