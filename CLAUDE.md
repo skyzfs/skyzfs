@@ -70,6 +70,13 @@ Codex, and other people can take part.
 The lead's own changes to the design document and this guide go
 straight to `zfs-topology`.
 
+The design is also open for outside review as a documents-only pull
+request into `main`, from the branch `skyzfs-design-docs`
+(skyzfs/skyzfs#2). The lead copies `docs/skyzfs-design.md` and
+`docs/skynbd-postgres-study.md` to that branch whenever they change and
+answers its comments. Nobody else pushes there, and the user decides
+when it merges.
+
 ## Easy to miss
 
 - **No kernel features in cloud containers.** There is no ublk, ZFS,
