@@ -80,15 +80,9 @@ for _p, _t in (('rec', 'Recovery with reissue (`-r 1 -i 1`)'), ('rec0', 'Recover
         (_p + '_serve', _t + ': served'),
         (_p + '_dev_flags', _t + ': device flags'),
         (_p + '_import', _t + ': import'),
-        (_p + '_server_pid', _t + ': server pid killed with `kill -9`'),
-        (_p + '_state_after_kill', _t + ': device state after the kill'),
-        (_p + '_inflight_at_kill', _t + ': requests in flight then (read, write)'),
-        (_p + '_recover', _t + ': `ublk recover`'),
-        (_p + '_recover_ms', _t + ': `ublk recover` took, ms'),
-        (_p + '_state_after_recover', _t + ': device state afterwards'),
-        (_p + '_pool_after_recover', _t + ': pool afterwards'),
-        (_p + '_zpool_clear', _t + ': `zpool clear`'),
-        (_p + '_pool_after_clear', _t + ': pool after `zpool clear`'),
+        (_p + '_kills', _t + ': each `kill -9` of the server'),
+        (_p + '_kills_summary', _t + ': kills'),
+        (_p + '_zpool_clear', _t + ': `zpool clear` afterwards, for cleanup'),
         (_p + '_writer', _t + ': the fsync writer'),
         (_p + '_scrub', _t + ': scrub'),
         (_p + '_scrub_result', _t + ': scrub result'),
@@ -165,14 +159,13 @@ def main():
 
     names = [p['res'].get('kernel', os.path.basename(p['dir'])) for p in probes]
     print('## SkyZFS kernel probe\n')
-    pinned = [(k, label) for k, label in PINS if any(p['res'].get(k) for p in probes)]
-    if pinned:
-        print('**Pinned properties.** A FAIL fails the probe.\n')
-        print('| | ' + ' | '.join(names) + ' |')
-        print('|---|' + '---|' * len(probes))
-        for key, label in pinned:
-            print(f'| {label} | ' + ' | '.join(cell(p['res'].get(key)) for p in probes) + ' |')
-        print('\n**Findings.**\n')
+    # All four rows, always: a pin that was never checked is not a pass.
+    print('**Pinned properties.** A FAIL, or a property that was not checked, fails the probe.\n')
+    print('| | ' + ' | '.join(names) + ' |')
+    print('|---|' + '---|' * len(probes))
+    for key, label in PINS:
+        print(f'| {label} | ' + ' | '.join(cell(p['res'].get(key) or '**NOT CHECKED**') for p in probes) + ' |')
+    print('\n**Findings.**\n')
     print('| | ' + ' | '.join(names) + ' |')
     print('|---|' + '---|' * len(probes))
     known = {k for k, _ in ROWS} | {k for k, _ in PINS}

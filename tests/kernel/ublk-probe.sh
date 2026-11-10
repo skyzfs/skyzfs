@@ -22,8 +22,11 @@
 #      the labels are; whether flushes reach the ublk queue; what ZFS
 #      does when every flush fails (zinject)
 #   6. the same pool on a device with user recovery: kill -9 the server
-#      while ZFS writes, recover, scrub; with reissue (pinned) and
-#      without (the contrast)
+#      five times while ZFS writes, each time when writes are in
+#      flight, recover, scrub; with reissue (pinned) and without (the
+#      contrast)
+#
+# UBLKSRV_REF in the environment picks the server commit to build.
 set -uo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -169,7 +172,7 @@ step "a ublk server"
 pkgs=$(apt-cache search --names-only 'ublk|ubdsrv' 2>/dev/null | tr '\n' ';')
 rec ublk_packages "${pkgs:-none}"
 SRV=""
-if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
+if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
     SRV=$(tail -n 1 "$OUT/ublksrv.ver")
     rec ublk_server "built from source: $SRV"
 else
@@ -346,8 +349,9 @@ PY
         rec pool_after "$(pool_errors)"
 
         # What ZFS does when every flush to the data vdev fails. The
-        # fault is injected inside ZFS, so these flushes never reach the
-        # device: the trace then shows whether ZFS went on to write.
+        # fault is applied inside ZFS when the flush completes: the
+        # request still goes to the device and succeeds there, and ZFS
+        # is then told it failed.
         step "a failing flush (zinject)"
         if command -v zinject >/dev/null; then
             rec zinject_from "$(dpkg -S "$(command -v zinject)" 2>/dev/null | cut -d: -f1)"
@@ -370,7 +374,7 @@ PY
             # proves nothing.
             lim 30 zinject > "$OUT/zinject-list.log" 2>&1
             rec zinject_fired "$(awk '$4 == "flush" { printf "flush zios matched %s, failed %s", $(NF - 1), $NF }' "$OUT/zinject-list.log")"
-            rec zinject_sync "zpool sync with every flush failing: rc $rc$([ "$rc" = 124 ] && echo ' (TIMEOUT)'); $traced flush requests reached the device, diskstats +$delta"
+            rec zinject_sync "zpool sync with every flush reported to ZFS as failed: rc $rc$([ "$rc" = 124 ] && echo ' (TIMEOUT)'); $traced flush requests were still issued to the device, diskstats +$delta"
             rec zinject_pool_state "health $(lim 30 zpool list -H -o health "$POOL" 2>&1); $(pool_errors)"
             rec zinject_events "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
             lim 30 zinject -c all > /dev/null 2>&1
@@ -382,9 +386,47 @@ PY
 fi
 
 # --------------------------------------- 6. kill the server, recover
-kill_test() { # prefix, then `ublk add` arguments: kill -9 the server while ZFS writes, recover, check
-    local p=$1 pid before at_kill after i failed health scrub verify names; shift
+KILLS=5
+INFLIGHT=/sys/block/$(basename "$BDEV")/inflight
+kill_round() { # prefix n: one kill -9 and one recovery. Fails unless the server died and the device came back.
+    local p=$1 n=$2 pid w=0 i rc ms t0 state_k state_r health errs
+    pid=$(ublk_field "daemon pid")
+    if [ -z "$pid" ]; then
+        KT_ROUNDS+="kill $n: no server pid found, nothing killed; "
+        return 1
+    fi
+    # Kill at a moment when the server holds writes: wait, for at most
+    # five seconds, until the device has some in flight, then kill at
+    # once. A kill that lands on nothing proves nothing about reissue.
+    for i in $(seq 1 500); do
+        read -r _ w < "$INFLIGHT" 2>/dev/null || break
+        [ "${w:-0}" -gt 0 ] && break
+        sleep 0.01
+    done
+    if ! kill -9 "$pid" 2>/dev/null; then
+        KT_ROUNDS+="kill $n: kill -9 $pid failed, nothing killed; "
+        return 1
+    fi
+    [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
+    sleep 2
+    state_k=$(ublk_field state)
+    t0=$(date +%s%N)
+    lim 90 ublk recover -n "$DEV_ID" > "$OUT/$p-recover-$n.log" 2>&1; rc=$?
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    state_r=$(ublk_field state)
+    sleep 4
+    # The pool as the kill and the recovery left it, before anything
+    # clears it: an unhealthy pool or a counted error is the finding.
+    health=$(lim 30 zpool list -H -o health "$POOL" 2>&1)
+    errs=$(pool_errors)
+    KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $state_k, recover rc $rc in $ms ms, $state_r, pool ${health:-unknown}, ${errs%%),*}); "
+    case "$health/$errs" in "ONLINE/vdev errors 0 "*) ;; *) KT_UNHEALTHY=$((KT_UNHEALTHY + 1)) ;; esac
+    [ "$state_k" = QUIESCED ] && [ "$rc" = 0 ] && [ "$state_r" = LIVE ]
+}
+kill_test() { # prefix, then `ublk add` arguments: kill -9 the server KILLS times while ZFS writes, recover, check
+    local p=$1 n after i failed health scrub verify names; shift
     local wlog="$OUT/$p-writer.log"
+    KT_ROUNDS=""; KT_INFLIGHT=0; KT_UNHEALTHY=0; KT_DONE=0
     try "${p}_export" 120 zpool export "$POOL" || return 1
     lim 60 ublk del -n "$DEV_ID" > "$OUT/$p-del.log" 2>&1
     try "${p}_serve" 90 serve "$@" || return 1
@@ -403,45 +445,36 @@ kill_test() { # prefix, then `ublk add` arguments: kill -9 the server while ZFS 
     ) &
     WRITER=$!
     # An fsync is served by the log device alone. Syncing the pool in a
-    # loop keeps writes to the data vdev in flight, so that the kill
+    # loop keeps writes to the data vdev in flight, so that a kill
     # lands on some.
     ( while [ ! -e "$WORK/stop" ]; do zpool sync "$POOL" 2>/dev/null; sleep 0.1; done ) &
     SYNCER=$!
     sleep 5
-    pid=$(ublk_field "daemon pid")
-    before=$(cat "$WORK/writer.count" 2>/dev/null); before=${before:-0}
-    rec "${p}_server_pid" "${pid:-not found}"
-    at_kill=$before
-    if [ -n "$pid" ] && kill -9 "$pid"; then
-        sleep 3
-        rec "${p}_state_after_kill" "$(ublk_field state)"
-        rec "${p}_inflight_at_kill" "$(tr -s ' ' < "/sys/block/$(basename "$BDEV")/inflight" 2>/dev/null)"
-        at_kill=$(cat "$WORK/writer.count" 2>/dev/null); at_kill=${at_kill:-0}
-        t0=$(date +%s%N)
-        try "${p}_recover" 90 ublk recover -n "$DEV_ID"
-        rec "${p}_recover_ms" "$(( ($(date +%s%N) - t0) / 1000000 ))"
-        rec "${p}_state_after_recover" "$(ublk_field state)"
-        sleep 5
-        health=$(lim 30 zpool list -H -o health "$POOL" 2>&1)
-        rec "${p}_pool_after_recover" "health ${health:-unknown}; $(pool_errors)"
-        if [ "$health" != ONLINE ]; then
-            try "${p}_zpool_clear" 120 zpool clear "$POOL"
-            rec "${p}_pool_after_clear" "health $(lim 30 zpool list -H -o health "$POOL" 2>&1); $(pool_errors)"
-        fi
-        sleep 5
-    fi
+    for n in $(seq 1 "$KILLS"); do
+        kill_round "$p" "$n" || break
+        KT_DONE=$n
+        sleep 2
+    done
+    rec "${p}_kills" "${KT_ROUNDS:-none}"
+    rec "${p}_kills_summary" "$KT_DONE of $KILLS kills ended with the device recovered; $KT_INFLIGHT landed with writes in flight; $KT_UNHEALTHY left the pool unhealthy or with an error counted"
     touch "$WORK/stop"
+    # Cleanup only, and only after the state above is on record: a pool
+    # the kills left suspended must be cleared before it can be scrubbed.
+    health=$(lim 30 zpool list -H -o health "$POOL" 2>&1)
+    if [ "$health" != ONLINE ]; then
+        try "${p}_zpool_clear" 120 zpool clear "$POOL"
+    fi
     # The writer blocks while the device has no server; it must come
     # back once the device does.
     i=0; while kill -0 "$WRITER" 2>/dev/null && [ $i -lt 90 ]; do sleep 1; i=$((i + 1)); done
     failed=$(grep -c failed "$wlog" 2>/dev/null || true)
+    after=$(cat "$WORK/writer.count" 2>/dev/null)
     if kill -0 "$WRITER" 2>/dev/null; then
-        rec "${p}_writer" "STUCK: still blocked 90 s after recovery; failed writes: ${failed:-0}"
+        rec "${p}_writer" "STUCK: still blocked 90 s after the last recovery; ${after:-0} files written; failed writes: ${failed:-0}"
         kill -9 "$WRITER" 2>/dev/null
         failed=stuck
     else
-        after=$(cat "$WORK/writer.count" 2>/dev/null)
-        rec "${p}_writer" "resumed: $before files before the kill, $at_kill when recovery began, ${after:-0} at the end; failed writes: ${failed:-0}"
+        rec "${p}_writer" "ran through every kill: ${after:-0} files written; failed writes: ${failed:-0}"
     fi
     kill -9 "$SYNCER" 2>/dev/null; pkill -9 -f "zpool sync $POOL" 2>/dev/null
     try "${p}_scrub" 600 zpool scrub -w "$POOL"
@@ -449,21 +482,26 @@ kill_test() { # prefix, then `ublk add` arguments: kill -9 the server while ZFS 
     rec "${p}_scrub_result" "$scrub"
     if (cd "$MNT" && lim 300 sha256sum -c --quiet "$WORK/sums") > "$OUT/$p-verify.log" 2>&1; then
         verify=ok
-        rec "${p}_verify" "ok: the files written before the kill are intact"
+        rec "${p}_verify" "ok: the files written before the kills are intact"
     else
         verify=failed
         rec "${p}_verify" "FAILED: $(tail -n 1 "$OUT/$p-verify.log")"
     fi
-    KT_SUMMARY="flags $names; failed writes ${failed:-0}; $scrub; earlier files $verify"
-    [ "${failed:-0}" = 0 ] && [ "$verify" = ok ] && case "$scrub" in "vdev errors 0 "*"with 0 errors"*) true ;; *) false ;; esac
+    KT_SUMMARY="flags $names; $KT_DONE of $KILLS kills recovered, $KT_INFLIGHT with writes in flight, $KT_UNHEALTHY left the pool unhealthy or with an error; failed writes ${failed:-0}; $scrub; earlier files $verify"
+    [ "$KT_DONE" = "$KILLS" ] && [ "$KT_UNHEALTHY" = 0 ] && [ "${failed:-0}" = 0 ] && [ "$verify" = ok ] \
+        && case "$scrub" in "vdev errors 0 "*"with 0 errors"*) true ;; *) false ;; esac
 }
 if [ -n "$POOL_OK" ]; then
-    # Recovery is chosen when the device is added, so each run replaces
+    # Recovery is chosen when the device is added, so each test replaces
     # the device: -r 1 is UBLK_F_USER_RECOVERY, -i 1 adds _REISSUE (the
     # requests the dead server held are issued again, not failed).
-    step "user recovery with reissue: kill -9 the server under load"
-    KT_SUMMARY="did not run to the end"
-    if kill_test rec -r 1 -i 1 && case "$KT_SUMMARY" in *RECOVERY_REISSUE*) true ;; *) false ;; esac; then
+    step "user recovery with reissue: kill -9 the server under load, $KILLS times"
+    KT_SUMMARY="did not run to the end"; KT_INFLIGHT=0
+    # The pin passes only if every kill really killed the server and
+    # was recovered, the pool was healthy with no error counted after
+    # each one, and at least one kill landed on writes in flight.
+    if kill_test rec -r 1 -i 1 && [ "$KT_INFLIGHT" -gt 0 ] \
+        && case "$KT_SUMMARY" in *RECOVERY_REISSUE*) true ;; *) false ;; esac; then
         pin recovery_reissue PASS "$KT_SUMMARY"
     else
         pin recovery_reissue FAIL "$KT_SUMMARY"
@@ -478,9 +516,21 @@ if [ -n "$POOL_OK" ]; then
     try rec0_export_end 120 zpool export "$POOL"
 fi
 
+# Every pinned property must have been checked. A probe that never got
+# as far as a pool has pinned nothing, and that is a failure, not a pass.
+step "pins"
+why="the pool was not created"
+[ -n "$ZFS_OK" ] || why="the ZFS module did not load"
+[ -n "$SERVED" ] || why="no file was served as $BDEV"
+[ -n "$SRV" ] || why="the ublk server did not build"
+[ -e /dev/ublk-control ] || why="ublk_drv did not load"
+for k in no_partition_table label_at_byte_0 flush_delivered recovery_reissue; do
+    grep -q "^pin_$k	" "$R" || pin "$k" FAIL "not checked: $why"
+done
+
 step "done"
 cat "$R"
 if [ "$PINS_FAILED" -gt 0 ]; then
-    echo "$PINS_FAILED pinned properties FAILED" >&2
+    echo "$PINS_FAILED pinned properties FAILED or were not checked" >&2
     exit 1
 fi

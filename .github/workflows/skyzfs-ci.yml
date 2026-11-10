@@ -15,10 +15,17 @@ on:
       - "skyzfs-*"
   workflow_dispatch:
 
-# A newer push to a branch replaces the run of the older one.
+# A newer push to a role branch replaces the run of the older one. Not
+# on zfs-topology: each merge there is a different change, and two
+# merges in quick succession must both be checked.
 concurrency:
   group: skyzfs-ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_name != 'zfs-topology' }}
+
+# The jobs run branch code: the token can read the repository and
+# nothing else. The gate job asks for what it needs.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,8 +36,12 @@ env:
 
 jobs:
   # Is this push already covered by ci.yml? It is when the branch is the
-  # head of an open pull request. If the question cannot be answered,
-  # run: twice is better than not at all.
+  # head of an open pull request that does not conflict with its base.
+  # GitHub starts no pull_request workflow for a pull request that
+  # conflicts, so such a push would otherwise get no checks at all. If
+  # the question cannot be answered, run: twice is better than not at
+  # all. (GitHub works out the conflict state in the background; while
+  # it is still unknown the pull request is taken as covered.)
   gate:
     runs-on: ubuntu-latest
     permissions:
@@ -42,15 +53,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          open=0
+          pr=""
           if [ "$GITHUB_EVENT_NAME" = push ]; then
-            open=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" --jq length) || open=0
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" --jq '.[0].number // empty') || pr=""
           fi
-          if [ "$open" -gt 0 ]; then
+          state=""
+          if [ -n "$pr" ]; then
+            state=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.mergeable_state // empty') || state=dirty
+          fi
+          if [ -n "$pr" ] && [ "$state" != dirty ]; then
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "$GITHUB_REF_NAME has an open pull request: ci.yml covers this push." >> "$GITHUB_STEP_SUMMARY"
+            echo "$GITHUB_REF_NAME heads pull request #$pr: ci.yml covers this push." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "run=true" >> "$GITHUB_OUTPUT"
+            [ -z "$pr" ] || echo "Pull request #$pr conflicts with its base, so ci.yml does not run for it: running here." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   lint:

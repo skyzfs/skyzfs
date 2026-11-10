@@ -195,7 +195,7 @@ jobs:
       - name: Build the ublk reference server
         if: matrix.topology == 'zfs-ublk' || contains(inputs.sequence, 'zfs-ublk')
         run: |
-          [[ $UBLKSRV_REF =~ ^[A-Za-z0-9._/-]*$ ]] || { echo "::error::bad ublksrv ref"; exit 64; }
+          [[ $UBLKSRV_REF =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || { echo "::error::bad ublksrv ref"; exit 64; }
           sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
           sudo modprobe ublk_drv
           sudo ublk features || true
