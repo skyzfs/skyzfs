@@ -580,6 +580,7 @@ are two datasets of the one pool.
 | zfs-plain | zfs with compression off and `full_page_writes=on`: the control for what pgbench's very compressible rows and the missing full-page images contribute |
 | zfs-l2arc | zfs plus an L2ARC device of 25% of the database, the counterpart of baseline's dm-cache |
 | zfs-slog | zfs plus a separate 1 GiB log device on local flash, so ZIL blocks never reach the vdev: the ZFS-native form of the two-volume split |
+| zfs-slog-rcache | zfs-slog plus a dm-cache (writethrough, smq, 25% of the database: baseline's cache) on the origin path under the vdev, standing in for a backend that keeps what it fetched |
 
 The ARC is not charged to postgres's cgroup, so it is capped at the
 memory limit minus `shared_buffers` (768 MiB here), which is what the
@@ -732,8 +733,7 @@ resume, or the `zfs snapshot` call, which blocks only its caller.
   all four comparisons, in either phase order. The likely reason is
   that the freeze flushes the dirty backlog before the snapshot, while
   without it that backlog is written afterwards, when every chunk has
-  to be copied first. That is a hypothesis: a third mode that syncs
-  and then suspends would test it.
+  to be copied first. The `sync` mode below tests that.
 - **`zfs snapshot` cost nothing measurable**: throughput and flash
   writes are unchanged. With the log device there was no stalled
   second in any phase and the worst transaction stayed under 0.7 s.
@@ -750,11 +750,89 @@ resume, or the `zfs snapshot` call, which blocks only its caller.
 - On the 10 ms origin zfs-slog matches zfs (720 against 725 tps): both
   are bound by page reads, as in §10.3.
 
-### 10.5 What this means for the design
+**Sync, then suspend.** A third thin mode runs syncfs on the
+filesystem and then takes the suspend-only snapshot: the flush a
+freeze does, with writers running. Two more runs, nocache and twovol,
+phases in opposite order (C: none, sync, suspend, freeze; D: none,
+freeze, suspend, sync):
+
+| topology | mode | tps vs none C / D | pause ms, mean | sync before it, ms | stalled seconds C / D | max latency ms C / D |
+|---|---|---|---|---|---|---|
+| nocache | sync | 0.75 / 0.83 | 66 / 48 | 180–1300 | 2 / 1 | 3820 / 2152 |
+| nocache | suspend | 0.54 / 0.81 | 50 / 47 | – | 10 / 10 | 4246 / 5102 |
+| nocache | freeze | 0.62 / 0.81 | 1037 / 304 | – | 3 / 2 | 2734 / 2766 |
+| twovol | sync | 0.69 / 0.67 | 55 / 49 | 300–980 | 2 / 6 | 3072 / 3752 |
+| twovol | suspend | 0.78 / 0.68 | 51 / 46 | – | 11 / 9 | 4205 / 5258 |
+| twovol | freeze | 0.83 / 0.65 | 574 / 277 | – | 4 / 9 | 2794 / 3899 |
+
+The `none` phases had 0 stalled seconds for nocache and 0 and 3 for
+twovol.
+
+- **The flush is what the freeze contributes.** Syncing first brings
+  the suspend-only snapshot from about 10 stalled seconds to 1 or 2 on
+  nocache, level with the freeze, while writers are paused for about
+  50 ms and not for the 0.3 to 1 s the freeze holds. twovol follows
+  the same order in run C and is too noisy to rank in run D.
+- **So a freeze-free capture is viable if it syncs first**, and the
+  agent's existing suspend-only path is the wrong one to promote as it
+  stands.
+- **It does not remove the cost of a thin snapshot.** Every thin mode
+  still loses 17 to 46% of throughput, writes about 40% more to flash,
+  and has a worst transaction of 2 to 5 s.
+
+### 10.5 A read cache under the vdev
+
+§10.3's cold result is a statement about the model's missing read
+cache. zfs-slog-rcache puts baseline's dm-cache on the origin path,
+below the dm-snapshot. The origin is immutable, so that cache sees
+only reads of blocks ZFS has never written: no write is doubled,
+nothing in it can go stale, and blocks already on local flash do not
+compete for it. It is where a backend's cache of fetched objects
+would sit. smq promotes on repeat reads only, where a backend would
+keep every block it paid a round trip for, so this is a floor.
+
+Same settings as §10.2 unless stated; one run per cell.
+
+| origin, window | workload | baseline | twovol | zfs-slog | zfs-slog-rcache |
+|---|---|---|---|---|---|
+| 10 ms, 120 s | tpcb tps | 377 | 3159 | 366 | 1327 |
+| 10 ms, 120 s | select tps | 14695 | 20148 | 1706 | 11056 |
+| 10 ms, 300 s | tpcb tps | 1520 | 2563 | 1369 | 2328 |
+| 10 ms, 300 s | select tps | 19460 | 18807 | 15804 | 31103 |
+| 10 ms, 300 s | tpcb flash MB/ktxn | 34.6 | 26.8 | 16.7 | 14.7 |
+| 3 ms, 300 s | tpcb tps | 2956 | 5546 | 3017 | 3085 |
+| 3 ms, 300 s | select tps | 19612 | 20856 | 27769 | 28158 |
+| 3 ms, 300 s | tpcb flash MB/ktxn | 25.7 | 21.5 | 12.6 | 13.0 |
+
+- **At 10 ms the cache closes most of the gap.** tpcb goes from 1369
+  to 2328 over 300 s, within 10% of twovol at about half the flash
+  writes, and select-only becomes the fastest row measured. In the
+  first 120 s the gain is larger (3.6x on tpcb, 6.5x on select) and
+  twovol is still 2.4x ahead on tpcb.
+- **At 3 ms the cache makes no measurable difference over 300 s.**
+  zfs-slog without it matches baseline on tpcb, leads every thin row
+  on select, and writes about half as much to flash. twovol is 1.8x
+  faster on tpcb.
+- **Every stack hydrates given time.** baseline went from 377 tps in
+  a 120 s window to 1520 in 300 s on the same 10 ms origin, and
+  zfs-slog from 366 to 1369. The 120 s rows in §10.2 measure the
+  first two minutes after a stage.
+- **L2ARC works once it is larger than the ARC.** At 200% of the
+  database (10 ms, 300 s) it served 2.3 million reads on select-only
+  for 23291 tps. It did not help tpcb (1226 tps) and wrote 2.7 GB to
+  flash doing so, 24.3 MB per thousand transactions against 16.7 for
+  zfs-slog. It is fed only from what the ARC evicts, so it warms
+  behind the workload.
+- zfs-slog's own 10 ms, 120 s tpcb figure was 720 in the earlier run
+  and 366 here. Read single cells accordingly.
+
+### 10.6 What this means for the design
 
 1. The backend's read side decides cold performance: what it keeps of
    what it fetched, and how much it fetches around a miss. ZFS's write
-   path is not the limit.
+   path is not the limit. A plain repeat-read cache under the vdev
+   already brings tpcb within 10% of twovol at a 10 ms origin, and at
+   3 ms the stack does not need one (§10.5).
 2. The uploader needs to know what ZFS freed. Without that it uploads
    three to five times the live data.
 3. ZIL traffic is the largest single component at the vdev. A separate
@@ -766,20 +844,20 @@ resume, or the `zfs snapshot` call, which blocks only its caller.
    are level in throughput, and only zfs-slog ran without stalls.
    ZFS's case rests on snapshots that cost the workload nothing, fewer
    flash writes, and a much simpler node stack.
-5. Removing the freeze from the dm-thin capture is not a win by
-   itself (§10.4). The per-snapshot cost there is the copy-on-write
-   after the snapshot, which the freeze does not cause.
+5. The dm-thin capture can drop the freeze if it syncs first (§10.4):
+   the pause falls to about 50 ms with no more stalls than the freeze.
+   The per-snapshot cost stays, because it is the copy-on-write after
+   the snapshot, which the freeze does not cause.
 
-### 10.6 Not yet measured
+### 10.7 Not yet measured
 
-- A backend read cache: fetched blocks kept local, with read-ahead.
+- A backend read cache that keeps every fetched block and reads
+  ahead; §10.5 measures only a repeat-read cache.
 - `logbias=throughput` on the WAL dataset.
-- A thin snapshot mode that syncs and then suspends, to test why the
-  suspend-only snapshots stalled longer than the frozen ones.
 - Why twovol stalls for whole seconds with no snapshots at all (2 and
   7 stalled seconds in §10.4's `none` phases).
 - Snapshots during the window on the 10 ms origin.
 - A database several times larger than RAM, where sparse updates
   rewrite a 128 KiB indirect block per 8 KiB page.
-- Repetitions. Every cell in §10.2 is one run, §10.4 has two, and
-  §6.2 documents how far two runner VMs can differ.
+- Repetitions. Every cell in §10.2 and §10.5 is one run, §10.4 has
+  two per table, and §6.2 documents how far two runner VMs can differ.
