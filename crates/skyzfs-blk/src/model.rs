@@ -33,8 +33,7 @@
 //!   submitted, and whatever precedes that in the world's order (rule R7).
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
-//!   be in the log, so each may end up in the order twice (rule R9, and
-//!   note 1 of the crate documentation).
+//!   be in the log, so each may end up in the order twice (rule R9).
 //! - A **power cut** leaves a prefix of the world's order. Which one is
 //!   unknown until the client reads, so the model asks for a **read-back**
 //!   of every block an unflushed operation touched before anything else
@@ -1528,7 +1527,7 @@ mod tests {
         c.sees(0, &[1]).unwrap();
     }
 
-    /// R9, and note 1 of the crate documentation: an operation in flight
+    /// R9: an operation in flight
     /// at a daemon loss may be applied before the loss and again after
     /// the reissue. W1 covers blocks 0 and 1, W2 block 1. Without a
     /// daemon loss, "W1 won block 1, then a power cut left W1 on block 0

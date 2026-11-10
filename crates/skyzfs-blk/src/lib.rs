@@ -126,33 +126,30 @@
 //!   [`BlockTarget::wait`] is enough for the suite and for a simple loop;
 //!   a wake-up hook can be added without changing the rest.
 //!
-//! # Notes for the design
+//! # Notes
 //!
-//! Places where this crate had to go beyond the words of §4.1. None is a
-//! choice between two implementable readings, except where marked.
-//!
-//! 1. **A reissued operation can be in the order twice.** W1 and W2
-//!    overlap and are in flight together. The daemon logs W1, then W2,
-//!    acknowledges W2 and dies. W1 is reissued and logged again. In memory
-//!    W1 now wins; a power cut that loses the last record leaves W2 the
-//!    winner. §4.1 says the winner is "the same one in memory, in the log,
-//!    after replay and in every cut", which no daemon can promise here,
-//!    because a reissue carries nothing to recognise it by. The model
-//!    therefore lets an operation that was in flight at a daemon loss
-//!    occupy two positions: one before the loss, which may or may not
-//!    exist, and one after.
-//! 2. **When a failed volume starts failing** (reading). After the log
-//!    has failed for good, every flush must fail. Other requests may fail
-//!    or succeed until the first failure has been delivered; every request
-//!    submitted after that must fail.
-//! 3. **`queue_depth`** is reported with the parameters although §4.1's
-//!    table does not list it: a completion queue needs a stated bound.
-//! 4. **The base race** of §4.1's review (a delayed fetch of a base block
-//!    racing a write to it) needs a base whose fetches a test can delay.
-//!    The model and `MemTarget` have a non-empty base; the race case is
-//!    deferred to M3.
-//! 5. **Order of rejection reasons** when a request breaks two rules is
-//!    unspecified; the suite accepts either.
+//! - **A reissued operation can be in the order twice** (rule R9). W1 and
+//!   W2 overlap and are in flight together. The daemon logs W1, then W2,
+//!   acknowledges W2 and dies. W1 is reissued and logged again: the log
+//!   is W1, W2, W1. A reissue carries nothing to recognise it by, so it is
+//!   a new operation in the order. The model lets an operation that was in
+//!   flight at a daemon loss occupy two positions: one before the loss,
+//!   which may or may not exist, and one after.
+//! - **When a failed volume starts failing** (rule R11). Once the log has
+//!   failed for good no flush succeeds. Requests between the failure and
+//!   its first report may succeed or fail: a store learns of the failure
+//!   from an append or an fsync, not at the instant it happens. Every
+//!   request submitted after the first reported failure fails.
+//! - **The base race** (a delayed fetch of a base block racing a write to
+//!   it) needs a base whose fetches a test can delay. The model and
+//!   `MemTarget` have a non-empty base; the race case is deferred to M3.
+//! - **Order of rejection reasons** when a request breaks two rules is
+//!   unspecified; the suite accepts either.
+//! - **Limits of the test model**, not of the contract: the suite's
+//!   random programs keep at most four writes, write-zeroes and discards
+//!   in flight together, and after a power cut the suite reads back every
+//!   block an unflushed operation touched before it issues anything else.
+//!   See [`model`] for why.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
