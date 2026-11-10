@@ -105,30 +105,59 @@ New code: `skyzfs-blk` (contract and conformance suite), `skyzfs-ublk`, `skyzfs-
 
 ### 4.1 Contract
 
-Every transport delivers the same five operations to the daemon and must honour the same rules.
+Every transport delivers the same operations to the daemon and must honour the same rules. The rules are written from what the daemon can observe, so that one reference model can express them and one suite can test them. This section was tightened after an independent review of the first draft (§10.2).
+
+**Parameters.** A target reports these when it is opened, and they do not change while it is open:
+
+| Parameter | Value |
+|---|---|
+| Size | Fixed, a multiple of 1 MiB |
+| Logical and physical block size | 4096 bytes. Every offset and length is a multiple of it |
+| Largest read or write | 1 MiB. A transport splits anything larger (§6.2 caps `recordsize` to match) |
+| Discard and write_zeroes | Any aligned range inside the device |
+| Volatile write cache | Yes: flushes are meaningful and must be delivered |
+| Discard | Supported |
+| Read-only | Set for a snapshot exposed for browsing |
+
+**Content.** A volume has a base: empty, which reads as zeros, or a commit, for a clone or a restore. The content of a 4 KiB block is what the last operation covering it in the daemon's order left there, or else the base.
 
 | Operation | Rule |
 |---|---|
-| `read(offset, len)` | Returns the latest acknowledged write for every byte, or zeros. |
-| `write(offset, len, data)` | Acknowledged once in the daemon's memory and queued for the write log. May be lost on a crash until a later flush completes. |
-| `flush()` | Completes only when every write acknowledged before the flush was submitted is durable in the local write log. Never waits for upload. |
-| `discard(offset, len)` | Advisory. Recorded so that the uploader and the cache skip dead blocks. |
-| `write_zeroes(offset, len)` | Same durability as `write`. |
+| `read` | Returns the content of each block. A read overlapping an operation still in flight sees the old or the new content, per block. |
+| `write` | Replaces the content. |
+| `write_zeroes` | A write of zeros, with a write's ordering and durability. It need not store data, but on a clone it must hide the base: it is a recorded zero extent, not an absence. |
+| `discard` | The content of each block becomes unspecified until the next write to it: the old content, zeros or the base, possibly differing between reads, never bytes from another offset or volume. A crash may forget a discard. A discard is never applied to data written after it. |
+| `flush` | Completes only when every operation the daemon completed before it received the flush is durable against power loss. It need not cover or wait for operations still in flight. It never waits for upload. |
 
-Further rules:
+**Order.** The daemon applies writes, write_zeroes and discards in one total order, which is the order of the write log. An operation submitted after another was acknowledged follows it in that order. Two overlapping operations that are both in flight may land either way round. The result is then one of the two for each block, and it is the same in memory, in the log, after replay and in every cut.
 
-- Offsets and lengths are multiples of 4 KiB. Pools are created with `ashift=12`.
-- Writes to one offset are applied in acknowledgement order. The daemon may complete independent requests out of order.
-- The daemon may disappear and return. In-flight requests are then reissued by the transport and must be idempotent, which reads, writes by offset, flushes and discards all are.
-- The daemon locks its memory and keeps its own files off any pool it serves. A daemon that page-faults onto its own pool deadlocks the machine.
+**Two kinds of failure.** They are different, and treating them as one corrupts a pool.
 
-A conformance suite in `skyzfs-blk` exercises these rules against any transport with a reference model, including kill-and-restart and power-cut replays. Passing it is the entry condition for every transport.
+- **The daemon is lost and the kernel carries on.** ZFS never restarted, so nothing it was told is done may be undone. An operation is therefore acknowledged only once it would survive the daemon process: appended to the write log, though not necessarily flushed to the device. Requests that were not acknowledged are issued again. They may arrive in any order, and may include ones the lost daemon had already applied, so all five operations are idempotent.
+- **Power is lost.** The recovered volume is a prefix of the daemon's order that includes at least everything the last completed flush covered. Every operation in it is whole: none is torn. Blocks that no lost operation touched are unchanged. Whatever recovery exposes is made durable before the first request is served, so a second crash cannot take it back.
+
+**Errors.**
+
+- A request that is misaligned, empty or beyond the end is rejected and has no effect.
+- A flush or a discard is never answered "not supported". ZFS would stop issuing it for good[^zfserr].
+- A flush is never failed for a condition that can recover. It is held. If the write log has failed for good, the flush fails **and so does every later write**: ZFS ignores the result of the flush it issues before the uberblocks[^zfserr], so it is the uberblock write that must fail.
+- A read that needs object storage that cannot be reached is held and retried. After a configured bound it fails, so that `failmode=wait` suspends the pool where an administrator can see it. The bound is set in M3.
+- On a read-only target, writes, write_zeroes and discards fail and a flush succeeds.
+
+**Clients.** A kernel transport is one kind of client. The agent's own tools are another: reading labels to build an import, and rewriting a clone's GUID (§5.4). They use the same contract through a library interface in the daemon, exclusive with a kernel attachment to the same volume. No device node is needed for them, which matters on macOS and Windows, where there is none.
+
+A conformance suite in `skyzfs-blk` exercises these rules against any implementation with a reference model. It distinguishes the two failures: after daemon loss every acknowledged operation is readable, and after power loss only flushed ones are guaranteed. Passing it is the entry condition for every transport and for the local store.
+
+Two deployment rules are outside the suite and are covered by a stress test in the kernel rig: the daemon locks its memory, and it keeps its own files off any pool it serves. A daemon that page-faults onto its own pool deadlocks the machine.
 
 ### 4.2 Linux: ublk
 
 ublk is the in-kernel userspace block driver, driven by io_uring passthrough commands[^ublk]. The daemon fetches requests per queue, copies data to or from its own buffers, and commits results. The kernel presents an ordinary block device, so ZFS uses its normal disk vdev and nothing in ZFS is patched.
 
-- **Recovery.** `UBLK_F_USER_RECOVERY` lets a restarted daemon take the device over, with in-flight requests reissued[^ublk]. This is what makes a daemon upgrade or crash survivable.
+- **Recovery.** ublk's user-recovery mode lets a restarted daemon take the device over[^ublk]. The contract needs the variant that reissues in-flight requests, not the one that fails them: a failed write suspends a single-vdev pool.
+- **Flushes must reach the daemon.** The device advertises a volatile write cache and a 4096-byte logical block. Without the first the block layer completes flushes itself, and there would be no durability and no cuts.
+- **One zio is not one request.** The kernel splits and merges to the advertised limits.
+- **Labels at byte 0.** `zpool create` partitions only what it recognises as a whole disk, and its device table does not list ublk[^wholedisk], so the pool's labels sit at the start of the device, as they do through `udev_shm`. CI pins this (§6.2).
 - **Copies.** One copy per request to start with. The zero-copy modes are a later optimisation and are not needed to meet the study's numbers, which included a comparable per-request cost in dm-snapshot.
 - **Kernels.** ublk was merged in Linux 6.0. Feature flags and their kernel versions must be pinned during M1 against the kernel documentation, not from memory.
 - **Fallback.** Where ublk is missing, the existing NBD server on a local socket is the transport.
@@ -176,7 +205,9 @@ Design points:
 - **Two single-producer rings and a data area.** Descriptors are fixed-size: request id, operation, offset, length, data offset in the arena, priority, and the transaction group as a hint. Completions carry an id and a status.
 - **One copy each way**, in and out of the arena. The vdev queue above the frontend still bounds concurrency and aggregates adjacent I/O, so a ring depth of a few hundred is enough.
 - **The kernel never trusts the arena.** Every descriptor field is copied out and validated before use. The daemon is privileged, but a corrupt daemon must not corrupt the kernel.
-- **Daemon loss.** When the daemon's handle closes, the provider holds new and in-flight zios. A daemon that re-attaches under the same name within a timeout gets the in-flight requests again. Past the timeout the zios fail, and ZFS's `failmode=wait` suspends the pool until the daemon returns and the pool is cleared. This reuses ZFS's own handling of a vanished disk.
+- **Daemon loss.** When the daemon's handle closes, the provider holds new and in-flight zios. A daemon that re-attaches under the same name within a timeout gets the in-flight requests again. Request ids carry an attach generation, so a completion from before the loss cannot complete a reissued request. Past the timeout every request fails and keeps failing until the daemon is back, so that a flush error ZFS ignores cannot be followed by an uberblock write that succeeds (§4.1). ZFS's `failmode=wait` then suspends the pool until it is cleared. This reuses ZFS's own handling of a vanished disk.
+- **A full data area makes the frontend wait**, holding nothing that memory reclaim needs. The area is sized for the largest request times the ring depth.
+- **The transaction group in the descriptor is a hint for diagnostics only.** Cuts are detected the same way on every transport (§5.2), so that one tested rule covers them all.
 - **Bring-up shortcut.** Before the shared arena exists, the same descriptors can travel inside the wait and kick ioctls with the data copied by the kernel. That is slower and proves everything else.
 
 **Size.** The common C code is a ring, an allocator for the data area, the lifecycle state machine and the vdev-facing calls. Per-OS glue is page wiring, the ioctl entries and the hook above. The estimate is 1,500 to 2,500 lines across both ports, plus tests. It is small in lines. It is not small in responsibility: it runs in the kernel, it must never deadlock against memory reclaim, and it must be rebased as the ports follow upstream.
@@ -203,7 +234,11 @@ A restore always starts in `cache` and can be promoted to `complete` by hydratin
 
 ### 5.2 Cuts and snapshot visibility
 
-ZFS writes a transaction group, flushes, writes the uberblocks, and flushes again[^txgorder]. After that flush the device holds a complete, self-consistent pool at transaction group *N*. The daemon recognises the uberblock writes by their position in the labels and reads *N* from them. That point in its write log is a **cut**.
+ZFS writes a transaction group, flushes, writes the uberblocks, and flushes again[^txgorder]. The daemon recognises the uberblock writes by their position in the labels and reads the transaction group *N* from them.
+
+A **cut** is a position in the write log: that of the first flush the daemon receives after it has acknowledged an uberblock write for *N*. The log up to that position is a complete pool at *N*. This holds whatever else was in flight at the time, because ZFS's flush before the uberblocks had completed, so every block of *N* precedes the first uberblock record, and ZFS never writes over a block that a recent uberblock can reach. It rests on the write log being one total order whose flushes mean "durable up to here" (§4.1).
+
+A cut is identified by its log position, with *N* recorded beside it. *N* alone is not unique after a rewind import. Repeated uberblock writes for the same *N* make no new cut.
 
 ```mermaid
 sequenceDiagram
@@ -232,11 +267,13 @@ sequenceDiagram
 
 ### 5.3 What is uploaded
 
-Most of what ZFS writes is dead within a minute: in the study 2 to 6 MB per thousand transactions was still live at the end of a window, against 12 to 19 MB written[^study]. A cut therefore uploads only blocks that are live at the cut:
+Most of what ZFS writes is dead within a minute: in the study 2 to 6 MB per thousand transactions was still live at the end of a window, against 12 to 19 MB written[^study]. A cut therefore uploads only blocks that are live **at the cut's position**:
 
-- overwritten blocks are superseded in the extent tree before upload,
-- blocks freed by ZFS arrive as discards, with `autotrim=on`, and are dropped,
+- blocks overwritten before the cut are superseded in the extent tree,
+- blocks ZFS freed before the cut arrive as discards, with `autotrim=on`, and are dropped,
 - ZIL blocks never reach the device, because the intent log is on a local log device.
+
+Nothing after the cut may leak into it. Upload can lag the cut by minutes on a slow uplink, and in that time ZFS reuses uberblock slots and trims blocks that were live at the cut. The local store therefore keeps the cut-time version of every block until the cut is uploaded or abandoned. The engine's copy-on-write extent tree gives a cut its own root. The store must not reclaim what that root references.
 
 ### 5.4 Restore and clone
 
@@ -257,7 +294,8 @@ sequenceDiagram
     Note over A,Z: Mounted. Hydration continues in the background.
 ```
 
-- **A new GUID before import.** ZFS refuses a pool whose GUID is already imported[^guid], and a clone must be importable on the node that still holds the original. `zpool reguid` only works on an imported pool, so the agent rewrites the GUID offline with `libzpool`.
+- **A new GUID before import.** ZFS refuses a pool whose GUID is already imported[^guid], and a clone must be importable on the node that still holds the original. `zpool reguid` only works on an imported pool, so the agent changes the GUID offline with `libzpool`. That is a real transaction: it writes labels and uberblocks, which the daemon sees as a cut on the new volume.
+- **Labels are read through the daemon.** `zpool import` normally scans device nodes from user space. The agent builds the import configuration from labels it reads through the daemon's client interface (§4.1), which also works where there is no device node.
 - **`-f` and `-m`.** The cut is of a pool that was imported elsewhere, and its log device is not in the cut.
 - **Read-only browsing** needs no clone. The daemon exposes the ref read-only and the pool is imported with `readonly=on`, which skips log replay.
 
@@ -293,7 +331,10 @@ A pool must import on all three systems, so pools are created the same way every
 |---|---|
 | `compatibility=` pinned to one published feature set, the oldest of the three ports' | The ports track upstream at different speeds. |
 | Leaf vdev of type `disk` | §4.3. |
+| No partition table: the pool's first label is at byte 0 of the device | Cut detection finds the labels by position, and the layout must be the same on every system. |
 | `ashift=12` | One block size for every transport. |
+| `recordsize` at most 1M | The contract's largest request (§4.1). |
+| `multihost=off` | It rewrites uberblocks outside a sync. |
 | `xattr`, `normalization`, `casesensitivity` and `acltype` set explicitly at creation, to one set of values for all three systems | Most cannot change later, and the defaults differ between the systems. |
 | ZFS native encryption on by default | The object store, and the vendor, see ciphertext. Keys stay with the user. |
 
@@ -355,7 +396,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | Milestone | Size | Deliverables | Exit criteria |
 |---|---|---|---|
 | **M0** I/O model | Done | Topology benchmark, study §10 | Throughput level with twovol. Snapshots free. |
-| **M1** Linux prototype | M | `skyzfs-blk` with the conformance suite. ublk transport. Local store with write log and cache, no upload. `skyzfsd` serving one volume. | Pool creates, scrubs clean, and survives `kill -9` of the daemon under load. Power-cut replay: the pool imports at every flush boundary of the log. tpcb within 10% of the benchmark model on the same machine. |
+| **M1** Linux prototype | M | `skyzfs-blk` with the conformance suite. ublk transport. Local store with write log and cache, no upload. `skyzfsd` serving one volume. | Pool creates, scrubs clean, and survives `kill -9` of the daemon under load. Power-cut replay: the pool imports at every record prefix of the log, not only at flush boundaries, sampled densely where exhaustive is too slow. tpcb within 10% of the benchmark model on the same machine. |
 | **M2** Cuts and visibility | M | Uberblock detection, cuts, background upload, commit and ref swap, publish handshake in the agent. | A snapshot on node A is listed on node B once its ref is swapped, and imports read-only there with a clean scrub. A snapshot every minute changes p99.9 by no more than run-to-run noise. The crash matrix passes at every step of publish. |
 | **M3** Restore and clone | M | Lazy fetch with read-ahead, clone from a ref, offline GUID rewrite, import flow, background hydration, both cache policies. | A restored volume mounts in under 30 s whatever its size. At a 10 ms origin tpcb reaches half its hydrated throughput within 5 minutes. A clone imports on the node that holds the original. |
 | **M4** Efficiency and hardening | L | Discard tracking, live-only upload, garbage collection and retention, encryption by default, dirty-data sizing in the agent, second object API, many pools on one node, metrics. | Bytes uploaded per cut within 1.5 times the live bytes ZFS reports. Seven-day soak with a snapshot every minute and no leak in store or log. Twenty pools on one node without a stalled second. |
@@ -400,6 +441,12 @@ Recorded 2026-11-10.
 | D2 | Is losing the fsynced tail on node loss acceptable? | **Yes for M1, and through M4.** The log device stays local. Streaming backup of the intent log comes later as M9 (§5.5). |
 | D3 | Offer the frontend to the port maintainers from the start? | **No.** They are better served by a stable proof of concept that is likely to stick. The frontend is developed out of tree and offered at gate G5. |
 
+### 10.2 Review record
+
+| Date | Scope | Outcome |
+|---|---|---|
+| 2026-11-10 | §4.1, §5.2, §4.3 and §5.4, by the review session, before any code | The first draft allowed a daemon that passed its tests and corrupted a pool, in two ways: it treated daemon loss as a power cut, and it left discards outside the write order. Both are fixed in §4.1, with an error model, limits, a crash model and a definition of a cut as a log position. §5.3 now keeps cut-time block versions. Left for CI to pin on the runners: flush delivery on ublk, the recovery flags, and where `zpool create` puts the labels. |
+
 ## References
 
 [^study]: `docs/skynbd-postgres-study.md` §10, in particular §10.7 for the same-machine comparison, the dirty-data limits and the snapshot runs, and §10.3 for what reaches the vdev.
@@ -410,6 +457,8 @@ Recorded 2026-11-10.
 [^vdevfile]: `module/zfs/vdev.c`, `vdev_alloc`: an unknown type returns `EINVAL`. `module/zfs/vdev_file.c`, `vdev_file_open`: "Make sure it's a regular file".
 [^ldi]: `openzfsonosx/openzfs-fork`, `module/os/macos/zfs/vdev_disk.c` and `include/os/macos/zfs/sys/ldi_impl_osx.h` (`LDI_TYPE_IOKIT`, `LDI_TYPE_VNODE`).
 [^winvdev]: `openzfsonwindows/openzfs`, `module/os/windows/zfs/vdev_disk.c` (`ZwCreateFile`, `IoBuildAsynchronousFsdRequest`).
+[^zfserr]: `module/zfs/zio.c`: a flush that returns `ENOTSUP` sets `vdev_nowritecache`, and `zio_flush` is issued with `ZIO_FLAG_DONT_PROPAGATE`. `module/zfs/vdev_label.c`, `vdev_config_sync`: the result of the flush before the labels is discarded. Read in upstream master on 2026-11-10.
+[^wholedisk]: `lib/libzutil/os/linux/zutil_device_path_os.c`, `zfs_dev_is_whole_disk`, and `lib/libefi/rdwr_efi.c`, `efi_get_info`: device names are matched against a fixed list.
 [^txgorder]: `module/zfs/vdev_label.c`, `vdev_config_sync`: flush every written vdev, sync the even labels, write the uberblocks, flush, then sync the odd labels and flush.
 [^guid]: `module/zfs/spa.c`, the check for an already-imported pool GUID during load.
 [^applekext]: Apple Platform Security, "Securely extending the kernel in macOS", <https://support.apple.com/guide/security/sec8e454101b>, and "Change security settings on the startup disk of a Mac with Apple silicon", <https://support.apple.com/guide/mac-help/mchl768f7291>.
