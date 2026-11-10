@@ -320,9 +320,12 @@ if drows:
     if zd:
         MB = 1 << 20
         print('\nZFS rows: the intent log and the transaction groups. ZIL payload by dataset separates WAL commits '
-              'from data-file fsyncs; `tx delayed` counts transactions the write throttle or the ARC made wait:\n')
-        print('| workload | topology | ZIL commits/s | txn per ZIL commit | ZIL payload MB/ktxn, wal / data | txgs | txg sync ms mean / max | dirty MB per txg | tx delayed | ARC throttles |')
-        print('|---|---|---|---|---|---|---|---|---|---|')
+              'from data-file fsyncs; `tx delayed` counts transactions the write throttle or the ARC made wait; '
+              '`space-check waits` counts transactions sent to wait for a transaction group to sync because the '
+              'pool\'s free space is less than the dirty data in flight times `spa_asize_inflation` (24) — a pool '
+              'too small for its dirty data, and then `lat max ms` tracks the longest sync:\n')
+        print('| workload | topology | ZIL commits/s | txn per ZIL commit | ZIL payload MB/ktxn, wal / data | txgs | txg sync ms mean / max | dirty MB per txg | tx delayed | ARC throttles | space-check waits | lat max ms |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in zd:
             z = r['zfs']; dl = z['delta']; tx = z.get('txg', {})
             txn = r['pg'].get('xact_commit', 0) or 0; k = txn / 1000 if txn else float('nan'); dur = r['duration_s']
@@ -334,7 +337,8 @@ if drows:
             print(f"| {r['workload']} | {label(r)} | {zc / dur:.0f} | {nf(txn / zc if zc else None)} | "
                   f"{pay('wal') / k:.1f} / {pay('data') / k:.1f} | {tx.get('n', 0)} | "
                   f"{nf(tx.get('sync_ms_mean'), '.0f')} / {nf(tx.get('sync_ms_max'), '.0f')} | {nf(tx.get('dirty_mb_mean'), '.0f')} | "
-                  f"{delayed} | {dl.get('arc.memory_throttle_count', 0)} |")
+                  f"{delayed} | {dl.get('arc.memory_throttle_count', 0)} | {dl.get('dmutx.dmu_tx_quota', 0)} | "
+                  f"{nf(r.get('latency', {}).get('max_ms'), '.0f')} |")
 # Snapshots during the window. Phases of one topology ran on the same
 # stack and machine, in the order listed, so `vs none` compares like
 # with like; rows of different topologies are different machines.
@@ -1131,7 +1135,7 @@ topo_zfs_slog() {
     # transaction group, not the fsynced tail.
     mkimage "$WORK/slog.img" "$(mb "$ZFS_SLOG_MB")"
     if [ "$ZFS_SLOG_PREALLOC" = 1 ]; then
-        dd if=/dev/zero of="$WORK/slog.img" bs=1M count="$ZFS_SLOG_MB" \
+        "$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$ZFS_SLOG_MB" \
             oflag=direct conv=notrunc,fsync status=none
     fi
     SLOG_LOOP=$(attach_loop "$WORK/slog.img")
