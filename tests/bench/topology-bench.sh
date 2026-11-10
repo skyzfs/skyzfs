@@ -66,10 +66,14 @@
 #   zfs-l2arc zfs plus an L2ARC device of TB_CACHE_PCT: the counterpart
 #             of baseline's dm-cache, a flash read cache that is not on
 #             the write path.
+#   zfs-slog  zfs plus a separate log device on local flash, so ZIL
+#             blocks never reach the vdev the backend would serve: the
+#             ZFS-native form of the two-volume split.
 #
 # For these rows `origin` is the delayed pool image, `pool` is the
 # dm-snapshot's COW device (the local flash every vdev write lands on),
-# `fs` is the vdev itself and `cache` is the L2ARC device. The ARC is
+# `fs` is the vdev itself, `cache` is the L2ARC device and `slog` the
+# log device (counted into `flash write`). The ARC is
 # not charged to postgres's cgroup, so with TB_MEM_LIMIT set it is
 # capped at TB_MEM_LIMIT minus shared_buffers — what the page cache
 # gets in the other topologies.
@@ -88,7 +92,7 @@
 #                           (default /var/tmp/topology-bench)
 #   TB_TOPOLOGIES="..."     subset of: nocache baseline twovol twovol-origin
 #                           twovol-hydrated bcache opencas zfs zfs-plain
-#                           zfs-l2arc
+#                           zfs-l2arc zfs-slog
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -136,6 +140,20 @@
 #                           upload per window would have to carry. 0 skips
 #                           it (the snapshot pins every overwritten block
 #                           for the window).
+#   TB_ZFS_SLOG_MB=1024     size of zfs-slog's log device
+#   TB_SNAP_MODES=none      snapshots taken DURING the measured window, one
+#                           phase per listed mode on the same stack, in
+#                           order (so the phases share a machine and are
+#                           comparable). `none` takes none. For the thin
+#                           stacks `freeze` is fsfreeze → suspend →
+#                           create_snap → resume → thaw (what the agent's
+#                           capture does) and `suspend` is the same without
+#                           the freeze: a crash-consistent snapshot. The
+#                           ZFS stacks have one mechanism, `zfs snapshot`,
+#                           so any mode other than none runs it once.
+#                           twovol snapshots both volumes in one bracket.
+#   TB_SNAP_INTERVAL=60     seconds between snapshots
+#   TB_SNAP_KEEP=2          snapshots retained; older ones are deleted
 #   TB_PG_USER=postgres     unprivileged user postgres runs as
 #   TB_KEEP=1               leave the stack up on failure for inspection
 #   TB_REUSE_ORIGIN=1       keep an existing origin image (same scale)
@@ -165,11 +183,15 @@ import glob, json, os, sys
 out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
-         'zfs', 'zfs-plain', 'zfs-l2arc']
-runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99))
+         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog']
+modes = ['none', 'suspend', 'freeze', 'zfs']
+def mode(r): return r.get('snap', {}).get('mode', 'none')
+def label(r): return r['topology'] + ('' if mode(r) == 'none' else ' +' + mode(r))
+runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99,
+                         modes.index(mode(r)) if mode(r) in modes else 99))
 print('## topology-bench\n')
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
-      '`flash write` = pool + cache device writes; '
+      '`flash write` = pool + cache (+ ZFS log) device writes; '
       '`amp` = flash write relative to the nocache run of the same workload.\n')
 print('| workload | topology | tps | lat ms | origin read MB | pool read MB | pool write MB | cache write MB | cache read MB | flash write MB | amp | WAL MB | flushes (pool) |')
 print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
@@ -177,10 +199,10 @@ base = {}
 rows = []
 for r in runs:
     d = r['devices']; c = d.get('cache', {})
-    flash = d['pool']['write_mb'] + c.get('write_mb', 0)
-    if r['topology'] == 'nocache': base[r['workload']] = flash
+    flash = d['pool']['write_mb'] + c.get('write_mb', 0) + d.get('slog', {}).get('write_mb', 0)
+    if label(r) == 'nocache': base[r['workload']] = flash
     amp = flash / base[r['workload']] if base.get(r['workload']) else float('nan')
-    print(f"| {r['workload']} | {r['topology']} | {r['tps'] or 0:.0f} | {r['latency_ms'] or 0:.2f} | "
+    print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {r['latency_ms'] or 0:.2f} | "
           f"{d['origin']['read_mb'] + d.get('walorigin', {}).get('read_mb', 0):.0f} | {d['pool']['read_mb']:.0f} | {d['pool']['write_mb']:.0f} | {c.get('write_mb', 0):.0f} | "
           f"{c.get('read_mb', 0):.0f} | {flash:.0f} | {amp:.2f} | {r['pg']['wal_mb']:.0f} | {d['pool']['flushes']} |")
     rows.append((r, d, c, flash))
@@ -196,9 +218,9 @@ for r, d, c, flash in rows:
     txn = r['pg'].get('xact_commit', 0) or 0
     k = txn / 1000 if txn else float('nan')
     per = flash / k if txn else float('nan')
-    if r['topology'] == 'nocache': base_txn[r['workload']] = per
+    if label(r) == 'nocache': base_txn[r['workload']] = per
     ampt = per / base_txn[r['workload']] if base_txn.get(r['workload']) else float('nan')
-    print(f"| {r['workload']} | {r['topology']} | {txn} | {d['pool']['write_mb'] / k if txn else float('nan'):.1f} | "
+    print(f"| {r['workload']} | {label(r)} | {txn} | {d['pool']['write_mb'] / k if txn else float('nan'):.1f} | "
           f"{c.get('write_mb', 0) / k if txn else float('nan'):.1f} | {per:.1f} | {ampt:.2f} |")
 # ZFS rows: the vdev is the device a userspace backend would serve, so
 # split what reached it. `first-touch` is the growth of the dm-snapshot
@@ -212,8 +234,8 @@ zrows = [(r, d) for r, d, c, flash in rows if r.get('zfs')]
 if zrows:
     MB = 1 << 20
     print('\nZFS rows, per 1000 transactions: what reached the vdev, and how much of it one upload per window would carry:\n')
-    print('| workload | topology | vdev write MB/ktxn | first-touch LBA MB/ktxn | live at end MB/ktxn | ZIL MB/ktxn | vdev read MB | ARC hit % | L2ARC hit % of ARC misses |')
-    print('|---|---|---|---|---|---|---|---|---|')
+    print('| workload | topology | vdev write MB/ktxn | log dev write MB/ktxn | first-touch LBA MB/ktxn | live at end MB/ktxn | ZIL MB/ktxn | vdev read MB | ARC hit % | L2ARC hit % of ARC misses |')
+    print('|---|---|---|---|---|---|---|---|---|---|')
     for r, d in zrows:
         z = r['zfs']; dl = z.get('delta', {}); af = z.get('after', {})
         txn = r['pg'].get('xact_commit', 0) or 0
@@ -223,11 +245,34 @@ if zrows:
         live = af.get('window.written_bytes')
         hits = dl.get('arc.hits', 0); miss = dl.get('arc.misses', 0) + dl.get('arc.iohits', 0)
         l2h = dl.get('arc.l2_hits', 0); l2m = dl.get('arc.l2_misses', 0)
-        print(f"| {r['workload']} | {r['topology']} | {d['fs']['write_mb'] / k:.1f} | "
+        print(f"| {r['workload']} | {label(r)} | {d['fs']['write_mb'] / k:.1f} | "
+              f"{d.get('slog', {}).get('write_mb', 0) / k:.1f} | "
               f"{dl.get('cow.allocated_bytes', 0) / MB / k:.1f} | "
               f"{'n/a' if live is None else format(live / MB / k, '.1f')} | {zil / k:.1f} | {d['fs']['read_mb']:.0f} | "
               f"{100 * hits / (hits + miss) if hits + miss else float('nan'):.1f} | "
               f"{100 * l2h / (l2h + l2m) if l2h + l2m else float('nan'):.1f} |")
+# Snapshots during the window. Phases of one topology ran on the same
+# stack and machine, in the order listed, so `vs none` compares like
+# with like; rows of different topologies are different machines.
+# `snapshot ms` is the bracket the mechanism holds: freeze..thaw,
+# suspend..resume, or the `zfs snapshot` call (which blocks only its
+# caller). What the workload felt is the latency columns.
+if any(mode(r) != 'none' for r in runs):
+    print('\nSnapshots during the window (`vs none` = tps against the same stack with no snapshots):\n')
+    print('| workload | topology | mode | every s | taken | snapshot ms mean | snapshot ms max | tps | vs none | lat p99 ms | lat max ms | slowest 1 s tps | flash MB/ktxn |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    ref = {(r['workload'], r['topology']): r['tps'] for r in runs if mode(r) == 'none'}
+    for r, d, c, flash in rows:
+        sn = r.get('snap', {}); lat = r.get('latency', {})
+        txn = r['pg'].get('xact_commit', 0) or 0
+        base_tps = ref.get((r['workload'], r['topology']))
+        ms = sn.get('ms', [])
+        fmt = lambda v, f='.1f': 'n/a' if v is None else format(v, f)
+        print(f"| {r['workload']} | {r['topology']} | {mode(r)} | {sn.get('interval_s', '-')} | {len(ms)} | "
+              f"{fmt(sum(ms) / len(ms) if ms else None, '.0f')} | {fmt(max(ms) if ms else None, '.0f')} | "
+              f"{r['tps'] or 0:.0f} | {fmt(r['tps'] / base_tps if base_tps and r['tps'] else None, '.2f')} | "
+              f"{fmt(lat.get('p99_ms'))} | {fmt(lat.get('max_ms'), '.0f')} | {fmt(lat.get('min_tps_1s'), '.0f')} | "
+              f"{flash / (txn / 1000) if txn else float('nan'):.1f} |")
 PY
 }
 if [ "${1:-}" = summarize ]; then
@@ -236,7 +281,7 @@ if [ "${1:-}" = summarize ]; then
 fi
 
 WORK=${TB_WORK:-/var/tmp/topology-bench}
-TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc"}
+TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog"}
 WORKLOADS=${TB_WORKLOADS:-"tpcb select"}
 SCALE=${TB_SCALE:-100}
 CLIENTS=${TB_CLIENTS:-8}
@@ -264,7 +309,30 @@ KEEP=${TB_KEEP:-}
 MAX_WAL_GB=${TB_MAX_WAL_GB:-1}
 VOL_GB=${TB_VOL_GB:-$(( (SCALE * 16 + 1023) / 1024 + MAX_WAL_GB + 1 ))}
 WAL_GB=${TB_WAL_GB:-$(( MAX_WAL_GB + 1 ))}
-POOL_GB=${TB_POOL_GB:-$(( VOL_GB + WAL_GB + 1 ))}
+# Snapshots during the window (see the knob list).
+SNAP_MODES=${TB_SNAP_MODES:-none}
+SNAP_INTERVAL=${TB_SNAP_INTERVAL:-60}
+SNAP_KEEP=${TB_SNAP_KEEP:-2}
+ANY_SNAP=""
+# shellcheck disable=SC2086  # a space-separated list by contract
+for m in $SNAP_MODES; do
+    case $m in
+        none) ;;
+        freeze) need fsfreeze; ANY_SNAP=1 ;;
+        suspend) ANY_SNAP=1 ;;
+        *) echo "unknown TB_SNAP_MODES entry: $m (none|freeze|suspend)" >&2; exit 64 ;;
+    esac
+done
+if [ "$SNAP_INTERVAL" -lt 1 ] || [ "$SNAP_KEEP" -lt 1 ]; then
+    echo "TB_SNAP_INTERVAL and TB_SNAP_KEEP must be at least 1" >&2; exit 64
+fi
+# A retained thin snapshot pins the old copy of every chunk rewritten
+# after it, so the pool can hold several versions of the hot set.
+if [ -n "$ANY_SNAP" ]; then
+    POOL_GB=${TB_POOL_GB:-$(( (VOL_GB + WAL_GB) * 2 + 1 ))}
+else
+    POOL_GB=${TB_POOL_GB:-$(( VOL_GB + WAL_GB + 1 ))}
+fi
 
 # ZFS topologies. The pool is twice the ext4 volume: copy-on-write needs
 # free space to turn over in, and the per-window snapshot pins every
@@ -277,6 +345,7 @@ ZFS_FPW=${TB_ZFS_FPW:-off}
 ZFS_ASHIFT=${TB_ZFS_ASHIFT:-12}
 ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 ))}
 ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
+ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
 to_mb() { # "1G" | "256MB" | "512M" | bytes -> MiB
     python3 -c '
 import re, sys
@@ -298,7 +367,7 @@ for t in $TOPOLOGIES; do
         nocache|baseline|twovol|twovol-origin|twovol-hydrated) ANY_THIN=1 ;;
         bcache) need make-bcache; ANY_THIN=1 ;;
         opencas) need casadm; ANY_THIN=1 ;;
-        zfs|zfs-plain|zfs-l2arc) need zpool zfs tar; ANY_ZFS=1 ;;
+        zfs|zfs-plain|zfs-l2arc|zfs-slog) need zpool zfs tar; ANY_ZFS=1 ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
@@ -331,7 +400,7 @@ STACK_MB=0
 if [ -n "$ANY_ZFS" ] && [ $(( ZFS_GB * 2 * 1024 + 64 )) -gt "$STACK_MB" ]; then
     STACK_MB=$(( ZFS_GB * 2 * 1024 + 64 ))
 fi
-NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
+NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + ZFS_SLOG_MB + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
 AVAIL_MB=$(df -Pm "$WORK" | awk 'NR==2 {print $4}')
 if [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
     echo "not enough space under $WORK: ${AVAIL_MB} MiB free, worst case needs ${NEED_MB} MiB" \
@@ -393,7 +462,8 @@ ORIGIN_LOOP=""; POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""
 ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
-ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""
+ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
+SNAP_PID=""; SNAP_STOP=""
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -406,6 +476,15 @@ stop_pg() {
 teardown_topology() {
     local errexit=0; case $- in *e*) errexit=1 ;; esac
     set +e
+    if [ -n "$SNAP_PID" ]; then
+        # Never kill the snapshot loop: it may be inside a freeze. Ask
+        # it to stop and wait; then undo anything it could have left.
+        touch "$SNAP_STOP"; wait "$SNAP_PID" 2>/dev/null; SNAP_PID=""
+    fi
+    if [ -n "$ANY_SNAP" ]; then
+        fsfreeze -u "$MNT_WAL" 2>/dev/null; fsfreeze -u "$MNT" 2>/dev/null
+        dmsetup resume tb-data 2>/dev/null; dmsetup resume tb-wal 2>/dev/null
+    fi
     stop_pg
     umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
     umount "$WORK/mnt-src" 2>/dev/null
@@ -437,13 +516,13 @@ teardown_topology() {
              tb-zdev tb-zorigin; do
         dmsetup remove "$d" 2>/dev/null
     done
-    for l in "$POOL_LOOP" "$CACHE_LOOP" "$BSB_LOOP" "$ZORIGIN_LOOP" "$ZSRC_LOOP"; do
+    for l in "$POOL_LOOP" "$CACHE_LOOP" "$BSB_LOOP" "$ZORIGIN_LOOP" "$ZSRC_LOOP" "$SLOG_LOOP"; do
         [ -n "$l" ] && losetup -d "$l" 2>/dev/null
     done
     # The ZFS origin is per topology (its properties differ), and big.
     rm -f "$WORK/zfs-origin.img"
     POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""
-    ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""
+    ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""; SLOG_LOOP=""
     [ "$errexit" = 1 ] && set -e
     return 0
 }
@@ -823,6 +902,73 @@ topo_zfs_l2arc() {
     zpool add -f "$ZFS_POOL" cache "$CACHE_LOOP"
     log "l2arc: $CACHE_LOOP write_max=$(cat /sys/module/zfs/parameters/l2arc_write_max) noprefetch=$(cat /sys/module/zfs/parameters/l2arc_noprefetch)"
 }
+topo_zfs_slog() {
+    topo_zfs
+    # The log device is plain local flash: ZIL blocks land here and
+    # never on the vdev. A cut of the vdev then holds the last synced
+    # transaction group, not the fsynced tail.
+    mkimage "$WORK/slog.img" "$(mb "$ZFS_SLOG_MB")"
+    SLOG_LOOP=$(attach_loop "$WORK/slog.img")
+    zpool add -f "$ZFS_POOL" log "$SLOG_LOOP"
+    log "slog: ${ZFS_SLOG_MB} MiB on $SLOG_LOOP"
+}
+
+# ------------------------------------------- snapshots in the window
+take_snap() { # n mode: one snapshot of the stack. Leaves nothing frozen or suspended.
+    local n=$1 mode=$2 rc=0 d
+    if [ -n "$ZFS_UP" ]; then
+        # Both datasets, atomically, in one transaction group. Blocks
+        # this caller until the group is synced; nobody else.
+        zfs snapshot -r "$ZFS_POOL@tbs$n" || rc=1
+        return $rc
+    fi
+    local devs="tb-data:0"
+    [ -n "$TWO_VOL" ] && devs="$devs tb-wal:1"
+    if [ "$mode" = freeze ]; then
+        fsfreeze -f "$MNT" || rc=1
+        if [ -n "$TWO_VOL" ]; then fsfreeze -f "$MNT_WAL" || rc=1; fi
+    fi
+    # --nolockfs: dm's own suspend would otherwise freeze a filesystem
+    # mounted on the device, which is the thing `suspend` mode omits
+    # and `freeze` mode has already done.
+    for d in $devs; do dmsetup suspend --nolockfs "${d%%:*}" || rc=1; done
+    for d in $devs; do
+        dmsetup message tb-pool 0 "create_snap $(( 100 + 2 * n + ${d##*:} )) ${d##*:}" || rc=1
+    done
+    for d in $devs; do dmsetup resume "${d%%:*}" || rc=1; done
+    if [ "$mode" = freeze ]; then
+        [ -n "$TWO_VOL" ] && fsfreeze -u "$MNT_WAL"
+        fsfreeze -u "$MNT" || rc=1
+    fi
+    return $rc
+}
+drop_snap() { # n: delete snapshot n (untimed; its cost lands in the workload)
+    local n=$1
+    if [ -n "$ZFS_UP" ]; then
+        zfs destroy -r "$ZFS_POOL@tbs$n" 2>/dev/null
+    else
+        dmsetup message tb-pool 0 "delete $(( 100 + 2 * n ))" 2>/dev/null
+        [ -n "$TWO_VOL" ] && dmsetup message tb-pool 0 "delete $(( 101 + 2 * n ))" 2>/dev/null
+    fi
+    return 0
+}
+snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file appears
+    local out=$1 mode=$2 n=0 i t0 t1 rc
+    set +e
+    while :; do
+        for (( i = 0; i < SNAP_INTERVAL; i++ )); do
+            [ -e "$SNAP_STOP" ] && return 0
+            sleep 1
+        done
+        t0=$(date +%s%N)
+        take_snap "$n" "$mode"; rc=$?
+        t1=$(date +%s%N)
+        # epoch-seconds  bracket-ms  rc
+        echo "$(( t1 / 1000000000 )) $(( (t1 - t0) / 1000000 )) $rc" >> "$out"
+        [ "$n" -ge "$SNAP_KEEP" ] && drop_snap $(( n - SNAP_KEEP ))
+        n=$(( n + 1 ))
+    done
+}
 
 # --------------------------------------------------------- measuring
 diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
@@ -835,6 +981,7 @@ snapshot() { # file
         echo "dev pool $(diskstats_line "${STAT_POOL:-$(dm_blk tb-tdata)}")"
         [ -n "$TWO_VOL" ] && echo "dev wal $(diskstats_line "$(dm_blk tb-wal)")"
         [ -n "$CACHE_LOOP" ] && echo "dev cache $(diskstats_line "$(basename "$CACHE_LOOP")")"
+        [ -n "$SLOG_LOOP" ] && echo "dev slog $(diskstats_line "$(basename "$SLOG_LOOP")")"
         echo "dev fs $(diskstats_line "$(basename "$(readlink -f "$FS_DEV")")")"
         echo "pg wal_bytes $(psqlq "select wal_bytes from pg_stat_wal" || echo 0)"
         echo "pg xact_commit $(psqlq "select xact_commit from pg_stat_database where datname='bench'" || echo 0)"
@@ -851,8 +998,13 @@ snapshot() { # file
     } > "$1"
 }
 
-run_workload() { # topology workload
-    local topo=$1 wl=$2 builtin tag="$1-$2"
+run_workload() { # topology workload [snapshot mode]
+    local topo=$1 wl=$2 mode=${3:-none} builtin tag="$1-$2" plog taken i
+    [ "$mode" = none ] || tag="$tag+$mode"
+    # Per-transaction latencies, for the tail the average hides.
+    plog="$WORK/pgbench-log/$tag"
+    mkdir -p "$WORK/pgbench-log"; chown "$PG_USER" "$WORK/pgbench-log"
+    rm -f "$plog".*
     case $wl in
         tpcb) builtin=tpcb-like ;;
         select) builtin=select-only ;;
@@ -869,17 +1021,34 @@ run_workload() { # topology workload
         zfs snapshot -r "$ZFS_POOL@$ZFS_WIN"
     fi
     snapshot "$OUT/$tag.before"
-    log "$tag: measuring ${DURATION}s"
-    as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
+    rm -f "$OUT/$tag.snaps"
+    if [ "$mode" != none ]; then
+        SNAP_STOP="$OUT/$tag.snapstop"; rm -f "$SNAP_STOP"
+        snap_loop "$OUT/$tag.snaps" "$mode" &
+        SNAP_PID=$!
+    fi
+    log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
+    as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
+    if [ -n "$SNAP_PID" ]; then
+        touch "$SNAP_STOP"; wait "$SNAP_PID" || true; SNAP_PID=""
+        rm -f "$SNAP_STOP"
+    fi
     sync; sleep 2
     snapshot "$OUT/$tag.after"
+    if [ -s "$OUT/$tag.snaps" ]; then
+        # The next phase starts from a stack with no snapshots.
+        taken=$(wc -l < "$OUT/$tag.snaps")
+        for (( i = taken > SNAP_KEEP ? taken - SNAP_KEEP : 0; i < taken; i++ )); do drop_snap "$i"; done
+        log "$tag: $taken snapshots, bracket ms: $(awk '{ printf "%s%s", sep, $2; sep = " " } $3 != 0 { bad++ } END { if (bad) printf "  (%d FAILED)", bad }' "$OUT/$tag.snaps")"
+    fi
     if [ -n "$ZFS_WIN" ]; then
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
         ZFS_WIN=""
     fi
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" > "$OUT/$tag.json" <<'PY'
-import json, re, sys
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" > "$OUT/$tag.json" <<'PY'
+import collections, glob, json, os, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
 def load(p):
     dev, pg, other = {}, {}, {}
@@ -909,12 +1078,37 @@ txt = open(base + '.pgbench').read()
 m = re.search(r'tps = ([\d.]+)', txt); r['tps'] = float(m.group(1)) if m else None
 m = re.search(r'latency average = ([\d.]+)', txt); r['latency_ms'] = float(m.group(1)) if m else None
 r['cache_stats'] = {'before': bo, 'after': ao}
+# Snapshots taken during the window: "epoch-s bracket-ms rc" per line.
+r['snap'] = {'mode': snap_mode, 'interval_s': snap_interval, 'ms': [], 'failed': 0}
+if os.path.exists(base + '.snaps'):
+    for line in open(base + '.snaps'):
+        f = line.split()
+        if len(f) >= 3:
+            r['snap']['ms'].append(int(f[1])); r['snap']['failed'] += f[2] != '0'
+# pgbench -l: client txn latency_us script epoch_s epoch_us. The tail,
+# and the slowest whole second (a stall shows as a second with few or
+# no completions; the first and last seconds are partial and skipped).
+lats, per_s = [], collections.Counter()
+for path in glob.glob(plog + '.*'):
+    for line in open(path):
+        f = line.split()
+        if len(f) >= 5 and f[2].isdigit():
+            lats.append(int(f[2])); per_s[int(f[4])] += 1
+if lats:
+    lats.sort()
+    q = lambda p: lats[min(len(lats) - 1, int(p * len(lats)))] / 1000
+    secs = range(min(per_s) + 1, max(per_s))
+    r['latency'] = {'p50_ms': q(0.50), 'p99_ms': q(0.99), 'p999_ms': q(0.999), 'max_ms': lats[-1] / 1000,
+                    'min_tps_1s': min((per_s.get(x, 0) for x in secs), default=None),
+                    'stalled_s': sum(1 for x in secs if per_s.get(x, 0) == 0)}
 if zc[base + '.after'] or zg[base + '.after']:
     zb, za = zc[base + '.before'], zc[base + '.after']
     r['zfs'] = {'delta': {k: za[k] - zb.get(k, 0) for k in za}, 'after': zg[base + '.after']}
 print(json.dumps(r, indent=1))
 PY
+    rm -f "$plog".*
     log "$tag: tps=$(python3 -c "import json;print(json.load(open('$OUT/$tag.json'))['tps'])")"
+    log "$tag: latency $(python3 -c "import json;l=json.load(open('$OUT/$tag.json')).get('latency',{});print(' '.join(f'{k}={v}' for k,v in l.items()))")"
     # Per-device bytes in the job log too (the artifact holds the JSON).
     log "$tag: $(python3 -c "import json;r=json.load(open('$OUT/$tag.json'));print(' '.join(f\"{k}=r{v['read_mb']:.0f}/w{v['write_mb']:.0f}MB\" for k,v in r['devices'].items()))")"
     # The cache's own counters, before and after, so a hit-rate question
@@ -964,8 +1158,18 @@ for TOPO in $TOPOLOGIES; do
     case $TOPO in zfs*) ;; *) build_pool ;; esac
     "topo_${TOPO//-/_}"
     mount_and_start
+    # One phase per snapshot mode, on this one stack. The ZFS stacks
+    # have a single mechanism, so every mode but none collapses to it.
+    PHASES=""
     # shellcheck disable=SC2086
-    for wl in $WORKLOADS; do run_workload "$TOPO" "$wl"; done
+    for m in $SNAP_MODES; do
+        case $TOPO in zfs*) [ "$m" = none ] || m=zfs ;; esac
+        case " $PHASES " in *" $m "*) ;; *) PHASES="$PHASES $m" ;; esac
+    done
+    # shellcheck disable=SC2086
+    for wl in $WORKLOADS; do
+        for m in $PHASES; do run_workload "$TOPO" "$wl" "$m"; done
+    done
     teardown_topology
 done
 

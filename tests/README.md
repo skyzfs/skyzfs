@@ -35,9 +35,13 @@ shipped stack), `twovol` (cached PGDATA + uncached pg_wal volume),
 `bcache` (writearound over a two-segment backing) and `opencas`
 (write-invalidate; casadm built with `CAS_EXT_EXP=1`). Three more
 rows explore ZFS on a userspace block backend — `zfs`, `zfs-plain`
-(no compression, full-page writes on) and `zfs-l2arc` — with the pool
+(no compression, full-page writes on), `zfs-l2arc` and `zfs-slog`
+(ZIL on a separate local log device) — with the pool
 on a transient dm-snapshot of one-sector chunks over a delayed image of
 the same database, so no write reads before it writes. Reports
+`TB_SNAP_MODES` takes snapshots during the measured window — thin
+with a freeze, thin with a suspend only, or `zfs snapshot` — as phases
+on one stack, and reports tail latency beside throughput. Reports
 origin/pool/cache device bytes, tps and latency per run, so write
 amplification and origin (network) reads are measured where the
 design's costs land. Dispatch `.github/workflows/topology-bench.yml`
