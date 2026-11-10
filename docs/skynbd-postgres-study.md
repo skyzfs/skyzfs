@@ -579,6 +579,7 @@ are two datasets of the one pool.
 | zfs | recordsize 8k (WAL dataset 128k), lz4, `full_page_writes=off`, `wal_recycle=off`, `wal_init_zero=off` |
 | zfs-plain | zfs with compression off and `full_page_writes=on`: the control for what pgbench's very compressible rows and the missing full-page images contribute |
 | zfs-l2arc | zfs plus an L2ARC device of 25% of the database, the counterpart of baseline's dm-cache |
+| zfs-slog | zfs plus a separate 1 GiB log device on local flash, so ZIL blocks never reach the vdev: the ZFS-native form of the two-volume split |
 
 The ARC is not charged to postgres's cgroup, so it is capped at the
 memory limit minus `shared_buffers` (768 MiB here), which is what the
@@ -691,7 +692,65 @@ the window-start snapshot.
   below the vdev.
 - **Pool import over the 10 ms origin took about 0.7 s.**
 
-### 10.4 What this means for the design
+### 10.4 Snapshots during the window, and the separate log device
+
+`TB_SNAP_MODES` takes a snapshot every 60 s while pgbench runs and
+keeps the last two. The modes run as phases on one stack, so a row's
+phases share a machine. For the thin stacks `freeze` is the agent's
+capture bracket (fsfreeze, suspend, `create_snap`, resume, thaw) and
+`suspend` is the same without the freeze; twovol snapshots both
+volumes in one bracket. The ZFS stacks run `zfs snapshot` of both
+datasets. tpcb, local origin, 300 s per phase, two runs with the thin
+phases in opposite order (suspend first in run A, freeze first in
+run B):
+
+| topology | mode | tps A / B | vs none A / B | bracket ms, mean | stalled seconds A / B | max latency ms A / B | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|
+| nocache | none | 4892 / 4628 | – | – | 0 / 0 | 188 / 65 | 19.5 |
+| nocache | suspend | 3496 / 3825 | 0.71 / 0.83 | 37 / 45 | 9 / 8 | 6306 / 4788 | 26.9 / 26.4 |
+| nocache | freeze | 3895 / 3820 | 0.80 / 0.83 | 288 / 493 | 3 / 2 | 2280 / 2961 | 26.2 / 26.3 |
+| twovol | none | 4265 / 3728 | – | – | 7 / 2 | 2055 / 2052 | 22.4 / 22.6 |
+| twovol | suspend | 3268 / 3046 | 0.77 / 0.82 | 62 / 62 | 14 / 7 | 5702 / 5868 | 30.5 / 31.2 |
+| twovol | freeze | 3593 / 2662 | 0.84 / 0.71 | 339 / 502 | 7 / 1 | 3307 / 3026 | 29.8 / 32.1 |
+| zfs | none | 1669 / 2948 | – | – | 0 / 1 | 193 / 2629 | 10.4 / 11.1 |
+| zfs | zfs snapshot | 1741 / 3660 | 1.04 / 1.24 | 247 / 475 | 1 / 1 | 2023 / 1860 | 9.3 / 10.9 |
+| zfs-slog | none | 3664 / 3768 | – | – | 0 / 0 | 703 / 626 | 11.5 |
+| zfs-slog | zfs snapshot | 3717 / 3785 | 1.01 / 1.00 | 338 / 336 | 0 / 0 | 427 / 504 | 11.0 / 11.1 |
+
+A stalled second is a whole second in which no transaction completed.
+The bracket is what the mechanism holds: freeze to thaw, suspend to
+resume, or the `zfs snapshot` call, which blocks only its caller.
+
+- **A thin snapshot every minute costs 17 to 29% of throughput and
+  about 35% more flash writes, with or without the freeze.** The cost
+  is dm-thin's: after each snapshot the first write to every chunk
+  copies 64 KiB to break sharing.
+- **Dropping the freeze made the stalls worse, not better.** The
+  bracket fell from 0.3–0.5 s to about 50 ms, but the suspend-only
+  phases had 7 to 14 stalled seconds against 1 to 7 with the freeze,
+  and a worst transaction of 4.8 to 6.3 s against 2.3 to 3.3 s — in
+  all four comparisons, in either phase order. The likely reason is
+  that the freeze flushes the dirty backlog before the snapshot, while
+  without it that backlog is written afterwards, when every chunk has
+  to be copied first. That is a hypothesis: a third mode that syncs
+  and then suspends would test it.
+- **`zfs snapshot` cost nothing measurable**: throughput and flash
+  writes are unchanged. With the log device there was no stalled
+  second in any phase and the worst transaction stayed under 0.7 s.
+- **The log device moves the ZIL off the vdev without reducing total
+  flash writes.** With a local origin the vdev takes 5.1 MB per
+  thousand transactions against 10.4 to 11.1 without it, and the log
+  device takes 6.3; with the 10 ms origin, 8.0 against 18.9. Live
+  bytes at the end of a 300 s window were 0.9.
+- **zfs-slog was also faster and steadier than zfs** (3664 to 3785
+  tps over four phases on two machines, against 1669 to 3660). Part of
+  that is the model: a flush on the vdev is an fsync of a sparse file
+  that is still growing, and the log device is a small file that stops
+  growing after one pass. The size of the real effect is unmeasured.
+- On the 10 ms origin zfs-slog matches zfs (720 against 725 tps): both
+  are bound by page reads, as in §10.3.
+
+### 10.5 What this means for the design
 
 1. The backend's read side decides cold performance: what it keeps of
    what it fetched, and how much it fetches around a miss. ZFS's write
@@ -699,23 +758,28 @@ the window-start snapshot.
 2. The uploader needs to know what ZFS freed. Without that it uploads
    three to five times the live data.
 3. ZIL traffic is the largest single component at the vdev. A separate
-   log device on local flash would keep it out of the backend
-   entirely, at the price of cuts that hold the last synced
-   transaction group and not the fsynced tail.
-4. The thin split remains the fastest measured option. ZFS's case
-   rests on fewer flash writes, freeze-free atomic snapshots of the
-   data and WAL pair, and a much simpler node stack — not on
-   throughput.
+   log device on local flash keeps it out of the backend (§10.4), at
+   the price of cuts that hold the last synced transaction group and
+   not the fsynced tail.
+4. Without snapshots the thin split remains the fastest measured
+   option. With a snapshot every minute the thin stacks and zfs-slog
+   are level in throughput, and only zfs-slog ran without stalls.
+   ZFS's case rests on snapshots that cost the workload nothing, fewer
+   flash writes, and a much simpler node stack.
+5. Removing the freeze from the dm-thin capture is not a win by
+   itself (§10.4). The per-snapshot cost there is the copy-on-write
+   after the snapshot, which the freeze does not cause.
 
-### 10.5 Not yet measured
+### 10.6 Not yet measured
 
 - A backend read cache: fetched blocks kept local, with read-ahead.
-- A separate log device (`zfs-slog`), and `logbias=throughput` on the
-  WAL dataset.
-- Snapshots taken during the window, for all three mechanisms: thin
-  with a freeze, thin with a suspend only, and `zfs snapshot`. The
-  cost of the freeze has not been measured anywhere in this study.
+- `logbias=throughput` on the WAL dataset.
+- A thin snapshot mode that syncs and then suspends, to test why the
+  suspend-only snapshots stalled longer than the frozen ones.
+- Why twovol stalls for whole seconds with no snapshots at all (2 and
+  7 stalled seconds in §10.4's `none` phases).
+- Snapshots during the window on the 10 ms origin.
 - A database several times larger than RAM, where sparse updates
   rewrite a 128 KiB indirect block per 8 KiB page.
-- Repetitions. Every cell above is one run, and §6.2 documents how
-  far two runner VMs can differ.
+- Repetitions. Every cell in §10.2 is one run, §10.4 has two, and
+  §6.2 documents how far two runner VMs can differ.
