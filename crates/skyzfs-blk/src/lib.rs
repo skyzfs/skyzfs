@@ -7,59 +7,68 @@
 //! - the contract as types: [`Geometry`], [`Op`], [`Request`],
 //!   [`Completion`], [`BlkError`] and the [`BlockTarget`] trait,
 //! - [`model::Model`], a reference model of what a client may observe,
-//!   including what a power cut may leave behind,
-//! - [`mem::MemTarget`], an in-memory implementation with crash and restart
-//!   hooks,
+//!   including what a daemon loss and a power cut may leave behind,
+//! - [`mem::MemTarget`], an in-memory implementation with a simulated
+//!   write log and hooks for daemon loss, power cuts and log failure,
 //! - `conformance` (feature `conformance`), a suite that runs any
 //!   implementation against the model.
 //!
 //! # The rules
 //!
-//! Rules R1 to R10 restate §4.1. Where §4.1 is silent or ambiguous the rule
-//! is marked **(reading)**: it is this crate's conservative reading, not a
-//! design decision, and is listed again under [Open readings](#open-readings).
+//! Rules R1 to R12 restate §4.1 in the order of that section. Tests name
+//! the rule they verify by these numbers.
 //!
-//! - **R1 Geometry.** Offsets and lengths are multiples of [`BLOCK_SIZE`]
-//!   (4 KiB). The device size is a non-zero multiple of it.
-//! - **R2 Rejection.** A request that is misaligned, of zero length
-//!   **(reading)**, beyond the end of the device, or a read or write longer
-//!   than [`Geometry::max_io_bytes`] **(reading)** completes with an error
-//!   and has no effect. [`Geometry::validate`] is the one definition of
-//!   "valid" and every implementation should call it.
-//! - **R3 Read.** A read returns, for every block, the latest acknowledged
-//!   write, or zeros if the block was never written. A block that has been
-//!   discarded since its last write reads as either that last write or
-//!   zeros, and the choice may differ from one read to the next
-//!   **(reading)**.
-//! - **R4 Write.** A write is acknowledged once it is visible to reads. It
-//!   may be lost on a power cut until a later flush completes.
-//! - **R5 Flush.** A flush completes only when every write acknowledged
-//!   before the flush was submitted is durable. A write still in flight when
-//!   the flush is submitted is not covered **(reading)**.
-//! - **R6 Discard.** Advisory. It changes nothing a client may rely on
-//!   except that the block may afterwards read as zeros (R3).
-//! - **R7 Write zeroes.** A write of zeros, with the durability of a write.
-//! - **R8 Order.** Writes to one block are applied in acknowledgement order:
-//!   the block holds the data of the write whose completion was delivered
-//!   last. Requests that do not overlap may complete in any order. Every
-//!   accepted request completes exactly once.
-//! - **R9 Daemon loss.** The daemon may disappear and return while its
-//!   client lives on. The transport then reissues every request that was in
-//!   flight, with the same id, and the result must be as if each had been
-//!   issued once. Writes acknowledged before the loss are still there
-//!   **(reading)**: the client is alive, will not resend them, and a later
-//!   flush promises them durable.
-//! - **R10 Power cut.** After a power cut every block holds exactly one of:
-//!   the latest write to it that a completed flush covers, or any one later
-//!   write to it, acknowledged or in flight. No block is ever a mix of two
-//!   writes. Blocks of one multi-block write survive or vanish
-//!   independently **(reading)**. What a client reads after the device
-//!   returns is stable and is itself durable **(reading)**.
+//! - **R1 Parameters.** Reported at open and fixed while open: a size that
+//!   is a multiple of 1 MiB, 4096-byte blocks, a largest read or write of
+//!   1 MiB, discard and write-zeroes over any aligned range, a volatile
+//!   write cache, no forced-unit-access, and a read-only flag.
+//! - **R2 Rejection.** A request that is misaligned, empty or beyond the
+//!   end is rejected and has no effect. So is a read or write longer than
+//!   1 MiB: a transport splits before the target sees it.
+//!   [`Geometry::validate`] is the one definition of "valid".
+//! - **R3 Content and read.** A volume has a [`Base`]: empty, which reads
+//!   as zeros, or a commit. A block's content is what the last operation
+//!   covering it in the daemon's order left there, or else the base. A
+//!   read received after an operation was acknowledged observes it. A read
+//!   that overlaps an operation in flight sees, for each block, the
+//!   content before it or after it.
+//! - **R4 Write.** Replaces the content.
+//! - **R5 Write zeroes.** A write of zeros. On a volume with a base it
+//!   hides the base.
+//! - **R6 Discard.** Each block becomes unspecified until the next write
+//!   to it: the content just before the discard, zeros or the base,
+//!   possibly differing between reads, never anything else. A discard is
+//!   never applied to data written after it.
+//! - **R7 Flush.** Completes only when every operation acknowledged on the
+//!   volume before the flush was received is durable against power loss,
+//!   including operations an earlier instance of the daemon acknowledged.
+//!   It need not cover operations in flight.
+//! - **R8 Order.** Writes, write-zeroes and discards are applied whole, in
+//!   one total order. An operation submitted after another was
+//!   acknowledged follows it. Two overlapping operations in flight
+//!   together may go either way round; the later one wins on every block
+//!   they share. Every accepted request completes exactly once.
+//! - **R9 Daemon loss.** The daemon is lost and returns while its client
+//!   lives on. Every acknowledged operation is still there. Requests that
+//!   were not acknowledged are reissued, in any order, and may include
+//!   ones the lost daemon had applied; the result is as the contract
+//!   describes all the same.
+//! - **R10 Power loss.** The recovered volume is a prefix of the daemon's
+//!   order that includes at least what every completed flush covered.
+//!   Every operation in it is whole. What recovery exposes is durable
+//!   before the first request is served: a second power cut does not take
+//!   it back.
+//! - **R11 Failed volume.** Once the write log has failed for good, the
+//!   flush fails and so does every later request, reads included, also
+//!   after a daemon restart.
+//! - **R12 Read-only.** On a read-only target writes, write-zeroes and
+//!   discards fail and a flush succeeds.
 //!
-//! Not expressible here, and so not checked by the suite: that the daemon
-//! locks its memory and keeps its files off the pools it serves, that a
-//! flush never waits for upload, and that a discard is *recorded* for the
-//! uploader and the cache.
+//! Outside the suite, by §4.1: locked memory and the daemon's files off
+//! its own pools. Not checkable through this interface: that a flush never
+//! waits for upload, that a flush is *held* for a recoverable condition,
+//! that a discard is recorded for the uploader, and the held-then-failed
+//! read against unreachable object storage (M3).
 //!
 //! # The shape of the API, and why
 //!
@@ -88,9 +97,11 @@
 //! - **`&mut self`, one owner per queue.** An io_uring loop or a ring loop
 //!   is a single thread that owns its queue. A target with several queues
 //!   hands out one handle per queue.
-//! - **The same trait fits a store behind a transport.** A transport loop
-//!   forwards requests to a `BlockTarget` store and its completions back;
-//!   nothing in the trait is specific to the kernel side.
+//! - **Transport-neutral.** Nothing in the trait is specific to a kernel
+//!   transport. A transport loop forwards requests to a `BlockTarget`
+//!   store and its completions back, and the agent's tools (label reads,
+//!   the offline GUID rewrite, §5.4) drive the same trait in-process as
+//!   the "library client" of §4.1.
 //!
 //! Alternatives rejected:
 //!
@@ -115,43 +126,33 @@
 //!   [`BlockTarget::wait`] is enough for the suite and for a simple loop;
 //!   a wake-up hook can be added without changing the rest.
 //!
-//! # Open readings
+//! # Notes for the design
 //!
-//! These are the places where this crate had to choose. Each is the
-//! conservative choice and each needs a decision in the design.
+//! Places where this crate had to go beyond the words of §4.1. None is a
+//! choice between two implementable readings, except where marked.
 //!
-//! 1. **Read after discard** (R3, R6). §4.1 says a read returns "the latest
-//!    acknowledged write for every byte, or zeros" and that discard is
-//!    advisory. Reading: per block, either, not necessarily the same on
-//!    every read. The suite rejects anything else.
-//! 2. **Largest request** (R2). §4.1 gives none. Reading: the target states
-//!    one for reads and writes in its geometry and rejects longer ones.
-//!    Discards and write-zeroes carry no data and may span the device.
-//! 3. **Zero-length requests** (R2). Rejected.
-//! 4. **Flush with writes in flight** (R5). Reading, by the letter of
-//!    §4.1: only writes whose completion the client had before it submitted
-//!    the flush are covered.
-//! 5. **Daemon loss and acknowledged writes** (R9). §4.1 acknowledges a
-//!    write "once in the daemon's memory" and says it "may be lost on a
-//!    crash". Read literally, `kill -9` of the daemon loses writes that the
-//!    still-running ZFS believes written, and a later flush would then
-//!    succeed over a hole. Reading: only a power cut may lose acknowledged
-//!    writes; a daemon restart may not. This constrains the local store
-//!    (an acknowledged write must already be somewhere that outlives the
-//!    process) and should be settled before `skyzfs-local` is designed.
-//! 6. **Atomicity of a multi-block write across a power cut** (R10). §4.1
-//!    promises only that no 4 KiB block is torn. Reading: nothing more.
-//! 7. **Order between unflushed writes across a power cut** (R10). A later
-//!    unflushed write may survive while an earlier one, to another block,
-//!    does not. §4.1 does not promise a prefix.
-//! 8. **Recovered state is durable** (R10). What reads return after a power
-//!    cut does not change at a second power cut, even without a flush in
-//!    between. ZFS relies on this at import.
-//! 9. **Reads concurrent with writes** (R3). A read in flight together with
-//!    a write to the same block may return either the old or the new
-//!    block, whole.
-//! 10. **Flags.** FUA, a no-unmap flag on write-zeroes, priorities and the
-//!     transaction-group hint of §4.3 are not in §4.1 and are not modelled.
+//! 1. **A reissued operation can be in the order twice.** W1 and W2
+//!    overlap and are in flight together. The daemon logs W1, then W2,
+//!    acknowledges W2 and dies. W1 is reissued and logged again. In memory
+//!    W1 now wins; a power cut that loses the last record leaves W2 the
+//!    winner. §4.1 says the winner is "the same one in memory, in the log,
+//!    after replay and in every cut", which no daemon can promise here,
+//!    because a reissue carries nothing to recognise it by. The model
+//!    therefore lets an operation that was in flight at a daemon loss
+//!    occupy two positions: one before the loss, which may or may not
+//!    exist, and one after.
+//! 2. **When a failed volume starts failing** (reading). After the log
+//!    has failed for good, every flush must fail. Other requests may fail
+//!    or succeed until the first failure has been delivered; every request
+//!    submitted after that must fail.
+//! 3. **`queue_depth`** is reported with the parameters although §4.1's
+//!    table does not list it: a completion queue needs a stated bound.
+//! 4. **The base race** of §4.1's review (a delayed fetch of a base block
+//!    racing a write to it) needs a base whose fetches a test can delay.
+//!    The model and `MemTarget` have a non-empty base; the race case is
+//!    deferred to M3.
+//! 5. **Order of rejection reasons** when a request breaks two rules is
+//!    unspecified; the suite accepts either.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -170,51 +171,57 @@ pub const BLOCK_SIZE: u64 = 4096;
 /// `BLOCK_SIZE` as a `usize`, for slicing buffers.
 pub const BLOCK_USIZE: usize = BLOCK_SIZE as usize;
 
-/// What a target tells its client about itself (rule R1, R2).
+/// The largest read or write: 1 MiB (rule R1). A transport splits anything
+/// larger.
+pub const MAX_IO_BYTES: u64 = 1 << 20;
+
+/// Device sizes are multiples of this: 1 MiB (rule R1).
+pub const SIZE_UNIT: u64 = 1 << 20;
+
+/// The parameters a target reports when it is opened (rule R1). They do not
+/// change while it is open.
+///
+/// Fixed by the contract and so not fields: the block size
+/// ([`BLOCK_SIZE`]), the largest read or write ([`MAX_IO_BYTES`]), a
+/// volatile write cache (flushes are meaningful), discard supported, and
+/// no forced-unit-access writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
     size_bytes: u64,
-    max_io_bytes: u64,
     queue_depth: u32,
+    read_only: bool,
 }
 
 /// Why a [`Geometry`] could not be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum GeometryError {
-    /// The device has no blocks, or its size overflows a `u64` in bytes.
-    #[error("device size must be between one block and u64::MAX bytes")]
+    /// The size is zero, not a multiple of 1 MiB, or too large.
+    #[error("device size must be a non-zero multiple of 1 MiB")]
     BadSize,
-    /// The largest read or write is not at least one block.
-    #[error("the largest request must be at least one block")]
-    BadMaxIo,
     /// No request could ever be in flight.
     #[error("queue depth must be at least one")]
     BadQueueDepth,
 }
 
 impl Geometry {
-    /// A device of `blocks` blocks that takes reads and writes of up to
-    /// `max_io_blocks` blocks and up to `queue_depth` requests in flight.
-    pub fn new(blocks: u64, max_io_blocks: u64, queue_depth: u32) -> Result<Self, GeometryError> {
-        let size_bytes = blocks
-            .checked_mul(BLOCK_SIZE)
+    /// A device of `size_mib` MiB that takes up to `queue_depth` requests
+    /// in flight.
+    pub fn new(size_mib: u64, queue_depth: u32, read_only: bool) -> Result<Self, GeometryError> {
+        let size_bytes = size_mib
+            .checked_mul(SIZE_UNIT)
             .filter(|s| *s > 0)
             .ok_or(GeometryError::BadSize)?;
-        let max_io_bytes = max_io_blocks
-            .checked_mul(BLOCK_SIZE)
-            .filter(|s| *s > 0)
-            .ok_or(GeometryError::BadMaxIo)?;
         if queue_depth == 0 {
             return Err(GeometryError::BadQueueDepth);
         }
         Ok(Self {
             size_bytes,
-            max_io_bytes,
             queue_depth,
+            read_only,
         })
     }
 
-    /// Device size in bytes. A non-zero multiple of [`BLOCK_SIZE`].
+    /// Device size in bytes. A non-zero multiple of [`SIZE_UNIT`].
     pub fn size_bytes(&self) -> u64 {
         self.size_bytes
     }
@@ -224,11 +231,10 @@ impl Geometry {
         self.size_bytes / BLOCK_SIZE
     }
 
-    /// The longest read or write the target accepts, in bytes. A non-zero
-    /// multiple of [`BLOCK_SIZE`]. Discards and write-zeroes are bounded
-    /// only by the device size (open reading 2).
+    /// The longest read or write the target accepts: [`MAX_IO_BYTES`].
+    /// Discards and write-zeroes are bounded only by the device.
     pub fn max_io_bytes(&self) -> u64 {
-        self.max_io_bytes
+        MAX_IO_BYTES
     }
 
     /// How many requests the target accepts in flight at once. A request is
@@ -238,11 +244,17 @@ impl Geometry {
         self.queue_depth
     }
 
+    /// Whether the target is read-only (rule R12).
+    pub fn read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// The one definition of a valid request (rule R2).
     ///
     /// Checks, in this order: zero length, alignment, the size limit for
     /// reads and writes, and the end of the device. A flush is always
-    /// valid.
+    /// valid. Whether a valid request is allowed on a read-only or failed
+    /// target is not decided here.
     pub fn validate(&self, op: &Op) -> Result<(), BlkError> {
         let Some((offset, len)) = op.range() else {
             return Ok(());
@@ -253,10 +265,10 @@ impl Geometry {
         if offset % BLOCK_SIZE != 0 || len % BLOCK_SIZE != 0 {
             return Err(BlkError::Misaligned { offset, len });
         }
-        if op.carries_data() && len > self.max_io_bytes {
+        if op.carries_data() && len > MAX_IO_BYTES {
             return Err(BlkError::TooLarge {
                 len,
-                max: self.max_io_bytes,
+                max: MAX_IO_BYTES,
             });
         }
         match offset.checked_add(len) {
@@ -266,6 +278,37 @@ impl Geometry {
                 len,
                 size: self.size_bytes,
             }),
+        }
+    }
+}
+
+/// What a volume holds before anything is written to it (rule R3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Base {
+    /// Empty: every block reads as zeros.
+    Empty,
+    /// A commit, as for a clone or a restore. For tests its content is a
+    /// pattern computed from the seed and the block number, so that a
+    /// harness can build the same base in any store. No block of it is
+    /// zeros.
+    Pattern(u64),
+}
+
+impl Base {
+    /// Fill `out`, one block long, with the base content of `block`.
+    pub fn fill_block(&self, block: u64, out: &mut [u8]) {
+        match self {
+            Base::Empty => out.fill(0),
+            Base::Pattern(seed) => {
+                let mut z = seed
+                    .wrapping_mul(0xD6E8_FEB8_6659_FD93)
+                    .wrapping_add(block.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+                z ^= z >> 31;
+                let word = (z | 0x8080_8080_8080_8080).to_le_bytes();
+                for chunk in out.chunks_mut(8) {
+                    chunk.copy_from_slice(&word[..chunk.len()]);
+                }
+            }
         }
     }
 }
@@ -300,7 +343,7 @@ pub enum Op {
         /// The data. Returned in the completion for reuse.
         data: Vec<u8>,
     },
-    /// Make every write acknowledged so far durable (rule R5).
+    /// Make every operation acknowledged so far durable (rule R7).
     Flush,
     /// The blocks are no longer needed (rule R6).
     Discard {
@@ -309,7 +352,7 @@ pub enum Op {
         /// Length in bytes.
         len: u64,
     },
-    /// Write zeros (rule R7).
+    /// Write zeros (rule R5).
     WriteZeroes {
         /// Byte offset on the device.
         offset: u64,
@@ -393,7 +436,7 @@ pub enum BlkError {
         /// The device size in bytes.
         size: u64,
     },
-    /// A read or write longer than [`Geometry::max_io_bytes`].
+    /// A read or write longer than [`MAX_IO_BYTES`].
     #[error("length {len} exceeds the largest request {max}")]
     TooLarge {
         /// The length asked for.
@@ -401,7 +444,14 @@ pub enum BlkError {
         /// The limit.
         max: u64,
     },
-    /// The target could not carry out a valid request.
+    /// A write, write-zeroes or discard on a read-only target (rule R12).
+    #[error("the target is read-only")]
+    ReadOnly,
+    /// The volume has failed: its write log is lost for good (rule R11).
+    /// Every later request fails with this too.
+    #[error("the volume has failed")]
+    Failed,
+    /// The target could not carry out a valid request for another reason.
     #[error("I/O error: {0}")]
     Io(std::io::ErrorKind),
 }
@@ -410,7 +460,13 @@ impl BlkError {
     /// Whether this is a rejection of an invalid request (rule R2), as
     /// opposed to a failure of a valid one.
     pub fn is_rejection(&self) -> bool {
-        !matches!(self, BlkError::Io(_))
+        matches!(
+            self,
+            BlkError::Misaligned { .. }
+                | BlkError::ZeroLength
+                | BlkError::OutOfBounds { .. }
+                | BlkError::TooLarge { .. }
+        )
     }
 }
 
@@ -437,7 +493,7 @@ pub enum SubmitErrorKind {
 }
 
 /// A block target: anything that takes the five operations and honours
-/// rules R1 to R10. See the [crate documentation](crate) for the rules and
+/// rules R1 to R12. See the [crate documentation](crate) for the rules and
 /// for why the trait has this shape.
 pub trait BlockTarget {
     /// The target's geometry. Constant for the life of the device,
@@ -457,8 +513,8 @@ pub trait BlockTarget {
     /// Append the completions that are ready to `out` and return how many
     /// were appended. Never blocks.
     ///
-    /// The order of completions in `out`, within one call and across
-    /// calls, is the acknowledgement order of rule R8.
+    /// The order of completions says nothing about the daemon's order of
+    /// operations (rule R8): only "acknowledged before submitted" does.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize;
 
     /// As [`poll`](BlockTarget::poll), but if nothing is ready and requests

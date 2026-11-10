@@ -1,14 +1,14 @@
-//! The conformance suite: rules R1 to R10 of the [crate documentation](crate)
+//! The conformance suite: rules R1 to R12 of the [crate documentation](crate)
 //! run against any [`BlockTarget`].
 //!
-//! Passing it is the entry condition for every transport and store
-//! (design §4.1).
+//! Passing it is the entry condition for every transport and for the local
+//! store (design §4.1).
 //!
 //! # Using it
 //!
-//! Implement [`Harness`] for the thing under test: how to create a fresh
-//! device, how to cut its power and bring it back, and how to lose and
-//! restart its daemon. Then:
+//! Implement [`Harness`] for the thing under test: how to create a device
+//! on a given base, how to lose and restart its daemon, how to cut its
+//! power at a chosen point of its log, and how to make its log fail. Then:
 //!
 //! ```
 //! use skyzfs_blk::conformance::{run_all, Config};
@@ -29,11 +29,19 @@
 //! [`Violation`](crate::model::Violation), when a request does not
 //! complete within [`Config::timeout`], or when `submit` refuses a request
 //! the contract obliges the target to take. The property cases run random
-//! programs of requests, reaps, power cuts and restarts with proptest, and
-//! report the shrunk program on failure.
+//! programs of requests, reaps, daemon losses and power cuts with
+//! proptest, and report the shrunk program on failure.
 //!
-//! The suite assumes a fault-free environment: an I/O error on a valid
-//! request fails the case.
+//! The two failures are kept apart (design §4.1): after [`Harness::kill`]
+//! every acknowledged operation must be readable; after
+//! [`Harness::power_cut`] the device must hold a prefix of the daemon's
+//! order that includes everything flushed. After every power cut the suite
+//! reads back each block an unflushed operation touched before it does
+//! anything else, which is what lets the model decide which prefix
+//! survived.
+//!
+//! The suite assumes a fault-free environment apart from the faults it
+//! injects: an I/O error on a valid request fails the case.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -47,8 +55,8 @@ use proptest::test_runner::{TestCaseError, TestRunner};
 
 use crate::model::Model;
 use crate::{
-    BlkError, BlockTarget, Completion, Geometry, Op, Request, RequestId, SubmitErrorKind,
-    BLOCK_SIZE, BLOCK_USIZE,
+    Base, BlkError, BlockTarget, Completion, Geometry, Op, Request, RequestId, SubmitErrorKind,
+    BLOCK_SIZE, BLOCK_USIZE, MAX_IO_BYTES, SIZE_UNIT,
 };
 
 /// The harness could not do what the suite asked of it. This is a failure
@@ -57,27 +65,68 @@ use crate::{
 #[error("harness: {0}")]
 pub struct HarnessError(pub String);
 
+/// The device a case asks the harness for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spec {
+    /// What the device holds before anything is written. For
+    /// [`Base::Pattern`] the harness builds a volume whose every block is
+    /// what [`Base::fill_block`] gives.
+    pub base: Base,
+    /// Whether the device is opened read-only.
+    pub read_only: bool,
+}
+
+impl Spec {
+    /// A writable device on an empty base.
+    pub const EMPTY: Spec = Spec {
+        base: Base::Empty,
+        read_only: false,
+    };
+
+    /// A writable device on a non-empty base, as a clone has.
+    pub const CLONE: Spec = Spec {
+        base: Base::Pattern(0xBA5E),
+        read_only: false,
+    };
+}
+
 /// What the suite needs from the thing under test.
+///
+/// The two fault hooks are separate on purpose: daemon loss and power loss
+/// promise different things (rules R9 and R10), and a target that
+/// acknowledges from memory must fail under [`Harness::kill`].
 pub trait Harness {
     /// The target type.
     type Target: BlockTarget;
 
-    /// A fresh device on which every block reads as zeros. Each call must
-    /// give a device independent of the earlier ones. The device needs at
-    /// least 16 blocks and should be small: the suite reads back the first
-    /// [`Config::window_blocks`] blocks often.
-    fn create(&mut self) -> Result<Self::Target, HarnessError>;
+    /// A fresh device as `spec` describes. Each call must give a device
+    /// independent of the earlier ones. It should be small: the suite
+    /// works in its first [`Config::window_blocks`] blocks.
+    fn create(&mut self, spec: &Spec) -> Result<Self::Target, HarnessError>;
 
-    /// Crash and reopen: cut the power under `target` and return the
-    /// device as it comes back (rule R10). Requests in flight are lost.
-    /// `seed` is for a harness that can choose what a cut loses; a real
-    /// rig may ignore it.
-    fn power_cut(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
+    /// Daemon loss (rule R9): kill the daemon under `target` and start a
+    /// new instance while the client stays attached. The returned target
+    /// has nothing in flight; the suite reissues what was. `seed` is for a
+    /// harness that can choose how far the requests in flight had got; a
+    /// real rig may ignore it.
+    fn kill(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
 
-    /// Lose the daemon and bring it back while the client lives on (rule
-    /// R9). The returned target has nothing in flight; the suite reissues
-    /// what was. `seed` is as for [`Harness::power_cut`].
-    fn restart(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
+    /// How many places beyond the durable part of its log the target could
+    /// be cut at right now: the number of records, or of whatever units it
+    /// persists, that no flush covers yet. The suite cuts at every point
+    /// from 0 to this number. A rig that cannot cut inside its log returns
+    /// 0.
+    fn cut_points(&mut self, target: &Self::Target) -> u64;
+
+    /// Power loss (rule R10): cut the power under `target` so that `keep`
+    /// units beyond the durable part of its log survive, and return the
+    /// device as it comes back. `keep` may exceed [`Harness::cut_points`]
+    /// (requests in flight may have added to the log); the harness then
+    /// picks any point, deterministically from `keep`.
+    fn power_cut(&mut self, target: Self::Target, keep: u64) -> Result<Self::Target, HarnessError>;
+
+    /// Make the target's write log fail for good (rule R11).
+    fn fail_log(&mut self, target: &mut Self::Target) -> Result<(), HarnessError>;
 }
 
 /// How hard to run the suite.
@@ -225,15 +274,16 @@ pub fn run_case<H: Harness>(
 pub fn cases<H: Harness>() -> Vec<Case<H>> {
     vec![
         Case {
-            name: "geometry_is_sane",
-            rule: "R1: the device size and the largest request are non-zero multiples of 4 KiB; \
-                   the geometry survives a power cut and a restart",
-            run: geometry_is_sane::<H>,
+            name: "parameters_are_as_the_contract_fixes_them",
+            rule: "R1: the size is a non-zero multiple of 1 MiB, the read-only flag is as \
+                   asked, and the parameters survive a daemon loss and a power cut",
+            run: parameters::<H>,
         },
         Case {
-            name: "fresh_device_reads_zeros",
-            rule: "R3: a block never written reads as zeros",
-            run: fresh_device_reads_zeros::<H>,
+            name: "fresh_device_reads_as_its_base",
+            rule: "R3: a block never written reads as the base: zeros on an empty volume, \
+                   the commit's content on a clone",
+            run: fresh_device_reads_as_its_base::<H>,
         },
         Case {
             name: "rejects_misaligned",
@@ -248,11 +298,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             run: rejects_out_of_bounds::<H>,
         },
         Case {
-            name: "rejects_zero_length_and_oversize",
-            rule: "R2: a zero-length request, and a read or write longer than the stated \
-                   maximum, are rejected; the maximum itself is accepted, and a discard and a \
-                   write-zeroes may span the device",
-            run: rejects_zero_length_and_oversize::<H>,
+            name: "rejects_empty_and_oversize",
+            rule: "R1, R2: an empty request and a read or write longer than 1 MiB are \
+                   rejected; 1 MiB itself is accepted, and a discard and a write-zeroes may \
+                   span the device",
+            run: rejects_empty_and_oversize::<H>,
         },
         Case {
             name: "read_your_writes",
@@ -261,40 +311,53 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             run: read_your_writes::<H>,
         },
         Case {
-            name: "write_zeroes_reads_zeros_and_is_durable",
-            rule: "R7: write-zeroes reads as zeros and, once flushed, survives a power cut \
-                   like a write",
-            run: write_zeroes_reads_zeros_and_is_durable::<H>,
+            name: "write_zeroes_hides_the_base",
+            rule: "R5: write-zeroes reads as zeros on a volume with a base, and once flushed \
+                   survives a power cut like a write",
+            run: write_zeroes_hides_the_base::<H>,
         },
         Case {
-            name: "discard_reads_old_or_zeros",
-            rule: "R3, R6: a discarded block reads as its last write or as zeros, also after \
-                   a power cut; blocks next to the discard are untouched",
-            run: discard_reads_old_or_zeros::<H>,
+            name: "discard_leaves_old_zeros_or_base",
+            rule: "R6: a discarded block reads as its content before the discard, zeros or the \
+                   base, also after a power cut; blocks next to the discard are untouched",
+            run: discard_leaves_old_zeros_or_base::<H>,
         },
         Case {
-            name: "write_after_discard_wins",
-            rule: "R6, R8: a write acknowledged after a discard is what reads return",
-            run: write_after_discard_wins::<H>,
+            name: "discard_never_hits_later_writes",
+            rule: "R6, R8: a write acknowledged after a discard is what reads return, now, \
+                   after a flush and after a power cut",
+            run: discard_never_hits_later_writes::<H>,
         },
         Case {
-            name: "flushed_writes_survive_power_cut",
-            rule: "R5, R10: every write acknowledged before a completed flush was submitted \
-                   survives a power cut",
-            run: flushed_writes_survive_power_cut::<H>,
+            name: "flushed_operations_survive_power_cut",
+            rule: "R7, R10: every operation acknowledged before a completed flush was \
+                   submitted survives a power cut that keeps nothing unflushed",
+            run: flushed_operations_survive_power_cut::<H>,
         },
         Case {
-            name: "unflushed_writes_are_old_or_new_never_torn",
-            rule: "R4, R10: after a power cut a block holds its flushed content or one later \
-                   write, never a mix, and what is read then is stable and survives a second \
-                   power cut",
-            run: unflushed_writes_are_old_or_new_never_torn::<H>,
+            name: "flush_covers_what_was_acknowledged_before_it",
+            rule: "R7: write A acknowledged, flush submitted, write B submitted while the flush \
+                   is pending, power cut once both completed: A is present (the group-commit \
+                   bug)",
+            run: flush_covers_what_was_acknowledged_before_it::<H>,
         },
         Case {
-            name: "flush_with_writes_in_flight",
-            rule: "R5: a flush submitted while a write is in flight completes, and covers at \
-                   least the writes acknowledged before it was submitted",
-            run: flush_with_writes_in_flight::<H>,
+            name: "flush_covers_an_earlier_instance",
+            rule: "R7, R9: a write acknowledged before a daemon loss is covered by a flush \
+                   sent to the new instance, and is durable even without one",
+            run: flush_covers_an_earlier_instance::<H>,
+        },
+        Case {
+            name: "power_cut_at_every_point_leaves_a_prefix",
+            rule: "R10: cut after every record the target has not flushed: the device holds a \
+                   prefix of the order, with every operation whole",
+            run: power_cut_at_every_point_leaves_a_prefix::<H>,
+        },
+        Case {
+            name: "recovered_state_is_durable",
+            rule: "R10: what is read after a power cut is stable, and a second power cut that \
+                   keeps nothing unflushed does not take it back",
+            run: recovered_state_is_durable::<H>,
         },
         Case {
             name: "queue_depth_requests_complete_in_any_order",
@@ -303,22 +366,35 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             run: queue_depth_requests_complete_in_any_order::<H>,
         },
         Case {
-            name: "overlapping_writes_apply_in_ack_order",
-            rule: "R8: of several writes in flight to one block, the one acknowledged last is \
-                   what reads return",
-            run: overlapping_writes_apply_in_ack_order::<H>,
+            name: "overlapping_operations_in_flight_apply_whole",
+            rule: "R8: overlapping operations in flight together end up in one order: on \
+                   every block they share the same one wins, in memory and after a power cut",
+            run: overlapping_operations_in_flight_apply_whole::<H>,
         },
         Case {
-            name: "restart_keeps_acknowledged_writes",
-            rule: "R9: a write acknowledged before the daemon is lost is read back after it \
-                   returns, and a flush after the restart makes it durable",
-            run: restart_keeps_acknowledged_writes::<H>,
+            name: "kill_keeps_acknowledged_operations",
+            rule: "R9: every operation acknowledged before the daemon is lost is read back \
+                   after it returns, flushed or not",
+            run: kill_keeps_acknowledged_operations::<H>,
         },
         Case {
-            name: "reissue_after_restart_is_idempotent",
+            name: "reissue_after_kill_is_idempotent",
             rule: "R9: requests in flight when the daemon is lost complete correctly when \
-                   reissued under the same ids, whether or not they had already taken effect",
-            run: reissue_after_restart_is_idempotent::<H>,
+                   reissued under the same ids, in either order, whether or not they had \
+                   already been applied",
+            run: reissue_after_kill_is_idempotent::<H>,
+        },
+        Case {
+            name: "failed_volume_fails_every_request",
+            rule: "R11: once the log has failed for good the flush fails, and then every \
+                   request does, reads included, also after a daemon restart",
+            run: failed_volume_fails_every_request::<H>,
+        },
+        Case {
+            name: "read_only_target_refuses_mutations",
+            rule: "R12: on a read-only target write, write-zeroes and discard fail without \
+                   effect, and flush and read succeed",
+            run: read_only_target_refuses_mutations::<H>,
         },
         Case {
             name: "prop_invalid_requests_are_rejected_without_effect",
@@ -327,15 +403,16 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
         },
         Case {
             name: "prop_concurrent_programs_match_model",
-            rule: "R3, R4, R6, R7, R8: property: random overlapping requests, reaped at random \
-                   moments, read back as the model allows",
+            rule: "R3 to R8: property: random overlapping requests on an empty or a non-empty \
+                   base, reaped at random moments, read back as some order of whole \
+                   operations allows",
             run: prop_concurrent_programs::<H>,
         },
         Case {
-            name: "prop_power_cuts_and_restarts_match_model",
-            rule: "R5, R9, R10: property: random programs with power cuts and daemon restarts \
-                   at random moments read back as the model allows",
-            run: prop_crashing_programs::<H>,
+            name: "prop_failures_match_model",
+            rule: "R7, R9, R10, R11: property: random programs with daemon losses, power cuts \
+                   at random points and log failure read back as the model allows",
+            run: prop_failing_programs::<H>,
         },
     ]
 }
@@ -349,7 +426,7 @@ struct Driver<'a, H: Harness> {
     target: Option<H::Target>,
     geometry: Geometry,
     model: Model,
-    /// A copy of every request in flight, for reissue after a restart.
+    /// A copy of every request in flight, for reissue after a kill.
     inflight: BTreeMap<RequestId, Request>,
     next_id: u64,
     stamp: u64,
@@ -357,37 +434,41 @@ struct Driver<'a, H: Harness> {
     timeout: Duration,
 }
 
-/// Fill `buf` with a pattern that names `stamp` and the block, differs in
-/// every byte position group from any other stamp's, and is never zeros.
+/// Fill `buf` with a pattern that names `stamp` and the block, differs
+/// from any other stamp's, from every base and from zeros.
 fn fill(buf: &mut [u8], stamp: u64, first_block: u64) {
     for (i, block) in buf.chunks_mut(BLOCK_USIZE).enumerate() {
         let mut z = stamp
             .wrapping_mul(0x9E37_79B9_7F4A_7C15)
             .wrapping_add((first_block + i as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9));
         z ^= z >> 29;
-        let word = (z | 0x0101_0101_0101_0101).to_le_bytes();
+        let word = ((z | 0x0101_0101_0101_0101) & 0x7F7F_7F7F_7F7F_7F7F).to_le_bytes();
         for chunk in block.chunks_mut(8) {
             chunk.copy_from_slice(&word[..chunk.len()]);
         }
     }
 }
 
+fn mutates(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Write { .. } | Op::WriteZeroes { .. } | Op::Discard { .. }
+    )
+}
+
 impl<'a, H: Harness> Driver<'a, H> {
-    fn new(harness: &'a mut H, config: &Config) -> Result<Self, Failure> {
-        let target = harness.create()?;
+    fn new(harness: &'a mut H, config: &Config, spec: &Spec) -> Result<Self, Failure> {
+        let target = harness.create(spec)?;
         let geometry = target.geometry();
-        if geometry.blocks() < 16 {
-            return fail("the suite needs a device of at least 16 blocks");
-        }
         Ok(Self {
             harness,
             target: Some(target),
             geometry,
-            model: Model::new(geometry),
+            model: Model::with_base(geometry, spec.base),
             inflight: BTreeMap::new(),
             next_id: 0,
             stamp: 0,
-            window: config.window_blocks.clamp(16, geometry.blocks()),
+            window: config.window_blocks.clamp(16, 256),
             timeout: config.timeout,
         })
     }
@@ -404,9 +485,10 @@ impl<'a, H: Harness> Driver<'a, H> {
         (self.geometry.queue_depth() as usize).min(16)
     }
 
-    /// Longest read or write the suite issues, in blocks.
-    fn max_len(&self) -> u64 {
-        (self.geometry.max_io_bytes() / BLOCK_SIZE).min(8)
+    /// Writes, write-zeroes and discards the random programs keep in
+    /// flight together at most. The model's cost grows with it.
+    fn mutation_depth(&self) -> usize {
+        self.depth().min(4)
     }
 
     fn submit(&mut self, op: Op) -> Result<RequestId, Failure> {
@@ -481,12 +563,18 @@ impl<'a, H: Harness> Driver<'a, H> {
         }
     }
 
-    /// Submit, making room first if the queue is at the suite's depth.
+    /// Submit, making room first if the queue is at the suite's depth, or
+    /// if `op` mutates and enough mutations are in flight already.
     fn submit_with_room(&mut self, op: Op) -> Result<RequestId, Failure> {
-        while self.inflight.len() >= self.depth() {
+        loop {
+            let mutations = self.inflight.values().filter(|r| mutates(&r.op)).count();
+            let full = self.inflight.len() >= self.depth()
+                || (mutates(&op) && mutations >= self.mutation_depth());
+            if !full {
+                return self.submit(op);
+            }
             self.reap()?;
         }
-        self.submit(op)
     }
 
     fn data(&mut self, block: u64, count: u64) -> Vec<u8> {
@@ -503,42 +591,23 @@ impl<'a, H: Harness> Driver<'a, H> {
         }
     }
 
-    /// The longest read or write the target takes, in blocks.
-    fn max_io_blocks(&self) -> u64 {
-        self.geometry.max_io_bytes() / BLOCK_SIZE
-    }
-
-    /// Write fresh data, in as many requests as the target's largest
-    /// request needs, one after the other. Returns the data.
+    /// Write fresh data and wait for the acknowledgement. Returns the
+    /// data.
     fn write(&mut self, block: u64, count: u64) -> Result<Vec<u8>, Failure> {
         let data = self.data(block, count);
-        let step = (self.max_io_blocks() * BLOCK_SIZE) as usize;
-        let mut offset = block * BLOCK_SIZE;
-        for chunk in data.chunks(step) {
-            self.run(Op::Write {
-                offset,
-                data: chunk.to_vec(),
-            })?;
-            offset += chunk.len() as u64;
-        }
+        self.run(Op::Write {
+            offset: block * BLOCK_SIZE,
+            data: data.clone(),
+        })?;
         Ok(data)
     }
 
-    /// Read, in as many requests as needed, and return the bytes. The
-    /// model has checked them.
+    /// Read and return the bytes. The model has checked them.
     fn read(&mut self, block: u64, count: u64) -> Result<Vec<u8>, Failure> {
-        let step = self.max_io_blocks();
-        let mut all = Vec::with_capacity((count * BLOCK_SIZE) as usize);
-        let mut done = 0;
-        while done < count {
-            let n = step.min(count - done);
-            match self.run(read_op(block + done, n))?.buf {
-                Some(mut buf) => all.append(&mut buf),
-                None => return fail("read completed without a buffer"),
-            }
-            done += n;
+        match self.run(read_op(block, count))?.buf {
+            Some(buf) => Ok(buf),
+            None => fail("read completed without a buffer"),
         }
-        Ok(all)
     }
 
     fn expect_read(&mut self, block: u64, expected: &[u8], what: &str) -> Outcome {
@@ -552,20 +621,46 @@ impl<'a, H: Harness> Driver<'a, H> {
         }
     }
 
+    fn zeroes(&mut self, block: u64, count: u64) -> Outcome {
+        self.run(Op::WriteZeroes {
+            offset: block * BLOCK_SIZE,
+            len: count * BLOCK_SIZE,
+        })
+        .map(|_| ())
+    }
+
+    fn discard(&mut self, block: u64, count: u64) -> Outcome {
+        self.run(Op::Discard {
+            offset: block * BLOCK_SIZE,
+            len: count * BLOCK_SIZE,
+        })
+        .map(|_| ())
+    }
+
     fn flush(&mut self) -> Outcome {
         self.run(Op::Flush).map(|_| ())
     }
 
     /// Read the whole window through the model.
     fn verify(&mut self) -> Outcome {
-        let step = self.max_len();
         let mut block = 0;
         while block < self.window {
-            let count = step.min(self.window - block);
+            let count = 8.min(self.window - block);
             self.submit_with_room(read_op(block, count))?;
             block += count;
         }
         self.drain().map(|_| ())
+    }
+
+    /// If the model is carrying many candidate orders, settle them: read
+    /// everything back and flush.
+    fn settle(&mut self) -> Outcome {
+        if self.model.worlds() > 48 {
+            self.drain()?;
+            self.verify()?;
+            self.flush()?;
+        }
+        Ok(())
     }
 
     fn check_geometry(&mut self) -> Outcome {
@@ -574,29 +669,50 @@ impl<'a, H: Harness> Driver<'a, H> {
             Ok(())
         } else {
             fail(format!(
-                "R1: geometry changed from {:?} to {now:?}",
+                "R1: parameters changed from {:?} to {now:?}",
                 self.geometry
             ))
         }
     }
 
-    fn power_cut(&mut self, seed: u64) -> Outcome {
+    fn cut_points(&mut self) -> Result<u64, Failure> {
+        match self.target.as_ref() {
+            Some(target) => Ok(self.harness.cut_points(target)),
+            None => fail("no target: an earlier harness call failed"),
+        }
+    }
+
+    /// Cut the power so that `keep` unflushed units survive, bring the
+    /// device back, and read back every block the cut may have changed.
+    fn power_cut(&mut self, keep: u64) -> Outcome {
         let Some(target) = self.target.take() else {
             return fail("no target: an earlier harness call failed");
         };
-        self.target = Some(self.harness.power_cut(target, seed)?);
+        self.target = Some(self.harness.power_cut(target, keep)?);
         self.model.power_cut();
         self.inflight.clear();
-        self.check_geometry()
+        self.check_geometry()?;
+        let blocks = self.model.readback();
+        let mut i = 0;
+        while i < blocks.len() {
+            // One read per run of consecutive blocks, up to 1 MiB.
+            let mut j = i + 1;
+            while j < blocks.len() && blocks[j] == blocks[j - 1] + 1 && j - i < 256 {
+                j += 1;
+            }
+            self.run(read_op(blocks[i], (j - i) as u64))?;
+            i = j;
+        }
+        Ok(())
     }
 
     /// Lose the daemon, bring it back and reissue what was in flight.
-    fn restart(&mut self, seed: u64) -> Outcome {
+    fn kill(&mut self, seed: u64) -> Outcome {
         let Some(target) = self.target.take() else {
             return fail("no target: an earlier harness call failed");
         };
-        self.target = Some(self.harness.restart(target, seed)?);
-        self.model.restart();
+        self.target = Some(self.harness.kill(target, seed)?);
+        self.model.kill();
         self.check_geometry()?;
         let mut reissue: Vec<Request> = self.inflight.values().cloned().collect();
         if seed & 1 == 1 {
@@ -605,9 +721,20 @@ impl<'a, H: Harness> Driver<'a, H> {
         for request in reissue {
             let id = request.id;
             if let Err(e) = self.target()?.submit(request) {
-                return fail(format!("R9: reissue of {id} after restart refused: {e}"));
+                return fail(format!(
+                    "R9: reissue of {id} after daemon loss refused: {e}"
+                ));
             }
         }
+        Ok(())
+    }
+
+    fn fail_log(&mut self) -> Outcome {
+        let Some(target) = self.target.as_mut() else {
+            return fail("no target: an earlier harness call failed");
+        };
+        self.harness.fail_log(target)?;
+        self.model.log_failed();
         Ok(())
     }
 
@@ -616,16 +743,27 @@ impl<'a, H: Harness> Driver<'a, H> {
     /// for that instead: the contract does not rank the reasons.
     fn expect_rejection(&mut self, op: Op, want: fn(&BlkError) -> bool, what: &str) -> Outcome {
         let name = op.name();
-        let oversize = op.carries_data()
-            && op
-                .range()
-                .is_some_and(|(_, len)| len > self.geometry.max_io_bytes());
+        let oversize = op.carries_data() && op.range().is_some_and(|(_, len)| len > MAX_IO_BYTES);
         let done = self.run(op)?;
         match done.result {
             Err(e) if want(&e) || (oversize && is_too_large(&e)) => Ok(()),
             other => fail(format!(
                 "R2: {name} {what}: expected a rejection, got {other:?}"
             )),
+        }
+    }
+
+    /// Submit a request that must fail with `want`.
+    fn expect_error(&mut self, op: Op, want: BlkError, rule: &str) -> Outcome {
+        let name = op.name();
+        let done = self.run(op)?;
+        if done.result == Err(want) {
+            Ok(())
+        } else {
+            fail(format!(
+                "{rule}: {name} must fail with {want:?}, got {:?}",
+                done.result
+            ))
         }
     }
 }
@@ -674,38 +812,57 @@ fn is_too_large(e: &BlkError) -> bool {
 // Deterministic cases.
 // ---------------------------------------------------------------------------
 
-fn geometry_is_sane<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let g = d.geometry;
-    if g.size_bytes() == 0 || g.size_bytes() % BLOCK_SIZE != 0 {
-        return fail(format!("R1: device size {} is not blocks", g.size_bytes()));
+fn base_bytes(base: Base, block: u64, count: u64) -> Vec<u8> {
+    let mut out = vec![0; (count * BLOCK_SIZE) as usize];
+    for (i, chunk) in out.chunks_mut(BLOCK_USIZE).enumerate() {
+        base.fill_block(block + i as u64, chunk);
     }
-    if g.max_io_bytes() == 0 || g.max_io_bytes() % BLOCK_SIZE != 0 {
+    out
+}
+
+fn parameters<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    let g = d.geometry;
+    if g.size_bytes() == 0 || g.size_bytes() % SIZE_UNIT != 0 {
         return fail(format!(
-            "R1: max_io_bytes {} is not blocks",
-            g.max_io_bytes()
+            "R1: device size {} is not a multiple of 1 MiB",
+            g.size_bytes()
         ));
     }
     if g.queue_depth() == 0 {
         return fail("R1: queue depth is zero");
     }
-    d.restart(1)?;
-    d.power_cut(1)
+    if g.read_only() {
+        return fail("R1: a writable device reports read-only");
+    }
+    d.kill(1)?;
+    d.power_cut(0)?;
+    let read_only = Spec {
+        read_only: true,
+        ..Spec::CLONE
+    };
+    let d = Driver::new(h, cfg, &read_only)?;
+    if !d.geometry.read_only() {
+        return fail("R1: a read-only device does not report read-only");
+    }
+    Ok(())
 }
 
-fn fresh_device_reads_zeros<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    d.verify()?;
-    let last = d.geometry.blocks() - 1;
-    let got = d.read(last, 1)?;
-    if got.iter().any(|b| *b != 0) {
-        return fail("R3: the last block of a fresh device is not zeros");
+fn fresh_device_reads_as_its_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    for spec in [Spec::EMPTY, Spec::CLONE] {
+        let mut d = Driver::new(h, cfg, &spec)?;
+        d.verify()?;
+        let last = d.geometry.blocks() - 1;
+        for (block, count) in [(0, 4), (last, 1)] {
+            let expected = base_bytes(spec.base, block, count);
+            d.expect_read(block, &expected, "R3: a fresh device")?;
+        }
     }
     Ok(())
 }
 
 fn rejects_misaligned<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     let before = d.write(0, 4)?;
     for (offset, len) in [
         (1, BLOCK_SIZE),
@@ -725,7 +882,7 @@ fn rejects_misaligned<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 }
 
 fn rejects_out_of_bounds<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     let size = d.geometry.size_bytes();
     let last = d.geometry.blocks() - 1;
     let before = d.write(last - 1, 2)?;
@@ -741,7 +898,7 @@ fn rejects_out_of_bounds<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
             d.expect_rejection(op, is_out_of_bounds, &format!("at {offset}+{len}"))?;
         }
     }
-    for len in [far, far - size + BLOCK_SIZE] {
+    for len in [far, far - size + BLOCK_SIZE, size + BLOCK_SIZE] {
         d.expect_rejection(
             Op::Discard { offset: 0, len },
             is_out_of_bounds,
@@ -766,120 +923,119 @@ fn rejects_out_of_bounds<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     d.expect_read(last, &data, "R2: the last block")
 }
 
-fn rejects_zero_length_and_oversize<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+fn rejects_empty_and_oversize<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     for op in ranged_ops(BLOCK_SIZE, 0) {
         d.expect_rejection(op, is_zero_length, "of zero length")?;
     }
-    let max_blocks = d.geometry.max_io_bytes() / BLOCK_SIZE;
-    // The maximum is honoured only if it is small enough to test sensibly
-    // and fits the device.
-    if max_blocks <= 4096 {
-        if max_blocks <= d.geometry.blocks() {
-            let data = d.write(0, max_blocks)?;
-            d.expect_read(0, &data, "R2: a request of exactly max_io_bytes")?;
-        }
-        let over = (max_blocks + 1) * BLOCK_SIZE;
-        d.expect_rejection(
-            Op::Read {
-                offset: 0,
-                buf: vec![0; over as usize],
-            },
-            |e| is_too_large(e) || is_out_of_bounds(e),
-            "longer than max_io_bytes",
-        )?;
-        d.expect_rejection(
-            Op::Write {
-                offset: 0,
-                data: vec![1; over as usize],
-            },
-            |e| is_too_large(e) || is_out_of_bounds(e),
-            "longer than max_io_bytes",
-        )?;
-        if max_blocks < d.geometry.blocks() {
-            d.expect_rejection(
-                Op::Write {
-                    offset: 0,
-                    data: vec![1; over as usize],
-                },
-                is_too_large,
-                "longer than max_io_bytes but within the device",
-            )?;
-        }
-    }
+    // Exactly 1 MiB is accepted.
+    let max_blocks = MAX_IO_BYTES / BLOCK_SIZE;
+    let data = d.write(0, max_blocks)?;
+    d.expect_read(0, &data, "R1: a request of exactly 1 MiB")?;
+    // One block more is not, even where it fits the device.
+    let over = (MAX_IO_BYTES + BLOCK_SIZE) as usize;
+    let fits = d.geometry.size_bytes() >= over as u64;
+    let want: fn(&BlkError) -> bool = if fits {
+        is_too_large
+    } else {
+        |e| is_too_large(e) || is_out_of_bounds(e)
+    };
+    d.expect_rejection(
+        Op::Read {
+            offset: 0,
+            buf: vec![0; over],
+        },
+        want,
+        "longer than 1 MiB",
+    )?;
+    d.expect_rejection(
+        Op::Write {
+            offset: 0,
+            data: vec![1; over],
+        },
+        want,
+        "longer than 1 MiB",
+    )?;
+    d.expect_read(0, &data, "R2: after rejected oversize requests")?;
     // Discard and write-zeroes carry no data and may span the device.
-    let size = d.geometry.size_bytes();
+    // (Capped at 64 MiB so that the model stays small on a large rig.)
+    let span = d.geometry.size_bytes().min(64 * SIZE_UNIT);
     d.run(Op::Discard {
         offset: 0,
-        len: size,
+        len: span,
     })?;
+    d.verify()?;
     d.run(Op::WriteZeroes {
         offset: 0,
-        len: size,
+        len: span,
     })?;
-    d.verify()
+    let zeros = vec![0; 8 * BLOCK_USIZE];
+    d.expect_read(0, &zeros, "R5: after write-zeroes over the device")
 }
 
 fn read_your_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let n = d.max_len();
-    let a = d.write(2, 1)?;
-    d.expect_read(2, &a, "R3: a single block")?;
-    let b = d.write(2, 1)?;
-    d.expect_read(2, &b, "R3: an overwrite")?;
-    let c = d.write(4, n)?;
-    d.expect_read(4, &c, "R3: a multi-block write")?;
-    // Partial overwrite: the rest of the earlier write must remain.
-    if n >= 3 {
+    for spec in [Spec::EMPTY, Spec::CLONE] {
+        let mut d = Driver::new(h, cfg, &spec)?;
+        let a = d.write(2, 1)?;
+        d.expect_read(2, &a, "R3: a single block")?;
+        let b = d.write(2, 1)?;
+        d.expect_read(2, &b, "R3: an overwrite")?;
+        let c = d.write(4, 8)?;
+        d.expect_read(4, &c, "R3: a multi-block write")?;
+        // Partial overwrite: the rest of the earlier write must remain.
         let mid = d.write(5, 1)?;
-        let got = d.read(4, n)?;
-        let b = BLOCK_USIZE;
-        if got[..b] != c[..b] || got[b..2 * b] != mid[..] || got[2 * b..] != c[2 * b..] {
+        let got = d.read(4, 8)?;
+        let n = BLOCK_USIZE;
+        if got[..n] != c[..n] || got[n..2 * n] != mid[..] || got[2 * n..] != c[2 * n..] {
             return fail("R3: a partial overwrite disturbed its neighbours");
         }
+        d.expect_read(4, &c[..n], "R3: the first block of a multi-block write")?;
+        d.verify()?;
     }
-    // Reads of single blocks out of a multi-block write.
-    let b = BLOCK_USIZE;
-    d.expect_read(4, &c[..b], "R3: the first block of a multi-block write")?;
-    d.verify()
+    Ok(())
 }
 
-fn write_zeroes_reads_zeros_and_is_durable<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+fn write_zeroes_hides_the_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let base = Spec::CLONE.base;
+    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
     for round in 0..u64::from(cfg.rounds) {
         let data = d.write(0, 4)?;
         d.flush()?;
-        d.run(Op::WriteZeroes {
-            offset: BLOCK_SIZE,
-            len: 2 * BLOCK_SIZE,
-        })?;
-        let b = BLOCK_USIZE;
+        // Over written blocks, and over blocks only the base has.
+        d.zeroes(1, 2)?;
+        d.zeroes(6, 2)?;
+        let n = BLOCK_USIZE;
         let mut expected = data.clone();
-        expected[b..3 * b].fill(0);
-        d.expect_read(0, &expected, "R7: after write-zeroes")?;
+        expected[n..3 * n].fill(0);
+        expected.extend(base_bytes(base, 4, 2));
+        expected.extend(vec![0; 2 * n]);
+        d.expect_read(0, &expected, "R5: after write-zeroes")?;
         d.flush()?;
-        d.power_cut(round)?;
-        d.expect_read(0, &expected, "R7: after write-zeroes, flush and power cut")?;
+        d.power_cut(0)?;
+        d.expect_read(0, &expected, "R5: after write-zeroes, flush and power cut")?;
+        // Give blocks 6 and 7 data again for the next round.
+        d.write(6, 2)?;
+        let _ = round;
     }
     Ok(())
 }
 
-fn discard_reads_old_or_zeros<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+fn discard_leaves_old_zeros_or_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
     for round in 0..u64::from(cfg.rounds) {
         let data = d.write(0, 6)?;
-        d.run(Op::Discard {
-            offset: 2 * BLOCK_SIZE,
-            len: 2 * BLOCK_SIZE,
-        })?;
-        // The model accepts old or zeros for blocks 2 and 3. The
-        // neighbours are checked here by hand as well.
+        // Written blocks, and blocks only the base has.
+        d.discard(2, 2)?;
+        d.discard(8, 2)?;
+        // The model accepts old, zeros or base for the discarded blocks.
+        // The neighbours are checked here by hand as well.
         for _ in 0..3 {
             let got = d.read(0, 6)?;
-            let b = BLOCK_USIZE;
-            if got[..2 * b] != data[..2 * b] || got[4 * b..] != data[4 * b..] {
+            let n = BLOCK_USIZE;
+            if got[..2 * n] != data[..2 * n] || got[4 * n..] != data[4 * n..] {
                 return fail("R6: a discard changed blocks outside its range");
             }
+            d.read(8, 2)?;
         }
         d.flush()?;
         d.power_cut(round)?;
@@ -889,94 +1045,125 @@ fn discard_reads_old_or_zeros<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     Ok(())
 }
 
-fn write_after_discard_wins<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+fn discard_never_hits_later_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    for _ in 0..cfg.rounds {
+        d.write(0, 4)?;
+        d.discard(0, 4)?;
+        let data = d.write(1, 2)?;
+        d.expect_read(1, &data, "R6: a write after a discard")?;
+        d.flush()?;
+        d.expect_read(1, &data, "R6: a write after a discard, after a flush")?;
+        d.power_cut(0)?;
+        d.expect_read(1, &data, "R6: a write after a discard, after a power cut")?;
+    }
+    Ok(())
+}
+
+fn flushed_operations_survive_power_cut<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    for _ in 0..cfg.rounds {
+        let single = d.write(0, 1)?;
+        let multi = d.write(2, 8)?;
+        d.zeroes(11, 1)?;
+        d.flush()?;
+        // Unflushed operations elsewhere must not cost the flushed ones.
+        d.write(12, 2)?;
+        d.power_cut(0)?;
+        d.expect_read(0, &single, "R7: a flushed block after a power cut")?;
+        d.expect_read(2, &multi, "R7: a flushed write after a cut")?;
+        d.expect_read(11, &vec![0; BLOCK_USIZE], "R7: a flushed write-zeroes")?;
+        d.verify()?;
+    }
+    Ok(())
+}
+
+fn flush_covers_what_was_acknowledged_before_it<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    for _ in 0..cfg.rounds {
+        // An earlier flush, so that a sync "already under way" exists.
+        d.flush()?;
+        let a = d.write(0, 2)?;
+        // The flush, and a write that is acknowledged while it is pending.
+        d.submit(Op::Flush)?;
+        if d.depth() >= 2 {
+            let b = d.write_op(4, 2);
+            d.submit(b)?;
+        }
+        d.drain()?;
+        d.power_cut(0)?;
+        d.expect_read(0, &a, "R7: a write acknowledged before the flush arrived")?;
+        d.verify()?;
+    }
+    Ok(())
+}
+
+fn flush_covers_an_earlier_instance<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    for round in 0..u64::from(cfg.rounds) {
+        let w = d.write(1, 3)?;
+        d.kill(round)?;
+        d.flush()?;
+        d.power_cut(0)?;
+        d.expect_read(1, &w, "R7: acknowledged, daemon lost, flushed, power cut")?;
+        // Recovery itself makes the log durable: no flush needed.
+        let w = d.write(5, 2)?;
+        d.kill(round)?;
+        d.power_cut(0)?;
+        d.expect_read(5, &w, "R9: acknowledged, daemon lost, power cut")?;
+    }
+    Ok(())
+}
+
+fn power_cut_at_every_point_leaves_a_prefix<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut point = 0;
+    loop {
+        let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+        d.write(0, 4)?;
+        d.zeroes(6, 2)?;
+        d.flush()?;
+        // Unflushed: overlapping multi-block writes, a write-zeroes, a
+        // discard and writes over it.
+        d.write(0, 2)?;
+        d.write(1, 4)?;
+        d.zeroes(3, 1)?;
+        d.discard(8, 2)?;
+        d.write(8, 1)?;
+        d.write(10, 3)?;
+        d.write(11, 1)?;
+        let points = d.cut_points()?;
+        d.power_cut(point)?;
+        d.verify()?;
+        d.verify()?;
+        if point >= points.min(64) {
+            return Ok(());
+        }
+        point += 1;
+    }
+}
+
+fn recovered_state_is_durable<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     for round in 0..u64::from(cfg.rounds) {
         d.write(0, 4)?;
-        d.run(Op::Discard {
-            offset: 0,
-            len: 4 * BLOCK_SIZE,
-        })?;
-        let data = d.write(1, 2)?;
-        d.expect_read(1, &data, "R8: a write after a discard")?;
         d.flush()?;
-        d.power_cut(round)?;
-        d.expect_read(
-            1,
-            &data,
-            "R8: a flushed write after a discard, after a power cut",
-        )?;
-    }
-    Ok(())
-}
-
-fn flushed_writes_survive_power_cut<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let n = d.max_len();
-    for round in 0..u64::from(cfg.rounds) {
-        let single = d.write(0, 1)?;
-        let multi = d.write(2, n)?;
-        d.flush()?;
-        // Unflushed writes elsewhere must not cost the flushed ones.
-        d.write(12, 2)?;
-        d.power_cut(round)?;
-        d.expect_read(0, &single, "R5: a flushed block after a power cut")?;
-        d.expect_read(
-            2,
-            &multi,
-            "R5: a flushed multi-block write after a power cut",
-        )?;
-        d.verify()?;
-    }
-    Ok(())
-}
-
-fn unflushed_writes_are_old_or_new_never_torn<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let n = d.max_len();
-    for round in 0..u64::from(cfg.rounds) {
-        d.write(0, n)?;
-        d.write(8, 1)?;
-        d.flush()?;
-        // Two generations of unflushed writes over the flushed ones.
-        d.write(0, n)?;
-        d.write(8, 1)?;
-        d.write(0, n.min(2))?;
-        d.power_cut(round)?;
-        // The model accepts, per block, the flushed content or one of the
-        // later writes, whole. Reading twice checks stability, and the
-        // second cut checks that what was read is durable.
+        d.write(0, 2)?;
+        d.write(4, 2)?;
+        d.write(1, 1)?;
+        let points = d.cut_points()?;
+        d.power_cut(round % (points + 1))?;
+        // Reading twice checks stability; the second cut, which keeps
+        // nothing that is not durable, checks that what was read is.
         d.verify()?;
         d.verify()?;
-        d.power_cut(round.wrapping_add(0x1000))?;
-        d.verify()?;
-    }
-    Ok(())
-}
-
-fn flush_with_writes_in_flight<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    if d.depth() < 3 {
-        return Ok(());
-    }
-    for round in 0..u64::from(cfg.rounds) {
-        let acked = d.write(0, 2)?;
-        // A write and two flushes in flight together. The first flush was
-        // submitted after `acked` was acknowledged, so it covers it.
-        let op = d.write_op(4, 2);
-        d.submit(op)?;
-        d.submit(Op::Flush)?;
-        d.submit(Op::Flush)?;
-        d.drain()?;
-        d.power_cut(round)?;
-        d.expect_read(0, &acked, "R5: a write acknowledged before the flush")?;
+        d.power_cut(0)?;
         d.verify()?;
     }
     Ok(())
 }
 
 fn queue_depth_requests_complete_in_any_order<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     let depth = (d.geometry.queue_depth() as u64).min(d.window) as usize;
     for _ in 0..4 {
         // queue_depth independent writes, none reaped until all are in.
@@ -986,14 +1173,13 @@ fn queue_depth_requests_complete_in_any_order<H: Harness>(h: &mut H, cfg: &Confi
             ids.push(d.submit(op)?);
         }
         if depth >= 2 {
-            // An id already in flight must be refused.
+            // An id already in flight must be refused. A target that has
+            // completed the request internally still holds its id until
+            // the completion is reaped.
             let request = Request {
                 id: ids[0],
                 op: Op::Flush,
             };
-            // A target that has already completed the first request
-            // internally still holds its id until the completion is
-            // reaped.
             match d.target()?.submit(request) {
                 Err(e) if e.kind == SubmitErrorKind::DuplicateId => {}
                 Err(e) if e.kind == SubmitErrorKind::Busy => {}
@@ -1020,73 +1206,81 @@ fn queue_depth_requests_complete_in_any_order<H: Harness>(h: &mut H, cfg: &Confi
     Ok(())
 }
 
-fn overlapping_writes_apply_in_ack_order<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let k = d.depth().min(8) as u64;
-    let two = d.max_len().min(2);
+fn overlapping_operations_in_flight_apply_whole<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    let k = d.depth().min(3) as u64;
+    if k < 2 {
+        return Ok(());
+    }
     for round in 0..u64::from(cfg.rounds) {
-        // k writes to block 3, and k more that overlap one another by a
-        // block, all in flight together.
-        for _ in 0..k {
-            let op = d.write_op(3, 1);
-            d.submit(op)?;
-        }
-        d.drain()?;
-        d.verify()?;
+        // Staggered multi-block writes, each overlapping the next.
         for i in 0..k {
-            let op = d.write_op(6 + (i + round) % 2, two);
+            let op = d.write_op(2 + 2 * i, 4);
             d.submit(op)?;
         }
         d.drain()?;
+        d.verify()?;
+        // Writes over exactly the same blocks, and a write-zeroes inside.
+        for _ in 0..k - 1 {
+            let op = d.write_op(12, 4);
+            d.submit(op)?;
+        }
+        d.submit(Op::WriteZeroes {
+            offset: 13 * BLOCK_SIZE,
+            len: 2 * BLOCK_SIZE,
+        })?;
+        d.drain()?;
+        d.verify()?;
+        // The same order must hold in the log.
+        let points = d.cut_points()?;
+        d.power_cut(round % (points + 1))?;
+        d.verify()?;
+        d.flush()?;
+    }
+    Ok(())
+}
+
+fn kill_keeps_acknowledged_operations<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    for round in 0..u64::from(cfg.rounds) {
+        let data = d.write(1, 8)?;
+        d.write(12, 1)?;
+        d.zeroes(12, 1)?;
+        d.kill(round)?;
+        d.expect_read(1, &data, "R9: an acknowledged write after a daemon loss")?;
+        d.expect_read(
+            12,
+            &vec![0; BLOCK_USIZE],
+            "R9: an acknowledged write-zeroes",
+        )?;
+        let more = d.write(10, 1)?;
+        d.kill(round)?;
+        d.expect_read(10, &more, "R9: an acknowledged write after a daemon loss")?;
         d.verify()?;
     }
     Ok(())
 }
 
-fn restart_keeps_acknowledged_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let n = d.max_len();
-    for round in 0..u64::from(cfg.rounds) {
-        let data = d.write(1, n)?;
-        d.restart(round)?;
-        d.expect_read(1, &data, "R9: an acknowledged write after a restart")?;
-        let more = d.write(10, 1)?;
-        d.restart(round)?;
-        d.flush()?;
-        d.power_cut(round)?;
-        d.expect_read(1, &data, "R9, R5: written, restart, flush, power cut")?;
-        d.expect_read(10, &more, "R9, R5: written, restart, flush, power cut")?;
-    }
-    Ok(())
-}
-
-fn reissue_after_restart_is_idempotent<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
-    let k = d.depth().clamp(2, 8) as u64;
+fn reissue_after_kill_is_idempotent<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
     if d.depth() < 2 {
         return Ok(());
     }
     for round in 0..u64::from(cfg.rounds) {
         let before = d.write(15, 1)?;
-        // In flight when the daemon goes: writes (two of them to one
-        // block), a write-zeroes, a discard, a flush and a read.
-        let mut expected = Vec::new();
-        for i in 0..k.saturating_sub(4).max(1) {
-            let op = d.write_op(i, 1);
-            if let Op::Write { data, .. } = &op {
-                expected.push((i, data.clone()));
-            }
-            d.submit_with_room(op)?;
-        }
+        // In flight when the daemon goes: a write, two overlapping
+        // writes, a write-zeroes, a flush and a read.
+        let lone = d.write_op(0, 1);
+        let Op::Write { data: expected, .. } = &lone else {
+            return fail("write_op did not build a write");
+        };
+        let expected = expected.clone();
         for op in [
-            d.write_op(9, 1),
-            d.write_op(9, 1),
+            lone,
+            d.write_op(4, 3),
+            d.write_op(5, 3),
             Op::WriteZeroes {
                 offset: 11 * BLOCK_SIZE,
-                len: BLOCK_SIZE,
-            },
-            Op::Discard {
-                offset: 12 * BLOCK_SIZE,
                 len: BLOCK_SIZE,
             },
             Op::Flush,
@@ -1098,24 +1292,83 @@ fn reissue_after_restart_is_idempotent<H: Harness>(h: &mut H, cfg: &Config) -> O
             // Let the target get part of the way.
             d.poll()?;
         }
-        d.restart(round)?;
+        d.kill(round)?;
         d.drain()?;
-        for (block, data) in &expected {
-            d.expect_read(*block, data, "R9: a reissued write")?;
-        }
+        d.expect_read(0, &expected, "R9: a reissued write")?;
         d.expect_read(15, &before, "R9: a block no reissued request wrote")?;
         d.verify()?;
         // Everything is acknowledged now: a flush makes it durable.
         d.flush()?;
-        d.power_cut(round)?;
-        for (block, data) in &expected {
-            d.expect_read(
-                *block,
-                data,
-                "R9, R5: a reissued write, flushed, after a cut",
-            )?;
-        }
+        d.power_cut(0)?;
+        d.expect_read(
+            0,
+            &expected,
+            "R9, R7: a reissued write, flushed, after a cut",
+        )?;
         d.verify()?;
+    }
+    Ok(())
+}
+
+fn failed_volume_fails_every_request<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    d.write(0, 2)?;
+    d.flush()?;
+    d.write(2, 1)?;
+    d.fail_log()?;
+    let every_request = |d: &mut Driver<'_, H>| -> Outcome {
+        d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
+        let write = d.write_op(4, 1);
+        for op in [
+            read_op(0, 1),
+            write,
+            Op::WriteZeroes {
+                offset: 0,
+                len: BLOCK_SIZE,
+            },
+            Op::Discard {
+                offset: 0,
+                len: BLOCK_SIZE,
+            },
+            Op::Flush,
+        ] {
+            d.expect_error(op, BlkError::Failed, "R11")?;
+        }
+        Ok(())
+    };
+    every_request(&mut d)?;
+    // A new instance must not serve a shorter log to a client that was
+    // told more.
+    d.kill(1)?;
+    every_request(&mut d)
+}
+
+fn read_only_target_refuses_mutations<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    let spec = Spec {
+        read_only: true,
+        ..Spec::CLONE
+    };
+    let mut d = Driver::new(h, cfg, &spec)?;
+    let base = base_bytes(spec.base, 0, 8);
+    for round in 0..2 {
+        d.expect_read(0, &base, "R12: a read-only target reads as its base")?;
+        let write = d.write_op(0, 2);
+        for op in [
+            write,
+            Op::WriteZeroes {
+                offset: 0,
+                len: 2 * BLOCK_SIZE,
+            },
+            Op::Discard {
+                offset: 0,
+                len: 2 * BLOCK_SIZE,
+            },
+        ] {
+            d.expect_error(op, BlkError::ReadOnly, "R12")?;
+        }
+        d.flush()?;
+        d.expect_read(0, &base, "R12: after refused mutations")?;
+        d.kill(round)?;
     }
     Ok(())
 }
@@ -1138,31 +1391,38 @@ enum Step {
     Poll,
     /// Reap until nothing is in flight.
     Drain,
+    /// Lose the daemon and reissue what was in flight.
+    Kill(u64),
+    /// Cut the power, keeping this many unflushed units (wrapping).
     PowerCut(u64),
-    Restart(u64),
+    /// Make the write log fail for good.
+    FailLog,
 }
 
-fn step_strategy(window: u64, max_len: u64, crashes: bool) -> impl Strategy<Value = Step> {
-    let span = move || (0..window, 1..=max_len).prop_map(move |(b, l)| (b, l.min(window - b)));
+fn step_strategy(window: u64, failures: bool) -> impl Strategy<Value = Step> {
+    let span = move || (0..window, 1..=8u64).prop_map(move |(b, l)| (b, l.min(window - b)));
     let mut choices: Vec<(u32, BoxedStrategy<Step>)> = vec![
-        (8, span().prop_map(|(b, l)| Step::Write(b, l)).boxed()),
-        (6, span().prop_map(|(b, l)| Step::Read(b, l)).boxed()),
-        (2, span().prop_map(|(b, l)| Step::WriteZeroes(b, l)).boxed()),
-        (2, span().prop_map(|(b, l)| Step::Discard(b, l)).boxed()),
-        (3, Just(Step::Flush).boxed()),
-        (4, Just(Step::Reap).boxed()),
-        (2, Just(Step::Poll).boxed()),
-        (1, Just(Step::Drain).boxed()),
+        (16, span().prop_map(|(b, l)| Step::Write(b, l)).boxed()),
+        (12, span().prop_map(|(b, l)| Step::Read(b, l)).boxed()),
+        (4, span().prop_map(|(b, l)| Step::WriteZeroes(b, l)).boxed()),
+        (4, span().prop_map(|(b, l)| Step::Discard(b, l)).boxed()),
+        (6, Just(Step::Flush).boxed()),
+        (8, Just(Step::Reap).boxed()),
+        (4, Just(Step::Poll).boxed()),
+        (2, Just(Step::Drain).boxed()),
     ];
-    if crashes {
-        choices.push((2, any::<u64>().prop_map(Step::PowerCut).boxed()));
-        choices.push((2, any::<u64>().prop_map(Step::Restart).boxed()));
+    if failures {
+        choices.push((4, any::<u64>().prop_map(Step::Kill).boxed()));
+        choices.push((4, (0..12u64).prop_map(Step::PowerCut).boxed()));
+        choices.push((1, Just(Step::FailLog).boxed()));
     }
     Union::new_weighted(choices)
 }
 
-fn run_program<H: Harness>(h: &mut H, cfg: &Config, program: &[Step]) -> Outcome {
-    let mut d = Driver::new(h, cfg)?;
+fn run_program<H: Harness>(h: &mut H, cfg: &Config, on_clone: bool, program: &[Step]) -> Outcome {
+    let spec = if on_clone { Spec::CLONE } else { Spec::EMPTY };
+    let mut d = Driver::new(h, cfg, &spec)?;
+    let mut failed = false;
     for step in program {
         match *step {
             Step::Write(b, l) => {
@@ -1194,19 +1454,29 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, program: &[Step]) -> Outcome
             Step::Drain => {
                 d.drain()?;
             }
-            Step::PowerCut(seed) => {
-                d.power_cut(seed)?;
+            Step::Kill(seed) => d.kill(seed)?,
+            // What a failed volume holds after a power cut is not defined.
+            Step::PowerCut(_) if failed => {}
+            Step::PowerCut(keep) => {
+                d.power_cut(keep)?;
                 d.verify()?;
             }
-            Step::Restart(seed) => d.restart(seed)?,
+            Step::FailLog => {
+                d.fail_log()?;
+                failed = true;
+            }
         }
+        d.settle()?;
+    }
+    d.drain()?;
+    d.verify()?;
+    if failed {
+        return Ok(());
     }
     // Whatever the program did: the device reads as the model allows now,
     // after a flush and a power cut, and again after that.
-    d.drain()?;
-    d.verify()?;
     d.flush()?;
-    d.power_cut(program.len() as u64)?;
+    d.power_cut(0)?;
     d.verify()?;
     d.verify()
 }
@@ -1242,22 +1512,15 @@ fn check<S: Strategy>(
     }
 }
 
-/// The geometry and window of the devices the harness makes, read from a
-/// probe device so that strategies can be sized to it.
-fn probe<H: Harness>(h: &mut H, cfg: &Config) -> Result<(Geometry, u64, u64), Failure> {
-    let d = Driver::new(h, cfg)?;
-    Ok((d.geometry, d.window, d.max_len()))
-}
-
-fn prop_programs<H: Harness>(h: &mut H, cfg: &Config, crashes: bool) -> Outcome {
-    let (_, window, max_len) = probe(h, cfg)?;
-    let strategy = proptest::collection::vec(
-        step_strategy(window, max_len, crashes),
-        1..=cfg.max_steps.max(1),
+fn prop_programs<H: Harness>(h: &mut H, cfg: &Config, failures: bool) -> Outcome {
+    let window = cfg.window_blocks.clamp(16, 256);
+    let strategy = (
+        any::<bool>(),
+        proptest::collection::vec(step_strategy(window, failures), 1..=cfg.max_steps.max(1)),
     );
     let h = RefCell::new(h);
-    check(cfg, u8::from(crashes), strategy, |program| {
-        run_program(&mut **h.borrow_mut(), cfg, &program)
+    check(cfg, u8::from(failures), strategy, |(on_clone, program)| {
+        run_program(&mut **h.borrow_mut(), cfg, on_clone, &program)
     })
 }
 
@@ -1265,23 +1528,31 @@ fn prop_concurrent_programs<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     prop_programs(h, cfg, false)
 }
 
-fn prop_crashing_programs<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+fn prop_failing_programs<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     prop_programs(h, cfg, true)
 }
 
 fn prop_invalid_requests<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let (geometry, _, _) = probe(h, cfg)?;
+    let geometry = Driver::new(h, cfg, &Spec::EMPTY)?.geometry;
     let blocks = geometry.blocks();
-    let max_blocks = (geometry.max_io_bytes() / BLOCK_SIZE).min(64);
+    let max_blocks = MAX_IO_BYTES / BLOCK_SIZE;
     // Offsets and lengths around every limit: aligned or not, inside,
     // at and beyond the end, and near u64::MAX.
     let jitter = || prop_oneof![2 => Just(0u64), 1 => 1..BLOCK_SIZE];
     let offset = (
-        prop_oneof![4 => 0..=blocks + 2, 1 => Just(u64::MAX / BLOCK_SIZE - 1)],
+        prop_oneof![
+            4 => 0..=8u64,
+            4 => blocks.saturating_sub(4)..=blocks + 2,
+            1 => Just(u64::MAX / BLOCK_SIZE - 1)
+        ],
         jitter(),
     )
         .prop_map(|(b, j)| b * BLOCK_SIZE + j);
-    let len = (0..=max_blocks + 2, jitter()).prop_map(|(b, j)| b * BLOCK_SIZE + j);
+    let len = (
+        prop_oneof![6 => 0..=6u64, 1 => max_blocks - 1..=max_blocks + 2],
+        jitter(),
+    )
+        .prop_map(|(b, j)| b * BLOCK_SIZE + j);
     let op = (0..4usize, offset, len)
         .prop_map(|(kind, offset, len)| ranged_ops(offset, len).swap_remove(kind))
         .prop_filter("must be invalid", move |op| geometry.validate(op).is_err());
@@ -1289,10 +1560,9 @@ fn prop_invalid_requests<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let h = RefCell::new(h);
     check(cfg, 2, strategy, |ops| {
         let mut guard = h.borrow_mut();
-        let mut d = Driver::new(&mut **guard, cfg)?;
-        let n = d.max_len();
+        let mut d = Driver::new(&mut **guard, cfg, &Spec::CLONE)?;
         let last = d.geometry.blocks() - 1;
-        let head = d.write(0, n)?;
+        let head = d.write(0, 8)?;
         let tail = d.write(last, 1)?;
         for op in ops {
             d.submit_with_room(op)?;

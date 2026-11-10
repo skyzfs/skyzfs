@@ -1,6 +1,6 @@
 //! The conformance suite against `MemTarget`: one test per case of the
 //! suite, each run against several configurations of the target, so that
-//! both completion orders and all three discard behaviours are exercised.
+//! both completion orders and every discard behaviour are exercised.
 //!
 //! Rule numbers refer to the crate documentation of `skyzfs-blk`, which
 //! restates design §4.1.
@@ -11,8 +11,6 @@ use skyzfs_blk::mem::{DiscardPolicy, MemConfig, MemHarness, Schedule};
 /// The `MemTarget` configurations every case must pass against.
 fn configurations() -> Vec<MemConfig> {
     let base = MemConfig {
-        blocks: 64,
-        max_io_blocks: 8,
         queue_depth: 16,
         ..MemConfig::default()
     };
@@ -28,17 +26,19 @@ fn configurations() -> Vec<MemConfig> {
             seed: 77,
             ..base
         },
-        // A target that takes one request at a time and small requests.
         MemConfig {
-            blocks: 16,
-            max_io_blocks: 1,
+            discard: DiscardPolicy::Base,
+            seed: 78,
+            ..base
+        },
+        // A target that takes one request at a time.
+        MemConfig {
             queue_depth: 1,
             ..base
         },
-        // A device larger than the suite's window, with large requests.
+        // A larger device with a deep queue.
         MemConfig {
-            blocks: 1024,
-            max_io_blocks: 256,
+            size_mib: 4,
             queue_depth: 64,
             seed: 9,
             ..base
@@ -66,25 +66,29 @@ fn passes(name: &str) {
 
 /// The names of the cases that have a test below.
 const TESTED: &[&str] = &[
-    "geometry_is_sane",
-    "fresh_device_reads_zeros",
+    "parameters_are_as_the_contract_fixes_them",
+    "fresh_device_reads_as_its_base",
     "rejects_misaligned",
     "rejects_out_of_bounds",
-    "rejects_zero_length_and_oversize",
+    "rejects_empty_and_oversize",
     "read_your_writes",
-    "write_zeroes_reads_zeros_and_is_durable",
-    "discard_reads_old_or_zeros",
-    "write_after_discard_wins",
-    "flushed_writes_survive_power_cut",
-    "unflushed_writes_are_old_or_new_never_torn",
-    "flush_with_writes_in_flight",
+    "write_zeroes_hides_the_base",
+    "discard_leaves_old_zeros_or_base",
+    "discard_never_hits_later_writes",
+    "flushed_operations_survive_power_cut",
+    "flush_covers_what_was_acknowledged_before_it",
+    "flush_covers_an_earlier_instance",
+    "power_cut_at_every_point_leaves_a_prefix",
+    "recovered_state_is_durable",
     "queue_depth_requests_complete_in_any_order",
-    "overlapping_writes_apply_in_ack_order",
-    "restart_keeps_acknowledged_writes",
-    "reissue_after_restart_is_idempotent",
+    "overlapping_operations_in_flight_apply_whole",
+    "kill_keeps_acknowledged_operations",
+    "reissue_after_kill_is_idempotent",
+    "failed_volume_fails_every_request",
+    "read_only_target_refuses_mutations",
     "prop_invalid_requests_are_rejected_without_effect",
     "prop_concurrent_programs_match_model",
-    "prop_power_cuts_and_restarts_match_model",
+    "prop_failures_match_model",
 ];
 
 /// Not a contract rule: guards this file. Every case of the suite has a
@@ -114,17 +118,19 @@ fn run_all_passes_and_reports_every_case() {
     assert!(report.failed().is_empty());
 }
 
-/// R1: the device size and the largest request are non-zero multiples of
-/// 4 KiB, and the geometry survives a power cut and a restart.
+/// R1: the parameters are as the contract fixes them: a size in whole
+/// MiB, the read-only flag as asked, unchanged by a daemon loss and a
+/// power cut.
 #[test]
-fn geometry_is_sane() {
-    passes("geometry_is_sane");
+fn parameters_are_as_the_contract_fixes_them() {
+    passes("parameters_are_as_the_contract_fixes_them");
 }
 
-/// R3: a block never written reads as zeros.
+/// R3: a block never written reads as the base: zeros on an empty volume,
+/// the commit's content on a clone.
 #[test]
-fn fresh_device_reads_zeros() {
-    passes("fresh_device_reads_zeros");
+fn fresh_device_reads_as_its_base() {
+    passes("fresh_device_reads_as_its_base");
 }
 
 /// R2: an offset or length that is not a multiple of 4 KiB is rejected,
@@ -141,12 +147,12 @@ fn rejects_out_of_bounds() {
     passes("rejects_out_of_bounds");
 }
 
-/// R2: a zero-length request and a read or write longer than the stated
-/// maximum are rejected; the maximum itself is accepted, and a discard and
-/// a write-zeroes may span the device (open readings 2 and 3).
+/// R1, R2: an empty request and a read or write longer than 1 MiB are
+/// rejected; 1 MiB itself is accepted, and a discard and a write-zeroes
+/// may span the device.
 #[test]
-fn rejects_zero_length_and_oversize() {
-    passes("rejects_zero_length_and_oversize");
+fn rejects_empty_and_oversize() {
+    passes("rejects_empty_and_oversize");
 }
 
 /// R3, R4: once a write is acknowledged, reads return it, and an overwrite
@@ -156,46 +162,62 @@ fn read_your_writes() {
     passes("read_your_writes");
 }
 
-/// R7: write-zeroes reads as zeros and has the durability of a write.
+/// R5: write-zeroes reads as zeros on a volume with a base (a recorded
+/// zero extent, not an absence) and has the durability of a write.
 #[test]
-fn write_zeroes_reads_zeros_and_is_durable() {
-    passes("write_zeroes_reads_zeros_and_is_durable");
+fn write_zeroes_hides_the_base() {
+    passes("write_zeroes_hides_the_base");
 }
 
-/// R3, R6: a discarded block reads as its last write or as zeros, also
-/// after a power cut, and its neighbours are untouched (open reading 1).
+/// R6: a discarded block reads as its content before the discard, zeros
+/// or the base, also after a power cut, and its neighbours are untouched.
 #[test]
-fn discard_reads_old_or_zeros() {
-    passes("discard_reads_old_or_zeros");
+fn discard_leaves_old_zeros_or_base() {
+    passes("discard_leaves_old_zeros_or_base");
 }
 
-/// R6, R8: a write acknowledged after a discard is what reads return.
+/// R6, R8: a discard is never applied to data written after it.
 #[test]
-fn write_after_discard_wins() {
-    passes("write_after_discard_wins");
+fn discard_never_hits_later_writes() {
+    passes("discard_never_hits_later_writes");
 }
 
-/// R5, R10: every write acknowledged before a completed flush was
-/// submitted survives a power cut.
+/// R7, R10: every operation acknowledged before a completed flush was
+/// submitted survives a power cut that keeps nothing unflushed.
 #[test]
-fn flushed_writes_survive_power_cut() {
-    passes("flushed_writes_survive_power_cut");
+fn flushed_operations_survive_power_cut() {
+    passes("flushed_operations_survive_power_cut");
 }
 
-/// R4, R10: after a power cut a block holds its flushed content or one
-/// later write, never a mix of two; what is read then is stable and
-/// survives a second power cut (open reading 8).
+/// R7, the group-commit case: write A acknowledged, flush submitted, write
+/// B acknowledged while the flush is pending, power cut right after the
+/// flush completes: A is present, B may or may not be.
 #[test]
-fn unflushed_writes_are_old_or_new_never_torn() {
-    passes("unflushed_writes_are_old_or_new_never_torn");
+fn flush_covers_what_was_acknowledged_before_it() {
+    passes("flush_covers_what_was_acknowledged_before_it");
 }
 
-/// R5: a flush submitted while a write is in flight completes and covers
-/// at least the writes acknowledged before it was submitted (open reading
-/// 4).
+/// R7, R9: W acknowledged, daemon lost and restarted, flush, power cut
+/// immediately after the flush completes: W is present. And recovery
+/// makes the log durable even without the flush.
 #[test]
-fn flush_with_writes_in_flight() {
-    passes("flush_with_writes_in_flight");
+fn flush_covers_an_earlier_instance() {
+    passes("flush_covers_an_earlier_instance");
+}
+
+/// R10: a power cut at every record prefix of what the target persists,
+/// not only at flush boundaries, leaves a prefix of the daemon's order
+/// with every operation whole.
+#[test]
+fn power_cut_at_every_point_leaves_a_prefix() {
+    passes("power_cut_at_every_point_leaves_a_prefix");
+}
+
+/// R10: what recovery exposes is stable and is durable before the first
+/// request is served: a second power cut does not take it back.
+#[test]
+fn recovered_state_is_durable() {
+    passes("recovered_state_is_durable");
 }
 
 /// R8: the target takes `queue_depth` requests in flight, completes each
@@ -205,24 +227,41 @@ fn queue_depth_requests_complete_in_any_order() {
     passes("queue_depth_requests_complete_in_any_order");
 }
 
-/// R8: writes to one block are applied in acknowledgement order.
+/// R8: overlapping operations in flight together are applied whole in one
+/// order: the same one wins on every block they share, in memory and
+/// after a power cut.
 #[test]
-fn overlapping_writes_apply_in_ack_order() {
-    passes("overlapping_writes_apply_in_ack_order");
+fn overlapping_operations_in_flight_apply_whole() {
+    passes("overlapping_operations_in_flight_apply_whole");
 }
 
-/// R9: a write acknowledged before the daemon is lost is still there when
-/// it returns, and a later flush makes it durable (open reading 5).
+/// R9: after a daemon loss every acknowledged operation is readable,
+/// flushed or not.
 #[test]
-fn restart_keeps_acknowledged_writes() {
-    passes("restart_keeps_acknowledged_writes");
+fn kill_keeps_acknowledged_operations() {
+    passes("kill_keeps_acknowledged_operations");
 }
 
 /// R9: requests in flight when the daemon is lost are reissued under the
-/// same ids and complete as if issued once.
+/// same ids, in either order, and complete as the contract describes
+/// whether or not the lost daemon had applied them.
 #[test]
-fn reissue_after_restart_is_idempotent() {
-    passes("reissue_after_restart_is_idempotent");
+fn reissue_after_kill_is_idempotent() {
+    passes("reissue_after_kill_is_idempotent");
+}
+
+/// R11: once the log has failed for good the flush fails and so does
+/// every later request, reads included, also after a daemon restart.
+#[test]
+fn failed_volume_fails_every_request() {
+    passes("failed_volume_fails_every_request");
+}
+
+/// R12: on a read-only target write, write-zeroes and discard fail
+/// without effect, and flush and read succeed.
+#[test]
+fn read_only_target_refuses_mutations() {
+    passes("read_only_target_refuses_mutations");
 }
 
 /// R2, as a property: any invalid request is rejected and changes nothing.
@@ -231,17 +270,18 @@ fn prop_invalid_requests_are_rejected_without_effect() {
     passes("prop_invalid_requests_are_rejected_without_effect");
 }
 
-/// R3, R4, R6, R7, R8, as a property: random overlapping requests reaped
-/// at random moments, with completions out of order, read back as the
-/// reference model allows.
+/// R3 to R8, as a property: random overlapping requests on an empty or a
+/// non-empty base, reaped at random moments with completions out of
+/// order, read back as some order of whole operations allows.
 #[test]
 fn prop_concurrent_programs_match_model() {
     passes("prop_concurrent_programs_match_model");
 }
 
-/// R5, R9, R10, as a property: random programs with power cuts and daemon
-/// restarts at random moments read back as the reference model allows.
+/// R7, R9, R10, R11, as a property: random programs with daemon losses,
+/// power cuts at random points of the log and log failure read back as
+/// the reference model allows.
 #[test]
-fn prop_power_cuts_and_restarts_match_model() {
-    passes("prop_power_cuts_and_restarts_match_model");
+fn prop_failures_match_model() {
+    passes("prop_failures_match_model");
 }

@@ -5,21 +5,16 @@
 //! Rule numbers refer to the crate documentation of `skyzfs-blk`.
 
 use skyzfs_blk::conformance::{run_all, Config};
-use skyzfs_blk::mem::{DiscardPolicy, Fault, MemConfig, MemHarness, Schedule};
+use skyzfs_blk::mem::{Fault, MemConfig, MemHarness};
 
-fn mutant(fault: Fault) -> MemConfig {
-    MemConfig {
-        blocks: 64,
-        max_io_blocks: 8,
+/// Run the whole suite against a target with `fault` and require that it
+/// fails, and that every case in `must_fail` is among the failures.
+fn caught(fault: Fault, must_fail: &[&str]) {
+    let config = MemConfig {
         queue_depth: 16,
         fault: Some(fault),
         ..MemConfig::default()
-    }
-}
-
-/// Run the whole suite against `config` and require that it fails, and
-/// that every case in `must_fail` is among the failures.
-fn caught(config: MemConfig, must_fail: &[&str]) {
+    };
     let suite = Config {
         cases: 64,
         ..Config::default()
@@ -30,50 +25,20 @@ fn caught(config: MemConfig, must_fail: &[&str]) {
     for name in must_fail {
         assert!(
             failed.contains(name),
-            "{name} did not catch {:?}; failed cases: {failed:?}",
-            config.fault
+            "{name} did not catch {fault:?}; failed cases: {failed:?}"
         );
     }
 }
 
-/// R5: a target whose flush makes nothing durable loses flushed writes at
-/// a power cut. Caught by the flush durability case and the crash
-/// property.
-#[test]
-fn catches_flush_that_does_nothing() {
-    caught(
-        mutant(Fault::FlushDoesNothing),
-        &[
-            "flushed_writes_survive_power_cut",
-            "prop_power_cuts_and_restarts_match_model",
-        ],
-    );
-}
-
-/// R10: a target that leaves half a block of a lost write behind is caught
-/// as torn.
-#[test]
-fn catches_torn_blocks() {
-    caught(
-        mutant(Fault::TearOnCrash),
-        &[
-            "unflushed_writes_are_old_or_new_never_torn",
-            "prop_power_cuts_and_restarts_match_model",
-        ],
-    );
-}
+const INVALID: &str = "prop_invalid_requests_are_rejected_without_effect";
+const CONCURRENT: &str = "prop_concurrent_programs_match_model";
+const FAILURES: &str = "prop_failures_match_model";
 
 /// R2: a target that accepts misaligned requests is caught by the
 /// alignment case and the rejection property.
 #[test]
 fn catches_accepting_misaligned_requests() {
-    caught(
-        mutant(Fault::AcceptMisaligned),
-        &[
-            "rejects_misaligned",
-            "prop_invalid_requests_are_rejected_without_effect",
-        ],
-    );
+    caught(Fault::AcceptMisaligned, &["rejects_misaligned", INVALID]);
 }
 
 /// R2: a target that accepts requests beyond the end of the device is
@@ -81,121 +46,181 @@ fn catches_accepting_misaligned_requests() {
 #[test]
 fn catches_accepting_out_of_bounds_requests() {
     caught(
-        mutant(Fault::AcceptOutOfBounds),
-        &[
-            "rejects_out_of_bounds",
-            "prop_invalid_requests_are_rejected_without_effect",
-        ],
+        Fault::AcceptOutOfBounds,
+        &["rejects_out_of_bounds", INVALID],
     );
 }
 
-/// R3, R4: a target whose reads miss unflushed writes breaks
-/// read-your-writes.
+/// R3: a target whose reads miss acknowledged, unflushed operations breaks
+/// "a read received after an operation was acknowledged observes it".
 #[test]
 fn catches_stale_reads() {
-    caught(
-        mutant(Fault::StaleReads),
-        &["read_your_writes", "prop_concurrent_programs_match_model"],
-    );
+    caught(Fault::StaleReads, &["read_your_writes", CONCURRENT]);
 }
 
-/// R8: a target that applies overlapping writes in submission order while
-/// acknowledging them in another order is caught by the ack-order case.
+/// R4: a target that writes only the first block of a multi-block write
+/// is caught by read-your-writes.
 #[test]
-fn catches_writes_applied_out_of_ack_order() {
-    caught(
-        mutant(Fault::ApplyAtSubmit),
-        &[
-            "overlapping_writes_apply_in_ack_order",
-            "prop_concurrent_programs_match_model",
-        ],
-    );
+fn catches_short_writes() {
+    caught(Fault::ShortWrite, &["read_your_writes", CONCURRENT]);
 }
 
-/// R8: when completions come in submission order, submission order is
-/// acknowledgement order, so the same fault no longer breaks the rule for
-/// writes among themselves and the ack-order case must pass: it judges by
-/// the order the target delivers, not by one it assumes. The fault still
-/// misorders a write against a write-zeroes or discard submitted before
-/// it, which only the properties try.
-#[test]
-fn apply_at_submit_under_fifo_is_caught_only_by_the_properties() {
-    let config = MemConfig {
-        schedule: Schedule::Fifo,
-        discard: DiscardPolicy::Zero,
-        ..mutant(Fault::ApplyAtSubmit)
-    };
-    let suite = Config {
-        cases: 256,
-        ..Config::default()
-    };
-    let report = run_all(&mut MemHarness::new(config), &suite);
-    assert_eq!(
-        report.failed(),
-        [
-            "prop_concurrent_programs_match_model",
-            "prop_power_cuts_and_restarts_match_model"
-        ],
-        "{report}"
-    );
-}
-
-/// R3, R6: a target on which a discarded block reads as garbage is caught:
-/// only the last write or zeros are allowed.
-#[test]
-fn catches_discard_that_corrupts() {
-    caught(
-        mutant(Fault::DiscardCorrupts),
-        &[
-            "discard_reads_old_or_zeros",
-            "prop_concurrent_programs_match_model",
-        ],
-    );
-}
-
-/// R7: a target whose write-zeroes writes nothing is caught.
+/// R5: a target whose write-zeroes writes nothing is caught.
 #[test]
 fn catches_write_zeroes_that_does_nothing() {
     caught(
-        mutant(Fault::WriteZeroesDoesNothing),
-        &[
-            "write_zeroes_reads_zeros_and_is_durable",
-            "prop_concurrent_programs_match_model",
-        ],
+        Fault::WriteZeroesDoesNothing,
+        &["write_zeroes_hides_the_base", CONCURRENT],
     );
 }
 
-/// R9: a target that loses acknowledged writes when its daemon restarts is
-/// caught (open reading 5).
+/// R5: a target that stores write-zeroes as an absence lets the base show
+/// through on a clone. Only a case with a non-empty base can see it.
 #[test]
-fn catches_restart_that_loses_acknowledged_writes() {
+fn catches_write_zeroes_that_shows_the_base() {
     caught(
-        mutant(Fault::RestartLosesWrites),
-        &[
-            "restart_keeps_acknowledged_writes",
-            "prop_power_cuts_and_restarts_match_model",
-        ],
+        Fault::WriteZeroesShowsBase,
+        &["write_zeroes_hides_the_base", CONCURRENT],
     );
 }
 
-/// R9: a target that fails requests reissued after a restart is caught.
+/// R6: a target on which a discarded block reads as data that was never
+/// there is caught: only the old content, zeros or the base are allowed.
+#[test]
+fn catches_discard_that_corrupts() {
+    caught(
+        Fault::DiscardCorrupts,
+        &["discard_leaves_old_zeros_or_base", CONCURRENT],
+    );
+}
+
+/// R6, R8: a target that applies a discard late, over data written after
+/// it, is caught. This is one of the two ways the first draft of the
+/// contract allowed a daemon to corrupt a pool.
+#[test]
+fn catches_discard_applied_to_later_writes() {
+    caught(
+        Fault::DiscardAppliedLate,
+        &["discard_never_hits_later_writes", CONCURRENT],
+    );
+}
+
+/// R7: a target whose flush makes nothing durable loses flushed
+/// operations at a power cut.
+#[test]
+fn catches_flush_that_does_nothing() {
+    caught(
+        Fault::FlushDoesNothing,
+        &["flushed_operations_survive_power_cut", FAILURES],
+    );
+}
+
+/// R7: the group-commit bug, a flush that joins a sync begun before it
+/// arrived, is caught by the case named for it.
+#[test]
+fn catches_the_group_commit_bug() {
+    caught(
+        Fault::FlushJoinsOldSync,
+        &["flush_covers_what_was_acknowledged_before_it", FAILURES],
+    );
+}
+
+/// R7, R9: a flush that covers only what the current instance
+/// acknowledged loses what the earlier instance did.
+#[test]
+fn catches_flush_that_forgets_the_earlier_instance() {
+    caught(
+        Fault::FlushForgetsEarlierInstance,
+        &["flush_covers_an_earlier_instance", FAILURES],
+    );
+}
+
+/// R8: a target that applies a multi-block write in two parts lets two
+/// overlapping writes each win some shared blocks, which no order of
+/// whole operations produces.
+#[test]
+fn catches_operations_not_applied_whole() {
+    caught(
+        Fault::SplitWrites,
+        &["overlapping_operations_in_flight_apply_whole", CONCURRENT],
+    );
+}
+
+/// R9: a target that acknowledges from memory loses acknowledged
+/// operations when its daemon is killed. This is the other way the first
+/// draft of the contract allowed a daemon to corrupt a pool: treating
+/// daemon loss as a power cut.
+#[test]
+fn catches_acknowledging_from_memory() {
+    caught(
+        Fault::KillLosesUnflushed,
+        &["kill_keeps_acknowledged_operations", FAILURES],
+    );
+}
+
+/// R9: a target that fails requests reissued after a daemon loss is
+/// caught.
 #[test]
 fn catches_rejecting_reissued_requests() {
     caught(
-        mutant(Fault::RejectReissued),
-        &[
-            "reissue_after_restart_is_idempotent",
-            "prop_power_cuts_and_restarts_match_model",
-        ],
+        Fault::RejectReissued,
+        &["reissue_after_kill_is_idempotent", FAILURES],
     );
 }
 
-/// R4: a target that writes only the first block of a multi-block write is
-/// caught by read-your-writes.
+/// R10: a target that keeps part of an operation across a power cut is
+/// caught by the cut-at-every-point case.
 #[test]
-fn catches_short_writes() {
+fn catches_torn_operations() {
     caught(
-        mutant(Fault::ShortWrite),
-        &["read_your_writes", "prop_concurrent_programs_match_model"],
+        Fault::TearOnCut,
+        &["power_cut_at_every_point_leaves_a_prefix", FAILURES],
+    );
+}
+
+/// R10: a target that loses an operation and keeps later ones does not
+/// leave a prefix.
+#[test]
+fn catches_a_cut_that_is_not_a_prefix() {
+    caught(
+        Fault::CutDropsMiddle,
+        &["power_cut_at_every_point_leaves_a_prefix", FAILURES],
+    );
+}
+
+/// R10: a target whose recovery does not make what it exposes durable
+/// loses it at a second power cut.
+#[test]
+fn catches_recovery_that_is_not_durable() {
+    caught(
+        Fault::RecoveryNotDurable,
+        &["recovered_state_is_durable", FAILURES],
+    );
+}
+
+/// R11: a failed volume that still serves reads is caught.
+#[test]
+fn catches_a_failed_volume_that_serves_reads() {
+    caught(
+        Fault::FailedServesReads,
+        &["failed_volume_fails_every_request", FAILURES],
+    );
+}
+
+/// R11: a daemon restart that forgets the volume has failed is caught.
+#[test]
+fn catches_a_failure_forgotten_on_restart() {
+    caught(
+        Fault::FailureForgottenOnKill,
+        &["failed_volume_fails_every_request", FAILURES],
+    );
+}
+
+/// R12: a read-only target that accepts writes is caught.
+#[test]
+fn catches_a_read_only_target_that_writes() {
+    caught(
+        Fault::ReadOnlyAcceptsWrites,
+        &["read_only_target_refuses_mutations"],
     );
 }
