@@ -21,9 +21,11 @@ name: topology-bench
 on:
   # workflow_dispatch is only offered once the file lives on the default
   # branch; until then a push that touches the benchmark itself (on any
-  # other branch) runs it with the script's defaults.
+  # other branch) runs it with the script's defaults. The SkyZFS working
+  # branches are left out: the file is on main, so they dispatch what
+  # they need, and a push there used to start thirteen runner jobs.
   push:
-    branches-ignore: [main]
+    branches-ignore: [main, zfs-topology, "skyzfs-*"]
     paths:
       - tests/bench/topology-bench.sh
       - tests/lib/gnu-dd.sh
