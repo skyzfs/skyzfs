@@ -101,8 +101,8 @@ on:
         description: "Open CAS Linux git ref to build (only when topologies include opencas)"
         default: "v26.03.4"
       ublksrv_ref:
-        description: "ublk-org/ublksrv git ref to build (only when topologies include zfs-ublk); empty: its default branch"
-        default: ""
+        description: "ublk-org/ublksrv git ref to build (only when topologies include zfs-ublk). The default is v1.9, the commit the kernel probe built and served a pool with on both runner images"
+        default: "6d0d922614ec18e6f2b5d476af8d540a1d9c1de8"
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
@@ -125,7 +125,7 @@ env:
   TB_SEQUENCE: ${{ inputs.sequence || '' }}
   TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
   OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
-  UBLKSRV_REF: ${{ inputs.ublksrv_ref || '' }}
+  UBLKSRV_REF: ${{ inputs.ublksrv_ref || '6d0d922614ec18e6f2b5d476af8d540a1d9c1de8' }}
 
 jobs:
   plan:

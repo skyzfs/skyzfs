@@ -161,7 +161,8 @@ done
 
 # ------------------------------------------------------- 3. ublk server
 step "a ublk server"
-rec ublk_packages "$(apt-cache search --names-only 'ublk|ubdsrv' 2>/dev/null | tr '\n' ';' | sed 's/;$//;s/^$/none/')"
+pkgs=$(apt-cache search --names-only 'ublk|ubdsrv' 2>/dev/null | tr '\n' ';')
+rec ublk_packages "${pkgs:-none}"
 SRV=""
 if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
     SRV=$(tail -n 1 "$OUT/ublksrv.ver")
@@ -248,7 +249,8 @@ if [ -n "$SERVED" ] && [ -n "$ZFS_OK" ]; then
         lsblk -o NAME,SIZE,TYPE,PHY-SEC,LOG-SEC "$BDEV" > "$OUT/lsblk.log" 2>&1; cat "$OUT/lsblk.log"
         rec vdev_path "$(awk -v d="$BDEV" 'index($1, d) == 1 { print $1 }' "$OUT/zpool-status-created.log" | head -n 1)"
         rec vdev_partitioned "$([ -b "${BDEV}p1" ] && echo "yes: ZFS made ${BDEV}p1 and p9 (whole-disk vdev)" || echo "no: the pool is on the bare device")"
-        rec vdev_ashift "$(lim 30 zdb -C "$POOL" 2>/dev/null | awk '/ashift:/ { print $2; exit }')"
+        # From the label on the device, not from the pool's own report.
+        rec vdev_ashift "$(lim 30 zdb -l "$BDEV" 2>/dev/null | awk '$1 == "ashift:" { print $2; exit }')"
         s0=$(kstat_slog)
         try zfs_write 300 write_data
         rec slog_used "$(( $(kstat_slog) - s0 )) intent-log records on the log device"
@@ -312,7 +314,7 @@ if [ -n "$POOL_OK" ]; then
                 kill -9 "$WRITER" 2>/dev/null
             else
                 after=$(cat "$WORK/writer.count" 2>/dev/null || echo 0)
-                rec rec_writer "resumed: $before files before the kill, $at_kill when recovery began, $after at the end; failed writes: $(grep -c failed "$OUT/writer.log" 2>/dev/null || echo 0)"
+                rec rec_writer "resumed: $before files before the kill, $at_kill when recovery began, $after at the end; failed writes: $(grep -c failed "$OUT/writer.log" 2>/dev/null || true)"
             fi
             try rec_scrub 600 zpool scrub -w "$POOL"
             rec rec_scrub_result "$(pool_errors)"
