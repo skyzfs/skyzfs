@@ -16,11 +16,10 @@ on:
       ublksrv_ref:
         description: "ublk-org/ublksrv git ref to build (empty: its default branch)"
         default: ""
-  # workflow_dispatch is only offered once the file is on the default
-  # branch. Until then, a push to the testing branch that touches the
-  # probe runs it.
-  push:
-    branches: [skyzfs-testing]
+  # A pull request that changes the probe runs it. (Dispatching from a
+  # branch works although the file is not on main: a workflow can be
+  # dispatched through the API once it has run at all.)
+  pull_request:
     paths:
       - tests/kernel/**
       - .github/workflows/skyzfs-kernel-probe.yml

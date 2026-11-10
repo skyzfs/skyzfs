@@ -1,10 +1,13 @@
 name: skyzfs-ci
 
-# CI for the SkyZFS working branches. `ci.yml` runs on `main` and on pull
-# requests only, and the sessions that work on SkyZFS push to
-# `zfs-topology` and to `skyzfs-*` branches without opening pull
-# requests, so nothing covered those pushes. Same checks and the same
-# setup as the `lint` and `test` jobs of `ci.yml`.
+# CI for pushes to the SkyZFS working branches that no pull request
+# covers. `ci.yml` runs on `main` and on every pull request. That leaves
+# two kinds of push with no checks: a merge into `zfs-topology`, and a
+# push to a `skyzfs-*` branch whose work package has no pull request
+# open yet. This workflow runs for those, with the same checks and the
+# same setup as the `lint` and `test` jobs of `ci.yml`. Once a branch
+# has an open pull request, `ci.yml` runs on each push to it and this
+# workflow steps aside (the `gate` job), so nothing runs twice.
 on:
   push:
     branches:
@@ -25,7 +28,34 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
+  # Is this push already covered by ci.yml? It is when the branch is the
+  # head of an open pull request. If the question cannot be answered,
+  # run: twice is better than not at all.
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          open=0
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            open=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" --jq length) || open=0
+          fi
+          if [ "$open" -gt 0 ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_REF_NAME has an open pull request: ci.yml covers this push." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   lint:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -47,6 +77,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
