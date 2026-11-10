@@ -430,6 +430,7 @@ VOL_GB=${TB_VOL_GB:-$(( (SCALE * 16 + 1023) / 1024 + MAX_WAL_GB + 1 ))}
 WAL_GB=${TB_WAL_GB:-$(( MAX_WAL_GB + 1 ))}
 # Snapshots during the window (see the knob list).
 SNAP_MODES=${TB_SNAP_MODES:-none}
+SNAP_MODES=${SNAP_MODES//,/ }   # commas too, so a sequence entry can carry a list
 SNAP_INTERVAL=${TB_SNAP_INTERVAL:-60}
 SNAP_KEEP=${TB_SNAP_KEEP:-2}
 ANY_SNAP=""
