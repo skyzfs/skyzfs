@@ -236,7 +236,13 @@ jobs:
         id: bench
         run: |
           rc=0
-          sudo -E env "PATH=$PATH" BENCH_OUT="$GITHUB_WORKSPACE/bench-out" STORE_CONTAINER=minio \
+          # Every variable compare.sh reads is named here: ubuntu-26.04's
+          # sudo-rs ignores `sudo -E`, so nothing reaches the root shell
+          # from the job's environment (VARIANTS and S3_ENDPOINT come from
+          # GITHUB_ENV, RTTS and REPS from the workflow's env).
+          sudo env "PATH=$PATH" VARIANTS="$VARIANTS" S3_ENDPOINT="$S3_ENDPOINT" \
+            RTTS="$RTTS" REPS="$REPS" \
+            BENCH_OUT="$GITHUB_WORKSPACE/bench-out" STORE_CONTAINER=minio \
             tests/bench/compare.sh || rc=$?
           # compare.sh runs as root; the steps after it write here as the runner.
           sudo chown -R "$(id -u):$(id -g)" bench-out
