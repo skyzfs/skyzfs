@@ -580,6 +580,7 @@ are two datasets of the one pool.
 | zfs-plain | zfs with compression off and `full_page_writes=on`: the control for what pgbench's very compressible rows and the missing full-page images contribute |
 | zfs-l2arc | zfs plus an L2ARC device of 25% of the database, the counterpart of baseline's dm-cache |
 | zfs-slog | zfs plus a separate 1 GiB log device on local flash, so ZIL blocks never reach the vdev: the ZFS-native form of the two-volume split |
+| zfs-slog-l2arc | zfs-slog plus an L2ARC of twice the ARC cap (1536 MiB), with the WAL dataset excluded (`secondarycache=none`): the ZFS-native flash read cache |
 | zfs-slog-rcache | zfs-slog plus a dm-cache (writethrough, smq, 25% of the database: baseline's cache) on the origin path under the vdev, standing in for a backend that keeps what it fetched |
 
 The ARC is not charged to postgres's cgroup, so it is capped at the
@@ -826,13 +827,74 @@ Same settings as §10.2 unless stated; one run per cell.
 - zfs-slog's own 10 ms, 120 s tpcb figure was 720 in the earlier run
   and 366 here. Read single cells accordingly.
 
-### 10.6 What this means for the design
+### 10.6 ZFS-native read caching: L2ARC and recordsize
+
+dm-cache in §10.5 stands in for a cache the backend would own. The
+ZFS-native options are an L2ARC that is large enough, and a larger
+recordsize so that a miss brings in more than one page. ZFS has no
+other read-ahead for random reads: file prefetch follows sequential
+streams only. 300 s windows, tpcb then select, one run per cell; the
+L2ARC feed ran at module defaults (ZFS 2.4.1, which has no
+`l2arc_dwpd_limit`).
+
+Throughput, tps:
+
+| origin | recordsize | workload | twovol | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|---|---|
+| 10 ms | 8k | tpcb | 3163 | 1413 | 1425 | 2307 |
+| 10 ms | 8k | select | 18820 | 16578 | 23593 | 23080 |
+| 10 ms | 16k | tpcb | – | 2516 | 2470 | 4105 |
+| 10 ms | 16k | select | – | 31359 | 30355 | 36696 |
+| 3 ms | 8k | tpcb | 3428 | 3341 | 4047 | – |
+| 3 ms | 8k | select | 18818 | 24158 | 52893 | – |
+| 3 ms | 16k | tpcb | – | 5172 | 3455 | – |
+| 3 ms | 16k | select | – | 73086 | 30910 | – |
+
+Flash writes on tpcb, MB per thousand transactions:
+
+| origin | recordsize | twovol | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|---|
+| 10 ms | 8k | 25.2 | 16.6 | 24.0 | 15.4 |
+| 10 ms | 16k | – | 12.5 | 17.1 | 11.1 |
+| 3 ms | 8k | 22.9 | 12.4 | 17.6 | – |
+| 3 ms | 16k | – | 9.9 | 15.0 | – |
+
+- **An L2ARC of twice the ARC helps reads and not tpcb.** At 10 ms
+  and 8k it served 2.2 million reads on select-only and matched the
+  cache under the vdev (23593 against 23080), but tpcb did not move
+  (1425 against 1413) where the cache under the vdev gave 1.6x. In
+  the first 120 s after a stage the order is the same: on select 7903
+  for L2ARC, 11925 for the cache under the vdev and 1721 with
+  neither; on tpcb 717, 1291 and 468.
+- **It costs flash.** Feeding it added 40 to 50% to tpcb's flash
+  writes in every pairing.
+- **16k records were the larger gain, and most of it is compression,
+  not read-ahead.** At ashift 12 an 8 KiB record can shrink only to
+  4 KiB, a 16 KiB one to 4, 8 or 12. pgbench's rows compress about
+  4x, so the PGDATA dataset fell from 879 MiB to 444 MiB and fit
+  inside the 768 MiB ARC: the ARC hit rate went from 88% to 98–100%
+  and origin reads on select-only to zero. tpcb rose 1.5 to 1.8x and
+  flash writes fell, because a rewritten record is also smaller. On
+  less compressible data the dataset will not halve; the read-ahead
+  share of the gain is not separated out here.
+- **With 16k records the L2ARC had nothing to do** (the data was in
+  RAM) and was pure cost: 3.5 to 4.3 GB written, a handful of hits.
+- **16k records plus the cache under the vdev was the fastest tpcb
+  row at 10 ms** (4105), above twovol on a different machine, at less
+  than half twovol's flash writes.
+- **Machines differ by more than 2x.** The two 3 ms, 16k select cells
+  ran the same in-memory workload (ARC hit rate 100%, L2ARC idle) and
+  measured 73086 and 30910. Differences smaller than that between
+  rows in CPU-bound cells are not evidence of anything.
+
+### 10.7 What this means for the design
 
 1. The backend's read side decides cold performance: what it keeps of
    what it fetched, and how much it fetches around a miss. ZFS's write
    path is not the limit. A plain repeat-read cache under the vdev
    already brings tpcb within 10% of twovol at a 10 ms origin, and at
-   3 ms the stack does not need one (§10.5).
+   3 ms the stack does not need one (§10.5). ZFS's own L2ARC covers
+   read-mostly work but not tpcb, and costs flash writes (§10.6).
 2. The uploader needs to know what ZFS freed. Without that it uploads
    three to five times the live data.
 3. ZIL traffic is the largest single component at the vdev. A separate
@@ -849,15 +911,20 @@ Same settings as §10.2 unless stated; one run per cell.
    The per-snapshot cost stays, because it is the copy-on-write after
    the snapshot, which the freeze does not cause.
 
-### 10.7 Not yet measured
+### 10.8 Not yet measured
 
 - A backend read cache that keeps every fetched block and reads
   ahead; §10.5 measures only a repeat-read cache.
 - `logbias=throughput` on the WAL dataset.
+- recordsize 16k on data that does not compress 4x, and with the ARC
+  smaller than the compressed database, to separate read-ahead from
+  compression.
+- The L2ARC feed knobs (`l2arc_noprefetch`, `l2arc_headroom`,
+  `l2arc_mfuonly`, `l2arc_write_max`); `TB_ZFS_PARAMS` sets them.
 - Why twovol stalls for whole seconds with no snapshots at all (2 and
   7 stalled seconds in §10.4's `none` phases).
 - Snapshots during the window on the 10 ms origin.
 - A database several times larger than RAM, where sparse updates
   rewrite a 128 KiB indirect block per 8 KiB page.
-- Repetitions. Every cell in §10.2 and §10.5 is one run, §10.4 has
-  two per table, and §6.2 documents how far two runner VMs can differ.
+- Repetitions. Every cell in §10.2, §10.5 and §10.6 is one run,
+  §10.4 has two per table, and §6.2 documents how far two runner VMs can differ.
