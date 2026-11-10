@@ -1130,7 +1130,7 @@ cells first, J its one-client cells first):
   with no twovol cell after it to show drift; H lost 40% over one
   sequence. Without the cap, on F and G over 120 s, zfs-slog ran at
   0.71 and 0.92 of twovol at 32 clients with 27 and 207 ARC dirty
-  waits. Not settled.
+  waits. Four more machines follow below.
 - **No zfs-slog cell had a second without a transaction**, and its
   slowest transaction was 37 to 692 ms. twovol's slowest second at 8
   and 32 clients was 0 to 140 tps and its slowest transaction 1.1 to
@@ -1138,10 +1138,91 @@ cells first, J its one-client cells first):
 - **The cap's price shows at 8 clients**: 14.1 and 14.3 MB/ktxn,
   against 9.5 to 10.9 for the uncapped 16k rows above.
 
-The benchmark's defaults now follow this: the ZFS pool is 32 GiB and
-the log device is written through before use. The dirty cap is left to
+**Is the comparison fair?** Both kinds of stack sit on loop devices
+over sparse files in one directory of the runner's disk, attached by
+the same helper, which asks for direct I/O. Nothing is an LVM volume
+and nothing was preallocated, except the ZFS log device in the later
+runs above. twovol's thin pool is one such file of 7 GiB holding the
+pool metadata and both thin volumes, and its dm-cache is a second
+file. Three things could still tilt it, checked on machines K to N:
+
+- **Direct I/O took effect everywhere.** Each result now records every
+  loop's mode. In four sequences and two runs of all thirteen
+  topologies no loop was buffered, so no image was also in the host's
+  page cache.
+- **Sparse files are not what helps ZFS.** dm-thin overwrites in place
+  once a chunk is provisioned and ZFS keeps moving to fresh blocks, so
+  the two pay the host filesystem's allocation unevenly.
+  `TB_PREALLOC=1` writes every local-flash image through before use.
+  8 clients, zfs-slog with 16k records, an 8 GiB pool and the dirty
+  cap:
+
+  | | K sparse | K written through | L sparse | L written through |
+  |---|---|---|---|---|
+  | twovol tps | 3505 | 3588, 3482 | 5968 | 6011, 5739 |
+  | zfs-slog tps | 3734 | 4029 | 6488 | 6473 |
+
+  twovol moves by -4 to +2% and zfs-slog by 0 to +8%.
+- **Memory was uneven, in twovol's favour.** At the end of a window,
+  MiB:
+
+  | | twovol | zfs-slog |
+  |---|---|---|
+  | postgres's cgroup, capped at 1024 | 1007: 258 shared buffers, about 733 page cache | 261: shared buffers |
+  | ARC, capped at 768 | – | 550–616 at 16k, 778–788 at 8k |
+  | page cache outside any cap | about 1020 | none |
+
+  The extra gigabyte was twovol's WAL. The script moved `pg_wal` onto
+  the WAL volume before PostgreSQL started; a page is charged to the
+  cgroup that first touched it, and PostgreSQL then recycled those
+  segments for the whole run. Only twovol was staged that way. Every
+  twovol figure in this document up to this point includes it. The
+  script now drops the page cache before PostgreSQL starts.
+
+**On equal backing and equal memory.** Images written through, cold
+page cache, zfs-slog with an 8 GiB pool and the 192 MiB dirty cap,
+180 s per cell; M ran its 8-client cells first and N its 32-client
+cells first:
+
+| machine | clients | twovol tps | zfs-slog 16k tps | vs twovol | zfs-slog 8k tps | vs twovol | slowest transaction ms, twovol / zfs-slog 16k | seconds with no transaction, twovol / zfs-slog | flash MB/ktxn, twovol / 16k / 8k |
+|---|---|---|---|---|---|---|---|---|---|
+| M | 1 | 723 | 762 | 1.05 | – | – | 402 / 475 | 0 / 0 | 50.0 / 22.3 / – |
+| M | 8 | 3706, 3480 | 3038 | 0.85 | 3414 | 0.95 | 1296, 1778 / 645 | 0, 1 / 0 | 23.6 / 14.1 / 17.7 |
+| M | 32 | 3529 | 4253 | 1.20 | – | – | 2093 / 577 | 3 / 0 | 21.0 / 10.9 / – |
+| N | 1 | 1041 | 1209 | 1.16 | – | – | 387 / 399 | 0 / 0 | 41.7 / 22.4 / – |
+| N | 8 | 3749, 4005 | 3680 | 0.95 | 4311 | 1.11 | 1751, 2050 / 566 | 0, 2 / 0 | 23.1 / 13.8 / 17.2 |
+| N | 32 | 4795 | 4944 | 1.03 | – | – | 2045 / 555 | 5 / 0 | 19.9 / 10.7 / – |
+
+On K and L, written through but before the memory fix, zfs-slog 16k
+ran at 1.14 and 1.10 of twovol at 8 clients and 1.16 and 1.32 at 32,
+and 8k at 0.99 and 1.04 at 8.
+
+- **The memory fix made no difference these runs can show.** twovol
+  did not lose ground on M and N, and the spread between machines is
+  larger than any effect. That fits: WAL is not read back, so its page
+  cache is worth little.
+- **At 8 clients neither stack leads.** Over every 8-client cell where
+  neither dirty-data limit was in play — fifteen cells on nine
+  machines (C to E and I to N), 8k and 16k — zfs-slog ran at 0.85 to
+  1.14 of twovol, median 1.04. 16k with the cap gave 1.06 to 1.14 on I
+  to L and 0.85 and 0.95 on M and N.
+- **At 1 and 32 clients zfs-slog is usually ahead**: on five of six
+  machines at 1 client (0.90 on F, 1.04 to 1.43 on G, I, J, M and N),
+  and on five of six at 32 (1.03 to 1.32, and 0.81 on J).
+- **The tails and the flash writes do not depend on the machine.** No
+  capped zfs-slog cell on any machine had a second without a
+  transaction, and its slowest transaction stayed under 0.7 s. At 8
+  and 32 clients twovol's slowest was 1.1 to 2.1 s in every cell on I
+  to N but one, with up to 7 seconds without a transaction. zfs-slog
+  wrote 37 to 75% of twovol's flash bytes, least with 16k records.
+
+The benchmark's defaults now follow all of this: the ZFS pool is
+32 GiB, the log device is written through before use, and every run
+starts with a cold page cache. The dirty cap is left to
 `TB_ZFS_PARAMS`, because the right value is a trade between stalls and
-flash writes that these runs only sample at one point.
+flash writes that these runs sample at one point only, and
+`TB_PREALLOC` is left off because it made little difference and
+writes tens of GiB per run.
 
 ### 10.8 What this means for the design
 
@@ -1160,14 +1241,16 @@ flash writes that these runs only sample at one point.
    on a sparse file a lone commit took up to 2.4 times as long
    (§10.7).
 4. With the working set on local flash, twovol and zfs-slog are level
-   in throughput once both run on one machine and ZFS's pool and dirty
-   data are sized for each other (§10.7): within 2% at 8 clients with
-   8k records, ahead at 1 and 8 clients with 16k records and a dirty
-   cap, unsettled at 32. zfs-slog wrote 40 to 60% of twovol's flash
-   bytes and had no second without a transaction in those runs, where
-   twovol had up to 4. A snapshot every minute costs the thin stacks
-   17 to 46% of their throughput and costs zfs-slog nothing (§10.4).
-   ZFS's case rests on those and on a much simpler node stack.
+   in throughput once both run on one machine, on equal backing and
+   memory, with ZFS's pool and dirty data sized for each other
+   (§10.7). At 8 clients zfs-slog ran at 0.85 to 1.14 of twovol over
+   fifteen cells on nine machines, median 1.04; it was ahead on five
+   of six machines at 1 client and on five of six at 32. With a dirty
+   cap it wrote 37 to 75% of twovol's flash bytes and had no second
+   without a transaction, where twovol had up to 7. A snapshot every
+   minute costs the thin stacks 17 to 46% of their throughput and
+   costs zfs-slog nothing (§10.4). ZFS's case rests on those and on a
+   much simpler node stack.
 5. The dm-thin capture can drop the freeze if it syncs first (§10.4):
    the pause falls to about 50 ms with no more stalls than the freeze.
    The per-snapshot cost stays, because it is the copy-on-write after
@@ -1200,6 +1283,8 @@ flash writes that these runs only sample at one point.
 - A dirty-data cap between 192 MiB and the default, and one at half
   the ARC cap, to find where the waits end and what each costs in
   flash writes; and the 8k-record row at 1 and 32 clients.
+- Why 16k records with the cap ran at 0.85 and 0.95 of twovol at 8
+  clients on two machines and at 1.06 to 1.14 on four others.
 - §10.2 to §10.6 again with the 32 GiB pool, for the local-origin and
   3 ms cells that the space check held back.
 - Snapshots during the window on the 10 ms origin.
