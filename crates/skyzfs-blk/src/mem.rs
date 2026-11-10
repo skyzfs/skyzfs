@@ -9,7 +9,8 @@
 //!
 //! It is built to use every freedom the contract gives a target:
 //!
-//! - requests complete in an order drawn from a seed ([`Schedule`]),
+//! - requests complete in an order drawn from a seed ([`Schedule`]), and
+//!   a read may capture its data when it is submitted and complete later,
 //! - a flush makes durable exactly the records that existed when it was
 //!   submitted, and nothing later,
 //! - [`MemTarget::kill`] is a daemon loss: requests in flight are
@@ -195,6 +196,8 @@ struct Queued {
     cover: usize,
     /// `Fault::SplitWrites`: this many leading blocks are already logged.
     split: usize,
+    /// A read whose buffer was filled when it was submitted.
+    served: bool,
 }
 
 /// An in-memory block target. See the [module documentation](self).
@@ -421,8 +424,22 @@ impl MemTarget {
             request,
             cover,
             split,
+            served,
         } = queued;
         let id = request.id;
+        if served {
+            // The read captured its data when it was submitted.
+            let buf = match request.op {
+                Op::Read { buf, .. } => Some(buf),
+                _ => None,
+            };
+            let result = if self.failed && !self.fault(Fault::FailedServesReads) {
+                Err(BlkError::Failed)
+            } else {
+                Ok(())
+            };
+            return Completion { id, result, buf };
+        }
         let verdict = match self.admit(&request.op) {
             Err(e) => Err(e),
             Ok(false) => Ok(false),
@@ -594,10 +611,31 @@ impl BlockTarget for MemTarget {
                 }
             }
         }
+        // With the seeded schedule a read may capture its data now and be
+        // completed later: it then shows the state from before operations
+        // that are acknowledged while it is in flight.
+        let mut request = request;
+        let mut served = false;
+        let early = self.config.schedule == Schedule::Seeded
+            && !self.failed
+            && !self.fault(Fault::StaleReads)
+            && !self.poisoned.contains(&request.id.0)
+            && self.geometry.validate(&request.op).is_ok();
+        if early {
+            if let Op::Read { offset, buf } = &mut request.op {
+                if self.rng.coin() {
+                    let at = *offset as usize;
+                    let end = at + buf.len();
+                    buf.copy_from_slice(&self.image[at..end]);
+                    served = true;
+                }
+            }
+        }
         self.pending.push(Queued {
             request,
             cover: self.log.len(),
             split,
+            served,
         });
         Ok(())
     }

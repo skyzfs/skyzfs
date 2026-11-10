@@ -31,6 +31,9 @@
 //!   none is left, the target broke the contract.
 //! - A **flush** makes durable what was acknowledged before it was
 //!   submitted, and whatever precedes that in the world's order (rule R7).
+//!   A flushed operation stays in the tail, marked, until no read that
+//!   was in flight with it is outstanding: such a read may still return
+//!   the state before it.
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
 //!   be in the log, so each may end up in the order twice (rule R9).
@@ -229,6 +232,10 @@ struct Placed {
     op: usize,
     lb: u64,
     ub: u64,
+    /// A completed flush covers it: every power cut keeps it. It stays in
+    /// the tail for as long as a read in flight may have seen the state
+    /// before it.
+    flushed: bool,
 }
 
 /// An operation in flight that the world has not placed. It has not been
@@ -287,6 +294,7 @@ impl World {
                     op: w.op,
                     lb: w.lb,
                     ub: now,
+                    flushed: false,
                 };
                 without.place(cx, inst, &mut next);
                 if let Some(lb) = keep_from {
@@ -323,6 +331,29 @@ impl World {
                 self.tail.push(placed);
             }
         }
+    }
+
+    /// Mark the selected members of the tail, which must be closed under
+    /// "precedes", as covered by a flush.
+    fn mark_flushed(&mut self, cx: &Context, inside: &[bool]) {
+        for (placed, covered) in self.tail.iter_mut().zip(inside) {
+            placed.flushed |= *covered;
+        }
+        self.tail = cx.canonical(&self.tail);
+    }
+
+    /// Fold flushed operations into the durable content, except those a
+    /// read in flight may still need the state before: a read submitted
+    /// at or after `horizon` is the oldest outstanding one.
+    fn compact(&mut self, cx: &Context, horizon: u64) {
+        let n = self.tail.len();
+        let mut fold = vec![false; n];
+        for i in 0..n {
+            fold[i] = self.tail[i].flushed
+                && self.tail[i].ub < horizon
+                && (0..i).all(|j| fold[j] || !cx.ordered(&self.tail[j], &self.tail[i]));
+        }
+        self.absorb(cx, &fold);
     }
 
     /// Whether a read submitted at `since` may have returned `seen` for
@@ -409,7 +440,8 @@ impl World {
         }
         // Lost: then every later operation on its blocks is lost too, so
         // those blocks are final.
-        if op.blocks().all(|block| agrees(&image, block)) {
+        // An operation a flush covers is never lost.
+        if !self.tail[i].flushed && op.blocks().all(|block| agrees(&image, block)) {
             self.choose(cx, seen, last, i + 1, image, present, out);
         }
     }
@@ -784,6 +816,9 @@ impl Model {
                 }
             }
         }
+        if self.recovering.is_none() {
+            self.compact();
+        }
         Ok(())
     }
 
@@ -798,6 +833,7 @@ impl Model {
                         op,
                         lb: w.lb,
                         ub: self.now,
+                        flushed: false,
                     };
                     let mut without = world.clone();
                     without.waiting.retain(|x| x.op != op);
@@ -818,7 +854,28 @@ impl Model {
             let acked = &self.acked;
             let inside = world.closure(&self.cx, &|p| acked.get(&p.op).is_some_and(|t| *t < at));
             let mut world = world.clone();
-            world.absorb(&self.cx, &inside);
+            world.mark_flushed(&self.cx, &inside);
+            next.insert(world);
+        }
+        self.set_worlds(next);
+    }
+
+    /// Fold what is flushed into the durable content, as far as the reads
+    /// still in flight allow.
+    fn compact(&mut self) {
+        let horizon = self
+            .pending
+            .values()
+            .filter_map(|p| match p {
+                Pending::Read { since, .. } => Some(*since),
+                _ => None,
+            })
+            .min()
+            .unwrap_or(u64::MAX);
+        let mut next = BTreeSet::new();
+        for world in &self.worlds {
+            let mut world = world.clone();
+            world.compact(&self.cx, horizon);
             next.insert(world);
         }
         self.set_worlds(next);
@@ -1550,6 +1607,51 @@ mod tests {
         };
         assert!(!history(false));
         assert!(history(true));
+    }
+
+    /// R3, R7: a read stays in flight across a write to its block and a
+    /// completed flush, and then returns the content from before the
+    /// write. It overlapped the write, so that is allowed; the flush must
+    /// not make the model forget the earlier state. (Found in review.)
+    #[test]
+    fn read_held_across_a_flush_may_see_the_state_before() {
+        for answer in [0u8, 1] {
+            let mut c = Client::new();
+            let r = c.read(0, 1);
+            c.wrote(0, 1, 1);
+            c.flush();
+            c.returns(r, vec![answer; B]).unwrap();
+            // The flush still counts: the write survives a power cut.
+            c.model.power_cut();
+            assert!(!c.would_see(0, &[0]));
+            c.sees(0, &[1]).unwrap();
+        }
+        // A read submitted after the write was acknowledged cannot.
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let r = c.read(0, 1);
+        c.flush();
+        assert!(c.returns(r, vec![0; B]).is_err());
+    }
+
+    /// R3: the same across two flushes and a second write: every state
+    /// the block had while the read was in flight stays allowed, and the
+    /// model catches up once the read is done.
+    #[test]
+    fn read_held_across_flushes_sees_any_state_in_its_flight() {
+        for answer in [0u8, 1, 2] {
+            let mut c = Client::new();
+            let r = c.read(0, 2);
+            c.wrote(0, 2, 1);
+            c.flush();
+            c.wrote(0, 1, 2);
+            c.flush();
+            let mut bytes = vec![answer; B];
+            bytes.extend(vec![1; B]);
+            c.returns(r, bytes).unwrap();
+            assert!(!c.would_see(0, &[1, 1]));
+            c.sees(0, &[2, 1]).unwrap();
+        }
     }
 
     /// R11: once the log has failed, a flush must fail, and after the
