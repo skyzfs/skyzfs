@@ -195,6 +195,17 @@
 #                           prefix: "sync=disabled", "wal:logbias=throughput"
 #   TB_PG_CONF=             postgresql.conf settings for this run, comma-
 #                           separated name=value ("synchronous_commit=off")
+#   TB_PREALLOC=0           1 writes every local-flash image through once
+#                           before use: the thin pool, the cache device,
+#                           the ZFS vdev's COW store and the log device.
+#                           They are sparse files otherwise, so a first
+#                           write to a block also allocates it in the host
+#                           filesystem and the next flush commits that
+#                           filesystem's journal, which a flash partition
+#                           would not do. The stacks pay this unevenly:
+#                           dm-thin overwrites in place once a chunk is
+#                           provisioned, ZFS keeps moving to fresh blocks.
+#                           Costs the images' full size in writes and disk
 #   TB_FSYNC_TEST=1         run pg_test_fsync on the WAL filesystem before the
 #                           workloads: the commit path with nothing else
 #                           running (about 35 s per topology; 0 skips it)
@@ -322,6 +333,20 @@ if drows:
               f"{nf(ft / 1000 if ft else None, '.3f')} | {nf(rr / txn if txn else None)} | {nf(rus / rr / 1000 if rr else None, '.3f')} | "
               f"{cp.get('user', 0):.0f}/{cp.get('system', 0):.0f}/{cp.get('iowait', 0):.0f}/{cp.get('idle', 0):.0f} | "
               f"{nf(g.get('ctxt', 0) / txn if txn else None, '.1f')} | {top} |")
+    md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
+    if md:
+        print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
+              'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
+              'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0:\n')
+        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | host page cache | host dirty | buffered loops |')
+        print('|---|---|---|---|---|---|---|---|---|')
+        for r, d in md:
+            m = r['diag']['mem_mb']; lp = r['diag'].get('loops', {})
+            arc = r.get('zfs', {}).get('after', {}).get('arc.size')
+            print(f"| {r['workload']} | {label(r)} | {nf(m.get('cgroup.current'), '.0f')} | {nf(m.get('cgroup.file'), '.0f')} | "
+                  f"{nf(m.get('cgroup.anon', 0) + m.get('cgroup.shmem', 0) if 'cgroup.anon' in m else None, '.0f')} | "
+                  f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
+                  f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} |")
     zd = [(r, d) for r, d in drows if r.get('zfs')]
     if zd:
         MB = 1 << 20
@@ -441,6 +466,7 @@ ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 > 32 ? VOL_GB * 2 : 32 ))}
 ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
 ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
 ZFS_SLOG_PREALLOC=${TB_ZFS_SLOG_PREALLOC:-1}
+PREALLOC=${TB_PREALLOC:-0}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
@@ -571,12 +597,23 @@ psqlq() { as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -c \"$1\"" 2>/dev/null;
 sectors() { blockdev --getsz "$1"; }
 dm_blk() { dmsetup info -c --noheadings -o blkdevname "$1"; }
 mb() { echo $(( $1 << 20 )); }
-attach_loop() {
-    losetup --find --show --direct-io=on "$1" 2>/dev/null || losetup --find --show "$1"
+loop_dio() { losetup --noheadings --output DIO "$1" 2>/dev/null | tr -d ' '; }
+attach_loop() { # file: asks for direct I/O, so the image is not also in the host page cache
+    local l
+    l=$(losetup --find --show --direct-io=on "$1" 2>/dev/null || losetup --find --show "$1")
+    [ "$(loop_dio "$l")" = 1 ] || log "WARNING: $l on $(basename "$1") is BUFFERED (no direct I/O)"
+    echo "$l"
 }
 mkimage() { # file bytes — sparse on purpose (see the sizing note)
     rm -f "$1"
     truncate -s "$2" "$1"
+}
+mkflash() { # file bytes: an image that stands for local flash. TB_PREALLOC writes it through.
+    mkimage "$1" "$2"
+    [ "$PREALLOC" = 1 ] || return 0
+    local t0; t0=$(date +%s)
+    "$DD" if=/dev/zero of="$1" bs=1M count=$(( $2 >> 20 )) oflag=direct conv=notrunc,fsync status=none
+    log "$(basename "$1"): wrote $(( $2 >> 20 )) MiB through in $(( $(date +%s) - t0 ))s"
 }
 zero_head() { # device: zero the first 4 KiB, BYPASSING the bdev page cache.
     # A buffered dd leaves a dirty page in the block device's page cache
@@ -784,7 +821,7 @@ prepare_origin() {
 
 # ------------------------------------------- pool + thin (per topology)
 build_pool() {
-    mkimage "$WORK/pool.img" "$(mb $((POOL_GB * 1024)))"
+    mkflash "$WORK/pool.img" "$(mb $((POOL_GB * 1024)))"
     POOL_LOOP=$(attach_loop "$WORK/pool.img")
     local total meta chunk data
     total=$(sectors "$POOL_LOOP")
@@ -836,14 +873,17 @@ hydrate_thin() { # dm name: map every chunk locally, without reading the origin 
 build_cache_dev() { # [MiB]: default TB_CACHE_PCT of the database
     local bytes=${1:-$(( DB_MB * CACHE_PCT / 100 ))}
     [ "$bytes" -lt 64 ] && bytes=64
-    mkimage "$WORK/cache.img" "$(mb "$bytes")"
+    mkflash "$WORK/cache.img" "$(mb "$bytes")"
     CACHE_LOOP=$(attach_loop "$WORK/cache.img")
     log "cache device: ${bytes} MiB ($(( bytes * 100 / DB_MB ))% of the database) on $CACHE_LOOP"
 }
 
 # ------------------------------------------------------- ZFS stack
 attach_loop_ro() {
-    losetup --find --show --read-only --direct-io=on "$1" 2>/dev/null || losetup --find --show --read-only "$1"
+    local l
+    l=$(losetup --find --show --read-only --direct-io=on "$1" 2>/dev/null || losetup --find --show --read-only "$1")
+    [ "$(loop_dio "$l")" = 1 ] || log "WARNING: $l on $(basename "$1") is BUFFERED (no direct I/O)"
+    echo "$l"
 }
 arcstat() { awk -v k="$1" '$1 == k { print $3 }' /proc/spl/kstat/zfs/arcstats; }
 zfs_cap_arc() {
@@ -970,7 +1010,7 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     # The COW store is local flash. Transient ("N"): no on-disk
     # exception metadata, so a flush is the data device's flush alone.
     # Sized to the whole vdev because copy-on-write can sweep it.
-    mkimage "$WORK/pool.img" "$(mb $((ZFS_GB * 1024 + 64)))"
+    mkflash "$WORK/pool.img" "$(mb $((ZFS_GB * 1024 + 64)))"
     POOL_LOOP=$(attach_loop "$WORK/pool.img")
     chunk=$(( (1 << ZFS_ASHIFT) / 512 ))
     dmsetup create tb-zdev --table "0 $sect snapshot $odev $POOL_LOOP N $chunk"
@@ -1142,13 +1182,13 @@ topo_zfs_slog() {
     # never on the vdev. A cut of the vdev then holds the last synced
     # transaction group, not the fsynced tail.
     mkimage "$WORK/slog.img" "$(mb "$ZFS_SLOG_MB")"
-    if [ "$ZFS_SLOG_PREALLOC" = 1 ]; then
+    if [ "$ZFS_SLOG_PREALLOC" = 1 ] || [ "$PREALLOC" = 1 ]; then
         "$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$ZFS_SLOG_MB" \
             oflag=direct conv=notrunc,fsync status=none
     fi
     SLOG_LOOP=$(attach_loop "$WORK/slog.img")
     zpool add -f "$ZFS_POOL" log "$SLOG_LOOP"
-    log "slog: ${ZFS_SLOG_MB} MiB on $SLOG_LOOP$([ "$ZFS_SLOG_PREALLOC" = 1 ] && echo ', written through once')"
+    log "slog: ${ZFS_SLOG_MB} MiB on $SLOG_LOOP$([ "$ZFS_SLOG_PREALLOC$PREALLOC" != 00 ] && echo ', written through once')"
 }
 
 # ------------------------------------------- snapshots in the window
@@ -1247,6 +1287,16 @@ for k, v in c.most_common():
     if v: print('thr', k, v)
 PY
     as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
+    # Who holds the memory: the host's page cache (a buffered loop
+    # would put the images there, outside the cap), postgres's cgroup
+    # by kind, and the kernel's own.
+    awk '$1 ~ /^(MemTotal|MemFree|MemAvailable|Cached|Buffers|Dirty|Writeback|Slab|SUnreclaim):$/ { sub(":", "", $1); print "mem host." $1, $2 * 1024 }' /proc/meminfo
+    if [ -n "${CGROUP:-}" ] && [ -f "$CGROUP/memory.stat" ]; then
+        echo "mem cgroup.current $(cat "$CGROUP/memory.current")"
+        awk '$1 ~ /^(anon|file|shmem|kernel|slab|file_dirty|file_writeback)$/ { print "mem cgroup." $1, $2 }' "$CGROUP/memory.stat"
+    fi
+    losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
+        | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
 }
 fsync_test() { # the commit path with nothing else running: pg_test_fsync on the WAL filesystem
     rm -f "$OUT/$TOPO.fsync"
@@ -1337,11 +1387,11 @@ base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 fsync_file, run_label = sys.argv[8], sys.argv[9]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
-cpu, thr, txgs = {}, {}, {}
+cpu, thr, txgs, mem, loops = {}, {}, {}, {}, {}
 def load(p):
     dev, pg, other = {}, {}, {}
     zc[p], zg[p] = {}, {}
-    cpu[p], thr[p], txgs[p] = {}, {}, {}
+    cpu[p], thr[p], txgs[p], mem[p], loops[p] = {}, {}, {}, {}, {}
     for line in open(p):
         f = line.split()
         if not f: continue
@@ -1349,6 +1399,8 @@ def load(p):
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
         elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
         elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
+        elif f[0] == 'mem' and len(f) > 2 and f[2].isdigit(): mem[p][f[1]] = int(f[2])
+        elif f[0] == 'loop' and len(f) > 2: loops[p][f[1]] = {'dio': f[2] == '1', 'ro': len(f) > 3 and f[3] == '1'}
         elif f[0] == 'zfstxg' and len(f) >= 8: txgs[p][int(f[1])] = [int(x) for x in f[2:8]]
         elif f[0] in ('zfsc', 'zfsg'):
             if len(f) > 2 and f[2].isdigit(): (zc if f[0] == 'zfsc' else zg)[p][f[1]] = int(f[2])
@@ -1428,6 +1480,9 @@ for k, v in ta.items():
     if name in ('su', 'bash', 'sh', 'sudo', 'pgbench', 'python', 'runuser', 'awk', 'sed'): name = 'pgbench+harness'
     by[name] += dv / HZ
 diag['cpu_s_by_thread'] = dict(by.most_common(20))
+# Memory at the end of the window, MiB, and how the loops are attached.
+if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
+if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
 # pg_test_fsync, first table: one 8 kB write per sync, by wal_sync_method.
 if os.path.exists(fsync_file):
