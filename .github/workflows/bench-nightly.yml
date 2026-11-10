@@ -174,10 +174,19 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/bench-setup
+      # One download per side, by name, into its own directory. A pattern
+      # download that matches a single artifact (a head-alone run)
+      # extracts it straight into `path`, without the bins-<side>
+      # directory the next step looks for.
       - uses: actions/download-artifact@v7
         with:
-          pattern: bins-*
-          path: ${{ runner.temp }}/prebuilt
+          name: bins-head
+          path: ${{ runner.temp }}/prebuilt/bins-head
+      - if: contains(fromJSON(needs.resolve.outputs.sides), 'base')
+        uses: actions/download-artifact@v7
+        with:
+          name: bins-base
+          path: ${{ runner.temp }}/prebuilt/bins-base
 
       # The tuned profile writes the #97 settings ([nbd] max_in_flight,
       # publish_pipeline_depth) into configs that deny unknown fields, so
