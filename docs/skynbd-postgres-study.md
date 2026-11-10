@@ -1216,6 +1216,54 @@ and 8k at 0.99 and 1.04 at 8.
   to N but one, with up to 7 seconds without a transaction. zfs-slog
   wrote 37 to 75% of twovol's flash bytes, least with 16k records.
 
+**With a snapshot every minute, on the same footing.** §10.4 took its
+snapshots on different machines, with the 8 GiB pool and twovol's
+uncharged WAL cache. Here: 8 clients, images written through, cold
+page cache, 300 s per phase, four snapshots per phase with the last
+two kept. A stack's phases run on that one stack, `none` first. O ran
+twovol first and P ran it last:
+
+| machine | stack | snapshots | tps | vs its own `none` | p99 ms | p99.9 ms | slowest transaction ms | seconds with no transaction | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|---|---|
+| O | twovol | none | 3341 | – | 13.1 | 41.8 | 1242 | 0 | 23.0 |
+| O | twovol | sync, then suspend | 2809 | 0.84 | 11.0 | 45.6 | 2070 | 1 | 31.5 |
+| O | twovol | freeze | 2782 | 0.83 | 13.7 | 46.9 | 1499 | 1 | 32.5 |
+| O | zfs-slog 16k, cap | none | 3627 | – | 9.0 | 25.6 | 40 | 0 | 13.8 |
+| O | zfs-slog 16k, cap | `zfs snapshot` | 3554 | 0.98 | 9.1 | 25.9 | 47 | 0 | 13.0 |
+| O | zfs-slog 8k, cap | none | 3334 | – | 11.3 | 29.0 | 67 | 0 | 17.4 |
+| O | zfs-slog 8k, cap | `zfs snapshot` | 3526 | 1.06 | 9.2 | 25.0 | 60 | 0 | 15.5 |
+| O | zfs-slog 8k, no cap, 32 GiB pool | none | 3582 | – | 7.2 | 21.8 | 113 | 0 | 11.6 |
+| O | zfs-slog 8k, no cap, 32 GiB pool | `zfs snapshot` | 3584 | 1.00 | 6.8 | 29.2 | 139 | 0 | 11.0 |
+| P | twovol | none | 5376 | – | 8.2 | 39.0 | 2072 | 8 | 21.2 |
+| P | twovol | sync, then suspend | 4094 | 0.76 | 11.4 | 46.4 | 4130 | 6 | 28.2 |
+| P | twovol | freeze | 4157 | 0.77 | 10.5 | 45.6 | 3613 | 2 | 28.0 |
+| P | zfs-slog 16k, cap | none | 6608 | – | 7.1 | 15.4 | 160 | 0 | 12.4 |
+| P | zfs-slog 16k, cap | `zfs snapshot` | 6643 | 1.01 | 7.5 | 16.4 | 87 | 0 | 12.2 |
+| P | zfs-slog 8k, cap | none | 5696 | – | 7.8 | 17.7 | 356 | 0 | 15.6 |
+| P | zfs-slog 8k, cap | `zfs snapshot` | 5785 | 1.02 | 8.2 | 17.6 | 163 | 0 | 15.0 |
+| P | zfs-slog 8k, no cap, 32 GiB pool | none | 5599 | – | 7.7 | 15.4 | 859 | 0 | 10.3 |
+| P | zfs-slog 8k, no cap, 32 GiB pool | `zfs snapshot` | 5639 | 1.01 | 8.3 | 17.9 | 1218 | 0 | 10.1 |
+
+The capped rows ran a 16 GiB pool, written through; the row without a
+cap ran the default 32 GiB pool on a sparse store.
+
+- **With snapshots zfs-slog is the faster stack on both machines**:
+  1.26 to 1.28 times twovol's better snapshot mode on O and 1.36 to
+  1.60 times on P. A thin snapshot every minute cost twovol 16 to 24%
+  of its throughput and 32 to 41% more flash writes. `zfs snapshot`
+  cost nothing: 0.98 to 1.06 of the same stack without snapshots, and
+  flash writes unchanged.
+- **The latency lead is modest at p99 and large beyond it.** With
+  snapshots, zfs-slog's p99 was 6.8 to 9.2 ms against twovol's 10.5 to
+  13.7 ms, its p99.9 16 to 29 ms against 46 to 47 ms, and its slowest
+  transaction 47 to 163 ms with the cap against 1.5 to 4.1 s.
+- **Without the cap the far tail is longer** (139 and 1218 ms) and the
+  flash writes lower (10 to 11 MB/ktxn against 12 to 16). No row hit
+  either dirty-data limit.
+- **Syncing before a suspend did no better than the freeze here**
+  (0.84 against 0.83, 0.76 against 0.77), which is what §10.4 found
+  for throughput; its gain there was in the length of the pause.
+
 The benchmark's defaults now follow all of this: the ZFS pool is
 32 GiB, the log device is written through before use, and every run
 starts with a cold page cache. The dirty cap is left to
@@ -1248,9 +1296,12 @@ writes tens of GiB per run.
    of six machines at 1 client and on five of six at 32. With a dirty
    cap it wrote 37 to 75% of twovol's flash bytes and had no second
    without a transaction, where twovol had up to 7. A snapshot every
-   minute costs the thin stacks 17 to 46% of their throughput and
-   costs zfs-slog nothing (§10.4). ZFS's case rests on those and on a
-   much simpler node stack.
+   minute costs the thin stacks 16 to 46% of their throughput and
+   costs zfs-slog nothing (§10.4, §10.7): with snapshots, on one
+   machine, zfs-slog ran 1.26 to 1.60 times twovol's throughput at a
+   p99 a quarter to a third lower and a slowest transaction under
+   0.2 s against 1.5 to 4.1 s. ZFS's case rests on those and on a much
+   simpler node stack.
 5. The dm-thin capture can drop the freeze if it syncs first (§10.4):
    the pause falls to about 50 ms with no more stalls than the freeze.
    The per-snapshot cost stays, because it is the copy-on-write after
