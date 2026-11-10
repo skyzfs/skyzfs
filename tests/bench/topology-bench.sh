@@ -1541,6 +1541,13 @@ mount_and_start() {
     } >> "$PGDATA/postgresql.conf"
     [ -z "$PG_CONF" ] || log "postgresql.conf for this run: $PG_CONF"
     rm -f "$PGDATA/postmaster.pid"
+    # Start cold, and with nothing in the page cache that this script
+    # put there. A page is charged to the cgroup that first touched it:
+    # the pg_wal files moved above were written by this script, so
+    # without this about 1 GiB of WAL page cache stays outside
+    # TB_MEM_LIMIT for the whole run, in the two-volume rows only.
+    sync
+    echo 3 > /proc/sys/vm/drop_caches
     start_pg
 }
 
