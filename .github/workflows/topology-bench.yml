@@ -152,7 +152,7 @@ jobs:
             sudo apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" zfs-dkms
             sudo modprobe zfs
           }
-          zfs version
+          sudo zfs version
 
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas'
@@ -172,7 +172,16 @@ jobs:
           casadm --version
 
       - name: Run benchmark
-        run: sudo -E env "PATH=$PATH" TB_TOPOLOGIES="${{ matrix.topology }}" tests/bench/topology-bench.sh
+        # ubuntu-26.04's sudo-rs does not carry the job's environment
+        # through `sudo -E`: the script ran on its own defaults, with no
+        # memory cap and its results outside the upload path, and said
+        # nothing. Hand the TB_* settings over in a file the root shell
+        # sources instead.
+        run: |
+          export TB_TOPOLOGIES="${{ matrix.topology }}"
+          export -p | grep -E '^declare -x (TB_[A-Z_]+|PATH)=' > "$RUNNER_TEMP/tb.env"
+          cat "$RUNNER_TEMP/tb.env"
+          sudo bash -c '. "$1" && exec tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env"
 
       - name: Evidence on failure
         if: failure()

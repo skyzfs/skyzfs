@@ -33,7 +33,11 @@ external origin → a read cache on top) and runs pgbench against each
 candidate cache — `nocache`, `baseline` (dm-cache writethrough, the
 shipped stack), `twovol` (cached PGDATA + uncached pg_wal volume),
 `bcache` (writearound over a two-segment backing) and `opencas`
-(write-invalidate; casadm built with `CAS_EXT_EXP=1`). Reports
+(write-invalidate; casadm built with `CAS_EXT_EXP=1`). Three more
+rows explore ZFS on a userspace block backend — `zfs`, `zfs-plain`
+(no compression, full-page writes on) and `zfs-l2arc` — with the pool
+on a transient dm-snapshot of one-sector chunks over a delayed image of
+the same database, so no write reads before it writes. Reports
 origin/pool/cache device bytes, tps and latency per run, so write
 amplification and origin (network) reads are measured where the
 design's costs land. Dispatch `.github/workflows/topology-bench.yml`
