@@ -364,8 +364,12 @@ PY
             fi
         fi
         if command -v zinject >/dev/null && try zinject_flush 30 zinject -d "$BDEV" -e io -T flush "$POOL"; then
-            lim 30 zinject > "$OUT/zinject-list.log" 2>&1
             read -r traced delta rc <<< "$(sync_with_flush_count injected)"
+            # Listed after the sync: its MATCH and INJECT columns say
+            # whether the fault fired at all. Without them a clean sync
+            # proves nothing.
+            lim 30 zinject > "$OUT/zinject-list.log" 2>&1
+            rec zinject_fired "$(awk '$4 == "flush" { printf "flush zios matched %s, failed %s", $(NF - 1), $NF }' "$OUT/zinject-list.log")"
             rec zinject_sync "zpool sync with every flush failing: rc $rc$([ "$rc" = 124 ] && echo ' (TIMEOUT)'); $traced flush requests reached the device, diskstats +$delta"
             rec zinject_pool_state "health $(lim 30 zpool list -H -o health "$POOL" 2>&1); $(pool_errors)"
             rec zinject_events "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"

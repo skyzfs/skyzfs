@@ -68,6 +68,7 @@ ROWS = [
     ('flush_requests', 'Flush requests during `zpool sync`'),
     ('zinject_from', '`zinject` comes from'),
     ('zinject_flush', '`zinject -e io -T flush` on the data vdev'),
+    ('zinject_fired', 'Failing flush: did the fault fire'),
     ('zinject_sync', 'Failing flush: `zpool sync`'),
     ('zinject_pool_state', 'Failing flush: pool state'),
     ('zinject_events', 'Failing flush: `zpool events` so far'),
