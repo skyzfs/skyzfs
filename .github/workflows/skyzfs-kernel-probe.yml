@@ -8,7 +8,8 @@ name: skyzfs-kernel-probe
 # renders the table of kernel against flag. All the logic is
 # `tests/kernel/ublk-probe.sh` and `tests/kernel/ublk-flags.py`.
 #
-# Record-only: a failed step is a finding in the table, not a red job.
+# A failed step is a finding in the table, not a red job, except the
+# pinned properties the design depends on: a FAIL there fails the job.
 on:
   workflow_dispatch:
     inputs:

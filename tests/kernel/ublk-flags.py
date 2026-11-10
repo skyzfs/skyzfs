@@ -64,20 +64,41 @@ ROWS = [
     ('zpool_trim', '`zpool trim -w`'),
     ('backing_file_after_trim', 'Backing file after trim'),
     ('pool_after', 'Pool state at the end'),
-    ('rec_export', 'Recovery: export'),
-    ('rec_serve', 'Recovery: served with `-r 1 -i 1`'),
-    ('rec_dev_flags', 'Recovery: flags of that device'),
-    ('rec_import', 'Recovery: import'),
-    ('rec_server_pid', 'Recovery: server pid killed with `kill -9`'),
-    ('rec_state_after_kill', 'Recovery: device state after the kill'),
-    ('rec_recover', 'Recovery: `ublk recover`'),
-    ('rec_recover_ms', 'Recovery: `ublk recover` took, ms'),
-    ('rec_state_after_recover', 'Recovery: device state afterwards'),
-    ('rec_writer', 'Recovery: the fsync writer'),
-    ('rec_scrub', 'Recovery: scrub'),
-    ('rec_scrub_result', 'Recovery: scrub result'),
-    ('rec_verify', 'Recovery: earlier files'),
-    ('rec_export_end', 'Recovery: final export'),
+    ('zdb_labels', 'Labels `zdb -l` reads from the device'),
+    ('flush_requests', 'Flush requests during `zpool sync`'),
+    ('zinject_flush', '`zinject -e io -T flush` on the data vdev'),
+    ('zinject_sync', 'Failing flush: `zpool sync`'),
+    ('zinject_pool_state', 'Failing flush: pool state'),
+    ('zinject_events', 'Failing flush: `zpool events` so far'),
+    ('zinject_after_clear', 'Failing flush: after removing the fault'),
+]
+for _p, _t in (('rec', 'Recovery with reissue (`-r 1 -i 1`)'), ('rec0', 'Recovery without reissue (`-r 1 -i 0`)')):
+    ROWS += [
+        (_p + '_export', _t + ': export'),
+        (_p + '_serve', _t + ': served'),
+        (_p + '_dev_flags', _t + ': device flags'),
+        (_p + '_import', _t + ': import'),
+        (_p + '_server_pid', _t + ': server pid killed with `kill -9`'),
+        (_p + '_state_after_kill', _t + ': device state after the kill'),
+        (_p + '_inflight_at_kill', _t + ': requests in flight then (read, write)'),
+        (_p + '_recover', _t + ': `ublk recover`'),
+        (_p + '_recover_ms', _t + ': `ublk recover` took, ms'),
+        (_p + '_state_after_recover', _t + ': device state afterwards'),
+        (_p + '_pool_after_recover', _t + ': pool afterwards'),
+        (_p + '_zpool_clear', _t + ': `zpool clear`'),
+        (_p + '_pool_after_clear', _t + ': pool after `zpool clear`'),
+        (_p + '_writer', _t + ': the fsync writer'),
+        (_p + '_scrub', _t + ': scrub'),
+        (_p + '_scrub_result', _t + ': scrub result'),
+        (_p + '_verify', _t + ': earlier files'),
+        (_p + '_outcome', _t + ': outcome'),
+        (_p + '_export_end', _t + ': final export'),
+    ]
+PINS = [
+    ('pin_no_partition_table', 'No partition table on the vdev (§6.2)'),
+    ('pin_label_at_byte_0', 'First label at byte 0 (§4.2)'),
+    ('pin_flush_delivered', 'Flushes reach the ublk queue (§4.2)'),
+    ('pin_recovery_reissue', 'Daemon loss with reissue is invisible to ZFS (§4.2)'),
 ]
 
 
@@ -142,9 +163,17 @@ def main():
 
     names = [p['res'].get('kernel', os.path.basename(p['dir'])) for p in probes]
     print('## SkyZFS kernel probe\n')
+    pinned = [(k, label) for k, label in PINS if any(p['res'].get(k) for p in probes)]
+    if pinned:
+        print('**Pinned properties.** A FAIL fails the probe.\n')
+        print('| | ' + ' | '.join(names) + ' |')
+        print('|---|' + '---|' * len(probes))
+        for key, label in pinned:
+            print(f'| {label} | ' + ' | '.join(cell(p['res'].get(key)) for p in probes) + ' |')
+        print('\n**Findings.**\n')
     print('| | ' + ' | '.join(names) + ' |')
     print('|---|' + '---|' * len(probes))
-    known = {k for k, _ in ROWS}
+    known = {k for k, _ in ROWS} | {k for k, _ in PINS}
     extra = sorted({k for p in probes for k in p['res']} - known)
     for key, label in ROWS + [(k, k) for k in extra]:
         vals = [p['res'].get(key) for p in probes]
