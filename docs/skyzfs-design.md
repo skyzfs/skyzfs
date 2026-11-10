@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft for review |
+| Status | Draft. Decisions of 2026-11-10 recorded in §10.1 |
 | Date | 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
@@ -45,7 +45,7 @@ The study also produced three rules that this design adopts: the log device must
 
 - Multi-writer access to one volume.
 - Application-consistent snapshots (VSS writers, database quiesce hooks). ZFS snapshots are atomic across the pool, which is crash consistency for every dataset at once.
-- zvols carrying NTFS or APFS. The first clients expose ZFS datasets.
+- zvols carrying NTFS or APFS. Clients expose ZFS datasets (decision D1, §10.1).
 - Kubernetes integration. `skynbd-csi-design.md` will need its own revision once M3 lands.
 - Client user interface design.
 
@@ -228,7 +228,7 @@ sequenceDiagram
 - **No freeze, no pause.** Applications keep writing throughout. The study measured no cost.
 - **Atomic visibility.** A snapshot does not exist for other nodes until one compare-and-swap on the ref. A crash before it leaves no trace, and the existing commit protocol and its crash matrix apply unchanged.
 - **Retention** is ref deletion plus `zfs destroy` locally. Garbage collection reclaims what no ref reaches.
-- **Recovery point.** Between published snapshots the newest cut in object storage is the recovery point. With a local log device, a cut holds the last synced transaction group and not the fsynced tail (§6.1).
+- **Recovery point.** Between published snapshots the newest cut in object storage is the recovery point. With a local log device, a cut holds the last synced transaction group and not the fsynced tail (§6.1). That is accepted through M4 (decision D2). §5.5 sketches how the tail is recovered later.
 
 ### 5.3 What is uploaded
 
@@ -261,6 +261,21 @@ sequenceDiagram
 - **`-f` and `-m`.** The cut is of a pool that was imported elsewhere, and its log device is not in the cut.
 - **Read-only browsing** needs no clone. The daemon exposes the ref read-only and the pool is imported with `readonly=on`, which skips log replay.
 
+### 5.5 Later: streaming the intent log
+
+Through M4 a node loss costs everything since the newest uploaded cut. A reboot or a daemon crash costs nothing, because the log device is local and survives both. A later milestone (M9) closes the gap for tiers that need it, by shipping the intent log off the node continuously.
+
+The sketch, to be designed in its own document before M9 starts:
+
+- **The log device moves onto the daemon** as a second block target. Its writes go to the same local write log as the data vdev's, in one order.
+- **The daemon uploads that ordered log as it is written**, as short-lived tail objects, in addition to the cuts.
+- **A restore point is then any flush boundary in the stream.** Both devices as of one flush are exactly what a power cut would have left. ZFS imports that image and replays the intent log, which recovers every transaction fsynced before that point.
+- **Tail objects are garbage once a later cut is published**, so they cost upload bandwidth but little storage.
+
+Why both devices must come from the same point: the pool at a cut points at the start of a log chain, and ZFS frees and reuses log blocks once their transaction group has synced. A log device image taken much later than the cut no longer holds that chain, and replay would stop at the first block that does not belong. Pairing a cut with an arbitrary later log image is therefore not safe. Restoring both to one flush boundary is.
+
+Open for that design: how much the stream adds to upload volume (intent-log blocks were three quarters of device writes without a separate log[^study]), whether a flush may wait for the stream to bound the loss to zero, and how the stream is throttled on a slow uplink.
+
 ## 6. The ZFS layer
 
 ### 6.1 Pool layout
@@ -268,7 +283,7 @@ sequenceDiagram
 One pool per protected volume: one data vdev on the transport, and one log device on local flash.
 
 - **The log device is allocated storage.** A partition, or a file written through once. On a sparse file a lone commit took up to 2.4 times as long[^study].
-- **The log device is local on purpose.** It keeps the intent log out of the upload stream. The price is that a node loss drops what was fsynced since the last synced transaction group. That fits a product whose promise is minute-level snapshots, and it must be stated to users.
+- **The log device is local on purpose.** It keeps the intent log out of the upload stream. The price is that a node loss drops what was fsynced since the newest uploaded cut. That fits a product whose promise is minute-level snapshots, it is accepted through M4 (decision D2), and it must be stated to users. M9 removes it for the tiers that need more (§5.5).
 
 ### 6.2 Portability rules
 
@@ -328,6 +343,7 @@ flowchart LR
   M5 --> M6["M6 macOS client"]
   M5 --> M7["M7 Windows client"]
   M4 --> M8["M8 Product beta"]
+  M4 --> M9["M9 Streaming<br/>intent-log backup"]
   M6 --> M8
   M7 --> M8
   M5 -.-> H["H Userspace ZFS spike<br/>FSKit, WinFsp"]
@@ -347,6 +363,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M6** macOS client, alpha | L | LDI provider in the port. Daemon on launchd. Local log and cache on APFS. Installer with the extension approval flow. Keychain for keys. | Mac snapshot restores on Linux and Linux snapshot restores on the Mac, verified by checksum. Survives sleep and wake, network loss and daemon restart. Commit latency measured with both flush modes. |
 | **M7** Windows client, alpha | L | Path dispatch in the port's disk vdev. Daemon as a service. Signed driver. | The same cross-OS restore pairs with Windows. Loads with memory integrity enabled. |
 | **M8** Product beta | L | Client UI, snapshot browser, policies, two object-store targets at once, fleet view for small businesses, security review. | External beta users restore without help. |
+| **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
 | **H** Userspace ZFS spike | S | A read-only pool served through FSKit from a process that links `libzpool`. | A written go or no-go for a kernel-free client. |
 
 Decision gates:
@@ -356,6 +373,7 @@ Decision gates:
 | G1 | M1 | Does ublk with one copy meet the model's numbers? If not, adopt the zero-copy modes before M2. |
 | G2 | M3 | Is cold restore good enough for the server case? If not, the read cache gets a milestone of its own before M4. |
 | G3 | M5 | Carry patches on the two ports, or switch M6 and M7 to a generic block device? Decided by the measured size and rebase cost of the frontend. |
+| G5 | M6 and M7 in alpha | Is the frontend stable enough to offer to the port maintainers (decision D3)? |
 | G4 | Before M6 leaves alpha | Is a kernel extension still acceptable on current macOS for this audience? If not, the macOS client follows the userspace path from H. |
 
 ## 10. Risks and open questions
@@ -363,7 +381,7 @@ Decision gates:
 | Risk | Consequence | Mitigation |
 |---|---|---|
 | Apple removes or further restricts kernel extensions | No native macOS client on this design | Hedge H and gate G4. The engine and contract do not depend on the transport. |
-| Rebase cost of patches on two ports that follow upstream | Ongoing maintenance | Keep the hook minimal and below the disk vdev. Offer the frontend to the port maintainers. Gate G3. |
+| Rebase cost of patches on two ports that follow upstream | Ongoing maintenance, carried alone until gate G5 | Keep the hook minimal and below the disk vdev. Rebase in CI against both ports' development branches from M5 on, so drift shows early. Gates G3 and G5. |
 | Driver signing and distribution on Windows | Delay, and a dependency on Microsoft's process | Start the EV certificate and Hardware Dev Center account during M5. |
 | Daemon and kernel deadlock under memory pressure | Hung machine | Locked memory, no allocation in the daemon's I/O path, daemon files off its own pools, a stress test in the conformance suite. |
 | Flush cost on consumer SSDs, above all `F_FULLFSYNC` on macOS | Slow commits | Measure in M6. The log device is the only place that pays it per commit. |
@@ -372,11 +390,15 @@ Decision gates:
 | Licensing | The frontend lives in CDDL code. The daemon is FSL. | Publish the frontend under CDDL and the protocol header under a permissive licence. Needs legal review. |
 | twovol's 2 s stalls in the benchmark are unexplained | The far-tail comparison may flatter ZFS without snapshots | Does not affect the snapshot result. Listed in the study as open. |
 
-Open questions for the reviewer:
+### 10.1 Decisions
 
-1. Is a ZFS dataset the right thing to show a Mac or Windows user, or should the first desktop client be a zvol formatted natively? This document assumes datasets.
-2. Is losing the fsynced tail since the last synced transaction group on node loss acceptable for every tier of the product, or does a server tier need the intent log in the upload stream?
-3. Should the frontend be offered to the port maintainers from the start? That would cut the rebase cost and would make the protocol public early.
+Recorded 2026-11-10.
+
+| # | Question | Decision |
+|---|---|---|
+| D1 | What does a Mac or Windows user see: a ZFS dataset, or a zvol formatted natively? | **Datasets.** Snapshots stay freeze-free and atomic across the pool. zvols remain a non-goal. |
+| D2 | Is losing the fsynced tail on node loss acceptable? | **Yes for M1, and through M4.** The log device stays local. Streaming backup of the intent log comes later as M9 (§5.5). |
+| D3 | Offer the frontend to the port maintainers from the start? | **No.** They are better served by a stable proof of concept that is likely to stick. The frontend is developed out of tree and offered at gate G5. |
 
 ## References
 
