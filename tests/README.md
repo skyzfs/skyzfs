@@ -33,21 +33,24 @@ external origin → a read cache on top) and runs pgbench against each
 candidate cache — `nocache`, `baseline` (dm-cache writethrough, the
 shipped stack), `twovol` (cached PGDATA + uncached pg_wal volume),
 `bcache` (writearound over a two-segment backing) and `opencas`
-(write-invalidate; casadm built with `CAS_EXT_EXP=1`). Three more
-rows explore ZFS on a userspace block backend — `zfs`, `zfs-plain`
-(no compression, full-page writes on), `zfs-l2arc` and `zfs-slog`
-(ZIL on a separate local log device) — with the pool
-on a transient dm-snapshot of one-sector chunks over a delayed image of
-the same database, so no write reads before it writes. Reports
-`TB_SNAP_MODES` takes snapshots during the measured window — thin
+(write-invalidate; casadm built with `CAS_EXT_EXP=1`). More rows
+explore ZFS on a userspace block backend — `zfs`, `zfs-plain` (no
+compression, full-page writes on), `zfs-l2arc`, and `zfs-slog` (ZIL on
+a separate local log device) with its `-l2arc` and `-rcache` variants
+— with the pool on a transient dm-snapshot of one-sector chunks over a
+delayed image of the same database, so no write reads before it
+writes. `TB_SNAP_MODES` takes snapshots during the measured window — thin
 with a freeze, thin with a suspend only, or `zfs snapshot` — as phases
 on one stack, and reports tail latency beside throughput. Reports
 origin/pool/cache device bytes, tps and latency per run, so write
 amplification and origin (network) reads are measured where the
-design's costs land. Dispatch `.github/workflows/topology-bench.yml`
-for a shape check, or run it as root on a workstation NVMe for real
-numbers: `sudo TB_WORK=/nvme/tb tests/bench/topology-bench.sh`. Findings
-so far: `docs/skynbd-postgres-study.md`.
+design's costs land. Two runner VMs differ by more than most of these
+stacks do, so the workflow's `sequence` input runs several labelled
+configurations one after another on one runner. Dispatch
+`.github/workflows/topology-bench.yml` for a shape check, or run it as
+root on a workstation NVMe for real numbers:
+`sudo TB_WORK=/nvme/tb tests/bench/topology-bench.sh`. Findings so
+far: `docs/skynbd-postgres-study.md`.
 
 ## Lessons encoded from the first nightly campaign (5 rounds to green)
 

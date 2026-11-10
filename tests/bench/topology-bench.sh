@@ -141,9 +141,14 @@
 #   TB_ZFS_COMPRESSION=lz4  compression (zfs-plain forces off)
 #   TB_ZFS_FPW=off          full_page_writes (zfs-plain forces on)
 #   TB_ZFS_ASHIFT=12        pool ashift; also the dm-snapshot chunk
-#   TB_ZFS_GB=              pool size (default 2x TB_VOL_GB: copy-on-write
-#                           needs free space, and the window snapshot pins
-#                           what the window overwrites)
+#   TB_ZFS_GB=              pool size (default 32, or 2x TB_VOL_GB if that
+#                           is more). ZFS charges dirty data against free
+#                           space at spa_asize_inflation (24) times its
+#                           size and makes every writer wait for a
+#                           transaction group once that estimate exceeds
+#                           the pool, so a pool of a few GiB stalls at a
+#                           few hundred MiB of dirty data. The images are
+#                           sparse: the size costs nothing until written
 #   TB_ZFS_ARC_MB=          ARC cap (default TB_MEM_LIMIT - shared_buffers;
 #                           uncapped when TB_MEM_LIMIT is unset)
 #   TB_ZFS_WINDOW_SNAPSHOT=1  snapshot both datasets at the start of each
@@ -153,12 +158,13 @@
 #                           it (the snapshot pins every overwritten block
 #                           for the window).
 #   TB_ZFS_SLOG_MB=1024     size of zfs-slog's log device
-#   TB_ZFS_SLOG_PREALLOC=0  1 writes the log device's image through once
-#                           before use. The image is a sparse file, so the
-#                           first write to each block also allocates it in
-#                           the host filesystem, and the flush behind an
-#                           fsync then commits that filesystem's journal —
-#                           a cost a real flash partition does not have
+#   TB_ZFS_SLOG_PREALLOC=1  write the log device's image through once
+#                           before use. The image is a sparse file, so
+#                           otherwise the first write to each block also
+#                           allocates it in the host filesystem, and the
+#                           flush behind an fsync then commits that
+#                           filesystem's journal — a cost a real flash
+#                           partition does not have. 0 leaves it sparse
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -431,10 +437,10 @@ ZFS_WAL_RECORDSIZE=${TB_ZFS_WAL_RECORDSIZE:-128k}
 ZFS_COMPRESSION=${TB_ZFS_COMPRESSION:-lz4}
 ZFS_FPW=${TB_ZFS_FPW:-off}
 ZFS_ASHIFT=${TB_ZFS_ASHIFT:-12}
-ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 ))}
+ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 > 32 ? VOL_GB * 2 : 32 ))}
 ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
 ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
-ZFS_SLOG_PREALLOC=${TB_ZFS_SLOG_PREALLOC:-0}
+ZFS_SLOG_PREALLOC=${TB_ZFS_SLOG_PREALLOC:-1}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
@@ -492,8 +498,10 @@ mkdir -p "$OUT" "$WORK"
 # and a COW store that copy-on-write can sweep across the whole vdev).
 STACK_MB=0
 [ -n "$ANY_THIN" ] && STACK_MB=$(( POOL_GB * 1024 ))
-if [ -n "$ANY_ZFS" ] && [ $(( ZFS_GB * 2 * 1024 + 64 )) -gt "$STACK_MB" ]; then
-    STACK_MB=$(( ZFS_GB * 2 * 1024 + 64 ))
+# ZFS: the COW store can fill to the pool's size; the origin image is as
+# large but holds only the database that was copied into it.
+if [ -n "$ANY_ZFS" ] && [ $(( (ZFS_GB + VOL_GB) * 1024 + 64 )) -gt "$STACK_MB" ]; then
+    STACK_MB=$(( (ZFS_GB + VOL_GB) * 1024 + 64 ))
 fi
 # zfs-slog-l2arc's cache device: its own knob, else twice the ARC cap,
 # else twice the database.
@@ -505,7 +513,7 @@ NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + ZFS_SLOG_MB + L2ARC_NEED_MB + 
 AVAIL_MB=$(df -Pm "$WORK" | awk 'NR==2 {print $4}')
 if [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
     echo "not enough space under $WORK: ${AVAIL_MB} MiB free, worst case needs ${NEED_MB} MiB" \
-         "(lower TB_SCALE / TB_MAX_WAL_GB, or point TB_WORK at a bigger disk)" >&2
+         "(lower TB_SCALE / TB_MAX_WAL_GB / TB_ZFS_GB, or point TB_WORK at a bigger disk)" >&2
     exit 64
 fi
 MNT="$WORK/mnt"; MNT_WAL="$WORK/mnt-wal"; SOCK="$WORK/sock"
