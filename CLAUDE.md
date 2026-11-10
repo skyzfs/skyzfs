@@ -85,6 +85,10 @@ when it merges.
 - **The workspace needs two system packages to build**, because of
   `skynbd-agent`:
   `apt-get update && apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev`.
+- **Run `rustup update stable` before the local gates.** CI installs the
+  current stable toolchain, and a container's can be months older. A
+  newer clippy has lints an older one does not, so "clean locally" on
+  an old toolchain is not clean in CI.
 - **CI coverage.** `ci.yml`, `coverage.yml` and `e2e.yml` run on `main`
   and on every pull request, whatever its base. `skyzfs-ci.yml` runs
   shellcheck, fmt, clippy and the workspace tests on the pushes those
