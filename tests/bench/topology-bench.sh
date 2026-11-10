@@ -1323,7 +1323,7 @@ run_workload() { # topology workload [snapshot mode]
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
         ZFS_WIN=""
     fi
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" > "$OUT/$tag.json" <<'PY'
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
@@ -1350,6 +1350,7 @@ bd, bp, bo = load(base + '.before'); ad, ap, ao = load(base + '.after')
 MB = 1 << 20
 r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {}}
 if run_label: r['label'] = f'{topo} [{run_label}]'
+r['clients'] = int(sys.argv[10])
 for name in ad:
     d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
