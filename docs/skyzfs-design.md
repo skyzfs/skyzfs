@@ -116,6 +116,7 @@ Every transport delivers the same operations to the daemon and must honour the s
 | Largest read or write | 1 MiB. A transport splits anything larger (§6.2 caps `recordsize` to match) |
 | Discard and write_zeroes | Any aligned range inside the device |
 | Volatile write cache | Yes: flushes are meaningful and must be delivered |
+| Forced-unit-access writes | Not advertised. ZFS does not send them. A transport that delivers one treats it as a write followed by a flush |
 | Discard | Supported |
 | Read-only | Set for a snapshot exposed for browsing |
 
