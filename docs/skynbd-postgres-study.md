@@ -839,25 +839,30 @@ L2ARC feed ran at module defaults (ZFS 2.4.1, which has no
 
 Throughput, tps:
 
-| origin | recordsize | workload | twovol | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
-|---|---|---|---|---|---|---|
-| 10 ms | 8k | tpcb | 3163 | 1413 | 1425 | 2307 |
-| 10 ms | 8k | select | 18820 | 16578 | 23593 | 23080 |
-| 10 ms | 16k | tpcb | – | 2516 | 2470 | 4105 |
-| 10 ms | 16k | select | – | 31359 | 30355 | 36696 |
-| 3 ms | 8k | tpcb | 3428 | 3341 | 4047 | – |
-| 3 ms | 8k | select | 18818 | 24158 | 52893 | – |
-| 3 ms | 16k | tpcb | – | 5172 | 3455 | – |
-| 3 ms | 16k | select | – | 73086 | 30910 | – |
+| origin | recordsize | workload | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|---|
+| 10 ms | 8k | tpcb | 1413 | 1425 | 2307 |
+| 10 ms | 8k | select | 16578 | 23593 | 23080 |
+| 10 ms | 16k | tpcb | 2516 | 2470 | 4105 |
+| 10 ms | 16k | select | 31359 | 30355 | 36696 |
+| 3 ms | 8k | tpcb | 3341 | 4047 | 3446 |
+| 3 ms | 8k | select | 24158 | 52893 | 24046 |
+| 3 ms | 16k | tpcb | 5172 | 3455 | 3894 |
+| 3 ms | 16k | select | 73086 | 30910 | 43009 |
+
+twovol, which is ext4 and has no recordsize, ran beside the 8k rows:
+3163 tps on tpcb and 18820 on select at 10 ms, 3428 and 18818 at 3 ms.
 
 Flash writes on tpcb, MB per thousand transactions:
 
-| origin | recordsize | twovol | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
-|---|---|---|---|---|---|
-| 10 ms | 8k | 25.2 | 16.6 | 24.0 | 15.4 |
-| 10 ms | 16k | – | 12.5 | 17.1 | 11.1 |
-| 3 ms | 8k | 22.9 | 12.4 | 17.6 | – |
-| 3 ms | 16k | – | 9.9 | 15.0 | – |
+| origin | recordsize | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|
+| 10 ms | 8k | 16.6 | 24.0 | 15.4 |
+| 10 ms | 16k | 12.5 | 17.1 | 11.1 |
+| 3 ms | 8k | 12.4 | 17.6 | 12.6 |
+| 3 ms | 16k | 9.9 | 15.0 | 10.8 |
+
+twovol wrote 25.2 at 10 ms and 22.9 at 3 ms.
 
 - **An L2ARC of twice the ARC helps reads and not tpcb.** At 10 ms
   and 8k it served 2.2 million reads on select-only and matched the
@@ -882,10 +887,36 @@ Flash writes on tpcb, MB per thousand transactions:
 - **16k records plus the cache under the vdev was the fastest tpcb
   row at 10 ms** (4105), above twovol on a different machine, at less
   than half twovol's flash writes.
-- **Machines differ by more than 2x.** The two 3 ms, 16k select cells
-  ran the same in-memory workload (ARC hit rate 100%, L2ARC idle) and
-  measured 73086 and 30910. Differences smaller than that between
-  rows in CPU-bound cells are not evidence of anything.
+- **At 3 ms the cache under the vdev makes no measurable difference
+  at either recordsize**, as in §10.5.
+- **Machines differ by more than 2x.** The 3 ms, 16k select cells ran
+  the same in-memory workload (ARC hit rate 100%, both caches idle)
+  and measured 73086, 30910 and 43009. Differences smaller than that
+  between rows in CPU-bound cells are not evidence of anything.
+
+**The L2ARC feed knobs** (`TB_ZFS_PARAMS`), zfs-slog-l2arc at 10 ms
+with 8k records:
+
+| setting | tpcb tps | tpcb flash MB/ktxn | L2ARC written in tpcb | select tps | ARC misses served by L2ARC, select |
+|---|---|---|---|---|---|
+| defaults | 1628 | 23.6 | 3.5 GB | 30432 | 96% |
+| `l2arc_mfuonly=1` | 1675 | 19.0 | 1.3 GB | 31211 | 94% |
+| `l2arc_mfuonly=2` | 1443 | 19.4 | 1.3 GB | 23170 | 95% |
+| `l2arc_write_max` 4 MiB/s | 1605 | 23.1 | 3.5 GB | 45037 | 97% |
+| `l2arc_noprefetch=0 l2arc_headroom=0`, three runs | 408, 906, 1387 | 29.2, 26.1, 24.2 | 1.3, 2.3, 3.2 GB | 8630, 20088, 23189 | 91%, 96%, 96% |
+
+- **`l2arc_mfuonly` is the one worth setting.** Caching only
+  repeatedly used blocks cut what tpcb wrote to the L2ARC by about
+  60% and its flash overhead from about +40% to about +15% over
+  zfs-slog's 16.6, and kept the select-only benefit.
+- **No setting moves tpcb.** Its misses are first reads of a block,
+  and an L2ARC holds only what the ARC has already seen.
+- **Lowering `l2arc_write_max` did nothing**: the feed never reached
+  the cap.
+- **`l2arc_noprefetch=0 l2arc_headroom=0` bought nothing** and two of
+  its three runs were well below the default's tpcb. Whether that is
+  the setting or the machines is not settled; there is no reason to
+  use it.
 
 ### 10.7 What this means for the design
 
@@ -919,8 +950,9 @@ Flash writes on tpcb, MB per thousand transactions:
 - recordsize 16k on data that does not compress 4x, and with the ARC
   smaller than the compressed database, to separate read-ahead from
   compression.
-- The L2ARC feed knobs (`l2arc_noprefetch`, `l2arc_headroom`,
-  `l2arc_mfuonly`, `l2arc_write_max`); `TB_ZFS_PARAMS` sets them.
+- Why some zfs-slog tpcb cells at 10 ms run several times slower than
+  others with a p99 of 140 to 200 ms (366 and 468 tps in 120 s
+  windows against 720; 408 against 1387 in §10.6).
 - Why twovol stalls for whole seconds with no snapshots at all (2 and
   7 stalled seconds in §10.4's `none` phases).
 - Snapshots during the window on the 10 ms origin.
