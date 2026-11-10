@@ -69,6 +69,12 @@
 #   zfs-slog  zfs plus a separate log device on local flash, so ZIL
 #             blocks never reach the vdev the backend would serve: the
 #             ZFS-native form of the two-volume split.
+#   zfs-slog-rcache  zfs-slog plus a dm-cache (writethrough, smq, the
+#             same policy and TB_CACHE_PCT as baseline) on the ORIGIN
+#             path, under the dm-snapshot: the stand-in for a backend
+#             that keeps what it fetched on local flash. The origin is
+#             immutable, so this cache only ever sees reads: nothing is
+#             written twice and nothing can go stale.
 #
 # For these rows `origin` is the delayed pool image, `pool` is the
 # dm-snapshot's COW device (the local flash every vdev write lands on),
@@ -92,7 +98,7 @@
 #                           (default /var/tmp/topology-bench)
 #   TB_TOPOLOGIES="..."     subset of: nocache baseline twovol twovol-origin
 #                           twovol-hydrated bcache opencas zfs zfs-plain
-#                           zfs-l2arc zfs-slog
+#                           zfs-l2arc zfs-slog zfs-slog-rcache
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -148,7 +154,11 @@
 #                           stacks `freeze` is fsfreeze → suspend →
 #                           create_snap → resume → thaw (what the agent's
 #                           capture does) and `suspend` is the same without
-#                           the freeze: a crash-consistent snapshot. The
+#                           the freeze: a crash-consistent snapshot. `sync`
+#                           is `suspend` after a syncfs of the filesystem,
+#                           which writes the dirty backlog out first without
+#                           blocking writers (the flush a freeze does,
+#                           without the freeze). The
 #                           ZFS stacks have one mechanism, `zfs snapshot`,
 #                           so any mode other than none runs it once.
 #                           twovol snapshots both volumes in one bracket.
@@ -183,8 +193,8 @@ import glob, json, os, sys
 out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
-         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog']
-modes = ['none', 'suspend', 'freeze', 'zfs']
+         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-rcache']
+modes = ['none', 'sync', 'suspend', 'freeze', 'zfs']
 def mode(r): return r.get('snap', {}).get('mode', 'none')
 def label(r): return r['topology'] + ('' if mode(r) == 'none' else ' +' + mode(r))
 runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99,
@@ -281,7 +291,7 @@ if [ "${1:-}" = summarize ]; then
 fi
 
 WORK=${TB_WORK:-/var/tmp/topology-bench}
-TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog"}
+TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"}
 WORKLOADS=${TB_WORKLOADS:-"tpcb select"}
 SCALE=${TB_SCALE:-100}
 CLIENTS=${TB_CLIENTS:-8}
@@ -319,8 +329,8 @@ for m in $SNAP_MODES; do
     case $m in
         none) ;;
         freeze) need fsfreeze; ANY_SNAP=1 ;;
-        suspend) ANY_SNAP=1 ;;
-        *) echo "unknown TB_SNAP_MODES entry: $m (none|freeze|suspend)" >&2; exit 64 ;;
+        suspend|sync) ANY_SNAP=1 ;;
+        *) echo "unknown TB_SNAP_MODES entry: $m (none|sync|suspend|freeze)" >&2; exit 64 ;;
     esac
 done
 if [ "$SNAP_INTERVAL" -lt 1 ] || [ "$SNAP_KEEP" -lt 1 ]; then
@@ -367,7 +377,7 @@ for t in $TOPOLOGIES; do
         nocache|baseline|twovol|twovol-origin|twovol-hydrated) ANY_THIN=1 ;;
         bcache) need make-bcache; ANY_THIN=1 ;;
         opencas) need casadm; ANY_THIN=1 ;;
-        zfs|zfs-plain|zfs-l2arc|zfs-slog) need zpool zfs tar; ANY_ZFS=1 ;;
+        zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-rcache) need zpool zfs tar; ANY_ZFS=1 ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
@@ -463,7 +473,7 @@ ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
-SNAP_PID=""; SNAP_STOP=""
+SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -513,7 +523,7 @@ teardown_topology() {
         BCACHE_DEV=""; BCACHE_CSET=""
     fi
     for d in tb-rcache tb-cmeta tb-cdata tb-bback tb-ccache tb-wal tb-data tb-pool tb-tdata tb-tmeta \
-             tb-zdev tb-zorigin; do
+             tb-zdev tb-zrcache tb-zcmeta tb-zcdata tb-zorigin; do
         dmsetup remove "$d" 2>/dev/null
     done
     for l in "$POOL_LOOP" "$CACHE_LOOP" "$BSB_LOOP" "$ZORIGIN_LOOP" "$ZSRC_LOOP" "$SLOG_LOOP"; do
@@ -522,7 +532,7 @@ teardown_topology() {
     # The ZFS origin is per topology (its properties differ), and big.
     rm -f "$WORK/zfs-origin.img"
     POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""
-    ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""; SLOG_LOOP=""
+    ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""; SLOG_LOOP=""; ZFS_RCACHE=""
     [ "$errexit" = 1 ] && set -e
     return 0
 }
@@ -754,13 +764,43 @@ EOF
     losetup -d "$ZORIGIN_LOOP"; ZORIGIN_LOOP=""
 }
 build_zfs_stack() { # the pool on a no-read-before-write device over the delayed origin image
-    ZORIGIN_LOOP=$(attach_loop_ro "$WORK/zfs-origin.img")
-    local odev=$ZORIGIN_LOOP sect chunk
+    local odev sect chunk ro=--readonly
+    if [ -n "$ZFS_RCACHE" ]; then
+        # dm-cache opens its origin for writing even though a
+        # writethrough cache that only sees reads never writes it, so
+        # the origin path cannot be read-only here.
+        ZORIGIN_LOOP=$(attach_loop "$WORK/zfs-origin.img"); ro=""
+    else
+        ZORIGIN_LOOP=$(attach_loop_ro "$WORK/zfs-origin.img")
+    fi
+    odev=$ZORIGIN_LOOP
     sect=$(sectors "$ZORIGIN_LOOP")
     if [ "$ORIGIN_DELAY_MS" -gt 0 ]; then
-        dmsetup create --readonly tb-zorigin --table \
+        # shellcheck disable=SC2086  # $ro is one flag or nothing
+        dmsetup create $ro tb-zorigin --table \
             "0 $sect delay $ZORIGIN_LOOP 0 $ORIGIN_DELAY_MS $ZORIGIN_LOOP 0 0"
         odev=/dev/mapper/tb-zorigin
+    fi
+    if [ -n "$ZFS_RCACHE" ]; then
+        # The backend's read cache: what was fetched from the origin
+        # stays on local flash. Below the dm-snapshot, so it sees only
+        # reads of never-written blocks; locally written blocks do not
+        # compete for it, and no write is ever doubled.
+        build_cache_dev
+        local total meta data block
+        total=$(sectors "$CACHE_LOOP")
+        meta=$(( total / 500 / 8 * 8 )); [ "$meta" -lt $(( 8 << 11 )) ] && meta=$(( 8 << 11 ))
+        block=$(( CACHE_BLOCK_KB * 2 ))
+        data=$(( (total - meta) / block * block ))
+        zero_head "$CACHE_LOOP"  # "format me"
+        dmsetup create tb-zcmeta --table "0 $meta linear $CACHE_LOOP 0"
+        dmsetup create tb-zcdata --table "0 $data linear $CACHE_LOOP $meta"
+        dmsetup create tb-zrcache --table \
+            "0 $sect cache /dev/mapper/tb-zcmeta /dev/mapper/tb-zcdata $odev $block 1 writethrough smq 0"
+        if [ -n "$MIGRATION_THRESHOLD" ]; then
+            dmsetup message tb-zrcache 0 "migration_threshold $MIGRATION_THRESHOLD"
+        fi
+        odev=/dev/mapper/tb-zrcache
     fi
     # The COW store is local flash. Transient ("N"): no on-disk
     # exception metadata, so a flush is the data device's flush alone.
@@ -902,6 +942,7 @@ topo_zfs_l2arc() {
     zpool add -f "$ZFS_POOL" cache "$CACHE_LOOP"
     log "l2arc: $CACHE_LOOP write_max=$(cat /sys/module/zfs/parameters/l2arc_write_max) noprefetch=$(cat /sys/module/zfs/parameters/l2arc_noprefetch)"
 }
+topo_zfs_slog_rcache() { ZFS_RCACHE=1; topo_zfs_slog; }
 topo_zfs_slog() {
     topo_zfs
     # The log device is plain local flash: ZIL blocks land here and
@@ -953,18 +994,26 @@ drop_snap() { # n: delete snapshot n (untimed; its cost lands in the workload)
     return 0
 }
 snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file appears
-    local out=$1 mode=$2 n=0 i t0 t1 rc
+    local out=$1 mode=$2 n=0 i tp t0 t1 rc
     set +e
     while :; do
         for (( i = 0; i < SNAP_INTERVAL; i++ )); do
             [ -e "$SNAP_STOP" ] && return 0
             sleep 1
         done
+        # `sync`: write the dirty backlog out before the snapshot, as a
+        # freeze would, but with writers running. Not part of the
+        # bracket: nothing is paused while it runs.
+        tp=$(date +%s%N); rc=0
+        if [ "$mode" = sync ] && [ -z "$ZFS_UP" ]; then
+            sync -f "$MNT" || rc=1
+            if [ -n "$TWO_VOL" ]; then sync -f "$MNT_WAL" || rc=1; fi
+        fi
         t0=$(date +%s%N)
-        take_snap "$n" "$mode"; rc=$?
+        take_snap "$n" "$mode" || rc=1
         t1=$(date +%s%N)
-        # epoch-seconds  bracket-ms  rc
-        echo "$(( t1 / 1000000000 )) $(( (t1 - t0) / 1000000 )) $rc" >> "$out"
+        # epoch-seconds  bracket-ms  rc  ms-before-the-bracket
+        echo "$(( t1 / 1000000000 )) $(( (t1 - t0) / 1000000 )) $rc $(( (t0 - tp) / 1000000 ))" >> "$out"
         [ "$n" -ge "$SNAP_KEEP" ] && drop_snap $(( n - SNAP_KEEP ))
         n=$(( n + 1 ))
     done
@@ -993,7 +1042,7 @@ snapshot() { # file
             baseline|twovol*) echo "dmcache $(dmsetup status tb-rcache)" ;;
             bcache) echo "bcache $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_hits") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_misses") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_bypass_hits") $(cat "/sys/block/$(basename "$BCACHE_DEV")/bcache/stats_total/cache_bypass_misses")" ;;
             opencas) casadm --stats --cache-id 1 --core-id 1 --output-format csv 2>/dev/null | sed 's/^/cas /' ;;
-            zfs*) zfs_stats ;;
+            zfs*) zfs_stats; [ -z "$ZFS_RCACHE" ] || echo "dmcache $(dmsetup status tb-zrcache)" ;;
         esac
     } > "$1"
 }
@@ -1039,7 +1088,7 @@ run_workload() { # topology workload [snapshot mode]
         # The next phase starts from a stack with no snapshots.
         taken=$(wc -l < "$OUT/$tag.snaps")
         for (( i = taken > SNAP_KEEP ? taken - SNAP_KEEP : 0; i < taken; i++ )); do drop_snap "$i"; done
-        log "$tag: $taken snapshots, bracket ms: $(awk '{ printf "%s%s", sep, $2; sep = " " } $3 != 0 { bad++ } END { if (bad) printf "  (%d FAILED)", bad }' "$OUT/$tag.snaps")"
+        log "$tag: $taken snapshots, bracket ms (+ms before it): $(awk '{ printf "%s%s(+%s)", sep, $2, $4; sep = " " } $3 != 0 { bad++ } END { if (bad) printf "  (%d FAILED)", bad }' "$OUT/$tag.snaps")"
     fi
     if [ -n "$ZFS_WIN" ]; then
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
@@ -1079,12 +1128,13 @@ m = re.search(r'tps = ([\d.]+)', txt); r['tps'] = float(m.group(1)) if m else No
 m = re.search(r'latency average = ([\d.]+)', txt); r['latency_ms'] = float(m.group(1)) if m else None
 r['cache_stats'] = {'before': bo, 'after': ao}
 # Snapshots taken during the window: "epoch-s bracket-ms rc" per line.
-r['snap'] = {'mode': snap_mode, 'interval_s': snap_interval, 'ms': [], 'failed': 0}
+r['snap'] = {'mode': snap_mode, 'interval_s': snap_interval, 'ms': [], 'pre_ms': [], 'failed': 0}
 if os.path.exists(base + '.snaps'):
     for line in open(base + '.snaps'):
         f = line.split()
         if len(f) >= 3:
             r['snap']['ms'].append(int(f[1])); r['snap']['failed'] += f[2] != '0'
+            if len(f) > 3: r['snap']['pre_ms'].append(int(f[3]))
 # pgbench -l: client txn latency_us script epoch_s epoch_us. The tail,
 # and the slowest whole second (a stall shows as a second with few or
 # no completions; the first and last seconds are partial and skipped).

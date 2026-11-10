@@ -6,7 +6,7 @@ name: topology-bench
 # hydrated from its origin) / bcache writearound / Open CAS
 # write-invalidate, each under postgres pgbench on a dm-thin volume
 # with a read-only external origin; plus the ZFS exploration (zfs,
-# zfs-plain, zfs-l2arc, zfs-slog): one pool on a no-read-before-write device over
+# zfs-plain, zfs-l2arc, zfs-slog, zfs-slog-rcache): one pool on a no-read-before-write device over
 # a delayed image of the same database, the stand-in for ZFS on a
 # userspace block backend. All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
@@ -39,8 +39,8 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog"
-        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"
+        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"
       workloads:
         description: "space-separated subset of: tpcb select update"
         default: "tpcb select"
@@ -72,7 +72,7 @@ on:
         description: "dm-delay read latency on the origin, ms (the S3-backed NBD attach; the design plans on a 10 ms object-store round trip); 0 = local-file origin"
         default: "10"
       snap_modes:
-        description: "snapshots DURING the window, one phase per mode on the same stack, in this order: none | suspend (thin: suspend, create_snap, resume) | freeze (the same inside an fsfreeze). ZFS stacks run `zfs snapshot` for any mode but none"
+        description: "snapshots DURING the window, one phase per mode on the same stack, in this order: none | suspend (thin: suspend, create_snap, resume) | sync (syncfs, then suspend) | freeze (suspend inside an fsfreeze). ZFS stacks run `zfs snapshot` for any mode but none"
         default: "none"
       snap_interval:
         description: "seconds between snapshots"
@@ -89,7 +89,7 @@ on:
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
-  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog' }}
+  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache' }}
   TB_WORKLOADS: ${{ inputs.workloads || 'tpcb select' }}
   TB_SCALE: ${{ inputs.scale || '100' }}
   TB_DURATION: ${{ inputs.duration || '120' }}
