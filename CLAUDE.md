@@ -89,9 +89,10 @@ when it merges.
   and on every pull request, whatever its base. `skyzfs-ci.yml` runs
   shellcheck, fmt, clippy and the workspace tests on the pushes those
   miss: a merge into `zfs-topology`, and a push to a `skyzfs-*` branch
-  that has no pull request open. A newer push cancels the run of the
-  older one, and a cold build takes over ten minutes, so let a run
-  finish before pushing again when you need it green.
+  that has no pull request open. On a `skyzfs-*` branch a newer push
+  cancels the run of the older one, and a cold build takes over ten
+  minutes, so let a run finish before pushing again when you need it
+  green.
 - **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
   that touches `tests/kernel/` or the workflow, and by dispatch. It
   fails when a property the design depends on does not hold on the
