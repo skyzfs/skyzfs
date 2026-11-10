@@ -1,0 +1,200 @@
+name: topology-bench
+
+# Manual, RECORD-ONLY read-cache topology benchmark (no skynbd in the
+# loop): nocache / dm-cache writethrough (the shipped §7.1 stack) /
+# two-volume split (WAL thin without an origin, on a cold origin, and
+# hydrated from its origin) / bcache writearound / Open CAS
+# write-invalidate, each under postgres pgbench on a dm-thin volume
+# with a read-only external origin. All the logic is `tests/bench/topology-bench.sh`,
+# which is meant to be run by hand on a workstation with a real NVMe —
+# the runner's loop-on-virtual-disk I/O is throttled and noisy, so the
+# numbers here establish shapes and ratios, not absolutes.
+#
+# One job per topology: the stacks load out-of-tree and rarely-used
+# kernel modules on a cloud kernel, and a runner VM that dies takes its
+# step log with it — isolation names the culprit and keeps the other
+# topologies' numbers. A fan-in job renders the combined table.
+on:
+  # workflow_dispatch is only offered once the file lives on the default
+  # branch; until then a push that touches the benchmark itself (on any
+  # other branch) runs it with the script's defaults.
+  push:
+    branches-ignore: [main]
+    paths:
+      - tests/bench/topology-bench.sh
+      - tests/lib/gnu-dd.sh
+      - .github/workflows/topology-bench.yml
+  workflow_dispatch:
+    inputs:
+      runner:
+        # The runner image is the variable that broke Tier B in Nov 2026
+        # (ubuntu-latest moved to 26.04: Rust coreutils dd, sudo-rs), so
+        # a dispatch can pin it to check one image against the other.
+        # Scheduled, push and pull_request runs take ubuntu-latest.
+        description: "Runner image"
+        type: choice
+        options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
+        default: ubuntu-latest
+      topologies:
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas"
+        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas"
+      workloads:
+        description: "space-separated subset of: tpcb select update"
+        default: "tpcb select"
+      scale:
+        description: "pgbench scale (~15 MiB per unit)"
+        default: "100"
+      duration:
+        description: "measured seconds per run"
+        default: "120"
+      warmup:
+        description: "unmeasured warm-up seconds per run"
+        default: "30"
+      clients:
+        description: "pgbench clients"
+        default: "8"
+      cache_pct:
+        description: "cache device size, % of the loaded database"
+        default: "25"
+      cache_block_kb:
+        description: "dm-cache block size (min 32, multiple of 32); Open CAS line size follows it, capped at 64"
+        default: "32"
+      shared_buffers:
+        description: "postgres shared_buffers"
+        default: "256MB"
+      mem_limit:
+        description: "cgroup v2 memory.max for postgres (empty = none); keep it below the database size so reads reach the block layer"
+        default: "1G"
+      origin_delay_ms:
+        description: "dm-delay read latency on the origin, ms (the S3-backed NBD attach; the design plans on a 10 ms object-store round trip); 0 = local-file origin"
+        default: "10"
+      cas_mode:
+        description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
+        default: "wi"
+      opencas_ref:
+        description: "Open CAS Linux git ref to build (only when topologies include opencas)"
+        default: "v26.03.4"
+
+env:
+  # Inputs are empty on a push event; fall back to the dispatch defaults.
+  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas' }}
+  TB_WORKLOADS: ${{ inputs.workloads || 'tpcb select' }}
+  TB_SCALE: ${{ inputs.scale || '100' }}
+  TB_DURATION: ${{ inputs.duration || '120' }}
+  TB_WARMUP: ${{ inputs.warmup || '30' }}
+  TB_CLIENTS: ${{ inputs.clients || '8' }}
+  TB_CACHE_PCT: ${{ inputs.cache_pct || '25' }}
+  TB_CACHE_BLOCK_KB: ${{ inputs.cache_block_kb || '32' }}
+  TB_SHARED_BUFFERS: ${{ inputs.shared_buffers || '256MB' }}
+  TB_MEM_LIMIT: ${{ inputs.mem_limit || '1G' }}
+  TB_ORIGIN_DELAY_MS: ${{ inputs.origin_delay_ms || '10' }}
+  TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
+  OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
+
+jobs:
+  plan:
+    name: plan matrix
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    outputs:
+      topologies: ${{ steps.m.outputs.topologies }}
+    steps:
+      - id: m
+        run: |
+          echo "topologies=$(echo "$TB_TOPOLOGIES" | tr -s ' ' '\n' | sed '/^$/d' | jq -R . | jq -sc .)" >> "$GITHUB_OUTPUT"
+
+  bench:
+    name: ${{ matrix.topology }}
+    needs: plan
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: ${{ fromJSON(needs.plan.outputs.topologies) }}
+    env:
+      TB_WORK: /mnt/topology-bench
+      TB_OUT: ${{ github.workspace }}/topology-bench-out
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Reclaim runner disk
+        # One 72 GB root disk with ~14 GB free; the images need room.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/powershell /usr/share/swift
+          df -h /
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dmsetup bcache-tools postgresql postgresql-contrib python3 e2fsprogs
+          # bcache and dm-delay ship in the extra modules package on
+          # cloud kernels; harmless when already present.
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo systemctl stop postgresql 2>/dev/null || true
+          for m in dm_thin_pool dm_cache dm_cache_smq dm_delay bcache; do
+            sudo modprobe "$m" || echo "::warning::modprobe $m failed"
+          done
+          sudo mkdir -p "$TB_WORK"
+          uname -r; df -h "$TB_WORK"; free -m
+
+      - name: Build Open CAS (casadm with write-invalidate enabled)
+        if: matrix.topology == 'opencas'
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            git make gcc "linux-headers-$(uname -r)" libelf-dev python3-setuptools
+          git clone --depth 1 --branch "$OPENCAS_REF" --recurse-submodules \
+            https://github.com/Open-CAS/open-cas-linux /tmp/open-cas-linux
+          cd /tmp/open-cas-linux
+          ./configure
+          # CAS_EXT_EXP=1 compiles casadm's `wi` cache-mode entry
+          # (casadm/Makefile gates it behind WI_AVAILABLE); the kernel
+          # module accepts the mode unconditionally.
+          make -j"$(nproc)" CAS_EXT_EXP=1
+          sudo make install CAS_EXT_EXP=1
+          sudo modprobe cas_cache
+          casadm --version
+
+      - name: Run benchmark
+        run: sudo -E env "PATH=$PATH" TB_TOPOLOGIES="${{ matrix.topology }}" tests/bench/topology-bench.sh
+
+      - name: Evidence on failure
+        if: failure()
+        run: |
+          sudo dmsetup ls --tree || true
+          sudo losetup -a || true
+          ls /sys/block | grep -E 'bcache|cas' || true
+          sudo tail -50 "$TB_WORK/pg.log" 2>/dev/null || true
+          # The interesting kernel lines are the ones BEFORE a trace.
+          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|WARN|BUG|Call Trace|error' | tail -120 || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: topology-bench-${{ matrix.topology }}
+          path: topology-bench-out/
+          if-no-files-found: warn
+          retention-days: 90
+
+  summary:
+    name: combined table
+    needs: bench
+    if: always()
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: topology-bench-*
+          path: all
+      - name: Render
+        run: |
+          find all -name '*.json' | sort
+          tests/bench/topology-bench.sh summarize all | tee summary.md | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: topology-bench-summary
+          path: summary.md
+          retention-days: 90

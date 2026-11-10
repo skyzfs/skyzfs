@@ -1,0 +1,23 @@
+[package]
+name = "skynbd-stream"
+description = "SKYD1 diff streams + transactional importer (design §9.4, §9.5)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-format = { workspace = true }
+skynbd-engine = { workspace = true }
+skynbd-tree = { workspace = true }
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+blake3 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+ulid = { workspace = true }

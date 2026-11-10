@@ -1,0 +1,13 @@
+# k3s smoke (CSI design 6h): thin-mode StorageClass. WaitForFirstConsumer
+# is required — thin volumes pin to the node that holds their cache file
+# (the thin metadata lives in it), so the PV's topology must come from
+# the scheduler's node selection.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: skynbd-thin
+provisioner: csi.skynbd.io
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+parameters:
+  mode: thin

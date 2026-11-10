@@ -1,0 +1,291 @@
+name: bench-nightly
+
+# Nightly regression benchmark of main, as an A/B on ONE runner: builds
+# the commit of the last green nightly (the baseline) and tonight's main
+# (the head), then runs both through tests/bench/compare.sh (MinIO behind
+# injected store and agent<->API round trips, cold reads after daemon
+# restarts, QD1/QD32, thin-mount publish; see the script header),
+# interleaved with the order rotated per point, 5 reps. Then
+# tests/bench/regress.py compares head against base within that run.
+#
+# Why not compare against the previous run's numbers: runner VMs differ
+# by up to ~30% on the same binary, more than the regressions we want to
+# catch. Within one run both sides share the VM, the kernel and MinIO.
+#
+# A regression (head median worse by >15% AND the min-max ranges
+# separated), a changed store footprint, or a run that failed turns this
+# job red, with one annotation per finding. A red run never becomes the
+# baseline: the next night compares against the same old commit, so a
+# regression keeps failing until it is fixed. To accept an intended
+# change, run this workflow by hand with `rebaseline`: it benchmarks the
+# head alone (failed runs and an early low-disk stop still fail it), and
+# when green its commit becomes the baseline.
+#
+# Distinct from bench.yml (memory store, QD1, record-only) and from the
+# A/B bench-compare harness on PR #116 (any two revisions, record-only).
+on:
+  schedule:
+    # 05:13 UTC: clear of bench.yml (07:43) and nightly.yml (09:17).
+    - cron: "13 5 * * *"
+  workflow_dispatch:
+    inputs:
+      rebaseline:
+        description: benchmark the head alone, no comparison; when green it becomes the baseline
+        type: boolean
+        default: false
+      rtts:
+        description: latency points (S = store RTT ms, S+A adds agent<->API RTT ms)
+        default: "0 10 10+20"
+      reps:
+        description: repetitions (the regression check needs at least 3)
+        default: "5"
+  # Smoke on the PR branch that introduces this file: a small matrix,
+  # A/B against the branch's own last green run.
+  push:
+    branches: [claude/bench-nightly]
+    paths:
+      - .github/workflows/bench-nightly.yml
+      - .github/actions/bench-setup/**
+      - tests/bench/compare.sh
+      - tests/bench/regress.py
+
+permissions:
+  contents: read
+  actions: read # find the last green run's commit
+
+concurrency:
+  group: bench-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RTTS: ${{ github.event_name == 'push' && '0' || inputs.rtts || '0 10 10+20' }}
+  REPS: ${{ github.event_name == 'push' && '3' || inputs.reps || '5' }}
+  REBASELINE: ${{ inputs.rebaseline == true }}
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      base: ${{ steps.r.outputs.base }}
+      head: ${{ steps.r.outputs.head }}
+      sides: ${{ steps.r.outputs.sides }}
+      skip: ${{ steps.r.outputs.skip }}
+      note: ${{ steps.r.outputs.note }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Baseline: the commit of the newest green run of this workflow on
+      # this branch that this repository ran itself (schedule, manual, or
+      # the smoke push) and that is an ancestor of the head. Fallback when
+      # there is none (first run, history rewritten): the head's parent,
+      # or the head alone when no parent has the benchmark.
+      - id: r
+        name: Resolve base and head
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(git rev-parse HEAD)
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+          if [ "$REBASELINE" = true ]; then
+            echo 'sides=["head"]' >> "$GITHUB_OUTPUT"
+            note="rebaseline: head \`${head::7}\` alone, no comparison; when green it becomes the baseline"
+            echo "note=$note" >> "$GITHUB_OUTPUT"
+            echo "$note" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          base="" note=""
+          candidates=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/bench-nightly.yml/runs?branch=$GITHUB_REF_NAME&status=success&per_page=50" \
+            --jq ".workflow_runs[]
+                  | select(.id != $GITHUB_RUN_ID)
+                  | select(.event == \"schedule\" or .event == \"workflow_dispatch\" or .event == \"push\")
+                  | select(.head_repository.full_name == \"$GITHUB_REPOSITORY\")
+                  | \"\(.id) \(.head_sha)\"")
+          while read -r id sha; do
+            [ -n "$id" ] || continue
+            if git merge-base --is-ancestor "$sha" "$head" 2>/dev/null; then
+              base=$sha
+              note="base: last green run [$id]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$id) at \`${sha::7}\`"
+              break
+            fi
+            echo "skipping run $id: ${sha::7} is not an ancestor of ${head::7}"
+          done <<< "$candidates"
+          if [ -z "$base" ] && ! git cat-file -e HEAD^:tests/bench/compare.sh 2>/dev/null; then
+            # No parent, or a parent from before the benchmark existed:
+            # nothing to compare against, so run the head alone, as a
+            # rebaseline does.
+            echo 'sides=["head"]' >> "$GITHUB_OUTPUT"
+            note="no baseline: head \`${head::7}\` has no earlier green run and no parent that has the benchmark, so it runs alone; when green it becomes the baseline"
+            echo "note=$note" >> "$GITHUB_OUTPUT"
+            echo "$note" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "$base" ]; then
+            base=$(git rev-parse HEAD^)
+            note="base: no earlier green run on $GITHUB_REF_NAME, so the head's parent \`${base::7}\`"
+          fi
+          if [ "$base" = "$head" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            note="nothing to compare: the head \`${head::7}\` is the baseline"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo 'sides=["base","head"]' >> "$GITHUB_OUTPUT"
+          echo "note=$note" >> "$GITHUB_OUTPUT"
+          echo "$note, head \`${head::7}\`" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    strategy:
+      matrix:
+        side: ${{ fromJSON(needs.resolve.outputs.sides) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.resolve.outputs[matrix.side] }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench-nightly-${{ matrix.side }}
+      - name: Build (release)
+        run: cargo build --release -p skynbdd -p skynbd-agent-cli --features skynbdd/s3
+      # Staged outside the checkout: the repo's own bins/ holds the
+      # binary crates (bins/skynbdd/, bins/skynbd-agent/).
+      - name: Stage binaries
+        run: |
+          mkdir -p "$RUNNER_TEMP/prebuilt"
+          cp target/release/skynbdd target/release/skynbd-agent "$RUNNER_TEMP/prebuilt/"
+          git rev-parse HEAD > "$RUNNER_TEMP/prebuilt/REVISION"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: bins-${{ matrix.side }}
+          path: ${{ runner.temp }}/prebuilt/
+          retention-days: 1
+
+  bench:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    # 5 reps x 3 points x 4 variants, about a minute a run.
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/bench-setup
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: bins-*
+          path: ${{ runner.temp }}/prebuilt
+
+      # The tuned profile writes the #97 settings ([nbd] max_in_flight,
+      # publish_pipeline_depth) into configs that deny unknown fields, so
+      # it runs only when every benchmarked binary knows them. Probed in
+      # the binaries themselves (serde keeps field names as strings), not
+      # in the source, so a moved or renamed file can't fool it.
+      - name: Choose variants
+        run: |
+          dir=$RUNNER_TEMP/prebuilt
+          chmod +x "$dir"/bins-*/skynbdd "$dir"/bins-*/skynbd-agent
+          sides=""
+          for d in "$dir"/bins-*; do sides="$sides ${d##*/bins-}"; done
+          tuned=true v="" pairs="" knows=""
+          for s in $sides; do
+            echo "$s: $(cat "$dir/bins-$s/REVISION")"
+            v="$v $s:$dir/bins-$s:default"
+            if grep -aq max_in_flight "$dir/bins-$s/skynbdd" \
+               && grep -aq publish_pipeline_depth "$dir/bins-$s/skynbd-agent"; then
+              echo "  knows the #97 settings"
+              knows="$knows $s"
+            else
+              echo "  predates the #97 settings"
+              tuned=false
+            fi
+          done
+          # The base accepting the settings and the head rejecting them is a
+          # breaking config change, not a reason to quietly bench less.
+          if [ "$knows" = " base" ]; then
+            echo "LOST=the head no longer accepts the #97 settings ([nbd] max_in_flight, publish_pipeline_depth) that the base did, so the tuned pair was not run" >> "$GITHUB_ENV"
+          fi
+          if [ "$tuned" = true ]; then
+            for s in $sides; do v="$v $s-tuned:$dir/bins-$s:tuned"; done
+          fi
+          # No base side (a rebaseline, or a head with nothing before it):
+          # no pairs, and regress.py checks the run's integrity alone.
+          case " $sides " in *" base "*)
+            pairs="base:head"
+            [ "$tuned" = true ] && pairs="$pairs base-tuned:head-tuned"
+            ;;
+          esac
+          echo "VARIANTS=${v# }" >> "$GITHUB_ENV"
+          echo "PAIRS=$pairs" >> "$GITHUB_ENV"
+          echo "variants:${v}"
+          echo "pairs: ${pairs:-none (head alone)}"
+
+      - name: Run benchmark
+        id: bench
+        run: |
+          rc=0
+          sudo -E env "PATH=$PATH" BENCH_OUT="$GITHUB_WORKSPACE/bench-out" STORE_CONTAINER=minio \
+            tests/bench/compare.sh || rc=$?
+          # compare.sh runs as root; the steps after it write here as the runner.
+          sudo chown -R "$(id -u):$(id -g)" bench-out
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          printf '{"base": "%s", "head": "%s", "run_id": %s, "event": "%s", "date": "%s", "rtts": "%s", "reps": %s, "variants": "%s", "pairs": "%s", "compare_rc": %s}\n' \
+            "${{ needs.resolve.outputs.base }}" "${{ needs.resolve.outputs.head }}" "$GITHUB_RUN_ID" \
+            "$GITHUB_EVENT_NAME" "$(date -u +%FT%TZ)" "$RTTS" "$REPS" \
+            "$(echo "$VARIANTS" | sed 's/:[^ ]*//g')" "$PAIRS" "$rc" > bench-out/meta.json
+
+      - name: Regression check
+        id: regress
+        if: always() && steps.bench.outcome == 'success'
+        env:
+          NOTE: ${{ needs.resolve.outputs.note }}
+          BENCH_RC: ${{ steps.bench.outputs.rc }}
+        run: |
+          {
+            echo "# bench-nightly \`${GITHUB_SHA::7}\`"
+            echo
+            echo "$NOTE"
+            echo
+          } > bench-out/regress.md
+          rc=0
+          if [ ! -s bench-out/results.json ]; then
+            echo ":x: the benchmark produced no results.json" >> bench-out/regress.md
+            rc=1
+          else
+            # shellcheck disable=SC2086 # PAIRS is a word list
+            python3 tests/bench/regress.py bench-out/results.json $PAIRS >> bench-out/regress.md || rc=$?
+          fi
+          if [ -n "${LOST:-}" ]; then
+            echo "- :x: $LOST" >> bench-out/regress.md
+            rc=1
+          fi
+          if [ "$BENCH_RC" != 0 ]; then
+            echo "- :x: compare.sh exited $BENCH_RC" >> bench-out/regress.md
+            rc=1
+          fi
+          echo "regressed=$([ "$rc" = 0 ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish summary
+        if: always()
+        run: |
+          cat bench-out/regress.md 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+          echo >> "$GITHUB_STEP_SUMMARY"
+          cat bench-out/summary.md 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || echo "(no benchmark summary produced)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: bench-nightly
+          path: bench-out/
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Fail on regression
+        if: always() && steps.regress.outputs.regressed != 'false'
+        run: |
+          grep '^- :x: ' bench-out/regress.md 2>/dev/null | sed 's/^- :x: /::error title=bench regression::/' || true
+          echo "::error title=bench regression::the regression check did not pass (see the summary)"
+          exit 1

@@ -1,0 +1,12 @@
+# k3s smoke (CSI design 6h-2): fs-consistent snapshot of a thin volume.
+# The controller files a snapshot request; the node's embedded agent
+# cycle (fsfreeze → capture → objectize → publish → alias) makes it
+# ready. The snapshot lands in the volume's lineage sibling.
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: smoke-thin-snap
+spec:
+  volumeSnapshotClassName: skynbd
+  source:
+    persistentVolumeClaimName: smoke-thin-pvc

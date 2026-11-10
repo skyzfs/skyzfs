@@ -1,0 +1,62 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/skynbd-types",
+    "crates/skynbd-format",
+    "crates/skynbd-tree",
+    "crates/skynbd-store",
+    "crates/skynbd-refs",
+    "crates/skynbd-engine",
+    "crates/skynbd-nbd",
+    "crates/skynbd-stream",
+    "crates/skynbd-api",
+    "crates/skynbd-agent",
+    "bins/skynbdd",
+    "bins/skynbd-agent",
+    "bins/skynbdctl",
+    "bins/skynbd-csi-driver",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license-file = "LICENSE"
+repository = "https://github.com/skyzfs/skyzfs"
+
+[workspace.dependencies]
+# Internal crates
+skynbd-types = { path = "crates/skynbd-types" }
+skynbd-format = { path = "crates/skynbd-format" }
+skynbd-tree = { path = "crates/skynbd-tree" }
+skynbd-store = { path = "crates/skynbd-store" }
+skynbd-refs = { path = "crates/skynbd-refs" }
+skynbd-engine = { path = "crates/skynbd-engine" }
+skynbd-nbd = { path = "crates/skynbd-nbd" }
+skynbd-api = { path = "crates/skynbd-api" }
+
+# Core dependencies (design §11). Heavier deps (aws-sdk-s3, axum, redb,
+# tokio-rustls, moka) enter with the milestone that needs them (M1+), not
+# in the M0 scaffold, to keep the edit-test loop fast.
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["use-std"] }
+blake3 = "1"
+ulid = { version = "1", features = ["serde"] }
+thiserror = "2"
+bytes = "1"
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1"
+# Bounded fan-out for the tree walks (§7.2): `stream::buffered`. Already in
+# the lock via axum/tonic, so this declares a dependency rather than adding
+# one. `std` only — no executor, no io-compat.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+redb = "2"
+
+# Test dependencies
+proptest = "1"
+tempfile = "3"
+
+[profile.dev]
+# Property tests are compute-heavy; keep some optimization in dev builds.
+opt-level = 1

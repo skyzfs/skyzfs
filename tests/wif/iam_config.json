@@ -1,0 +1,63 @@
+{
+  "sts": {
+    "tokenDuration": "1h",
+    "maxSessionLength": "12h",
+    "issuer": "seaweedfs-sts",
+    "signingKey": "c2t5bmJkLXdpZi10ZXN0LXNpZ25pbmcta2V5LTMyYyE="
+  },
+  "providers": [
+    {
+      "name": "skynbd-wif",
+      "type": "oidc",
+      "enabled": true,
+      "config": {
+        "issuer": "http://127.0.0.1:8481",
+        "clientId": "skynbd-wif",
+        "jwksUri": "http://127.0.0.1:8481/jwks.json"
+      }
+    }
+  ],
+  "policy": {
+    "defaultEffect": "Deny"
+  },
+  "roles": [
+    {
+      "roleName": "SkynbdWifRole",
+      "roleArn": "arn:aws:iam::role/SkynbdWifRole",
+      "trustPolicy": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Principal": {
+              "Federated": "skynbd-wif"
+            },
+            "Action": ["sts:AssumeRoleWithWebIdentity"]
+          }
+        ]
+      },
+      "attachedPolicies": ["SkynbdS3Policy"],
+      "description": "WIF conformance role for the s3-seaweedfs CI job"
+    }
+  ],
+  "policies": [
+    {
+      "name": "SkynbdS3Policy",
+      "document": {
+        "Version": "2012-10-17",
+        "Statement": [
+          {
+            "Effect": "Allow",
+            "Action": ["s3:*"],
+            "Resource": ["*"]
+          },
+          {
+            "Effect": "Allow",
+            "Action": ["sts:ValidateSession"],
+            "Resource": ["*"]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,285 @@
+name: nightly
+
+on:
+  schedule:
+    # 09:17 UTC daily — off the :00 rush on shared runners.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      runner:
+        # The runner image is the variable that broke Tier B in Nov 2026
+        # (ubuntu-latest moved to 26.04: Rust coreutils dd, sudo-rs), so
+        # a dispatch can pin it to check one image against the other.
+        # Scheduled, push and pull_request runs take ubuntu-latest.
+        description: "Runner image"
+        type: choice
+        options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
+        default: ubuntu-latest
+      scenarios:
+        # Deliberately EMPTY rather than repeating the list: a second copy
+        # would drift. An empty value means "whatever the schedule runs",
+        # resolved once from TIER_B_SCENARIOS below.
+        description: "Tier B scenarios, space-separated (e.g. 'S15b'). Empty = the scheduled list."
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Matches ci.yml, same as the identical line in e2e.yml and for the
+  # same two reasons: rust-cache hashes CARGO_*/RUST* env vars into the
+  # cache key, so a jobs-level mismatch makes the dev restore-key never
+  # match (the first post-#99 nightly missed exactly this way, 1s no-op
+  # restore, 12-minute cold build) — and even on a key hit, differing
+  # debug settings would fingerprint-miss every crate.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # The single definition of what Tier B runs. Both the schedule and a
+  # dispatch that accepts the default resolve to exactly this.
+  #
+  # `run.sh` stops at the first failing scenario, so anything ordered
+  # behind a red one never runs and reports nothing — which is how S15j
+  # came to be merged without a single execution. That part still holds,
+  # and it is why the newest scenario sits early.
+  #
+  # What does NOT hold is the reason this comment used to give. It said
+  # S14's `freeze window exceeds budget` was an outstanding failure on
+  # main. It was not. Moving S15j ahead of S14 is what made S14 fail:
+  # S15j finished PASS still holding /dev/nbd0, and S14 died at its own
+  # attach with `Failed to setup device`. The freeze window was never
+  # the problem — S14 run on its own passes, and `FREEZE_BUDGET_S` has
+  # not been touched since S14 was written. The leak is fixed in
+  # `run.sh` (S15j releases on its success path, and the dispatch loop
+  # cleans between scenarios); this note stays because the failure was
+  # attributed to the wrong scenario for long enough to get written
+  # down as fact and acted on.
+  TIER_B_SCENARIOS: "S4 S15j S15k S15e S14 S14a S15b S10"
+
+jobs:
+  # STARTTLS interop smoke (auth design §3, design §8.1): real GnuTLS
+  # clients (qemu-io, nbdinfo) against forced-TLS skynbdd with an mTLS
+  # client cert; plaintext refused. Also runnable via workflow_dispatch.
+  tls-smoke:
+    name: NBD TLS smoke (qemu-io mTLS)
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      # Restores the dev cache ci.yml's `test` job writes on every main
+      # push; saves nothing. The nightly used to keep its own key
+      # (`nightly-tls-smoke`), which meant its only writer was itself —
+      # rust-cache skips the save on a failed job, so a red streak froze
+      # the cache until eviction (10 GB repo budget, once-a-day access)
+      # deleted it, and every green branch dispatch saved a branch-scoped
+      # copy nothing else could read. The dev `--workspace` build is a
+      # superset of this job's graph, same reasoning as e2e/s3-backends.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+          save-if: "false"
+      - name: Install client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-utils libnbd-bin
+      - name: Build skynbdd
+        run: cargo build -p skynbdd
+      - name: TLS smoke
+        run: E2E_SKIP_BUILD=1 tests/e2e/tls_smoke.sh
+      - name: Evidence on failure
+        if: failure()
+        run: |
+          ls -R /var/tmp/skynbd-tls-smoke-failed 2>/dev/null || true
+          tail -100 /var/tmp/skynbd-tls-smoke-failed/daemon.log 2>/dev/null || true
+          cat /var/tmp/skynbd-tls-smoke-failed/plain.err 2>/dev/null || true
+
+  tier-b:
+    name: Tier B e2e (kernel NBD + dm-thin)
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Same as tls-smoke above: read-only consumer of ci.yml's dev
+      # cache. The s3 feature graph this job builds is already compiled
+      # into that cache by feature unification (the writer's own comment
+      # documents the superset), so the delta on top is the nightly-only
+      # units, not a 13-minute cold build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+          save-if: "false"
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-utils libnbd-bin nbd-client lvm2 thin-provisioning-tools fio \
+            libdevmapper-dev libudev-dev psmisc lsof iproute2 blktrace
+          pip install blake3
+          python3 -c 'import blake3; print("blake3 at", blake3.__file__)'
+
+      - name: Load kernel NBD module
+        run: |
+          sudo modprobe nbd max_part=8
+          ls /dev/nbd0 /dev/nbd1 /dev/nbd2 /dev/nbd3
+          # Which dd the scenarios get: the helper's "$DD" (gnudd on
+          # ubuntu-26.04, whose plain dd is the Rust coreutils). Sourcing
+          # it also surfaces its warning if an image ships without gnudd.
+          . tests/lib/gnu-dd.sh
+          "$DD" --version 2>&1 | head -1 || true
+          ls -l "$(command -v "$DD")" || true
+
+      # minio/minio was removed from Docker Hub (Sept 2026) and the
+      # project is archived; pgsty/minio is the community fork with the
+      # same entrypoint and API. Pinned so a fork release can't move CI.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break || sleep 1
+          done
+
+      - name: Build (as runner user)
+        run: |
+          cargo build -p skynbdd -p skynbdctl --features skynbdd/s3 --features skynbdctl/s3
+          cargo build -p skynbd-agent-cli
+
+      # SCENARIOS arrives through `env`, never interpolated into the script
+      # body. `${{ }}` is substituted before bash ever sees the line, so an
+      # inlined input is executed as shell — and this line runs under
+      # `sudo -E`, which makes that a root shell on the runner. Through an
+      # env var it is data, and word-splitting on the expansion is the only
+      # thing left, which is what a space-separated list wants.
+      - name: Tier B scenarios
+        env:
+          SKYNBD_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_REGION: us-east-1
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set -u
+          PICKED="${SCENARIOS:-$TIER_B_SCENARIOS}"
+          echo "Tier B scenarios: $PICKED"
+          # Tee'd so the failure collector can re-print the assertion that
+          # actually failed. `run.sh` echoes `FAIL: ...` and exits, after
+          # which ~110 lines of log collection follow — and the Actions log
+          # API only tails, so the one line that says WHY was reliably out
+          # of reach while everything after it was not. PIPESTATUS keeps
+          # the scenario's exit code rather than tee's.
+          # PYTHONPATH carries the user-site `pip install blake3` above
+          # into the root shell. GNU sudo's -E kept HOME, so root's python
+          # found it there. ubuntu-26.04's sudo-rs does not, and S14's
+          # coordinator died on `import blake3`. Named explicitly, it no
+          # longer depends on which sudo the runner has.
+          sudo -E env "PATH=$PATH" E2E_SKIP_BUILD=1 E2E_TRACE=1 \
+            "PYTHONPATH=$(python3 -m site --user-site)" \
+            FIO_BASELINE_OUT="$GITHUB_WORKSPACE/fio-baseline.json" \
+            tests/e2e/run.sh $PICKED 2>&1 | tee /tmp/tierb-scenarios.out
+          exit "${PIPESTATUS[0]}"
+
+      # ALWAYS, not just on failure. The collector below runs `if: failure()`,
+      # so on a PASSING run the scenario's own measurements — the phase
+      # split, the attribution line, the COW correlation — are emitted but
+      # never re-printed where a tail can reach them. That is fine while an
+      # assertion fails every time and useless once it passes
+      # intermittently, which is exactly where S15j is: the evidence needed
+      # to settle the remaining question only arrives on the runs that do
+      # not produce it.
+      - name: Scenario measurements
+        if: always()
+        run: |
+          grep -vE '^\++ ' /tmp/tierb-scenarios.out 2>/dev/null | tail -40 \
+            || echo "(no scenario output captured)"
+
+      # The inter-scenario leak detector, hoisted out of the tail it cannot
+      # reach. `run.sh` warns when a scenario finishes still holding an nbd
+      # device (checking /sys/block/nbdN/pid, then releasing it) or still
+      # running its daemon on the shared harness port (probing /healthz,
+      # then killing it — the leak S15k/S15e shipped), but that
+      # line is printed BETWEEN scenarios — a leak after S15j lands ~200
+      # lines from the end, and the step above only shows the last 40.
+      #
+      # Worse, the leak is now absorbed: the cleanup means the next
+      # scenario no longer fails, so a green run is not evidence of no
+      # leak. The warning is the ONLY signal, and a signal that cannot be
+      # read is not one. This is the third time in this file the useful
+      # line has fallen outside a tail window — grep for it by name
+      # instead of hoping it lands near the end.
+      #
+      # Not `exit 1` yet: every scenario releases today, so a hit here is
+      # a regression and should eventually fail the run, but making it
+      # fatal in the same change that first makes it visible would mean
+      # promoting an assertion nobody has watched. Let it be loud first.
+      - name: Inter-scenario device leaks
+        if: always()
+        run: |
+          if grep -n '^WARNING: scenario .* left ' \
+               /tmp/tierb-scenarios.out 2>/dev/null; then
+            echo "::warning::a Tier B scenario leaked state to the next one (see above)"
+          else
+            echo "no inter-scenario leaks (nbd devices, daemons)"
+          fi
+
+      - name: Tier A sanity (S1, S7)
+        env:
+          SKYNBD_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+          AWS_REGION: us-east-1
+        run: E2E_SKIP_BUILD=1 tests/e2e/run.sh S1 S7
+
+      - name: Upload fio baseline
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fio-baseline
+          path: fio-baseline.json
+          if-no-files-found: ignore
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          mkdir -p /tmp/nightly-logs
+          sudo find /tmp /var/tmp -maxdepth 4 \
+            \( -name 'daemon.log' -o -name 'once.g*.log' -o -name '*.delta' \
+               -o -name 'agent.log' -o -name 'netcut.log' \) \
+            -exec cp --parents {} /tmp/nightly-logs \; 2>/dev/null || true
+          sudo dmesg | tail -200 > /tmp/nightly-logs/dmesg.txt || true
+          sudo chown -R "$(id -u)" /tmp/nightly-logs
+          # Also print inline so the failure is diagnosable from the run
+          # page without downloading artifacts. The set printed here must
+          # match the set collected above — `agent.log` and `netcut.log`
+          # were added to the copy and not to this loop, so S15j's first
+          # failure uploaded exactly the two files that would have
+          # explained it and showed neither.
+          for f in $(find /tmp/nightly-logs \( -name 'daemon.log' -o -name 'once.g*.log' \
+                       -o -name 'agent.log' -o -name 'netcut.log' \)); do
+            echo "===== $f ====="; tail -80 "$f"
+          done
+          # LAST, deliberately: the tail of the scenario's own output, with
+          # `set -x` traces stripped. Everything above is context for it,
+          # and context is what buries it — the log API tails, so whatever
+          # is printed last is what is always readable.
+          #
+          # This prints the tail rather than grepping for `FAIL:` because
+          # grepping for one pattern is how the same mistake got made three
+          # times: the phase split, then the attribution line, were each
+          # emitted just above the assertion and each fell outside the
+          # window. The measurements that explain a failure are the lines
+          # immediately before it, so take them all.
+          echo "===== scenario tail (traces stripped) ====="
+          grep -vE '^\++ ' /tmp/tierb-scenarios.out 2>/dev/null | tail -40 \
+            || echo "(no scenario output captured)"
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: tier-b-logs
+          path: /tmp/nightly-logs
+          if-no-files-found: ignore

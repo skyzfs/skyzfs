@@ -1,0 +1,12 @@
+{{- if and .Values.snapshots.enabled .Values.snapshots.createClass }}
+{{- if .Capabilities.APIVersions.Has "snapshot.storage.k8s.io/v1" }}
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.snapshots.className }}
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+driver: csi.skynbd.io
+deletionPolicy: {{ .Values.snapshots.deletionPolicy }}
+{{- end }}
+{{- end }}

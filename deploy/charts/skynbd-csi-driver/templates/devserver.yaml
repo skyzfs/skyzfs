@@ -1,0 +1,108 @@
+{{- if .Values.devServer.enabled }}
+# Dev/test only (the k3s CI smoke): in-cluster skynbdd, memory store,
+# auth disabled, plaintext NBD. No durable state, no auth — never for
+# production. The production path (S3 store, OIDC, forced-TLS mTLS) is
+# configured per docs/skynbd-auth-design.md.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-dev-config
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+data:
+  skynbd.toml: |
+    {{- if .Values.nbd.socket.enabled }}
+    # Unix data path (CSI design §2.1): the node plugin on this host
+    # attaches through the socket, so nothing listens on a TCP NBD port.
+    nbd_listen = "unix:{{ .Values.nbd.socket.path }}"
+    {{- else }}
+    nbd_listen = "0.0.0.0:{{ .Values.nbd.port }}"
+    {{- end }}
+    api_listen = "0.0.0.0:8080"
+
+    [store]
+    kind = "memory"
+---
+apiVersion: apps/v1
+kind: {{ .Values.devServer.kind }}
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-dev
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.devServer.kind "Deployment" }}
+  replicas: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skynbd-csi-driver
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: dev-server
+  template:
+    metadata:
+      labels:
+        {{- include "skynbd-csi.labels" . | nindent 8 }}
+        app.kubernetes.io/component: dev-server
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: skynbdd
+          image: {{ .Values.devServer.image }}
+          args: ["/etc/skynbd/skynbd.toml"]
+          {{- if .Values.nbd.socket.enabled }}
+          securityContext:
+            # The image runs as uid 10001, which cannot create the
+            # socket in a root-owned hostPath directory.
+            runAsUser: 0
+          {{- end }}
+          ports:
+            {{- if not .Values.nbd.socket.enabled }}
+            - containerPort: {{ .Values.nbd.port }}
+              name: nbd
+            {{- end }}
+            - containerPort: 8080
+              name: api
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: api
+          volumeMounts:
+            - name: config
+              mountPath: /etc/skynbd
+            {{- if .Values.nbd.socket.enabled }}
+            - name: nbd-socket-dir
+              mountPath: {{ include "skynbd-csi.nbdSocketDir" . | quote }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "skynbd-csi.fullname" . }}-dev-config
+        {{- if .Values.nbd.socket.enabled }}
+        - name: nbd-socket-dir
+          hostPath:
+            path: {{ include "skynbd-csi.nbdSocketDir" . | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-dev
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: skynbd-csi-driver
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: dev-server
+  ports:
+    {{- if not .Values.nbd.socket.enabled }}
+    - name: nbd
+      port: {{ .Values.nbd.port }}
+    {{- end }}
+    - name: api
+      port: 8080
+{{- end }}

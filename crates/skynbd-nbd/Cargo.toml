@@ -1,0 +1,32 @@
+[package]
+name = "skynbd-nbd"
+description = "NBD protocol framing, negotiation, per-connection loop (design §8)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-engine = { workspace = true }
+skynbd-format = { workspace = true }
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+tokio = { workspace = true, features = ["net", "io-util", "time"] }
+bytes = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+futures-util = { workspace = true }
+# STARTTLS (auth design §3.1): ring provider selected explicitly in code.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+x509-parser = "0.17"
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "process", "time"] }
+ulid = { workspace = true }
+serde_json = "1"
+tempfile = "3"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }

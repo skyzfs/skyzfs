@@ -1,0 +1,67 @@
+name: bench
+
+# Nightly benchmark, RECORD-ONLY: it publishes numbers (step summary +
+# artifact) and never fails on them — a benchmark that gates CI is a
+# flake generator, and shared runners make single-run numbers noisy
+# anyway. Trends live in the nightly artifacts. Also runnable by hand:
+# the same script the schedule runs is `sudo tests/bench/bench.sh`.
+on:
+  schedule:
+    # 07:43 UTC daily — off the :00 rush, and before the 09:17 nightly
+    # so the two never share a runner window.
+    - cron: "43 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  bench:
+    name: data-path benchmark (head + thin mount)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bench
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          # libdevmapper-dev + libudev-dev are BUILD dependencies, not
+          # runtime tools: `cargo build -p skynbd-agent-cli` links
+          # `devicemapper-sys`, whose build script pkg-configs
+          # `devmapper` — run 1 failed exactly there. Same line the
+          # nightly Tier B job installs, for the same build.
+          sudo apt-get install -y --no-install-recommends \
+            fio nbd-client dmsetup libdevmapper-dev libudev-dev
+
+      - name: Load kernel NBD module
+        run: |
+          sudo modprobe nbd max_part=8
+          ls /dev/nbd0
+
+      - name: Build (as runner user)
+        run: cargo build -p skynbdd -p skynbd-agent-cli
+
+      - name: Run benchmark
+        run: |
+          sudo -E env "PATH=$PATH" E2E_SKIP_BUILD=1 \
+            BENCH_OUT="$GITHUB_WORKSPACE/bench-out" \
+            tests/bench/bench.sh
+
+      - name: Publish summary
+        if: always()
+        run: |
+          cat "$GITHUB_WORKSPACE/bench-out/summary.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "(no summary produced)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: bench-${{ github.run_id }}
+          path: bench-out/
+          if-no-files-found: warn
+          retention-days: 90

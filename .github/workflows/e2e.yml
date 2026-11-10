@@ -1,0 +1,74 @@
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Matches ci.yml so this job's artifacts share the "dev" cache the ci
+  # test job writes (differing debug settings would fingerprint-miss
+  # every crate), and keeps test-binary links inside the runner's disk.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # Doc-only PR gate — see the `changes` job in ci.yml for the rationale
+  # (skipped jobs still satisfy required status checks; `paths-ignore`
+  # on the trigger would not).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - "!docs/**"
+              - "!**/*.md"
+              - "!LICENSE"
+
+  # Tier A E2E (design §14.3): real skynbdd + qemu-io/nbdinfo + MinIO.
+  e2e-tier-a:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      # Restores the ci test job's workspace build; saves nothing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+          save-if: "false"
+      - run: sudo apt-get update && sudo apt-get install -y qemu-utils libnbd-bin
+      - run: pip install blake3
+      # minio/minio was removed from Docker Hub (Sept 2026) and the
+      # project is archived; pgsty/minio is the community fork with the
+      # same entrypoint and API. Pinned so a fork release can't move CI.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break || sleep 1
+          done
+      - name: NBD interop tests (incl. qemu-io + nbdinfo)
+        run: cargo test -p skynbd-nbd
+      - name: Scenarios S1-S9 + S11-S13 + S1u
+        env:
+          SKYNBD_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+        run: tests/e2e/run.sh S1 S1u S2 S3 S5 S6 S7 S8 S9 S11 S12 S13
+      - name: Upload daemon logs on failure
+        if: failure()
+        run: for f in /tmp/*/*/daemon.log /tmp/*/daemon.log; do [ -f "$f" ] && { echo "== $f"; cat "$f"; }; done || true

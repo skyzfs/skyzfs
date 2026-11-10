@@ -1,0 +1,15 @@
+[package]
+name = "skynbd-types"
+description = "Core identifiers, extents, and hashes (design §4)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+postcard = { workspace = true }

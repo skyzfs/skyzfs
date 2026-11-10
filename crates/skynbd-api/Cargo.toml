@@ -1,0 +1,46 @@
+[package]
+name = "skynbd-api"
+description = "REST control plane (design §12); V3.2 ingestion endpoints arrive in M6 (§9A)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-engine = { workspace = true }
+skynbd-nbd = { workspace = true }
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+skynbd-stream = { path = "../skynbd-stream" }
+skynbd-format = { workspace = true }
+axum = "0.8"
+serde = { workspace = true }
+serde_json = "1"
+jsonwebtoken = "9"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+time = { version = "0.3", features = ["formatting"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+base64 = "0.22"
+subtle = "2"
+rustls-pemfile = "2"
+blake3 = { workspace = true }
+ulid = { workspace = true }
+postcard = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+skynbd-format = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+ulid = { workspace = true }
+tempfile = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+x509-parser = "0.17"

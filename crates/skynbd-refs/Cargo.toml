@@ -1,0 +1,25 @@
+[package]
+name = "skynbd-refs"
+description = "RefStore trait (CAS refs, pins, leases) + in-memory impl; redb impl in M1 (design §6.1)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-format = { workspace = true }
+skynbd-store = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+redb = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+skynbd-store = { workspace = true, features = ["s3"] }
+tokio = { workspace = true, features = ["rt", "macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
+bytes = { workspace = true }

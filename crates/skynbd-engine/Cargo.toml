@@ -1,0 +1,30 @@
+[package]
+name = "skynbd-engine"
+description = "Volume engine: overlay, segment writer, commit(), prepared roots, GC (design §6, §7, §9A, §10)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-format = { workspace = true }
+skynbd-tree = { workspace = true }
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+bytes = { workspace = true }
+ulid = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
+proptest = { workspace = true }
+tempfile = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }

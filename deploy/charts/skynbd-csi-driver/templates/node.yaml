@@ -1,0 +1,234 @@
+{{- include "skynbd-csi.checkSocket" . }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-node
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skynbd-csi-driver
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: node
+  template:
+    metadata:
+      labels:
+        {{- include "skynbd-csi.labels" . | nindent 8 }}
+        app.kubernetes.io/component: node
+    spec:
+      serviceAccountName: {{ include "skynbd-csi.fullname" . }}-node
+      {{- if .Values.node.cache.enabled }}
+      # device-mapper udev sync (thin mode): dm ioctls handshake with the
+      # HOST udev daemon via uevent cookies backed by SysV semaphores —
+      # which only works from the host IPC namespace, with /run/udev
+      # visible. Without both, every dm ioctl fails in-container.
+      hostIPC: true
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.node.loadNbdModule }}
+      initContainers:
+        - name: modprobe-nbd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          command:
+            - /bin/sh
+            - -c
+            - >-
+              (modprobe nbd nbds_max={{ .Values.node.nbdDevices }} || test -e /sys/module/nbd)
+              {{- if .Values.node.cache.enabled }}
+              && (modprobe dm-cache || true)
+              && (modprobe dm-thin-pool || true)
+              {{- end }}
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: driver
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # Mounts, /dev access, and kernel NBD configuration.
+            privileged: true
+          env:
+            - name: SKYNBD_CSI_MODE
+              value: node
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: SKYNBD_API_URL
+              value: {{ include "skynbd-csi.apiUrl" . | quote }}
+            {{- if .Values.nbd.socket.enabled }}
+            - name: SKYNBD_NBD_SOCKET
+              value: {{ .Values.nbd.socket.path | quote }}
+            {{- else }}
+            - name: SKYNBD_NBD_HOST
+              value: {{ include "skynbd-csi.nbdHost" . | quote }}
+            - name: SKYNBD_NBD_PORT
+              value: {{ .Values.nbd.port | quote }}
+            {{- end }}
+            - name: SKYNBD_NBD_TLS
+              value: {{ .Values.nbd.tls.enabled | ternary "1" "0" | quote }}
+            {{- if .Values.nbd.tls.hostname }}
+            - name: SKYNBD_TLS_HOSTNAME
+              value: {{ .Values.nbd.tls.hostname | quote }}
+            {{- end }}
+            - name: SKYNBD_STATE_DIR
+              value: {{ .Values.node.stateDir | quote }}
+            - name: SKYNBD_CERT_RENEW_S
+              value: {{ .Values.node.certRenewSeconds | quote }}
+            {{- if .Values.node.cache.enabled }}
+            - name: SKYNBD_CACHE_DIR
+              value: {{ printf "%s/cache" .Values.node.stateDir | quote }}
+            - name: SKYNBD_CACHE_BYTES
+              value: {{ .Values.node.cache.sizeBytes | quote }}
+            - name: SKYNBD_CHUNK_BYTES
+              value: {{ .Values.node.cache.chunkBytes | quote }}
+            - name: SKYNBD_CYCLE_INTERVAL_S
+              value: {{ .Values.node.cache.cycleIntervalSeconds | quote }}
+            - name: SKYNBD_FREEZE_BUDGET_MS
+              value: {{ .Values.node.cache.freezeBudgetMs | quote }}
+            {{- if .Values.node.cache.readCache.enabled }}
+            - name: SKYNBD_READ_CACHE_DIR
+              value: {{ printf "%s/rcache" .Values.node.stateDir | quote }}
+            - name: SKYNBD_READ_CACHE_BYTES
+              value: {{ .Values.node.cache.readCache.sizeBytes | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.advancePoolWatermark }}
+            - name: SKYNBD_ADVANCE_POOL_WATERMARK
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.advanceWindowSeconds }}
+            - name: SKYNBD_ADVANCE_WINDOW_SECONDS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.dirtyFlushReserveBytes }}
+            - name: SKYNBD_DIRTY_FLUSH_RESERVE_BYTES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.publishPipelineDepth }}
+            - name: SKYNBD_PUBLISH_PIPELINE_DEPTH
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.mixedApply }}
+            - name: SKYNBD_MIXED_APPLY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /* Not `with`: it drops a boolean false, the one value
+                   this knob exists for. Unset ("" or null) renders nothing. */}}
+            {{- $overlap := .Values.node.cache.publishOverlap }}
+            {{- if and (not (kindIs "invalid" $overlap)) (ne (toString $overlap) "") }}
+            - name: SKYNBD_PUBLISH_OVERLAP
+              value: {{ $overlap | toString | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.reclaim.strategy }}
+            - name: SKYNBD_RECLAIM_STRATEGY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.reclaim.timing }}
+            - name: SKYNBD_RECLAIM_TIMING
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.reclaim.rangeThreshold }}
+            - name: SKYNBD_RECLAIM_RANGE_THRESHOLD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.node.cache.reclaim.swingEveryN }}
+            - name: SKYNBD_RECLAIM_SWING_EVERY_N
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if .Values.auth.tokenAudience }}
+            - name: SKYNBD_TOKEN_FILE
+              value: /var/run/skynbd/token
+            {{- end }}
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: kubelet-dir
+              mountPath: {{ .Values.node.kubeletDir }}
+              mountPropagation: Bidirectional
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: state-dir
+              mountPath: {{ .Values.node.stateDir }}
+            {{- if .Values.nbd.socket.enabled }}
+            # The socket's directory, not the socket: a server restart
+            # replaces the file, and a bind-mounted file would keep the
+            # deleted inode.
+            - name: nbd-socket-dir
+              mountPath: {{ include "skynbd-csi.nbdSocketDir" . | quote }}
+            {{- end }}
+            {{- if .Values.node.cache.enabled }}
+            - name: run-udev
+              mountPath: /run/udev
+              readOnly: true
+            {{- end }}
+            {{- if .Values.auth.tokenAudience }}
+            - name: skynbd-token
+              mountPath: /var/run/skynbd
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.node.resources | nindent 12 }}
+        - name: node-driver-registrar
+          image: {{ .Values.node.registrarImage }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path={{ .Values.node.kubeletDir }}/plugins/csi.skynbd.io/csi.sock
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: {{ .Values.node.kubeletDir }}/plugins/csi.skynbd.io
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: {{ .Values.node.kubeletDir }}/plugins_registry
+            type: Directory
+        - name: kubelet-dir
+          hostPath:
+            path: {{ .Values.node.kubeletDir }}
+            type: Directory
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: state-dir
+          hostPath:
+            path: {{ .Values.node.stateDir }}
+            type: DirectoryOrCreate
+        {{- if .Values.nbd.socket.enabled }}
+        - name: nbd-socket-dir
+          hostPath:
+            path: {{ include "skynbd-csi.nbdSocketDir" . | quote }}
+            type: DirectoryOrCreate
+        {{- end }}
+        {{- if .Values.node.loadNbdModule }}
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        {{- end }}
+        {{- if .Values.node.cache.enabled }}
+        - name: run-udev
+          hostPath:
+            path: /run/udev
+        {{- end }}
+        {{- include "skynbd-csi.tokenVolume" . | nindent 8 }}

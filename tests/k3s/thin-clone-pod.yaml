@@ -1,0 +1,39 @@
+# k3s smoke (CSI design 6h-2): writable clone from a *thin* volume's
+# fs-consistent snapshot. The snapshot id points into the lineage
+# volume, so this is the same server fast clone as raw mode — but the
+# restore target must be a raw-mode StorageClass (thin restores are
+# unsupported).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: smoke-thin-clone-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: skynbd
+  dataSource:
+    apiGroup: snapshot.storage.k8s.io
+    kind: VolumeSnapshot
+    name: smoke-thin-snap
+  resources:
+    requests:
+      # Must be >= the thin source volume (100Mi): clones may only grow,
+      # and the snapshot's restore size enforces this at the PVC layer.
+      storage: 100Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: smoke-thin-cloner
+spec:
+  terminationGracePeriodSeconds: 1
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "sleep 3600"]
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: smoke-thin-clone-pvc

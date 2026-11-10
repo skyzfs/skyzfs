@@ -1,0 +1,89 @@
+name: k3s cluster with skynbd images
+description: >-
+  Build the csi-driver and skynbdd images, start single-node k3s, and
+  import the images into its containerd. Shared by the CSI install
+  smokes, which differ only in the profile they helm-install.
+
+inputs:
+  snapshots:
+    description: >-
+      Install the external-snapshotter CRDs + controller (cluster
+      infrastructure, deliberately not part of the chart). Only the
+      smokes that take VolumeSnapshots need it.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+
+    # Reuse the images workflow's layer cache (single shared scope,
+    # written by main runs only); amd64 only, loaded into the local
+    # docker daemon for import into k3s.
+    - name: Build csi-driver image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        target: csi-driver
+        load: true
+        tags: docker.io/library/skynbd-csi-driver:smoke
+        cache-from: type=gha,scope=images
+    - name: Build skynbdd image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        target: skynbdd
+        load: true
+        tags: docker.io/library/skynbdd:smoke
+        cache-from: type=gha,scope=images
+
+    # Pinned: with INSTALL_K3S_VERSION set the installer skips the
+    # update.k3s.io channel lookup and downloads the hash and binary
+    # straight from GitHub releases. Unpinned, an update.k3s.io outage
+    # (Nov 2026: ~half its responses carried Traefik's self-signed default
+    # cert) fails the lookup with curl (60), and the installer then tries
+    # a release literally named "stable" and dies with "Download
+    # failed". Pinning also keeps a new k3s release from changing the
+    # smokes unannounced; bump it deliberately.
+    - name: Install k3s
+      shell: bash
+      env:
+        INSTALL_K3S_VERSION: v1.36.5+k3s1
+      run: |
+        curl -sfL https://get.k3s.io | sudo --preserve-env=INSTALL_K3S_VERSION sh -s - \
+          --disable traefik --disable servicelb --disable metrics-server
+        mkdir -p "$HOME/.kube"
+        sudo cp /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
+        sudo chown "$(id -u)" "$HOME/.kube/config"
+        # The node object appears a few seconds after the service
+        # starts; `kubectl wait` errors immediately on zero matches,
+        # so poll for existence first.
+        for _ in $(seq 1 60); do
+          [ -n "$(kubectl get nodes -o name 2>/dev/null)" ] && break
+          sleep 2
+        done
+        kubectl wait --for=condition=Ready node --all --timeout=180s
+        k3s --version
+
+    # Version matches the chart's csi-snapshotter sidecar.
+    - name: Install snapshot CRDs + controller
+      if: inputs.snapshots == 'true'
+      shell: bash
+      run: |
+        base=https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/v7.0.2
+        kubectl apply \
+          -f "$base/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml" \
+          -f "$base/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
+          -f "$base/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml"
+        kubectl apply \
+          -f "$base/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
+          -f "$base/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"
+        kubectl -n kube-system rollout status deploy/snapshot-controller --timeout=180s
+
+    - name: Import images into k3s
+      shell: bash
+      run: |
+        docker save docker.io/library/skynbd-csi-driver:smoke \
+                    docker.io/library/skynbdd:smoke \
+          | sudo k3s ctr images import -

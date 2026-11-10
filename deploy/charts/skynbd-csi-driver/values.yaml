@@ -1,0 +1,189 @@
+# skynbd-csi-driver chart values (auth design §9.3).
+
+image:
+  repository: ghcr.io/skyzfs/skynbd-csi-driver
+  tag: "main"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# SkyNBD control plane the controller provisions against and nodes
+# enroll with. With devServer.enabled these default to the dev service.
+api:
+  url: ""
+nbd:
+  host: ""
+  port: 10809
+  # Node-local data path over a Unix domain socket (CSI design §2.1,
+  # server design §15 M10a). With this on, the node plugin attaches with
+  # `nbd-client -unix <path>` against a skynbdd running on the same host
+  # (a DaemonSet — devServer.kind below, or your own) instead of dialing
+  # a TCP endpoint: no TCP stack in the data path, and no enrollment or
+  # mTLS, because access control is the socket file's mode. nbd.host and
+  # nbd.tls are then unused, and tls.enabled must be false — the chart
+  # refuses the combination rather than silently dropping mTLS.
+  #
+  # The socket's server must serve the same volumes api.url provisions:
+  # a node-local control plane (single-host/edge), or per-node skynbdds
+  # sharing one control-plane state backend.
+  socket:
+    enabled: false
+    # Host path of the socket. Its *directory* is what gets mounted, so
+    # a server restart can recreate the socket without breaking mounts.
+    path: /run/skynbd/nbd.sock
+  # mTLS via cert enrollment (auth design §3.2). Requires [api.enroll]
+  # on the control plane and an OIDC binding granting `enroll`.
+  # Disable only for dev/smoke against a plaintext dev server.
+  tls:
+    enabled: true
+    # Cert hostname when it differs from nbd.host.
+    hostname: ""
+
+# Projected ServiceAccount token for control-plane auth (auth design §2:
+# one workload, distinct audiences). Empty audience = no token projected
+# (control plane running with auth disabled — dev only).
+auth:
+  tokenAudience: "skynbd-api"
+  tokenExpirationSeconds: 3600
+
+controller:
+  replicas: 1
+  resources: {}
+  provisionerImage: registry.k8s.io/sig-storage/csi-provisioner:v4.0.1
+  snapshotterImage: registry.k8s.io/sig-storage/csi-snapshotter:v7.0.2
+
+# CSI snapshots (CSI design §3). Requires the external-snapshotter CRDs
+# (VolumeSnapshot/-Content/-Class) in the cluster — they are cluster
+# infrastructure, not installed by this chart. Snapshots of raw-mode
+# volumes are crash-consistent (server-native, no freeze hook).
+snapshots:
+  enabled: true
+  # VolumeSnapshotClass is only rendered when the CRDs are present.
+  createClass: true
+  className: skynbd
+  deletionPolicy: Delete
+
+node:
+  resources: {}
+  registrarImage: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.1
+  kubeletDir: /var/lib/kubelet
+  stateDir: /var/lib/skynbd-csi
+  # Load the kernel nbd module at pod start (requires /lib/modules).
+  loadNbdModule: true
+  nbdDevices: 16
+  certRenewSeconds: 1800
+  # `mode: thin` StorageClass support (CSI design 6h, V3.2 Shape B):
+  # a per-volume LOCAL thin pool (origin-advance §5, publish-only: no
+  # writeback cache, no writable NBD path from the node — durability is
+  # the publish cadence). The pool's backing is a per-volume file under
+  # <stateDir>/cache, looped at stage time — it survives reboots (the
+  # dm metadata lives in it) and holds the unpublished delta; losing it
+  # re-stages a fresh pool reading through the lineage origin, losing
+  # exactly that delta. Also loads the dm-cache/dm-thin-pool modules
+  # when loadNbdModule is on.
+  cache:
+    enabled: false
+    # Per-volume cache file size in bytes (metadata regions carved from
+    # the same file; must comfortably exceed ~30 MiB of floors).
+    sizeBytes: "1073741824"
+    # Thin chunk == cache block; must divide 1 MiB.
+    chunkBytes: "65536"
+    # Embedded agent cycle (6h-2): cadence of unprompted fs-consistent
+    # snapshot publications into each thin volume's lineage volume; a
+    # CSI VolumeSnapshot triggers a cycle immediately regardless.
+    cycleIntervalSeconds: "900"
+    # fsfreeze watchdog budget (V3.2 §8.5): the capture fails cleanly
+    # (and the fs thaws) if the freeze window exceeds this.
+    freezeBudgetMs: "5000"
+    # D-M15 §4 backstop: pool-occupancy fraction above which a publish
+    # cycle is promoted to an advance ("0.8" = 80% provisioned). Unset =
+    # advance only at configured snapshots. Also the pressure signal
+    # reclaimTiming: lazy evicts against — a lazy volume staged on a node
+    # without this fails the stage.
+    advancePoolWatermark: ""
+    # §8.1 rule 1 (task 15j): the watermark also fires when the free
+    # space left — the tighter of thin-pool free blocks and, for a
+    # sparse cache file, its filesystem's free space — drops below what
+    # the rescue advance needs to survive its own fsfreeze: the OBSERVED
+    # write rate over this window, plus the reserve below. Both apply
+    # only when advancePoolWatermark is set. Unset = 30 s / 64 MiB.
+    advanceWindowSeconds: ""
+    dirtyFlushReserveBytes: ""
+    # Backfill upload batch depth (issue #97): this many ops upload their
+    # objects concurrently before the batch attaches in op order, cutting
+    # the round trips each publish chains by about this factor. A batch
+    # holds at most 64 MiB of data (a single larger range uploads alone)
+    # and runs at most 64 uploads at once. Unset = 1, one op at a time.
+    publishPipelineDepth: ""
+    # Whether a batch of interleaved writes and discards goes to the
+    # server as one call: "auto" (unset) follows the server's
+    # x-skynbd-features header; "always" is for a proxy that strips that
+    # header in front of a server that has the call (a server without it
+    # still works: the agent splits after one refused call per cycle);
+    # "never" splits every such batch into one call per same-kind run.
+    mixedApply: ""
+    # Above a publishPipelineDepth of 1, batch k+1 is read, hashed and
+    # uploaded while batch k attaches. false (or "false") keeps the
+    # batching but stages each batch only after the previous one attached
+    # — an escape hatch that does not cost the batching. Unset = on.
+    publishOverlap: ""
+    # Node-level §7 compaction-policy defaults (D-M15 task 15i). A
+    # StorageClass dial overrides each of these field-wise; unset here
+    # keeps the built-in default.
+    reclaim:
+      # Reclaim executor: auto (the §7 comparison) | port | swing.
+      strategy: ""
+      # eager reclaims every advance; lazy retains the published set as
+      # read cache (§7.1) and requires advancePoolWatermark above.
+      timing: ""
+      # Shared-range count where auto crosses from port to swing.
+      rangeThreshold: ""
+      # Force a swing every N advances (§7 aging); unset = never. 0 is
+      # rejected — say strategy: swing to swing on every advance.
+      swingEveryN: ""
+    # §7.1 top-of-stack READ cache: a writethrough dm-cache over the
+    # shim — the filesystem mounts the cache — backed by a per-volume
+    # file under <stateDir>/rcache, looped at stage time. Read warmth
+    # only; never dirty. The file persists across reboots (that
+    # persistence IS restage warmth); a stage that rebuilds the pool
+    # fresh zeroes it (fresh pool => cold cache, the design's one
+    # invalidation event). Off = the filesystem mounts the shim.
+    readCache:
+      enabled: false
+      # Per-volume read-cache file size in bytes (rcmeta+rcdata carved
+      # from it; must comfortably exceed ~24 MiB of floors).
+      sizeBytes: "268435456"
+
+storageClass:
+  create: true
+  name: skynbd
+  reclaimPolicy: Delete
+  volumeBindingMode: Immediate
+  isDefault: false
+  # Passed through to the driver via CSI parameters (e.g. fstype).
+  parameters: {}
+  # With `mode: thin`, the §7 compaction-policy dials (D-M15 task 15i)
+  # may ride along; all optional, node env defaults apply otherwise:
+  # parameters:
+  #   mode: thin
+  #   # Reclaim executor: auto (the §7 comparison) | port | swing.
+  #   reclaimStrategy: auto
+  #   # eager reclaims every advance; lazy retains the published set as
+  #   # read cache and evicts under watermark pressure (§7.1).
+  #   reclaimTiming: eager
+  #   # Shared-range count where auto crosses from port to swing.
+  #   reclaimRangeThreshold: "2048"
+  #   # Force a swing every N advances (§7 aging); unset = never, and 0
+  #   # is rejected — say reclaimStrategy: swing for every advance.
+  #   swingEveryNAdvances: "8"
+
+# Dev/test only (used by the k3s CI smoke): an in-cluster skynbdd with a
+# memory store, auth disabled, and plaintext NBD. Never for production —
+# it holds no durable state and skips the entire auth design.
+devServer:
+  enabled: false
+  image: ghcr.io/skyzfs/skynbdd:main
+  # Deployment (one pod, reached over the Service) or DaemonSet (one per
+  # node, reachable over nbd.socket). A DaemonSet only makes sense with
+  # nbd.socket.enabled, and — since each pod holds its own memory store —
+  # only on a single-node cluster.
+  kind: Deployment

@@ -1,0 +1,16 @@
+target/
+.git/
+docs/
+deploy/
+*.md
+# Test and bench sources never build inside the image (the build stage
+# compiles the two bins only), and keeping them out of the context is
+# load-bearing for the layer cache: cargo-chef's recipe embeds the
+# workspace's auto-discovered target list, so a new tests/*.rs file
+# would otherwise change recipe.json and re-cook the entire release
+# dependency graph (~8 min per platform) on a test-only change.
+# NOTE: `tests/` alone matches only the repo-root directory — Docker
+# ignore patterns don't recurse without `**`.
+tests/
+**/tests/
+**/benches/

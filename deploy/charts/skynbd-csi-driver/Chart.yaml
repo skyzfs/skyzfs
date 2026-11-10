@@ -1,0 +1,9 @@
+apiVersion: v2
+name: skynbd-csi-driver
+description: >-
+  SkyNBD CSI driver: snapshot-first network block volumes over forced-TLS
+  NBD, with OIDC workload identity against the SkyNBD control plane.
+type: application
+version: 0.1.0
+appVersion: "0.0.1"
+kubeVersion: ">=1.26.0"

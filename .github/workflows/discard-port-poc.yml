@@ -1,0 +1,57 @@
+name: discard-port-poc
+
+# PoC for the D-M15 dm-linear discard port (design doc, Invariant B
+# implementation note): verifies the kernel claim contract and measures
+# live-reclaim cost on a real kernel, plus the two-pool ping-pong swing
+# alternative (delta copy + shim retarget + wholesale pool teardown).
+# Pure device-mapper — no skynbd code, no Rust build. Results land in
+# the job step summary.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        # The runner image is the variable that broke Tier B in Nov 2026
+        # (ubuntu-latest moved to 26.04: Rust coreutils dd, sudo-rs), so
+        # a dispatch can pin it to check one image against the other.
+        # Scheduled, push and pull_request runs take ubuntu-latest.
+        description: "Runner image"
+        type: choice
+        options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
+        default: ubuntu-latest
+      size_mb:
+        description: thin device size (MiB)
+        default: "1024"
+      measure_mb:
+        description: reclaim region measured (MiB)
+        default: "256"
+      dirty_mb:
+        description: dirty set carried by the ping-pong swing (MiB)
+        default: "128"
+  pull_request:
+    paths:
+      - .github/workflows/discard-port-poc.yml
+      - tests/e2e/discard_port_poc.sh
+      - tests/lib/gnu-dd.sh
+
+permissions:
+  contents: read
+
+jobs:
+  poc:
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: run PoC
+        run: |
+          command -v thin_dump >/dev/null \
+            || sudo apt-get install -y --no-install-recommends thin-provisioning-tools \
+            || { sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends thin-provisioning-tools; }
+          sudo modprobe dm_thin_pool
+          sudo -E env \
+            SIZE_MB="${{ github.event.inputs.size_mb || '1024' }}" \
+            MEASURE_MB="${{ github.event.inputs.measure_mb || '256' }}" \
+            DIRTY_MB="${{ github.event.inputs.dirty_mb || '128' }}" \
+            GITHUB_STEP_SUMMARY="$GITHUB_STEP_SUMMARY" \
+            tests/e2e/discard_port_poc.sh

@@ -1,0 +1,31 @@
+[package]
+name = "skynbdd"
+description = "SkyNBD daemon (design §3.1, §12)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[features]
+# Forward the S3 backend; the e2e harness builds with this.
+s3 = ["skynbd-store/s3"]
+
+[dependencies]
+skynbd-types = { workspace = true }
+skynbd-engine = { workspace = true }
+skynbd-nbd = { workspace = true }
+skynbd-api = { path = "../../crates/skynbd-api" }
+axum = "0.8"
+skynbd-store = { workspace = true }
+skynbd-refs = { workspace = true }
+skynbd-format = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { workspace = true }
+toml = "0.8"
+ulid = { workspace = true }
+blake3 = { workspace = true }
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }

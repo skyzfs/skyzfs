@@ -1,0 +1,13 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.skynbd.io
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+spec:
+  # No ControllerPublish step: attachment happens at NodeStage.
+  attachRequired: false
+  podInfoOnMount: false
+  fsGroupPolicy: File
+  volumeLifecycleModes:
+    - Persistent

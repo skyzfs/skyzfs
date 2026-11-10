@@ -1,0 +1,49 @@
+name: bench host setup
+description: >-
+  Host side of tests/bench/compare.sh: free runner disk, install fio,
+  nbd-client and dmsetup, load the kernel NBD module, and start MinIO,
+  exporting S3_ENDPOINT once it answers its health check. Shared by
+  bench-nightly and bench-compare.
+
+runs:
+  using: composite
+  steps:
+    # The matrix writes ~200 MiB per run to the store plus per-run agent
+    # caches; a 3-variant matrix ran a stock runner (~13 GiB free) out of
+    # disk. Drop preinstalled SDKs no bench job uses (~20-30 GB back).
+    - name: Free runner disk
+      shell: bash
+      run: |
+        df -h /
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h /
+
+    - name: Install host tools and load NBD
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends fio nbd-client dmsetup
+        sudo modprobe nbd max_part=8
+        ls /dev/nbd0
+
+    # Same pinned community fork as ci.yml's s3-backends job. Reached by
+    # container IP over docker0, so netem on docker0 delays only store
+    # traffic (NBD and the API stay on loopback).
+    - name: Start MinIO
+      shell: bash
+      run: |
+        docker run -d --name minio \
+          -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+          pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+        ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' minio)
+        for _ in $(seq 1 30); do
+          if curl -sf "http://$ip:9000/minio/health/live"; then
+            echo "S3_ENDPOINT=http://$ip:9000" >> "$GITHUB_ENV"
+            echo "MinIO ready at http://$ip:9000"
+            exit 0
+          fi
+          sleep 1
+        done
+        echo "::error title=bench setup::MinIO at $ip:9000 did not become healthy in 30 s"
+        docker logs minio 2>&1 | tail -50
+        exit 1

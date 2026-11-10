@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+*.redb
+.env
+# NOTE: proptest-regressions/ is intentionally NOT ignored — regression
+# seeds are part of the test suite and must be committed.
+__pycache__/
+*.pyc

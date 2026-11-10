@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-controller
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-node
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+---
+# external-provisioner's standard requirements.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-provisioner
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["csinodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "delete", "update", "create"]
+  {{- if .Values.snapshots.enabled }}
+  # external-snapshotter's standard requirements.
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotclasses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshots"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["snapshot.storage.k8s.io"]
+    resources: ["volumesnapshotcontents/status"]
+    verbs: ["update", "patch"]
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-provisioner
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "skynbd-csi.fullname" . }}-controller
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ include "skynbd-csi.fullname" . }}-provisioner
+  apiGroup: rbac.authorization.k8s.io

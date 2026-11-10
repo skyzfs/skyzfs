@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "skynbd-csi.fullname" . }}-controller
+  labels:
+    {{- include "skynbd-csi.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: skynbd-csi-driver
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "skynbd-csi.labels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: {{ include "skynbd-csi.fullname" . }}-controller
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: driver
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: SKYNBD_CSI_MODE
+              value: controller
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: SKYNBD_API_URL
+              value: {{ include "skynbd-csi.apiUrl" . | quote }}
+            {{- if .Values.auth.tokenAudience }}
+            - name: SKYNBD_TOKEN_FILE
+              value: /var/run/skynbd/token
+            {{- end }}
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            {{- if .Values.auth.tokenAudience }}
+            - name: skynbd-token
+              mountPath: /var/run/skynbd
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+        - name: csi-provisioner
+          image: {{ .Values.controller.provisionerImage }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --leader-election
+            - --default-fstype=ext4
+            # Topology-aware provisioning: thin volumes are node-sticky
+            # (CSI design 6h) and need the selected node passed through
+            # accessibility_requirements. Default-off before v5; the
+            # driver also advertises VOLUME_ACCESSIBILITY_CONSTRAINTS.
+            # strict-topology = requisite is exactly the selected node,
+            # which is precisely the thin cache-file contract.
+            - --feature-gates=Topology=true
+            - --strict-topology
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        {{- if .Values.snapshots.enabled }}
+        - name: csi-snapshotter
+          image: {{ .Values.controller.snapshotterImage }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --leader-election
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        {{- end }}
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        {{- include "skynbd-csi.tokenVolume" . | nindent 8 }}

@@ -1,0 +1,23 @@
+[package]
+name = "skynbd-store"
+description = "ObjectStore trait + in-memory impl; S3 impl arrives in M1 (design §3.1, §11)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[features]
+# S3 backend (aws-sdk-s3). Off by default to keep the inner dev loop fast;
+# CI enables it and runs the conformance suite against MinIO.
+s3 = ["dep:aws-sdk-s3", "dep:aws-config"]
+
+[dependencies]
+async-trait = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+aws-sdk-s3 = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }

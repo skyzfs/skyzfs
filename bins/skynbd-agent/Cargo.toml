@@ -1,0 +1,28 @@
+[package]
+name = "skynbd-agent-cli"
+description = "skynbd production snapshot agent daemon/CLI (agent design doc §3.1)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "skynbd-agent"
+path = "src/main.rs"
+
+[dependencies]
+skynbd-agent = { path = "../../crates/skynbd-agent", features = ["dm"] }
+async-trait = { workspace = true }
+bpaf = { version = "0.9", features = ["derive"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "pem", "ring"] }
+serde = { workspace = true }
+serde_json = "1"
+thiserror = { workspace = true }
+toml = "0.8"
+tokio = { workspace = true, features = ["rt", "macros", "time", "signal", "process"] }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+skynbd-agent = { path = "../../crates/skynbd-agent", features = ["dm", "testutil"] }

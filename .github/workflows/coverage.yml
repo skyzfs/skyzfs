@@ -1,0 +1,197 @@
+name: coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual runs publish badges for the dispatched branch (under
+  # `badges/<branch>/`), so the mechanism can be exercised before merge.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # No DWARF (see ci.yml) — llvm-cov's mapping lives in its own section
+  # and doesn't need debuginfo; instrumented builds are the largest of all.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # Doc-only PR gate — see the `changes` job in ci.yml for the rationale
+  # (skipped jobs still satisfy required status checks; `paths-ignore`
+  # on the trigger would not).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - "!docs/**"
+              - "!**/*.md"
+              - "!LICENSE"
+
+  # Line coverage (cargo-llvm-cov). Two views: full workspace, and
+  # "library" (bins excluded — exercised by e2e, uninstrumented — and
+  # dm_linux.rs, the kernel glue below the M9 DmOps seam, whose paths run
+  # only in the nightly Tier B rig; dm.rs orchestration is mock-covered).
+  # The library view is GATED at 85% lines (baseline was 90.0% when the
+  # gate was set) and is the figure the README coverage badge shows;
+  # adjust the floor in one place, FLOOR_LINES below. The README tests badge sums the
+  # "test result: ok." lines of this same run (unit, property and
+  # integration tests of the default feature set; doctests and the
+  # s3-feature/e2e suites run elsewhere and are not counted).
+  coverage:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      FLOOR_LINES: 85
+      # The library view: what the floor gates and the badge shows.
+      LIB_IGNORE: '(^|/)bins/|src/dm_linux\.rs'
+    outputs:
+      report: ${{ steps.report.outputs.complete }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: coverage
+      # The test output is captured for the tests badge, and the library
+      # view exported as JSON for the coverage badge (both read by
+      # scripts/ci/publish-badges.sh).
+      - name: Coverage (lcov + JSON)
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/coverage"
+          cargo llvm-cov --workspace --lcov --output-path lcov.info 2>&1 \
+            | tee "$RUNNER_TEMP/coverage/coverage.log"
+          cargo llvm-cov report --json --summary-only \
+            --ignore-filename-regex "$LIB_IGNORE" \
+            --output-path "$RUNNER_TEMP/coverage/coverage.json"
+      # To the job's summary page and the log, even when tests or the
+      # floor failed: the badge figures (scripts/ci/coverage-figures.sh,
+      # as publish-badges reads them), then llvm-cov's per-file tables.
+      - name: Coverage summary
+        if: always()
+        shell: bash
+        run: |
+          cov=$RUNNER_TEMP/coverage
+          {
+            echo "## Coverage"
+            if [ -s "$cov/coverage.json" ] && [ -s "$cov/coverage.log" ]; then
+              read -r percent passed \
+                < <(sh scripts/ci/coverage-figures.sh "$cov/coverage.json" "$cov/coverage.log")
+              echo
+              echo "| | |"
+              echo "|---|---|"
+              echo "| Library lines (floor ${FLOOR_LINES}%) | **${percent}%** |"
+              echo "| Tests passed | **${passed}** |"
+              if grep -q '^test result: FAILED' "$cov/coverage.log"; then
+                echo "| Test binaries with failures | $(grep -c '^test result: FAILED' "$cov/coverage.log") |"
+              fi
+            else
+              echo
+              echo "No coverage report: the coverage run did not complete."
+            fi
+            for view in library workspace; do
+              if [ "$view" = library ]; then
+                title="Library code (bins + dm_linux.rs excluded)"
+                set -- --ignore-filename-regex "$LIB_IGNORE"
+              else
+                title="Full workspace"
+                set --
+              fi
+              echo
+              echo "<details><summary>$title</summary>"
+              echo
+              echo '```'
+              cargo llvm-cov report --summary-only "$@" 2>&1 || true
+              echo '```'
+              echo "</details>"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Enforce library-lines floor
+        run: |
+          cargo llvm-cov report \
+            --ignore-filename-regex "$LIB_IGNORE" \
+            --fail-under-lines "$FLOOR_LINES"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: lcov
+          path: lcov.info
+      - name: Upload badge inputs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage
+          path: ${{ runner.temp }}/coverage/
+          if-no-files-found: ignore
+      # Tells publish-badges whether there are figures to publish: a
+      # coverage report from a run whose tests all passed. That holds when
+      # only the floor was missed (the badge then shows the below-floor
+      # figure rather than the last passing one), but not when tests failed.
+      - name: Check for a complete coverage report
+        id: report
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/coverage/coverage.json" ] &&
+            ! grep -q '^test result: FAILED' "$RUNNER_TEMP/coverage/coverage.log"; then
+            echo complete=true >> "$GITHUB_OUTPUT"
+          fi
+
+  # Publishes the tests and coverage badges for main to the `badges`
+  # branch (path `main/`) as SVG files rendered by scripts/ci/badge.sh;
+  # the README embeds them through github.com/<repo>/raw/..., so they
+  # render in this private repository with no external service (which
+  # could not read it). A separate job so that only this step, which runs
+  # no project code, holds a write-capable token. Runs on pushes to main
+  # and on manual dispatch; never on pull requests. publish-badges.sh skips
+  # figures for a commit that is no longer its branch's tip, so a slow run
+  # can't overwrite a newer one's badges.
+  publish-badges:
+    name: Publish badges
+    if: >-
+      !cancelled() && needs.coverage.outputs.report == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: badges-${{ github.ref_name }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: coverage
+          path: ${{ runner.temp }}/coverage
+      - name: Publish
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: >-
+          sh scripts/ci/publish-badges.sh "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          "$RUNNER_TEMP/coverage/coverage.json" "$RUNNER_TEMP/coverage/coverage.log"
+      # Fetches the README as GitHub renders it and checks that it embeds
+      # the tests and coverage badges once each and that GitHub serves the
+      # files just published as SVG images.
+      - name: Verify the README badges render
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/ci/verify-badges-render.sh "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"

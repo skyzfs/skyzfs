@@ -1,0 +1,78 @@
+name: k3s-smoke
+
+# CSI install smoke on k3s (CSI design 6c). k3s over kind: single-binary
+# with bundled containerd, seconds to start, and it matches the edge
+# clusters skynbd targets. Uses the chart's devServer profile (memory
+# store, plaintext, auth off) — the mTLS/OIDC paths are covered by the
+# nightly TLS smoke and the api integration tests.
+#
+# Two profiles, one cluster each: the CSIDriver object, the StorageClass
+# and the kubelet plugin socket are all cluster-scoped, so the TCP and
+# Unix topologies cannot share an install.
+
+on:
+  pull_request:
+    # Everything the smoke's image is built from: the two binaries it
+    # ships (skynbd-csi-driver, skynbdd), every workspace crate they link
+    # — together that is all of crates/ (`cargo tree -p <bin>`) — and the
+    # workspace build inputs. A server-only change must not skip the
+    # smoke just because it touches no agent or chart path.
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "bins/skynbd-csi-driver/**"
+      - "bins/skynbdd/**"
+      - "crates/**"
+      - "deploy/charts/**"
+      - "tests/k3s/**"
+      - ".github/actions/k3s-cluster/**"
+      - ".github/workflows/k3s-smoke.yml"
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    name: k3s install smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/k3s-cluster
+        with:
+          snapshots: "true"
+
+      - name: Run smoke
+        run: tests/k3s/smoke.sh
+
+      - name: Evidence on failure
+        if: failure()
+        run: |
+          kubectl get events -A --sort-by=.lastTimestamp | tail -40 || true
+          kubectl -n skynbd-smoke get all -o wide || true
+          sudo dmesg | tail -30 || true
+
+  # Node-local Unix data path (CSI design §2.1): skynbdd as a DaemonSet
+  # binding a hostPath socket, node plugin attaching with
+  # `nbd-client -unix`. No snapshots here — the transport is what is
+  # under test, and it is orthogonal to the snapshot machinery.
+  uds-smoke:
+    name: k3s UDS smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/k3s-cluster
+
+      - name: Run UDS smoke
+        run: tests/k3s/smoke-uds.sh
+
+      - name: Evidence on failure
+        if: failure()
+        run: |
+          kubectl get events -A --sort-by=.lastTimestamp | tail -40 || true
+          kubectl -n skynbd-uds get all -o wide || true
+          sudo dmesg | tail -30 || true

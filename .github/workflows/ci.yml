@@ -1,0 +1,211 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # No DWARF in CI builds: the workspace's test binaries (aws-sdk linked in
+  # via feature unification) exceed the runner's free disk with debuginfo
+  # on, and ld dies with SIGBUS mid-link. Symbol names survive in
+  # backtraces either way.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # Doc-only PR gate (same shape in e2e.yml and coverage.yml): `code` is
+  # true when at least one changed file falls outside the documentation
+  # set (docs/, *.md, LICENSE), and every job below skips when a PR
+  # touches only docs. Skipped jobs report "skipped", which GitHub counts
+  # as passing for required status checks — a `paths-ignore` trigger
+  # filter would instead leave required checks pending forever. Pushes to
+  # main always run everything (the test job writes the shared dev cache).
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          # `every`: a changed file counts as code only when it matches
+          # ALL the negated patterns, i.e. is none of the doc paths.
+          predicate-quantifier: every
+          filters: |
+            code:
+              - "!docs/**"
+              - "!**/*.md"
+              - "!LICENSE"
+
+  lint:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # First: needs no toolchain or cache, and the shell harness is
+      # ~4.6k lines nothing else lints. Preinstalled on ubuntu runners.
+      # No blanket excludes — deliberate idioms carry a targeted
+      # `# shellcheck disable=` with the reason at the site.
+      - name: shellcheck
+        run: git ls-files '*.sh' | xargs -r shellcheck
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  chart-lint:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # helm is preinstalled on the runner. Render both value profiles:
+      # a production-shaped install and the devServer smoke profile.
+      - run: helm lint deploy/charts/skynbd-csi-driver
+      - run: |
+          helm template t deploy/charts/skynbd-csi-driver \
+            --set api.url=https://skynbd.example:8080 \
+            --set nbd.host=skynbd.example > /dev/null
+          helm template t deploy/charts/skynbd-csi-driver \
+            --set devServer.enabled=true \
+            --set nbd.tls.enabled=false \
+            --set auth.tokenAudience="" > /dev/null
+          # Node-local Unix data path (CSI design §2.1), and the guard
+          # that keeps it from rendering a silent plaintext downgrade.
+          helm template t deploy/charts/skynbd-csi-driver \
+            --set api.url=https://skynbd.example:8080 \
+            --set nbd.socket.enabled=true \
+            --set nbd.tls.enabled=false > /dev/null
+          if helm template t deploy/charts/skynbd-csi-driver \
+               --set api.url=https://skynbd.example:8080 \
+               --set nbd.socket.enabled=true > /dev/null 2>&1; then
+            echo "nbd.socket.enabled with nbd.tls.enabled rendered anyway" >&2
+            exit 1
+          fi
+          # publishOverlap (a cache-mode setting, so with the cache on): a
+          # boolean false must render (Helm's `with` would drop it), and
+          # unset must render nothing.
+          for v in false true; do
+            helm template t deploy/charts/skynbd-csi-driver \
+              --set api.url=https://skynbd.example:8080 \
+              --set nbd.host=skynbd.example \
+              --set node.cache.enabled=true \
+              --set node.cache.publishOverlap=$v \
+              | grep -A1 'name: SKYNBD_PUBLISH_OVERLAP' | grep -q "value: \"$v\"" \
+              || { echo "publishOverlap=$v did not render" >&2; exit 1; }
+          done
+          if helm template t deploy/charts/skynbd-csi-driver \
+               --set api.url=https://skynbd.example:8080 \
+               --set nbd.host=skynbd.example \
+               --set node.cache.enabled=true | grep -q SKYNBD_PUBLISH_OVERLAP; then
+            echo "unset publishOverlap rendered an env var" >&2
+            exit 1
+          fi
+
+  test:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+      # This job is the writer of the shared dev-profile cache: its
+      # `--workspace` build is a superset of what e2e and s3-backends
+      # compile (feature unification already builds the s3 graph here),
+      # so those jobs restore this cache and save nothing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+      - run: cargo test --workspace
+
+
+  # S3 conformance against both real backends, one build (design §14.2
+  # layer 3; previously two jobs compiling the same feature graph twice).
+  # MinIO exercises conditional writes + static credentials; SeaweedFS is
+  # the WIF rig (auth design §5): web-identity env vars and NO static
+  # keys, so the SDK's default chain must call AssumeRoleWithWebIdentity
+  # — the link the MinIO suite can't reach (env keys sit earlier in the
+  # chain), which is why the WIF step scopes its env to itself.
+  s3-backends:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      SEAWEEDFS_VERSION: "4.40" # >= 4.x Jan 2026 for SigV4 session tokens
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      # Restores the dev cache the `test` job writes (its --workspace
+      # build already compiled this whole feature graph); saves nothing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dev
+          save-if: "false"
+      # minio/minio was removed from Docker Hub (Sept 2026) and the
+      # project is archived; pgsty/minio is the community fork with the
+      # same entrypoint and API. Pinned so a fork release can't move CI.
+      - name: Start MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break || sleep 1
+          done
+      - name: Mint OIDC issuer (JWKS + signed token)
+        run: |
+          pip install --quiet cryptography
+          python3 tests/wif/mint_oidc.py /tmp/wif
+          (cd /tmp/wif && python3 -m http.server 8481 >/dev/null 2>&1 &)
+      - name: Start SeaweedFS S3 with IAM/STS
+        run: |
+          curl -sSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz -C /tmp
+          mkdir -p /tmp/weed-data
+          /tmp/weed server -dir=/tmp/weed-data -ip=127.0.0.1 \
+            -s3 -s3.port=8333 -s3.iam.config="$PWD/tests/wif/iam_config.json" \
+            > /tmp/weed.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -s -o /dev/null http://127.0.0.1:8333 && exit 0 || sleep 1
+          done
+          echo "SeaweedFS S3 endpoint never came up"; tail -50 /tmp/weed.log; exit 1
+      - name: S3 store conformance (MinIO, static credentials)
+        env:
+          SKYNBD_S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          AWS_ACCESS_KEY_ID: minioadmin
+          AWS_SECRET_ACCESS_KEY: minioadmin
+        # Bins included for their s3-gated [store] dispatch tests
+        # (static vs ambient credentials, auth design §5); skynbd-refs for
+        # the object refs store over live conditional writes (D-M1).
+        run: >-
+          cargo test -p skynbd-store -p skynbd-refs -p skynbdd -p skynbdctl
+          --features skynbd-store/s3,skynbdd/s3,skynbdctl/s3
+      - name: WIF conformance (SeaweedFS, no static keys in env)
+        env:
+          SKYNBD_S3_WIF_ENDPOINT: http://127.0.0.1:8333
+          AWS_WEB_IDENTITY_TOKEN_FILE: /tmp/wif/token
+          AWS_ROLE_ARN: arn:aws:iam::role/SkynbdWifRole
+          AWS_ENDPOINT_URL_STS: http://127.0.0.1:8333
+          AWS_REGION: us-east-1
+        run: >-
+          cargo test -p skynbd-store --features s3
+          -- s3_conformance_web_identity --nocapture
+      - name: SeaweedFS log on failure
+        if: failure()
+        run: tail -100 /tmp/weed.log
+
+  # TODO(M4): Tier A scenarios S5a, S8, S9 (BLOCK_STATUS, GC, fsck).
+  # TODO(M6): Tier A ingestion scenarios S11..S13.
+  # Tier B (kernel NBD, ext4, LVM thin, scenarios S4/S10/S14) runs in the
+  # nightly workflow — see .github/workflows/nightly.yml.
