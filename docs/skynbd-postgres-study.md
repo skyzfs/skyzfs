@@ -3,7 +3,8 @@
 **Status**: study, not a decision record. It informs the origin-advance
 design's §7.1 read cache (`skynbd-origin-advance-design.md`) and the
 per-StorageClass cache work it recommends; nothing here changes the
-shipped stack by itself. Companion benchmark:
+shipped stack by itself. §10 explores a different stack (ZFS on a
+userspace block backend) with the same benchmark. Companion benchmark:
 `tests/bench/topology-bench.sh` and `.github/workflows/topology-bench.yml`.
 
 ---
@@ -553,3 +554,168 @@ pool blocks), against a 10 ms-per-bio origin. tpcb, two runs:
   daemon serves 8 MiB segments and may cache them.
 - Once the workflow file is on the default branch, `workflow_dispatch`
   works and the push trigger it carries for development can go.
+
+## 10. ZFS on a userspace block backend (exploration)
+
+A different shape for the same problem: replace the dm-thin and
+dm-cache layers with ZFS, on one vdev that is a ublk device served by
+a node-local daemon with a local write log and the object store behind
+it. Snapshots become cuts of the backend's write log at a transaction
+group boundary, with no filesystem freeze. Nothing here is built; this
+section records what the topology benchmark says about the I/O.
+
+### 10.1 What the rows model
+
+The vdev is a transient dm-snapshot whose chunk is one ZFS sector
+(4 KiB at ashift 12) over a read-only, delayed image of an exported
+pool holding the same pgbench database. Written blocks are local,
+never-written blocks cost the origin round trip, and no write reads
+first: dm-snapshot skips the origin copy when a bio covers a whole
+chunk, and at chunk = sector every ZFS write does. PGDATA and `pg_wal`
+are two datasets of the one pool.
+
+| name | configuration |
+|---|---|
+| zfs | recordsize 8k (WAL dataset 128k), lz4, `full_page_writes=off`, `wal_recycle=off`, `wal_init_zero=off` |
+| zfs-plain | zfs with compression off and `full_page_writes=on`: the control for what pgbench's very compressible rows and the missing full-page images contribute |
+| zfs-l2arc | zfs plus an L2ARC device of 25% of the database, the counterpart of baseline's dm-cache |
+
+The ARC is not charged to postgres's cgroup, so it is capped at the
+memory limit minus `shared_buffers` (768 MiB here), which is what the
+page cache gets in the other rows. A snapshot of both datasets at the
+start of each measured window makes `written@` at the end report the
+live bytes born in the window.
+
+What the model leaves out, and which way it leans:
+
+- **No backend read cache or read-ahead.** A block that is read is
+  never local afterwards unless the ARC holds it. A real backend would
+  keep what it fetched and fetch more than one 8 KiB record at a time.
+  This is pessimistic for ZFS on a cold origin.
+- **No backend log commit.** A flush on the transient store is the
+  data device's flush alone; dm-thin pays a metadata commit. Slightly
+  optimistic for ZFS.
+- **4 KiB bios.** dm-snapshot splits every I/O at the chunk. Some CPU
+  cost the real device would not have.
+
+### 10.2 Results
+
+ubuntu-26.04 runner, kernel 7.0, ZFS 2.4.1, PostgreSQL as packaged.
+Scale 100, 1 GB memory cap, 8 clients, 30 s warm-up and 120 s
+measured, tpcb then select on the same stack. One run per cell, one
+runner VM per row.
+
+tpcb, 10 ms origin:
+
+| topology | tps | lat ms | origin read MB | flash MB/ktxn | vs nocache |
+|---|---|---|---|---|---|
+| nocache | 373 | 21.4 | 2100 | 65.2 | 1.00 |
+| baseline | 370 | 21.6 | 2285 | 86.6 | 1.33 |
+| twovol | 3590 | 2.2 | 1997 | 29.7 | 0.46 |
+| twovol-origin | 400 | 20.0 | 2313 | 78.3 | 1.20 |
+| twovol-hydrated | 2618 | 3.1 | 1893 | 32.6 | 0.50 |
+| bcache | 371 | 21.6 | 2096 | 81.0 | 1.24 |
+| opencas | 349 | 22.9 | 2045 | 78.3 | 1.20 |
+| zfs | 583 | 13.7 | 340 | 18.7 | 0.29 |
+| zfs-plain | 396 | 20.2 | 1023 | 54.1 | 0.83 |
+| zfs-l2arc | 546 | 14.6 | 327 | 171.1 | 2.63 |
+
+tpcb, local origin (`TB_ORIGIN_DELAY_MS=0`), the everything-local
+bound:
+
+| topology | tps | lat ms | flash MB/ktxn | vs nocache |
+|---|---|---|---|---|
+| nocache | 3384 | 2.4 | 22.0 | 1.00 |
+| baseline | 3159 | 2.5 | 26.7 | 1.21 |
+| twovol | 5576 | 1.4 | 22.3 | 1.01 |
+| zfs | 3454 | 2.3 | 11.5 | 0.52 |
+| zfs-plain | 2551 | 3.1 | 49.2 | 2.23 |
+
+select-only:
+
+| topology | tps, 10 ms origin | tps, local origin |
+|---|---|---|
+| nocache | 10732 | 20098 |
+| baseline | 11820 | 19015 |
+| twovol | 20290 | 20400 |
+| zfs | 2666 | 26345 |
+| zfs-plain | 1397 | 17136 |
+| zfs-l2arc | 2742 | – |
+
+What reached the ZFS vdev, per thousand tpcb transactions:
+
+| origin | topology | vdev write MB | first-touch LBA MB | live at window end MB | ZIL MB |
+|---|---|---|---|---|---|
+| 10 ms | zfs | 18.7 | 19.1 | 5.9 | 14.6 |
+| 10 ms | zfs-plain | 54.1 | 53.1 | 19.2 | 12.8 |
+| local | zfs | 11.5 | 9.3 | 2.2 | 8.7 |
+| local | zfs-plain | 49.2 | 8.7 | 6.3 | 10.1 |
+
+`first-touch` is growth of the COW store: bytes written to LBAs never
+written since the stage. `live at window end` is `written@` against
+the window-start snapshot.
+
+### 10.3 What the runs show
+
+- **On a cold origin ZFS is bound by PostgreSQL's own page reads.**
+  The zfs row took about one ARC miss per transaction, each one origin
+  round trip, and nothing in the model makes a read block local. It
+  beat the single-volume stacks by about 1.5x and lost to twovol by
+  about 6x.
+- **The thin stacks win the cold case by hydrating, as a side effect
+  of their amplification.** Every first write to a chunk copies 64 KiB
+  from the origin, so they read about 2 GB — the whole database —
+  within the window and then run on flash. Their select run inherits
+  that from the tpcb run before it. ZFS writes only the 8 KiB it was
+  given, which is why it read 340 MB.
+- **With everything local, ZFS matches single-volume ext4 in
+  throughput and halves the flash writes** (3454 against 3384 tps,
+  11.5 against 22.0 MB per thousand transactions), and leads on
+  select-only. twovol is still 1.6x faster on tpcb.
+- **The saving is compression and the absent full-page images, not
+  the layout.** zfs-plain writes 2.2x what nocache does with a local
+  origin and is 25% slower. Real schemas compress less than pgbench's.
+- **Most of what reaches the vdev is dead within the window.** For
+  zfs, 2.2 to 5.9 MB per thousand transactions was still live against
+  11.5 to 18.7 written. ZIL blocks are three quarters of the writes.
+  An uploader that sends one cut per window and knows what was freed
+  carries a fifth to a third of the vdev traffic; one that does not
+  carries nearly all of it, because on a cold origin almost every
+  write landed on a never-written LBA. The ZIL does not stay inside
+  its reserved metaslab at this pool size (8 GB).
+- **L2ARC at 25% of the database is churn.** It wrote 10 GB to a
+  381 MiB device during tpcb and 20 GB during select, and served about
+  1% of ARC misses. The device is smaller than the ARC that feeds it,
+  so it wraps every few seconds: the same failure as bcache and Open
+  CAS in §6. A flash read cache for this shape belongs in the backend,
+  below the vdev.
+- **Pool import over the 10 ms origin took about 0.7 s.**
+
+### 10.4 What this means for the design
+
+1. The backend's read side decides cold performance: what it keeps of
+   what it fetched, and how much it fetches around a miss. ZFS's write
+   path is not the limit.
+2. The uploader needs to know what ZFS freed. Without that it uploads
+   three to five times the live data.
+3. ZIL traffic is the largest single component at the vdev. A separate
+   log device on local flash would keep it out of the backend
+   entirely, at the price of cuts that hold the last synced
+   transaction group and not the fsynced tail.
+4. The thin split remains the fastest measured option. ZFS's case
+   rests on fewer flash writes, freeze-free atomic snapshots of the
+   data and WAL pair, and a much simpler node stack — not on
+   throughput.
+
+### 10.5 Not yet measured
+
+- A backend read cache: fetched blocks kept local, with read-ahead.
+- A separate log device (`zfs-slog`), and `logbias=throughput` on the
+  WAL dataset.
+- Snapshots taken during the window, for all three mechanisms: thin
+  with a freeze, thin with a suspend only, and `zfs snapshot`. The
+  cost of the freeze has not been measured anywhere in this study.
+- A database several times larger than RAM, where sparse updates
+  rewrite a 128 KiB indirect block per 8 KiB page.
+- Repetitions. Every cell above is one run, and §6.2 documents how
+  far two runner VMs can differ.
