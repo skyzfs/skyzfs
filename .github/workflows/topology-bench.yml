@@ -6,7 +6,8 @@ name: topology-bench
 # hydrated from its origin) / bcache writearound / Open CAS
 # write-invalidate, each under postgres pgbench on a dm-thin volume
 # with a read-only external origin; plus the ZFS exploration (zfs,
-# zfs-plain, zfs-l2arc, zfs-slog, zfs-slog-rcache): one pool on a no-read-before-write device over
+# zfs-plain, zfs-l2arc, zfs-slog, zfs-slog-l2arc, zfs-slog-rcache): one pool on a
+# no-read-before-write device over
 # a delayed image of the same database, the stand-in for ZFS on a
 # userspace block backend. All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
@@ -39,8 +40,8 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"
-        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
+        default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
       workloads:
         description: "space-separated subset of: tpcb select update"
         default: "tpcb select"
@@ -80,6 +81,12 @@ on:
       snap_keep:
         description: "snapshots retained; older ones are deleted"
         default: "2"
+      zfs_recordsize:
+        description: "recordsize of the PGDATA dataset in the ZFS topologies (above 8k a page write is a partial-record write)"
+        default: "8k"
+      zfs_params:
+        description: "zfs module parameters for the ZFS topologies, name=value separated by spaces (e.g. l2arc_noprefetch=0 l2arc_headroom=0)"
+        default: ""
       cas_mode:
         description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
         default: "wi"
@@ -89,7 +96,7 @@ on:
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
-  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache' }}
+  TB_TOPOLOGIES: ${{ inputs.topologies || 'nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache' }}
   TB_WORKLOADS: ${{ inputs.workloads || 'tpcb select' }}
   TB_SCALE: ${{ inputs.scale || '100' }}
   TB_DURATION: ${{ inputs.duration || '120' }}
@@ -103,6 +110,8 @@ env:
   TB_SNAP_MODES: ${{ inputs.snap_modes || 'none' }}
   TB_SNAP_INTERVAL: ${{ inputs.snap_interval || '60' }}
   TB_SNAP_KEEP: ${{ inputs.snap_keep || '2' }}
+  TB_ZFS_RECORDSIZE: ${{ inputs.zfs_recordsize || '8k' }}
+  TB_ZFS_PARAMS: ${{ inputs.zfs_params || '' }}
   TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
   OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
 
@@ -191,7 +200,7 @@ jobs:
         # sources instead.
         run: |
           export TB_TOPOLOGIES="${{ matrix.topology }}"
-          export -p | grep -E '^declare -x (TB_[A-Z_]+|PATH)=' > "$RUNNER_TEMP/tb.env"
+          export -p | grep -E '^declare -x (TB_[A-Z0-9_]+|PATH)=' > "$RUNNER_TEMP/tb.env"
           cat "$RUNNER_TEMP/tb.env"
           sudo bash -c '. "$1" && exec tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env"
 

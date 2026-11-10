@@ -69,6 +69,11 @@
 #   zfs-slog  zfs plus a separate log device on local flash, so ZIL
 #             blocks never reach the vdev the backend would serve: the
 #             ZFS-native form of the two-volume split.
+#   zfs-slog-l2arc  zfs-slog plus an L2ARC device of twice the ARC cap
+#             (upstream's floor for a useful L2ARC), with the WAL dataset
+#             excluded from it (secondarycache=none): the ZFS-native flash
+#             read cache, sized so that it does not churn as zfs-l2arc's
+#             25% device does.
 #   zfs-slog-rcache  zfs-slog plus a dm-cache (writethrough, smq, the
 #             same policy and TB_CACHE_PCT as baseline) on the ORIGIN
 #             path, under the dm-snapshot: the stand-in for a backend
@@ -98,7 +103,8 @@
 #                           (default /var/tmp/topology-bench)
 #   TB_TOPOLOGIES="..."     subset of: nocache baseline twovol twovol-origin
 #                           twovol-hydrated bcache opencas zfs zfs-plain
-#                           zfs-l2arc zfs-slog zfs-slog-rcache
+#                           zfs-l2arc zfs-slog zfs-slog-l2arc
+#                           zfs-slog-rcache
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -147,6 +153,13 @@
 #                           it (the snapshot pins every overwritten block
 #                           for the window).
 #   TB_ZFS_SLOG_MB=1024     size of zfs-slog's log device
+#   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
+#                           twice the ARC cap, or twice the database when
+#                           the ARC is uncapped)
+#   TB_ZFS_PARAMS=          zfs module parameters to set for the ZFS
+#                           topologies, "name=value ..." (for instance
+#                           "l2arc_noprefetch=0 l2arc_headroom=0"); restored
+#                           afterwards
 #   TB_SNAP_MODES=none      snapshots taken DURING the measured window, one
 #                           phase per listed mode on the same stack, in
 #                           order (so the phases share a machine and are
@@ -193,7 +206,7 @@ import glob, json, os, sys
 out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
-         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-rcache']
+         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache']
 modes = ['none', 'sync', 'suspend', 'freeze', 'zfs']
 def mode(r): return r.get('snap', {}).get('mode', 'none')
 def label(r): return r['topology'] + ('' if mode(r) == 'none' else ' +' + mode(r))
@@ -291,7 +304,7 @@ if [ "${1:-}" = summarize ]; then
 fi
 
 WORK=${TB_WORK:-/var/tmp/topology-bench}
-TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-rcache"}
+TOPOLOGIES=${TB_TOPOLOGIES:-"nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"}
 WORKLOADS=${TB_WORKLOADS:-"tpcb select"}
 SCALE=${TB_SCALE:-100}
 CLIENTS=${TB_CLIENTS:-8}
@@ -356,6 +369,8 @@ ZFS_ASHIFT=${TB_ZFS_ASHIFT:-12}
 ZFS_GB=${TB_ZFS_GB:-$(( VOL_GB * 2 ))}
 ZFS_WINDOW_SNAPSHOT=${TB_ZFS_WINDOW_SNAPSHOT:-1}
 ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
+ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
+ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 to_mb() { # "1G" | "256MB" | "512M" | bytes -> MiB
     python3 -c '
 import re, sys
@@ -377,7 +392,7 @@ for t in $TOPOLOGIES; do
         nocache|baseline|twovol|twovol-origin|twovol-hydrated) ANY_THIN=1 ;;
         bcache) need make-bcache; ANY_THIN=1 ;;
         opencas) need casadm; ANY_THIN=1 ;;
-        zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-rcache) need zpool zfs tar; ANY_ZFS=1 ;;
+        zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-l2arc|zfs-slog-rcache) need zpool zfs tar; ANY_ZFS=1 ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
@@ -410,7 +425,13 @@ STACK_MB=0
 if [ -n "$ANY_ZFS" ] && [ $(( ZFS_GB * 2 * 1024 + 64 )) -gt "$STACK_MB" ]; then
     STACK_MB=$(( ZFS_GB * 2 * 1024 + 64 ))
 fi
-NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + ZFS_SLOG_MB + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
+# zfs-slog-l2arc's cache device: its own knob, else twice the ARC cap,
+# else twice the database.
+L2ARC_NEED_MB=0
+case " $TOPOLOGIES " in *" zfs-slog-l2arc "*)
+    L2ARC_NEED_MB=${ZFS_L2ARC_MB:-$(( ${ZFS_ARC_MB:-0} > 0 ? ZFS_ARC_MB * 2 : SCALE * 32 ))} ;;
+esac
+NEED_MB=$(( (VOL_GB + WAL_GB) * 1024 + STACK_MB + ZFS_SLOG_MB + L2ARC_NEED_MB + SCALE * 16 * CACHE_PCT / 100 + 1024 ))
 AVAIL_MB=$(df -Pm "$WORK" | awk 'NR==2 {print $4}')
 if [ "$AVAIL_MB" -lt "$NEED_MB" ]; then
     echo "not enough space under $WORK: ${AVAIL_MB} MiB free, worst case needs ${NEED_MB} MiB" \
@@ -473,7 +494,7 @@ ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
-SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""
+SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -505,6 +526,10 @@ teardown_topology() {
             || log "WARNING: pool $ZFS_POOL is still imported"
         ZFS_UP=""
     fi
+    for kv in $ZFS_PARAMS_SAVED; do
+        echo "${kv#*=}" > "/sys/module/zfs/parameters/${kv%%=*}" 2>/dev/null
+    done
+    ZFS_PARAMS_SAVED=""
     if [ -n "$ZFS_ARC_SAVED" ]; then
         # shellcheck disable=SC2086  # "min max", two words on purpose
         set -- $ZFS_ARC_SAVED
@@ -700,12 +725,12 @@ hydrate_thin() { # dm name: map every chunk locally, without reading the origin 
     sync
     log "$1: hydrated ${total} MiB in $(( $(date +%s) - t0 ))s ($HYDRATE_JOBS streams); pool: $(dmsetup status tb-pool | awk '{print $6}') data blocks used/total"
 }
-build_cache_dev() {
-    local bytes=$(( DB_MB * CACHE_PCT / 100 ))
+build_cache_dev() { # [MiB]: default TB_CACHE_PCT of the database
+    local bytes=${1:-$(( DB_MB * CACHE_PCT / 100 ))}
     [ "$bytes" -lt 64 ] && bytes=64
     mkimage "$WORK/cache.img" "$(mb "$bytes")"
     CACHE_LOOP=$(attach_loop "$WORK/cache.img")
-    log "cache device: ${bytes} MiB ($CACHE_PCT% of the database) on $CACHE_LOOP"
+    log "cache device: ${bytes} MiB ($(( bytes * 100 / DB_MB ))% of the database) on $CACHE_LOOP"
 }
 
 # ------------------------------------------------------- ZFS stack
@@ -724,6 +749,23 @@ zfs_cap_arc() {
     local got=$(( $(arcstat c_max) >> 20 ))
     [ "$got" = "$ZFS_ARC_MB" ] || log "WARNING: asked for a ${ZFS_ARC_MB} MiB ARC, the module reports c_max=${got} MiB"
     log "ARC capped: c_max=${got} MiB (TB_MEM_LIMIT=${MEM_LIMIT:-unset} - shared_buffers=$SHARED_BUFFERS)"
+}
+zfs_set_params() { # TB_ZFS_PARAMS: "name=value ..." module parameters, saved for teardown
+    local kv name p
+    for kv in $ZFS_PARAMS; do
+        name=${kv%%=*}; p=/sys/module/zfs/parameters/$name
+        [ -e "$p" ] || { echo "TB_ZFS_PARAMS: no such zfs module parameter: $name" >&2; return 1; }
+        ZFS_PARAMS_SAVED="$ZFS_PARAMS_SAVED $name=$(cat "$p")"
+        echo "${kv#*=}" > "$p"
+        log "zfs parameter $name: ${ZFS_PARAMS_SAVED##* } -> $(cat "$p")"
+    done
+}
+l2arc_params() { # the feed's settings, for the log
+    local n out=""
+    for n in l2arc_write_max l2arc_headroom l2arc_noprefetch l2arc_mfuonly l2arc_dwpd_limit; do
+        out="$out $n=$(cat "/sys/module/zfs/parameters/$n" 2>/dev/null || echo absent)"
+    done
+    echo "$out"
 }
 build_zfs_origin() { # compression full_page_writes: an exported pool image holding the database
     local comp=$1 fpw=$2 img="$WORK/zfs-origin.img" srcmnt="$WORK/mnt-src"
@@ -811,6 +853,7 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     dmsetup create tb-zdev --table "0 $sect snapshot $odev $POOL_LOOP N $chunk"
     STAT_ORIGIN=$(basename "$ZORIGIN_LOOP"); STAT_POOL=$(basename "$POOL_LOOP")
     zfs_cap_arc
+    zfs_set_params
     local t0; t0=$(date +%s%N)
     zpool import -N -o cachefile=none -d /dev/mapper/tb-zdev "$ZFS_POOL"
     ZFS_UP=1
@@ -940,7 +983,20 @@ topo_zfs_l2arc() {
     # Kernel defaults for the feed (l2arc_write_max, l2arc_noprefetch):
     # record-only, like dm-cache's migration_threshold above.
     zpool add -f "$ZFS_POOL" cache "$CACHE_LOOP"
-    log "l2arc: $CACHE_LOOP write_max=$(cat /sys/module/zfs/parameters/l2arc_write_max) noprefetch=$(cat /sys/module/zfs/parameters/l2arc_noprefetch)"
+    log "l2arc: $CACHE_LOOP$(l2arc_params)"
+}
+topo_zfs_slog_l2arc() {
+    topo_zfs_slog
+    # WAL is never read back in normal running: keep it out of the cache.
+    zfs set secondarycache=none "$ZFS_POOL/wal"
+    # Twice the ARC: below that an L2ARC wraps faster than its contents
+    # are asked for again (zfs-l2arc), and upstream's write limiter only
+    # engages from that size.
+    local mb=$ZFS_L2ARC_MB
+    [ -n "$mb" ] || mb=$(( ${ZFS_ARC_MB:-0} > 0 ? ZFS_ARC_MB * 2 : DB_MB * 2 ))
+    build_cache_dev "$mb"
+    zpool add -f "$ZFS_POOL" cache "$CACHE_LOOP"
+    log "l2arc: $CACHE_LOOP, ${mb} MiB, WAL excluded;$(l2arc_params)"
 }
 topo_zfs_slog_rcache() { ZFS_RCACHE=1; topo_zfs_slog; }
 topo_zfs_slog() {
