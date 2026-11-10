@@ -1298,10 +1298,10 @@ writes tens of GiB per run.
    without a transaction, where twovol had up to 7. A snapshot every
    minute costs the thin stacks 16 to 46% of their throughput and
    costs zfs-slog nothing (§10.4, §10.7): with snapshots, on one
-   machine, zfs-slog ran 1.26 to 1.60 times twovol's throughput at a
-   p99 a quarter to a third lower and a slowest transaction under
-   0.2 s against 1.5 to 4.1 s. ZFS's case rests on those and on a much
-   simpler node stack.
+   machine, zfs-slog ran 1.26 to 1.60 times twovol's throughput, at a
+   p99 of 6.8 to 9.2 ms against 10.5 to 13.7 ms and, with the dirty
+   cap, a slowest transaction under 0.2 s against 1.5 to 4.1 s. ZFS's
+   case rests on those and on a much simpler node stack.
 5. The dm-thin capture can drop the freeze if it syncs first (§10.4):
    the pause falls to about 50 ms with no more stalls than the freeze.
    The per-snapshot cost stays, because it is the copy-on-write after
