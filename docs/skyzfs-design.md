@@ -114,6 +114,7 @@ Every transport delivers the same operations to the daemon and must honour the s
 | Size | Fixed, a multiple of 1 MiB |
 | Logical and physical block size | 4096 bytes. Every offset and length is a multiple of it |
 | Largest read or write | 1 MiB. A transport splits anything larger |
+| Requests in flight | A stated bound. The transport holds the rest |
 | Discard and write_zeroes | Any aligned range inside the device |
 | Volatile write cache | Yes: flushes are meaningful and must be delivered |
 | Forced-unit-access writes | Not advertised. ZFS does not send them. A transport that delivers one treats it as a write followed by a flush |
@@ -136,7 +137,7 @@ Reads are not in the log. A read received after an operation was acknowledged ob
 
 **Two kinds of failure.** They promise different things, and treating them as one corrupts a pool. The daemon cannot tell which one it is recovering from, so recovery is one procedure: every start replays the longest valid prefix of the write log and makes it durable before it serves the first request. A second crash then cannot take back what the first recovery exposed, and a flush received by the new instance covers what the old one acknowledged.
 
-- **The daemon is lost and the kernel carries on.** ZFS never restarted, so nothing it was told is done may be undone. An operation is therefore acknowledged only once it would survive the daemon process: appended whole to the write log, though not necessarily flushed to the device. The longest valid prefix then contains every acknowledged operation. Requests that were not acknowledged are issued again. They may arrive in any order, and may include ones the lost daemon had already applied, so all five operations are idempotent.
+- **The daemon is lost and the kernel carries on.** ZFS never restarted, so nothing it was told is done may be undone. An operation is therefore acknowledged only once it would survive the daemon process: appended whole to the write log, though not necessarily flushed to the device. The longest valid prefix then contains every acknowledged operation. Requests that were not acknowledged are issued again. They may arrive in any order, and may include ones the lost daemon had already applied, so all five operations are idempotent. A reissued request carries nothing that ties it to its first delivery, so it is a new operation in the order, and one the lost daemon had applied is in the order twice. This shows only where two overlapping operations were in flight at the loss, which ZFS does not do.
 - **Power is lost.** The recovered volume is a prefix of the daemon's order that includes at least what every completed flush covered. Every operation in it is whole: none is torn. Blocks that no lost operation touched are unchanged.
 
 **Errors.**
@@ -144,7 +145,7 @@ Reads are not in the log. A read received after an operation was acknowledged ob
 - A request that is misaligned, empty or beyond the end is rejected and has no effect.
 - A flush or a discard is never answered "not supported". ZFS would stop issuing it for good[^zfserr].
 - A flush is never failed for a condition that can recover. It is held.
-- If the write log has failed for good, the volume has **failed**: the flush fails **and so does every later request**, reads included. ZFS ignores the result of the flushes on either side of its uberblocks[^zfserr], so it is the next write that has to fail, and the content of a block whose log record was lost is unknown, so a read of it must not return something older.
+- If the write log has failed for good, the volume has **failed**: no flush succeeds from then on, and from the first failure the daemon reports, **every later request fails**, reads included. ZFS ignores the result of the flushes on either side of its uberblocks[^zfserr], so it is the next write that has to fail, and the content of a block whose log record was lost is unknown, so a read of it must not return something older.
 - A failed volume stays failed across a daemon restart for as long as its client stays attached. A new instance must never serve a shorter log to a ZFS that was told more. How the daemon remembers this when the log itself is what failed is part of M1.2. The simplest form is to give up the attachment so that it cannot be recovered.
 - A read that needs object storage that cannot be reached is held and retried. After a configured bound it fails, so that `failmode=wait` suspends the pool where an administrator can see it. The bound is set in M3.
 - On a read-only target, writes, write_zeroes and discards fail and a flush succeeds.
