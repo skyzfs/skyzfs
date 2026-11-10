@@ -86,11 +86,21 @@ when it merges.
   `skynbd-agent`:
   `apt-get update && apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev`.
 - **CI coverage.** `ci.yml`, `coverage.yml` and `e2e.yml` run on `main`
-  and on every pull request, whatever its base. A push to a role branch
-  with no pull request open is not covered by them.
-- **The benchmark's push trigger.** A push to any branch but `main` that
-  touches `topology-bench.sh`, `tests/lib/gnu-dd.sh` or the workflow
-  starts thirteen runner jobs. Cancel the run if you did not want it.
+  and on every pull request, whatever its base. `skyzfs-ci.yml` runs
+  shellcheck, fmt, clippy and the workspace tests on the pushes those
+  miss: a merge into `zfs-topology`, and a push to a `skyzfs-*` branch
+  that has no pull request open. A newer push cancels the run of the
+  older one, and a cold build takes over ten minutes, so let a run
+  finish before pushing again when you need it green.
+- **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
+  that touches `tests/kernel/` or the workflow, and by dispatch. It
+  fails when a property the design depends on does not hold on the
+  runner (`pin_*` lines in its summary).
+- **The benchmark runs by dispatch only** on `zfs-topology` and
+  `skyzfs-*` branches: dispatch `topology-bench.yml` with the branch as
+  the ref. A push no longer starts it there. On any other branch but
+  `main`, a push that touches `topology-bench.sh`, `tests/lib/gnu-dd.sh`
+  or the workflow still starts thirteen runner jobs.
 - **Runner noise.** Two GitHub runner VMs differ by more than most
   effects being measured. Compare configurations only on one runner (the
   workflow's `sequence` input), and say how many runs a number rests on.

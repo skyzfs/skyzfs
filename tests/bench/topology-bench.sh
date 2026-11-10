@@ -81,13 +81,28 @@
 #             immutable, so this cache only ever sees reads: nothing is
 #             written twice and nothing can go stale.
 #
+#   zfs-ublk  the pool's data vdev is a ublk device (design §4.2): the
+#             reference server's loop target (ublk-org/ublksrv, the
+#             `ublk` command; tests/kernel/build-ublksrv.sh builds it)
+#             serves the pool image itself, read-write, with one copy
+#             per request, and the pool is imported from /dev/ublkbN.
+#             Otherwise as zfs-slog: same datasets, same log device.
+#             There is no dm-snapshot and no delayed origin under it:
+#             everything is local, so compare it at TB_ORIGIN_DELAY_MS=0.
+#   zfs-loop  zfs-ublk with a kernel loop device (direct I/O) in place
+#             of the ublk device: the control. zfs-ublk against zfs-loop
+#             is the ublk hop alone; zfs-loop against zfs-slog is what
+#             the dm-snapshot model itself costs.
+#
 # For these rows `origin` is the delayed pool image, `pool` is the
 # dm-snapshot's COW device (the local flash every vdev write lands on),
 # `fs` is the vdev itself, `cache` is the L2ARC device and `slog` the
 # log device (counted into `flash write`). The ARC is
 # not charged to postgres's cgroup, so with TB_MEM_LIMIT set it is
 # capped at TB_MEM_LIMIT minus shared_buffers — what the page cache
-# gets in the other topologies.
+# gets in the other topologies. In zfs-ublk and zfs-loop one image is
+# origin, pool and vdev at once: `origin`, `pool` and `fs` all report
+# the vdev, and there is no first-touch figure.
 #
 # Usage (manual, as root, on the NVMe you want to measure):
 #
@@ -104,7 +119,8 @@
 #   TB_TOPOLOGIES="..."     subset of: nocache baseline twovol twovol-origin
 #                           twovol-hydrated bcache opencas zfs zfs-plain
 #                           zfs-l2arc zfs-slog zfs-slog-l2arc
-#                           zfs-slog-rcache
+#                           zfs-slog-rcache; and, never in the default
+#                           set, zfs-ublk zfs-loop
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -165,6 +181,9 @@
 #                           flush behind an fsync then commits that
 #                           filesystem's journal — a cost a real flash
 #                           partition does not have. 0 leaves it sparse
+#   TB_UBLK_ARGS=           extra arguments for zfs-ublk's `ublk add`, comma-
+#                           separated ("-q,4,-d,256": four queues of depth
+#                           256; the server's default is one queue of 128)
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -240,7 +259,8 @@ import glob, json, os, sys
 out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
-         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache']
+         'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache',
+         'zfs-loop', 'zfs-ublk']
 modes = ['none', 'sync', 'suspend', 'freeze', 'zfs']
 def mode(r): return r.get('snap', {}).get('mode', 'none')
 def label(r): return r.get('label', r['topology']) + ('' if mode(r) == 'none' else ' +' + mode(r))
@@ -469,6 +489,8 @@ ZFS_SLOG_MB=${TB_ZFS_SLOG_MB:-1024}
 ZFS_SLOG_PREALLOC=${TB_ZFS_SLOG_PREALLOC:-1}
 PREALLOC=${TB_PREALLOC:-0}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
+UBLK_ARGS=${TB_UBLK_ARGS:-}
+UBLK_ID=${TB_UBLK_ID:-7}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
@@ -488,14 +510,15 @@ if [ $(( CACHE_BLOCK_KB % 32 )) -ne 0 ] || [ "$CACHE_BLOCK_KB" -lt 32 ]; then
     echo "TB_CACHE_BLOCK_KB must be a multiple of 32 (dm-cache minimum)" >&2; exit 64
 fi
 
-ANY_THIN=""; ANY_ZFS=""
+ANY_THIN=""; ANY_ZFS=""; ANY_UBLK=""
 # shellcheck disable=SC2086  # TB_TOPOLOGIES is a space-separated list by contract
 for t in $TOPOLOGIES; do
     case $t in
         nocache|baseline|twovol|twovol-origin|twovol-hydrated) ANY_THIN=1 ;;
         bcache) need make-bcache; ANY_THIN=1 ;;
         opencas) need casadm; ANY_THIN=1 ;;
-        zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-l2arc|zfs-slog-rcache) need zpool zfs tar; ANY_ZFS=1 ;;
+        zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-l2arc|zfs-slog-rcache|zfs-loop) need zpool zfs tar; ANY_ZFS=1 ;;
+        zfs-ublk) need zpool zfs tar ublk; ANY_ZFS=1; ANY_UBLK=1 ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
@@ -591,6 +614,10 @@ if [ -n "$ANY_ZFS" ]; then
     for m in dm_snapshot zfs; do modprobe "$m" 2>/dev/null || true; done
     [ -r /proc/spl/kstat/zfs/arcstats ] || { echo "the zfs kernel module is not loaded (modprobe zfs)" >&2; exit 64; }
 fi
+if [ -n "$ANY_UBLK" ]; then
+    modprobe ublk_drv 2>/dev/null || true
+    [ -e /dev/ublk-control ] || { echo "no /dev/ublk-control: the ublk_drv kernel module is not loaded (modprobe ublk_drv)" >&2; exit 64; }
+fi
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 as_pg() { su -s /bin/bash "$PG_USER" -c "$*"; }
@@ -640,7 +667,7 @@ ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
-SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""
+SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -671,6 +698,12 @@ teardown_topology() {
         zpool export -f "$ZFS_POOL" 2>/dev/null || zpool destroy -f "$ZFS_POOL" 2>/dev/null \
             || log "WARNING: pool $ZFS_POOL is still imported"
         ZFS_UP=""
+    fi
+    if [ -n "$UBLK_UP" ]; then
+        # After the export: deleting a device under an imported pool
+        # would leave the pool waiting on a vdev that is gone.
+        timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || log "WARNING: ublk device $UBLK_ID was not deleted"
+        UBLK_UP=""
     fi
     for kv in $ZFS_PARAMS_SAVED; do
         echo "${kv#*=}" > "/sys/module/zfs/parameters/${kv%%=*}" 2>/dev/null
@@ -1025,6 +1058,39 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     zfs_set_props
     FS_DEV=/dev/mapper/tb-zdev
 }
+build_zfs_direct() { # ublk|loop: the pool imported from its own image, served read-write by that device
+    local dev t0
+    if [ "$ORIGIN_DELAY_MS" -gt 0 ]; then
+        log "WARNING: $TOPO has no origin under it: TB_ORIGIN_DELAY_MS=$ORIGIN_DELAY_MS does not apply to it"
+    fi
+    [ "$PREALLOC" != 1 ] || log "WARNING: TB_PREALLOC does not reach $TOPO's pool image, which stays sparse"
+    case $1 in
+        ublk)
+            dev=/dev/ublkb$UBLK_ID
+            timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || true   # a previous run's leftover
+            # shellcheck disable=SC2086  # a comma-separated argument list by contract
+            timeout 60 ublk add -t loop -n "$UBLK_ID" -f "$WORK/zfs-origin.img" ${UBLK_ARGS//,/ } >&2
+            UBLK_UP=1
+            wait_for "$dev" 20 || { echo "ublk add returned, but $dev did not appear" >&2; return 1; }
+            log "ublk: $(ublk list -n "$UBLK_ID" 2>&1 | tr -s ' \t\n' ' ')"
+            ;;
+        loop)
+            ZORIGIN_LOOP=$(attach_loop "$WORK/zfs-origin.img")
+            dev=$ZORIGIN_LOOP
+            ;;
+        *) echo "build_zfs_direct: $1?" >&2; return 1 ;;
+    esac
+    log "$TOPO: vdev $dev, logical/physical block $(cat "/sys/block/$(basename "$dev")/queue/logical_block_size")/$(cat "/sys/block/$(basename "$dev")/queue/physical_block_size"), max_sectors_kb $(cat "/sys/block/$(basename "$dev")/queue/max_sectors_kb")"
+    STAT_ORIGIN=$(basename "$dev"); STAT_POOL=$(basename "$dev")
+    zfs_cap_arc
+    zfs_set_params
+    t0=$(date +%s%N)
+    zpool import -N -o cachefile=none -d "$dev" "$ZFS_POOL"
+    ZFS_UP=1
+    log "zpool import from $dev took $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+    zfs_set_props
+    FS_DEV=$dev
+}
 zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg key n"
     awk 'NR > 2 { print "zfsc zil." $1, $3 }' /proc/spl/kstat/zfs/zil
     awk 'NR > 2 && $1 ~ /^(hits|iohits|misses|l2_hits|l2_misses|l2_read_bytes|l2_write_bytes|memory_throttle_count)$/ { print "zfsc arc." $1, $3 }
@@ -1045,7 +1111,10 @@ zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg k
     awk '$3 == "C" { print "zfstxg", $1, $4, $6, $9, $10, $11, $12 }' "/proc/spl/kstat/zfs/$ZFS_POOL/txgs" 2>/dev/null
     # Growth of the COW store = bytes written to LBAs never written
     # since the stage. dm-snapshot status: <allocated>/<total> sectors.
-    echo "zfsc cow.allocated_bytes $(dmsetup status tb-zdev | awk '{ split($4, a, "/"); print a[1] * 512 }')"
+    # (zfs-ublk and zfs-loop have no COW store, and no such figure.)
+    if dmsetup info tb-zdev >/dev/null 2>&1; then
+        echo "zfsc cow.allocated_bytes $(dmsetup status tb-zdev | awk '{ split($4, a, "/"); print a[1] * 512 }')"
+    fi
     echo "zfsg pool.allocated $(zpool get -Hp -o value allocated "$ZFS_POOL")"
     echo "zfsg pool.fragmentation $(zpool get -Hp -o value fragmentation "$ZFS_POOL" | tr -dc '0-9')"
     if [ -n "$ZFS_WIN" ]; then
@@ -1177,8 +1246,10 @@ topo_zfs_slog_l2arc() {
     log "l2arc: $CACHE_LOOP, ${mb} MiB, WAL excluded;$(l2arc_params)"
 }
 topo_zfs_slog_rcache() { ZFS_RCACHE=1; topo_zfs_slog; }
-topo_zfs_slog() {
-    topo_zfs
+topo_zfs_slog() { topo_zfs; add_slog; }
+topo_zfs_ublk() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_direct ublk; add_slog; }
+topo_zfs_loop() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_direct loop; add_slog; }
+add_slog() {
     # The log device is plain local flash: ZIL blocks land here and
     # never on the vdev. A cut of the vdev then holds the last synced
     # transaction group, not the fsynced tail.
