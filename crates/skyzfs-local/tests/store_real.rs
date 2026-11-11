@@ -12,21 +12,6 @@ use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig, StoreError};
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
-/// A child process that is being started holds, between its fork and
-/// its exec, a copy of every descriptor of this process, the lock files
-/// of the other tests' stores among them, and an advisory lock lives as
-/// long as any copy of its descriptor. A test that closes a store and
-/// opens it again at that moment would find it locked. So the test that
-/// starts children holds this for writing until its child has reported,
-/// and the tests that reopen a store in this process hold it for
-/// reading.
-static STARTING_A_CHILD: std::sync::RwLock<()> = std::sync::RwLock::new(());
-
-fn no_child_is_starting() -> std::sync::RwLockReadGuard<'static, ()> {
-    STARTING_A_CHILD
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 /// The seed of the kill test's moments, to repeat a run.
 const KILL_SEED: &str = "SKYZFS_KILL_SEED";
@@ -87,7 +72,6 @@ fn flush(store: &mut Served) {
 /// a reopen, at both alignments; the files are private to their owner.
 #[test]
 fn the_store_round_trips_on_real_files() {
-    let _quiet = no_child_is_starting();
     for align in [64, 4096] {
         let tmp = tempfile::tempdir().unwrap();
         let dir = FsDir::new(tmp.path()).unwrap();
@@ -150,7 +134,6 @@ fn the_store_round_trips_on_real_files() {
 /// modulo 4 GiB.
 #[test]
 fn a_volume_above_four_gib_on_real_files() {
-    let _quiet = no_child_is_starting();
     let tmp = tempfile::tempdir().unwrap();
     let dir = FsDir::new(tmp.path()).unwrap();
     let store = Store::create(dir.clone(), &config(5 * 1024, 4096), OpenOptions::default())
@@ -323,7 +306,6 @@ fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
 /// instance is dropped the store opens.
 #[test]
 fn a_second_instance_is_refused_on_real_files() {
-    let _quiet = no_child_is_starting();
     let tmp = tempfile::tempdir().unwrap();
     let dir = FsDir::new(tmp.path()).unwrap();
     let store = Store::create(dir.clone(), &config(16, 64), OpenOptions::default()).unwrap();
@@ -383,9 +365,6 @@ fn acknowledged_writes_survive_kill_9() {
     println!("kill moments from seed {seed}: set {KILL_SEED}={seed} to repeat them");
     let mut moment = seed | 1;
     for round in 0..6 {
-        let starting = STARTING_A_CHILD
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut child = Command::new(&exe)
             .args([
                 "--exact",
@@ -427,7 +406,6 @@ fn acknowledged_writes_survive_kill_9() {
                 "round {round}: the child did not open the store"
             );
         }
-        drop(starting);
         // While the child lives the store is its own: one instance per
         // volume, across processes.
         assert!(

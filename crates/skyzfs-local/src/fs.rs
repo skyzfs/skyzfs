@@ -92,7 +92,19 @@ pub const LOCK_NAME: &str = "lock";
 /// The directory's lock, held: see [`Dir::try_lock`].
 #[derive(Debug)]
 pub struct FsLock {
-    _file: fs::File,
+    file: fs::File,
+}
+
+impl Drop for FsLock {
+    /// Unlocks, and does not leave it to the close. A lock belongs to
+    /// the open file, not to this descriptor, and a child process
+    /// started by another thread holds a copy of the descriptor from
+    /// its fork to its exec: the close alone would leave the directory
+    /// locked for that time. The unlock releases it for every copy.
+    fn drop(&mut self) {
+        // Nothing to do about a failure: the close follows.
+        let _ = self.file.unlock();
+    }
 }
 
 impl Dir for FsDir {
@@ -100,8 +112,12 @@ impl Dir for FsDir {
     type Lock = FsLock;
 
     /// An advisory lock (`flock`, `LockFileEx`) on the file `lock`,
-    /// which is created if it is not there. The operating system drops
-    /// it when the process ends.
+    /// which is created if it is not there. Dropping the [`FsLock`]
+    /// unlocks. The operating system drops the lock when the process
+    /// ends, with one exception: if the process dies while a child of
+    /// its own is between its fork and its exec, the child holds the
+    /// lock until the exec, and the next instance may see the
+    /// directory locked for that moment.
     fn try_lock(&self) -> io::Result<FsLock> {
         let mut options = fs::OpenOptions::new();
         options.read(true).write(true).create(true).truncate(false);
@@ -109,7 +125,7 @@ impl Dir for FsDir {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let file = options.open(self.path.join(LOCK_NAME))?;
         match file.try_lock() {
-            Ok(()) => Ok(FsLock { _file: file }),
+            Ok(()) => Ok(FsLock { file }),
             Err(fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
             Err(fs::TryLockError::Error(e)) => Err(e),
         }
@@ -372,6 +388,51 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// The lock is free as soon as its holder is dropped, also while
+    /// other threads start child processes. A child holds a copy of
+    /// every descriptor from its fork to its exec, and a lock that was
+    /// only closed would stay held through that copy: without the
+    /// unlock in `FsLock`'s drop about one round in ten finds the
+    /// directory locked. The rounds go on until 300 children have been
+    /// started.
+    #[cfg(unix)]
+    #[test]
+    fn a_dropped_lock_is_free_while_children_are_started() {
+        use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let stop = AtomicBool::new(false);
+        let started = AtomicU32::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..2 {
+                scope.spawn(|| {
+                    while !stop.load(Ordering::Relaxed) {
+                        let status = std::process::Command::new("true").status();
+                        assert!(status.is_ok_and(|s| s.success()));
+                        started.fetch_add(1, Ordering::Relaxed);
+                    }
+                });
+            }
+            let mut held = 0;
+            let mut rounds = 0;
+            while started.load(Ordering::Relaxed) < 300 {
+                rounds += 1;
+                match dir.try_lock() {
+                    Ok(lock) => drop(lock),
+                    Err(e) => {
+                        assert_eq!(e.kind(), io::ErrorKind::WouldBlock, "{e}");
+                        held += 1;
+                    }
+                }
+            }
+            stop.store(true, Ordering::Relaxed);
+            assert_eq!(
+                held, 0,
+                "rounds of {rounds} that found the dropped lock held"
+            );
+        });
     }
 
     /// Real files, device reads: where the file system has them they
