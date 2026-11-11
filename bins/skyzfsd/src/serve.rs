@@ -81,54 +81,70 @@ fn say(text: impl std::fmt::Display) {
     crate::to_stderr(&format!("skyzfsd: {text}\n"));
 }
 
-/// The type of the file system `path` is on, by the mount table in
-/// `mounts` (the text of `/proc/self/mountinfo`): the mount whose
-/// mount point is the longest prefix of `path`.
-pub fn filesystem_of(mounts: &str, path: &Path) -> Option<String> {
-    let mut best: Option<(usize, String)> = None;
-    for line in mounts.lines() {
-        // "36 35 98:0 /root /mount/point options... - type source ..."
-        let (before, after) = line.split_once(" - ")?;
-        let point = before.split(' ').nth(4)?;
-        let kind = after.split(' ').next()?;
-        // The table escapes a space as \040.
-        let point = point.replace("\\040", " ");
-        if path.starts_with(&point) {
-            let len = Path::new(&point).components().count();
-            if best.as_ref().is_none_or(|(most, _)| len >= *most) {
-                best = Some((len, kind.to_string()));
-            }
-        }
-    }
-    best.map(|(_, kind)| kind)
-}
+/// The magic number of a ZFS file system in `statfs`.
+pub const ZFS_SUPER_MAGIC: u64 = 0x2fc1_2fc1;
 
-fn off_zfs(dir: &Path, what: &str) -> Result<(), String> {
-    // A run directory that does not exist yet is made under its
-    // nearest existing parent.
-    let mut existing = dir;
-    let real = loop {
+/// The nearest directory that exists at or above `dir`, resolved to
+/// its real path: where a directory that does not exist yet (the run
+/// directory) will be made. A relative `dir` is taken under `cwd`, so
+/// that `run`, or `a/b` with no `a`, ends at the current directory and
+/// not at an empty path.
+pub fn nearest_existing(dir: &Path, cwd: &Path) -> io::Result<std::path::PathBuf> {
+    let absolute = cwd.join(dir);
+    let mut existing: &Path = &absolute;
+    loop {
         match existing.canonicalize() {
-            Ok(real) => break real,
+            Ok(real) => return Ok(real),
             Err(e) => match existing.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => existing = parent,
-                _ => return Err(format!("{what} {}: {e}", dir.display())),
+                Some(parent) => existing = parent,
+                None => return Err(e),
             },
         }
-    };
-    let mounts = std::fs::read_to_string("/proc/self/mountinfo")
-        .map_err(|e| format!("/proc/self/mountinfo: {e}"))?;
-    match filesystem_of(&mounts, &real).as_deref() {
-        Some("zfs") => Err(format!(
+    }
+}
+
+/// The rule that the daemon keeps its files off any pool (design
+/// §4.1): refuse `dir` if the file system it is on, or will be made
+/// on, is ZFS. `kind` is `statfs`'s file system type for a path.
+///
+/// The kernel is asked (`statfs` of the real path) and the mount table
+/// is not parsed: the kernel cannot be wrong about which mount a path
+/// is on (bind mounts, mount namespaces, a mount over a mount, a mount
+/// point with a tab, a newline or a backslash in its name, which the
+/// table escapes). An answer that cannot be had is a refusal.
+///
+/// What the check sees and what it does not: a directory on any file
+/// system of type ZFS is refused, whatever pool it is. A file system
+/// of another type that itself lies on ZFS (ext4 on a zvol, or in a
+/// loop file on a dataset) is not seen, and neither is ZFS under a
+/// network or stacked file system.
+pub fn off_zfs(
+    dir: &Path,
+    what: &str,
+    cwd: &Path,
+    kind: impl Fn(&Path) -> io::Result<u64>,
+) -> Result<(), String> {
+    let real = nearest_existing(dir, cwd).map_err(|e| format!("{what} {}: {e}", dir.display()))?;
+    match kind(&real) {
+        Ok(ZFS_SUPER_MAGIC) => Err(format!(
             "{what} {} is on ZFS: the daemon keeps its files off any pool",
             dir.display()
         )),
-        Some(_) => Ok(()),
-        None => Err(format!(
-            "the file system of {what} {} cannot be told",
-            dir.display()
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the file system of {what} {} cannot be told ({}: {e})",
+            dir.display(),
+            real.display()
         )),
     }
+}
+
+/// `statfs`'s file system type of `path`.
+fn statfs_kind(path: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::statfs(path)?;
+    // A signed word on most architectures; the magic numbers are below
+    // 2^32, so its low 32 bits are the whole of it.
+    Ok(u64::from(stat.f_type as u32))
 }
 
 fn boot(serve: &Serve) -> io::Result<[u8; 16]> {
@@ -217,7 +233,10 @@ pub fn serve(serve: &Serve) -> Exit {
             (&serve.dir, "the volume's directory"),
             (&serve.run_dir, "the run directory"),
         ] {
-            if let Err(why) = off_zfs(dir, what) {
+            let checked = std::env::current_dir()
+                .map_err(|e| format!("the current directory: {e}"))
+                .and_then(|cwd| off_zfs(dir, what, &cwd, statfs_kind));
+            if let Err(why) = checked {
                 say(why);
                 return Exit::Error;
             }
@@ -514,25 +533,87 @@ mod tests {
         assert_eq!(appended(&counters), 6);
     }
 
-    /// The mount that holds a path is the one with the longest mount
-    /// point that is a prefix of it, by whole components.
+    /// A directory on ZFS is refused, one on anything else passes, and
+    /// an answer that cannot be had is a refusal. The name of the
+    /// directory plays no part: the kernel is asked about the real
+    /// path, also for a name with the characters a mount table escapes.
     #[test]
-    fn the_file_system_of_a_path_is_its_longest_mount() {
-        let mounts = "\
-22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
-30 22 0:25 / /run rw,nosuid shared:5 - tmpfs tmpfs rw
-41 22 0:40 / /tank rw shared:9 - zfs tank rw
-42 41 0:41 / /tank/with\\040space rw shared:9 - zfs tank/x rw
-43 22 8:2 / /tank2 rw - xfs /dev/sdb rw
-";
-        let kind = |path: &str| filesystem_of(mounts, Path::new(path));
-        assert_eq!(kind("/var/lib/v").as_deref(), Some("ext4"));
-        assert_eq!(kind("/run/skyzfsd").as_deref(), Some("tmpfs"));
-        assert_eq!(kind("/tank/v").as_deref(), Some("zfs"));
-        assert_eq!(kind("/tank/with space/v").as_deref(), Some("zfs"));
-        // A prefix of the name is not a prefix of the path.
-        assert_eq!(kind("/tank2/v").as_deref(), Some("xfs"));
-        assert_eq!(kind("/tankard").as_deref(), Some("ext4"));
-        assert_eq!(filesystem_of("", Path::new("/x")), None);
+    fn a_directory_on_zfs_is_refused_by_what_the_kernel_says() {
+        let keep = tempfile::tempdir().expect("a directory");
+        for name in [
+            "plain",
+            "with space",
+            "tab\there",
+            "new\nline",
+            "back\\slash",
+        ] {
+            let dir = keep.path().join(name);
+            std::fs::create_dir(&dir).expect("the directory");
+            let real = dir.canonicalize().expect("real");
+            let asked = std::cell::RefCell::new(Vec::new());
+            let says = |magic: u64| {
+                let asked = &asked;
+                move |path: &Path| {
+                    asked.borrow_mut().push(path.to_path_buf());
+                    Ok(magic)
+                }
+            };
+            let refused = off_zfs(
+                &dir,
+                "the volume's directory",
+                keep.path(),
+                says(ZFS_SUPER_MAGIC),
+            )
+            .expect_err("on ZFS");
+            assert!(refused.contains("is on ZFS"), "{refused}");
+            // ext4's magic.
+            assert_eq!(off_zfs(&dir, "x", keep.path(), says(0xef53)), Ok(()));
+            assert!(asked.borrow().iter().all(|path| *path == real), "{name}");
+            let unknown = off_zfs(&dir, "x", keep.path(), |_| {
+                Err(io::Error::other("no answer"))
+            })
+            .expect_err("no answer");
+            assert!(unknown.contains("cannot be told"), "{unknown}");
+        }
+        // The real call answers for a real directory, and this one is
+        // on some file system.
+        assert!(statfs_kind(keep.path()).is_ok());
+    }
+
+    /// A directory that does not exist yet is judged by the nearest
+    /// directory above it that does. A relative one is taken under the
+    /// current directory: `run`, and `a/b` with no `a`, end there and
+    /// are not refused for having no parent.
+    #[test]
+    fn a_missing_directory_is_judged_by_where_it_will_be_made_also_when_relative() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let cwd = keep.path().canonicalize().expect("real");
+        std::fs::create_dir(cwd.join("there")).expect("dir");
+        for (dir, lands) in [
+            ("run", cwd.clone()),
+            ("a/b", cwd.clone()),
+            ("there", cwd.join("there")),
+            ("there/run/deeper", cwd.join("there")),
+            (".", cwd.clone()),
+        ] {
+            assert_eq!(
+                nearest_existing(Path::new(dir), &cwd).expect(dir),
+                lands,
+                "{dir}"
+            );
+            let asked = std::cell::Cell::new(None);
+            let checked = off_zfs(Path::new(dir), "the run directory", &cwd, |path| {
+                asked.set(Some(path.to_path_buf()));
+                Ok(0xef53)
+            });
+            assert_eq!(checked, Ok(()), "{dir}");
+            assert_eq!(asked.take(), Some(lands), "{dir}");
+        }
+        // An absolute one is not moved under the current directory.
+        let absolute = cwd.join("there").join("missing");
+        assert_eq!(
+            nearest_existing(&absolute, Path::new("/nowhere")).expect("absolute"),
+            cwd.join("there")
+        );
     }
 }

@@ -4250,6 +4250,7 @@ dependencies = [
 name = "skyzfsd"
 version = "0.0.1"
 dependencies = [
+ "rustix 1.1.4",
  "skyzfs-blk",
  "skyzfs-local",
  "skyzfs-ublk",
