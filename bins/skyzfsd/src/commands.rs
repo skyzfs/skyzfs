@@ -48,6 +48,14 @@ pub const LOCK_RETRIES: u32 = 20;
 /// How long between two tries: 100 ms. With [`LOCK_RETRIES`], 2 s.
 pub const LOCK_PAUSE: Duration = Duration::from_millis(100);
 
+/// How often a device that was deleted is looked at again before its
+/// number is said to be held: with [`LOCK_PAUSE`] between, 5 s, the
+/// time a start gives a device that is still live. The driver's delete
+/// does not wait, and the binding's kernel tests measure how long the
+/// number of a device nobody holds takes to come free
+/// (`control_delete_frees_the_number_within`, with its detail line).
+pub const GONE_RETRIES: u32 = 50;
+
 /// The size of a new volume's log segments: 64 MiB. A constant, and
 /// recorded with the volume.
 pub const SEGMENT_SIZE: u64 = 64 << 20;
@@ -196,7 +204,13 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
     };
     let mut store = StoreVolume::new(&volume.dir, OpenOptions::default());
     let mut control = control;
-    let detached = match lifecycle::detach(&mut control, &mut records, &mut store, LOCK_RETRIES) {
+    let detached = match lifecycle::detach(
+        &mut control,
+        &mut records,
+        &mut store,
+        LOCK_RETRIES,
+        GONE_RETRIES,
+    ) {
         Ok(detached) => detached,
         Err(e) => return Output::error(format!("detach: {e}")),
     };

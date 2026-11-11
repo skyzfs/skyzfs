@@ -60,7 +60,7 @@ use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
-use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
+use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
@@ -262,6 +262,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         flags: FLAGS,
         lock_retries: LOCK_RETRIES,
         live_retries: LIVE_RETRIES,
+        gone_retries: GONE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
     };
     let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {

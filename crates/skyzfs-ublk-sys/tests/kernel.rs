@@ -564,6 +564,90 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
     property("take_over_beside_stale_file", || result);
 }
 
+/// How long the number of a device nobody holds takes to come free
+/// after the driver's delete, which does not wait: over many deletes of
+/// a device that was never started and of one whose server has ended.
+/// The lifecycle calls a number held when its device is still there
+/// 5 s after the delete; this is what that figure rests on. It fails
+/// if a number took longer than that, and prints the longest and the
+/// median time of each kind, and how often the device was still there
+/// at the first look.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_gives() {
+    const DELETES: usize = 40;
+    const LIMIT: Duration = Duration::from_secs(5);
+    let n = number(7);
+    clean(n);
+    let result = (|| {
+        let mut kernel = kernel()?;
+        let mut lines = Vec::new();
+        for served in [false, true] {
+            let kind = if served {
+                "after its server ended"
+            } else {
+                "never started"
+            };
+            let mut times = Vec::with_capacity(DELETES);
+            let mut there_at_first_look = 0;
+            for round in 0..DELETES {
+                kernel
+                    .add(n, &shape())
+                    .map_err(|e| format!("{kind}, round {round}: add: {e:?}"))?;
+                if served {
+                    let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
+                    let life = life(n, false, &content)?;
+                    until(&mut kernel, n, "live", |i| {
+                        i.is_some_and(|i| i.state == DeviceState::Live)
+                    })?;
+                    life.end()?;
+                    until(&mut kernel, n, "waiting", |i| {
+                        i.is_some_and(|i| i.state == DeviceState::Waiting)
+                    })?;
+                }
+                let began = Instant::now();
+                kernel
+                    .delete(n)
+                    .map_err(|e| format!("{kind}, round {round}: delete: {e}"))?;
+                let mut looks = 0u32;
+                loop {
+                    let gone = info(&mut kernel, n)?.is_none();
+                    looks += 1;
+                    if gone {
+                        break;
+                    }
+                    if began.elapsed() > LIMIT {
+                        return Err(format!(
+                            "{kind}, round {round}: device {n} is still there {:?} after its \
+                             delete, and nothing holds it",
+                            began.elapsed()
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
+                if looks > 1 {
+                    there_at_first_look += 1;
+                }
+                times.push(began.elapsed());
+            }
+            times.sort();
+            lines.push(format!(
+                "{kind}: longest {:?}, median {:?}, still there at the first look in \
+                 {there_at_first_look} of {DELETES}",
+                times[DELETES - 1],
+                times[DELETES / 2]
+            ));
+        }
+        println!(
+            "control_delete_frees_the_number_detail\t{DELETES} deletes of each kind, limit {LIMIT:?}; {}",
+            lines.join("; ")
+        );
+        Ok(())
+    })();
+    clean(n);
+    property("delete_frees_the_number_within", || result);
+}
+
 /// What a queue's thread does after its queue is dropped at a stop, in
 /// place of the store's shutdown: it takes memory of the size of the
 /// request buffers, fills it, goes through the kernel many times while
