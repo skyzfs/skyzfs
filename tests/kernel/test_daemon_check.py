@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Unit tests for daemon_check.py: no kernel needed.
+
+    python3 tests/kernel/test_daemon_check.py
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import daemon_check as dc  # noqa: E402
+
+ALL = {'a', 'b', 'd', 'e'}
+
+
+def as_expected():
+    r = {name: f'{want}: seen' for name, (_, want, _, _) in dc.EXPECTED.items()}
+    r.update({name: 'seen' for name in dc.OBSERVED})
+    r.update(impl='reference: x', setup='ok')
+    return r
+
+
+class Judge(unittest.TestCase):
+    def test_a_run_equal_to_the_table_passes(self):
+        _, differs, errors = dc.judge(as_expected(), ALL)
+        self.assertEqual((differs, errors), ([], []))
+
+    def test_a_failed_pin_differs(self):
+        r = as_expected()
+        r['pin_kill_under_load'] = 'FAIL: 2 write errors'
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual(len(differs), 1)
+        self.assertIn('pin_kill_under_load', differs[0])
+        self.assertEqual(errors, [])
+
+    def test_a_control_that_passes_differs(self):
+        # A wrong server that the check did not catch: the check cannot fail.
+        for name in ('ctl_kill_without_reissue', 'ctl_volume_that_does_not_fail', 'ctl_hold_too_short'):
+            r = as_expected()
+            r[name] = 'PASS: nothing went wrong'
+            _, differs, errors = dc.judge(r, ALL)
+            self.assertEqual(len(differs), 1, name)
+            self.assertEqual(errors, [])
+
+    def test_a_rig_error_is_not_a_verdict(self):
+        r = as_expected()
+        r['pin_kill_under_load'] = 'ERROR: zpool create failed'
+        r['ctl_kill_without_reissue'] = 'ERROR: zpool create failed'
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual(differs, [])
+        self.assertEqual(len(errors), 2)
+
+    def test_a_missing_line_is_a_rig_error(self):
+        for name in list(dc.EXPECTED) + list(dc.OBSERVED):
+            r = as_expected()
+            del r[name]
+            _, differs, errors = dc.judge(r, ALL)
+            self.assertEqual(differs, [], name)
+            self.assertEqual(len(errors), 1, name)
+
+    def test_an_unknown_word_is_a_rig_error(self):
+        r = as_expected()
+        r['pin_discard'] = 'MAYBE: ?'
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual((differs, len(errors)), ([], 1))
+
+    def test_only_the_checks_that_ran_are_asked_for(self):
+        r = {k: v for k, v in as_expected().items() if dc.EXPECTED.get(k, dc.OBSERVED.get(k, ('',)))[0] in ('a', '')}
+        _, differs, errors = dc.judge(r, {'a'})
+        self.assertEqual((differs, errors), ([], []))
+        _, _, errors = dc.judge(r, {'a', 'b'})
+        self.assertTrue(errors)
+
+    def test_with_the_daemon_the_reference_only_pin_is_not_asked_for(self):
+        r = as_expected()
+        r['pin_clear_resumes_on_returned_device'] = 'ERROR: not run: needs the flat image of the reference server'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon')
+        self.assertEqual((differs, errors), ([], []))
+        _, _, errors = dc.judge(r, ALL, impl='reference')
+        self.assertEqual(len(errors), 1)
+
+    def test_every_pin_says_what_it_rests_on(self):
+        for name, (check, want, basis, claim) in dc.EXPECTED.items():
+            self.assertIn(check, ALL, name)
+            self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
+            self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
+            self.assertTrue(claim, name)
+
+
+class Main(unittest.TestCase):
+    def test_exit_statuses(self):
+        import contextlib
+        import io
+        import tempfile
+        for change, want in ((None, 0), (('pin_discard', 'FAIL: 0'), 1), (('pin_discard', 'ERROR: x'), 2), (('setup', 'FAILED'), 2)):
+            r = as_expected()
+            if change:
+                r[change[0]] = change[1]
+            with tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, 'results.tsv'), 'w', encoding='utf-8') as f:
+                    f.writelines(f'{k}\t{v}\n' for k, v in r.items())
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(dc.main([d]), want, change)
+                self.assertIn('pin_discard', out.getvalue())
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dc.main([d]), 2)
+
+
+if __name__ == '__main__':
+    unittest.main()
