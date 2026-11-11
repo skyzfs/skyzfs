@@ -94,6 +94,11 @@ EXPECTED = {
     'pin_begin_recovery_on_live_says_busy': (
         'PASS', RIG, 'row: live, another process begins a recovery',
         'the binding passes the driver\'s answer on: busy; the server and its I/O are as before'),
+    'pin_begin_recovery_on_never_started_says_busy': (
+        'PASS', RIG, 'row: dead, never started',
+        'a recovery begun on a device that was added and never started answers busy, and the device '
+        'is as before. Busy is so not only "a server is still being torn down": seen on both images '
+        'in the binding\'s own runs before this pin was written'),
     'pin_begin_recovery_on_free_says_nothing': (
         'PASS', RIG, 'row: not there', 'a recovery begun on a free number answers that nothing is there'),
     'pin_delete_returns_while_held': (
