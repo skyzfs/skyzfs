@@ -374,12 +374,12 @@ impl Harness for H {
     }
     // Added with the hook itself (M1.2b): the volume comes back with
     // its whole log, as after a daemon loss, and serves again.
-    fn reopen_failed(&mut self, mut t: T) -> Result<Result<T, T>, HarnessError> {
+    fn reopen_failed(&mut self, mut t: T) -> Result<T, HarnessError> {
         t.land();
         t.rebuild();
         t.durable = t.log.len();
         t.failed = false;
-        Ok(Ok(t))
+        Ok(t)
     }
 }
 
@@ -398,6 +398,7 @@ fn conforms(mode: Mode) {
     let report = run(mode);
     assert!(report.passed(), "{mode:?} is correct but failed:\n{report}");
     assert!(report.not_exercised().is_empty(), "{report}");
+    assert!(report.weaker().is_empty(), "{report}");
 }
 
 /// A broken target must fail, in the cases named.

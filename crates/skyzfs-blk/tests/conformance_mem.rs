@@ -93,6 +93,9 @@ fn passes(name: &str) {
             Some(Ok(Status::NotExercised(why))) => {
                 panic!("{name} was not exercised against {config:?}: {why}")
             }
+            Some(Ok(Status::Weaker(what))) => {
+                panic!("{name} ran in a weaker form against {config:?}: {what}")
+            }
             Some(Err(failure)) => panic!("{name} failed against {config:?}:\n{failure}"),
             None => panic!("the suite has no case named {name}"),
         }
@@ -155,6 +158,7 @@ fn run_all_passes_and_reports_every_case() {
     assert_eq!(report.outcomes.len(), TESTED.len());
     assert!(report.failed().is_empty());
     assert!(report.not_exercised().is_empty());
+    assert!(report.weaker().is_empty(), "{report}");
 }
 
 /// Not a contract rule: a case whose rule the target cannot exercise is

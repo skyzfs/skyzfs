@@ -1655,6 +1655,7 @@ fn the_store_passes_the_conformance_suite() {
             "in {harness:?} not exercised: {:?}",
             report.not_exercised()
         );
+        assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");
     }
 }
 
@@ -1684,6 +1685,7 @@ fn the_served_store_passes_the_conformance_suite() {
             ["power_cut_at_every_point_leaves_a_prefix"],
             "in {harness:?}"
         );
+        assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");
     }
 }
 
