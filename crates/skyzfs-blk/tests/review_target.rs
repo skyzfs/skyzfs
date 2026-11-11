@@ -327,6 +327,11 @@ struct H {
 }
 impl Harness for H {
     type Target = T;
+    // Added when the suite stopped assuming (M1.2c): this harness can
+    // do everything the suite asks.
+    fn capabilities(&self) -> skyzfs_blk::conformance::Capabilities {
+        skyzfs_blk::conformance::Capabilities::ALL
+    }
     fn create(&mut self, spec: &Spec) -> Result<T, HarnessError> {
         let g = Geometry::new(1, 16, spec.read_only).unwrap();
         let mut base = vec![0u8; g.size_bytes() as usize];
@@ -374,12 +379,12 @@ impl Harness for H {
     }
     // Added with the hook itself (M1.2b): the volume comes back with
     // its whole log, as after a daemon loss, and serves again.
-    fn reopen_failed(&mut self, mut t: T) -> Result<Result<T, T>, HarnessError> {
+    fn reopen_failed(&mut self, mut t: T) -> Result<T, HarnessError> {
         t.land();
         t.rebuild();
         t.durable = t.log.len();
         t.failed = false;
-        Ok(Ok(t))
+        Ok(t)
     }
 }
 
@@ -398,6 +403,7 @@ fn conforms(mode: Mode) {
     let report = run(mode);
     assert!(report.passed(), "{mode:?} is correct but failed:\n{report}");
     assert!(report.not_exercised().is_empty(), "{report}");
+    assert!(report.weaker().is_empty(), "{report}");
 }
 
 /// A broken target must fail, in the cases named.

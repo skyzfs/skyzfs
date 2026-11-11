@@ -48,8 +48,90 @@
 //! harness names ([`Harness::boundaries`]).
 //!
 //! A case whose rule the target or harness cannot exercise (one request
-//! at a time; no cut point inside the log) is reported as
-//! [`Status::NotExercised`], not as passed.
+//! at a time; no cut point inside the log; a capability the harness
+//! lacks) is reported as [`Status::NotExercised`], not as passed.
+//!
+//! # A harness that cannot do everything
+//!
+//! A rig that drives a real block device cannot cut the power at a
+//! chosen record, or deliver a misaligned request past the kernel. It
+//! says what it cannot do with [`Harness::capabilities`], and the suite
+//! honours it, case by case:
+//!
+//! - a case whose rule needs a missing capability is **not exercised**:
+//!   it does not run, not even in part, and is reported with the
+//!   capability as the reason;
+//! - a case that used the capability only to check more than its rule
+//!   needs runs in a **weaker form**, and the report says what was left
+//!   out ([`Status::Weaker`]);
+//! - the random programs leave out the kinds of step the harness cannot
+//!   do, and say which.
+//!
+//! The suite never calls a hook the harness has said it lacks. For a
+//! harness that can do everything nothing changes, and a caller that
+//! expects the whole suite asserts that [`Report::not_exercised`] and
+//! [`Report::weaker`] are both empty.
+//!
+//! What each case does without a capability (P a power cut, B a base
+//! that is not empty, R a read-only device, F a log that fails on
+//! demand, I invalid requests, O reopening a failed volume). "Needs"
+//! means not exercised without it; "weaker without" is in
+//! [`Case::weaker`], with what is left out:
+//!
+//! | Case | Needs | Weaker without |
+//! |---|---|---|
+//! | `parameters_are_as_the_contract_fixes_them` | | P, R, B |
+//! | `fresh_device_reads_as_its_base` | | B |
+//! | `rejects_misaligned` | I | |
+//! | `rejects_out_of_bounds` | | I |
+//! | `rejects_empty_and_oversize` | | I |
+//! | `read_your_writes` | | B |
+//! | `write_zeroes_hides_the_base` | B | P |
+//! | `discard_leaves_old_zeros_or_base` | | B, P |
+//! | `discard_never_hits_later_writes` | | B, P |
+//! | `flushed_operations_survive_power_cut` | P | B |
+//! | `flush_covers_what_was_acknowledged_before_it` | P | |
+//! | `flush_covers_an_earlier_instance` | P | |
+//! | `power_cut_at_every_point_leaves_a_prefix` | P | B |
+//! | `recovered_state_is_durable` | P | |
+//! | `first_request_after_power_cut_may_be_a_write` | P | B |
+//! | `queue_depth_requests_complete_in_any_order` | | |
+//! | `overlapping_operations_in_flight_apply_whole` | | P |
+//! | `kill_keeps_acknowledged_operations` | | B |
+//! | `reissue_after_kill_is_idempotent` | | P |
+//! | `failed_volume_fails_every_request` | F | I |
+//! | `reopened_failed_volume_holds_what_was_flushed` | F, O | B, P |
+//! | `restart_after_the_log_failed_recovers_nothing` | F, O | B, P |
+//! | `read_only_target_refuses_mutations` | R | B |
+//! | `prop_invalid_requests_are_rejected_without_effect` | I | B |
+//! | `prop_concurrent_programs_match_model` | | B, I, P |
+//! | `prop_failures_match_model` | | P, F, O, B, I |
+//!
+//! What this costs is measured against the faulty targets of
+//! [`mem`](crate::mem) in `tests/capabilities.rs`, in three columns for
+//! each missing capability: the faults a remaining **fixed case**
+//! notices, which is asserted and does not depend on a seed; the faults
+//! that only **random programs** noticed, at some seeds and not at
+//! others, which is reported and promised by nobody; and the faults
+//! that are **invisible**, to the fixed cases and to the random
+//! programs at three seeds.
+//!
+//! | Without | No fixed case notices | Of those, invisible at three seeds |
+//! |---|---|---|
+//! | a power cut | `FlushDoesNothing`, `FlushJoinsOldSync`, `FlushForgetsEarlierInstance`, `CutDropsMiddle`, `RecoveryNotDurable` | none: each was noticed by random programs at one to three of the seeds, through a log failure and a reopen |
+//! | a base | `WriteZeroesShowsBase`, `ReopenLosesFlushed`, `StrayWrite` | `WriteZeroesShowsBase`, `StrayWrite` |
+//! | a read-only device | `ReadOnlyAcceptsWrites` | the same |
+//! | a log failure | `FailedServesReads`, `FlushSucceedsOnFailedLog`, `FailureForgottenOnKill`, `ReopenLosesFlushed` | the same |
+//! | invalid requests | `AcceptMisaligned`, `AcceptOutOfBounds` | the same |
+//! | a reopen | `ReopenLosesFlushed` | the same |
+//! | all six | the faults above and `TearOnCut`: 15 of 24 | the same 15 |
+//!
+//! So a rig without a power cut must not count on the suite for the
+//! faults of durability: no fixed case shows what was durable, and a
+//! random program does only if it happens to fail the log and reopen.
+//! A rig with none of the capabilities sees none of them at all. On an
+//! empty volume, damage that zeroes a block nothing has written is not
+//! seen either (`StrayWrite`).
 //!
 //! The suite assumes a fault-free environment apart from the faults it
 //! injects: an I/O error on a valid request fails the case.
@@ -64,7 +146,8 @@
 //!   tested.
 //! - A failed volume fails every read, so what it holds can be looked at
 //!   only once it is opened again ([`Harness::reopen_failed`]). Where a
-//!   rig cannot do that, the suite cannot tell whether a flush that was
+//!   rig cannot do that ([`Capability::ReopenFailed`]), the suite cannot
+//!   tell whether a flush that was
 //!   in flight when the log failed, and succeeded, had made anything
 //!   durable. Where it can, the suite asks what rule R11 promises:
 //!   a prefix of the daemon's order, as after a power cut (see
@@ -94,6 +177,85 @@ use crate::{
     Base, BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId,
     SubmitErrorKind, BLOCK_SIZE, BLOCK_USIZE, MAX_IO_BYTES, SIZE_UNIT,
 };
+
+/// Something the suite asks of a harness that not every rig can do. A
+/// harness says which of these it has with [`Harness::capabilities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Capability {
+    /// Cut the power under the device and bring it back
+    /// ([`Harness::power_cut`]).
+    PowerCut,
+    /// Create a device on a base that is not empty ([`Spec::base`]).
+    Base,
+    /// Create a read-only device ([`Spec::read_only`]).
+    ReadOnly,
+    /// Make the write log fail on demand ([`Harness::fail_log`]).
+    FailLog,
+    /// Deliver an invalid request (misaligned, empty, beyond the end,
+    /// too large) to the target as the suite issued it.
+    InvalidRequests,
+    /// Open a failed volume again ([`Harness::reopen_failed`]).
+    ReopenFailed,
+}
+
+impl Capability {
+    /// Every capability.
+    pub const ALL: [Capability; 6] = [
+        Capability::PowerCut,
+        Capability::Base,
+        Capability::ReadOnly,
+        Capability::FailLog,
+        Capability::InvalidRequests,
+        Capability::ReopenFailed,
+    ];
+
+    /// A short name, for reports.
+    pub fn name(self) -> &'static str {
+        match self {
+            Capability::PowerCut => "a power cut",
+            Capability::Base => "a base that is not empty",
+            Capability::ReadOnly => "a read-only device",
+            Capability::FailLog => "a log that fails on demand",
+            Capability::InvalidRequests => "invalid requests",
+            Capability::ReopenFailed => "reopening a failed volume",
+        }
+    }
+
+    /// The reason a case that needs it is reported with when it was not
+    /// exercised.
+    pub fn missing(self) -> &'static str {
+        match self {
+            Capability::PowerCut => "the harness cannot cut the power",
+            Capability::Base => "the harness cannot create a device on a base that is not empty",
+            Capability::ReadOnly => "the harness cannot create a read-only device",
+            Capability::FailLog => "the harness cannot make the log fail",
+            Capability::InvalidRequests => {
+                "the harness cannot deliver an invalid request to the target"
+            }
+            Capability::ReopenFailed => "the harness cannot open a failed volume again",
+        }
+    }
+}
+
+/// The set of capabilities a harness has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities(u8);
+
+impl Capabilities {
+    /// Everything.
+    pub const ALL: Capabilities = Capabilities(0x3f);
+
+    /// The same set without `capability`.
+    #[must_use]
+    pub const fn without(self, capability: Capability) -> Self {
+        Capabilities(self.0 & !(1 << capability as u8))
+    }
+
+    /// Whether the set holds `capability`.
+    pub const fn has(self, capability: Capability) -> bool {
+        self.0 & (1 << capability as u8) != 0
+    }
+}
 
 /// The harness could not do what the suite asked of it. This is a failure
 /// of the rig, not a verdict on the target, but it fails the case.
@@ -139,13 +301,56 @@ impl Spec {
 /// The two fault hooks are separate on purpose: daemon loss and power loss
 /// promise different things (rules R9 and R10), and a target that
 /// acknowledges from memory must fail under [`Harness::kill`].
+///
+/// # What a harness cannot do
+///
+/// A rig that drives a real device through a kernel cannot do all of
+/// this, and says so with [`Harness::capabilities`]. The suite then
+/// never calls what the harness lacks. A case whose rule needs a missing
+/// capability is reported as [`Status::NotExercised`], with the
+/// capability named, before it runs anything. A case that used the
+/// capability only to check more runs in a weaker form and is reported
+/// as [`Status::Weaker`], with what was left out. Neither is a failure,
+/// and neither is coverage of what was left out.
+///
+/// **A harness must not claim a capability it imitates loosely.** A
+/// "power cut" that only restarts the daemon, a "base" written through
+/// the device under test, a "log failure" that merely stops the daemon:
+/// each makes cases pass that have checked nothing. If the rig cannot
+/// do exactly what the hook's documentation says, it leaves the
+/// capability out.
+///
+/// What a harness at the level of a kernel block device is expected to
+/// answer:
+///
+/// | Capability | A kernel-level rig | Why |
+/// |---|---|---|
+/// | [`Capability::PowerCut`] | has it only if it can drop, under the daemon, exactly what the daemon's storage had not been told to make durable, and bring the device back; a process kill is not one | the page cache survives a kill |
+/// | [`Capability::Base`] | has it only if it can build the volume's base outside the device under test | a base written through the device is a write, not a base |
+/// | [`Capability::ReadOnly`] | has it if it can attach the volume read-only | |
+/// | [`Capability::FailLog`] | has it only if it can make the storage under the daemon's log fail for good while the device stays attached | |
+/// | [`Capability::InvalidRequests`] | does not have it | the kernel refuses or splits such a request and answers with its own error; the target never sees it |
+/// | [`Capability::ReopenFailed`] | has it if it has `FailLog` and can repair the storage and attach again | |
 pub trait Harness {
     /// The target type.
     type Target: BlockTarget;
 
+    /// What this harness can do. There is no default: a harness for a
+    /// real device that did not say would claim a power cut it can
+    /// only imitate, and every case about flushes would pass having
+    /// checked nothing. See the trait's documentation for what leaving
+    /// a capability out means, and do not claim one that the rig only
+    /// imitates. A harness that can do everything returns
+    /// [`Capabilities::ALL`].
+    fn capabilities(&self) -> Capabilities;
+
     /// A fresh device as `spec` describes. Each call must give a device
     /// independent of the earlier ones. It should be small: the suite
     /// works in its first [`Config::window_blocks`] blocks.
+    ///
+    /// Without [`Capability::Base`] the suite asks only for
+    /// [`Base::Empty`], and without [`Capability::ReadOnly`] only for
+    /// writable devices.
     fn create(&mut self, spec: &Spec) -> Result<Self::Target, HarnessError>;
 
     /// Daemon loss (rule R9): kill the daemon under `target` and start a
@@ -171,29 +376,30 @@ pub trait Harness {
     /// device as it comes back. `keep` may exceed [`Harness::cut_points`]
     /// (requests in flight may have added to the log); the harness then
     /// picks any point, deterministically from `keep`.
+    ///
+    /// Not called without [`Capability::PowerCut`]; such a harness
+    /// returns an error here and 0 from [`Harness::cut_points`].
     fn power_cut(&mut self, target: Self::Target, keep: u64) -> Result<Self::Target, HarnessError>;
 
     /// Make the target's write log fail for good (rule R11). Completions
     /// for work that finished before this call may still be delivered
     /// after it, successfully; a flush the target receives after it must
-    /// fail.
+    /// fail if it has anything to make durable.
+    ///
+    /// Not called without [`Capability::FailLog`]; such a harness
+    /// returns an error here.
     fn fail_log(&mut self, target: &mut Self::Target) -> Result<(), HarnessError>;
 
     /// A failed volume is repaired and opened again for a new client
     /// (rule R11): the fault that [`Harness::fail_log`] injected is gone,
     /// and whatever the daemon needs to be told to open a volume that
-    /// failed, it is told. `Ok(Ok(target))` is the volume as it comes
-    /// back, with nothing in flight; the suite then requires that it
-    /// holds at least what every completed flush covered. `Ok(Err(target))`
-    /// hands the target back: this rig cannot do it, which is the
-    /// default, and the cases that need it are reported as not
-    /// exercised.
-    fn reopen_failed(
-        &mut self,
-        target: Self::Target,
-    ) -> Result<Result<Self::Target, Self::Target>, HarnessError> {
-        Ok(Err(target))
-    }
+    /// failed, it is told. The result is the volume as it comes back,
+    /// with nothing in flight; the suite then requires that it holds at
+    /// least what every completed flush covered.
+    ///
+    /// Not called without [`Capability::ReopenFailed`]; such a harness
+    /// returns an error here.
+    fn reopen_failed(&mut self, target: Self::Target) -> Result<Self::Target, HarnessError>;
 
     /// Let the target do, now, whatever it does on its own between
     /// requests: a checkpoint, a compaction, an eviction. `seed` chooses
@@ -284,8 +490,6 @@ pub enum Needs {
     Concurrency,
     /// A harness that can cut inside the unflushed part of the log.
     CutPoints,
-    /// A harness that can open a failed volume again.
-    Reopen,
 }
 
 /// One case of the suite.
@@ -297,6 +501,15 @@ pub struct Case<H: Harness> {
     /// What the case needs to mean anything. Where the target or harness
     /// does not offer it, the case is reported as not exercised.
     pub needs: Needs,
+    /// The capabilities the case's rule needs. Where the harness lacks
+    /// one, the case is not run and is reported as not exercised.
+    pub requires: &'static [Capability],
+    /// The capabilities the case uses to check more than its rule needs,
+    /// each with what is left out where the harness lacks it. The case
+    /// then runs in that weaker form.
+    pub weaker: &'static [(Capability, &'static str)],
+    /// Whether the case runs [`Config::cases`] random programs.
+    pub random: bool,
     /// Runs the case.
     pub run: fn(&mut H, &Config) -> Result<(), Failure>,
 }
@@ -305,6 +518,33 @@ impl<H: Harness> Case<H> {
     /// Run the case and say whether it passed, failed, or could not
     /// exercise its rule on this target.
     pub fn run_on(&self, harness: &mut H, config: &Config) -> Result<Status, Failure> {
+        self.run_checked(harness, config, true)
+    }
+
+    /// A defect of the suite, for the suite's own tests and for nothing
+    /// else: the case runs although the harness lacks a capability its
+    /// rule needs.
+    #[doc(hidden)]
+    pub fn defect_run_without_its_capabilities(
+        &self,
+        harness: &mut H,
+        config: &Config,
+    ) -> Result<Status, Failure> {
+        self.run_checked(harness, config, false)
+    }
+
+    fn run_checked(
+        &self,
+        harness: &mut H,
+        config: &Config,
+        honour: bool,
+    ) -> Result<Status, Failure> {
+        let has = harness.capabilities();
+        if honour {
+            if let Some(lacking) = self.requires.iter().find(|c| !has.has(**c)) {
+                return Ok(Status::NotExercised(lacking.missing()));
+            }
+        }
         (self.run)(harness, config)?;
         let missing = match self.needs {
             Needs::Nothing => None,
@@ -319,21 +559,36 @@ impl<H: Harness> Case<H> {
                 (d.cut_points()? == 0)
                     .then_some("the harness offers no cut point inside the unflushed log")
             }
-            Needs::Reopen => {
-                let mut d = Driver::new(harness, config, &Spec::EMPTY)?;
-                d.fail_log()?;
-                (!d.reopen_failed()?).then_some("the harness cannot open a failed volume again")
-            }
         };
-        Ok(missing.map_or(Status::Passed, Status::NotExercised))
+        if let Some(why) = missing {
+            return Ok(Status::NotExercised(why));
+        }
+        let mut left_out: Vec<String> = self
+            .weaker
+            .iter()
+            .filter(|(capability, _)| !has.has(*capability))
+            .map(|(capability, what)| format!("without {}: {what}", capability.name()))
+            .collect();
+        if left_out.is_empty() {
+            return Ok(Status::Passed);
+        }
+        if self.random {
+            left_out.push(format!("{} programs ran", config.cases));
+        }
+        Ok(Status::Weaker(left_out.join("; ")))
     }
 }
 
 /// How a case that did not fail ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
     /// The rule was exercised and held.
     Passed,
+    /// The rule was exercised and held, in a weaker form than the case
+    /// has on a harness that can do everything: what was left out, and
+    /// for the lack of which capability. This is not coverage of what
+    /// was left out.
+    Weaker(String),
     /// Nothing failed, but the target or harness cannot exercise the rule,
     /// for the reason given. This is not coverage: a green run with such
     /// cases says nothing about their rules.
@@ -377,10 +632,34 @@ impl Report {
     /// The names of the cases whose rule this target or harness could not
     /// exercise.
     pub fn not_exercised(&self) -> Vec<&'static str> {
+        self.unexercised()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// The cases whose rule this target or harness could not exercise,
+    /// each with the reason.
+    pub fn unexercised(&self) -> Vec<(&'static str, &'static str)> {
         self.outcomes
             .iter()
-            .filter(|o| matches!(o.result, Ok(Status::NotExercised(_))))
-            .map(|o| o.name)
+            .filter_map(|o| match o.result {
+                Ok(Status::NotExercised(why)) => Some((o.name, why)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The cases that ran in a weaker form, each with what was left out.
+    /// A caller that expects the whole suite asserts that this and
+    /// [`Report::not_exercised`] are empty.
+    pub fn weaker(&self) -> Vec<(&'static str, &str)> {
+        self.outcomes
+            .iter()
+            .filter_map(|o| match &o.result {
+                Ok(Status::Weaker(what)) => Some((o.name, what.as_str())),
+                _ => None,
+            })
             .collect()
     }
 }
@@ -390,6 +669,12 @@ impl fmt::Display for Report {
         for o in &self.outcomes {
             match &o.result {
                 Ok(Status::Passed) => writeln!(f, "ok    {}", o.name)?,
+                Ok(Status::Weaker(what)) => writeln!(
+                    f,
+                    "WEAK  {}
+      a weaker form ran: {what}",
+                    o.name
+                )?,
                 Ok(Status::NotExercised(why)) => writeln!(
                     f,
                     "SKIP  {}
@@ -442,6 +727,13 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R1: the size is a non-zero multiple of 1 MiB, the read-only flag is as \
                    asked, and the parameters survive a daemon loss and a power cut",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::PowerCut, "the parameters are not checked after a power cut"),
+                (Capability::ReadOnly, "the read-only flag of a read-only device is not checked"),
+                (Capability::Base, "the read-only device has an empty base"),
+            ],
+            random: false,
             run: parameters::<H>,
         },
         Case {
@@ -449,6 +741,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R3: a block never written reads as the base: zeros on an empty volume, \
                    the commit's content on a clone",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "only an empty volume is read; a clone's base is not"),
+            ],
+            random: false,
             run: fresh_device_reads_as_its_base::<H>,
         },
         Case {
@@ -456,6 +753,9 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R2: an offset or length that is not a multiple of 4 KiB is rejected, for all \
                    four ranged operations, without effect",
             needs: Needs::Nothing,
+            requires: &[Capability::InvalidRequests],
+            weaker: &[],
+            random: false,
             run: rejects_misaligned::<H>,
         },
         Case {
@@ -463,6 +763,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R2: a request reaching past the end of the device is rejected without \
                    effect; a request ending exactly at the end is accepted",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::InvalidRequests, "no request beyond the end is issued; only that the last block can be written and read, which through a kernel exercises the target only as far as the block layer forwards the request unchanged"),
+            ],
+            random: false,
             run: rejects_out_of_bounds::<H>,
         },
         Case {
@@ -471,6 +776,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
                    rejected; 1 MiB itself is accepted, and a discard and a write-zeroes may \
                    span the device",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::InvalidRequests, "no empty or oversize request is issued; only that 1 MiB is accepted and that a discard and a write-zeroes may span the device, which through a kernel exercises the target only if the device advertises a largest request of 1 MiB: the block layer splits to the advertised limits"),
+            ],
+            random: false,
             run: rejects_empty_and_oversize::<H>,
         },
         Case {
@@ -478,6 +788,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R3, R4: once a write is acknowledged, reads return it, block for block, and \
                    an overwrite replaces it",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: false,
             run: read_your_writes::<H>,
         },
         Case {
@@ -485,6 +800,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R5: write-zeroes reads as zeros on a volume with a base, and once flushed \
                    survives a power cut like a write",
             needs: Needs::Nothing,
+            requires: &[Capability::Base],
+            weaker: &[
+                (Capability::PowerCut, "the result is not checked after a power cut"),
+            ],
+            random: false,
             run: write_zeroes_hides_the_base::<H>,
         },
         Case {
@@ -492,6 +812,12 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R6: a discarded block reads as its content before the discard, zeros or the \
                    base, also after a power cut; blocks next to the discard are untouched",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume, where the base is zeros"),
+                (Capability::PowerCut, "the result is not checked after a power cut"),
+            ],
+            random: false,
             run: discard_leaves_old_zeros_or_base::<H>,
         },
         Case {
@@ -499,6 +825,12 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R6, R8: a write acknowledged after a discard is what reads return, now, \
                    after a flush and after a power cut",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+                (Capability::PowerCut, "the result is not checked after a power cut"),
+            ],
+            random: false,
             run: discard_never_hits_later_writes::<H>,
         },
         Case {
@@ -506,6 +838,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R7, R10: every operation acknowledged before a completed flush was \
                    submitted survives a power cut that keeps nothing unflushed",
             needs: Needs::Nothing,
+            requires: &[Capability::PowerCut],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: false,
             run: flushed_operations_survive_power_cut::<H>,
         },
         Case {
@@ -514,6 +851,9 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
                    is pending, power cut once both completed: A is present (the group-commit \
                    bug)",
             needs: Needs::Nothing,
+            requires: &[Capability::PowerCut],
+            weaker: &[],
+            random: false,
             run: flush_covers_what_was_acknowledged_before_it::<H>,
         },
         Case {
@@ -521,6 +861,9 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R7, R9: a write acknowledged before a daemon loss is covered by a flush \
                    sent to the new instance, and is durable even without one",
             needs: Needs::Nothing,
+            requires: &[Capability::PowerCut],
+            weaker: &[],
+            random: false,
             run: flush_covers_an_earlier_instance::<H>,
         },
         Case {
@@ -528,6 +871,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R10: cut after every record the target has not flushed: the device holds a \
                    prefix of the order, with every operation whole",
             needs: Needs::CutPoints,
+            requires: &[Capability::PowerCut],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: false,
             run: power_cut_at_every_point_leaves_a_prefix::<H>,
         },
         Case {
@@ -535,6 +883,9 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R10: what is read after a power cut is stable, and a second power cut that \
                    keeps nothing unflushed does not take it back",
             needs: Needs::Nothing,
+            requires: &[Capability::PowerCut],
+            weaker: &[],
+            random: false,
             run: recovered_state_is_durable::<H>,
         },
         Case {
@@ -542,6 +893,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R10: a write issued straight after a power cut, before any read, lands \
                    after everything recovery exposed, and both survive the next cut",
             needs: Needs::Nothing,
+            requires: &[Capability::PowerCut],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: false,
             run: first_request_after_power_cut_may_be_a_write::<H>,
         },
         Case {
@@ -549,6 +905,9 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R8: the target takes queue_depth requests in flight, completes each exactly \
                    once in whatever order, and refuses an id that is already in flight",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[],
+            random: false,
             run: queue_depth_requests_complete_in_any_order::<H>,
         },
         Case {
@@ -556,6 +915,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R8: overlapping operations in flight together end up in one order: on \
                    every block they share the same one wins, in memory and after a power cut",
             needs: Needs::Concurrency,
+            requires: &[],
+            weaker: &[
+                (Capability::PowerCut, "the order is checked in memory only, not in the log after a power cut"),
+            ],
+            random: false,
             run: overlapping_operations_in_flight_apply_whole::<H>,
         },
         Case {
@@ -563,6 +927,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R9: every operation acknowledged before the daemon is lost is read back \
                    after it returns, flushed or not",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: false,
             run: kill_keeps_acknowledged_operations::<H>,
         },
         Case {
@@ -571,6 +940,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
                    reissued under the same ids, in either order, whether or not they had \
                    already been applied",
             needs: Needs::Concurrency,
+            requires: &[],
+            weaker: &[
+                (Capability::PowerCut, "the reissued operations are not checked after a flush and a power cut"),
+            ],
+            random: false,
             run: reissue_after_kill_is_idempotent::<H>,
         },
         Case {
@@ -578,6 +952,11 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R11: once the log has failed for good the flush fails, and then every \
                    request does, reads included, also after a daemon restart",
             needs: Needs::Nothing,
+            requires: &[Capability::FailLog],
+            weaker: &[
+                (Capability::InvalidRequests, "no invalid request is in flight at the failure or issued after it"),
+            ],
+            random: false,
             run: failed_volume_fails_every_request::<H>,
         },
         Case {
@@ -585,13 +964,25 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R11: a completed flush stays a promise on a failed volume: opened again \
                    after a repair, it holds at least what every completed flush covered, \
                    and serves as a healthy volume does",
-            needs: Needs::Reopen,
+            needs: Needs::Nothing,
+            requires: &[Capability::FailLog, Capability::ReopenFailed],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+                (Capability::PowerCut, "the write after the reopen is not checked after a power cut"),
+            ],
+            random: false,
             run: reopened_failed_volume_holds_what_was_flushed::<H>,
         },
         Case {
             name: "restart_after_the_log_failed_recovers_nothing",
             rule: "R11 over R9: the log fails, no request completes, the daemon restarts:                    opened again, the volume holds a prefix with everything flushed, and an                    acknowledged operation that no flush covered may be gone",
-            needs: Needs::Reopen,
+            needs: Needs::Nothing,
+            requires: &[Capability::FailLog, Capability::ReopenFailed],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+                (Capability::PowerCut, "the write after the reopen is not checked after a power cut"),
+            ],
+            random: false,
             run: restart_after_the_log_failed_recovers_nothing::<H>,
         },
         Case {
@@ -599,12 +990,22 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R12: on a read-only target write, write-zeroes and discard fail without \
                    effect, and flush and read succeed",
             needs: Needs::Nothing,
+            requires: &[Capability::ReadOnly],
+            weaker: &[
+                (Capability::Base, "the read-only device has an empty base"),
+            ],
+            random: false,
             run: read_only_target_refuses_mutations::<H>,
         },
         Case {
             name: "prop_invalid_requests_are_rejected_without_effect",
             rule: "R2: property: any invalid request is rejected and changes nothing",
             needs: Needs::Nothing,
+            requires: &[Capability::InvalidRequests],
+            weaker: &[
+                (Capability::Base, "it runs on an empty volume only"),
+            ],
+            random: true,
             run: prop_invalid_requests::<H>,
         },
         Case {
@@ -613,6 +1014,13 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
                    base, reaped at random moments, read back as some order of whole \
                    operations allows",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::Base, "every program runs on an empty volume"),
+                (Capability::InvalidRequests, "no program has an invalid request"),
+                (Capability::PowerCut, "no power cut before the last read-back"),
+            ],
+            random: true,
             run: prop_concurrent_programs::<H>,
         },
         Case {
@@ -620,6 +1028,15 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             rule: "R7, R9, R10, R11: property: random programs with daemon losses, power cuts \
                    at random points and log failure read back as the model allows",
             needs: Needs::Nothing,
+            requires: &[],
+            weaker: &[
+                (Capability::PowerCut, "no program has a power cut, and none before the last read-back"),
+                (Capability::FailLog, "no program has a log failure or a reopen"),
+                (Capability::ReopenFailed, "no program reopens the volume; one whose log failed ends there"),
+                (Capability::Base, "every program runs on an empty volume"),
+                (Capability::InvalidRequests, "no program has an invalid request"),
+            ],
+            random: true,
             run: prop_failing_programs::<H>,
         },
     ]
@@ -642,6 +1059,39 @@ struct Driver<'a, H: Harness> {
     /// The first block of the window the random programs work in.
     origin: u64,
     timeout: Duration,
+    /// What the harness can do.
+    has: Capabilities,
+}
+
+/// The suite was about to ask the harness for something it says it
+/// cannot do. The cases are written not to; this is the guard.
+fn overstepped<T>(capability: Capability) -> Result<T, Failure> {
+    fail(format!(
+        "the case asked for {} although {}: it should not have run, or not in this form",
+        capability.name(),
+        capability.missing()
+    ))
+}
+
+/// `spec`, on an empty base where the harness cannot build another.
+fn on_base<H: Harness>(h: &H, spec: Spec) -> Spec {
+    if h.capabilities().has(Capability::Base) {
+        spec
+    } else {
+        Spec {
+            base: Base::Empty,
+            ..spec
+        }
+    }
+}
+
+/// The bases a case that runs on each of them runs on.
+fn bases<H: Harness>(h: &H) -> Vec<Spec> {
+    if h.capabilities().has(Capability::Base) {
+        vec![Spec::EMPTY, Spec::CLONE]
+    } else {
+        vec![Spec::EMPTY]
+    }
 }
 
 /// Fill `buf` with a pattern that names `stamp` and the block, differs
@@ -668,6 +1118,13 @@ fn mutates(op: &Op) -> bool {
 
 impl<'a, H: Harness> Driver<'a, H> {
     fn new(harness: &'a mut H, config: &Config, spec: &Spec) -> Result<Self, Failure> {
+        let has = harness.capabilities();
+        if spec.base != Base::Empty && !has.has(Capability::Base) {
+            return overstepped(Capability::Base);
+        }
+        if spec.read_only && !has.has(Capability::ReadOnly) {
+            return overstepped(Capability::ReadOnly);
+        }
         let target = harness.create(spec)?;
         let geometry = target.geometry();
         Ok(Self {
@@ -681,6 +1138,7 @@ impl<'a, H: Harness> Driver<'a, H> {
             window: config.window_blocks.clamp(16, 256),
             origin: 0,
             timeout: config.timeout,
+            has,
         })
     }
 
@@ -702,7 +1160,14 @@ impl<'a, H: Harness> Driver<'a, H> {
         self.depth().min(4)
     }
 
+    fn can(&self, capability: Capability) -> bool {
+        self.has.has(capability)
+    }
+
     fn submit(&mut self, op: Op) -> Result<RequestId, Failure> {
+        if !self.can(Capability::InvalidRequests) && self.geometry.validate(&op).is_err() {
+            return overstepped(Capability::InvalidRequests);
+        }
         self.next_id += 1;
         let request = Request {
             id: RequestId(self.next_id),
@@ -922,6 +1387,9 @@ impl<'a, H: Harness> Driver<'a, H> {
     /// Cut the power so that `keep` unflushed units survive, bring the
     /// device back, and read back every block the cut may have changed.
     fn power_cut(&mut self, keep: u64) -> Outcome {
+        if !self.can(Capability::PowerCut) {
+            return overstepped(Capability::PowerCut);
+        }
         let Some(target) = self.target.take() else {
             return fail("no target: an earlier harness call failed");
         };
@@ -932,25 +1400,30 @@ impl<'a, H: Harness> Driver<'a, H> {
         self.read_back()
     }
 
-    /// Open the failed volume again, if the harness can, and read back
-    /// every block whose content the failure left open. Returns whether
-    /// it was opened.
-    fn reopen_failed(&mut self) -> Result<bool, Failure> {
+    /// Where a case cuts the power only to check more than its rule
+    /// needs: cut it if the harness can, and go on if it cannot.
+    fn power_cut_if_able(&mut self, keep: u64) -> Outcome {
+        if self.can(Capability::PowerCut) {
+            self.power_cut(keep)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Open the failed volume again and read back every block whose
+    /// content the failure left open.
+    fn reopen_failed(&mut self) -> Outcome {
+        if !self.can(Capability::ReopenFailed) {
+            return overstepped(Capability::ReopenFailed);
+        }
         let Some(target) = self.target.take() else {
             return fail("no target: an earlier harness call failed");
         };
-        match self.harness.reopen_failed(target)? {
-            Ok(reopened) => self.target = Some(reopened),
-            Err(same) => {
-                self.target = Some(same);
-                return Ok(false);
-            }
-        }
+        self.target = Some(self.harness.reopen_failed(target)?);
         self.model.reopened();
         self.inflight.clear();
         self.check_geometry()?;
-        self.read_back()?;
-        Ok(true)
+        self.read_back()
     }
 
     /// Let the target do its own work between requests.
@@ -1003,6 +1476,9 @@ impl<'a, H: Harness> Driver<'a, H> {
     }
 
     fn fail_log(&mut self) -> Outcome {
+        if !self.can(Capability::FailLog) {
+            return overstepped(Capability::FailLog);
+        }
         let Some(target) = self.target.as_mut() else {
             return fail("no target: an earlier harness call failed");
         };
@@ -1160,10 +1636,13 @@ fn parameters<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
         return fail("R1: a writable device reports read-only");
     }
     d.kill(1)?;
-    d.power_cut(0)?;
+    d.power_cut_if_able(0)?;
+    if !d.can(Capability::ReadOnly) {
+        return Ok(());
+    }
     let read_only = Spec {
         read_only: true,
-        ..Spec::CLONE
+        ..on_base(h, Spec::CLONE)
     };
     let d = Driver::new(h, cfg, &read_only)?;
     if !d.geometry.read_only() {
@@ -1173,7 +1652,7 @@ fn parameters<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 }
 
 fn fresh_device_reads_as_its_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    for spec in [Spec::EMPTY, Spec::CLONE] {
+    for spec in bases(h) {
         let mut d = Driver::new(h, cfg, &spec)?;
         d.verify()?;
         let last = d.geometry.blocks() - 1;
@@ -1211,18 +1690,21 @@ fn rejects_out_of_bounds<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let last = d.geometry.blocks() - 1;
     let before = d.write(last - 1, 2)?;
     let far = u64::MAX - u64::MAX % BLOCK_SIZE;
-    for (offset, len) in [
+    let rejections = d.can(Capability::InvalidRequests);
+    let beyond: &[(u64, u64)] = &[
         (size, BLOCK_SIZE),
         (size - BLOCK_SIZE, 2 * BLOCK_SIZE),
         (size + 16 * BLOCK_SIZE, BLOCK_SIZE),
         (far - BLOCK_SIZE, BLOCK_SIZE),
         (far, BLOCK_SIZE),
-    ] {
+    ];
+    for &(offset, len) in beyond.iter().filter(|_| rejections) {
         for op in ranged_ops(offset, len) {
             d.expect_rejection(op, is_out_of_bounds, &format!("at {offset}+{len}"))?;
         }
     }
-    for len in [far, far - size + BLOCK_SIZE, size + BLOCK_SIZE] {
+    let longer = [far, far - size + BLOCK_SIZE, size + BLOCK_SIZE];
+    for len in longer.into_iter().filter(|_| rejections) {
         d.expect_rejection(
             Op::Discard { offset: 0, len },
             is_out_of_bounds,
@@ -1249,7 +1731,8 @@ fn rejects_out_of_bounds<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 
 fn rejects_empty_and_oversize<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
-    for op in ranged_ops(BLOCK_SIZE, 0) {
+    let rejections = d.can(Capability::InvalidRequests);
+    for op in ranged_ops(BLOCK_SIZE, 0).into_iter().filter(|_| rejections) {
         d.expect_rejection(op, is_zero_length, "of zero length")?;
     }
     // Exactly 1 MiB is accepted.
@@ -1264,23 +1747,25 @@ fn rejects_empty_and_oversize<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     } else {
         |e| is_too_large(e) || is_out_of_bounds(e)
     };
-    d.expect_rejection(
-        Op::Read {
-            offset: 0,
-            buf: Buf::zeroed(over),
-        },
-        want,
-        "longer than 1 MiB",
-    )?;
-    d.expect_rejection(
-        Op::Write {
-            offset: 0,
-            data: Buf::filled(over, 1),
-        },
-        want,
-        "longer than 1 MiB",
-    )?;
-    d.expect_read(0, &data, "R2: after rejected oversize requests")?;
+    if rejections {
+        d.expect_rejection(
+            Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(over),
+            },
+            want,
+            "longer than 1 MiB",
+        )?;
+        d.expect_rejection(
+            Op::Write {
+                offset: 0,
+                data: Buf::filled(over, 1),
+            },
+            want,
+            "longer than 1 MiB",
+        )?;
+        d.expect_read(0, &data, "R2: after rejected oversize requests")?;
+    }
     // Discard and write-zeroes carry no data and may span the device.
     // (Capped at 64 MiB so that the model stays small on a large rig.)
     let span = d.geometry.size_bytes().min(64 * SIZE_UNIT);
@@ -1298,7 +1783,7 @@ fn rejects_empty_and_oversize<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 }
 
 fn read_your_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    for spec in [Spec::EMPTY, Spec::CLONE] {
+    for spec in bases(h) {
         let mut d = Driver::new(h, cfg, &spec)?;
         let a = d.write(2, 1)?;
         d.expect_read(2, &a, "R3: a single block")?;
@@ -1335,7 +1820,7 @@ fn write_zeroes_hides_the_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
         expected.extend(vec![0; 2 * n]);
         d.expect_read(0, &expected, "R5: after write-zeroes")?;
         d.flush()?;
-        d.power_cut(0)?;
+        d.power_cut_if_able(0)?;
         d.expect_read(0, &expected, "R5: after write-zeroes, flush and power cut")?;
         // Give blocks 6 and 7 data again for the next round.
         d.write(6, 2)?;
@@ -1345,7 +1830,7 @@ fn write_zeroes_hides_the_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 }
 
 fn discard_leaves_old_zeros_or_base<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
     for round in 0..u64::from(cfg.rounds) {
         let data = d.write(0, 6)?;
         // Written blocks, and blocks only the base has.
@@ -1362,7 +1847,7 @@ fn discard_leaves_old_zeros_or_base<H: Harness>(h: &mut H, cfg: &Config) -> Outc
             d.read(8, 2)?;
         }
         d.flush()?;
-        d.power_cut(round)?;
+        d.power_cut_if_able(round)?;
         d.verify()?;
         d.verify()?;
     }
@@ -1370,7 +1855,7 @@ fn discard_leaves_old_zeros_or_base<H: Harness>(h: &mut H, cfg: &Config) -> Outc
 }
 
 fn discard_never_hits_later_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
     for _ in 0..cfg.rounds {
         d.write(0, 4)?;
         d.discard(0, 4)?;
@@ -1378,14 +1863,14 @@ fn discard_never_hits_later_writes<H: Harness>(h: &mut H, cfg: &Config) -> Outco
         d.expect_read(1, &data, "R6: a write after a discard")?;
         d.flush()?;
         d.expect_read(1, &data, "R6: a write after a discard, after a flush")?;
-        d.power_cut(0)?;
+        d.power_cut_if_able(0)?;
         d.expect_read(1, &data, "R6: a write after a discard, after a power cut")?;
     }
     Ok(())
 }
 
 fn flushed_operations_survive_power_cut<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
     for _ in 0..cfg.rounds {
         let single = d.write(0, 1)?;
         let multi = d.write(2, 8)?;
@@ -1442,7 +1927,7 @@ fn flush_covers_an_earlier_instance<H: Harness>(h: &mut H, cfg: &Config) -> Outc
 fn power_cut_at_every_point_leaves_a_prefix<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let mut point = 0;
     loop {
-        let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+        let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
         d.write(0, 4)?;
         d.zeroes(6, 2)?;
         d.flush()?;
@@ -1487,7 +1972,7 @@ fn recovered_state_is_durable<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
 }
 
 fn first_request_after_power_cut_may_be_a_write<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
     for _ in 0..cfg.rounds {
         let old = d.write(0, 4)?;
         d.zeroes(6, 1)?;
@@ -1578,7 +2063,7 @@ fn overlapping_operations_in_flight_apply_whole<H: Harness>(h: &mut H, cfg: &Con
         d.verify()?;
         // The same order must hold in the log.
         let points = d.cut_points()?;
-        d.power_cut(round % (points + 1))?;
+        d.power_cut_if_able(round % (points + 1))?;
         d.verify()?;
         d.flush()?;
     }
@@ -1586,7 +2071,7 @@ fn overlapping_operations_in_flight_apply_whole<H: Harness>(h: &mut H, cfg: &Con
 }
 
 fn kill_keeps_acknowledged_operations<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::CLONE)?;
+    let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
     for round in 0..u64::from(cfg.rounds) {
         let data = d.write(1, 8)?;
         d.write(12, 1)?;
@@ -1644,7 +2129,7 @@ fn reissue_after_kill_is_idempotent<H: Harness>(h: &mut H, cfg: &Config) -> Outc
         d.verify()?;
         // Everything is acknowledged now: a flush makes it durable.
         d.flush()?;
-        d.power_cut(0)?;
+        d.power_cut_if_able(0)?;
         d.expect_read(
             0,
             &expected,
@@ -1675,10 +2160,13 @@ fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcom
     d.write(2, 1)?;
     // In flight when the log fails: each may complete either way, and a
     // read that succeeds shows the model's content.
-    d.submit_with_room(Op::Discard {
-        offset: 1,
-        len: BLOCK_SIZE,
-    })?;
+    let invalid = d.can(Capability::InvalidRequests);
+    if invalid {
+        d.submit_with_room(Op::Discard {
+            offset: 1,
+            len: BLOCK_SIZE,
+        })?;
+    }
     let write = d.write_op(6, 1);
     d.submit_with_room(write)?;
     d.submit_with_room(read_op(6, 1))?;
@@ -1711,10 +2199,12 @@ fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcom
         }
         // An invalid request fails too; which error it gets is not
         // specified, and the model accepts either.
-        d.run(Op::Discard {
-            offset: 1,
-            len: BLOCK_SIZE,
-        })?;
+        if invalid {
+            d.run(Op::Discard {
+                offset: 1,
+                len: BLOCK_SIZE,
+            })?;
+        }
         Ok(())
     };
     every_request(&mut d)?;
@@ -1733,7 +2223,7 @@ fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Co
             ..if seed % 2 == 0 {
                 Spec::EMPTY
             } else {
-                Spec::CLONE
+                on_base(h, Spec::CLONE)
             }
         };
         let mut d = Driver::new(h, cfg, &spec)?;
@@ -1763,9 +2253,7 @@ fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Co
             d.kill(seed)?;
             d.expect_error(read_op(0, 1), BlkError::Failed, "R11")?;
         }
-        if !d.reopen_failed()? {
-            return Ok(());
-        }
+        d.reopen_failed()?;
         // The model has read back what the failure left open and found a
         // state that includes everything flushed. Blocks nothing touched
         // after the flush are as they were flushed.
@@ -1778,7 +2266,7 @@ fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Co
         // And it is a healthy volume again.
         let again = d.write(1, 3)?;
         d.flush()?;
-        d.power_cut(0)?;
+        d.power_cut_if_able(0)?;
         d.expect_read(1, &again, "R11: a write after the reopen, flushed")?;
         d.verify()?;
     }
@@ -1792,7 +2280,7 @@ fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Co
             ..if seed % 2 == 0 {
                 Spec::EMPTY
             } else {
-                Spec::CLONE
+                on_base(h, Spec::CLONE)
             }
         };
         let mut d = Driver::new(h, cfg, &spec)?;
@@ -1808,9 +2296,7 @@ fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Co
         if seed % 4 >= 2 {
             d.kill(seed + 1)?;
         }
-        if !d.reopen_failed()? {
-            return Ok(());
-        }
+        d.reopen_failed()?;
         // The model has read back blocks 2 to 5 and takes either
         // content; what was flushed and not touched since is there.
         d.expect_read(
@@ -1821,7 +2307,7 @@ fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Co
         d.verify()?;
         let again = d.write(1, 3)?;
         d.flush()?;
-        d.power_cut(0)?;
+        d.power_cut_if_able(0)?;
         d.expect_read(1, &again, "R11: a write after the reopen, flushed")?;
         d.verify()?;
     }
@@ -1831,7 +2317,7 @@ fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Co
 fn read_only_target_refuses_mutations<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let spec = Spec {
         read_only: true,
-        ..Spec::CLONE
+        ..on_base(h, Spec::CLONE)
     };
     let mut d = Driver::new(h, cfg, &spec)?;
     let base = base_bytes(spec.base, 0, 8);
@@ -1890,7 +2376,9 @@ enum Step {
     Invalid(u64),
 }
 
-fn step_strategy(window: u64, failures: bool) -> impl Strategy<Value = Step> {
+/// The steps of the random programs. Kinds of step the harness cannot
+/// do are left out.
+fn step_strategy(window: u64, failures: bool, has: Capabilities) -> impl Strategy<Value = Step> {
     let span = move || (0..window, 1..=8u64).prop_map(move |(b, l)| (b, l.min(window - b)));
     let mut choices: Vec<(u32, BoxedStrategy<Step>)> = vec![
         (16, span().prop_map(|(b, l)| Step::Write(b, l)).boxed()),
@@ -1902,13 +2390,19 @@ fn step_strategy(window: u64, failures: bool) -> impl Strategy<Value = Step> {
         (4, Just(Step::Poll).boxed()),
         (2, Just(Step::Drain).boxed()),
         (3, any::<u64>().prop_map(Step::Maintain).boxed()),
-        (2, any::<u64>().prop_map(Step::Invalid).boxed()),
     ];
+    if has.has(Capability::InvalidRequests) {
+        choices.push((2, any::<u64>().prop_map(Step::Invalid).boxed()));
+    }
     if failures {
         choices.push((4, any::<u64>().prop_map(Step::Kill).boxed()));
-        choices.push((4, (0..12u64).prop_map(Step::PowerCut).boxed()));
-        choices.push((1, Just(Step::FailLog).boxed()));
-        choices.push((2, Just(Step::Reopen).boxed()));
+        if has.has(Capability::PowerCut) {
+            choices.push((4, (0..12u64).prop_map(Step::PowerCut).boxed()));
+        }
+        if has.has(Capability::FailLog) {
+            choices.push((1, Just(Step::FailLog).boxed()));
+            choices.push((2, Just(Step::Reopen).boxed()));
+        }
     }
     Union::new_weighted(choices)
 }
@@ -1941,7 +2435,7 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, place: &Place, program: &[St
     let spec = Spec {
         seed: place.seed,
         ..if place.on_clone {
-            Spec::CLONE
+            on_base(h, Spec::CLONE)
         } else {
             Spec::EMPTY
         }
@@ -2002,12 +2496,11 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, place: &Place, program: &[St
                 d.fail_log()?;
                 failed = true;
             }
-            Step::Reopen if failed => {
+            Step::Reopen if failed && d.can(Capability::ReopenFailed) => {
                 // What was in flight across the failure is gone with it.
-                if d.reopen_failed()? {
-                    failed = false;
-                    d.verify()?;
-                }
+                d.reopen_failed()?;
+                failed = false;
+                d.verify()?;
             }
             Step::Reopen => {}
             Step::Maintain(seed) => d.maintain(seed)?,
@@ -2020,13 +2513,16 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, place: &Place, program: &[St
     }
     d.drain()?;
     d.verify()?;
-    if failed && !d.reopen_failed()? {
-        return Ok(());
+    if failed {
+        if !d.can(Capability::ReopenFailed) {
+            return Ok(());
+        }
+        d.reopen_failed()?;
     }
     // Whatever the program did: the device reads as the model allows now,
     // after a flush and a power cut, and again after that.
     d.flush()?;
-    d.power_cut(0)?;
+    d.power_cut_if_able(0)?;
     d.verify()?;
     d.verify()
 }
@@ -2071,7 +2567,10 @@ fn prop_programs<H: Harness>(h: &mut H, cfg: &Config, failures: bool) -> Outcome
     });
     let strategy = (
         place,
-        proptest::collection::vec(step_strategy(window, failures), 1..=cfg.max_steps.max(1)),
+        proptest::collection::vec(
+            step_strategy(window, failures, h.capabilities()),
+            1..=cfg.max_steps.max(1),
+        ),
     );
     let h = RefCell::new(h);
     check(cfg, u8::from(failures), strategy, |(place, program)| {
@@ -2119,7 +2618,8 @@ fn prop_invalid_requests<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
     let h = RefCell::new(h);
     check(cfg, 2, strategy, |ops| {
         let mut guard = h.borrow_mut();
-        let mut d = Driver::new(&mut **guard, cfg, &Spec::CLONE)?;
+        let spec = on_base(&**guard, Spec::CLONE);
+        let mut d = Driver::new(&mut **guard, cfg, &spec)?;
         let last = d.geometry.blocks() - 1;
         let head = d.write(0, 8)?;
         let tail = d.write(last, 1)?;
@@ -2131,4 +2631,91 @@ fn prop_invalid_requests<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
         d.expect_read(last, &tail, "R2: after rejected requests")?;
         d.verify()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The suite's own parts that cannot be seen from outside.
+
+    use proptest::strategy::ValueTree;
+
+    use super::*;
+
+    /// The kinds of step in `samples` programs' worth of steps.
+    fn kinds(failures: bool, has: Capabilities) -> Vec<&'static str> {
+        let strategy = step_strategy(24, failures, has);
+        let mut runner = TestRunner::deterministic();
+        let mut seen = Vec::new();
+        for _ in 0..4000 {
+            let step = strategy.new_tree(&mut runner).unwrap().current();
+            let kind = match step {
+                Step::Write(..) => "write",
+                Step::Read(..) => "read",
+                Step::WriteZeroes(..) => "write_zeroes",
+                Step::Discard(..) => "discard",
+                Step::Flush => "flush",
+                Step::Reap => "reap",
+                Step::Poll => "poll",
+                Step::Drain => "drain",
+                Step::Kill(_) => "kill",
+                Step::PowerCut(_) => "power_cut",
+                Step::FailLog => "fail_log",
+                Step::Reopen => "reopen",
+                Step::Maintain(_) => "maintain",
+                Step::Invalid(_) => "invalid",
+            };
+            if !seen.contains(&kind) {
+                seen.push(kind);
+            }
+        }
+        seen.sort_unstable();
+        seen
+    }
+
+    /// Not a contract rule: the random programs of a harness that can
+    /// do everything contain every kind of step, and those of a harness
+    /// that lacks a capability leave out exactly the steps that need
+    /// it. A strategy that dropped a kind of step for everyone would
+    /// otherwise pass every test.
+    #[test]
+    fn the_random_programs_have_every_kind_of_step_the_harness_can_do() {
+        let plain = [
+            "discard",
+            "drain",
+            "flush",
+            "invalid",
+            "maintain",
+            "poll",
+            "read",
+            "reap",
+            "write",
+            "write_zeroes",
+        ];
+        let with = |more: &[&'static str]| {
+            let mut all: Vec<&str> = plain.iter().chain(more).copied().collect();
+            all.sort_unstable();
+            all
+        };
+        let without = |all: Vec<&'static str>, gone: &[&str]| -> Vec<&'static str> {
+            all.into_iter().filter(|k| !gone.contains(k)).collect()
+        };
+        let failing = with(&["kill", "power_cut", "fail_log", "reopen"]);
+        assert_eq!(kinds(false, Capabilities::ALL), with(&[]));
+        assert_eq!(kinds(true, Capabilities::ALL), failing);
+        for (capability, gone) in [
+            (Capability::PowerCut, &["power_cut"][..]),
+            (Capability::FailLog, &["fail_log", "reopen"][..]),
+            (Capability::InvalidRequests, &["invalid"][..]),
+            (Capability::Base, &[][..]),
+            (Capability::ReadOnly, &[][..]),
+            (Capability::ReopenFailed, &[][..]),
+        ] {
+            let has = Capabilities::ALL.without(capability);
+            assert_eq!(
+                kinds(true, has),
+                without(failing.clone(), gone),
+                "without {capability:?}"
+            );
+        }
+    }
 }

@@ -265,6 +265,11 @@ impl Cut for RecordCut {
 impl Harness for SimHarness {
     type Target = OnSim;
 
+    /// The simulated disk can do everything the suite asks.
+    fn capabilities(&self) -> skyzfs_blk::conformance::Capabilities {
+        skyzfs_blk::conformance::Capabilities::ALL
+    }
+
     fn create(&mut self, spec: &Spec) -> Result<OnSim, HarnessError> {
         let disk = SimDisk::new(spec.seed);
         disk.set_write_unit(u64::from(self.unit));
@@ -411,7 +416,7 @@ impl Harness for SimHarness {
         Ok(())
     }
 
-    fn reopen_failed(&mut self, target: OnSim) -> Result<Result<OnSim, OnSim>, HarnessError> {
+    fn reopen_failed(&mut self, target: OnSim) -> Result<OnSim, HarnessError> {
         let OnSim {
             inner,
             disk,
@@ -424,13 +429,13 @@ impl Harness for SimHarness {
         disk.kill();
         let (store, _) = Store::open(disk.clone(), self.options_with(read_only, true))
             .map_err(|e| HarnessError(format!("open after a failure: {e}")))?;
-        Ok(Ok(OnSim {
+        Ok(OnSim {
             inner: Inner::Live(Box::new(store)),
             disk,
             geometry,
             read_only,
             mark: None,
-        }))
+        })
     }
 
     fn maintenance(&mut self, target: &mut OnSim, seed: u64) -> Result<(), HarnessError> {

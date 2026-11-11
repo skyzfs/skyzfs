@@ -824,6 +824,10 @@ impl MemHarness {
 impl crate::conformance::Harness for MemHarness {
     type Target = MemTarget;
 
+    fn capabilities(&self) -> crate::conformance::Capabilities {
+        crate::conformance::Capabilities::ALL
+    }
+
     fn create(
         &mut self,
         spec: &crate::conformance::Spec,
@@ -868,9 +872,9 @@ impl crate::conformance::Harness for MemHarness {
     fn reopen_failed(
         &mut self,
         target: MemTarget,
-    ) -> Result<Result<MemTarget, MemTarget>, crate::conformance::HarnessError> {
+    ) -> Result<MemTarget, crate::conformance::HarnessError> {
         let keep = target.cut_points() / 2;
-        Ok(Ok(target.reopen_failed(keep)))
+        Ok(target.reopen_failed(keep))
     }
 }
 
