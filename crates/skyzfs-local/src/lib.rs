@@ -668,11 +668,13 @@
 //! - **Cost**, where the write unit is larger than a block, for each
 //!   batch: a read of each block saved, one write and one sync of
 //!   `home.pre`, on top of the sync of the home image and the reclaim
-//!   (a write and a sync of the superblock) that a batch costs
-//!   anywhere. In the worst case, single-block writes scattered one to
+//!   (a write and a sync of the superblock, and one epoch of the log)
+//!   that a batch costs anywhere. In the worst case, single-block writes scattered one to
 //!   a 16 KiB unit, that is a batch for every 85 records, and so three
 //!   syncs and about 1 MiB of preimages for every 340 KiB applied.
-//!   Writes of whole units cost no preimages. Not measured.
+//!   Writes of whole units cost no preimages. None of this is
+//!   measured: not the preimages, and not the superblock write, the
+//!   sync and the epoch that every batch pays for its reclaim.
 //!
 //! # Limits
 //!

@@ -543,6 +543,40 @@ fn a_checkpoint_puts_only_its_own_blocks_at_risk() {
     caught_where(scenario, Mutants::NO_RESTORE, garbled_neighbours);
 }
 
+/// A neighbour is left out of the preimages only if a durable record
+/// of the log writes it. One whose newest record is acknowledged and
+/// not flushed is held by the home image alone as far as a power cut
+/// goes, and is saved. Here four blocks are flushed and checkpointed;
+/// block 4 is written again and flushed; block 5 is written and not
+/// flushed; the checkpoint that applies block 4 is cut off before its
+/// sync and the power cut takes the unflushed record. Block 5 must read
+/// as the home image had it. Mutant: a neighbour counts as held by the
+/// log whenever the index names a record for it. (The review's probe.)
+#[test]
+fn a_neighbour_whose_record_is_not_durable_is_saved() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 4, 4, 1)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        write(&mut store, 4, 1, 3)?;
+        flush(&mut store)?;
+        write(&mut store, 5, 1, 2)?;
+        disk.fail_sync_of(HOME_NAME);
+        if store.checkpoint().is_ok() {
+            return Err("the checkpoint did not notice the failed sync".into());
+        }
+        drop(store);
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let mut store = env.reopen_ack(&disk)?;
+        expect(&mut store, 4, 1, 3, "the block the checkpoint wrote")?;
+        expect(&mut store, 5, 1, 1, "the neighbour whose record was lost")?;
+        expect(&mut store, 6, 2, 1, "the neighbours behind")
+    }
+    caught_where(scenario, Mutants::UNSYNCED_COVERS, garbled_neighbours);
+}
+
 /// Where a write rewrites more than its own block.
 fn large_units(env: &Env) -> bool {
     env.unit > 4096
@@ -613,13 +647,21 @@ fn a_checkpoint_at_four_kib_units_has_no_preimages_and_no_extra_sync() {
 /// each; the checkpoint that applies them is stopped after a number of
 /// writes and syncs, the power is cut, the open that follows is stopped
 /// as well and the power cut again. After the next open every block
-/// reads as what was flushed, and the preimage file never held more
-/// than one batch.
+/// of the volume reads as what was flushed, and the preimage file never
+/// held more than one batch.
 #[test]
 fn a_checkpoint_in_batches_can_be_cut_anywhere() {
     fn scenario(env: &Env) -> Outcome {
         let largest = (4096 + Preimages::table_len(PREIMAGE_BATCH) + PREIMAGE_BATCH * 4096) as u64;
-        for stop in (0..40).chain([55, 80, 120, 400]) {
+        // Among the stops: the end of the first batch (the reclaim's
+        // superblock write and its sync, about 89 and 90 at 16 KiB units, and
+        // the next batch's preimage write and sync), and points inside
+        // the second and the third batch.
+        for stop in (0..40)
+            .chain([55, 80])
+            .chain(88..=93)
+            .chain([120, 200, 400])
+        {
             let (disk, mut store) = env.fresh()?;
             for mib in 0..4 {
                 write(&mut store, mib * 256, 256, 9)?;
@@ -658,7 +700,7 @@ fn a_checkpoint_in_batches_can_be_cut_anywhere() {
             disk.power_cut(BySector(move |_: Option<&str>, _| lost));
             disk.set_write_unit(u64::from(env.unit));
             let mut store = env.reopen_ack(&disk)?;
-            for unit in [0u64, 1, 63, 64, 65, 127, 128, 200, 254, 255] {
+            for unit in 0..256u64 {
                 let what = format!("unit {unit} after a cut at {stop}");
                 expect(&mut store, unit * 4, 1, 9, &what)?;
                 expect(&mut store, unit * 4 + 1, 1, (unit % 200) as u8 + 10, &what)?;

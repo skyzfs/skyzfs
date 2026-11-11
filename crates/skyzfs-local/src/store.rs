@@ -88,6 +88,9 @@ impl Mutants {
     pub(crate) const READ_ERROR_SERVED: u32 = 1 << 16;
     /// A hold is taken at any position.
     pub(crate) const HOLD_UNCHECKED: u32 = 1 << 18;
+    /// A neighbour counts as held by the log when the index names a
+    /// record for it, durable or not, and is not saved.
+    pub(crate) const UNSYNCED_COVERS: u32 = 1 << 19;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -165,6 +168,11 @@ pub struct OpenOptions {
     /// attachment at once (design §4.2). It is called from the thread
     /// that executes the store's requests, inside the request that
     /// failed, and is expected to return quickly.
+    ///
+    /// It is installed once the log has been opened, so a failure
+    /// during the log's recovery is not announced. Nothing is lost by
+    /// that: no client is attached before the open returns, and the
+    /// open returns the error to the caller that would attach one.
     pub on_failure: Option<FailureObserver>,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
@@ -735,13 +743,17 @@ impl<D: Dir> Core<D> {
                     .is_some_and(|(_, e)| *e > block);
                 // A block that a durable record of the log writes is
                 // covered by the log, whatever becomes of its copy here.
+                // A record that is not durable covers nothing: a power
+                // cut can take it and the block's copy here together.
                 let durable = self.log.durable();
                 let logged = self
                     .index
                     .lookup(block, 1)
                     .first()
                     .and_then(|(_, _, source)| *source)
-                    .is_some_and(|source| source.record() < durable);
+                    .is_some_and(|source| {
+                        source.record() < durable || self.mutants.has(Mutants::UNSYNCED_COVERS)
+                    });
                 if !covered && !logged && neighbours.last() != Some(&block) {
                     neighbours.push(block);
                 }
