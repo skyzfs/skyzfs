@@ -40,7 +40,9 @@
 #     error; the default, delete, removes the device as the daemon
 #     will), SKZ_REF_COMMIT_DELAY_BEFORE=1 (the commit delay is taken
 #     before the write is applied, so nothing is left applied and
-#     unacknowledged).
+#     unacknowledged), SKZ_REF_UNORDERED=1 (overlapping writes in
+#     flight are issued to the file together, as upstream does, and can
+#     each win some of the blocks).
 set -uo pipefail
 
 usage() { echo "usage: skyzfsd-ref.sh create|serve|detach|status --dir DIR ..." >&2; exit 2; }
@@ -193,6 +195,7 @@ serve)
     [ -z "${SKZ_REF_DROP_EVERY:-}" ] || export SKZ_DROP_EVERY=$SKZ_REF_DROP_EVERY
     [ -z "$DELAY" ] || export SKZ_COMMIT_DELAY_MS=$DELAY
     [ -z "${SKZ_REF_COMMIT_DELAY_BEFORE:-}" ] || export SKZ_COMMIT_DELAY_BEFORE=$SKZ_REF_COMMIT_DELAY_BEFORE
+    [ -z "${SKZ_REF_UNORDERED:-}" ] || export SKZ_UNORDERED=$SKZ_REF_UNORDERED
     echo 0 > "$TAKEOVER"
     if [ -n "$n" ] && [ "$(dev_state "$n")" = QUIESCED ]; then
         # The dead server's count, before the new one sets it to zero.

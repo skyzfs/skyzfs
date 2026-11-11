@@ -300,6 +300,56 @@ fi
 rec setup ok
 
 # =================================================================== a
+# Overlapping writes in flight together apply whole (§4.1): two writers
+# at one range at one moment, for some seconds, on a new volume.
+# name impl seconds [serve arguments] -> OV_ROUNDS OV_TORN OV_SAID, 1 if it did not run.
+overlap_test() {
+    local name=$1 impl=$2 secs=$3 dir=$WORK/vol-$1 rc; shift 3
+    OV_ROUNDS=0; OV_TORN=0; OV_SAID=""
+    if ! vol_up "$impl" "$dir" "$@"; then OV_SAID="not created or served (serve rc ${SERVE_RC:-none})"; return 1; fi
+    lim $((secs + 60)) python3 -I "$HERE/overlap-tear.py" "$BDEV" "$secs" > "$OUT/$name-overlap.out" 2> "$OUT/$name-overlap.err"; rc=$?
+    OV_SAID=$(tail -n 1 "$OUT/$name-overlap.out")
+    read -r _ OV_ROUNDS _ OV_TORN _ <<< "$OV_SAID"
+    kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
+    vol_detach "$impl" "$dir"
+    [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]]
+}
+check_a_overlap() {
+    local rounds torn said ms=${RIG_COMMIT_DELAY_MS:-20}
+    step "a: overlapping writes in flight apply whole"
+    if overlap_test ao "$SKYZFSD" 30; then
+        rounds=$OV_ROUNDS; torn=$OV_TORN; said="plain: $OV_SAID"
+        if overlap_test aod "$SKYZFSD" 30 --commit-delay-ms "$ms"; then
+            rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN)); said+="; acknowledged $ms ms after the apply: $OV_SAID"
+            if [ "$rounds" -lt 200 ]; then
+                pin overlapping_writes_apply_whole ERROR "only $rounds rounds in 60 s: $said"
+            else
+                pin_is overlapping_writes_apply_whole "$torn of $rounds rounds torn, two writers of 16 blocks at one range at one moment, 30 s each; $said" [ "$torn" = 0 ]
+            fi
+        else
+            pin overlapping_writes_apply_whole ERROR "with the delay: ${OV_SAID:-no output} $(tail -n 1 "$OUT/aod-overlap.err" 2>/dev/null)"
+        fi
+    else
+        pin overlapping_writes_apply_whole ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao-overlap.err" 2>/dev/null)"
+    fi
+    # The control: the reference server as upstream has it, every
+    # request issued to the file as it arrives. FAIL means torn rounds
+    # were seen, which is what shows the pin above can fail.
+    step "a, control: a server that does not order overlapping writes"
+    if SKZ_REF_UNORDERED=1 overlap_test ao0 "$REF" 60; then
+        said="plain, 60 s: $OV_SAID"; rounds=$OV_ROUNDS; torn=$OV_TORN
+        if SKZ_REF_UNORDERED=1 overlap_test ao0d "$REF" 30 --commit-delay-ms "$ms"; then
+            said+="; acknowledged $ms ms after the apply, 30 s: $OV_SAID"; rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN))
+        fi
+        if [ "$torn" -gt 0 ]; then
+            ctl unordered_overlapping_writes FAIL "$torn of $rounds rounds torn; $said"
+        else
+            ctl unordered_overlapping_writes PASS "no round of $rounds torn; $said"
+        fi
+    else
+        ctl unordered_overlapping_writes ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao0-overlap.err" 2>/dev/null)"
+    fi
+}
 check_a() {
     local dir=$WORK/vol-a pool=skzd-a q slog v f0 f1 label
     step "a: parameters"
@@ -1179,7 +1229,7 @@ check_e() {
     case $v in 0) ctl hold_too_short PASS "$HT_WHY" ;; 1) ctl hold_too_short FAIL "$HT_WHY" ;; *) ctl hold_too_short ERROR "$HT_ERR" ;; esac
 }
 
-case $CHECKS in *" a "*) check_a ;; esac
+case $CHECKS in *" a "*) check_a; check_a_overlap ;; esac
 case $CHECKS in *" b "*) check_b ;; esac
 case $CHECKS in *" c "*) check_c ;; esac
 case $CHECKS in *" e "*) check_e ;; esac

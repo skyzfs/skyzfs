@@ -41,6 +41,14 @@ EXPECTED = {
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
     'pin_unstored_zero_a': ('a', 'PASS', WAITING, 'no completion waits for the acknowledged position to be stored (status: unstored 0)'),
 
+    'pin_overlapping_writes_apply_whole': ('a', 'PASS', SERVER,
+                                           'two writes at one range in flight together apply whole: after both, '
+                                           'every block of the range is from one of them, in every round of a '
+                                           'minute of rounds, with and without the commit delay (§4.1)'),
+    'ctl_unordered_overlapping_writes': ('a', 'FAIL', KERNEL,
+                                         'control: the reference server as upstream has it, issuing overlapping '
+                                         'writes to its file together, tears some rounds of the same load'),
+
     'pin_c_max_request': ('c', 'PASS', SERVER,
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
                           'cases about a 1 MiB request and a discard across the device test only the block layer'),
