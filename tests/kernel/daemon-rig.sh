@@ -814,7 +814,9 @@ check_d() {
 # d.3, an observation: the device comes back holding less than ZFS was told.
 check_d_shorter() {
     local dir=$WORK/vol-d3 mark rc n st v
-    [ "$IMPL" = reference ] || { obs returned_device_with_older_content "not run: needs the flat image of the reference server"; return; }
+    # On the reference server whatever the server under test, as d.1:
+    # the observation is of the kernel and ZFS, and needs the flat
+    # image only the reference server has.
     step "d: the device comes back with older content"
     mark=$(dmesg_mark)
     if ! SKZ_REF_FAIL_STYLE=eio fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
