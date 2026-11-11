@@ -769,11 +769,8 @@ pub fn report(
                          that lets go",
                 }
             ),
-            Some(l) if l.whose == Whose::Unsure => format!(
-                "device {} has this volume's values and no note, and is left: deleting it \
-                 by hand, or a reboot, resolves it",
-                l.number
-            ),
+            // The words of a refused start, for the same device.
+            Some(l) if l.whose == Whose::Unsure => crate::lifecycle::unnoted(l.number, l.state),
             Some(l) => format!(
                 "device {} under the recorded number is not this volume's",
                 l.number

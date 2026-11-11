@@ -148,7 +148,7 @@ fn a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boo
     kernel.held.push(number);
     let served = ready.store.serve().expect("serve");
     served.fail_now();
-    let (failure, written) = fail_serving(&mut kernel, &mut records, number, identity);
+    let (failure, written, _) = fail_serving(&mut kernel, &mut records, number, identity);
     assert!(failure.held == Held::Unknown && written);
     drop(served);
     assert_eq!(

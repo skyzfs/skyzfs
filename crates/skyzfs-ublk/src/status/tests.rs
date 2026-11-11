@@ -629,12 +629,22 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
     // what to do about a pool on it.
     let waiting = located(DeviceState::Waiting, Whose::Ours);
     let unsure = located(DeviceState::Waiting, Whose::Unsure);
+    // What a failure under an imported pool leaves: the words are the
+    // refused start's.
+    let unsure_dead = located(DeviceState::Dead, Whose::Unsure);
     let anothers = located(DeviceState::Live, Whose::Anothers);
     for (found, says) in [
         (None, "none under the volume's recorded number"),
         (Some(&waiting), "waits for a server it will not get"),
         (Some(&dead), "deleted, and something still holds it"),
-        (Some(&unsure), "this volume's values and no note"),
+        (
+            Some(&unsure),
+            "no note, and was left: deleting it by hand, or a reboot",
+        ),
+        (
+            Some(&unsure_dead),
+            "already deleted and still held open by a client",
+        ),
         (Some(&anothers), "is not this volume's"),
     ] {
         for noted in [Noted::Whole(stored(false)), Noted::Unreadable] {
