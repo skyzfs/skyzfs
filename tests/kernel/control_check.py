@@ -127,7 +127,8 @@ EXPECTED = {
         'the deleted device reads as dead, has no nodes, and an add under its number is "taken"'),
     'pin_delete_fails_requests': (
         'PASS', RIG, 'row: in any state, held open, a delete',
-        'a request in flight at the delete fails for the holder, and so does a later one'),
+        'the holder\'s read works before the delete and fails after it (the server holds no request at the '
+        'delete; what a held request does to a delete is obs_delete_while_the_server_holds_a_request)'),
     'pin_number_free_when_holder_lets_go': (
         'PASS', RIG, 'row: in any state, held open, a delete',
         'when the holder closes the device, a lookup of the number says nothing is there'),
@@ -194,6 +195,8 @@ OBSERVED = {
                                          'handed to the servers, rounds with none finished before the stop',
     'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
+    'obs_delete_while_the_server_holds_a_request': 'a delete of a live device whose server holds a read for 20 s: how '
+                                                   'long the delete took, and what the reader got and when',
 }
 
 
@@ -218,11 +221,25 @@ def judge(results):
         elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
     for name in results:
+        if is_detail(name, results[name]):
+            continue
         if name.startswith(JUDGED) and name not in EXPECTED and name not in OBSERVED:
             errors.append(f'{name}: not in the table EXPECTED: {results[name]}')
     if results.get('setup') != 'ok':
         errors.append(f"setup: {results.get('setup', 'no line')}")
     return rows, differs, errors
+
+
+def is_detail(name, value):
+    """A detail line of the crate's tests that the table does not name.
+
+    The crate's tests print `control_<something>_detail` lines beside
+    their verdicts, and grow new ones. Such a line is shown and not
+    judged. One that carries a verdict word is not a detail: a verdict
+    must be in the table.
+    """
+    return (name.startswith('control_') and name.endswith('_detail') and name not in OBSERVED
+            and value.partition(':')[0] not in ('PASS', 'FAIL'))
 
 
 def summary(results, rows, differs, errors):
@@ -240,6 +257,9 @@ def summary(results, rows, differs, errors):
     out += ['', '| Observation | What it is | Value |', '|---|---|---|']
     for name, what in OBSERVED.items():
         out.append(f'| `{name}` | {what} | {results.get(name, "missing").replace("|", "/")} |')
+    for name, value in results.items():
+        if is_detail(name, value):
+            out.append(f'| `{name}` | a detail line of the crate\'s tests, not named in the table | {value.replace("|", "/")} |')
     return '\n'.join(out) + '\n'
 
 

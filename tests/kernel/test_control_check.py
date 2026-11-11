@@ -50,6 +50,19 @@ class Judge(unittest.TestCase):
             r[name] = 'PASS'
             self.assertEqual(len(cc.judge(r)[2]), 1, name)
 
+    def test_a_new_detail_line_of_the_crate_is_shown_and_not_an_error(self):
+        r = as_expected()
+        r['control_stop_addresses_detail'] = '12 addresses told, 0 overlaps'
+        rows, differs, errors = cc.judge(r)
+        self.assertEqual((differs, errors), ([], []))
+        self.assertIn('control_stop_addresses_detail', cc.summary(r, rows, differs, errors))
+
+    def test_a_detail_name_does_not_hide_a_verdict(self):
+        for value in ('PASS: all well', 'FAIL: no'):
+            r = as_expected()
+            r['control_stop_addresses_detail'] = value
+            self.assertEqual(len(cc.judge(r)[2]), 1, value)
+
     def test_an_error_or_another_word_is_a_rig_error_not_a_verdict(self):
         for value in ('ERROR: no driver', 'WAITING: later', 'ok'):
             r = as_expected()
