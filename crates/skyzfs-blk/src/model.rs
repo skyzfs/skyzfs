@@ -996,15 +996,16 @@ impl Model {
     /// including whatever the lost daemon had applied of the requests in
     /// flight.
     ///
-    /// Not so on a volume that has failed (rule R11): the daemon that
-    /// returns serves nothing and recovers nothing, and of what was
-    /// acknowledged the volume is held only to what a completed flush
-    /// covered. The log that failed may have lost the rest, and a
-    /// restart does not bring it back. Until the volume is opened again
-    /// ([`Model::reopened`]) nothing can be read, so this only shows
-    /// there.
+    /// Not so once the log has failed (rule R11), whether or not the
+    /// client has been told yet: the rule that an acknowledged operation
+    /// survives the daemon holds for a log that has not failed. The
+    /// recovery of the daemon that returns cannot make its prefix
+    /// durable, and of what was acknowledged the volume is held only to
+    /// what a completed flush covered. The log that failed may have
+    /// lost the rest, and a restart does not bring it back. This shows
+    /// when the volume is opened again ([`Model::reopened`]).
     pub fn kill(&mut self) {
-        if self.recovering.is_some() || self.health == Health::Failed {
+        if self.recovering.is_some() || self.health != Health::Healthy {
             return;
         }
         self.now += 1;
@@ -1859,6 +1860,25 @@ mod tests {
         assert_eq!(c.model.readback(), vec![0]);
         assert!(c.would_see(0, &[2]));
         assert!(!c.would_see(0, &[0]));
+        c.sees(0, &[1]).unwrap();
+    }
+
+    /// R11 over R9, before anyone was told: the log fails, no request
+    /// completes, the daemon restarts. The rule is about the log having
+    /// failed, not about a failure having been reported: the write that
+    /// no flush covered may be gone when the volume is opened again.
+    #[test]
+    fn a_restart_after_the_log_failed_unreported_keeps_only_what_was_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(0, 1, 2);
+        c.model.log_failed();
+        c.model.kill();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![0]);
+        assert!(c.would_see(0, &[2]));
         c.sees(0, &[1]).unwrap();
     }
 

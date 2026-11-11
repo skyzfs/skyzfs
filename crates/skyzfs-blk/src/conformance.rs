@@ -589,6 +589,12 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             run: reopened_failed_volume_holds_what_was_flushed::<H>,
         },
         Case {
+            name: "restart_after_the_log_failed_recovers_nothing",
+            rule: "R11 over R9: the log fails, no request completes, the daemon restarts:                    opened again, the volume holds a prefix with everything flushed, and an                    acknowledged operation that no flush covered may be gone",
+            needs: Needs::Reopen,
+            run: restart_after_the_log_failed_recovers_nothing::<H>,
+        },
+        Case {
             name: "read_only_target_refuses_mutations",
             rule: "R12: on a read-only target write, write-zeroes and discard fail without \
                    effect, and flush and read succeed",
@@ -1761,6 +1767,49 @@ fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Co
         )?;
         d.verify()?;
         // And it is a healthy volume again.
+        let again = d.write(1, 3)?;
+        d.flush()?;
+        d.power_cut(0)?;
+        d.expect_read(1, &again, "R11: a write after the reopen, flushed")?;
+        d.verify()?;
+    }
+    Ok(())
+}
+
+fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    for seed in 0..8 {
+        let spec = Spec {
+            seed,
+            ..if seed % 2 == 0 {
+                Spec::EMPTY
+            } else {
+                Spec::CLONE
+            }
+        };
+        let mut d = Driver::new(h, cfg, &spec)?;
+        let flushed = d.write(0, 4)?;
+        d.flush()?;
+        // Acknowledged, and no flush covers it.
+        d.write(2, 4)?;
+        // The log fails and the daemon is lost before any request
+        // completes, so before any failure is reported. The new
+        // instance's recovery cannot make its prefix durable.
+        d.fail_log()?;
+        d.kill(seed)?;
+        if seed % 4 >= 2 {
+            d.kill(seed + 1)?;
+        }
+        if !d.reopen_failed()? {
+            return Ok(());
+        }
+        // The model has read back blocks 2 to 5 and takes either
+        // content; what was flushed and not touched since is there.
+        d.expect_read(
+            0,
+            &flushed[..2 * BLOCK_USIZE],
+            "R11: flushed before the failure",
+        )?;
+        d.verify()?;
         let again = d.write(1, 3)?;
         d.flush()?;
         d.power_cut(0)?;
