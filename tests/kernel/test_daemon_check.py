@@ -33,6 +33,9 @@ def as_expected(impl='reference'):
         # A pin only the daemon can carry; the tests below set the
         # other one that waits on the stand-in by hand.
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: seen'
+        # And those the daemon cannot carry yet.
+        for name in dc.WAITS_FOR_THE_DAEMON:
+            r[name] = 'WAITING: seen'
     return r
 
 
@@ -262,6 +265,26 @@ class Judge(unittest.TestCase):
             self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
             self.assertTrue(claim, name)
+
+
+class WaitsForTheDaemon(unittest.TestCase):
+    def test_a_pin_the_daemon_cannot_carry_yet_is_waiting_there_and_nothing_else(self):
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: seen'       # the control only the daemon runs
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual((differs, errors), ([], []))
+        # PASS before its time is a difference: the table is changed on
+        # purpose when the daemon can carry the pin.
+        r['pin_takeover_time_does_not_grow'] = 'PASS: early'
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual(len(differs), 1)
+        r['pin_takeover_time_does_not_grow'] = 'FAIL: grew'
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual(len(differs), 1)
+
+    def test_every_such_pin_is_in_the_table_and_waits_on_the_stand_in(self):
+        for name in dc.WAITS_FOR_THE_DAEMON:
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
 
 
 class Main(unittest.TestCase):

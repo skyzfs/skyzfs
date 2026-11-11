@@ -14,6 +14,9 @@
 #   skyzfsd-ref.sh status --dir DIR
 #
 # SIGUSR1 to `serve` makes the volume fail, as in the daemon's test build.
+# --fail-log-after N: the volume fails after N requests that append to
+# the log: writes, write-zeroes and discards. Reads and flushes are not
+# counted.
 #
 # --commit-delay-ms N: a write is applied and acknowledged N ms later,
 # so that a kill leaves writes applied and not acknowledged. A serve

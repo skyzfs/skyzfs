@@ -70,6 +70,28 @@ EXPECTED = {
     'pin_c_delay_cases': ('c', 'PASS', SERVER,
                           'every case of the suite ends with that delay as it does without it'),
 
+    # Checkpoints (design §5.1, "When the daemon checkpoints"): the four
+    # lines wait for M1.3c. They are WAITING on the stand-in for good,
+    # and on the daemon as long as they are named in WAITS_FOR_THE_DAEMON
+    # below; a name is taken out of that set on purpose, with the rig's
+    # code for the pin, when the daemon checkpoints.
+    'pin_takeover_time_does_not_grow': ('b', 'PASS', WAITING,
+                                        'over the kills of the kill test a take-over does not take longer and '
+                                        'longer: the median of the last five is at most twice the median of '
+                                        'the first five plus 1 s. Without checkpoints the log replayed at a '
+                                        'start grows from kill to kill (2.8 s to 23 s over 20 kills in the '
+                                        'daemon\'s first runs)', 'WAITING'),
+    'pin_log_stays_below_high_mark': ('b', 'PASS', WAITING,
+                                      'under the kill test\'s load the write log never holds more than the '
+                                      'high mark (two segments of 64 MiB) plus one step (8 MiB of payload or '
+                                      '1024 records) plus one request (1 MiB)', 'WAITING'),
+    'pin_kills_inside_steps_lose_nothing': ('b', 'PASS', WAITING,
+                                            'kills that land inside a checkpoint step lose nothing: the pool '
+                                            'comes through as after any kill, and enough kills landed in a '
+                                            'step to say so (fewer is a rig error)', 'WAITING'),
+    'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
+                                 'every case of the suite ends as declared with the marks set low enough that '
+                                 'the daemon checkpoints while the suite runs (no step taken is a rig error)', 'WAITING'),
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
                             'a clean scrub, every file as the writer recorded it (§4.1, M1 exit). Writes '
@@ -160,6 +182,8 @@ OBSERVED = {
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
     'obs_a_unordered_overlapping_writes': ('a', 'how often the reference server without the ordering tears the same load, '
                                                 'on this runner: the pin on overlapping writes means as much as this shows'),
+    'obs_b_takeover_ms': ('b', 'how long each take-over of the kill test took, in order, and the medians of '
+                               'the first and the last five'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
@@ -220,6 +244,15 @@ def parse_checks(text):
 NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 
+# Pins the daemon cannot carry yet: expected WAITING on the daemon too.
+WAITS_FOR_THE_DAEMON = {
+    'pin_takeover_time_does_not_grow': 'M1.3c: checkpoints',
+    'pin_log_stays_below_high_mark': 'M1.3c: checkpoints',
+    'pin_kills_inside_steps_lose_nothing': 'M1.3c: checkpoints',
+    'pin_c_suite_with_low_marks': 'M1.3c: checkpoints',
+}
+
+
 def judge(results, checks, impl='reference'):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
@@ -228,6 +261,8 @@ def judge(results, checks, impl='reference'):
             continue
         if impl == 'reference' and on_stand_in:
             want = on_stand_in[0]
+        if impl != 'reference' and name in WAITS_FOR_THE_DAEMON:
+            want = 'WAITING'
         if impl != 'reference':
             if name in REFERENCE_ONLY:
                 rows.append((name, want, 'not run', 'needs the reference server', KERNEL, claim))

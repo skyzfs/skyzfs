@@ -98,6 +98,9 @@ step() { printf '\n######## %s\n' "$*"; }
 # A limit that holds even when the command cannot be killed.
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
+# Three tries, a minute apart, for what needs the network.
+# shellcheck source=tests/lib/net-try.sh
+. "$HERE/../lib/net-try.sh"
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # The kernel log of an interval: klog_mark, klog_since, klog_bad,
 # klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
@@ -332,29 +335,38 @@ HUNG_WARNINGS_WAS=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
 rec hung_task_warnings_start "${HUNG_WARNINGS_WAS:-unreadable} (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
-SETUP_OK=1
-apt-get update > /dev/null 2>&1
-apt-get install -y --no-install-recommends zfsutils-linux python3 util-linux > "$OUT/apt.log" 2>&1 || SETUP_OK=""
+SETUP_OK=1; SETUP_WHY=""
+# The packages and the reference server's source come over the
+# network: each is tried three times, a minute apart, and a setup that
+# still fails says which step and why in its own line, which the judge
+# puts first.
+# shellcheck disable=SC2317,SC2329  # run through net_try
+setup_packages() { apt-get update && apt-get install -y --no-install-recommends zfsutils-linux python3 util-linux; }
+net_try setup_packages > "$OUT/apt.log" 2>&1 || { SETUP_OK=""; SETUP_WHY+="apt could not install zfsutils-linux in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|^E: ' "$OUT/apt.log"); "; }
 [ -e /dev/ublk-control ] || modprobe ublk_drv 2>> "$OUT/apt.log" || {
-    apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/apt.log" 2>&1
-    modprobe ublk_drv 2>> "$OUT/apt.log" || SETUP_OK=""
+    net_try apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/apt.log" 2>&1
+    modprobe ublk_drv 2>> "$OUT/apt.log" || { SETUP_OK=""; SETUP_WHY+="no ublk driver (modprobe ublk_drv failed); "; }
 }
-modprobe zfs 2>> "$OUT/apt.log" || SETUP_OK=""
+modprobe zfs 2>> "$OUT/apt.log" || { SETUP_OK=""; SETUP_WHY+="modprobe zfs failed; "; }
 rec zfs "$(cat /sys/module/zfs/version 2>/dev/null)"
 rec zfs_userland "$(zfs version 2>&1 | tr '\n' ' ')"
-if UBLKSRV_PATCH=$HERE/ublksrv-skz.patch "$HERE/build-ublksrv.sh" \
-    "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
-    rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver"), with ublksrv-skz.patch"
+# shellcheck disable=SC2317,SC2329  # run through net_try
+build_reference() {
+    UBLKSRV_PATCH=$HERE/ublksrv-skz.patch "$HERE/build-ublksrv.sh" \
+        "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"
+}
+if net_try build_reference; then
+    rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver"), with ublksrv-skz.patch (built at try $NET_TRIES)"
 else
-    rec ublk_server "BUILD FAILED: $(tail -n 1 "$OUT/ublksrv-build.log")"
+    rec ublk_server "BUILD FAILED in three tries: $(tail -n 1 "$OUT/ublksrv-build.log")"
     tail -n 60 "$OUT/ublksrv-build.log"
-    SETUP_OK=""
+    SETUP_OK=""; SETUP_WHY+="the reference server was not built in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|^E: |fatal:' "$OUT/ublksrv-build.log" || tail -n 1 "$OUT/ublksrv-build.log"); "
 fi
 zed_state() { local z; z=$(systemctl is-active zfs-zed 2>/dev/null); echo "${z:-unknown}"; }
 rec zed "$(zed_state)"
 mkdir -p "$RUN_DIR" "$WORK/mnt"
 if [ -z "$SETUP_OK" ]; then
-    rec setup "FAILED: see apt.log and ublksrv-build.log"
+    rec setup "FAILED: ${SETUP_WHY:-see apt.log and ublksrv-build.log}"
     exit 2
 fi
 rec setup ok
@@ -379,6 +391,11 @@ overlap_test() {
 # without that had no two writes in flight and shows nothing on any
 # server. Fewer than half of the rounds, or fewer than 200, is the
 # rig's error. (Measured: see the pull request of this rule.)
+# The tool also prints "well W": the rounds whose calls overlapped for
+# at least a quarter of the shorter one, a stricter count that the
+# evidence lines carry. The floor is still on "together" and still the
+# one set before any kernel run; it moves to "well" and to a measured
+# figure once runs with this count exist.
 overlap_enough() { [ "$1" -ge 200 ] && [ $(($2 * 2)) -ge "$1" ] && [ "$2" -ge 200 ]; }
 check_a_overlap() {
     local rounds torn together said ms=${RIG_COMMIT_DELAY_MS:-20}
@@ -538,7 +555,7 @@ kill_test() {
     local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
     KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
-    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
+    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_MS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
     # key recovered_unacknowledged): the sum, and how many did not say.
     KT_RECOVERED=0; KT_RECOVERED_UNSAID=0
@@ -625,6 +642,7 @@ kill_test() {
         read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
         KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; last seen LIVE with the dead server at $live ms, first seen otherwise at $gone ms ($saw, $looks looks); "
         KT_QUIESCE+="${live:--1}:${gone:--1} "
+        [ $rc != 0 ] || KT_MS+="$ms "
         [ "${SERVE_RC:-}" != "$EXIT_REFUSED_FAILED" ] || KT_REFUSED=$((KT_REFUSED + 1))
         [ $rc = 0 ] || { KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"; break; }
         KT_DONE=$n
@@ -672,6 +690,17 @@ live_stats() {
             printf "No longer LIVE with the dead server by: %s (%d kills; at %d not within 10 s). ", nb ? dist(b, nb) : "none", nb, never_gone
             printf "For each kill the true time is between its two figures; all, last-first:%s", all
         }'
+}
+# "MS MS ...": the take-over times in order -> their count, the median
+# of the first five and of the last five, and the list.
+medians() {
+    # shellcheck disable=SC2086  # a list of numbers
+    set -- $1
+    if [ $# -lt 10 ]; then echo "only $# take-overs, too few for two medians of five: $*"; return; fi
+    local first last
+    first=$(printf '%s\n' "${@:1:5}" | sort -n | sed -n 3p)
+    last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
+    echo "$# take-overs; median of the first five $first ms, of the last five $last ms; all, in order: $*"
 }
 # The four judgments of a kill test, as pins or as one control line.
 kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
@@ -769,6 +798,15 @@ check_b() {
     kill_test "$SKYZFSD" b "$KILLS"
     kill_verdict; v=$KT_VERDICT
     pin kill_under_load "$v" "${KT_WHY:-writes were in flight just before $KT_INFLIGHT of $KT_DONE kills: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+    # How long each take-over took, in order. A daemon that does not
+    # checkpoint replays a log that grows from kill to kill; one that
+    # does must not. The pin on it waits for checkpoints (M1.3c); until
+    # then the times are an observation, and the medians are those the
+    # pin will compare: the last five against the first five.
+    obs b_takeover_ms "$(medians "$KT_MS")"
+    for v in takeover_time_does_not_grow log_stays_below_high_mark kills_inside_steps_lose_nothing; do
+        pin "$v" WAITING "the daemon does not checkpoint yet (M1.3c); see obs_b_takeover_ms"
+    done
     # The check of what was acknowledged (§4.2) must not refuse a log
     # that a kill left whole. Kills around a change of log segment and
     # right after a checkpoint are the daemon's to arrange; here every
@@ -931,11 +969,13 @@ fail_setup() {
 # name seconds: wait for the pool to suspend. Records what ZFS and the
 # kernel said. -> PASS (suspended, no application error), FAIL, in FS_WHY.
 fail_wait() {
-    local name=$1 secs=$2 pool=skzd-$1 i st rerr werr mark=$3
+    local name=$1 secs=$2 pool=skzd-$1 i st rerr werr mark=$3 t0 took
+    t0=$(now_ms)
     for i in $(seq 1 "$secs"); do
         st=$(pool_state "$pool"); [ "$st" = SUSPENDED ] && break
         sleep 1
     done
+    took=$(( ($(now_ms) - t0) / 1000 ))
     sleep 3
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
@@ -946,7 +986,7 @@ fail_wait() {
     else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
     fi
     rec "${name}_events" "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
-    FS_WHY="pool $st after at most ${secs} s; reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr; writes failed for the writer: $werr"
+    FS_WHY="pool $st after $took s of waiting (the limit is ${secs} s); reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr; writes failed for the writer: $werr"
     [ "$st" = SUSPENDED ] && [ "$rerr" = 0 ] && [ "$werr" = 0 ]
 }
 fail_stop() { # name: stop the helpers of fail_setup; they may be blocked on a suspended pool
@@ -1397,7 +1437,12 @@ check_e() {
 
 case $CHECKS in *" a "*) check_a; check_a_overlap ;; esac
 case $CHECKS in *" b "*) check_b ;; esac
-case $CHECKS in *" c "*) check_c ;; esac
+case $CHECKS in *" c "*)
+    check_c
+    # A third pass of the suite with the daemon's marks set low, so
+    # that it checkpoints while the suite runs: waits for M1.3c.
+    pin c_suite_with_low_marks WAITING "the daemon does not checkpoint yet (M1.3c)" ;;
+esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.
 case $CHECKS in *" d "*) check_d ;; esac
