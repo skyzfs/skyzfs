@@ -25,6 +25,13 @@ rm -rf "$SRC"
 git clone --quiet https://github.com/ublk-org/ublksrv "$SRC" >&2
 cd "$SRC"
 [ -z "$REF" ] || git checkout --quiet --detach "$REF" >&2
+# UBLKSRV_PATCH: a patch to apply before building. The daemon rig builds
+# the loop target with test switches (tests/kernel/ublksrv-skz.patch);
+# the probe, the replay rig and the benchmark build it as it is.
+if [ -n "${UBLKSRV_PATCH:-}" ]; then
+    git apply --verbose "$UBLKSRV_PATCH" >&2
+    echo "patched with $(basename "$UBLKSRV_PATCH")" >&2
+fi
 {
     autoreconf -fi
     ./configure

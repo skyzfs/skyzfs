@@ -1,0 +1,173 @@
+diff --git a/targets/ublk.loop.cpp b/targets/ublk.loop.cpp
+index 2208ec7..7328d2b 100644
+--- a/targets/ublk.loop.cpp
++++ b/targets/ublk.loop.cpp
+@@ -6,8 +6,112 @@
+ #include <sys/epoll.h>
+ #include <linux/falloc.h>
+ 
++#include <sys/mman.h>
++
+ #include "ublksrv_tgt.h"
+ 
++/*
++ * SkyZFS test switches (tests/kernel/ublksrv-skz.patch). They turn the
++ * loop target into a stand-in for skyzfsd in the kernel rig. All come
++ * from the environment of `ublk add` or `ublk recover`; none set, the
++ * target behaves as upstream apart from not advertising FUA.
++ *
++ *   SKZ_STATS=FILE        counters, eight native u64 (see enum skz_stat),
++ *                         in a shared mapping: they survive kill -9
++ *   SKZ_FAIL_AFTER=N      after N writes, write-zeroes and discards the
++ *                         volume has failed: every request, reads
++ *                         included, completes with -EIO. Kept in the
++ *                         counters, so a recovered server is failed too
++ *   SKZ_FAIL_FILE=FILE    the volume fails as soon as FILE exists
++ *   SKZ_HOLD=SECONDS:OP   the first read, write or flush (OP) is held
++ *                         that long before it is served
++ *   SKZ_DROP_EVERY=K      every Kth write is acknowledged and not
++ *                         written: a deliberately wrong server
++ *
++ * One queue only: the counters are not atomic.
++ */
++enum skz_stat { SKZ_READS, SKZ_WRITES, SKZ_FLUSHES, SKZ_DISCARDS,
++	SKZ_WRITE_ZEROES, SKZ_FAILED_REQS, SKZ_HELD, SKZ_FAILED, SKZ_NR };
++static __u64 skz_private[SKZ_NR];
++static __u64 *skz = skz_private;
++static long skz_fail_after = -1;
++static const char *skz_fail_file;
++static long skz_drop_every;
++static int skz_hold_op = -1;
++static struct __kernel_timespec skz_hold_ts;
++
++static void skz_init(void)
++{
++	const char *v;
++
++	if ((v = getenv("SKZ_STATS")) != NULL) {
++		int fd = open(v, O_RDWR | O_CREAT, 0644);
++		void *m = MAP_FAILED;
++
++		if (fd >= 0 && ftruncate(fd, sizeof(skz_private)) == 0)
++			m = mmap(NULL, sizeof(skz_private), PROT_READ | PROT_WRITE,
++					MAP_SHARED, fd, 0);
++		if (fd >= 0)
++			close(fd);
++		if (m == MAP_FAILED)
++			ublk_err("skz: cannot map %s\n", v);
++		else
++			skz = (__u64 *)m;
++	}
++	if ((v = getenv("SKZ_FAIL_AFTER")) != NULL)
++		skz_fail_after = strtol(v, NULL, 10);
++	skz_fail_file = getenv("SKZ_FAIL_FILE");
++	if ((v = getenv("SKZ_DROP_EVERY")) != NULL)
++		skz_drop_every = strtol(v, NULL, 10);
++	if ((v = getenv("SKZ_HOLD")) != NULL) {
++		const char *op = strchr(v, ':');
++
++		skz_hold_ts.tv_sec = strtol(v, NULL, 10);
++		if (op && !strcmp(op + 1, "read"))
++			skz_hold_op = UBLK_IO_OP_READ;
++		else if (op && !strcmp(op + 1, "write"))
++			skz_hold_op = UBLK_IO_OP_WRITE;
++		else if (op && !strcmp(op + 1, "flush"))
++			skz_hold_op = UBLK_IO_OP_FLUSH;
++	}
++}
++
++/* Counts the request. True if the volume has failed and it must get -EIO. */
++static bool skz_count_and_failed(unsigned ublk_op)
++{
++	bool append = false;
++
++	switch (ublk_op) {
++	case UBLK_IO_OP_READ:
++		skz[SKZ_READS]++;
++		break;
++	case UBLK_IO_OP_WRITE:
++		skz[SKZ_WRITES]++;
++		append = true;
++		break;
++	case UBLK_IO_OP_FLUSH:
++		skz[SKZ_FLUSHES]++;
++		break;
++	case UBLK_IO_OP_DISCARD:
++		skz[SKZ_DISCARDS]++;
++		append = true;
++		break;
++	case UBLK_IO_OP_WRITE_ZEROES:
++		skz[SKZ_WRITE_ZEROES]++;
++		append = true;
++		break;
++	}
++	if (!skz[SKZ_FAILED] && skz_fail_file && access(skz_fail_file, F_OK) == 0)
++		skz[SKZ_FAILED] = 1;
++	if (!skz[SKZ_FAILED] && append && skz_fail_after >= 0 &&
++			skz[SKZ_WRITES] + skz[SKZ_DISCARDS] + skz[SKZ_WRITE_ZEROES] >
++			(__u64)skz_fail_after)
++		skz[SKZ_FAILED] = 1;
++	if (skz[SKZ_FAILED])
++		skz[SKZ_FAILED_REQS]++;
++	return skz[SKZ_FAILED] != 0;
++}
++
+ struct loop_tgt_data {
+ 	bool user_copy;
+ 	bool auto_zc;
+@@ -54,6 +158,8 @@ static int loop_setup_tgt(struct ublksrv_dev *dev, int type)
+ 	struct loop_tgt_data *tgt_data = (struct loop_tgt_data*)dev->tgt.tgt_data;
+ 	struct stat sb;
+ 
++	skz_init();
++
+ 	ret = ublk_json_read_target_str_info(cdev, "backing_file", file);
+ 	if (ret < 0) {
+ 		ublk_err( "%s: backing file can't be retrieved from jbuf %d\n",
+@@ -147,7 +253,8 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
+ 		.types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DISCARD |
+ 			UBLK_PARAM_TYPE_DMA_ALIGN,
+ 		.basic = {
+-			.attrs                  = UBLK_ATTR_VOLATILE_CACHE | UBLK_ATTR_FUA,
++			/* skz: no FUA, as the SkyZFS contract has it (design 4.1) */
++			.attrs                  = UBLK_ATTR_VOLATILE_CACHE,
+ 			.logical_bs_shift	= 9,
+ 			.physical_bs_shift	= 12,
+ 			.io_opt_shift	= 12,
+@@ -515,6 +622,19 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+ 	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
+ 	int ret;
+ 
++	if ((int)ublksrv_get_op(data->iod) == skz_hold_op && !skz[SKZ_HELD]) {
++		struct io_uring_sqe *sqe[1];
++
++		/* skz: hold this one request; 1 while held, 2 once released */
++		skz[SKZ_HELD] = 1;
++		ublk_queue_alloc_sqes(q, sqe, 1);
++		io_uring_prep_timeout(sqe[0], &skz_hold_ts, 0, 0);
++		sqe[0]->user_data = build_user_data(tag,
++				ublksrv_get_op(data->iod), 0, 1);
++		co_await__suspend_always(tag);
++		skz[SKZ_HELD] = 2;
++	}
++
+  again:
+ 	ret = loop_queue_tgt_io(q, data, tag);
+ 	if (ret > 0) {
+@@ -543,6 +663,16 @@ static int loop_handle_io_async(const struct ublksrv_queue *q,
+ 	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
+ 	const struct loop_tgt_data *tgt_data = (struct loop_tgt_data*) q->dev->tgt.tgt_data;
+ 
++	if (skz_count_and_failed(ublksrv_get_op(data->iod))) {
++		ublksrv_complete_io(q, data->tag, -EIO);
++		return 0;
++	}
++	if (skz_drop_every > 0 && ublksrv_get_op(data->iod) == UBLK_IO_OP_WRITE &&
++			skz[SKZ_WRITES] % (__u64)skz_drop_every == 0) {
++		ublksrv_complete_io(q, data->tag, data->iod->nr_sectors << 9);
++		return 0;
++	}
++
+ 	if (tgt_data->block_device && ublksrv_get_op(data->iod) == UBLK_IO_OP_DISCARD) {
+ 		__u64 r[2];
+ 		int res;
