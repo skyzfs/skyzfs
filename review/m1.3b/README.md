@@ -56,3 +56,26 @@ Tests: skyzfs-blk 132, skyzfs-local 152 and 3 ignored, skyzfs-ublk 100,
 skyzfsd 31, skyzfs-ublk-sys 4 and 7 ignored; none failed. Of the 38 new
 registry crates one is not MIT, Apache or BSD: `bitmaps` 3.2.1, MPL-2.0+,
 a direct dependency of libublk.
+
+## Second look, 15bd6fd..20f8a8c
+
+Run here at 20f8a8c: tests of skyzfs-blk, skyzfs-local, skyzfs-ublk,
+skyzfs-ublk-sys and skyzfsd pass; clippy `-D warnings` and fmt clean.
+No kernel test was run (no ublk here).
+
+Reruns with the built `skyzfsd`:
+
+- `create --size $((1<<62))` (and `1<<50`) in a directory it makes:
+  exit 1, the directory is gone. In a directory that was there:
+  `home.new` and `lock` stay, the next create works.
+- `skyzfsd help | true`: exit 0 (was 101). A usage error with standard
+  error closed: exit 2.
+- `status` and `detach` with no `/dev/ublk-control`, volume with no
+  record: "state detached" / "nothing to detach", exit 0.
+
+Read, not run: `Queue::flush` is `submit_with_args(0, ..)` in libublk
+0.4.8, a submit with no wait; a fetch that completes in it is consumed
+by the empty closure, the request stays with the driver and goes to the
+next life. The driver gives ublk devices `max_segments = USHRT_MAX`, so
+a 1 MiB direct write is one request and `handed == total` does not fail
+by splitting.
