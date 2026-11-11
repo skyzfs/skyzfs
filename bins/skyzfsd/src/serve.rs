@@ -42,7 +42,7 @@
 
 use std::io::{self, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,7 +52,7 @@ use skyzfs_ublk::ack::{AckFile, SharedAck};
 use skyzfs_ublk::lifecycle::{self, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
-use skyzfs_ublk::status::{self, Board, Pace, Status};
+use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status};
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
@@ -187,10 +187,23 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 fn post<Q: skyzfs_ublk::pump::Queue>(
     board: &Board,
     pump: &mut Pump<Delayed<Q, SharedAck>, skyzfs_local::store::Served, LateAck<SharedAck>>,
+    shown: &mut LogShown,
 ) {
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
     board.post(counters);
+    // The log, as the store's worker last showed it. The worker wakes
+    // this thread when a checkpoint step begins and when it ends; those
+    // two are written to the status file at once.
+    let log = pump.target().log_state();
+    let now = LogShown {
+        live: log.live(),
+        steps: log.steps,
+        stepping: log.stepping,
+    };
+    let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
+    board.post_log(now, step_changed);
+    *shown = now;
 }
 
 /// Run `serve`. Prints for itself: the ready line has to be out when
@@ -334,14 +347,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 let (queue, ack) =
                     Delayed::new(queue, SharedAck::new(ack), delay, hold, move || wake.wake());
                 let mut pump = Pump::new(queue, served, ack);
+                let mut shown = LogShown::default();
                 let stopped = loop {
                     if let Some(stopped) = pump.turn() {
                         break stopped;
                     }
-                    post(&board, &mut pump);
+                    post(&board, &mut pump, &mut shown);
                     faults(&mut pump, &flags, &mut fail_after);
                 };
-                post(&board, &mut pump);
+                post(&board, &mut pump, &mut shown);
                 // The pump is dropped here, and with it the store: the
                 // volume's lock is held until then.
                 stopped
@@ -349,6 +363,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         })
         .map_err(|e| format!("the queue of device {number}: {e}"))?;
     let stopper = serving.stopper();
+    // How long the start took: known once the device serves, 0 until then.
+    let start_ms = Arc::new(AtomicU64::new(0));
     let publisher = std::thread::Builder::new()
         .name("skyzfsd-status".into())
         .spawn({
@@ -356,8 +372,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let path = records.volume_run_dir().join(status::STATUS);
             let (queues, depth) = (shape.queues, shape.depth);
             let stopper = stopper.clone();
+            let start_ms = start_ms.clone();
             move || {
-                board.publish(Pace::new(STATUS_INTERVAL_MS), |counters, failures| {
+                board.publish_with_log(Pace::new(STATUS_INTERVAL_MS), |counters, log, failures| {
                     let status = Status {
                         pid: std::process::id(),
                         queues,
@@ -369,6 +386,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                         failures,
                         first_write_copies: stopper.first_write_copies(),
                         recovered_unacknowledged: recovered,
+                        log: Some(LogStatus {
+                            shown: *log,
+                            start_ms: start_ms.load(Ordering::SeqCst),
+                            replayed_bytes: log_bytes,
+                        }),
                     };
                     status::write(&path, &status)
                 })
@@ -395,6 +417,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
+    start_ms.store(
+        u64::try_from((started - began).as_millis()).unwrap_or(u64::MAX),
+        Ordering::SeqCst,
+    );
     println!("ready {}", block_device(number));
     let _ = io::stdout().flush();
     // Where the start's time went. `devices` is everything between the
