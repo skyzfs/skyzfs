@@ -2211,3 +2211,68 @@ fn what_the_suite_notices_of_each_defect() {
         }
     }
 }
+
+/// The hook for test rigs: a served store whose owner fails it on
+/// demand answers what it completed before as completed, fails every
+/// later request, tells its owner, and is found marked as failed by
+/// the next open.
+#[test]
+fn a_served_store_failed_on_demand_fails_every_later_request_and_is_found_marked() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    let write = |id: u64, block: u64| Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(1, 9),
+        },
+    };
+    let mut done = Vec::new();
+    served.submit(write(1, 0)).unwrap();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    assert_eq!(done[0].result, Ok(()));
+    let woken = calls.load(Ordering::SeqCst);
+
+    served.fail_now();
+    assert!(
+        calls.load(Ordering::SeqCst) > woken,
+        "the owner is woken by the failure"
+    );
+    assert!(
+        !served.gone(),
+        "the worker lives: it answers with the failure"
+    );
+
+    let flush = Request {
+        id: RequestId(3),
+        op: Op::Flush,
+    };
+    let read = Request {
+        id: RequestId(4),
+        op: Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        },
+    };
+    for request in [write(2, 1), flush, read] {
+        done.clear();
+        served.submit(request).unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Err(BlkError::Failed), "{:?}", done[0].id);
+    }
+    // Failing twice is failing once.
+    served.fail_now();
+    drop(served);
+
+    match Store::open(disk.clone(), env.options()) {
+        Err(StoreError::Log(LogError::MarkedFailed)) => {}
+        other => panic!("the next open: {:?}", other.map(|_| ())),
+    }
+}
