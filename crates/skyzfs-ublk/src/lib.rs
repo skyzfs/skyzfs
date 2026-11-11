@@ -13,6 +13,10 @@
 //! - [`ack`]: the record, outside the store, of the position of the
 //!   newest acknowledged log record, which every start compares with
 //!   what it recovered.
+//! - [`lifecycle`]: the order of steps at every start: the store is
+//!   opened first, then a device is taken over or added. Generic over
+//!   the kernel's control interface, the store and the records, and
+//!   tested with fakes.
 //!
 //! The binding to the kernel is built on these.
 
@@ -21,5 +25,6 @@
 
 #[cfg(unix)]
 pub mod ack;
+pub mod lifecycle;
 pub mod pump;
 pub mod translate;
