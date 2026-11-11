@@ -38,12 +38,14 @@
 #
 # Knobs (environment): RIG_SYNCS=40, RIG_FILE_KB=256, RIG_FILE_SLEEP=0.05
 # (seconds between files), RIG_SYNC_SLEEP=0.6 (seconds between syncs),
-# RIG_BUDGET_S=840 and RIG_DEEP_BUDGET_S=240 (the check's main pass),
+# RIG_BUDGET_S=840, RIG_DEEP_BUDGET_S=240 and RIG_COPIES_BUDGET_S=300
+# (the check's main pass), RIG_DISCARD=zero|skip (what a discarded range
+# holds afterwards on the image),
 # RIG_REPLAY_LOG (path of xfstests replay-log, a witness for the
 # provider; skipped when unset, which RIG_REQUIRE_WITNESS=1 makes a
 # failure).
 #
-# Needs root, ZFS, dm-log-writes, dm-snapshot, and `ublk` unless
+# Needs root, ZFS with zdb, dm-log-writes, dm-snapshot, and `ublk` unless
 # RIG_DEVICE is set. For a throwaway machine: it creates a pool named
 # skzreplay.
 set -euo pipefail
@@ -202,7 +204,9 @@ if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exi
 # ----------------------------------------------------------------- check
 args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MANIFEST"
       --pool "$POOL" --mountpoint "$MOUNTPOINT" --work "$WORK/check" --out "$OUT"
-      --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}")
+      --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}"
+      --copies-budget-s "${RIG_COPIES_BUDGET_S:-300}" --discard "${RIG_DISCARD:-zero}")
+[ "$LAYOUT" != slog ] || args+=(--log-device-image "$WORK/slog-base.img")
 [ -z "${RIG_PROVIDER:-}" ] || args+=(--provider "$RIG_PROVIDER")
 [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
 [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)

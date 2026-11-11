@@ -252,26 +252,107 @@ class Log(unittest.TestCase):
         idx = logwrites.index(self.log, DEV)
         self.assertEqual(replay_check.controls(idx['records'], replay_check.parse_marks(idx['records'])), [])
 
-    def test_controls_are_judged_against_the_table_in_both_directions(self):
+    def test_controls_are_judged_against_the_table(self):
         drop = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 2}}
-        reorder = {'name': 'reorder', 'caught': False, 'failed_by': {}}
-        rows, gaps, ok = replay_check.judge_controls([drop, reorder])
-        self.assertTrue(ok)
-        self.assertEqual([g['name'] for g in gaps], ['reorder'])
-        # a control that is no longer caught
-        self.assertFalse(replay_check.judge_controls([dict(drop, caught=False, failed_by={}), reorder])[2])
-        # drop caught by the light check, with or without the deep check: the rig did better, not worse
-        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}):
-            rows, _, ok = replay_check.judge_controls([dict(drop, failed_by=by), reorder])
-            self.assertTrue(ok, by)
-            self.assertIn(sorted(by)[-1], rows[0]['observed'])
-        # the gap closing is also a difference: the table has to be changed on purpose
-        rows, gaps, ok = replay_check.judge_controls([drop, dict(reorder, caught=True, failed_by={'deep': 1})])
-        self.assertFalse(ok)
+        reorder = {'name': 'reorder', 'caught': True, 'failed_by': {'copies': 1}}
+        data = {'name': 'data', 'caught': True, 'failed_by': {'verify': 30, 'copies': 2}}
+        rows, gaps, ok = replay_check.judge_controls([drop, reorder, data])
+        self.assertTrue(ok, rows)
         self.assertEqual(gaps, [])
+        self.assertEqual(rows[2]['observed'], 'caught by the every-copy check')
+
+        def judged(**changed):
+            ctl = {c['name']: dict(c) for c in (drop, reorder, data)}
+            for name, c in changed.items():
+                ctl[name].update(c)
+            return replay_check.judge_controls(list(ctl.values()))[2]
+        # a control that is no longer caught
+        for name in ('drop', 'reorder', 'data'):
+            self.assertFalse(judged(**{name: {'caught': False, 'failed_by': {}}}), name)
+        # drop may be caught by any check
+        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}, {'copies': 4}):
+            self.assertTrue(judged(drop={'failed_by': by}), by)
+        # reorder must be caught by the every-copy check, whatever else catches it
+        self.assertTrue(judged(reorder={'failed_by': {'copies': 1, 'deep': 1}}))
+        self.assertFalse(judged(reorder={'failed_by': {'deep': 1}}))
+        # data must be caught by the files' checksums: that is what it is for
+        self.assertFalse(judged(data={'failed_by': {'copies': 2}}))
         # a control that did not run, and one the table does not know
-        self.assertFalse(replay_check.judge_controls([drop])[2])
-        self.assertFalse(replay_check.judge_controls([drop, reorder, dict(drop, name='new')])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder, data, dict(drop, name='new')])[2])
+        # a known gap is strict in both directions, and is stated while it holds
+        table = {'reorder': {'by': None, 'gap': 'not seen yet'}}
+        rows, gaps, ok = replay_check.judge_controls([{'name': 'reorder', 'caught': False, 'failed_by': {}}], table)
+        self.assertEqual((ok, gaps), (True, [{'name': 'reorder', 'gap': 'not seen yet'}]))
+        rows, gaps, ok = replay_check.judge_controls([reorder], table)
+        self.assertEqual((ok, gaps), (False, []))
+
+    def test_group_points(self):
+        recs = self.idx['records']
+        groups = replay_check.group_points(recs)
+        ubs = [i for i, r in enumerate(recs) if r.get('ub')]
+        self.assertEqual(len(groups), 6)
+        # first: right after a group's first uberblock write; last: just before the next group's
+        self.assertEqual([f for f, _ in groups], [u + 1 for u in ubs[0::4]])
+        self.assertEqual([la for _, la in groups], ubs[4::4] + [len(recs)])
+        for f, la in groups:
+            self.assertTrue(recs[f - 1].get('ub'))
+            self.assertLess(f, la)
+        # a flush or a mark between two uberblock writes does not start a new group
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(1)), ('flush',), ('write', 128 << 10, UB), ('flush',),
+                                           ('write', (128 << 10) + SS, UB), ('mark', 'sync-1-0'), ('write', 1 << 20, blk(2))])
+        recs = logwrites.index(self.log, DEV)['records']
+        self.assertEqual(replay_check.group_points(recs), [(3, 7)])
+        self.assertEqual(replay_check.group_points(recs[:2]), [])
+
+    def test_coverage_needs_every_group(self):
+        recs = self.idx['records']
+        groups = replay_check.group_points(recs)
+        flush = [{'n': n, 't_deep': 0.1} for n in replay_check.flush_points(recs)]
+        firsts = [{'n': f, 't_copies': 1.0} for f, _ in groups]
+        lasts = [{'n': la, 't_copies': 1.0} for _, la in groups]
+        cov = replay_check.coverage(recs, flush + firsts + lasts, groups=groups)
+        self.assertEqual((cov['errors'], cov['warnings'], cov['groups'], cov['group_firsts'], cov['group_lasts']), ([], [], 6, 6, 6))
+        # last points may go without, with a warning
+        cov = replay_check.coverage(recs, flush + firsts + lasts[:2], groups=groups)
+        self.assertEqual((cov['errors'], len(cov['warnings']), cov['group_lasts']), ([], 1, 2))
+        # a first point may not; nor may it be checked without the every-copy check
+        self.assertEqual(len(replay_check.coverage(recs, flush + firsts[1:] + lasts, groups=groups)['errors']), 1)
+        cov = replay_check.coverage(recs, flush + [{'n': firsts[0]['n']}] + firsts[1:] + lasts, groups=groups)
+        self.assertEqual(len(cov['errors']), 1)
+        # a log in which no uberblock write is recognised cannot pass
+        self.assertEqual(len(replay_check.coverage(recs, flush, groups=[])['errors']), 1)
+
+    def test_the_data_control_takes_a_files_block(self):
+        # six groups; in group k, file k-1 is written: once to the intent log, then to its place
+        ents = []
+        for k in range(1, 7):
+            name = replay_check.file_pattern(k - 1)
+            ents += [('write', (5 << 20) + k * 16 * SS, name + blk(k)), ('flush',),
+                     ('write', (1 << 20) + k * 16 * SS, blk(0x30 + k) + name + blk(k, 2))]
+            ents += [e for e in txg(k) if e[0] != 'mark'] + [('mark', f'sync-{k}-{k}')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        marks = replay_check.parse_marks(recs)
+        self.assertEqual(len(replay_check.file_pattern(3)), 4096)
+        self.assertEqual(replay_check.writes_carrying(self.log, recs, replay_check.file_pattern(0)), [0, 2])
+
+        def find(n):
+            return replay_check.writes_carrying(self.log, recs, replay_check.file_pattern(n))
+        ctl = {c['name']: c for c in replay_check.controls(recs, marks, find)}
+        self.assertEqual(set(ctl), {'drop', 'reorder', 'data'})
+        m = len(marks) // 2
+        wanted = marks[m][2] - 1
+        d = ctl['data']
+        # the victim is the last write before the middle mark that carries that file's first block
+        self.assertEqual(d['victim'], find(wanted)[-1])
+        self.assertLess(d['victim'], marks[m][0])
+        self.assertEqual(sorted(d['schedule']), [i for i in range(len(recs)) if i != d['victim']])
+        # and it is checked from the mark on, where the file is due
+        self.assertTrue(any(n >= marks[m][0] for n in d['points']))
+        self.assertTrue(all(d['victim'] <= n <= len(d['schedule']) for n in d['points']))
+        # without a way to find a file's block there is no such control
+        self.assertEqual({c['name'] for c in replay_check.controls(recs, marks)}, {'drop', 'reorder'})
 
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
@@ -434,46 +515,75 @@ class Log(unittest.TestCase):
             replay_check.run, replay_check.time.sleep = real, real_sleep
 
     # ------------------------------------------------ the every-copy check
-    def zdb_text(self, extra='', bp_count=4, ganged=0):
-        a, b = 0x100000, 0x300000        # DVA offsets; on the device they sit 4 MiB further on
-        return (
-            'Traversing all blocks to verify checksums and verify nothing leaked ...\n\n'
-            f'objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:{a:x}:1000> DVA[1]=<0:{b:x}:1000> DVA[2]=<0:{b + 0x1000:x}:1000> '
-            '[L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=9L/9P fill=5 cksum=1:2:3:4\n'
-            f'objset 54 object 28 level 0 offset 0x0 DVA[0]=<0:{a + 0x2000:x}:2000> [L0 ZFS plain file] fletcher4 uncompressed '
-            'unencrypted LE contiguous unique single size=2000L/2000P birth=9L/9P fill=1 cksum=1:2:3:4\n'
-            f'objset 0 object 5 level 0 offset 0x0 DVA[0]=<0:{a + 0x4000:x}:1000> DVA[1]=<0:{b + 0x4000:x}:1000> '
-            '[L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique double size=20000L/600P birth=9L/9P fill=1 cksum=1:2:3:4\n'
-            'objset 0 object 34 level 0 offset 0x0 EMBEDDED [L0 DSL props] et=0 lz4 size=200L/4dP birth=4L\n'
-            'objset 0 object 0 level 0 offset 0x20000 HOLE [L0 DMU dnode] size=4000L birth=56L\n'
-            + extra +
-            f'\n\tNo leaks (block sum matches space maps exactly)\n\n\tbp count:   {bp_count}\n\tganged count:    {ganged}\n')
+    A, B = 0x100000, 0x300000        # DVA offsets; on the device they sit 4 MiB further on
+    BLOCKS = (                       # (object, kind, checksum name, copies' offsets, bytes of the block on disk, content)
+        ('objset 0 object 0 level -1', 'L0 DMU objset', 'fletcher4', (A, B, B + 0x1000), 0x1000, 0xAA),
+        ('objset 54 object 28 level 0', 'L0 ZFS plain file', 'fletcher4', (A + 0x2000,), 0x2000, 0xCC),
+        ('objset 0 object 5 level 0', 'L0 SPA space map', 'fletcher4', (A + 0x4000, B + 0x4000), 0x600, 0xBB),
+        ('objset 54 object 1 level 0', 'L0 ZIL intent log', 'zilog2', (A + 0x8000,), 0x1000, 0xDD),
+    )
+
+    @staticmethod
+    def content(byte, size):
+        return bytes((byte + i * 7) & 0xff for i in range(size))
+
+    def zdb_text(self, extra='', bp_count=5, ganged=0, blocks=None):
+        out = ['Traversing all blocks to verify nothing leaked ...', '']
+        for obj, kind, ckname, offs, psize, byte in (blocks or self.BLOCKS):
+            ck = ':'.join(f'{x:016x}' for x in replay_check.fletcher4(self.content(byte, psize)))
+            dvas = ' '.join(f'DVA[{k}]=<0:{o:x}:{(psize + 0xfff) & ~0xfff:x}>' for k, o in enumerate(offs))
+            out.append(f'{obj} offset 0x0 {dvas} [{kind}] {ckname} uncompressed unencrypted LE contiguous unique '
+                       f"{('single', 'double', 'triple')[len(offs) - 1]} size={psize:x}L/{psize:x}P birth=9L/9P fill=1 cksum={ck}")
+        out += ['objset 0 object 34 level 0 offset 0x0 EMBEDDED [L0 DSL props] et=0 lz4 size=200L/4dP birth=4L',
+                'objset 0 object 0 level 0 offset 0x20000 HOLE [L0 DMU dnode] size=4000L birth=56L']
+        return ('\n'.join(out) + '\n' + extra
+                + f'\n\tNo leaks (block sum matches space maps exactly)\n\n\tbp count:   {bp_count}\n\tganged count:    {ganged}\n')
 
     def good_image(self):
-        off = replay_check.DVA_OFFSET
         with open(self.img, 'r+b') as f:
-            for at in (0x100000, 0x300000, 0x301000):
-                f.seek(off + at)
-                f.write(blk(0xAA))
-            for at in (0x104000, 0x304000):
-                f.seek(off + at)
-                f.write(blk(0xBB))          # only the first 0x600 bytes are the block
+            for _, _, _, offs, psize, byte in self.BLOCKS:
+                for o in offs:
+                    f.seek(replay_check.DVA_OFFSET + o)
+                    f.write(self.content(byte, psize))
+
+    def test_fletcher4(self):
+        def plain(data):
+            a = b = c = d = 0
+            for i in range(0, len(data), 4):
+                a = (a + int.from_bytes(data[i:i + 4], 'little')) & replay_check.M64
+                b = (b + a) & replay_check.M64
+                c = (c + b) & replay_check.M64
+                d = (d + c) & replay_check.M64
+            return a, b, c, d
+        self.assertEqual(replay_check.fletcher4(b'\x01\0\0\0\x02\0\0\0'), (3, 4, 5, 6))
+        for size in (4, 512, 4096, 131072):
+            data = bytes((i * 131 + size) & 0xff for i in range(size))
+            self.assertEqual(replay_check.fletcher4(data), plain(data), size)
+        ones = b'\xff' * 131072               # sums that wrap around 64 bits
+        self.assertEqual(replay_check.fletcher4(ones), plain(ones))
+        # with and without numpy, the same sums
+        saved, replay_check.np = replay_check.np, None
+        try:
+            self.assertEqual(replay_check.fletcher4(ones), plain(ones))
+        finally:
+            replay_check.np = saved
 
     def test_every_copy_passes_a_good_image(self):
         self.good_image()
         b = replay_check.zdb_blocks(self.zdb_text())
         self.assertEqual((len(b['bps']), b['embedded'], b['holes'], b['bp_count'], b['ganged_count'], b['unread']),
-                         (3, 1, 1, 4, 0, []))
-        self.assertEqual([len(x['dvas']) for x in b['bps']], [3, 1, 2])
-        self.assertEqual(b['bps'][2]['psize'], 0x600)
-        failed, _, counts = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
-        self.assertIsNone(failed)
-        self.assertEqual(counts['with_copies'], 2)
+                         (4, 1, 1, 5, 0, []))
+        self.assertEqual([(len(x['dvas']), x['type'], x['level'], x['checksum']) for x in b['bps']],
+                         [(3, 'DMU objset', 0, 'fletcher4'), (1, 'ZFS plain file', 0, 'fletcher4'),
+                          (2, 'SPA space map', 0, 'fletcher4'), (1, 'ZIL intent log', 0, 'zilog2')])
+        failed, detail, counts = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
+        self.assertIsNone(failed, detail)
+        self.assertEqual((counts['blocks'], counts['copies'], counts['with_copies'], counts['intent_log']), (3, 6, 2, 1))
 
-    def test_every_copy_sees_one_stale_copy_among_three(self):
-        self.good_image()
+    def test_every_copy_sees_each_bad_copy_by_itself(self):
         off = replay_check.DVA_OFFSET
-        for at in (0x300000, 0x301000, 0x304000 + 0x5ff):      # each copy by itself, and the last byte of a short block
+        # each copy of a block with three, the single copy of a file's block, the last byte of a short block
+        for at in (self.A, self.B, self.B + 0x1000, self.A + 0x2000 + 0x1fff, self.B + 0x4000 + 0x5ff):
             self.good_image()
             with open(self.img, 'r+b') as f:
                 f.seek(off + at)
@@ -481,11 +591,20 @@ class Log(unittest.TestCase):
             failed, detail, _ = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
             self.assertEqual(failed, 'copies: differ', hex(at))
             self.assertIn(failed, replay_check.JUDGING)
-        # bytes after the end of a compressed block are not the block
+            self.assertIn('1 of 6 copies', detail)
+        # a copy that is stale in the same way in all three places is still caught: each is checked against the checksum
         self.good_image()
         with open(self.img, 'r+b') as f:
-            f.seek(off + 0x304000 + 0x600)
-            f.write(b'\x01')
+            for at in (self.A, self.B, self.B + 0x1000):
+                f.seek(off + at)
+                f.write(b'\x01')
+        self.assertIn('3 of 6 copies', replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[1])
+        # bytes after the end of a short block are not the block; an intent-log block is not judged
+        self.good_image()
+        with open(self.img, 'r+b') as f:
+            for at in (self.B + 0x4000 + 0x600, self.A + 0x8000):
+                f.seek(off + at)
+                f.write(b'\x01')
         self.assertIsNone(replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[0])
 
     def test_every_copy_takes_zdbs_exit_code_as_a_verdict(self):
@@ -497,20 +616,22 @@ class Log(unittest.TestCase):
 
     def test_every_copy_never_passes_what_it_could_not_check(self):
         self.good_image()
-        gang = ('objset 54 object 9 level 0 offset 0x0 DVA[0]=<0:500000:1000> [L0 ZFS plain file] fletcher4 uncompressed '
-                'unencrypted LE gang unique single size=20000L/20000P birth=9L/9P fill=1 cksum=1:2:3:4\n')
+        line = 'objset 9 object 9 level 0 offset 0x0 {} [L0 ZFS plain file] {} uncompressed unencrypted {} {} unique single size=1000L/1000P birth=9L/9P fill=1 cksum=1:2:3:4\n'
         cases = {
             'timed out': (124, self.zdb_text()),
             'not started': (127, ''),
             'died': (-6, "libzpool: PANIC: Pool 'p' has encountered an uncorrectable I/O failure"),
-            'list too short': (0, self.zdb_text(bp_count=5)),
-            'list too long': (0, self.zdb_text(bp_count=3)),
+            'list too short': (0, self.zdb_text(bp_count=6)),
+            'list too long': (0, self.zdb_text(bp_count=4)),
             'no counts': (0, self.zdb_text().split('\tbp count')[0]),
             'a line it cannot read': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 something new\n')),
-            'copies out of order': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 DVA[1]=<0:1:1000> [L0 x] size=1000L/1000P\n', 5)),
-            'ganged': (0, self.zdb_text(gang, bp_count=5, ganged=1)),
+            'no checksum on the line': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'LE', 'contiguous').split(' cksum')[0] + '\n', 6)),
+            'copies out of order': (0, self.zdb_text(line.format('DVA[1]=<0:500000:1000>', 'fletcher4', 'LE', 'contiguous'), 6)),
+            'ganged': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'LE', 'gang'), 6, ganged=1)),
             'ganged by count only': (0, self.zdb_text(ganged=2)),
-            'another device': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 DVA[0]=<1:500000:1000> [L0 x] size=1000L/1000P\n', 5)),
+            'another device': (0, self.zdb_text(line.format('DVA[0]=<1:500000:1000>', 'fletcher4', 'LE', 'contiguous'), 6)),
+            'another checksum': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'sha256', 'LE', 'contiguous'), 6)),
+            'another byte order': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'BE', 'contiguous'), 6)),
             'empty output': (0, ''),
         }
         for name, (rc, text) in cases.items():

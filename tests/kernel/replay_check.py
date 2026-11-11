@@ -54,9 +54,15 @@ import re
 import shlex
 import shutil
 import statistics
+import struct
 import subprocess
 import sys
 import time
+
+try:
+    import numpy as np
+except ImportError:          # the checksum then runs in plain Python, slowly
+    np = None
 
 WINDOW = 50
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,6 +109,45 @@ def ub_clusters(records, window=WINDOW):
         else:
             out.append((lo, hi))
     return out
+
+
+def group_points(records):
+    """Where the every-copy check belongs -> [(first, last)], one pair per transaction group.
+
+    The blocks the newest uberblock reaches change only when a new
+    uberblock lands. `first` is the prefix right after a group's first
+    uberblock write: the earliest moment its tree is the live one, so
+    everything it reaches must already be there. `last` is the prefix
+    just before the next group's first uberblock write: the latest
+    moment the same tree is still the one a power cut falls back on, so
+    nothing written since may have damaged it.
+    """
+    firsts, after_ub = [], False
+    for i, r in enumerate(records):
+        if 'pos' not in r:
+            continue                    # a flush, a mark or a discard does not end a run of uberblock writes
+        if r.get('ub') and not after_ub:
+            firsts.append(i)
+        after_ub = bool(r.get('ub'))
+    return [(f + 1, firsts[k + 1] if k + 1 < len(firsts) else len(records)) for k, f in enumerate(firsts)]
+
+
+def file_pattern(n):
+    """The 4 KiB that start file f.<n> of the rig's workload (see replay-rig.sh)."""
+    return (b'SKZ-FILE-%06d\n' % n) * 256
+
+
+def writes_carrying(log_path, records, pattern):
+    """Numbers of the write records whose data contains `pattern`."""
+    hits = []
+    with open(log_path, 'rb') as f:
+        for r in records:
+            if 'pos' not in r or r['bytes'] < len(pattern):
+                continue
+            f.seek(r['pos'])
+            if pattern in f.read(r['bytes']):
+                hits.append(r['i'])
+    return hits
 
 
 def spread(items, k):
@@ -169,8 +214,11 @@ def data_writes(records, lo, hi):
     return [i for i in range(lo, hi) if 'pos' in records[i] and not records[i].get('label')]
 
 
-def controls(records, marks):
-    """The two wrong replays -> list of dicts with a schedule and the prefixes to check.
+def controls(records, marks, find=None):
+    """The wrong replays -> list of dicts with a schedule and the prefixes to check.
+
+    `find(file number)` gives the write records that carry the first
+    block of that file; without it the `data` control is not built.
 
     Fixed rule, on the transaction group of the middle mark:
       A      the last flush before that group's first uberblock write
@@ -180,6 +228,11 @@ def controls(records, marks):
       reorder  the last data write before A is moved to just before the
              middle mark, after the group's uberblocks and flushes.
              Checked at every prefix from A to the mark.
+      data   the last write before the middle mark that carries the
+             first block of the last file that mark promises is left
+             out for good. A file's block has one copy, and the file is
+             due from the mark on: this is the control that says what
+             the light check catches by itself. Checked as `drop` is.
     """
     if len(marks) < 4:
         return []
@@ -215,31 +268,43 @@ def controls(records, marks):
     out.append({'name': 'reorder', 'victim': victim, 'schedule': sched, 'points': pts,
                 'what': f'record {victim} (a write of {records[victim]["bytes"]} bytes at byte {records[victim]["offset"]}, '
                         f'the last data write before flush {a}) is applied only after the uberblocks of its transaction group'})
+
+    wanted = marks[m][2] - 1                            # the last file the middle mark promises
+    hits = [i for i in find(wanted) if i < hi] if find and wanted >= 0 else []
+    if hits:
+        victim = hits[-1]
+        sched = [i for i in natural if i != victim]
+        pts = set(range(max(victim, hi - 20), hi + 2))  # around the mark from which the file is due
+        pts.update(n for n in range(victim, end) if 'flush' in records[sched[n - 1]]['flags'])
+        pts.update(spread(range(victim, end), 40))
+        pts.add(end - 1)
+        out.append({'name': 'data', 'victim': victim, 'schedule': sched, 'points': sorted(p for p in pts if p >= victim),
+                    'what': f'record {victim} (a write of {records[victim]["bytes"]} bytes at byte {records[victim]["offset"]}, '
+                            f'the last one before the middle mark that carries the first block of file f.{wanted}) is never applied'})
     return out
 
 
 # What each control is expected to do today. The job fails when a result
 # differs from this table. Do not edit a control to fit the table.
-#   by: 'any'   caught, by whichever check. So far that has been the
-#               deep check alone, because the victim was redundant
-#               metadata; a run whose victim is a file's block will be
-#               caught by the light check, and that is not a failure.
-#               (A prefix that fails the light check gets no deep
-#               check, so "the deep check too" cannot be required.)
-#       None    not caught: a known gap, stated in every run's summary.
-#               Strict in both directions: once a deeper check catches
-#               it, the job fails until this table is changed on purpose.
+#   by: 'any'     caught, by whichever check
+#       a check   caught, and by that check among those that caught it:
+#                 'copies' (the every-copy check), 'verify' (the files'
+#                 checksums in the light check), 'deep' (the scrub)
+#       None      not caught: a known gap, stated in every run's summary
+#                 under 'gap'. Strict in both directions: once a check
+#                 catches it, the job fails until this table is changed
+#                 on purpose.
+# History: `reorder` was None until the every-copy check existed. Its
+# victim is one copy of several of pool metadata; the import reads
+# another copy and the scrub runs after a writable import, so neither
+# sees it.
 EXPECTED = {
     'drop': {'by': 'any'},
-    'reorder': {'by': None,
-                'gap': 'this rig does not yet detect a device that delays or loses one copy of redundant pool '
-                       'metadata. Measured: the withheld write is one of three in its transaction group that '
-                       'carry the same bytes, and no check fails. Likely explanation, not verified: the '
-                       'read-only import reads another copy, and the scrub runs after a writable import that '
-                       'rewrites that metadata first. To be closed by work package M1.T3 (a deep check that '
-                       'reads every copy without writing first).'},
+    'reorder': {'by': 'copies'},
+    'data': {'by': 'verify'},
 }
-
+CHECK_NAMES = {'deep': 'the scrub', 'copies': 'the every-copy check', 'verify': "the files' checksums",
+               'import': 'the import', 'mount': 'the mount'}
 
 # A failed check says something about the image only when the stage that
 # failed is one of these. Anything else (a loop device, the snapshot, an
@@ -260,26 +325,47 @@ DEEP_FLOOR = 0.5
 # ------------------------------------------------- the every-copy check
 # Is every block that the newest uberblock reaches on the device, in
 # every copy? Nothing is imported and nothing is written:
-#   1. `zdb -e -bbbbb -cc` walks everything reachable from the newest
-#      uberblock, verifies each block's checksum, checks that nothing is
-#      leaked, and prints every block pointer with all its copies. Its
-#      exit code is the verdict for a block with one copy.
-#   2. zdb is content with one good copy (it reads as a scrub does, and
-#      the read succeeds while any copy is good), so its exit code
-#      cannot see one bad copy among several. The rig therefore reads
-#      every copy of every block that has more than one, from the image,
-#      and requires them to be byte-identical. With 1, each copy then
-#      holds bytes that pass the block's checksum.
+#   1. `zdb -e -bbbbb` walks everything reachable from the newest
+#      uberblock, checks that nothing is leaked, and prints every block
+#      pointer: where each copy is, its size, and its checksum.
+#   2. The rig reads every copy of every block from the image and
+#      computes its checksum itself. zdb cannot do this part: when it
+#      verifies checksums it is content with one good copy (it reads as
+#      a scrub does, and the read succeeds while any copy is good), so
+#      its exit code does not see one bad copy among several.
 # The list must be provably complete: pointers with addresses plus
-# embedded ones must equal zdb's own count. A ganged block, a line that
-# cannot be read, or a zdb that dies or times out stops the check as a
-# rig error; none of them is ever a pass or a verdict.
+# embedded ones must equal zdb's own count. A ganged block, a checksum
+# the rig cannot compute, a line it cannot read, or a zdb that dies or
+# times out stops the check as a rig error; none of them is ever a pass
+# or a verdict.
 # Not covered: the uberblock's own four label copies (the import
-# chooses among them), and intent-log chains beyond what zdb follows,
-# which may end early by design.
+# chooses among them), and intent-log blocks, whose checksum is inside
+# the block and whose chains may end early by design.
 DVA_OFFSET = 0x400000           # a DVA's offset counts from the end of the two front labels
 DVA_RE = re.compile(r'DVA\[(\d)\]=<(\d+):([0-9a-f]+):([0-9a-f]+)>')
 SIZE_RE = re.compile(r'size=([0-9a-f]+)L/([0-9a-f]+)P')
+CKSUM_RE = re.compile(r'cksum=([0-9a-f]+):([0-9a-f]+):([0-9a-f]+):([0-9a-f]+)')
+KIND_RE = re.compile(r'\[L(-?\d+) ([^\]]+)\] (\S+) ')
+M64 = (1 << 64) - 1
+
+
+def fletcher4(data):
+    """ZFS's fletcher4 over little-endian 32-bit words -> four 64-bit sums."""
+    n = len(data) // 4
+    if np is not None and n < (1 << 20):
+        w = np.frombuffer(data, dtype='<u4', count=n).astype(np.uint64)
+        k = np.arange(n, 0, -1, dtype=np.uint64)             # how many more times a word is added to the next sum
+        with np.errstate(over='ignore'):
+            return (int(w.sum(dtype=np.uint64)), int((w * k).sum(dtype=np.uint64)),
+                    int((w * (k * (k + np.uint64(1)) // np.uint64(2))).sum(dtype=np.uint64)),
+                    int((w * (k * (k + np.uint64(1)) * (k + np.uint64(2)) // np.uint64(6))).sum(dtype=np.uint64)))
+    a = b = c = d = 0
+    for (x,) in struct.iter_unpack('<I', data[:n * 4]):
+        a += x
+        b += a
+        c += b
+        d += c
+    return a & M64, b & M64, c & M64, d & M64
 
 
 def zdb_blocks(text):
@@ -298,33 +384,37 @@ def zdb_blocks(text):
         if ' HOLE ' in line:
             out['holes'] += 1
             continue
-        dvas, size = DVA_RE.findall(line), SIZE_RE.search(line)
-        if not dvas or not size or [int(k) for k, _, _, _ in dvas] != list(range(len(dvas))):
+        dvas, size, ck, kind = DVA_RE.findall(line), SIZE_RE.search(line), CKSUM_RE.search(line), KIND_RE.search(line)
+        if not dvas or not size or not ck or not kind or [int(k) for k, _, _, _ in dvas] != list(range(len(dvas))):
             out['unread'].append(line.strip()[:300])
             continue
         if ' gang ' in line:
             out['ganged'] += 1
-        out['bps'].append({'line': line.strip()[:400],
+        out['bps'].append({'line': line.strip()[:260], 'type': kind.group(2), 'level': int(kind.group(1)),
+                           'checksum': kind.group(3), 'little_endian': ' LE ' in line,
                            'dvas': [(int(v), int(off, 16), int(asize, 16)) for _, v, off, asize in dvas],
-                           'psize': int(size.group(2), 16)})
+                           'psize': int(size.group(2), 16), 'cksum': tuple(int(x, 16) for x in ck.groups())})
     return out
 
 
-def copies_that_differ(image, bps):
-    """-> (blocks with several copies, those whose copies do not all hold the same bytes)."""
-    bad, checked = [], 0
+def bad_copies(image, bps):
+    """Check every copy of every block -> (counts, copies whose bytes do not pass the block's checksum)."""
+    counts = {'blocks': 0, 'copies': 0, 'intent_log': 0, 'with_copies': 0}
+    bad = []
     with open(image, 'rb') as f:
         for bp in bps:
-            if len(bp['dvas']) < 2:
+            if bp['type'] == 'ZIL intent log':
+                counts['intent_log'] += 1
                 continue
-            checked += 1
-            datas = []
-            for _, off, _ in bp['dvas']:
+            counts['blocks'] += 1
+            counts['with_copies'] += len(bp['dvas']) > 1
+            for k, (_, off, _) in enumerate(bp['dvas']):
                 f.seek(off + DVA_OFFSET)
-                datas.append(f.read(bp['psize']))
-            if any(d != datas[0] for d in datas[1:]) or len(datas[0]) != bp['psize']:
-                bad.append({'line': bp['line'], 'differs': [k for k, d in enumerate(datas) if d != datas[0]]})
-    return checked, bad
+                data = f.read(bp['psize'])
+                counts['copies'] += 1
+                if len(data) != bp['psize'] or fletcher4(data) != bp['cksum']:
+                    bad.append({'copy': k, 'of': len(bp['dvas']), 'at': off + DVA_OFFSET, 'line': bp['line']})
+    return counts, bad
 
 
 def every_copy_verdict(rc, text, image):
@@ -339,7 +429,7 @@ def every_copy_verdict(rc, text, image):
         said = [ln.strip()[:200] for ln in text.splitlines() if re.search(r'rror|leak|cannot|failed', ln)][:3]
         return 'copies: zdb', f'zdb exit code {rc}: ' + ' | '.join(said), counts
     b = zdb_blocks(text)
-    counts.update(blocks=len(b['bps']), embedded=b['embedded'], bp_count=b['bp_count'])
+    counts.update(listed=len(b['bps']), embedded=b['embedded'], bp_count=b['bp_count'])
     if b['unread']:
         return 'rig: zdb printed a block pointer the rig cannot read', b['unread'][0], counts
     if b['bp_count'] is None or b['ganged_count'] is None:
@@ -348,12 +438,18 @@ def every_copy_verdict(rc, text, image):
         return ('rig: the list of block pointers is not complete',
                 f"{len(b['bps'])} with addresses + {b['embedded']} embedded, but zdb counted {b['bp_count']}", counts)
     if b['ganged'] or b['ganged_count']:
-        return 'rig: ganged blocks, whose copies this check cannot compare', f"{b['ganged_count']} ganged", counts
-    if any(v != 0 for bp in b['bps'] for v, _, _ in bp['dvas']):
-        return 'rig: a block on a device other than the image', '', counts
-    counts['with_copies'], bad = copies_that_differ(image, b['bps'])
+        return 'rig: ganged blocks, whose copies this check cannot read', f"{b['ganged_count']} ganged", counts
+    for bp in b['bps']:
+        if any(v != 0 for v, _, _ in bp['dvas']):
+            return 'rig: a block on a device other than the image', bp['line'], counts
+        if bp['type'] != 'ZIL intent log' and (bp['checksum'] != 'fletcher4' or not bp['little_endian']):
+            return 'rig: a block whose checksum the rig cannot compute', bp['line'], counts
+    c, bad = bad_copies(image, b['bps'])
+    counts.update(c)
     if bad:
-        return 'copies: differ', f"{len(bad)} of {counts['with_copies']} blocks with several copies: " + bad[0]['line'][:300], counts
+        x = bad[0]
+        return ('copies: differ', f"{len(bad)} of {c['copies']} copies do not pass their block's checksum; the first is "
+                f"copy {x['copy']} of {x['of']} at byte {x['at']}: {x['line']}", counts)
     return None, '', counts
 
 
@@ -382,8 +478,14 @@ def tally_control(results):
     return by, rig_errors, first
 
 
-def coverage(records, points, floor=DEEP_FLOOR):
-    """What the pass over `points` left out -> dict with 'errors' (fail the job) and 'warnings'."""
+def coverage(records, points, floor=DEEP_FLOOR, groups=None):
+    """What the pass over `points` left out -> dict with 'errors' (fail the job) and 'warnings'.
+
+    Every flush boundary must have been checked, and the scrub must
+    have run at `floor` of them. With `groups` (see group_points), the
+    every-copy check must have run at the first point of every
+    transaction group; how many last points had it is reported.
+    """
     flush = set(flush_points(records))
     checked = {p['n'] for p in points}
     deep = {p['n'] for p in points if 't_deep' in p}
@@ -399,6 +501,20 @@ def coverage(records, points, floor=DEEP_FLOOR):
     elif len(flush & deep) < len(flush):
         cov['warnings'].append(f'the deep check ran at {len(flush & deep)} of {len(flush)} flush boundaries; '
                                f'{len(flush) - len(flush & deep)} went without it')
+    if groups is not None:
+        copies = {p['n'] for p in points if 't_copies' in p}
+        firsts, lasts = {f for f, _ in groups}, {la for _, la in groups}
+        cov.update(groups=len(groups), group_firsts=len(firsts & copies), group_lasts=len(lasts & copies),
+                   group_lasts_total=len(lasts))
+        missed = sorted(firsts - copies)
+        if not groups:
+            cov['errors'].append('the log shows no transaction group: no uberblock write was recognised')
+        if missed:
+            cov['errors'].append(f'the every-copy check did not run at the first point of {len(missed)} of {len(firsts)} '
+                                 f'transaction groups (first: prefix {missed[0]})')
+        if len(lasts & copies) < len(lasts):
+            cov['warnings'].append(f'the every-copy check ran at the last point of {len(lasts & copies)} of {len(lasts)} '
+                                   f'transaction groups; the rest went without it for time')
     return cov
 
 
@@ -438,24 +554,33 @@ def judge_controls(ctl, expected=None):
         elif not c['caught']:
             got = 'not caught'
         else:
-            kinds = set(c['failed_by'])
-            got = 'caught by the deep check only' if kinds == {'deep'} else 'caught by ' + ', '.join(sorted(kinds))
+            got = 'caught by ' + ', '.join(CHECK_NAMES.get(k, k) for k in sorted(c['failed_by']))
+        clean = bool(c and c['caught'] and not c.get('rig_errors'))
         if want is None:
-            exp = 'not in the table'
+            exp, match = 'not in the table', False
         elif want['by'] is None:
-            exp = 'not caught'
-        elif want['by'] == 'deep':
-            exp = 'caught by the deep check only'
+            exp, match = 'not caught', got == 'not caught'
+        elif want['by'] == 'any':
+            exp, match = 'caught', clean
         else:
-            exp = 'caught by ' + want['by']
-        match = exp == got
-        if want and want['by'] == 'any':
-            exp, match = 'caught', bool(c and c['caught'] and not c.get('rig_errors'))
+            exp, match = 'caught, and by ' + CHECK_NAMES[want['by']], clean and want['by'] in c['failed_by']
         ok = ok and match
         rows.append({'name': name, 'expected': exp, 'observed': got, 'match': match})
         if want and want.get('gap') and match:
             gaps.append({'name': name, 'gap': want['gap']})
     return rows, gaps, ok
+
+
+def blocks_at(bps, lo, hi):
+    """Which listed blocks have a copy in device bytes [lo, hi) -> short descriptions."""
+    out = []
+    for bp in bps:
+        for k, (_, off, asize) in enumerate(bp['dvas']):
+            if off + DVA_OFFSET < hi and lo < off + DVA_OFFSET + asize:
+                obj = re.match(r'objset (\d+) object (\d+) level (-?\d+)', bp['line'])
+                out.append({'copy': k, 'of': len(bp['dvas']), 'type': bp['type'], 'level': bp['level'],
+                            'objset': int(obj.group(1)) if obj else None, 'object': int(obj.group(2)) if obj else None})
+    return out
 
 
 def victim_facts(log_path, records, victim, base_path=None):
@@ -513,7 +638,15 @@ def facts_text(facts):
               + ', '.join(f"record {x['record']} at byte {x['offset']}" for x in c[:4])) if c else 'no other write in the log carries the same bytes',
              f"that place is next written by record {facts['later']}" if facts['later'] is not None else 'that place is not written again',
              f"and was last written by record {facts['earlier']}" if facts['earlier'] is not None else 'and was not written earlier in the log']
-    return '; '.join(x for x in parts if x)
+    text = '; '.join(x for x in parts if x)
+    b = facts.get('blocks')
+    if b:
+        text += '. By zdb, on the true image, it holds ' + '; '.join(
+            f"copy {x['copy'] + 1} of {x['of']} of a level-{x['level']} `{x['type']}` block (objset {x['objset']}, object {x['object']})"
+            for x in b[:6])
+    elif b is not None:
+        text += '. zdb lists no live block there on the true image at the end of the checked range'
+    return text
 
 
 # ------------------------------------------------------------- running
@@ -548,6 +681,15 @@ class Rig:
         self.sched_path = None
         os.makedirs(self.imgdir, exist_ok=True)
         os.makedirs(self.alt, exist_ok=True)
+        # zdb cannot open a pool without its log device. Where the log
+        # device is not under test, its image from the time of the base
+        # image stands beside every prefix: the pool opens, and its
+        # intent-log chains simply end there.
+        self.logdev = getattr(args, 'log_device_image', '')
+        if self.logdev:
+            rc, out, _ = run(['cp', '--sparse=always', self.logdev, os.path.join(self.imgdir, 'log-device.img')])
+            if rc:
+                sys.exit(f'copying the log device image failed: {out}')
 
     # image provider
     def make_index(self):
@@ -578,7 +720,7 @@ class Rig:
         if n == self.at:
             return 0.0
         cmd = self.provider + ['advance', '--log', self.a.log, '--index', self.index_path, '--image', self.image,
-                               '--from', str(self.at), '--to', str(n)]
+                               '--from', str(self.at), '--to', str(n), '--discard', getattr(self.a, 'discard', 'zero')]
         if self.sched_path:
             cmd += ['--schedule', self.sched_path]
         rc, out, t = run(cmd)
@@ -743,19 +885,29 @@ class Rig:
             return 'scrub', bad
         return None, ''
 
-    def point(self, n, files, deep):
+    def copies(self):
+        """The every-copy check on the image as it is -> (failure or None, detail, seconds, counts)."""
+        t0 = time.monotonic()
+        rc, out, _ = run(['zdb', '-e', '-p', self.imgdir, '-bbbbb', self.a.pool], 300)
+        failed, detail, counts = every_copy_verdict(rc, out, self.image)
+        return failed, detail, time.monotonic() - t0, counts
+
+    def point(self, n, files, deep, copies=False):
+        """All the checks due at prefix n. A check runs only if those before it passed."""
         res = {'n': n, 'files': files, 't_advance': self.advance(n)}
         t0 = time.monotonic()
-        stage, detail, t = self.light(files)
+        failed, detail, t = self.light(files)
         res['t_light'] = time.monotonic() - t0
         res['t'] = t
-        if stage is None and deep:
-            stage, detail, res['t_deep'] = self.deep()
-            if stage:
-                stage = 'deep: ' + stage
-        res['ok'] = stage is None
-        if stage:
-            res['failed'], res['detail'] = stage, detail
+        if failed is None and deep:
+            failed, detail, res['t_deep'] = self.deep()
+            if failed:
+                failed = 'deep: ' + failed
+        if failed is None and copies:
+            failed, detail, res['t_copies'], res['copies'] = self.copies()
+        res['ok'] = failed is None
+        if failed:
+            res['failed'], res['detail'] = failed, detail
         return res
 
 
@@ -796,6 +948,11 @@ def main():
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--replay-log', default='', help='path of xfstests replay-log, as a witness for the provider')
     ap.add_argument('--require-witness', action='store_true', help='fail when the witness comparison did not run')
+    ap.add_argument('--copies-budget-s', type=float, default=300, help='seconds of every-copy checks in the main pass')
+    ap.add_argument('--log-device-image', default='',
+                    help="image of the pool's log device as it was when the base image was taken, where the pool has one")
+    ap.add_argument('--discard', choices=('zero', 'skip'), default='zero',
+                    help='what a discarded range holds afterwards: zeros (the harsher), or what was there')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     rig = Rig(args)
@@ -805,7 +962,9 @@ def main():
     marks = parse_marks(records)
     res = {'records': total, 'marks': len(marks), 'files': len(rig.manifest), 'sectorsize': idx['sectorsize'],
            'write_bytes': sum(r['bytes'] for r in records if 'pos' in r),
-           'discards': sum(1 for r in records if 'discard' in r['flags'])}
+           'discards': sum(1 for r in records if 'discard' in r['flags']),
+           'discard_bytes': sum(r['bytes'] for r in records if 'discard' in r['flags']), 'discard_mode': args.discard}
+    groups = group_points(records)
     print(f"log: {total} records, {len(marks)} marks, {res['write_bytes'] >> 20} MiB written, {len(rig.manifest)} files", flush=True)
     trouble = manifest_trouble(marks, len(rig.manifest))
     if trouble:
@@ -815,24 +974,39 @@ def main():
     rig.reset()
     cal = []
     flush = flush_points(records)
-    cal_pts = sorted(set(spread(range(total + 1), 8)) | set(spread(flush, 2)))
+    cal_copies = {g[0] for g in spread(groups, 2)}
+    cal_pts = sorted(set(spread(range(total + 1), 8)) | set(spread(flush, 2)) | cal_copies)
     for n in cal_pts:
-        r = rig.point(n, files_at(marks, n), n in set(spread(flush, 2)))
+        r = rig.point(n, files_at(marks, n), n in set(spread(flush, 2)), n in cal_copies)
         r['kind'] = 'calibration'
         cal.append(r)
         print(f"calibration {n}: {'ok' if r['ok'] else 'FAILED ' + r['failed']} light {r['t_light']:.2f}s"
-              + (f" deep {r['t_deep']:.2f}s" if 't_deep' in r else ''), flush=True)
+              + (f" deep {r['t_deep']:.2f}s" if 't_deep' in r else '')
+              + (f" every-copy {r['t_copies']:.2f}s" if 't_copies' in r else ''), flush=True)
     t_light = statistics.mean(r['t_light'] + r['t_advance'] for r in cal)
     deeps = [r['t_deep'] for r in cal if 't_deep' in r]
     t_deep = statistics.mean(deeps) if deeps else 5.0
     budget_points = max(4, int(args.budget_s * 0.9 / t_light))
     deep_points = max(1, int(args.deep_budget_s / t_deep))
     kind, deep, avail = plan(records, budget_points, deep_points, args.seed)
-    res['calibration'] = {'points': len(cal), 't_light_mean': t_light, 't_deep_mean': t_deep,
-                          'budget_points': budget_points, 'deep_points': deep_points}
+    # The every-copy check: the first point of every transaction group
+    # and the two ends, whatever it costs; then as many last points as
+    # the budget leaves, spread over the run.
+    tc = [r['t_copies'] for r in cal if 't_copies' in r]
+    t_copies = statistics.mean(tc) if tc else 2.0
+    firsts = {f for f, _ in groups} | {0, total}
+    room = int(args.copies_budget_s / t_copies) - len(firsts)
+    lasts = sorted({la for _, la in groups} - firsts)
+    copies_at = firsts | set(spread(lasts, max(0, room)))
+    for n in copies_at:
+        kind.setdefault(n, 'group')
+    avail['groups'] = len(groups)
+    res['calibration'] = {'points': len(cal), 't_light_mean': t_light, 't_deep_mean': t_deep, 't_copies_mean': t_copies,
+                          'budget_points': budget_points, 'deep_points': deep_points, 'copies_points': len(copies_at)}
     res['available'] = avail
     print(f'plan: {len(kind)} prefixes of {total + 1} ({budget_points} fit the budget at {t_light:.2f}s each), '
-          f'{len(deep)} deep checks at {t_deep:.2f}s each', flush=True)
+          f'{len(deep)} deep checks at {t_deep:.2f}s each, {len(copies_at)} every-copy checks at {t_copies:.2f}s each '
+          f'for {len(groups)} transaction groups', flush=True)
 
     # Main pass, in order, on one image.
     rig.reset()
@@ -845,7 +1019,7 @@ def main():
         if kind[n] == 'random' and over > args.budget_s or kind[n] == 'ub_window' and over > args.budget_s * 1.25:
             skipped += 1
             continue
-        r = rig.point(n, files_at(marks, n), n in deep)
+        r = rig.point(n, files_at(marks, n), n in deep, n in copies_at)
         r['kind'] = kind[n]
         points.append(r)
         if not r['ok']:
@@ -857,39 +1031,52 @@ def main():
         if j % 200 == 0:
             print(f'  {j} of {len(kind)} prefixes, {time.monotonic() - start:.0f}s', flush=True)
     res['main_pass_s'] = time.monotonic() - start
-    res['coverage'] = cov = coverage(records, points)
+    res['coverage'] = cov = coverage(records, points, groups=groups)
     for e in cov['errors']:
         print(f'::error title=replay rig, coverage::{e}', flush=True)
     for w in cov['warnings']:
         print(f'::warning title=replay rig, coverage::{w}', flush=True)
     res['skipped_for_time'] = skipped
 
-    # zdb as a possible deep check without the kernel: timed, not judged.
-    zdb = []
-    rig.reset()
-    for n in spread(flush, 3):
-        rig.advance(n)
-        rc, out, t = run(['zdb', '-e', '-p', rig.imgdir, '-bcc', args.pool], 300)
-        said = [ln.strip() for ln in out.splitlines() if re.search(r'ASSERT|VERIFY|PANIC|panic|failed|cannot|error', ln)][:4]
-        zdb.append({'n': n, 'rc': rc, 's': t, 'tail': ' | '.join(out.strip().splitlines()[-3:])[-300:],
-                    'said': ' | '.join(said)[:600]})
-        print(f'zdb -e -bcc at prefix {n}: rc {rc} in {t:.1f}s', flush=True)
-    res['zdb'] = zdb
-
-    # The provider against xfstests replay-log, at a middle flush boundary and at the end.
+    # The provider against xfstests replay-log. First the image the main
+    # pass ended on, which was reached through thousands of small steps;
+    # then a fresh image at a prefix that lies between two writes.
     witness = []
+    other = os.path.join(args.work, 'witness.img')
+
+    def replay_log_image(n):
+        run(['cp', '--sparse=always', args.base, other])
+        cmd = [args.replay_log, '--log', args.log, '--replay', other, '--limit', str(n)]
+        # replay-log makes a discarded range zeros on a file; --no-discard leaves it.
+        rc, out, _ = run(cmd + (['--no-discard'] if args.discard == 'skip' else [])) if n else (0, '', 0)
+        same = rc == 0 and run(['cmp', '-s', rig.image, other])[0] == 0
+        return {'n': n, 'rc': rc, 'same': same, 'tail': out.strip()[-200:]}
+
     if args.replay_log:
-        other = os.path.join(args.work, 'witness.img')
-        for n in (spread(flush, 3)[1] if len(flush) >= 3 else total, total):
+        if rig.at == total:
+            witness.append(dict(replay_log_image(total), what="the main pass's final image"))
+        between = [n for n in range(1, total) if 'pos' in records[n - 1] and 'pos' in records[n]]
+        for n, what in ((min(between, key=lambda n: abs(n - total // 2)) if between else total // 2, 'between two writes'),
+                        (total, 'the end')):
             rig.reset()
             rig.advance(n)
-            run(['cp', '--sparse=always', args.base, other])
-            rc, out, _ = run([args.replay_log, '--log', args.log, '--replay', other, '--limit', str(n)] if n else ['true'])
-            same = rc == 0 and run(['cmp', '-s', rig.image, other])[0] == 0
-            witness.append({'n': n, 'rc': rc, 'same': same, 'tail': out.strip()[-200:]})
-            print(f"replay-log at prefix {n}: {'same image' if same else 'DIFFERENT'} (rc {rc})", flush=True)
+            witness.append(dict(replay_log_image(n), what=what))
+        for w in witness:
+            print(f"replay-log at prefix {w['n']} ({w['what']}): {'same image' if w['same'] else 'DIFFERENT'} (rc {w['rc']})",
+                  flush=True)
         if os.path.exists(other):
             os.unlink(other)
+
+    # zdb's own checksum pass at the end, as a second opinion on the
+    # rig's checksums: both must find the true image clean.
+    rig.reset()
+    rig.advance(total)
+    rc, out, t = run(['zdb', '-e', '-p', rig.imgdir, '-bcc', args.pool], 300)
+    said = [ln.strip() for ln in out.splitlines() if re.search(r'ASSERT|VERIFY|PANIC|rror|cannot|leak', ln)][:3]
+    res['zdb_cc'] = {'n': total, 'rc': rc, 's': t, 'said': ' | '.join(said)[:500]}
+    print(f'zdb -e -bcc at the end: rc {rc} in {t:.1f}s', flush=True)
+    if rc:
+        print(f"::error title=replay rig::zdb -bcc on the final image: exit code {rc}: {res['zdb_cc']['said']}", flush=True)
     res['witness'] = witness
     witness_ok, res['witness_verdict'] = witness_verdict(witness, args.require_witness)
     if not witness_ok:
@@ -897,15 +1084,32 @@ def main():
 
     # Negative controls: wrong replays, judged against EXPECTED.
     ctl = []
-    for c in controls(records, marks):
+    def find(n):
+        return [] if args.provider else writes_carrying(args.log, records, file_pattern(n))
+
+    for c in controls(records, marks, find):
         rig.reset(c['schedule'])
-        deep_at = {n for n in c['points'] if 'flush' in records[c['schedule'][n - 1]]['flags']} if c['points'] else set()
-        results = [rig.point(n, files_at(marks, n), n in deep_at) for n in c['points']]
+        # The transaction-group points of the wrong replay itself, inside the range the control checks.
+        lo, hi = c['points'][0], c['points'][-1]
+        gp = group_points([records[i] for i in c['schedule']])
+        ctl_copies = {n for pair in gp for n in pair if lo <= n <= hi}
+        pts = sorted(set(c['points']) | ctl_copies)
+        deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']}
+        results = [rig.point(n, files_at(marks, n), n in deep_at, n in ctl_copies) for n in pts]
         checked = len(results)
         by, rig_errors, first = tally_control(results)
         facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
+        # Which blocks the victim is, by the pool's own account: the
+        # true image at the end of the control's range, listed by zdb.
+        if facts is not None:
+            rig.reset()
+            rig.advance(hi)
+            rc, out, _ = run(['zdb', '-e', '-p', rig.imgdir, '-bbbbb', args.pool], 300)
+            v = records[c['victim']]
+            facts['blocks'] = blocks_at(zdb_blocks(out)['bps'], v['offset'], v['offset'] + v['bytes']) if rc == 0 else None
         ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
-                    'deep_points': len(deep_at), 'caught': first is not None, 'first': first, 'failed_by': by,
+                    'deep_points': len(deep_at), 'copies_points': len(ctl_copies), 'caught': first is not None,
+                    'first': first, 'failed_by': by,
                     'rig_errors': rig_errors})
         print(f"control {c['name']}: {'caught' if first else 'NOT CAUGHT'} over {checked} prefixes"
               + (f", first at {first['n']} by {first['failed']}" if first else '')
@@ -928,7 +1132,7 @@ def main():
     with open(os.path.join(args.out, 'replay-summary.md'), 'w') as f:
         f.write(summary(res))
     print(summary(res))
-    ok = not failures and controls_ok and witness_ok and not cov['errors']
+    ok = not failures and controls_ok and witness_ok and not cov['errors'] and res['zdb_cc']['rc'] == 0
     sys.exit(0 if ok else 1)
 
 
@@ -945,7 +1149,8 @@ def summary(res):
     out.append('|---|---|---|---|---|')
     for k, label, n_av in (('flush', 'flush boundary', av['flush']),
                            ('ub_window', f'within {WINDOW} records of an uberblock write', av['ub_window']),
-                           ('random', 'any other, at random', av['other']), ('end', 'first and last', 2)):
+                           ('random', 'any other, at random', av['other']),
+                           ('group', 'taken only for the every-copy check', '–'), ('end', 'first and last', 2)):
         sel = [p for p in pts if p['kind'] == k]
         ts = [p['t_light'] + p['t_advance'] for p in sel]
         out.append(f"| {label} | {n_av} | {len(sel)} | {sum(1 for p in sel if not p['ok'])} | "
@@ -959,15 +1164,29 @@ def summary(res):
                    f"verify {parts['verify']:.2f}, the rest is the loop device, the export and advancing the image). "
                    f"At that rate a 30-minute job covers about {int(1800 / per)} prefixes with no deep check.")
     if deep:
-        out.append(f"\nDeep check (writable import of a snapshot and a scrub): {len(deep)} flush boundaries, "
+        out.append(f"\nScrub (writable import of a snapshot, then a scrub): {len(deep)} flush boundaries, "
                    f"{statistics.mean(deep):.2f} s each on average, {max(deep):.2f} s at most, "
                    f"{sum(1 for p in pts if 't_deep' in p and not p['ok'])} failed.")
-    if res.get('zdb'):
-        out.append('\n`zdb -e -bcc` on the image, timed as an alternative deep check (not judged): '
-                   + '; '.join(f"prefix {z['n']}: rc {z['rc']} in {z['s']:.1f} s" for z in res['zdb']) + '.')
-        bad = [z for z in res['zdb'] if z['rc']]
-        if bad:
-            out.append(f"zdb said: `{bad[0].get('said') or bad[0]['tail']}`")
+    cp = [p for p in pts if 't_copies' in p]
+    if cp:
+        tc = [p['t_copies'] for p in cp]
+        last = cp[-1].get('copies', {})
+        cov = res.get('coverage', {})
+        out.append(f"\nEvery-copy check (zdb lists every block the newest uberblock reaches; the rig checksums every copy "
+                   f"on the image; nothing is imported or written): {len(cp)} prefixes, {statistics.mean(tc):.2f} s each on "
+                   f"average, {max(tc):.2f} s at most, {sum(1 for p in cp if not p['ok'])} failed. "
+                   f"Transaction groups: {cov.get('groups', '?')}; checked right after the first uberblock write of "
+                   f"{cov.get('group_firsts', '?')} (all are required) and just before the next group's of "
+                   f"{cov.get('group_lasts', '?')} of {cov.get('group_lasts_total', '?')}. At the last one checked: "
+                   f"{last.get('blocks', '?')} blocks in {last.get('copies', '?')} copies, {last.get('with_copies', '?')} "
+                   f"blocks with more than one copy, {last.get('intent_log', '?')} intent-log blocks not judged.")
+    z = res.get('zdb_cc')
+    if z:
+        out.append(f"\n`zdb -e -bcc` on the final image, as a second opinion on the rig's checksums: exit code {z['rc']} in "
+                   f"{z['s']:.1f} s" + (f" — **{z['said']}**" if z['rc'] else '') + '.')
+    if res.get('discards') is not None:
+        out.append(f"\nDiscards in the log: {res['discards']}, covering {res.get('discard_bytes', 0) >> 10} KiB; a discarded "
+                   f"range was made {'zeros' if res.get('discard_mode') == 'zero' else 'nothing new (left as it was)'} on the image.")
     cov = res.get('coverage')
     if cov:
         out.append(f"\nCoverage: {cov['flush'] - len(cov['flush_unchecked'])} of {cov['flush']} flush boundaries checked "
@@ -980,22 +1199,23 @@ def summary(res):
         out.append(f"\nProvider against xfstests `replay-log`: **{res.get('witness_verdict', 'witness not run')}**.")
     if res.get('witness'):
         out.append('\nProvider against xfstests `replay-log`: '
-                   + '; '.join(f"prefix {w['n']}: {'same image' if w['same'] else 'DIFFERENT'}" for w in res['witness']) + '.')
+                   + '; '.join(f"prefix {w['n']} ({w.get('what', '')}): {'same image' if w['same'] else 'DIFFERENT'}"
+                               for w in res['witness']) + '.')
     out.append('\n### Negative controls\n')
     if not res['controls']:
         out.append('**None could be built from this log.**')
     else:
-        out.append('| control | what was done | prefixes checked (deep) | caught | first failure |')
+        out.append('| control | what was done | prefixes checked (scrub, every-copy) | caught | first failure |')
         out.append('|---|---|---|---|---|')
         for c in res['controls']:
             first = f"prefix {c['first']['n']}: {c['first']['failed']}: {c['first']['detail'][:160]}" if c['first'] else '–'
             by = ', '.join(f'{k} {v}' for k, v in c['failed_by'].items())
             if c.get('rig_errors'):
                 first += f"; **the rig failed** at {len(c['rig_errors'])} prefixes, first {c['rig_errors'][0]['failed']}"
-            out.append(f"| {c['name']} | {c['what']} | {c['points']} ({c['deep_points']}) | "
+            out.append(f"| {c['name']} | {c['what']} | {c['points']} ({c['deep_points']}, {c.get('copies_points', 0)}) | "
                        f"{'yes, ' + by if c['caught'] else 'no'} | {first.replace('|', '/')} |")
         out.append('\nAgainst what each control is expected to do today (`EXPECTED` in `replay_check.py`; '
-                   'a difference in either direction fails the job):\n')
+                   'a difference fails the job):\n')
         out.append('| control | expected | observed | |')
         out.append('|---|---|---|---|')
         for r in res.get('control_rows', []):
