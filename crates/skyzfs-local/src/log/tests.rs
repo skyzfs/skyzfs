@@ -2459,3 +2459,56 @@ fn a_lost_superblock_copy_is_noticed() {
     }
     holds(scenario);
 }
+
+/// Failure is announced first (design §4.2): the observer is called
+/// once, when the log decides it has failed and before the marker is
+/// attempted, whether the marker can then be written or not, and also
+/// when the owner fails the log.
+#[test]
+fn the_observer_is_told_before_the_marker_is_attempted() {
+    use std::sync::{Arc, Mutex};
+    fn scenario(env: &Env) -> Outcome {
+        // The log's own failure, the marker writable and not; and the
+        // owner's.
+        for (halt, own) in [(false, true), (true, true), (false, false)] {
+            let (disk, mut log) = env.fresh()?;
+            // What the observer saw: whether the marker was there.
+            let seen: Arc<Mutex<Vec<bool>>> = Arc::default();
+            let (watch, record) = (disk.clone(), seen.clone());
+            log.set_observer(Observer::new(move || {
+                let there = watch
+                    .list()
+                    .is_ok_and(|names| names.iter().any(|n| n == MARKER_NAME));
+                record.lock().unwrap().push(there);
+            }));
+            s(put_raw(&mut log, env, 1))?;
+            if !seen.lock().unwrap().is_empty() {
+                return Err("the observer was called on a healthy log".into());
+            }
+            if !own {
+                log.mark_failed();
+            } else if halt {
+                disk.halt_after(0);
+                if log.sync().is_ok() {
+                    return Err("a sync succeeded on a halted disk".into());
+                }
+            } else {
+                disk.fail_sync(0, false);
+                if log.sync().is_ok() {
+                    return Err("the failing sync succeeded".into());
+                }
+            }
+            // Nothing more is announced.
+            let _ = log.sync();
+            log.mark_failed();
+            let seen = seen.lock().unwrap().clone();
+            if seen != [false] {
+                return Err(format!(
+                    "the observer saw the marker there: {seen:?} (halted {halt}, own failure {own})"
+                ));
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::OBSERVE_AFTER_MARKER, everywhere);
+}

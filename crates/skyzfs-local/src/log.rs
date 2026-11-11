@@ -113,6 +113,8 @@ impl Mutants {
     pub(crate) const RECLAIM_UNCHECKED: u32 = 1 << 29;
     /// A replay goes beyond the durable position.
     pub(crate) const REPLAY_UNSYNCED: u32 = 1 << 30;
+    /// The failure observer is called after the marker was attempted.
+    pub(crate) const OBSERVE_AFTER_MARKER: u32 = 1 << 31;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
@@ -544,6 +546,22 @@ fn read_error(during: &'static str, e: &io::Error) -> LogError {
     }
 }
 
+/// Who is told that the log has failed: see [`Log::set_observer`].
+pub struct Observer(Box<dyn FnMut() + Send>);
+
+impl Observer {
+    /// An observer that calls `f`.
+    pub fn new(f: impl FnMut() + Send + 'static) -> Self {
+        Self(Box::new(f))
+    }
+}
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Observer")
+    }
+}
+
 /// The write log. One writer owns it: appends are written in order, one
 /// at a time, and that is what makes an acknowledged record imply every
 /// earlier one (see the crate documentation, "Order of
@@ -580,6 +598,8 @@ pub struct Log<D: Dir> {
     scratch: Vec<u8>,
     /// The most segment files the log may have.
     limit: Option<usize>,
+    /// Told once, when the log fails.
+    observer: Option<Observer>,
     mutants: Mutants,
 }
 
@@ -899,6 +919,7 @@ impl<D: Dir> Log<D> {
             fresh_block: !mutants.has(Mutants::REWRITE_DURABLE_BLOCK),
             closed: stopped == Stop::NoNextSegment,
             hold: None,
+            observer: None,
             failed: false,
             dirty: BTreeSet::new(),
             dir_dirty: false,
@@ -1058,7 +1079,43 @@ impl<D: Dir> Log<D> {
     /// returns whether it was.
     pub fn mark_failed(&mut self) -> bool {
         self.failed = true;
-        write_marker(&self.dir, self.mutants)
+        self.announce()
+    }
+
+    /// Call `observer` once, at the moment the log fails: after the
+    /// decision and before the marker is attempted. The marker needs
+    /// the disk that has just failed, and a sync on a sick disk can
+    /// take minutes or never return; whoever must act on the failure
+    /// at once (a transport giving up its attachment) cannot wait for
+    /// it. The observer runs in the thread that owns the log and is to
+    /// return quickly.
+    pub fn set_observer(&mut self, observer: Observer) {
+        self.observer = Some(observer);
+    }
+
+    /// Tell the observer, then attempt the marker. Returns whether the
+    /// marker was written.
+    fn announce(&mut self) -> bool {
+        let late = self.mutants.has(Mutants::OBSERVE_AFTER_MARKER);
+        let mut observer = self.observer.take();
+        if !late {
+            if let Some(Observer(call)) = observer.as_mut() {
+                call();
+            }
+        }
+        let written = write_marker(&self.dir, self.mutants);
+        if late {
+            if let Some(Observer(call)) = observer.as_mut() {
+                call();
+            }
+        }
+        written
+    }
+
+    /// The key the log's headers are tagged with, for what the store
+    /// keeps beside the log. It stays inside this crate.
+    pub(crate) fn key(&self) -> &Key {
+        &self.key
     }
 
     /// The segment file that holds `position` and the offset in it, for
@@ -1099,7 +1156,7 @@ impl<D: Dir> Log<D> {
         LogError::Io {
             during,
             kind: e.kind(),
-            marker_written: write_marker(&self.dir, self.mutants),
+            marker_written: self.announce(),
         }
     }
 
