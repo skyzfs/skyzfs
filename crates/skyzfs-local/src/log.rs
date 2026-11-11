@@ -347,6 +347,12 @@ pub struct Options {
     /// that died between the open and its own comparison would have
     /// destroyed the evidence.
     pub must_reach: Option<Lsn>,
+    /// The store the position was recorded for, as its identity (two
+    /// keyed tags under the log's key). If this log's is another, the
+    /// position counts as none: a volume made again in the same place
+    /// is another store, with a log that rightly ends lower. `None`
+    /// applies the position to whatever log is opened.
+    pub must_reach_identity: Option<[u8; 16]>,
     /// For test rigs, to stand for a log that came back shorter: the
     /// prefix end that is compared with [`Options::must_reach`] is
     /// taken as if the last so many writes, write-zeroes and discards
@@ -960,7 +966,11 @@ impl<D: Dir> Log<D> {
         // What the caller was told is in the log must be in the prefix.
         // Compared before anything is written: a recovery that sealed a
         // short prefix would leave the next open nothing to notice.
-        let short = options.must_reach.and_then(|must_reach| {
+        let same_store = options
+            .must_reach_identity
+            .is_none_or(|identity| identity == crate::format::store_identity(&current.key));
+        let must_reach = options.must_reach.filter(|_| same_store);
+        let short = must_reach.and_then(|must_reach| {
             let compared = match last_starts.front() {
                 Some(start) if last_starts.len() == pretend => *start,
                 // Fewer records than are to be pretended away.

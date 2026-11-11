@@ -208,6 +208,13 @@ pub struct OpenOptions {
     /// below the log's start, of a record a checkpoint has given up,
     /// is always reached.
     pub must_reach: Option<Lsn>,
+    /// The store [`OpenOptions::must_reach`] was recorded for
+    /// ([`Store::identity`]). If the store that is opened is another
+    /// one, the position counts as none. A caller cannot make this
+    /// comparison itself: the identity is known only once the log is
+    /// read, and by then the open has to have compared. `None` applies
+    /// the position whatever the store.
+    pub must_reach_identity: Option<[u8; 16]>,
     /// For test rigs: see [`Options::pretend_short_by`]. Leave it 0.
     pub pretend_short_by: u32,
     pub(crate) mutants: Mutants,
@@ -223,6 +230,7 @@ impl Default for OpenOptions {
             log_segments: None,
             on_failure: None,
             must_reach: None,
+            must_reach_identity: None,
             pretend_short_by: 0,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
@@ -459,13 +467,9 @@ impl<D: Dir> Core<D> {
         BlkError::Failed
     }
 
-    /// See [`Store::identity`]: two keyed tags of fixed labels.
+    /// See [`Store::identity`].
     fn identity(&self) -> [u8; 16] {
-        let key = self.log.key();
-        let mut identity = [0u8; 16];
-        identity[..8].copy_from_slice(&siphash24(key, b"skyzfs store identity 1").to_le_bytes());
-        identity[8..].copy_from_slice(&siphash24(key, b"skyzfs store identity 2").to_le_bytes());
-        identity
+        crate::format::store_identity(self.log.key())
     }
 
     /// Set or release the hold. A position inside the log must be a
@@ -1162,6 +1166,7 @@ impl<D: Dir> Store<D> {
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
             must_reach: options.must_reach,
+            must_reach_identity: options.must_reach_identity,
             pretend_short_by: options.pretend_short_by,
             mutants: options.log_mutants,
         };

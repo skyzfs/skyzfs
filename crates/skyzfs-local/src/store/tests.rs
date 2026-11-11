@@ -1943,7 +1943,8 @@ fn an_open_refuses_a_log_that_lost_an_acknowledged_record_and_writes_nothing() {
 /// log that was only killed; and an open that is told nothing is never
 /// refused. A rig that pretends the log came back one record short
 /// (`pretend_short_by`) is refused for the last record's position and
-/// not for the one before it, with nothing written.
+/// not for the one before it, with nothing written. A position that
+/// was recorded for another store counts as none.
 #[test]
 fn an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position() {
     fn scenario(env: &Env) -> Outcome {
@@ -1983,6 +1984,27 @@ fn an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position() {
             if got != want {
                 return Err(format!(
                     "must reach {must_reach:?}, short by {pretend}: opened {got}"
+                ));
+            }
+        }
+        // A position recorded for another store counts as none, and one
+        // recorded for this store counts.
+        let (store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        let identity = store.identity();
+        drop(store);
+        disk.kill();
+        for (recorded_for, want) in [(identity, false), (*b"some other store", true)] {
+            let options = OpenOptions {
+                must_reach: last,
+                must_reach_identity: Some(recorded_for),
+                pretend_short_by: 1,
+                ..env.options()
+            };
+            let opened = Store::open(disk.clone(), options).is_ok();
+            disk.kill();
+            if opened != want {
+                return Err(format!(
+                    "a position recorded for {recorded_for:?}: opened {opened}"
                 ));
             }
         }
