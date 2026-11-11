@@ -40,3 +40,24 @@ the container: all clean. No kernel here.
   `ublk_stop_dev`) under `ublk_ctl_mutex`.
 - The kernel run 43109974850 ran 8b06c43; `git diff 8b06c43 9f66288 --
   crates bins` is empty. Both jobs green. Logs not read.
+
+# Second look at 00a5ecc (delta 9f66288..00a5ecc)
+
+Tests of the five packages (also with `test-hooks`): 527 passed, 0
+failed. Clippy both ways and fmt clean.
+
+- Finding 1 dropped: `delete` puts the note back when the driver still
+  shows a device; the author's test makes the second start, which
+  deletes. Mutant `DELETE_FAILURE_STRANDS` is my first experiment.
+- Finding 2 dropped: `FAILED_SKIPS_FLUSH_WAITERS` is my plant. The
+  claim that `WantsFlush` outlasts a turn only when the turn ends the
+  pump is right for a target that keeps its contract: flush waiters are
+  submitted before the backlog and each write's completion frees the
+  place its flush takes. One more way by the code: the target answers
+  "busy" to the flush (`submit_what_fits` returns), which the store does
+  only once its worker has ended.
+- Finding 3 and wordings dropped.
+- Not blocking: the put-back looks only at "a device is under the
+  number", not at its state or values. A note put back on a dead device
+  would outlive it. I know no path in driver v7.0 where the delete
+  without waiting fails and yet deletes.
