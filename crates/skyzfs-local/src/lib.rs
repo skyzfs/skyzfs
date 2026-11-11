@@ -693,6 +693,11 @@
 //!   with making the limit a property of the volume.
 //! - **The lock keeps out stores, not everything.** It is advisory: a
 //!   program that writes the files without asking is not stopped.
+//!   And it lives as long as any copy of its descriptor: a process
+//!   that starts a child holds the lock, in the child, from the fork
+//!   to the exec, so a store that is closed and opened again in the
+//!   same process at that moment is found locked. A daemon that does
+//!   both must not do them at once.
 //! - **Write-zeroes is written out as zeros** by a checkpoint, and a
 //!   discard frees nothing: no hole is punched in the home image.
 //! - **The home image is written through the page cache**, so a
