@@ -242,20 +242,50 @@ PY
     )"
 }
 
-# The routes by which the content can come back, each on its own pool.
-RESUMED=""
-for route in other link; do
-    step "$route: the device is deleted; the same content comes back ($route)"
-    n=0; [ "$route" = link ] && n=1
-    if scenario_start "$route" "$n"; then
-        scenario_delete "$route" "$n" || rec "${route}_note" "the pool did not suspend; the rest is recorded as it went"
-        bring_back "$route" "$n" "$WORK/$route.img" "$route"
-        wait_unaided "$route" 60
-        if clear_and_see "$route"; then RESUMED+="$route "; fi
-    fi
-    touch "$WORK/$route.stop"
-done
-rec routes_that_resumed "${RESUMED:-none}"
+# What a sync blocks on while a pool is suspended. FILE is on the root
+# file system, which has nothing to do with the pool. Each call under
+# the limit that holds for a process that cannot be killed.
+sync_probe() { # name
+    local f=/var/tmp/skz-sync-probe t0 rc what
+    echo x > "$f"
+    for what in fsync fdatasync syncfs; do
+        t0=$(date +%s%N)
+        lim 30 python3 -I -c '
+import ctypes, os, sys
+fd = os.open(sys.argv[2], os.O_RDWR)
+os.write(fd, b"y")
+if sys.argv[1] == "fsync":
+    os.fsync(fd)
+elif sys.argv[1] == "fdatasync":
+    os.fdatasync(fd)
+else:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.syncfs(fd) != 0:
+        sys.exit(ctypes.get_errno() or 1)' "$what" "$f"; rc=$?
+        rec "$1_$what" "$what of a file on the root file system: rc $rc after $(( ($(date +%s%N) - t0) / 1000000 )) ms (124: not returned after 30 s)"
+    done
+    t0=$(date +%s%N)
+    lim 30 sync "$f"; rc=$?
+    rec "$1_sync_file" "sync FILE ($(sync --version 2>&1 | head -n 1)): rc $rc after $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+    t0=$(date +%s%N)
+    lim 30 sync -f "$f"; rc=$?
+    rec "$1_sync_f_file" "sync -f FILE: rc $rc after $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+}
+sync_all_probe() { # name: sync() of everything, last, since it may never return
+    local t0 rc
+    t0=$(date +%s%N)
+    lim 30 python3 -I -c 'import os; os.sync()'; rc=$?
+    rec "$1_sync_all" "sync() of everything: rc $rc after $(( ($(date +%s%N) - t0) / 1000000 )) ms (124: not returned after 30 s)"
+}
+
+step "sync: what a sync waits for while a pool is suspended"
+rec sync_version "$(sync --version 2>&1 | head -n 1); $(readlink -f "$(command -v sync)")"
+sync_probe sync_before
+if scenario_start syncp 6; then
+    scenario_delete syncp 6 || rec syncp_note "the pool did not suspend"
+    sync_probe sync_suspended
+fi
+touch "$WORK/syncp.stop"
 
 step "gone: the device is deleted for good, with a delete that waits"
 if scenario_start gone 2; then
@@ -311,6 +341,21 @@ fi
 touch "$WORK/zed.stop"
 systemctl stop zfs-zed > /dev/null 2>&1
 
+# The routes by which the content can come back, each on its own pool.
+RESUMED=""
+for route in other link; do
+    step "$route: the device is deleted; the same content comes back ($route)"
+    n=0; [ "$route" = link ] && n=1
+    if scenario_start "$route" "$n"; then
+        scenario_delete "$route" "$n" || rec "${route}_note" "the pool did not suspend; the rest is recorded as it went"
+        bring_back "$route" "$n" "$WORK/$route.img" "$route"
+        wait_unaided "$route" 60
+        if clear_and_see "$route"; then RESUMED+="$route "; fi
+    fi
+    touch "$WORK/$route.stop"
+done
+rec routes_that_resumed "${RESUMED:-none}"
+
 step "older: the device comes back with an earlier copy of its image"
 route=${RESUMED%% *}; route=${route:-link}
 if scenario_start older 4; then
@@ -333,6 +378,10 @@ if scenario_start scrub 5; then
     scenario_delete scrub 5 || rec scrub_note "the pool did not suspend"
 fi
 touch "$WORK/scrub.stop"
+
+step "sync, the end: everything at once, and the single file again after it"
+sync_all_probe sync_suspended
+sync_probe sync_after_sync_all
 
 step "done"
 cat "$R"
