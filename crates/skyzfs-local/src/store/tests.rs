@@ -1762,10 +1762,10 @@ fn the_acknowledged_position_is_where_the_newest_completed_record_starts() {
 }
 
 /// What was acknowledged (design §4.2): after a kill at any point, the
-/// prefix the next instance recovers ([`Recovery::end`]) ends beyond
-/// every position an earlier instance reported, so the check a
-/// transport makes at its start never refuses a store that was only
-/// killed. Across changes of log segment,
+/// prefix the next instance recovers ends beyond every position an
+/// earlier instance reported, so an open that is told what the log
+/// must reach ([`OpenOptions::must_reach`]) never refuses a store that
+/// was only killed. Across changes of log segment,
 /// behind checkpoints that gave the whole log up, with and without
 /// flushes in between, and killed again before anything new was
 /// written. Mutant: the position is the record's end, where the
@@ -1825,8 +1825,12 @@ fn a_kill_never_leaves_the_log_ending_at_or_before_what_was_acknowledged() {
                 for _ in 0..1 + round % 2 {
                     drop(store);
                     disk.kill();
-                    let (reopened, recovery) =
-                        Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+                    let options = OpenOptions {
+                        must_reach: stored,
+                        ..env.options()
+                    };
+                    let (reopened, recovery) = Store::open(disk.clone(), options)
+                        .map_err(|e| format!("round {round}, acknowledged {stored:?}: {e}"))?;
                     store = reopened;
                     kills += 1;
                     let end = recovery.end;
@@ -1850,15 +1854,22 @@ fn a_kill_never_leaves_the_log_ending_at_or_before_what_was_acknowledged() {
 }
 
 /// What was acknowledged (design §4.2), the other side: a log that
-/// comes back without an acknowledged record is told from one that
-/// kept it, by the end of the recovered prefix. A write is flushed, a
-/// second is acknowledged and its position taken, and a power cut
-/// loses the second. The recovered prefix then ends at or before that
-/// position. The end of the log after the open does not show it: the
-/// recovery seals the prefix with a mark at the next unit boundary, so
-/// the log's end lies beyond where the lost record started.
+/// comes back without an acknowledged record is refused by the open
+/// that is told what the log must reach, and that open writes nothing,
+/// so every later open with the same position refuses again. A write
+/// is flushed, a second is acknowledged and its position taken, and a
+/// power cut loses the second.
+///
+/// The comparison has to be inside the open and before the recovery
+/// writes: an open that is not told the position succeeds, reports a
+/// prefix that ends at or before the lost record, and seals it with a
+/// mark; from then on the log's end, and the prefix every later open
+/// finds, lie beyond the place of the lost record, and an open that is
+/// told the position no longer notices. The test shows that too.
+/// Mutant (of the log): the comparison is made after the recovery has
+/// sealed the prefix.
 #[test]
-fn a_log_that_lost_an_acknowledged_record_ends_at_or_before_its_position() {
+fn an_open_refuses_a_log_that_lost_an_acknowledged_record_and_writes_nothing() {
     fn scenario(env: &Env) -> Outcome {
         let (disk, mut store) = env.fresh()?;
         write(&mut store, 0, 1, 1)?;
@@ -1870,6 +1881,28 @@ fn a_log_that_lost_an_acknowledged_record_ends_at_or_before_its_position() {
         drop(store);
         let lost = env.lost();
         disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let told = OpenOptions {
+            must_reach: Some(stored),
+            ..env.options()
+        };
+        let before = disk.image();
+        for attempt in 0..3 {
+            match Store::open(disk.clone(), told.clone()) {
+                Err(StoreError::Log(LogError::Short { end, must_reach })) => {
+                    if must_reach != stored || end > stored {
+                        return Err(format!("refused with {end} and {must_reach}"));
+                    }
+                }
+                Err(other) => return Err(format!("attempt {attempt}: {other}")),
+                Ok(_) => return Err(format!("attempt {attempt}: the short log was opened")),
+            }
+            disk.kill();
+            if disk.image() != before {
+                return Err(format!("attempt {attempt}: the refused open wrote"));
+            }
+        }
+        // An open that is not told: it reports the short prefix, and
+        // seals it.
         let (mut store, recovery) =
             Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
         expect(&mut store, 1, 1, 0, "the write that was lost")?;
@@ -1881,6 +1914,90 @@ fn a_log_that_lost_an_acknowledged_record_ends_at_or_before_its_position() {
         }
         if store.position() <= stored {
             return Err("the log's end did not move past the lost record".into());
+        }
+        drop(store);
+        disk.kill();
+        // The evidence is gone: this is why the daemon never opens a
+        // store without the position it has stored.
+        match Store::open(disk.clone(), told) {
+            Ok((_, recovery)) if recovery.end > stored => Ok(()),
+            Ok(_) => Err("the sealed prefix does not end beyond the lost record".into()),
+            Err(e) => Err(format!("after an open that sealed: {e}")),
+        }
+    }
+    holds(scenario);
+    for env in environments(0) {
+        let env = Env {
+            log_mutants: crate::log::Mutants::COMPARE_AFTER_SEAL,
+            ..env
+        };
+        assert!(
+            scenario(&env).is_err(),
+            "a comparison after the seal was not noticed in {env:?}"
+        );
+    }
+}
+
+/// A position below the log's start, of a record that a checkpoint has
+/// given up, is reached; so is the position of the last record of a
+/// log that was only killed; and an open that is told nothing is never
+/// refused. A rig that pretends the log came back one record short
+/// (`pretend_short_by`) is refused for the last record's position and
+/// not for the one before it, with nothing written.
+#[test]
+fn an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        let first = store.acknowledged();
+        write(&mut store, 1, 1, 2)?;
+        let last = store.acknowledged();
+        drop(store);
+        disk.kill();
+        let open = |must_reach: Option<Lsn>, pretend_short_by: u32| {
+            let options = OpenOptions {
+                must_reach,
+                pretend_short_by,
+                ..env.options()
+            };
+            let before = disk.image();
+            let opened = Store::open(disk.clone(), options).map(|_| ());
+            disk.kill();
+            let short = matches!(opened, Err(StoreError::Log(LogError::Short { .. })));
+            if opened.is_err() && (!short || disk.image() != before) {
+                return Err(format!("{opened:?}, or the refused open wrote"));
+            }
+            Ok(opened.is_ok())
+        };
+        for (must_reach, pretend, want) in [
+            (last, 1, false),
+            (first, 1, true),
+            (first, 2, false),
+            (last, 5, false),
+            (None, 1, true),
+            (last, 0, true),
+            (first, 0, true),
+            (None, 0, true),
+        ] {
+            let got = open(must_reach, pretend)?;
+            if got != want {
+                return Err(format!(
+                    "must reach {must_reach:?}, short by {pretend}: opened {got}"
+                ));
+            }
+        }
+        // A checkpoint gives the whole log up: the position is below
+        // the log's start and still reached.
+        let (mut store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        if store.log_start() <= last.unwrap_or(Lsn(0)) {
+            return Err("the checkpoint did not give the record up".into());
+        }
+        drop(store);
+        disk.kill();
+        if !open(last, 0)? {
+            return Err("a position below the log's start was not reached".into());
         }
         Ok(())
     }

@@ -199,6 +199,17 @@ pub struct OpenOptions {
     /// that: no client is attached before the open returns, and the
     /// open returns the error to the caller that would attach one.
     pub on_failure: Option<FailureObserver>,
+    /// A position the log must still reach: what an earlier instance
+    /// reported with [`Store::acknowledged`] and its transport stored
+    /// before it told its client. If the log's valid prefix ends at or
+    /// before it, the open fails with [`LogError::Short`] and has
+    /// written nothing to the log: see [`Options::must_reach`], also
+    /// for why the comparison is made inside the open. A position
+    /// below the log's start, of a record a checkpoint has given up,
+    /// is always reached.
+    pub must_reach: Option<Lsn>,
+    /// For test rigs: see [`Options::pretend_short_by`]. Leave it 0.
+    pub pretend_short_by: u32,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -211,6 +222,8 @@ impl Default for OpenOptions {
             acknowledge_failure: false,
             log_segments: None,
             on_failure: None,
+            must_reach: None,
+            pretend_short_by: 0,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -1116,8 +1129,8 @@ impl<D: Dir> Store<D> {
         dir.sync().map_err(&creating)?;
         drop(home);
         let log_options = Options {
-            acknowledge_failure: false,
             mutants: options.log_mutants,
+            ..Options::default()
         };
         let log = Log::create_keyed(dir, identity, key, log_options)?;
         let home = log
@@ -1148,6 +1161,8 @@ impl<D: Dir> Store<D> {
         let lock = Self::lock(&dir, &options)?;
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
+            must_reach: options.must_reach,
+            pretend_short_by: options.pretend_short_by,
             mutants: options.log_mutants,
         };
         let (log, recovery) = Log::open(dir, log_options)?;
@@ -1278,10 +1293,9 @@ impl<D: Dir> Store<D> {
     /// The log position at which the newest record starts among the
     /// mutations whose completions [`BlockTarget::wait`] has returned.
     /// `None` before the first. A transport stores it before it tells
-    /// its client, and the next instance requires that the prefix it
-    /// recovered ends beyond it ([`Recovery::end`], and not the log's
-    /// end after the open, which the recovery's own mark has moved
-    /// past the place of a record that was lost): design §4.2, "what
+    /// its client, and the next instance hands it to the open
+    /// ([`OpenOptions::must_reach`]), which requires that the prefix it
+    /// recovers ends beyond it: design §4.2, "what
     /// was acknowledged". It is where the record
     /// starts and not where it ends, so that the padding at a change of
     /// segment and after a recovery cannot make the two differ, and it
@@ -1574,8 +1588,10 @@ impl Served {
         result.recv().unwrap_or(Err(BlkError::Failed))
     }
 
-    /// The end of the log, behind the request the worker is executing:
-    /// see [`Store::position`]. `None` if the worker is gone.
+    /// The end of the log as it is when the worker gets to the
+    /// question: see [`Store::position`]. The worker answers before it
+    /// executes requests that are still queued, so a request submitted
+    /// just before may not be in it yet. `None` if the worker is gone.
     pub fn position(&self) -> Option<Lsn> {
         let (reply, result) = mpsc::channel();
         if !self.send(Command::Position(reply)) {

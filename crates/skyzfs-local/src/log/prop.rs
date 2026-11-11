@@ -198,6 +198,7 @@ impl Run {
             let options = Options {
                 acknowledge_failure: true,
                 mutants: self.mutants,
+                ..Options::default()
             };
             match Log::open(self.disk.clone(), options) {
                 Ok(opened) => break opened,
@@ -508,6 +509,7 @@ impl Run {
                 let options = Options {
                     acknowledge_failure: true,
                     mutants: self.mutants,
+                    ..Options::default()
                 };
                 match Log::open(self.disk.clone(), options) {
                     // An error, and then the disk is as it was. With
@@ -559,6 +561,7 @@ impl Run {
                 let options = Options {
                     acknowledge_failure: true,
                     mutants: self.mutants,
+                    ..Options::default()
                 };
                 match Log::open(self.disk.clone(), options) {
                     Ok(_) => {}
