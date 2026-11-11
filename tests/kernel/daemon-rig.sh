@@ -756,7 +756,11 @@ refused_snap() {
     # pool that re-executes failed writes posts tens of thousands a
     # second (run 43100887191: files of up to 584 MB).
     # shellcheck disable=SC2016  # the inner shell expands them
-    lim 40 bash -c 'zpool events -v 2>&1 | head -n 1500 > "$1"; zpool events -H 2>/dev/null | awk "{ c[\$NF]++ } END { for (k in c) print c[k], k }" > "$2"' \
+    # Both are cut by `head`: while the pool posts events faster than
+    # they are read, `zpool events` does not come to an end (run
+    # 43107654994: the count ran into its limit at every snapshot, 40 s
+    # each, and the probes were late by as much).
+    lim 15 bash -c 'zpool events -v 2>&1 | head -n 1500 > "$1"; zpool events -H 2>/dev/null | head -n 20000 | awk "{ c[\$NF]++ } END { for (k in c) print c[k], k }" > "$2"' \
         events "$OUT/$tag-$at-events.txt" "$OUT/$tag-$at-event-classes.txt" 2> /dev/null
     lim 20 zpool status -v "$pool" > "$OUT/$tag-$at-status.txt" 2>&1
     { echo "== the pools at this moment (zpool list -H -o name,health; the threads below do not carry a pool's name):"
@@ -919,8 +923,8 @@ refused_start_arm() {
     fails=$(grep -c . "$OUT/$tag-writer.log")
     klog_since "$mark" > "$OUT/$tag-klog.txt" 2>/dev/null
     zios=$(grep "$pool" "$OUT/$tag-klog.txt" | grep -o 'type=[0-9]*' | sort | uniq -c | tr -s ' \n' ' ')
-    ev=$(tr -s ' \n' ' ' < "$OUT/$tag-end-event-classes.txt" 2>/dev/null)
-    seen="zpool status: $(grep -E '^ *(state|status):' "$OUT/$tag-end-status.txt" 2>/dev/null | tr -s ' \n' ' ' | cut -c1-220)$([ -s "$OUT/$tag-end-status.txt" ] || echo 'gave nothing within 20 s'); events held by ZFS at the end, by class (it keeps only the newest): ${ev:-none}; kernel log lines naming ublkb$num or the pool since the kill: $(grep -c -E "ublkb$num|$pool" "$OUT/$tag-klog.txt")"
+    ev=$(cat "$OUT/$tag-end-event-classes.txt" 2>/dev/null | tr -s ' \n' ' ')
+    seen="zpool status: $(grep -E '^ *(state|status):' "$OUT/$tag-end-status.txt" 2>/dev/null | tr -s ' \n' ' ' | cut -c1-220)$([ -s "$OUT/$tag-end-status.txt" ] || echo 'gave nothing within 20 s'); the first 20000 events ZFS held at the end, by class: ${ev:-not read}; kernel log lines naming ublkb$num or the pool since the kill: $(grep -c -E "ublkb$num|$pool" "$OUT/$tag-klog.txt")"
     case $did in *writer2*) io+="a second writer (4 MiB, synced) at $tw s: $(cat "$WORK/$tag.writer2" 2>/dev/null || echo "had not ended at $end s (hung)"); " ;; esac
     case $did in *reader*) io+="a read of the uncached file at $tr s: $(cat "$WORK/$tag.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-reader.err" 2>/dev/null | tr '\n' ' '); " ;; esac
     case $did in *scrub*) io+="a scrub at $ts s: $(cat "$WORK/$tag.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-scrub.log" 2>/dev/null | tr '\n' ' '); " ;; esac
