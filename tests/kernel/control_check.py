@@ -51,7 +51,8 @@ STATES = ('live', 'waiting', 'never_started', 'deleted_held')
 STATE_WORDS = {
     'live': 'live, served by the reference server',
     'waiting': 'waiting, its reference server killed',
-    'never_started': 'added by the reference tool and never started',
+    'never_started': 'added by another process and never started (the reference tool has no add without a start: '
+                     'the test program adds it, with another depth than the add under test asks for)',
     'deleted_held': 'deleted while a process held it open',
 }
 
@@ -71,6 +72,10 @@ EXPECTED = {
     'control_take_over_beside_stale_file': (
         'PASS', CRATE, 'Library', 'a take-over works beside a stale file of another server under /run/ublksrvd '
         'and leaves it as it was'),
+    'control_buffers_4k_1m_across_take_over': (
+        'PASS', CRATE, 'Library: the buffers',
+        'writes of 4 KiB to 1 MiB through the binding\'s queue read back the same, in a first life of the '
+        'device and after a take-over'),
     'control_test_program_steps': ('PASS', CRATE, 'none: the rig\'s own means',
                                    'the test program answers each step in one line'),
 
@@ -167,6 +172,10 @@ OBSERVED = {
     'obs_serve_of_a_device_whose_adder_ended': 'whether another process can still start a device that was '
                                                'added and never started, its adder gone (the design does '
                                                'not say; the daemon deletes such a device)',
+    # Lines the crate's tests print beside their verdicts.
+    'control_started_detail': 'the crate\'s test of a start: requests answered and first-write copies',
+    'control_buffers_detail': 'the crate\'s test of the buffers: first-write copies and the longest write',
+    'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
 }
 
@@ -192,7 +201,7 @@ def judge(results):
         elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
     for name in results:
-        if name.startswith(JUDGED) and name not in EXPECTED:
+        if name.startswith(JUDGED) and name not in EXPECTED and name not in OBSERVED:
             errors.append(f'{name}: not in the table EXPECTED: {results[name]}')
     if results.get('setup') != 'ok':
         errors.append(f"setup: {results.get('setup', 'no line')}")
