@@ -236,6 +236,23 @@ class Log(unittest.TestCase):
         idx = logwrites.index(self.log, DEV)
         self.assertEqual(replay_check.controls(idx['records'], replay_check.parse_marks(idx['records'])), [])
 
+    def test_controls_are_judged_against_the_table_in_both_directions(self):
+        drop = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 2}}
+        reorder = {'name': 'reorder', 'caught': False, 'failed_by': {}}
+        rows, gaps, ok = replay_check.judge_controls([drop, reorder])
+        self.assertTrue(ok)
+        self.assertEqual([g['name'] for g in gaps], ['reorder'])
+        # a control that is no longer caught, or caught by something else
+        self.assertFalse(replay_check.judge_controls([dict(drop, caught=False, failed_by={}), reorder])[2])
+        self.assertFalse(replay_check.judge_controls([dict(drop, failed_by={'deep': 1, 'verify': 3}), reorder])[2])
+        # the gap closing is also a difference: the table has to be changed on purpose
+        rows, gaps, ok = replay_check.judge_controls([drop, dict(reorder, caught=True, failed_by={'deep': 1})])
+        self.assertFalse(ok)
+        self.assertEqual(gaps, [])
+        # a control that did not run, and one the table does not know
+        self.assertFalse(replay_check.judge_controls([drop])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder, dict(drop, name='new')])[2])
+
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
                  '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')

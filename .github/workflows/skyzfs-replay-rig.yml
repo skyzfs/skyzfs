@@ -6,7 +6,9 @@ name: skyzfs-replay-rig
 # device, rebuilds the device at sampled prefixes, and at each one
 # imports the pool read-only and verifies the files that were due; at
 # flush boundaries it also scrubs a throwaway copy. Two deliberately
-# wrong replays must be caught, or the job fails. All the logic is
+# wrong replays are run through the same checks; the job fails unless
+# each does what `EXPECTED` in `tests/kernel/replay_check.py` says, and
+# the summary states what the rig cannot detect yet. All the logic is
 # `tests/kernel/replay-rig.sh` and `tests/kernel/replay_check.py`.
 #
 # Built against the reference ublk server, so that it is ready and
