@@ -109,6 +109,18 @@
 //!
 //! Whenever a device is left and another number taken, [`Ready::left`]
 //! says which and why, for the daemon's log.
+//!
+//! # A note does not outlive its device
+//!
+//! The note is removed **before** the device is deleted, wherever the
+//! daemon deletes one. A note that stayed would, together with a record
+//! that still names the number, make this volume's device of whatever
+//! program is given the number next. A kill between the two leaves
+//! this volume's device without its note, which is the case that
+//! cannot be told, above: a device that was never started is left, and
+//! one that waits for a server stops the next start until it is deleted
+//! by hand. (This order is this module's reading; the design does not
+//! say which goes first.)
 
 use std::io;
 
@@ -225,6 +237,8 @@ pub trait Records {
     fn note(&mut self, number: u32) -> io::Result<Option<[u8; 16]>>;
     /// Write the note for a device.
     fn write_note(&mut self, number: u32, nonce: &[u8; 16]) -> io::Result<()>;
+    /// Remove the note for a device, if there is one.
+    fn remove_note(&mut self, number: u32) -> io::Result<()>;
     /// What was acknowledged in this boot, if anything was recorded.
     /// An error if the record is there and cannot be read.
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>>;
@@ -340,6 +354,8 @@ impl Mutants {
     /// A device without a note is taken for a stranger's whatever its
     /// values.
     pub(crate) const NO_NOTE_IS_A_STRANGER: u32 = 1 << 12;
+    /// A device is deleted and its note is left.
+    pub(crate) const NOTE_OUTLIVES_DEVICE: u32 = 1 << 13;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -426,6 +442,7 @@ fn open<C: Control, R: Records, V: Volume>(
                 control,
                 records,
                 wanted,
+                mutants,
                 "the record of what was acknowledged cannot be read",
             ))
         }
@@ -449,7 +466,7 @@ fn open<C: Control, R: Records, V: Volume>(
             Err(OpenError::Short) => "the log is shorter than what was acknowledged",
             Err(OpenError::MarkedFailed) => "the volume is marked as failed",
         };
-        return Err(failed(control, records, wanted, why));
+        return Err(failed(control, records, wanted, mutants, why));
     }
 }
 
@@ -485,6 +502,7 @@ fn failed<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     wanted: &Wanted,
+    mutants: Mutants,
     why: &'static str,
 ) -> Stop {
     if let Ok(Some(attachment)) = records.attachment() {
@@ -500,7 +518,13 @@ fn failed<C: Control, R: Records>(
                 ..
             })) = info
             {
-                let _ = control.delete(attachment.number);
+                // The note goes first: see "a note does not outlive its
+                // device" in the module documentation.
+                let removed = mutants.has(Mutants::NOTE_OUTLIVES_DEVICE)
+                    || records.remove_note(number).is_ok();
+                if removed {
+                    let _ = control.delete(number);
+                }
             }
         }
     }
@@ -645,6 +669,11 @@ fn attach<C: Control, R: Records>(
         Found::Afresh { stale, left } => (stale, left),
     };
     if let Some(number) = stale {
+        if !mutants.has(Mutants::NOTE_OUTLIVES_DEVICE) {
+            records.remove_note(number).map_err(error(
+                "removing the note of a device that was never started",
+            ))?;
+        }
         control
             .delete(number)
             .map_err(error("deleting a device that was never started"))?;
@@ -706,6 +735,112 @@ fn attach<C: Control, R: Records>(
         });
     }
     Err(Stop::Error("every device number is taken".into()))
+}
+
+/// Whose a device under a volume's recorded number is: see "whose
+/// device it is" in the [module documentation](self).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Whose {
+    /// This volume's: its note carries the record's nonce.
+    Ours,
+    /// Not this volume's: another volume's note, or no note and other
+    /// values than the record.
+    Anothers,
+    /// It cannot be told: no note, and the recorded values.
+    Unsure,
+}
+
+/// The device a volume's record names, as it is now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Located {
+    /// Its number.
+    pub number: u32,
+    /// What the kernel says it is doing.
+    pub state: DeviceState,
+    /// The values the kernel reports.
+    pub shape: Shape,
+    /// Whose it is.
+    pub whose: Whose,
+}
+
+/// Find the device the volume's record names: for `status` and
+/// `detach`. Opens no store, changes nothing and does not wait.
+/// `Ok(None)` if there is no record of this boot or the kernel has no
+/// device under the recorded number. An error if a record or the note
+/// cannot be read.
+pub fn locate<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+) -> io::Result<Option<Located>> {
+    let Some(attachment) = records.attachment()?.filter(|a| a.boot == records.boot()) else {
+        return Ok(None);
+    };
+    let number = attachment.number;
+    let Some(info) = control.info(number)? else {
+        return Ok(None);
+    };
+    let whose = match records.note(number)? {
+        Some(nonce) if nonce == attachment.nonce => Whose::Ours,
+        Some(_) => Whose::Anothers,
+        None if info.shape != attachment.shape => Whose::Anothers,
+        None => Whose::Unsure,
+    };
+    Ok(Some(Located {
+        number,
+        state: info.state,
+        shape: info.shape,
+        whose,
+    }))
+}
+
+/// What a detach did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Detached {
+    /// The volume has no device.
+    Nothing,
+    /// The device was deleted and its number is free.
+    Deleted(u32),
+    /// The device was deleted and something still holds it open: it
+    /// keeps its number until that closes it.
+    DeletedHeld(u32),
+    /// The device had been deleted before and is still held. Nothing
+    /// was done.
+    Held(u32),
+    /// The device is live under a server. Nothing was done.
+    Live(u32),
+    /// The device under the recorded number is not known to be this
+    /// volume's. Nothing was done.
+    NotOurs(Located),
+}
+
+/// Give up the volume's device: delete it if it is this volume's and
+/// no server serves it. Opens no store. The delete does not wait: the
+/// device is looked at once more afterwards, and if it is still there
+/// the answer says that its number is still held.
+///
+/// A reading, marked: a device that is **live** is refused, not
+/// stopped. Stopping a serving daemon is not this function's.
+pub fn detach<C: Control, R: Records>(control: &mut C, records: &mut R) -> io::Result<Detached> {
+    let Some(located) = locate(control, records)? else {
+        return Ok(Detached::Nothing);
+    };
+    let number = located.number;
+    if located.whose != Whose::Ours {
+        return Ok(Detached::NotOurs(located));
+    }
+    match located.state {
+        DeviceState::Live => Ok(Detached::Live(number)),
+        DeviceState::Dead => Ok(Detached::Held(number)),
+        DeviceState::Waiting | DeviceState::Added => {
+            // The note first: a note does not outlive its device.
+            records.remove_note(number)?;
+            control.delete(number)?;
+            Ok(match control.info(number)? {
+                None => Detached::Deleted(number),
+                Some(_) => Detached::DeletedHeld(number),
+            })
+        }
+    }
 }
 
 #[cfg(test)]

@@ -367,6 +367,13 @@ impl Records for Files {
         )
     }
 
+    fn remove_note(&mut self, number: u32) -> io::Result<()> {
+        match fs::remove_file(note_path(&self.run_dir, number)) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
         // A record of another boot says nothing: no client holds a
         // device across a reboot. The store it was recorded for is

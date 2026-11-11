@@ -86,6 +86,9 @@ fn what_is_written_is_read_and_what_is_absent_is_none() {
     assert_eq!(files.note(3).expect("read"), Some([0xA5; 16]));
     assert_eq!(read_note(&dirs.run, 3).expect("read"), Some([0xA5; 16]));
     assert_eq!(files.note(4).expect("read"), None);
+    files.remove_note(4).expect("nothing to remove");
+    files.remove_note(3).expect("remove");
+    assert_eq!(files.note(3).expect("read"), None);
 
     // A record replaces the one before it, and leaves nothing beside.
     files.write_attachment(&attachment(5)).expect("write");

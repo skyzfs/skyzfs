@@ -21,6 +21,7 @@ enum Event {
     Add(u32, bool),
     Disown(u32),
     WriteNote(u32),
+    RemoveNote(u32),
     Delete(u32),
     BeginRecovery(u32),
 }
@@ -203,6 +204,12 @@ impl Records for Fake {
         w.notes.insert(number, *nonce);
         Ok(())
     }
+    fn remove_note(&mut self, number: u32) -> io::Result<()> {
+        let mut w = self.0.borrow_mut();
+        w.happens(Event::RemoveNote(number))?;
+        w.notes.remove(&number);
+        Ok(())
+    }
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
         let mut w = self.0.borrow_mut();
         w.happens(Event::Acknowledged)?;
@@ -308,6 +315,15 @@ fn rules(outcome: &Outcome) -> Result<(), String> {
             check(
                 *must_reach == wanted,
                 "the store was opened without the position it must reach",
+            )?;
+        }
+    }
+    // A device is deleted only after its note is gone.
+    for (i, event) in events.iter().enumerate() {
+        if let Event::Delete(n) = event {
+            check(
+                i > 0 && events[i - 1] == Event::RemoveNote(*n),
+                "a device was deleted and its note left",
             )?;
         }
     }
@@ -638,8 +654,8 @@ fn this_volumes_device_that_was_never_started_is_deleted_and_replaced() {
     assert!(!ready.took_over);
     assert_eq!(ready.left, None);
     assert_eq!(
-        outcome.world.events[3..5],
-        [Event::Info(4), Event::Delete(4)]
+        outcome.world.events[3..6],
+        [Event::Info(4), Event::RemoveNote(4), Event::Delete(4)]
     );
     assert_eq!(outcome.world.devices.len(), 1);
 }
@@ -1045,4 +1061,180 @@ fn a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_dev
         })
     };
     assert_eq!(killed_anywhere(twins, false, 0), Ok((2, 2)));
+}
+
+/// The volume fails and its waiting device is deleted. Whatever is
+/// given the number next, with the same values, is not this volume's.
+fn the_number_is_given_to_another(mutants: u32) -> Result<(), String> {
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.opens.push_back(OpenError::MarkedFailed);
+    let outcome = run(world, mutants);
+    check(matches!(outcome.result, Err(Stop::Failed(_))), "failed")?;
+    check(outcome.world.devices.is_empty(), "deleted")?;
+
+    let mut next = outcome.world;
+    next.events.clear();
+    next.devices.insert(
+        4,
+        DeviceInfo {
+            state: DeviceState::Waiting,
+            shape: EARLIER,
+        },
+    );
+    untouched(next, mutants, |s| matches!(s, Stop::Error(_)))
+}
+
+#[test]
+fn a_note_does_not_outlive_its_device() {
+    holds(
+        the_number_is_given_to_another,
+        &[(
+            "the note outlives the device",
+            Mutants::NOTE_OUTLIVES_DEVICE,
+        )],
+    );
+}
+
+fn fakes(world: World) -> (Fake, Fake, Rc<RefCell<World>>) {
+    let shared = Rc::new(RefCell::new(world));
+    (Fake(shared.clone()), Fake(shared.clone()), shared)
+}
+
+#[test]
+fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
+    let all = [
+        DeviceState::Added,
+        DeviceState::Live,
+        DeviceState::Waiting,
+        DeviceState::Dead,
+    ];
+    for state in all {
+        // (the note, the kernel's depth, whose)
+        let table = [
+            (Some([0xA5; 16]), 32, Whose::Ours),
+            (Some([0xA5; 16]), 16, Whose::Ours),
+            (Some([0x5A; 16]), 32, Whose::Anothers),
+            (None, 16, Whose::Anothers),
+            (None, 32, Whose::Unsure),
+        ];
+        for (note, depth, whose) in table {
+            let mut world = World::new().attached(4, state, EARLIER);
+            world.notes.clear();
+            if let Some(note) = note {
+                world.notes.insert(4, note);
+            }
+            if let Some(device) = world.devices.get_mut(&4) {
+                device.shape.depth = depth;
+            }
+            let (mut control, mut records, shared) = fakes(world);
+            let located = locate(&mut control, &mut records).expect("read");
+            let located = located.expect("a device");
+            assert_eq!(
+                (located.number, located.state, located.whose),
+                (4, state, whose)
+            );
+            assert_eq!(located.shape.depth, depth);
+            // One look, and nothing else: it neither waits nor changes.
+            assert_eq!(shared.borrow().events, [Event::Info(4)]);
+        }
+    }
+
+    // No record, a record of another boot, a device that is gone.
+    let (mut control, mut records, _) = fakes(World::new());
+    assert_eq!(locate(&mut control, &mut records).expect("read"), None);
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    if let Some(attachment) = world.attachment.as_mut() {
+        attachment.boot = [9; 16];
+    }
+    let (mut control, mut records, shared) = fakes(world);
+    assert_eq!(locate(&mut control, &mut records).expect("read"), None);
+    assert!(
+        shared.borrow().events.is_empty(),
+        "the number is not looked up"
+    );
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.devices.clear();
+    let (mut control, mut records, _) = fakes(world);
+    assert_eq!(locate(&mut control, &mut records).expect("read"), None);
+
+    // A note that is not a whole record is an error.
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.torn_note = Some(4);
+    let (mut control, mut records, _) = fakes(world);
+    assert!(locate(&mut control, &mut records).is_err());
+}
+
+#[test]
+fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
+    for state in [DeviceState::Waiting, DeviceState::Added] {
+        for held in [false, true] {
+            let mut world = World::new().attached(4, state, EARLIER);
+            if held {
+                world.held.push(4);
+            }
+            let (mut control, mut records, shared) = fakes(world);
+            let detached = detach(&mut control, &mut records).expect("detach");
+            let world = shared.borrow();
+            if held {
+                assert_eq!(detached, Detached::DeletedHeld(4));
+                assert_eq!(
+                    world.devices.get(&4).map(|d| d.state),
+                    Some(DeviceState::Dead)
+                );
+            } else {
+                assert_eq!(detached, Detached::Deleted(4));
+                assert!(world.devices.is_empty());
+            }
+            assert!(world.notes.is_empty(), "the note is gone");
+            // The note first, one delete, one look after it.
+            assert_eq!(
+                world.events,
+                [
+                    Event::Info(4),
+                    Event::RemoveNote(4),
+                    Event::Delete(4),
+                    Event::Info(4)
+                ]
+            );
+        }
+    }
+}
+
+#[test]
+fn detach_touches_nothing_it_may_not() {
+    // Live under a server, and deleted before and still held.
+    for (state, expected) in [
+        (DeviceState::Live, Detached::Live(4)),
+        (DeviceState::Dead, Detached::Held(4)),
+    ] {
+        let world = World::new().attached(4, state, EARLIER);
+        let (mut control, mut records, shared) = fakes(world);
+        assert_eq!(
+            detach(&mut control, &mut records).expect("detach"),
+            expected
+        );
+        assert_eq!(shared.borrow().events, [Event::Info(4)]);
+    }
+    // Not known to be this volume's, in any state.
+    for state in STATES {
+        for note in [None, Some([0x5A; 16])] {
+            let mut world = World::new().attached(4, state, EARLIER);
+            world.notes.clear();
+            if let Some(note) = note {
+                world.notes.insert(4, note);
+            }
+            let (mut control, mut records, shared) = fakes(world);
+            let detached = detach(&mut control, &mut records).expect("detach");
+            assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
+            assert_eq!(shared.borrow().events, [Event::Info(4)]);
+            assert_eq!(shared.borrow().notes.get(&4).copied(), note);
+        }
+    }
+    // No device.
+    let (mut control, mut records, shared) = fakes(World::new());
+    assert_eq!(
+        detach(&mut control, &mut records).expect("detach"),
+        Detached::Nothing
+    );
+    assert!(shared.borrow().events.is_empty());
 }
