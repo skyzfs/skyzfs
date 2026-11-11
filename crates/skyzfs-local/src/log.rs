@@ -226,6 +226,9 @@ pub enum LogError {
         /// Whether the failure could be recorded in the marker file. If
         /// not, a later open cannot know that the log failed.
         marker_written: bool,
+        /// Whether the log has failed by this error: a write or a sync
+        /// failed. If not, a read failed, which fails only the call.
+        failed: bool,
     },
     /// The log's content is damaged.
     #[error("the log is corrupt: {0}")]
@@ -588,6 +591,7 @@ fn read_error(during: &'static str, e: &io::Error) -> LogError {
         during,
         kind: e.kind(),
         marker_written: false,
+        failed: false,
     }
 }
 
@@ -757,6 +761,7 @@ impl<D: Dir> Log<D> {
             during,
             kind: e.kind(),
             marker_written: write_marker(dir, mutants),
+            failed: true,
         };
         let mut superblock = dir
             .open(SUPER_NAME)
@@ -1230,6 +1235,7 @@ impl<D: Dir> Log<D> {
             during,
             kind: e.kind(),
             marker_written: self.announce(),
+            failed: true,
         }
     }
 
