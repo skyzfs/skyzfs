@@ -1689,6 +1689,340 @@ fn the_served_store_passes_the_conformance_suite() {
     }
 }
 
+/// What was acknowledged (design §4.2): the store reports where the
+/// newest record starts among the mutations it has completed. A write,
+/// a write-zeroes and a discard move it to a position at or beyond the
+/// log's end before them and below its end after them; a read, a
+/// flush, a rejected request and a checkpoint leave it; a new instance
+/// starts with none.
+#[test]
+fn the_acknowledged_position_is_where_the_newest_completed_record_starts() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if store.acknowledged().is_some() {
+            return Err("a position before anything was acknowledged".into());
+        }
+        read(&mut store, 0, 1)?;
+        flush(&mut store)?;
+        if store.acknowledged().is_some() {
+            return Err("a read or a flush gave a position".into());
+        }
+        let mutations = [
+            Op::Write {
+                offset: 0,
+                data: Buf::filled(3, 1),
+            },
+            Op::WriteZeroes {
+                offset: BLOCK,
+                len: 2 * BLOCK,
+            },
+            Op::Discard {
+                offset: 0,
+                len: BLOCK,
+            },
+        ];
+        for op in mutations {
+            let before = store.position();
+            ok(&mut store, op)?;
+            let Some(at) = store.acknowledged() else {
+                return Err("no position after a mutation".into());
+            };
+            if at < before || at >= store.position() {
+                return Err(format!(
+                    "{at} is not a record between {before} and {}",
+                    store.position()
+                ));
+            }
+            read(&mut store, 0, 4)?;
+            flush(&mut store)?;
+            let rejected = Op::Discard {
+                offset: 1,
+                len: BLOCK,
+            };
+            if run(&mut store, rejected)?.result.is_ok() {
+                return Err("a misaligned discard was taken".into());
+            }
+            if store.acknowledged() != Some(at) {
+                return Err("something that is no mutation moved the position".into());
+            }
+        }
+        let at = store.acknowledged();
+        checkpoint(&mut store)?;
+        if store.acknowledged() != at {
+            return Err("a checkpoint moved the position".into());
+        }
+        drop(store);
+        let store = env.reopen(&disk)?;
+        if store.acknowledged().is_some() {
+            return Err("a new instance has a position".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// What was acknowledged (design §4.2): after a kill at any point, the
+/// prefix the next instance recovers ([`Recovery::end`]) ends beyond
+/// every position an earlier instance reported, so the check a
+/// transport makes at its start never refuses a store that was only
+/// killed. Across changes of log segment,
+/// behind checkpoints that gave the whole log up, with and without
+/// flushes in between, and killed again before anything new was
+/// written. Mutant: the position is the record's end, where the
+/// recovered prefix ends exactly and not beyond.
+#[test]
+fn a_kill_never_leaves_the_log_ending_at_or_before_what_was_acknowledged() {
+    fn scenario(env: &Env) -> Outcome {
+        let env = Env {
+            segments: Some(2),
+            ..*env
+        };
+        let (disk, mut store) = env.fresh()?;
+        let mut stored: Option<Lsn> = None;
+        let (mut segments, mut emptied, mut kills) = (0, 0, 0);
+        let mut segment = store.position().0 / SEGMENT;
+        for round in 0..400u64 {
+            let block = round * 7 % 1000;
+            match round % 5 {
+                0..=2 => write(&mut store, block, 1 + (round % 16) as usize, round as u8)?,
+                3 => ok(
+                    &mut store,
+                    Op::WriteZeroes {
+                        offset: block * BLOCK,
+                        len: 8 * BLOCK,
+                    },
+                )
+                .map(|_| ())?,
+                _ => ok(
+                    &mut store,
+                    Op::Discard {
+                        offset: block * BLOCK,
+                        len: BLOCK,
+                    },
+                )
+                .map(|_| ())?,
+            }
+            // What a transport would store before it tells its client.
+            stored = stored.max(store.acknowledged());
+            if store.position().0 / SEGMENT != segment {
+                segment = store.position().0 / SEGMENT;
+                segments += 1;
+            }
+            if round % 3 == 0 {
+                flush(&mut store)?;
+            }
+            if round % 37 == 36 {
+                flush(&mut store)?;
+                checkpoint(&mut store)?;
+                if store.log_start() == store.position() {
+                    emptied += 1;
+                }
+            }
+            // A kill after every operation for a while, then at
+            // changing distances, and twice in a row.
+            let kill = round < 60 || round % (2 + round % 5) == 0 || round % 37 == 36;
+            if kill {
+                for _ in 0..1 + round % 2 {
+                    drop(store);
+                    disk.kill();
+                    let (reopened, recovery) =
+                        Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+                    store = reopened;
+                    kills += 1;
+                    let end = recovery.end;
+                    if stored.is_some_and(|stored| end <= stored) {
+                        return Err(format!(
+                            "round {round}: the recovered prefix ends at {end}, \
+                             acknowledged was {stored:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        if segments < 3 || emptied < 3 || kills < 100 {
+            return Err(format!(
+                "the scenario saw {segments} segment changes, {emptied} emptied logs, {kills} kills"
+            ));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::ACKNOWLEDGED_IS_END);
+}
+
+/// What was acknowledged (design §4.2), the other side: a log that
+/// comes back without an acknowledged record is told from one that
+/// kept it, by the end of the recovered prefix. A write is flushed, a
+/// second is acknowledged and its position taken, and a power cut
+/// loses the second. The recovered prefix then ends at or before that
+/// position. The end of the log after the open does not show it: the
+/// recovery seals the prefix with a mark at the next unit boundary, so
+/// the log's end lies beyond where the lost record started.
+#[test]
+fn a_log_that_lost_an_acknowledged_record_ends_at_or_before_its_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        flush(&mut store)?;
+        write(&mut store, 1, 1, 2)?;
+        let Some(stored) = store.acknowledged() else {
+            return Err("no position".into());
+        };
+        drop(store);
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let (mut store, recovery) =
+            Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        expect(&mut store, 1, 1, 0, "the write that was lost")?;
+        if recovery.end > stored {
+            return Err(format!(
+                "the prefix ends at {}, beyond the lost record at {stored}",
+                recovery.end
+            ));
+        }
+        if store.position() <= stored {
+            return Err("the log's end did not move past the lost record".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// The store behind its worker reports the acknowledged position for
+/// what its owner has taken, never ahead of it: before a completion is
+/// taken there is none, although the worker has appended the record;
+/// once taken, it is that record's start. The waker is called once for
+/// every completion made ready.
+#[test]
+fn the_served_store_acknowledges_what_its_owner_has_taken() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    let before = served.position().unwrap();
+    let write = |id: u64, block: u64| Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(1, 9),
+        },
+    };
+    // The waker is called once the completion is ready to be taken.
+    let ready = |n: u32| {
+        for _ in 0..10_000 {
+            if calls.load(Ordering::SeqCst) >= n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the waker was not called {n} times");
+    };
+    served.submit(write(1, 0)).unwrap();
+    ready(1);
+    let after_first = served.position().unwrap();
+    assert!(after_first > before);
+    assert_eq!(served.acknowledged(), None, "ahead of what was taken");
+    let mut done = Vec::new();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    let first = served.acknowledged().unwrap();
+    assert!(first >= before && first < after_first, "{first}");
+    served.submit(write(2, 1)).unwrap();
+    let read = Request {
+        id: RequestId(3),
+        op: Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        },
+    };
+    served.submit(read).unwrap();
+    ready(3);
+    let end = served.position().unwrap();
+    assert_eq!(
+        served.acknowledged(),
+        Some(first),
+        "ahead of what was taken"
+    );
+    while done.len() < 3 {
+        served.wait(&mut done, Duration::from_secs(10));
+    }
+    let second = served.acknowledged().unwrap();
+    assert!(second >= after_first && second < end, "{second}");
+    assert!(!served.gone());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "one call for each completion"
+    );
+    drop(served);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "and one when the worker ended"
+    );
+}
+
+/// A worker that has ended tells its owner: the waker is called, `gone`
+/// says so from then on, a request in flight stays in flight and a new
+/// one is not taken. Before that, `gone` is false.
+#[test]
+fn a_worker_that_has_ended_tells_its_owner() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    assert!(!served.gone());
+    served.panic_worker();
+    assert!(served.gone());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the owner is woken");
+    let flush = Request {
+        id: RequestId(1),
+        op: Op::Flush,
+    };
+    let refused = served.submit(flush).unwrap_err();
+    assert_eq!(refused.kind, SubmitErrorKind::Busy);
+    let mut done = Vec::new();
+    assert_eq!(served.poll(&mut done), 0);
+}
+
+/// The store's identity is the same at every open of one store and
+/// behind the worker, differs for a store made again for the same
+/// volume with another key, and is not the key.
+#[test]
+fn the_identity_belongs_to_the_store_and_is_not_its_key() {
+    let env = environments(0)[0];
+    let (disk, store) = env.fresh().unwrap();
+    let identity = store.identity();
+    drop(store);
+    let store = env.reopen(&disk).unwrap();
+    assert_eq!(store.identity(), identity);
+    let served = store.serve().unwrap();
+    assert_eq!(served.identity(), identity);
+    let key = *b"a key for tests!";
+    assert_ne!(identity, key);
+    assert_ne!(identity[..8], key[..8]);
+    assert_ne!(identity[8..], key[8..]);
+    assert_ne!(identity[..8], identity[8..]);
+    // The same volume, made again: another key, another store.
+    let other = SimDisk::new(7);
+    let again = Store::create_keyed(
+        other,
+        &env.config(),
+        Key(*b"another key here"),
+        env.options(),
+    )
+    .unwrap();
+    assert_ne!(again.identity(), identity);
+}
+
 /// Not a property of the store: a measurement, run by hand, of what the
 /// conformance suite notices by itself. For each defect it prints the
 /// cases that failed, and in how many of the eight environments. The

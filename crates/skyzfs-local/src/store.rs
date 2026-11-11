@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -91,6 +92,9 @@ impl Mutants {
     /// A neighbour counts as held by the log when the index names a
     /// record for it, durable or not, and is not saved.
     pub(crate) const UNSYNCED_COVERS: u32 = 1 << 19;
+    /// The acknowledged position is the end of the record, which is
+    /// the log's end, and not where the record starts.
+    pub(crate) const ACKNOWLEDGED_IS_END: u32 = 1 << 20;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -145,6 +149,27 @@ impl FailureObserver {
 impl std::fmt::Debug for FailureObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("FailureObserver")
+    }
+}
+
+/// What the worker of a [`Served`] store calls when its owner has
+/// something to take: a completion is ready, or the worker has ended.
+/// A transport that sleeps on something else, such as an event
+/// descriptor in its ring, is woken through it. It is called from the
+/// worker's thread and must return quickly.
+#[derive(Clone)]
+pub struct Waker(Arc<dyn Fn() + Send + Sync>);
+
+impl Waker {
+    /// A waker that calls `f`.
+    pub fn new(f: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for Waker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Waker")
     }
 }
 
@@ -366,6 +391,9 @@ struct Core<D: Dir> {
     /// With [`Mutants::ACK_BEFORE_APPEND`]: the write that was
     /// acknowledged and not appended.
     deferred: Option<(Kind, u64, u64, Vec<u8>)>,
+    /// Where the record of the mutation that was just executed starts:
+    /// taken by the driver when it hands out the completion.
+    appended: Option<Lsn>,
     mutants: Mutants,
 }
 
@@ -416,6 +444,15 @@ impl<D: Dir> Core<D> {
             self.log.mark_failed();
         }
         BlkError::Failed
+    }
+
+    /// See [`Store::identity`]: two keyed tags of fixed labels.
+    fn identity(&self) -> [u8; 16] {
+        let key = self.log.key();
+        let mut identity = [0u8; 16];
+        identity[..8].copy_from_slice(&siphash24(key, b"skyzfs store identity 1").to_le_bytes());
+        identity[8..].copy_from_slice(&siphash24(key, b"skyzfs store identity 2").to_le_bytes());
+        identity
     }
 
     /// Set or release the hold. A position inside the log must be a
@@ -472,6 +509,11 @@ impl<D: Dir> Core<D> {
             }
         };
         self.unsynced.push((appended.start, appended.end));
+        self.appended = Some(if self.mutants.has(Mutants::ACKNOWLEDGED_IS_END) {
+            appended.end
+        } else {
+            appended.start
+        });
         let (start, blocks) = (offset / BLOCK_SIZE, len / BLOCK_SIZE);
         match kind {
             Kind::Write => self.index.insert(
@@ -1020,6 +1062,9 @@ fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
 /// until the hold is released.
 pub struct Store<D: Dir> {
     core: Core<D>,
+    /// Where the newest record starts among the mutations whose
+    /// completions have been handed out.
+    acknowledged: Option<Lsn>,
     queue: VecDeque<Request>,
     /// The ids in flight: submitted and not yet returned.
     ids: BTreeSet<RequestId>,
@@ -1179,8 +1224,10 @@ impl<D: Dir> Store<D> {
                 failed: false,
                 unsynced: Vec::new(),
                 deferred: None,
+                appended: None,
                 mutants: options.mutants,
             },
+            acknowledged: None,
             queue: VecDeque::new(),
             ids: BTreeSet::new(),
         })
@@ -1228,6 +1275,32 @@ impl<D: Dir> Store<D> {
         self.core.failed
     }
 
+    /// The log position at which the newest record starts among the
+    /// mutations whose completions [`BlockTarget::wait`] has returned.
+    /// `None` before the first. A transport stores it before it tells
+    /// its client, and the next instance requires that the prefix it
+    /// recovered ends beyond it ([`Recovery::end`], and not the log's
+    /// end after the open, which the recovery's own mark has moved
+    /// past the place of a record that was lost): design §4.2, "what
+    /// was acknowledged". It is where the record
+    /// starts and not where it ends, so that the padding at a change of
+    /// segment and after a recovery cannot make the two differ, and it
+    /// stays valid when a checkpoint has given the record up: it is
+    /// then below the log's start, and still below its end.
+    pub fn acknowledged(&self) -> Option<Lsn> {
+        self.acknowledged
+    }
+
+    /// An identity of this store, derived from the log's key: the same
+    /// for every open of one store, and different for a store made
+    /// again in the same directory or for the same volume. It is not
+    /// the key and does not give it away. A position kept outside the
+    /// store ([`Store::acknowledged`]) is kept with it, so that one
+    /// recorded for another store counts as none.
+    pub fn identity(&self) -> [u8; 16] {
+        self.core.identity()
+    }
+
     /// Execute up to `limit` queued requests, in order, and collect
     /// their completions. Stops at a request that cannot proceed.
     fn run(&mut self, limit: usize, out: &mut Vec<Completion>) -> usize {
@@ -1239,6 +1312,9 @@ impl<D: Dir> Store<D> {
             match self.core.execute(op) {
                 Ok((result, buf)) => {
                     self.ids.remove(&id);
+                    if let Some(start) = self.core.appended.take() {
+                        self.acknowledged = Some(start);
+                    }
                     out.push(Completion { id, result, buf });
                     done += 1;
                 }
@@ -1309,6 +1385,9 @@ enum Command {
     Hold(Option<Lsn>, mpsc::Sender<Result<(), NotABoundary>>),
     Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
     Position(mpsc::Sender<Lsn>),
+    /// For tests: the worker panics.
+    #[cfg(test)]
+    Panic,
 }
 
 /// The store behind a worker thread.
@@ -1326,10 +1405,31 @@ enum Command {
 /// process is lost.
 pub struct Served {
     geometry: Geometry,
+    identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
-    completions: mpsc::Receiver<Completion>,
+    completions: mpsc::Receiver<(Completion, Option<Lsn>)>,
     ids: BTreeSet<RequestId>,
+    acknowledged: Option<Lsn>,
+    /// Set by the worker as it ends, however it ends.
+    ended: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+/// Says that the worker has ended, when the worker's closure is left:
+/// by its return or by a panic. The flag is set before the owner is
+/// woken, so an owner that is woken and looks finds it.
+struct Ending {
+    ended: Arc<AtomicBool>,
+    waker: Option<Waker>,
+}
+
+impl Drop for Ending {
+    fn drop(&mut self) {
+        self.ended.store(true, Ordering::SeqCst);
+        if let Some(Waker(wake)) = &self.waker {
+            wake();
+        }
+    }
 }
 
 impl<D> Store<D>
@@ -1341,17 +1441,31 @@ where
     /// Put the store behind a worker thread. Requests that are queued
     /// are executed first.
     pub fn serve(self) -> io::Result<Served> {
+        self.serve_with(None)
+    }
+
+    /// As [`Store::serve`], with a waker that the worker calls after
+    /// every completion it makes ready and when it ends.
+    pub fn serve_with(self, waker: Option<Waker>) -> io::Result<Served> {
         let Store {
             mut core,
+            acknowledged,
             mut queue,
             ids,
         } = self;
         let geometry = core.geometry;
+        let identity = core.identity();
         let (commands, inbox) = mpsc::channel::<Command>();
-        let (outbox, completions) = mpsc::channel::<Completion>();
+        let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>)>();
+        let ended = Arc::new(AtomicBool::new(false));
+        let ending = Ending {
+            ended: ended.clone(),
+            waker: waker.clone(),
+        };
         let worker = thread::Builder::new()
             .name("skyzfs-store".into())
             .spawn(move || {
+                let _ending = ending;
                 // Whether the request at the head was tried and cannot
                 // proceed until something changes.
                 let mut held = false;
@@ -1394,6 +1508,8 @@ where
                             let _ = reply.send(core.log.tail());
                             continue;
                         }
+                        #[cfg(test)]
+                        Some(Command::Panic) => panic!("a test asked the worker to panic"),
                         None => {}
                     }
                     let Some(Request { id, op }) = queue.pop_front() else {
@@ -1401,8 +1517,13 @@ where
                     };
                     match core.execute(op) {
                         Ok((result, buf)) => {
-                            if outbox.send(Completion { id, result, buf }).is_err() {
+                            let start = core.appended.take();
+                            let completion = Completion { id, result, buf };
+                            if outbox.send((completion, start)).is_err() {
                                 return;
+                            }
+                            if let Some(Waker(wake)) = &waker {
+                                wake();
                             }
                         }
                         Err(op) => {
@@ -1414,9 +1535,12 @@ where
             })?;
         Ok(Served {
             geometry,
+            identity,
             commands: Some(commands),
             completions,
             ids,
+            acknowledged,
+            ended,
             worker: Some(worker),
         })
     }
@@ -1460,8 +1584,41 @@ impl Served {
         result.recv().ok()
     }
 
-    fn took(&mut self, completion: Completion, out: &mut Vec<Completion>) {
+    /// See [`Store::acknowledged`]: exact for what [`BlockTarget::poll`]
+    /// and [`BlockTarget::wait`] have handed out, and never ahead of
+    /// it, although the worker may have appended more.
+    pub fn acknowledged(&self) -> Option<Lsn> {
+        self.acknowledged
+    }
+
+    /// See [`Store::identity`].
+    pub fn identity(&self) -> [u8; 16] {
+        self.identity
+    }
+
+    /// Whether the worker has ended, which only a panic in it does
+    /// while the store is served. Nothing more will complete: requests
+    /// in flight stay in flight, and [`BlockTarget::submit`] answers
+    /// "busy" from then on. The owner is told through the [`Waker`].
+    pub fn gone(&self) -> bool {
+        self.ended.load(Ordering::SeqCst)
+    }
+
+    /// For tests: make the worker panic, and wait until it has.
+    #[cfg(test)]
+    pub(crate) fn panic_worker(&mut self) {
+        self.send(Command::Panic);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+
+    fn took(&mut self, taken: (Completion, Option<Lsn>), out: &mut Vec<Completion>) {
+        let (completion, start) = taken;
         self.ids.remove(&completion.id);
+        if let Some(start) = start {
+            self.acknowledged = Some(start);
+        }
         out.push(completion);
     }
 }
