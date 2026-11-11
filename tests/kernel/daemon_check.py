@@ -113,9 +113,13 @@ EXPECTED = {
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4 and the pool suspends. The server is killed at rest '
-                                    '(writer stopped, pool synced, its counts still), so that the dropped record '
-                                    'is one that was acknowledged; that the last record of the log is then such a '
-                                    'write rests on what --recover-short counts, which the rig does not check',
+                                    '(writer stopped, pool synced, writes and requests in flight still for a '
+                                    'second, unstored 0), so that the log\'s last data record is the newest '
+                                    'acknowledged one. --recover-short N takes the log\'s end as if its last N data '
+                                    'records (writes, write-zeroes, discards) were not there; the daemon refuses '
+                                    'exactly when that end is at or before the stored acknowledged position, '
+                                    'which is where the newest acknowledged record starts. Killed under load '
+                                    'the line would be a coin toss (run 43064604469)',
                                     'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,

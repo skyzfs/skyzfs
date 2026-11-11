@@ -730,11 +730,22 @@ kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
 # the daemon served, and it was right). So the server is killed when
 # nothing is in flight: the writer is stopped, the pool synced, and the
 # server's counts of writes and of requests in flight must stand still
-# over a second. A writer is started again after the kill, so that the
+# over a second, with no position left unstored (`unstored 0`: a
+# position that could not be stored would leave the last record beyond
+# it). The rule, as the daemon's author states it: --recover-short N
+# takes the log's end as if its last N data records (writes,
+# write-zeroes, discards; not pads or marks, and a flush leaves none)
+# were not there, and the daemon refuses exactly when that end is at or
+# before the stored acknowledged position, which is where the newest
+# acknowledged record starts. At rest that record is the log's last
+# data record, so N=1 is refused. Two cases would not be: a log with no
+# data record, and, once the daemon checkpoints, a log whose last data
+# record a checkpoint has taken; this load stays far below the high
+# mark. A writer is started again after the kill, so that the
 # pool has work when its device is refused. If the server never came
 # to rest, the control is the rig's error and not a verdict.
 check_b_short() {
-    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held quiet=""
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet=""
     if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
     slog=$(new_slog bs)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
@@ -745,11 +756,11 @@ check_b_short() {
     lim 120 zpool sync "$pool" > "$OUT/bs-sync.log" 2>&1
     for i in $(seq 1 30); do
         w0=$(vol_stat "$SKYZFSD" "$dir" writes); sleep 1
-        w1=$(vol_stat "$SKYZFSD" "$dir" writes); held=$(vol_stat "$SKYZFSD" "$dir" held)
-        if [[ $w0 =~ ^[0-9]+$ ]] && [ "$w0" = "$w1" ] && [ "$w0" -gt 0 ] && [ "${held:-0}" = 0 ]; then quiet="$w1 writes, none in flight, for 1 s"; break; fi
+        w1=$(vol_stat "$SKYZFSD" "$dir" writes); held=$(vol_stat "$SKYZFSD" "$dir" held); unst=$(vol_stat "$SKYZFSD" "$dir" unstored)
+        if [[ $w0 =~ ^[0-9]+$ ]] && [ "$w0" = "$w1" ] && [ "$w0" -gt 0 ] && [ "$held" = 0 ] && [ "$unst" = 0 ]; then quiet="$w1 writes, none in flight, unstored 0, for 1 s"; break; fi
     done
     if [ -z "$quiet" ]; then
-        ctl recovered_log_too_short ERROR "the server did not come to rest before the kill (writes '${w0:-}' then '${w1:-}', in flight '${held:-}')"
+        ctl recovered_log_too_short ERROR "the server did not come to rest before the kill (writes '${w0:-}' then '${w1:-}', in flight '${held:-}', unstored '${unst:-}')"
         return
     fi
     pid=$(server_pid "$SKYZFSD" "$dir")
