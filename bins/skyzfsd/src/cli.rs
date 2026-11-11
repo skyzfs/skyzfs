@@ -27,7 +27,9 @@
 //! is a usage error:
 //!
 //! - `create --base-pattern SEED`: a base that is not zeros;
-//! - `serve --fail-log-after N`: the log fails after N more requests;
+//! - `serve --fail-log-after N`: the log fails once N requests that
+//!   append to it are completed: writes, write-zeroes and discards.
+//!   Reads and flushes do not count;
 //! - `serve --hold-one-request SECONDS:read:OFFSET`,
 //!   `SECONDS:write:OFFSET` or `SECONDS:flush`: the first request of
 //!   that kind that covers that byte is held for so long;
@@ -212,7 +214,8 @@ pub struct Serve {
 /// The fault hooks of `serve`: all off in a default build.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hooks {
-    /// The log fails after this many more requests.
+    /// The log fails once this many requests that append to it
+    /// (writes, write-zeroes, discards) are completed.
     pub fail_log_after: Option<u64>,
     /// One request to hold.
     pub hold: Option<Hold>,

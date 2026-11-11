@@ -146,6 +146,15 @@ struct Flags {
     user: AtomicBool,
 }
 
+/// What `--fail-log-after` counts: the requests completed so far that
+/// append to the log, which are writes, write-zeroes and discards. A
+/// read never touches the log and a flush appends no operation, so
+/// neither counts: a check that writes until the volume fails is then
+/// what trips the failure, and not the reads of the device's start.
+pub fn appended(counters: &skyzfs_ublk::pump::Counters) -> u64 {
+    counters.writes + counters.write_zeroes + counters.discards
+}
+
 /// The test build's faults, on the queue's thread after each turn. In
 /// a default build this does nothing and the options that ask for it
 /// are refused by the command line.
@@ -155,9 +164,7 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
     flags: &Flags,
     fail_after: &mut Option<u64>,
 ) {
-    let c = pump.counters();
-    let done = c.reads + c.writes + c.flushes + c.discards + c.write_zeroes;
-    let due = fail_after.is_some_and(|after| done >= after);
+    let due = fail_after.is_some_and(|after| appended(&pump.counters()) >= after);
     if due {
         *fail_after = None;
     }
@@ -481,6 +488,27 @@ fn run(serve: &Serve) -> Result<Exit, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--fail-log-after` counts what appends to the log: not reads,
+    /// not flushes, not what was refused or is in flight.
+    #[test]
+    fn the_log_fault_counts_writes_zeroes_and_discards_only() {
+        let counters = skyzfs_ublk::pump::Counters {
+            reads: 100,
+            flushes: 50,
+            refused: 9,
+            in_flight: 8,
+            ..Default::default()
+        };
+        assert_eq!(appended(&counters), 0);
+        let counters = skyzfs_ublk::pump::Counters {
+            writes: 3,
+            write_zeroes: 2,
+            discards: 1,
+            ..counters
+        };
+        assert_eq!(appended(&counters), 6);
+    }
 
     /// The mount that holds a path is the one with the longest mount
     /// point that is a prefix of it, by whole components.
