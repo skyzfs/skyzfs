@@ -265,7 +265,7 @@ check_a() {
     local dir=$WORK/vol-a pool=skzd-a q slog v f0 f1 label
     step "a: parameters"
     if ! vol_up "$SKYZFSD" "$dir"; then
-        for v in block_size max_request write_cache discard write_zeroes no_fua label_at_byte_0 flush_counted; do
+        for v in block_size max_request write_cache discard write_zeroes no_fua discard_carried_out write_zeroes_carried_out label_at_byte_0 flush_counted; do
             pin "$v" ERROR "the volume was not created or served (serve rc ${SERVE_RC:-none})"
         done
         return
@@ -287,6 +287,31 @@ check_a() {
     pin_is write_zeroes "write_zeroes_max_bytes $v" [ "$v" -gt 0 ]
     v=$(cat "$q/fua")
     pin_is no_fua "fua $v (1 would mean forced-unit-access writes are advertised)" [ "$v" = 0 ]
+
+    # Offered is not carried out: one discard and one write of zeros, by
+    # the server's own count. And which calls reach the device: the two
+    # ioctls, and fallocate in its three forms.
+    local d0 z0 d1 z1 at=$((1 << 30)) probes=""
+    d0=$(vol_stat "$SKYZFSD" "$dir" discards); z0=$(vol_stat "$SKYZFSD" "$dir" write_zeroes)
+    lim 30 blkdiscard -f -o "$at" -l 1048576 "$BDEV" > "$OUT/a-blkdiscard.log" 2>&1; rc=$?
+    sleep 1.2; d1=$(vol_stat "$SKYZFSD" "$dir" discards)
+    v=no; [ "$rc" = 0 ] && [ "${d1:-0}" -gt "${d0:-0}" ] && v=yes
+    pin_is discard_carried_out "blkdiscard of 1 MiB: rc $rc; the server's discards went from ${d0:-?} to ${d1:-?}" [ "$v" = yes ]
+    lim 30 blkdiscard -f -z -o "$at" -l 1048576 "$BDEV" > "$OUT/a-blkzeroout.log" 2>&1; rc=$?
+    sleep 1.2; z1=$(vol_stat "$SKYZFSD" "$dir" write_zeroes)
+    v=no; [ "$rc" = 0 ] && [ "${z1:-0}" -gt "${z0:-0}" ] && v=yes
+    pin_is write_zeroes_carried_out "blkdiscard -z (BLKZEROOUT) of 1 MiB: rc $rc; the server's write_zeroes went from ${z0:-?} to ${z1:-?}" [ "$v" = yes ]
+    for v in "punch-hole keep-size no-hide-stale:7" "punch-hole keep-size:3" "zero-range keep-size:17"; do
+        probes+="fallocate ${v%:*}: $(lim 30 python3 -I -c '
+import ctypes, os, sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+fd = os.open(sys.argv[1], os.O_RDWR)
+r = libc.fallocate(fd, int(sys.argv[2]), int(sys.argv[3]), 1048576)
+print("ok" if r == 0 else os.strerror(ctypes.get_errno()))' "$BDEV" "${v#*:}" "$at" 2>&1 | tail -n 1); "
+    done
+    sleep 1.2
+    rec a_fallocate "$probes; after them the server counts discards $(vol_stat "$SKYZFSD" "$dir" discards), write_zeroes $(vol_stat "$SKYZFSD" "$dir" write_zeroes) (before: ${d1:-?}, ${z1:-?})"
 
     slog=$(new_slog a)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/a-create.log" 2>&1; then

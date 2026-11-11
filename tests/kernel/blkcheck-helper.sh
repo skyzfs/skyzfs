@@ -78,6 +78,14 @@ kill)
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
     kill -USR1 "$pid" 2>/dev/null || die "serve ($pid) was not there"
+    # The suite's next request must meet a failed volume: wait until the
+    # server says so, or is gone.
+    for _ in $(seq 1 100); do
+        [ "$(status_of state)" = failed ] && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.05
+    done
+    [ "$(status_of state)" = failed ] || ! kill -0 "$pid" 2>/dev/null || die "the server did not say failed within 5 s of SIGUSR1"
     DEV=""
     ;;
 reopen)

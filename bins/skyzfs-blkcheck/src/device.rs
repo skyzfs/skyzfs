@@ -28,6 +28,8 @@ const UNSUPPORTED: &str = "not at a block device: ";
 struct DeviceTarget {
     number: u64,
     file: Arc<File>,
+    /// The path, if it is a block device and not a plain file.
+    device: Option<Arc<str>>,
     geometry: Geometry,
     done_tx: Sender<Completion>,
     done_rx: Receiver<Completion>,
@@ -46,7 +48,11 @@ fn io_error(e: &std::io::Error) -> BlkError {
 }
 
 /// Carry out one operation with plain system calls.
-fn perform(file: &File, op: Op) -> (Result<(), BlkError>, Option<skyzfs_blk::Buf>) {
+fn perform(
+    file: &File,
+    device: Option<&str>,
+    op: Op,
+) -> (Result<(), BlkError>, Option<skyzfs_blk::Buf>) {
     match op {
         Op::Read { offset, mut buf } => {
             let r = file
@@ -59,16 +65,37 @@ fn perform(file: &File, op: Op) -> (Result<(), BlkError>, Option<skyzfs_blk::Buf
             (r, Some(data))
         }
         Op::Flush => (file.sync_all().map_err(|e| io_error(&e)), None),
-        // On a block device: punch-hole with no-hide-stale is a discard,
-        // zero-range is a write of zeros that keeps the blocks.
+        // A discard of a block device is the BLKDISCARD ioctl. There
+        // is no call for it without `unsafe`, and the fallocate that
+        // means the same (punch-hole with no-hide-stale) came back
+        // "unsupported" from the rig's ublk devices (check a of the rig
+        // observes which calls a device takes), so util-linux issues it. On a plain file, punch a hole.
         Op::Discard { offset, len } => {
-            let flags = FallocateFlags::PUNCH_HOLE
-                | FallocateFlags::KEEP_SIZE
-                | FallocateFlags::NO_HIDE_STALE;
-            let r = fallocate(file, flags, offset, len)
-                .map_err(|e| BlkError::Io(std::io::Error::from(e).kind()));
+            let r = match device {
+                Some(path) => Command::new("blkdiscard")
+                    .arg("--force")
+                    .args(["--offset", &offset.to_string()])
+                    .args(["--length", &len.to_string()])
+                    .arg(path)
+                    .output()
+                    .map_err(|e| io_error(&e))
+                    .and_then(|out| {
+                        if out.status.success() {
+                            Ok(())
+                        } else {
+                            Err(BlkError::Io(std::io::ErrorKind::Other))
+                        }
+                    }),
+                None => {
+                    let flags = FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE;
+                    fallocate(file, flags, offset, len)
+                        .map_err(|e| BlkError::Io(std::io::Error::from(e).kind()))
+                }
+            };
             (r, None)
         }
+        // Zero-range on a block device is a write of zeros that keeps
+        // the blocks.
         Op::WriteZeroes { offset, len } => {
             let flags = FallocateFlags::ZERO_RANGE | FallocateFlags::KEEP_SIZE;
             let r = fallocate(file, flags, offset, len)
@@ -99,10 +126,15 @@ impl DeviceTarget {
         }
         let geometry =
             Geometry::new(size / SIZE_UNIT, depth, false).map_err(|e| err("geometry of", &e))?;
+        let is_device = file
+            .metadata()
+            .map(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type()))
+            .map_err(|e| err("type of", &e))?;
         let (done_tx, done_rx) = channel();
         Ok(Self {
             number,
             file: Arc::new(file),
+            device: is_device.then(|| Arc::from(path)),
             geometry,
             done_tx,
             done_rx,
@@ -175,10 +207,11 @@ impl BlockTarget for DeviceTarget {
             return Ok(());
         }
         let file = Arc::clone(&self.file);
+        let device = self.device.clone();
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
             let Request { id, op } = request;
-            let (result, buf) = perform(&file, op);
+            let (result, buf) = perform(&file, device.as_deref(), op);
             // The receiver is gone only when the target was dropped.
             let _ = tx.send(Completion { id, result, buf });
         });

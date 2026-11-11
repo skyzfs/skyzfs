@@ -100,6 +100,7 @@ status)
         esac
     fi
     [ "$(stat_field 7)" = 0 ] || state=failed
+    [ ! -e "$DIR/fail-now" ] || state=failed      # SIGUSR1 has been taken
     [ ! -e "$(note)" ] || state=failed
     echo "state $state"
     [ -z "$n" ] || echo "device /dev/ublkb$n"
@@ -166,7 +167,9 @@ serve)
     # No note, and yet the counters say failed: the note was emptied, as
     # a reboot empties /run. The stand-in has no log to check, so the
     # volume simply starts again.
-    [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || { : > "$STATS"; unlink "$DIR/fail-now" 2>/dev/null; }
+    [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || : > "$STATS"
+    # A volume that is served starts whole: the signal to fail is gone.
+    unlink "$DIR/fail-now" 2>/dev/null
     export SKZ_STATS=$STATS
     export SKZ_FAIL_FILE=$DIR/fail-now      # SIGUSR1, below
     [ -z "$FAIL_AFTER" ] || export SKZ_FAIL_AFTER=$FAIL_AFTER
@@ -175,7 +178,10 @@ serve)
     if [ -n "$n" ] && [ "$(dev_state "$n")" = QUIESCED ]; then
         lim 90 ublk recover -n "$n" >&2 9>&- || { echo "recovery of /dev/ublkb$n failed" >&2; exit 1; }
     else
-        n=0; while [ -e "/dev/ublkc$n" ]; do n=$((n + 1)); done
+        # A number no device has: one deleted under an open pool keeps
+        # its number in the driver after its names are gone from /dev.
+        taken=" $(lim 20 ublk list 2>/dev/null | sed -n 's/^dev id \([0-9]*\):.*/\1/p' | tr '\n' ' ')"
+        n=0; while [ -e "/dev/ublkc$n" ] || [[ $taken == *" $n "* ]]; do n=$((n + 1)); done
         echo "$n" > "$DEVREC"
         # fsync of this one file. Not sync(1): where it syncs every
         # filesystem it never returns while a pool is suspended.
@@ -196,7 +202,14 @@ serve)
     STOP=""
     trap 'STOP=1' TERM INT
     # As the daemon's test build: SIGUSR1 makes the log fail for good.
-    trap ': > "$DIR/fail-now"' USR1
+    # The note is written at once, so that a server killed straight
+    # after is still a failed volume to the next serve.
+    fail_now() {
+        : > "$DIR/fail-now"
+        mkdir -p "$RUN_DIR"
+        { echo "boot $(cat /proc/sys/kernel/random/boot_id)"; echo "held $(held_open "/dev/ublkb$n")"; } > "$NOTE"
+    }
+    trap fail_now USR1
     echo "ready /dev/ublkb$n"
     while :; do
         if [ -n "$STOP" ]; then
