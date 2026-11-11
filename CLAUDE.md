@@ -97,6 +97,17 @@ when it merges.
   cancels the run of the older one, and a cold build takes over ten
   minutes, so let a run finish before pushing again when you need it
   green.
+- **Package mirrors.** Every job that installs packages calls
+  `bash tests/lib/apt-fallback.sh` right after checkout; a new job that
+  uses apt needs that step too. When a name of the runner image's Ubuntu
+  mirrors does not resolve, the script replaces the mirror list by one
+  mirror outside `ubuntu.com` (named in the script) and says so in the
+  job's summary; otherwise it changes nothing, and it does nothing on a
+  runner that is not GitHub-hosted. apt's signature checks are not
+  touched. `skyzfs-mirror-canary.yml` (dispatch only; input `force`
+  takes the fallback path on a healthy day) tries it for real. A job
+  that still fails on an unresolved name is an outage, not the change:
+  report it and do not rerun blind.
 - **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
   that touches `tests/kernel/` or the workflow, and by dispatch. It
   fails when a property the design depends on does not hold on the
