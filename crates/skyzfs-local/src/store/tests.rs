@@ -3473,3 +3473,168 @@ fn a_long_log_found_at_the_start_is_worked_off_without_a_request() {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
+/// The owner is woken for a completion only after the log state that
+/// has the completion's record is shown: a waker that looks at the
+/// shown state at each wake, on the worker's own thread, finds the
+/// log's end beyond where it was before the write, at the first wake
+/// after the write. And the caller of a checkpoint finds the log as
+/// the checkpoint left it when the call returns. What is asserted does
+/// not rest on timing: the state is read by the waker, on the worker's
+/// thread, between the worker's send and its next look at its queue,
+/// and the test waits for that wake before it reads what was seen.
+#[test]
+fn the_log_shown_has_a_completion_when_the_owner_is_woken_for_it() {
+    use std::sync::Mutex;
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let shown: Arc<Mutex<Option<Arc<Shown>>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<LogState>>> = Arc::default();
+    let waker = Waker::new({
+        let (shown, seen) = (shown.clone(), seen.clone());
+        move || {
+            if let Some(shown) = shown.lock().unwrap().as_ref() {
+                seen.lock().unwrap().push(shown.state());
+            }
+        }
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    *shown.lock().unwrap() = Some(served.log.clone());
+    let before = served.log_state();
+    for (id, block) in [(1, 0), (2, 5)] {
+        let end = served.log_state().end;
+        let wakes = seen.lock().unwrap().len();
+        served
+            .submit(Request {
+                id: RequestId(id),
+                op: Op::Write {
+                    offset: block * BLOCK,
+                    data: Buf::filled(1, 9),
+                },
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        // The completion can be taken before the worker has run the
+        // waker: wait for this request's wake, whatever the scheduling.
+        let asked = std::time::Instant::now();
+        while seen.lock().unwrap().len() <= wakes {
+            assert!(
+                asked.elapsed() < Duration::from_secs(10),
+                "write {id}: the owner was never woken for it"
+            );
+            std::thread::yield_now();
+        }
+        let at_the_wake = seen.lock().unwrap()[wakes];
+        assert!(
+            at_the_wake.end > end,
+            "write {id}: woken with the log shown ending at {}, as before the write ({end})",
+            at_the_wake.end
+        );
+    }
+    assert!(served.log_state().end > before.end);
+    served
+        .submit(Request {
+            id: RequestId(3),
+            op: Op::Flush,
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    served.checkpoint().unwrap();
+    let after = served.log_state();
+    assert!(
+        after.start > before.start,
+        "a checkpoint that has returned is shown: {after:?}, before {before:?}"
+    );
+}
+
+/// A served store with marks and a hold, twelve writes of 16 blocks
+/// and a flush behind it, and the worker at rest: the rule has been
+/// asked after the flush and found nothing below the hold.
+fn served_at_rest_behind_a_hold(first: u64) -> (Served, Lsn) {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    let start = store.log_start();
+    store.set_hold(Some(start)).expect("a hold at the start");
+    let mut served = store.serve().unwrap();
+    let mut middle = start;
+    let run = |served: &mut Served, id: u64, op: Op| {
+        served
+            .submit(Request {
+                id: RequestId(id),
+                op,
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()));
+    };
+    for n in 0..12u64 {
+        if n == first {
+            middle = served.position().unwrap();
+        }
+        let op = Op::Write {
+            offset: n * 16 * BLOCK,
+            data: Buf::filled(16, 1),
+        };
+        run(&mut served, n, op);
+    }
+    run(&mut served, 99, Op::Flush);
+    // Answered behind the rule's look after the flush: the worker is
+    // at rest when this returns.
+    served.position().unwrap();
+    let state = served.log_state();
+    assert!(state.live() > MARKS.high, "{state:?}");
+    assert_eq!((state.steps, state.stepping), (0, false), "{state:?}");
+    (served, middle)
+}
+
+/// The log comes to what `there` asks by itself, with no request.
+fn comes_by_itself(served: &Served, what: &str, there: impl Fn(&LogState) -> bool) -> LogState {
+    let asked = std::time::Instant::now();
+    loop {
+        let state = served.log_state();
+        if there(&state) && !state.stepping {
+            return state;
+        }
+        assert!(
+            asked.elapsed() < Duration::from_secs(10),
+            "{what}: not within 10 s with no request: {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The worker asks the rule of the marks again when a hold changes,
+/// with no request to follow: a hold released above the high mark lets
+/// the log come below the low mark by itself, and a hold moved forward
+/// lets it come up to the new hold, where the worker rests again.
+/// Without that the worker slept on its queue with a long log until
+/// the next request.
+#[test]
+fn a_hold_that_goes_or_moves_lets_the_idle_worker_checkpoint() {
+    let (served, _) = served_at_rest_behind_a_hold(0);
+    served.set_hold(None).expect("released");
+    let state = comes_by_itself(&served, "after the hold was released", |s| {
+        s.live() < MARKS.low
+    });
+    assert!(state.steps > 0, "{state:?}");
+
+    let (served, middle) = served_at_rest_behind_a_hold(6);
+    served.set_hold(Some(middle)).expect("moved forward");
+    let state = comes_by_itself(&served, "after the hold moved", |s| s.start == middle.0);
+    assert!(state.steps > 0, "{state:?}");
+    // It rests there: what is left is above the low mark and behind
+    // the hold.
+    served.position().unwrap();
+    let rests = served.log_state();
+    assert_eq!(
+        (rests.start, rests.stepping),
+        (middle.0, false),
+        "{rests:?}"
+    );
+    assert!(rests.live() >= MARKS.low, "{rests:?}");
+    assert_eq!(rests.steps, state.steps, "no step beyond the hold");
+}

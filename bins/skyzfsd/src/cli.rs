@@ -40,7 +40,10 @@
 //! - `serve --step-pause-ms N` or `serve --step-pause-until PATH`:
 //!   every checkpoint step waits for N ms or until a file of that
 //!   path exists (a step that arrives there first makes the empty
-//!   file `PATH.reached`). One of the two at most. `--step-pause-at POINT`
+//!   file `PATH.reached`, and nothing here ever removes it or `PATH`:
+//!   a caller that uses a path again removes both files first, or the
+//!   next step does not wait and `PATH.reached` says nothing new). One
+//!   of the two at most. `--step-pause-at POINT`
 //!   says where, and needs one of them: `saved` (the blocks the step
 //!   writes over are saved), `written` (the home image is written and
 //!   not synced; this unless given), `synced` (the home image is
