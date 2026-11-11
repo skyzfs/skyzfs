@@ -306,11 +306,13 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
         assert!(setup.detach().out.starts_with("nothing to detach"));
     }
 
-    // Deleted and still held: 0, and said on standard error.
+    // Deleted and still held: 6, and said on standard error. A script
+    // can tell it from "nothing of this volume is left attached".
     let mut setup = Setup::new().attached(DeviceState::Waiting);
     setup.kernel.held.push(4);
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::DeletedHeld);
+    assert_eq!(output.exit.status(), 6);
     assert!(output.out.is_empty());
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
@@ -320,16 +322,17 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
     let mut setup = Setup::new().attached(DeviceState::Dead);
     setup.kernel.held.push(4);
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::DeletedHeld);
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
 
     // No server, no note, the recorded values: deleted before and
-    // still held, or another's. 0, said, nothing done, the record stays.
+    // still held, or another's. Whose it is cannot be told: 1, said in
+    // its own words, nothing done, the record stays.
     let mut setup = Setup::new().attached(DeviceState::Dead);
     setup.records().remove_note(4).expect("the note");
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::Error);
     assert!(output.out.is_empty());
     assert!(
         output.err.contains("has no server and no note"),

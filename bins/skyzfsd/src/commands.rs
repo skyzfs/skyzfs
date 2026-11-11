@@ -251,12 +251,23 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// | What was found | Exit status | Said on |
 /// |---|---|---|
 /// | no device of this boot is the volume's | 0 | standard output |
-/// | the device was deleted | 0 | standard output |
-/// | it was deleted and something still holds it open | 0 | standard error |
-/// | a device with no server and no note, with the recorded values: deleted before and still held, or another's | 0 | standard error |
+/// | the device was deleted, and its number is free | 0 | standard output |
+/// | it was deleted and something still holds it open | 6 | standard error |
+/// | a device with no server and no note, with the recorded values: deleted before and still held, or another's | 1 | standard error |
 /// | the device under the recorded number is not known to be the volume's | 1 | standard error |
 /// | a server is live on it | 5 | standard error |
 /// | a daemon holds the volume's lock, after 2 s of trying | 5 | standard error |
+///
+/// **Only 0 says that nothing of this volume is left attached on this
+/// node**, so that the volume may be served elsewhere on it. With 6
+/// the device is deleted and a client (a pool that was not exported)
+/// still holds it under its number; with 1 the device was left as it
+/// is because whose it is cannot be told; with 5 nothing was done.
+///
+/// The driver's delete does not wait, so "still held" is said only of
+/// a device that is still there 5 s after the delete
+/// ([`GONE_RETRIES`]): a detach of a held device takes that much
+/// longer.
 pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Output {
     let mut records = match files(volume, boot) {
         Ok(records) => records,
@@ -282,7 +293,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
         ),
         Detached::Deleted(n) => Output::said(Exit::Done, &format!("deleted /dev/ublkb{n}"), ""),
         Detached::DeletedHeld(n) => Output::said(
-            Exit::Done,
+            Exit::DeletedHeld,
             "",
             &format!(
                 "deleted /dev/ublkb{n}; something still holds it open, and it keeps its number \
@@ -291,7 +302,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
         ),
 
         Detached::DeadNoNote(n) => Output::said(
-            Exit::Done,
+            Exit::Error,
             "",
             &format!(
                 "device {n} under the recorded number has no server and no note: it is this \
