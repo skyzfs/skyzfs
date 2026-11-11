@@ -24,3 +24,16 @@ Nothing here ran on a kernel.
   line altered or missing with a difference or a rig error.
 - `overlap-tear.py` on a plain file with direct I/O here: 10,096 rounds in
   3 s, none torn.
+
+## Second look, at 4a46b6a
+
+- `stamp-slack.py`: how far the two stamps `overlap-tear.py` takes stand
+  outside the system call between them, with two threads released by a
+  barrier as there, around a call that does nothing. In this container,
+  6,000 calls: median 10 µs, 90th percentile 40 µs, 99th 106 µs. A round
+  is counted "together" when the later begin stamp is before the earlier
+  end stamp, so two requests that missed each other at the device by less
+  than this are counted as in flight together.
+- `ublksrvd_look` with `0000.json`, `0008.json`, `08.pid`,
+  `ublk_0008.json`, `0010.json` in the directory: each is listed under
+  its own number and no other.
