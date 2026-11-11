@@ -221,10 +221,11 @@ impl BlockTarget for DeviceTarget {
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
             let Request { id, op } = request;
-            let (mut result, buf) = perform(&file, device.as_deref(), op);
-            if matches!(result, Err(BlkError::Io(_))) && failed.load(Ordering::SeqCst) {
-                result = Err(BlkError::Failed);
-            }
+            let (result, buf) = perform(&file, device.as_deref(), op);
+            // Looked at when the call has returned, not when it began:
+            // a request in flight while the log fails is answered by
+            // the failure.
+            let result = after_failure(result, failed.load(Ordering::SeqCst));
             // The receiver is gone only when the target was dropped.
             let _ = tx.send(Completion { id, result, buf });
         });
@@ -247,6 +248,17 @@ impl BlockTarget for DeviceTarget {
             }
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => 0,
         }
+    }
+}
+
+/// What a result means once the log has been made to fail. The server
+/// then deletes its device and exits, so whatever I/O error the kernel
+/// answers with for a deleted device is the volume having failed. A
+/// request that succeeds stays a success, for the suite to judge.
+fn after_failure(result: Result<(), BlkError>, failed: bool) -> Result<(), BlkError> {
+    match result {
+        Err(BlkError::Io(_)) if failed => Err(BlkError::Failed),
+        other => other,
     }
 }
 
@@ -333,8 +345,16 @@ impl Harness for DeviceHarness {
     }
 
     fn fail_log(&mut self, target: &mut DeviceTarget) -> Result<(), HarnessError> {
-        self.helper("fail", target.number)?;
+        // Before the helper runs, not after it returns: the helper
+        // waits for the server to exit, and a request in flight in that
+        // time comes back with the kernel's I/O error while the helper
+        // is still running. If the helper could not make the log fail,
+        // the volume has not failed.
         target.failed.store(true, Ordering::SeqCst);
+        if let Err(e) = self.helper("fail", target.number) {
+            target.failed.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -525,6 +545,77 @@ mod tests {
             "the resubmission was issued"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// An I/O error counts as "the volume has failed" only after the
+    /// log was made to fail; nothing else is touched.
+    #[test]
+    fn an_io_error_after_the_failure_is_the_volume_having_failed() {
+        let io = Err(BlkError::Io(std::io::ErrorKind::Other));
+        assert_eq!(after_failure(io, true), Err(BlkError::Failed));
+        assert_eq!(after_failure(io, false), io, "before the failure");
+        assert_eq!(after_failure(Ok(()), true), Ok(()), "a success stays one");
+        assert_eq!(
+            after_failure(Err(BlkError::ZeroLength), true),
+            Err(BlkError::ZeroLength),
+            "another error stays what it is"
+        );
+        assert_eq!(
+            after_failure(Err(BlkError::Failed), false),
+            Err(BlkError::Failed)
+        );
+    }
+
+    fn harness(name: &str, script: &str) -> (DeviceHarness, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("blkcheck-{}-{name}.sh", std::process::id()));
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let harness = DeviceHarness {
+            command: path.to_str().unwrap().to_string(),
+            depth: 16,
+            timeout: Duration::from_secs(30),
+            capabilities: Capabilities::ALL,
+            next: 0,
+            last: None,
+        };
+        (harness, path)
+    }
+
+    /// The volume counts as failed from the moment the helper is asked
+    /// to make the log fail: a request in flight returns with the
+    /// kernel's I/O error while the helper is still waiting for the
+    /// server to exit, and must be reported as failed, not as an error.
+    #[test]
+    fn the_volume_counts_as_failed_while_the_helper_runs() {
+        let (mut t, path) = target("flag");
+        let (mut h, script) = harness("slow", "sleep 1");
+        let flag = Arc::clone(&t.failed);
+        let watcher = std::thread::spawn(move || {
+            // Well inside the helper's second.
+            std::thread::sleep(Duration::from_millis(400));
+            flag.load(Ordering::SeqCst)
+        });
+        h.fail_log(&mut t).unwrap();
+        assert!(
+            watcher.join().unwrap(),
+            "the flag was set only after the helper returned"
+        );
+        assert!(t.failed.load(Ordering::SeqCst));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
+    }
+
+    /// A helper that could not make the log fail leaves the volume as
+    /// it was: later I/O errors are errors.
+    #[test]
+    fn a_failure_the_helper_could_not_cause_is_not_a_failure() {
+        let (mut t, path) = target("nofail");
+        let (mut h, script) = harness("refuses", "exit 1");
+        assert!(h.fail_log(&mut t).is_err());
+        assert!(!t.failed.load(Ordering::SeqCst));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
     }
 
     /// A request submitted after the kill under a new id is issued as

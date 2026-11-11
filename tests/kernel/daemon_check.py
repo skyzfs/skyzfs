@@ -6,8 +6,11 @@
 Reads OUT/results.tsv and compares every pin and every control with the
 table EXPECTED below. Exit status 0 if they are equal, 1 if a pin or a
 control differs from the table in either direction, 2 if the rig itself
-failed: a line is missing, or a stage that judges nothing went wrong
-(ERROR). A rig error is never a verdict on the server.
+failed: a line is missing, a stage that judges nothing went wrong
+(ERROR), the run names a check or wrote a pin this table does not know,
+a pin was written twice with two results, an observation says it did
+not run, or nothing was checked at all. A rig error is never a verdict
+on the server.
 
 Changing what the rig catches means changing EXPECTED on purpose.
 """
@@ -43,11 +46,19 @@ EXPECTED = {
 
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
-                            'a clean scrub, every file as the writer recorded it (§4.1, M1 exit)'),
+                            'a clean scrub, every file as the writer recorded it (§4.1, M1 exit). Writes '
+                            'must have been in flight just before at least nine kills in ten, or the run '
+                            'is a rig error: a kill with none tests a restart, not the reissue'),
     'pin_second_serve_refused': ('b', 'PASS', WAITING, 'a second serve exits with an error and disturbs nothing (§4.2)'),
     'pin_orderly_stop_keeps_device': ('b', 'PASS', WAITING,
                                       'after SIGTERM the device waits for a server and the pool carries on (§4.2); '
                                       'the stand-in stops by being killed'),
+    'pin_detach_refused_while_served': ('b', 'PASS', WAITING,
+                                        'detach while a server holds the volume exits 5 and changes nothing: the '
+                                        'server, the device, the attachment record and the notes are as before (§4.2)'),
+    'pin_detach_frees_number': ('b', 'PASS', WAITING,
+                                'with the server stopped and the pool exported, detach exits 0 and the device '
+                                'number is free again (§4.2)'),
     'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
                                          'no serve after a kill is refused by the check of what was acknowledged '
                                          '(§4.2): a false alarm would suspend a healthy pool'),
@@ -73,19 +84,24 @@ EXPECTED = {
                                              'failure answers again: the reason a failed volume is not served '
                                              'again (§4.2). A device deleted under the pool does not come back: '
                                              'see tests/kernel/failed-volume-obs.sh'),
-    'pin_failure_note_under_run': ('d', 'PASS', WAITING, 'the note of a failure is under /run by default (§4.2)'),
+    'pin_failure_note_under_run': ('d', 'PASS', WAITING,
+                                   'the note of a failure is /run/skyzfsd/v-<dev>-<ino>/failed by default, the '
+                                   'device and inode numbers of the volume\'s directory in hex (§4.2)'),
     'pin_failed_unheld_volume_serves_when_acknowledged': ('d', 'PASS', WAITING,
                                                           'a volume that failed with no client attached is served '
                                                           'again only when the operator acknowledges (§4.2)'),
 
     'pin_held_request_completes': ('e', 'PASS', SERVER,
-                                   'a request held for minutes completes; the kernel neither times it out nor '
-                                   'reports an error (§4.2, a pin for M3)'),
+                                   'a request held for minutes completes, by the reader\'s own clock and by the '
+                                   'server\'s; the kernel neither times it out nor reports an error (§4.2, a pin '
+                                   'for M3)'),
     'pin_unstored_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes'),
     'ctl_hold_too_short': ('e', 'FAIL', SERVER, 'control: a request held 5 s is not accepted as one held for minutes'),
 }
-# Observations: recorded, not judged, but the run is incomplete without them.
+# Observations: recorded, not judged, but the run is incomplete without
+# them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
@@ -110,15 +126,36 @@ C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 REFERENCE_ONLY = set()
 
 
+CHECKS = ('a', 'b', 'c', 'd', 'e')
+JUDGED = ('pin_', 'ctl_', 'case_')
+
+
 def read_results(path):
-    """key -> value, the last line for a key winning."""
-    out = {}
+    """-> (key -> value, the last line for a key winning; rig errors).
+
+    A pin, a control or a case written twice with two results is a rig
+    error: the last line would otherwise decide which one counts.
+    """
+    out, twice = {}, []
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             key, _, value = line.rstrip('\n').partition('\t')
-            if key:
-                out[key] = value
-    return out
+            if not key:
+                continue
+            if key.startswith(JUDGED) and key in out and out[key].partition(':')[0] != value.partition(':')[0]:
+                twice.append(f"{key}: written twice, as {out[key].partition(':')[0]} and as {value.partition(':')[0]}")
+            out[key] = value
+    return out, twice
+
+
+def parse_checks(text):
+    """-> (set of checks, rig errors): names the rig knows, and at least one."""
+    names = text.split()
+    unknown = [n for n in names if n not in CHECKS]
+    errors = [f"checks: '{n}' is not a check; the checks are {' '.join(CHECKS)}" for n in unknown]
+    if not names:
+        errors.append('checks: none was asked for, so nothing was checked')
+    return {n for n in names if n in CHECKS}, errors
 
 
 def judge(results, checks, impl='reference'):
@@ -146,11 +183,27 @@ def judge(results, checks, impl='reference'):
             differs.append(f'{name}: expected {want}, got {got}: {detail}')
         rows.append((name, want, got, detail, basis, claim))
     for name, (check, _) in OBSERVED.items():
-        if check in checks and name not in results:
+        if check not in checks:
+            continue
+        if name not in results:
             errors.append(f'{name}: no observation')
+        elif results[name].startswith('not run'):
+            errors.append(f'{name}: {results[name]}')
+    # A pin or a control the table does not know is not judged by
+    # anything: the rig and the table have come apart.
+    for name in results:
+        if name.startswith(('pin_', 'ctl_')) and name not in EXPECTED:
+            errors.append(f'{name}: not in the table EXPECTED')
     if 'c' in checks:
         judge_cases(results, rows, differs, errors, impl)
+    if not rows and not errors:
+        errors.append('the run has no row to judge: nothing was checked')
     return rows, differs, errors
+
+
+def tally(words):
+    """'PASS 1, WEAKER 15, NOT_EXERCISED 10' from the declared word of each case."""
+    return ', '.join(f'{w} {sum(1 for x in words if x == w)}' for w in C_RESULTS[:3])
 
 
 def judge_cases(results, rows, differs, errors, impl='reference'):
@@ -176,6 +229,11 @@ def judge_cases(results, rows, differs, errors, impl='reference'):
         rows.append((f'case_{name}', want, got, detail, basis, 'conformance suite of skyzfs-blk, through the kernel'))
     if run is not None and run.startswith('ok') and not cases:
         errors.append('check c ran and left no case')
+    # The case lines must be the cases the suite declared, all of them:
+    # a suite that stopped early, or a line lost, is not a shorter pass.
+    wanted = [v.partition(': declared ')[2].partition(': ')[0] for v in cases.values()]
+    if declared is not None and cases and tally(wanted) != declared:
+        errors.append(f'check c left {len(cases)} cases declared {tally(wanted)}; the suite declared {declared}')
 
 
 def render(results, rows, differs, errors, checks):
@@ -207,15 +265,16 @@ def main(argv=None):
     ap.add_argument('out')
     ap.add_argument('--checks', default='a b c d e')
     args = ap.parse_args(argv)
-    checks = set(args.checks.split())
+    checks, asked_wrong = parse_checks(args.checks)
     path = os.path.join(args.out, 'results.tsv')
     try:
-        results = read_results(path)
+        results, twice = read_results(path)
     except OSError as e:
         print(f'The rig left no results: {e}')
         return 2
     impl = 'reference' if results.get('impl', '').startswith('reference') else 'daemon'
     rows, differs, errors = judge(results, checks, impl)
+    errors = asked_wrong + twice + errors
     if results.get('setup') != 'ok':
         errors.insert(0, f"setup: {results.get('setup', 'did not finish')}")
     print(render(results, rows, differs, errors, checks))

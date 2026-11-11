@@ -79,7 +79,10 @@ except OSError as e:
 sys.exit(1)' "$1"
     case $? in 1) echo 0 ;; *) echo 1 ;; esac
 }
-note() { echo "$RUN_DIR/$(printf '%s' "$(cd "$DIR" && pwd)" | sha256sum | cut -c1-16).failed"; }
+# The note of a failure, where the daemon keeps it: under the run
+# directory, in a directory named by the device and inode numbers of
+# the volume's directory, in hex.
+note() { echo "$RUN_DIR/v-$(stat -c %D "$DIR")-$(printf '%x' "$(stat -c %i "$DIR")")/failed"; }
 
 case $CMD in
 create)
@@ -218,7 +221,7 @@ serve)
         kill -0 "$pid" 2>/dev/null || { echo "the server died" >&2; exit 1; }
         if [ "$(stat_field 7)" != 0 ] || [ -n "$FAILNOW" ]; then
             : > "$DIR/fail-now"     # the server answers with errors from here on
-            mkdir -p "$RUN_DIR"
+            mkdir -p "$(dirname "$NOTE")"
             { echo "boot $(cat /proc/sys/kernel/random/boot_id)"; echo "held $(held_open "/dev/ublkb$n")"; } > "$NOTE"
             if [ "${SKZ_REF_FAIL_STYLE:-delete}" = delete ]; then
                 # Without waiting for whoever still holds the device

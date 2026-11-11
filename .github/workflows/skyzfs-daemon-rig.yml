@@ -74,7 +74,9 @@ jobs:
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
         run: |
-          [[ $CHECKS =~ ^[abcde\ ]+$ ]] || { echo "::error::checks are letters of a b c d e: $CHECKS"; exit 64; }
+          # Single letters with one space between: "abcde" or a lone
+          # space would run nothing.
+          [[ $CHECKS =~ ^[abcde](\ [abcde])*$ ]] || { echo "::error::checks are letters of a b c d e with a space between: '$CHECKS'"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done

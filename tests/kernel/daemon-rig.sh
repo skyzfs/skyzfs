@@ -57,6 +57,13 @@ REF=$HERE/skyzfsd-ref.sh
 SKYZFSD=${RIG_SKYZFSD:-$REF}
 IMPL=daemon; [ "$SKYZFSD" = "$REF" ] && IMPL=reference
 CHECKS=" ${RIG_CHECKS:-a b c d e} "
+# Every word is a check and there is at least one: a run that checks
+# nothing must not look like a run.
+n=0
+for c in $CHECKS; do
+    case $c in a|b|c|d|e) n=$((n + 1)) ;; *) echo "RIG_CHECKS: '$c' is not a check; the checks are a b c d e" >&2; exit 64 ;; esac
+done
+[ $n -gt 0 ] || { echo "RIG_CHECKS names no check" >&2; exit 64; }
 KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
 # Options for every serve, split at spaces: for the daemon on a runner,
@@ -86,8 +93,13 @@ step() { printf '\n######## %s\n' "$*"; }
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
-dmesg_mark() { dmesg | wc -l; }
-dmesg_since() { dmesg | tail -n +"$(($1 + 1))"; }
+# The kernel log from a point on. The point is a line of our own
+# written to the log, not a line count: once the ring buffer has
+# wrapped the count stops growing and a cut by count would be empty.
+# dmesg_since returns 3, with nothing printed, when the marker is no
+# longer in the log.
+dmesg_mark() { local m; m="skz-rig-mark-$$-$(date +%s%N)"; echo "$m" > /dev/kmsg; echo "$m"; }
+dmesg_since() { dmesg | awk -v m="$1" 'found { print } index($0, m) { found = 1 } END { exit found ? 0 : 3 }'; }
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -116,6 +128,7 @@ serve_start() {
         fi
         sleep 0.25
     done
+    SERVE_RC="none: neither ready nor gone after 120 s"
     # Neither ready nor gone: write down what it is doing.
     { echo "== serve $dir: not ready after 120 s"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
       tail -n 20 "$dir.serve.log"; lim 20 ublk list; } >> "$OUT/serve-stuck.log" 2>&1
@@ -132,7 +145,10 @@ serve_wait() { # seconds: wait for the `serve` started last to exit; its status 
     done
     return 1
 }
-vol_status() { lim 30 "$1" status --dir "$2" 2>/dev/null; }      # impl dir
+# The --run-dir of `status` and `detach`: the one every serve of
+# serve_start gets. A check that serves with the default empties this.
+VOL_RUN_ARGS=(--run-dir "$RUN_DIR")
+vol_status() { lim 30 "$1" status --dir "$2" "${VOL_RUN_ARGS[@]}" 2>/dev/null; }      # impl dir
 # check dir: `unstored` (completions waiting because the acknowledged
 # position could not be stored) is 0 in a healthy run. Counters are
 # since the instance started, so this reads the instance serving now.
@@ -147,7 +163,17 @@ pin_unstored() {
 vol_stat() { vol_status "$1" "$2" | awk -v k="$3" '$1 == k { print $2; exit }'; }
 # The process to kill -9: the one `status` names, else the one started.
 server_pid() { local p; p=$(vol_stat "$1" "$2" pid); echo "${p:-$SERVE_PID}"; }
-vol_detach() { lim 90 "$1" detach --dir "$2" >/dev/null 2>&1; }
+vol_detach() { lim 90 "$1" detach --dir "$2" "${VOL_RUN_ARGS[@]}" >/dev/null 2>&1; }
+# dir -> a digest of the records a refused command must leave alone:
+# the attachment record in the volume's directory and every note under
+# the run directory. Not the status file, which a live server rewrites.
+vol_records() {
+    { cat "$1/attachment" 2>/dev/null
+      find "$RUN_DIR" -type f \( -name '*.note' -o -name failed -o -name '*.failed' \) -exec sha256sum {} + 2>/dev/null | sort; } | sha256sum | cut -c1-16
+}
+ublk_number_free() { # N: no control node and the driver knows no such device
+    [ ! -e "/dev/ublkc$1" ] && ! lim 20 ublk list -n "$1" 2>/dev/null | grep -q '^dev id'
+}
 ublk_state() { lim 20 ublk list -n "${1#/dev/ublkb}" 2>/dev/null | sed -n 's/.*state \([A-Z_]*\).*/\1/p' | head -n 1; }
 
 # ------------------------------------------------------------ pools
@@ -254,7 +280,8 @@ else
     tail -n 60 "$OUT/ublksrv-build.log"
     SETUP_OK=""
 fi
-rec zed "$(systemctl is-active zfs-zed 2>/dev/null || echo unknown)"
+zed_state() { local z; z=$(systemctl is-active zfs-zed 2>/dev/null); echo "${z:-unknown}"; }
+rec zed "$(zed_state)"
 mkdir -p "$RUN_DIR" "$WORK/mnt"
 if [ -z "$SETUP_OK" ]; then
     rec setup "FAILED: see apt.log and ublksrv-build.log"
@@ -364,7 +391,7 @@ PY
 # the server killed `kills` times with writes in flight and served
 # again. Sets KT_* for the caller to judge.
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     vol_up "$impl" "$dir" || { KT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
@@ -391,17 +418,27 @@ kill_test() {
             sleep 0.01
         done
         kill -9 "$pid" 2>/dev/null || { KT_ERR="kill $n: kill -9 $pid failed"; break; }
-        # How long the kernel still reports the device LIVE with the dead
-        # server: watched beside the serve that follows, which must cope
-        # with it. It ends when the device waits for a server, or has
-        # another one already.
-        ( t0=$(now_ms); polls=0; saw=LIVE
+        # How long the kernel reports the device LIVE after its server
+        # died: watched beside the serve that follows, which must cope
+        # with it. The driver reports pid -1 once the server's task is
+        # gone, whatever the state, so the look is at the state alone.
+        # A look is one `ublk list`; the state it reports held at some
+        # moment between its start and its end. So the device was still
+        # LIVE at the start of the last look that said so, and no longer
+        # LIVE with the dead server at the end of the first look that
+        # said anything else (waiting for a server, or LIVE with the
+        # next one already): the true time lies between the two.
+        ( t0=$(now_ms); looks=0; saw=""; live=-1; gone=-1
           while [ $(( $(now_ms) - t0 )) -lt 10000 ]; do
-              saw=$(lim 20 ublk list -n "${BDEV#/dev/ublkb}" 2>/dev/null | tr '\n' ' ' | sed -n 's/.*daemon pid \(-\{0,1\}[0-9]*\) state \([A-Z_]*\).*/\2 \1/p')
-              polls=$((polls + 1))
-              case $saw in "LIVE $pid") ;; *) break ;; esac
+              at=$(( $(now_ms) - t0 ))
+              saw=$(timeout -s KILL 5 ublk list -n "${BDEV#/dev/ublkb}" 2>/dev/null | tr '\n' ' ' | sed -n 's/.*daemon pid \(-\{0,1\}[0-9]*\) state \([A-Z_]*\).*/\2 \1/p')
+              looks=$((looks + 1))
+              case $saw in
+                  "LIVE $pid"|"LIVE -1") live=$at ;;
+                  *) gone=$(( $(now_ms) - t0 )); break ;;
+              esac
           done
-          echo "$(( $(now_ms) - t0 )) ms, $polls polls, then ${saw:-nothing}" > "$WORK/$name.quiesce" ) &
+          echo "$live $gone $looks ${saw:-nothing}" > "$WORK/$name.quiesce" ) &
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
@@ -410,8 +447,9 @@ kill_test() {
         serve_start "$impl" "$dir"; rc=$?
         ms=$(( $(now_ms) - t0 ))
         wait "$watcher"
-        KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms, no longer LIVE with the dead server after $(cat "$WORK/$name.quiesce" 2>/dev/null); "
-        KT_QUIESCE+="$(cut -d' ' -f1 "$WORK/$name.quiesce" 2>/dev/null) "
+        read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
+        KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; last seen LIVE with the dead server at $live ms, first seen otherwise at $gone ms ($saw, $looks looks); "
+        KT_QUIESCE+="${live:--1}:${gone:--1} "
         [ "${SERVE_RC:-}" != "$EXIT_REFUSED_FAILED" ] || KT_REFUSED=$((KT_REFUSED + 1))
         [ $rc = 0 ] || { KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"; break; }
         KT_DONE=$n
@@ -427,7 +465,7 @@ kill_test() {
     fi
     kill -9 "$KT_SYNCER" 2>/dev/null; pkill -9 -f "zpool sync $pool" 2>/dev/null
     rec "${name}_rounds" "${KT_ROUNDS:-none}"
-    rec "${name}_dead_server_still_live_ms" "$(echo "$KT_QUIESCE" | tr ' ' '\n' | grep . | sort -n | awk '{ v[NR] = $1 } END { if (NR) printf "min %d, median %d, max %d over %d kills; a poll is one ublk list, so the figure is an upper bound to within one poll; all: ", v[1], v[int((NR + 1) / 2)], v[NR], NR }')$KT_QUIESCE"
+    rec "${name}_dead_server_live_ms" "$(live_stats "$KT_QUIESCE")"
     # The pool as the kills left it, before anything clears it.
     KT_STATE=$(pool_state "$pool")
     KT_VDEV=$(pool_errors "$pool")
@@ -442,12 +480,35 @@ kill_test() {
     rec "${name}_result" "$KT_DONE of $kills kills served again, $KT_INFLIGHT with writes in flight; failed writes $KT_FAILED_WRITES; pool $KT_STATE, $KT_VDEV; after scrub: $KT_SCRUB; files: $KT_FILES"
     [ -z "$KT_ERR" ]
 }
+# "last:first ..." per kill, in ms after the kill (-1: never) -> the
+# distribution of both ends. The time a dead server's device stays LIVE
+# is, for each kill, between its two figures.
+live_stats() {
+    echo "$1" | tr ' ' '\n' | grep . | awk -F: '
+        function dist(v, n,    i, j, t) {
+            for (i = 2; i <= n; i++) { t = v[i]; for (j = i - 1; j >= 1 && v[j] > t; j--) v[j + 1] = v[j]; v[j + 1] = t }
+            return sprintf("min %d, median %d, max %d", v[1], v[int((n + 1) / 2)], v[n])
+        }
+        { all = all " " $1 ".." $2
+          if ($1 < 0) never_live++; else a[++na] = $1
+          if ($2 < 0) never_gone++; else b[++nb] = $2 }
+        END {
+            printf "%d kills. Still LIVE at the last look that said so, ms after the kill: %s (%d kills; at %d the first look already said otherwise). ", NR, na ? dist(a, na) : "none", na, never_live
+            printf "No longer LIVE with the dead server by: %s (%d kills; at %d not within 10 s). ", nb ? dist(b, nb) : "none", nb, never_gone
+            printf "For each kill the true time is between its two figures; all, last-first:%s", all
+        }'
+}
 # The four judgments of a kill test, as pins or as one control line.
 kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
     KT_WHY=""; KT_VERDICT=""
     if [ -n "$KT_ERR" ]; then KT_WHY=$KT_ERR; KT_VERDICT=ERROR; return; fi
-    if [ "$KT_INFLIGHT" -lt $((KT_DONE / 2)) ]; then
-        KT_WHY="only $KT_INFLIGHT of $KT_DONE kills landed with writes in flight"; KT_VERDICT=ERROR; return
+    # A kill with no write in flight tests a restart and not the
+    # reissue of requests, so a run in which more than one kill in ten
+    # found none says nothing about what the pin claims: a rig error.
+    # "In flight" is the write column of the device's `inflight` file,
+    # read just before the kill and not at it.
+    if [ $((KT_INFLIGHT * 10)) -lt $((KT_DONE * 9)) ]; then
+        KT_WHY="writes were in flight at only $KT_INFLIGHT of $KT_DONE kills; at least nine in ten are needed"; KT_VERDICT=ERROR; return
     fi
     [ "$KT_FAILED_WRITES" = 0 ] || KT_WHY+="application writes failed: $KT_FAILED_WRITES; "
     case "$KT_STATE/$KT_VDEV" in "ONLINE/vdev errors 0 "*) ;; *) KT_WHY+="after the kills: pool $KT_STATE, $KT_VDEV; " ;; esac
@@ -480,11 +541,11 @@ check_b_short() {
     fi
 }
 check_b() {
-    local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i
+    local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i num before after
     step "b: kill -9 under load, $KILLS times"
     kill_test "$SKYZFSD" b "$KILLS"
     kill_verdict; v=$KT_VERDICT
-    pin kill_under_load "$v" "${KT_WHY:-$KT_DONE kills, $KT_INFLIGHT with writes in flight: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+    pin kill_under_load "$v" "${KT_WHY:-writes were in flight just before $KT_INFLIGHT of $KT_DONE kills: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
     # The check of what was acknowledged (§4.2) must not refuse a log
     # that a kill left whole. Kills around a change of log segment and
     # right after a checkpoint are the daemon's to arrange; here every
@@ -499,7 +560,9 @@ check_b() {
     if [ -n "$KT_ERR" ] || [ -z "$BDEV" ]; then
         pin second_serve_refused ERROR "the kill test did not leave a served pool"
         pin orderly_stop_keeps_device ERROR "the kill test did not leave a served pool"
+        pin detach_refused_while_served ERROR "the kill test did not leave a served pool"
     else
+        num=${BDEV#/dev/ublkb}
         step "b: a second serve while the first is alive"
         pid0=$(server_pid "$SKYZFSD" "$dir")
         lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" > "$OUT/b-second.out" 2> "$OUT/b-second.err"; rc=$?
@@ -511,6 +574,20 @@ check_b() {
             pin second_serve_refused PASS "exit $rc; the first server ($pid0) and the pool carried on"
         else
             pin second_serve_refused FAIL "exit $rc (wanted $EXIT_BUSY); server pid $pid0 then $pid1; pool $(pool_state "$pool"); $(tail -n 1 "$OUT/b-second.err")"
+        fi
+
+        step "b: detach while a server holds the volume"
+        pid0=$(server_pid "$SKYZFSD" "$dir"); before=$(vol_records "$dir")
+        lim 90 "$SKYZFSD" detach --dir "$dir" "${VOL_RUN_ARGS[@]}" > "$OUT/b-detach.out" 2> "$OUT/b-detach.err"; rc=$?
+        pid1=$(server_pid "$SKYZFSD" "$dir"); after=$(vol_records "$dir"); st=$(ublk_state "$BDEV")
+        if [ $rc = 124 ]; then
+            pin detach_refused_while_served FAIL "detach did not exit within 90 s"
+        elif [ $rc = "$EXIT_BUSY" ] && [ "$pid0" = "$pid1" ] && kill -0 "$pid0" 2>/dev/null && [ -b "$BDEV" ] && [ "$st" = LIVE ] \
+            && [ "$before" = "$after" ] && [ "$(pool_state "$pool")" = ONLINE ] \
+            && lim 60 "$DD" if=/dev/zero of="$WORK/mnt/$pool/after-detach" bs=1M count=4 conv=fsync status=none; then
+            pin detach_refused_while_served PASS "exit $rc ($(tail -n 1 "$OUT/b-detach.err")); the server ($pid0), the device ($st), the attachment record and the notes are as before, and the pool carried on"
+        else
+            pin detach_refused_while_served FAIL "exit $rc (wanted $EXIT_BUSY); server pid $pid0 then $pid1; device $st; records $before then $after; pool $(pool_state "$pool"); $(tail -n 1 "$OUT/b-detach.err")"
         fi
 
         step "b: an orderly stop leaves the device for the next serve"
@@ -536,7 +613,23 @@ check_b() {
     if [ -n "$SERVE_PID" ]; then pin_unstored b "$dir"; else pin unstored_zero_b ERROR "no server at the end of the check"; fi
     [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool"
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
-    vol_detach "$SKYZFSD" "$dir"
+    # With the server stopped and the pool exported, detach deletes the
+    # device and its number comes free.
+    if [ -z "${num:-}" ]; then
+        pin detach_frees_number ERROR "the kill test did not leave a served pool"
+        vol_detach "$SKYZFSD" "$dir"
+    elif [ "$(pool_state "$pool")" = ONLINE ] || [ -n "$SERVE_PID" ]; then
+        pin detach_frees_number ERROR "the pool was not exported or the server did not stop (pool $(pool_state "$pool"), serve pid '${SERVE_PID:-}')"
+        vol_detach "$SKYZFSD" "$dir"
+    else
+        st=$(ublk_state "/dev/ublkb$num")
+        lim 90 "$SKYZFSD" detach --dir "$dir" "${VOL_RUN_ARGS[@]}" > "$OUT/b-detach-stopped.out" 2> "$OUT/b-detach-stopped.err"; rc=$?
+        if [ $rc = 0 ] && ublk_number_free "$num"; then
+            pin detach_frees_number PASS "the device was $st with no server; detach exit 0; number $num is free"
+        else
+            pin detach_frees_number FAIL "the device was $st with no server; detach exit $rc (wanted 0); number $num $(ublk_number_free "$num" && echo 'is free' || echo 'is still taken'); $(tail -n 1 "$OUT/b-detach-stopped.err")"
+        fi
+    fi
 
     step "b, control: a recovered log that is too short"
     if [ "$IMPL" = reference ]; then
@@ -596,7 +689,7 @@ fail_wait() {
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
     lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1
-    dmesg_since "$mark" > "$OUT/$name-dmesg.log"
+    dmesg_since "$mark" > "$OUT/$name-dmesg.log" || echo "the rig's marker is no longer in the kernel log" >> "$OUT/$name-dmesg.log"
     rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
     rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
     rec "${name}_events" "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
@@ -645,7 +738,7 @@ check_d() {
         else
             st0=$(pool_state skzd-d1)
             for n in $(seq 1 60); do st1=$(pool_state skzd-d1); [ "$st1" = ONLINE ] && break; sleep 1; done
-            obs device_back_without_clear "zed $(systemctl is-active zfs-zed 2>/dev/null || echo unknown); the kept device answers again: pool $st0, then $st1 after $n s without zpool clear"
+            obs device_back_without_clear "zed $(zed_state); the kept device answers again: pool $st0, then $st1 after $n s without zpool clear"
             before=$(grep -c . "$WORK/d1.record" || true)
             lim 120 zpool clear skzd-d1 > "$OUT/d1-clear.log" 2>&1; rc=$?
             for n in $(seq 1 30); do st1=$(pool_state skzd-d1); [ "$st1" = ONLINE ] && break; sleep 1; done
@@ -747,24 +840,31 @@ check_d_shorter() {
 }
 # d.5, an observation: a scrub in progress when the volume fails.
 check_d_scrub() {
-    local mark st
+    local mark st rc before
     step "d: a scrub in progress at the failure"
     mark=$(dmesg_mark)
     if ! fail_setup d5 "$SKYZFSD"; then obs scrub_in_progress_at_failure "not run: $FS_ERR"; fail_stop d5; return; fi
     # More to scrub, then the failure a little after the scrub begins.
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzd-d5/big" bs=1M count=1024 conv=fsync status=none
-    kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 60
-    serve_start "$SKYZFSD" "$WORK/vol-d5" --fail-log-after 1500 || { obs scrub_in_progress_at_failure "not run: serve with --fail-log-after did not start"; fail_stop d5; return; }
-    lim 30 zpool scrub skzd-d5
+    # The failure comes by the signal, with the server that is already
+    # serving. Before, the server was restarted with a count of writes
+    # after which to fail; the writes that had queued up while no
+    # server ran could use the count up before `ready` was seen, and
+    # the serve then counted as not started (Ubuntu 24.04, twice).
+    lim 30 zpool scrub skzd-d5; rc=$?
+    sleep 2
+    before=$(lim 30 zpool status skzd-d5 2>&1 | grep -A2 'scan:' | tr -s ' ' | tr '\n' ' ')
+    kill -USR1 "$SERVE_PID" 2>/dev/null || { obs scrub_in_progress_at_failure "not run: no server to signal (serve pid '${SERVE_PID:-}')"; fail_stop d5; return; }
     fail_wait d5 180 "$mark"; st=$?
-    obs scrub_in_progress_at_failure "$FS_WHY; scan line when suspended: $(grep -A2 'scan:' "$OUT/d5-status-suspended.log" | tr -s ' ' | tr '\n' ' '); $(pool_errors skzd-d5)"
+    obs scrub_in_progress_at_failure "zpool scrub rc $rc; scan line 2 s later, just before the failure: ${before:-none}; $FS_WHY; scan line when suspended: $(grep -A2 'scan:' "$OUT/d5-status-suspended.log" | tr -s ' ' | tr '\n' ' '); $(pool_errors skzd-d5)"
     fail_stop d5
     return $st
 }
 # d.6, second half: nothing held the device at the failure, so an
 # operator may acknowledge it. Also where the note is kept by default.
 check_d_not_held() {
-    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found
+    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note
+    local VOL_RUN_ARGS=()       # this volume is served with the default run directory
     step "d: a volume that failed with no client attached"
     : > "$marker"
     # No --run-dir here: the default must be under /run.
@@ -784,9 +884,14 @@ check_d_not_held() {
     done
     serve_wait 30
     rc=$SERVE_RC
-    found=$(find /run -xdev -type f -newer "$marker" -path '*skyzfs*' 2>/dev/null | head -n 3 | tr '\n' ' ')
-    if [ -n "$found" ]; then pin failure_note_under_run PASS "after a failure without --run-dir: $found"
-    else pin failure_note_under_run FAIL "no new file under /run with skyzfs in its path after a failure without --run-dir (serve exit $rc)"; fi
+    # The note has a name: <run dir>/v-<dev>-<ino>/failed, the device
+    # and inode numbers of the volume's directory in hex, and the
+    # default run directory is /run/skyzfsd. Any other new file under
+    # /run (the status file, the acknowledged position) is not it.
+    note=/run/skyzfsd/v-$(stat -c %D "$dir")-$(printf '%x' "$(stat -c %i "$dir")")/failed
+    found=$(find /run -xdev -type f -newer "$marker" -path '*skyzfs*' 2>/dev/null | head -n 6 | tr '\n' ' ')
+    if [ -f "$note" ] && [ "$note" -nt "$marker" ]; then pin failure_note_under_run PASS "after a failure without --run-dir: $note"
+    else pin failure_note_under_run FAIL "no $note after a failure without --run-dir (serve exit $rc); new files under /run with skyzfs in the path: ${found:-none}"; fi
     lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" > /dev/null 2> "$OUT/d6-noack.err"; n=$?
     serve_start_default() { "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --acknowledge-failure > "$dir.ready" 2>> "$dir.serve.log" & SERVE_PID=$!; }
     : > "$dir.ready"; serve_start_default
@@ -810,7 +915,7 @@ check_d_not_held() {
 # =================================================================== e
 # name seconds wanted: one read held `seconds`; judged against `wanted`.
 hold_test() {
-    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader
+    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader took
     HT_ERR=""; HT_WHY=""
     mark=$(dmesg_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
@@ -818,7 +923,11 @@ hold_test() {
     # right now: 1 while the read is held, 0 once it has completed.
     # The held request is the first read of the block at HOLD_AT, a
     # place nothing probes when a device appears.
-    ( lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=16 skip=$((HOLD_AT / 4096)) iflag=direct status=none 2> "$OUT/$name-dd.err"; echo $? > "$WORK/$name.rc" ) &
+    # The reader is timed by itself: how long the kernel's side of the
+    # request waited, whatever the server says of its own hold.
+    ( t0=$(now_ms)
+      lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=16 skip=$((HOLD_AT / 4096)) iflag=direct status=none 2> "$OUT/$name-dd.err"
+      echo "$? $(( $(now_ms) - t0 ))" > "$WORK/$name.rc" ) &
     reader=$!
     for i in $(seq 1 120); do
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
@@ -830,16 +939,20 @@ hold_test() {
     done
     t1=$(now_ms)
     wait "$reader"
-    rc=$(cat "$WORK/$name.rc" 2>/dev/null)
+    read -r rc took < "$WORK/$name.rc" 2>/dev/null || { rc=""; took=0; }
     udevadm settle --timeout=30 2>/dev/null
-    dmesg_since "$mark" > "$OUT/$name-dmesg.log"
+    if ! dmesg_since "$mark" > "$OUT/$name-dmesg.log"; then
+        HT_ERR="the rig's marker is no longer in the kernel log, so the log of this time cannot be cut out"
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; vol_detach "$SKYZFSD" "$dir"
+        return 2
+    fi
     bad=$(grep -ciE 'I/O error|timeout|timed out|abort' "$OUT/$name-dmesg.log")
     obs "${name}_kernel_log" "$(wc -l < "$OUT/$name-dmesg.log") lines while a request was held ${secs} s; hung-task warnings: $(grep -c 'blocked for more than' "$OUT/$name-dmesg.log"); lines with an I/O error, a timeout or an abort: $bad"
-    HT_WHY="held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s); the reader exited $rc; kernel log lines with an I/O error, a timeout or an abort: $bad"
+    HT_WHY="the read took $(( took / 1000 )) s at the reader and was held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s, to within the polling, by both); the reader exited $rc; kernel log lines with an I/O error, a timeout or an abort: $bad"
     [ "$name" != e ] || pin_unstored e "$dir"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
-    [ "$held" = 0 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
+    [ "$held" = 0 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$took" -ge $(( (want - 1) * 1000 )) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
 }
 # =================================================================== c
 # The suite's verdict on each case, next to what the suite declares for
