@@ -216,6 +216,17 @@ fn catches_a_failure_forgotten_on_restart() {
     );
 }
 
+/// R11: a failed volume that comes back without something a flush had
+/// covered is caught, by the case that opens it again and by the random
+/// programs.
+#[test]
+fn catches_a_reopened_volume_that_lost_what_was_flushed() {
+    caught(
+        Fault::ReopenLosesFlushed,
+        &["reopened_failed_volume_holds_what_was_flushed", FAILURES],
+    );
+}
+
 /// R12: a read-only target that accepts writes is caught.
 #[test]
 fn catches_a_read_only_target_that_writes() {

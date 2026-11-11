@@ -121,6 +121,7 @@ const TESTED: &[&str] = &[
     "kill_keeps_acknowledged_operations",
     "reissue_after_kill_is_idempotent",
     "failed_volume_fails_every_request",
+    "reopened_failed_volume_holds_what_was_flushed",
     "read_only_target_refuses_mutations",
     "prop_invalid_requests_are_rejected_without_effect",
     "prop_concurrent_programs_match_model",
@@ -325,6 +326,13 @@ fn reissue_after_kill_is_idempotent() {
 #[test]
 fn failed_volume_fails_every_request() {
     passes("failed_volume_fails_every_request");
+}
+
+/// R11: a failed volume that is opened again after a repair holds at
+/// least what every completed flush covered, and serves again.
+#[test]
+fn reopened_failed_volume_holds_what_was_flushed() {
+    passes("reopened_failed_volume_holds_what_was_flushed");
 }
 
 /// R12: on a read-only target write, write-zeroes and discard fail
