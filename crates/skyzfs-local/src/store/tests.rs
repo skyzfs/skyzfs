@@ -2846,3 +2846,72 @@ fn a_served_store_steps_between_requests_and_when_idle() {
     disk.kill();
     env.reopen_ack(&disk).expect("opens after a kill");
 }
+
+/// A kill inside a step of the served store, through the worker's own
+/// rule: the step waits in its middle (the test hook), the store shows
+/// that a step is under way, and the process is killed there. The next
+/// open finds every acknowledged write, the rule goes on where the
+/// log was left, and the content stays right.
+#[test]
+fn a_kill_inside_a_step_of_the_worker_loses_nothing() {
+    static NUMBER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    for env in environments(0) {
+        let gate = std::env::temp_dir().join(format!(
+            "skyzfs-step-gate-{}-{}",
+            std::process::id(),
+            NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_file(&gate);
+        let (disk, mut store) = env.fresh().unwrap();
+        store.set_marks(Some(MARKS));
+        store.set_step_pause(Some(StepPause::Until(gate.clone())));
+        let mut served = store.serve().unwrap();
+        let mut done = Vec::new();
+        let mut newest = [0u8; 64];
+        let mut n = 0u64;
+        // Writes until the worker is inside its first step. It answers
+        // the write that reached the mark and then waits in the step.
+        while !served.log_state().stepping {
+            assert!(n < 64, "no step after {n} writes: {:?}", served.log_state());
+            let (slot, byte) = (n % 64, n as u8 + 1);
+            done.clear();
+            served
+                .submit(Request {
+                    id: RequestId(n),
+                    op: Op::Write {
+                        offset: slot * 16 * BLOCK,
+                        data: Buf::filled(16, byte),
+                    },
+                })
+                .unwrap();
+            assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+            assert_eq!(done[0].result, Ok(()));
+            newest[slot as usize] = byte;
+            n += 1;
+            // The worker decides about a step right after the answer.
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        assert_eq!(served.log_state().steps, 0, "the step has not ended");
+        disk.kill();
+        std::fs::write(&gate, b"").unwrap();
+        drop(served);
+        let _ = std::fs::remove_file(&gate);
+        let mut store = env
+            .reopen_ack(&disk)
+            .unwrap_or_else(|why| panic!("after a kill inside a step in {env:?}: {why}"));
+        let check = |store: &mut SimStore, when: &str| {
+            for (slot, byte) in newest.iter().enumerate() {
+                expect(store, slot as u64 * 16, 16, *byte, when)
+                    .unwrap_or_else(|why| panic!("{env:?}: {why}"));
+            }
+        };
+        check(&mut store, "after a kill inside a step");
+        store.set_marks(Some(MARKS));
+        let mut steps = 0;
+        while store.tend().unwrap() {
+            steps += 1;
+        }
+        assert!(steps > 0, "the rule did not go on after the restart");
+        check(&mut store, "after the steps that followed");
+    }
+}

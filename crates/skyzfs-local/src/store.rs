@@ -424,6 +424,9 @@ struct Core<D: Dir> {
     working: bool,
     /// The steps the rule has taken.
     steps: u64,
+    /// For test rigs: where every batch of a checkpoint waits.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pause: Option<StepPause>,
     mutants: Mutants,
 }
 
@@ -865,6 +868,12 @@ impl<D: Dir> Core<D> {
         if replayed.is_err() || written {
             return Err(self.fail());
         }
+        // The middle of a step: the home image holds the batch and is
+        // not durable, and the log still holds it too.
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(pause) = &self.pause {
+            pause.wait();
+        }
         let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
         if !early && self.home.sync().is_err() {
             return Err(self.fail());
@@ -1046,6 +1055,32 @@ impl StepBound {
         payload: 8 << 20,
         records: 1024,
     };
+}
+
+/// For test rigs: how long every batch of a checkpoint, and so every
+/// step, waits in its middle, after it has written the home image and
+/// before it syncs it. A kill in that time lands inside a step.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepPause {
+    /// For this long.
+    For(std::time::Duration),
+    /// Until a file of this path exists.
+    Until(std::path::PathBuf),
+}
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl StepPause {
+    fn wait(&self) {
+        match self {
+            Self::For(time) => thread::sleep(*time),
+            Self::Until(path) => {
+                while !path.exists() {
+                    thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    }
 }
 
 /// When the store checkpoints by itself (design §5.1, "when the daemon
@@ -1509,6 +1544,8 @@ impl<D: Dir> Store<D> {
                 marks: None,
                 working: false,
                 steps: 0,
+                #[cfg(any(test, feature = "test-hooks"))]
+                pause: None,
                 mutants: options.mutants,
             },
             unacknowledged,
@@ -1566,6 +1603,13 @@ impl<D: Dir> Store<D> {
     pub fn set_marks(&mut self, marks: Option<Marks>) {
         self.core.marks = marks;
         self.core.working = false;
+    }
+
+    /// For test rigs: make every step wait in its middle. See
+    /// [`StepPause`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_step_pause(&mut self, pause: Option<StepPause>) {
+        self.core.pause = pause;
     }
 
     /// Apply the rule of the marks once: see [`Marks`]. Returns whether
