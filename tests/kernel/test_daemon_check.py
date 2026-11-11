@@ -137,14 +137,16 @@ class Judge(unittest.TestCase):
         _, _, errors = dc.judge(r, {'a', 'b'})
         self.assertTrue(errors)
 
-    def test_with_the_daemon_the_reference_only_pin_is_not_asked_for(self):
+    def test_with_the_daemon_the_kept_device_pin_is_still_asked_for(self):
         r = as_expected('daemon')
-        r['pin_clear_resumes_on_returned_device'] = 'ERROR: not run: needs the flat image of the reference server'
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        r['pin_clear_resumes_on_returned_device'] = 'ERROR: not run'
+        self.assertEqual(len(dc.judge(r, ALL, impl='daemon')[2]), 1)
+        r['pin_clear_resumes_on_returned_device'] = 'PASS: resumed'
         _, differs, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual((differs, errors), ([], []))
         r['ctl_recovered_log_too_short'] = 'WAITING: no log'
-        _, _, errors = dc.judge(r, ALL, impl='reference')
+        _, _, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual(len(errors), 1)
 
     def test_waiting_is_accepted_only_where_the_table_says_so(self):
@@ -158,7 +160,6 @@ class Judge(unittest.TestCase):
         self.assertEqual((differs, len(errors)), ([], 1))
         # with the daemon, waiting is over: the control must have run and failed
         r = as_expected('daemon')
-        r['pin_clear_resumes_on_returned_device'] = 'ERROR: needs the reference server'
         _, differs, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual((differs, len(errors)), ([], 1))
         r['ctl_recovered_log_too_short'] = 'FAIL: refused with status 4, pool suspended'

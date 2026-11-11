@@ -103,9 +103,11 @@ C_DECLARED = {'reference': 'PASS 1, WEAKER 15, NOT_EXERCISED 10',
               'daemon': 'PASS 1, WEAKER 13, NOT_EXERCISED 12'}
 C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 
-# With the daemon behind the device these cannot be taken: they bring a
-# device back from the reference server's flat image.
-REFERENCE_ONLY = {'pin_clear_resumes_on_returned_device'}
+# Pins that cannot be taken with the daemon behind the device. None now:
+# the pin that brings a kept device back is always taken on the
+# stand-in, whichever server is under test, because the daemon deletes
+# its device when the volume fails.
+REFERENCE_ONLY = set()
 
 
 def read_results(path):
