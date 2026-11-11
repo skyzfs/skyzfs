@@ -16,10 +16,11 @@
 #![cfg(target_os = "linux")]
 
 use std::fs::OpenOptions;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use skyzfs_blk::BLOCK_SIZE;
+use skyzfs_blk::{Buf, BLOCK_SIZE};
 use skyzfs_ublk::lifecycle::{AddError, Control, DeviceInfo, DeviceState, Shape};
 use skyzfs_ublk::pump::{Fetched, Queue, Wake as Woken};
 use skyzfs_ublk::translate::op;
@@ -260,4 +261,291 @@ fn a_device_added_by_the_binding_is_started_and_outlives_its_server() {
     })();
     clean(n);
     property("start_no_flag_and_keep", || result);
+}
+
+/// A server that keeps the device's content in memory, shared between
+/// the lives of a device: what one life was written, the next reads.
+/// Returns the longest write it was handed, in bytes.
+fn memory(mut queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
+    let mut fetched: Vec<Fetched> = Vec::new();
+    let mut longest = 0;
+    loop {
+        fetched.clear();
+        let Ok(woken) = queue.wait(&mut fetched) else {
+            return longest;
+        };
+        for f in fetched.drain(..) {
+            let at = (f.desc.start_sector * 512) as usize;
+            let bytes = f.desc.nr_sectors as usize * 512;
+            let mut content = content.lock().expect("the content");
+            let buf = match f.desc.op() {
+                op::READ => {
+                    let mut buf = queue.take_buf(f.tag, bytes / BLOCK_SIZE as usize);
+                    buf.copy_from_slice(&content[at..at + bytes]);
+                    Some(buf)
+                }
+                op::WRITE => {
+                    let buf = queue.take_buf(f.tag, bytes / BLOCK_SIZE as usize);
+                    content[at..at + bytes].copy_from_slice(&buf);
+                    longest = longest.max(bytes as u64);
+                    Some(buf)
+                }
+                _ => None,
+            };
+            queue.commit(f.tag, bytes as i32, buf);
+        }
+        if woken == Woken::Stop {
+            return longest;
+        }
+    }
+}
+
+/// One life of a device over `content`: opened, served, started.
+struct Life {
+    serving: skyzfs_ublk_sys::queue::Serving<u64>,
+    _device: Device,
+}
+
+fn life(n: u32, take_over: bool, content: &Arc<Mutex<Vec<u8>>>) -> Result<Life, String> {
+    let device = Device::open(&Open {
+        number: n,
+        size: SIZE,
+        take_over,
+    })
+    .map_err(|e| format!("open: {e}"))?;
+    let wake = Wake::new().map_err(|e| e.to_string())?;
+    let content = content.clone();
+    let serving = device
+        .serve(&wake, false, move |queue| memory(queue, content))
+        .map_err(|e| format!("serve: {e}"))?;
+    if let Err(e) = device.start() {
+        serving.stopper().stop();
+        let _ = serving.join();
+        return Err(format!(
+            "{}: {e}",
+            if take_over {
+                "end of recovery"
+            } else {
+                "start"
+            }
+        ));
+    }
+    Ok(Life {
+        serving,
+        _device: device,
+    })
+}
+
+impl Life {
+    /// End the life in order; the longest write, and the first-write
+    /// copies.
+    fn end(self) -> Result<(u64, u64), String> {
+        let stopper = self.serving.stopper();
+        stopper.stop();
+        let longest = self.serving.join().map_err(|e| e.to_string())?;
+        Ok((longest, stopper.first_write_copies()))
+    }
+}
+
+/// A buffer of `bytes` whose content depends on `seed` and the place.
+fn pattern(bytes: usize, seed: u8) -> Buf {
+    let mut buf = Buf::zeroed(bytes / BLOCK_SIZE as usize);
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = (i as u8).wrapping_mul(31).wrapping_add(seed) ^ (i >> 12) as u8;
+    }
+    buf
+}
+
+fn direct(n: u32) -> Result<std::fs::File, String> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(block_device(n))
+        .map_err(|e| format!("opening {} with direct I/O: {e}", block_device(n)))
+}
+
+fn written_reads_back(file: &std::fs::File, at: u64, want: &Buf, what: &str) -> Result<(), String> {
+    let mut got = Buf::zeroed(want.blocks());
+    file.read_exact_at(&mut got, at)
+        .map_err(|e| format!("reading {what}: {e}"))?;
+    if got != *want {
+        let first = got.iter().zip(want.iter()).position(|(a, b)| a != b);
+        return Err(format!("{what} read back differs, first at byte {first:?}"));
+    }
+    Ok(())
+}
+
+/// The buffers across a take-over, by name: writes and reads of 4 KiB
+/// and of 1 MiB come back as written in the first life (where each
+/// tag's first request arrives in the library's buffer and every later
+/// one in the tag's own) and across a take-over, where the first
+/// requests of the new life are writes of each size. A 1 MiB write
+/// arrives as one request. The copies of first writes are counted and
+/// are at most the depth, in each life.
+///
+/// The first life ends in order and not by a kill: the test is its own
+/// server. The device waits for a server either way, and the take-over
+/// is the same begin and end of a recovery.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
+    let n = number(3);
+    clean(n);
+    const MIB: usize = 1 << 20;
+    let result = (|| {
+        let mut kernel = kernel()?;
+        kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
+        let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
+        let first = life(n, false, &content)?;
+        let (small, large) = (pattern(4096, 1), pattern(MIB, 2));
+        {
+            let file = direct(n)?;
+            // Twice round the tags and more, so that tags are used
+            // after their first commit too.
+            for round in 0..3 * u64::from(DEPTH) {
+                let at = (round % 8) * 8192;
+                file.write_all_at(&small, at)
+                    .map_err(|e| format!("a 4 KiB write: {e}"))?;
+                written_reads_back(&file, at, &small, "4 KiB")?;
+            }
+            for at in [8 << 20, 16 << 20] {
+                file.write_all_at(&large, at)
+                    .map_err(|e| format!("a 1 MiB write: {e}"))?;
+                written_reads_back(&file, at, &large, "1 MiB")?;
+            }
+        }
+        let (longest, copies) = first.end()?;
+        if longest != MIB as u64 {
+            return Err(format!("the longest write handed over was {longest} bytes"));
+        }
+        if copies == 0 || copies > u64::from(DEPTH) {
+            return Err(format!("{copies} first-write copies in the first life"));
+        }
+        until(&mut kernel, n, "waiting", |i| {
+            i.is_some_and(|i| i.state == DeviceState::Waiting)
+        })?;
+
+        kernel
+            .begin_recovery(n)
+            .map_err(|e| format!("begin of recovery: {e}"))?;
+        let second = life(n, true, &content)?;
+        let (small2, large2) = (pattern(4096, 3), pattern(MIB, 4));
+        {
+            let file = direct(n)?;
+            // The first requests of this life: a write of each size.
+            file.write_all_at(&large2, 24 << 20)
+                .map_err(|e| format!("a 1 MiB write after the take-over: {e}"))?;
+            file.write_all_at(&small2, 4096)
+                .map_err(|e| format!("a 4 KiB write after the take-over: {e}"))?;
+            written_reads_back(&file, 24 << 20, &large2, "1 MiB after the take-over")?;
+            written_reads_back(&file, 4096, &small2, "4 KiB after the take-over")?;
+            // What the first life was written.
+            written_reads_back(&file, 8 << 20, &large, "1 MiB of the first life")?;
+            written_reads_back(&file, 16 << 20, &large, "1 MiB of the first life")?;
+            written_reads_back(&file, 0, &small, "4 KiB of the first life")?;
+            for round in 0..2 * u64::from(DEPTH) {
+                let at = (32 << 20) + round * 8192;
+                file.write_all_at(&small2, at)
+                    .map_err(|e| format!("a 4 KiB write: {e}"))?;
+                written_reads_back(&file, at, &small2, "4 KiB")?;
+            }
+        }
+        let (_, copies2) = second.end()?;
+        if copies2 == 0 || copies2 > u64::from(DEPTH) {
+            return Err(format!("{copies2} first-write copies after the take-over"));
+        }
+        println!(
+            "control_buffers_detail\tfirst-write copies {copies} in the first life and {copies2} after the take-over, depth {DEPTH}; longest write {longest} bytes"
+        );
+        Ok(())
+    })();
+    clean(n);
+    property("buffers_4k_1m_across_take_over", || result);
+}
+
+/// A take-over where a file of the library's name is already under
+/// `/run/ublksrvd` for the number, left by some other server: one of
+/// the shape such a server writes and one of garbage, under both ways
+/// of writing the number. The take-over works, and the files are as
+/// they were: this daemon neither believes, changes nor removes them.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
+    let n = number(4);
+    clean(n);
+    let dir = std::path::Path::new("/run/ublksrvd");
+    let made_dir = !dir.exists();
+    let files = [
+        (
+            dir.join(format!("{n:04}.json")),
+            format!(
+                "{{\"dev_info\":{{\"dev_id\":{n},\"nr_hw_queues\":4,\"queue_depth\":128,\"state\":1}},\"queues\":{{\"0\":{{\"qid\":0,\"tid\":1}}}},\"target\":{{\"dev_size\":1,\"name\":\"loop\",\"type\":1}}}}"
+            ),
+        ),
+        (dir.join(format!("{n}.json")), "not json at all {".to_string()),
+        (dir.join(format!("{n}.pid")), "1\n".to_string()),
+    ];
+    let result = (|| {
+        let mut kernel = kernel()?;
+        kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
+        let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
+        life(n, false, &content)?.end()?;
+        until(&mut kernel, n, "waiting", |i| {
+            i.is_some_and(|i| i.state == DeviceState::Waiting)
+        })?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for (path, text) in &files {
+            std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        for garbage_in_the_librarys_name in [false, true] {
+            if garbage_in_the_librarys_name {
+                std::fs::write(&files[0].0, &files[1].1).map_err(|e| e.to_string())?;
+            }
+            kernel
+                .begin_recovery(n)
+                .map_err(|e| format!("begin of recovery: {e}"))?;
+            let taken = life(n, true, &content)?;
+            let live = until(&mut kernel, n, "live after the take-over", |i| {
+                i.is_some_and(|i| i.state == DeviceState::Live)
+            })?;
+            if live.map(|i| i.shape) != Some(shape()) {
+                return Err(format!("taken over as {live:?}, not {:?}", shape()));
+            }
+            taken.end()?;
+            until(&mut kernel, n, "waiting", |i| {
+                i.is_some_and(|i| i.state == DeviceState::Waiting)
+            })?;
+            for (i, (path, text)) in files.iter().enumerate() {
+                let want = if i == 0 && garbage_in_the_librarys_name {
+                    &files[1].1
+                } else {
+                    text
+                };
+                match std::fs::read_to_string(path) {
+                    Ok(now) if now == *want => {}
+                    other => {
+                        return Err(format!(
+                            "{} was changed or removed: {other:?}",
+                            path.display()
+                        ))
+                    }
+                }
+            }
+        }
+        kernel.delete(n).map_err(|e| format!("delete: {e}"))?;
+        until(&mut kernel, n, "gone", Option::is_none)?;
+        if let Some((path, _)) = files.iter().find(|(path, _)| !path.exists()) {
+            return Err(format!("{} went with the delete", path.display()));
+        }
+        Ok(())
+    })();
+    for (path, _) in &files {
+        let _ = std::fs::remove_file(path);
+    }
+    if made_dir {
+        let _ = std::fs::remove_dir(dir);
+    }
+    clean(n);
+    property("take_over_beside_stale_file", || result);
 }
