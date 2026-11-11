@@ -231,6 +231,12 @@ impl Mutants {
     pub(crate) const NEWEST_FIRST: u32 = 1 << 9;
     /// A target that is gone is not noticed.
     pub(crate) const GONE_UNNOTICED: u32 = 1 << 10;
+    /// A target that is gone is looked for only after submitting.
+    pub(crate) const GONE_AFTER_SUBMIT: u32 = 1 << 11;
+    /// A tag that is still in flight is taken again.
+    pub(crate) const TAG_REUSED: u32 = 1 << 12;
+    /// A completion nobody waits for is ignored.
+    pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -366,10 +372,16 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
         // Completions make room, and room lets more be submitted.
         loop {
+            // Before anything is submitted: a target whose worker has
+            // ended refuses requests, and that refusal is not a broken
+            // contract.
+            if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+                return Some(Stopped::TargetGone);
+            }
             if let Err(stopped) = self.submit_what_fits() {
                 return Some(stopped);
             }
-            if self.target.gone() && !self.mutants.has(Mutants::GONE_UNNOTICED) {
+            if self.is_gone() {
                 return Some(Stopped::TargetGone);
             }
             let mut done = Vec::new();
@@ -409,6 +421,20 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
     }
 
+    fn is_gone(&self) -> bool {
+        self.target.gone() && !self.mutants.has(Mutants::GONE_UNNOTICED)
+    }
+
+    /// The target refused a request it had room for: because its worker
+    /// ended in that moment, or against the contract.
+    fn refused(&self) -> Stopped {
+        if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+            Stopped::TargetGone
+        } else {
+            Stopped::TargetFault
+        }
+    }
+
     /// How many requests the target takes at once.
     fn room(&self) -> usize {
         if self.mutants.has(Mutants::UNBOUNDED) {
@@ -432,7 +458,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             match self.target.submit(request) {
                 Ok(()) => {}
                 Err(e) if e.kind == skyzfs_blk::SubmitErrorKind::Busy => return Ok(()),
-                Err(_) => return Err(Stopped::TargetFault),
+                Err(_) => return Err(self.refused()),
             }
             self.wants_flush.pop_front();
             self.in_target += 1;
@@ -466,7 +492,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             // for it.
             return Err(Stopped::QueueDown);
         };
-        if !matches!(slot, Slot::Idle) {
+        if !matches!(slot, Slot::Idle) && !self.mutants.has(Mutants::TAG_REUSED) {
             // The queue reused a tag that is not committed.
             return Err(Stopped::QueueDown);
         }
@@ -527,9 +553,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         };
         if self.target.submit(request).is_err() {
             // There was room, and the tag is not in flight: the target
-            // is not keeping the contract. The buffer went with the
-            // request.
-            return Err(Stopped::TargetFault);
+            // is gone, or it is not keeping the contract. The buffer
+            // went with the request.
+            return Err(self.refused());
         }
         self.in_target += 1;
         self.slots[usize::from(tag)] = Slot::Running(plan);
@@ -563,6 +589,10 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             }
             Slot::Flushing(plan, kept) if is_flush => {
                 self.finish(tag, &plan, &result, kept);
+                Ok(())
+            }
+            other if self.mutants.has(Mutants::STRAY_IGNORED) => {
+                self.slots[usize::from(tag)] = other;
                 Ok(())
             }
             _ => Err(Stopped::TargetFault),
@@ -623,6 +653,16 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         self.ack.advance(position)?;
         self.stored = Some(position);
         Ok(())
+    }
+}
+
+impl Positions for skyzfs_local::store::Served {
+    fn acknowledged(&self) -> Option<u64> {
+        skyzfs_local::store::Served::acknowledged(self).map(|position| position.0)
+    }
+
+    fn gone(&self) -> bool {
+        skyzfs_local::store::Served::gone(self)
     }
 }
 

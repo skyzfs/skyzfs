@@ -144,7 +144,9 @@ impl BlockTarget for FakeTarget {
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
         let held = self.pending.len() + self.ready.len();
         self.most = self.most.max(held + 1);
-        if held >= self.geometry.queue_depth() as usize {
+        // As the served store does: once its worker has ended it
+        // refuses everything as busy.
+        if self.gone || held >= self.geometry.queue_depth() as usize {
             return Err(SubmitError {
                 kind: SubmitErrorKind::Busy,
                 request,
@@ -792,6 +794,60 @@ fn a_target_that_is_gone_ends_the_pump_and_commits_nothing() {
         )
     }
     caught(scenario, Mutants::GONE_UNNOTICED);
+}
+
+/// A target that is gone when a request is waiting is still a target
+/// that is gone, not one that broke the contract: the pump looks
+/// before it submits. Mutant: it looks only afterwards, and takes the
+/// refusal for a fault.
+#[test]
+fn a_target_that_is_gone_is_gone_also_when_a_request_waits() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.pump.target().gone = true;
+        expect(
+            rig.fetch(&[write(0, 0)]),
+            Some(Stopped::TargetGone),
+            "a turn that fetched a request",
+        )?;
+        expect(rig.submitted(), vec![], "nothing reached the target")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(scenario, Mutants::GONE_AFTER_SUBMIT);
+}
+
+/// Two guards against the other side. A queue that hands over a tag
+/// that is still in flight is not served further: nothing can be
+/// committed for a tag twice. And a completion nobody waits for means
+/// the target is not keeping the contract. Mutants: each guard gone.
+#[test]
+fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
+    fn reused(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.fetch(&[write(0, 0)]), None, "the first")?;
+        expect(
+            rig.fetch(&[write(0, 5)]),
+            Some(Stopped::QueueDown),
+            "the same tag again",
+        )?;
+        expect(rig.submitted().len(), 1, "the second reached nothing")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(reused, Mutants::TAG_REUSED);
+
+    fn stray(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.fetch(&[write(0, 0)]), None, "a request")?;
+        let nobodys = Completion {
+            id: RequestId(5),
+            result: Ok(()),
+            buf: None,
+        };
+        rig.pump.target().ready.push((nobodys, None));
+        expect(rig.turn(), Some(Stopped::TargetFault), "a stray completion")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(stray, Mutants::STRAY_IGNORED);
 }
 
 /// When the queue goes away the pump ends and says so.
