@@ -550,6 +550,188 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
     property("take_over_beside_stale_file", || result);
 }
 
+/// What a queue's thread does after its queue is dropped at a stop, in
+/// place of the store's shutdown: it takes memory of the size of the
+/// request buffers, fills it, goes through the kernel many times while
+/// the writers' requests keep arriving at the device, and counts the
+/// bytes that changed under it.
+fn canaries(count: usize, linger: Duration) -> u64 {
+    const FILL: u8 = 0x5a;
+    let mut held: Vec<Buf> = (0..count)
+        .map(|_| {
+            let mut buf = Buf::zeroed((1 << 20) / BLOCK_SIZE as usize);
+            buf.fill(FILL);
+            buf
+        })
+        .collect();
+    let began = Instant::now();
+    while began.elapsed() < linger {
+        // Each return from the kernel is a moment at which the driver
+        // copies an arrived write to the address its fetch names.
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let changed = held
+        .iter()
+        .map(|buf| buf.iter().filter(|&&b| b != FILL).count() as u64)
+        .sum();
+    held.clear();
+    changed
+}
+
+/// A server stopped under writers, many times: after each stop the
+/// queue's thread goes on working while the device is still live and
+/// requests arrive for tags whose fetch commands are still with the
+/// driver. The addresses those commands name must stay memory that
+/// nothing else uses: memory the thread takes after the stop is never
+/// written by the kernel, every write the writers were acknowledged
+/// reads back, and the next life takes over.
+///
+/// What it cannot see is whether a request did arrive during a given
+/// stop: it reports how many writes the writers finished, and that
+/// they were writing across every stop.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    const ROUNDS: u32 = 24;
+    const WRITERS: u64 = 4;
+    const MIB: u64 = 1 << 20;
+    let n = number(6);
+    clean(n);
+    let result = (|| {
+        let mut kernel = kernel()?;
+        kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
+        let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
+        let serve = |take_over: bool| -> Result<_, String> {
+            let device = Device::open(&Open {
+                number: n,
+                size: SIZE,
+                take_over,
+            })
+            .map_err(|e| format!("open: {e}"))?;
+            let wake = Wake::new().map_err(|e| e.to_string())?;
+            let content = content.clone();
+            let serving = device
+                .serve(&wake, false, move |queue| {
+                    // The queue is dropped when `memory` returns.
+                    memory(queue, content);
+                    canaries(4 * usize::from(DEPTH), Duration::from_millis(150))
+                })
+                .map_err(|e| format!("serve: {e}"))?;
+            if let Err(e) = device.start() {
+                serving.stopper().stop();
+                let _ = serving.join();
+                return Err(format!("start (take-over {take_over}): {e}"));
+            }
+            Ok((serving, device))
+        };
+        let mut life = serve(false)?;
+
+        // Each writer has its own megabytes and writes them round and
+        // round, each write filled with its round's number, and
+        // remembers the last round it was acknowledged for each place.
+        let done = Arc::new(AtomicBool::new(false));
+        let finished = Arc::new(AtomicU64::new(0));
+        let writers: Vec<_> = (0..WRITERS)
+            .map(|w| {
+                let (done, finished) = (done.clone(), finished.clone());
+                std::thread::spawn(move || -> Result<Vec<u8>, String> {
+                    let file = direct(n)?;
+                    let places = 4u64;
+                    let mut last = vec![0u8; places as usize];
+                    let mut buf = Buf::zeroed((MIB / BLOCK_SIZE) as usize);
+                    let mut round = 0u64;
+                    while !done.load(Ordering::SeqCst) {
+                        round += 1;
+                        let place = round % places;
+                        let fill = (round % 251) as u8 + 1;
+                        buf.fill(fill);
+                        file.write_all_at(&buf, (w * places + place) * MIB)
+                            .map_err(|e| format!("writer {w}, write {round}: {e}"))?;
+                        last[place as usize] = fill;
+                        finished.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(last)
+                })
+            })
+            .collect();
+
+        let mut changed = 0u64;
+        let mut idle_rounds = 0u32;
+        for round in 0..ROUNDS {
+            let before = finished.load(Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20 + u64::from(round % 5) * 7));
+            if finished.load(Ordering::SeqCst) == before {
+                idle_rounds += 1;
+            }
+            let (serving, device) = life;
+            serving.stopper().stop();
+            changed += serving.join().map_err(|e| format!("round {round}: {e}"))?;
+            drop(device);
+            until(&mut kernel, n, "waiting", |i| {
+                i.is_some_and(|i| i.state == DeviceState::Waiting)
+            })?;
+            kernel
+                .begin_recovery(n)
+                .map_err(|e| format!("round {round}: begin of recovery: {e}"))?;
+            life = serve(true)?;
+        }
+        done.store(true, Ordering::SeqCst);
+        let mut lasts = Vec::new();
+        for writer in writers {
+            lasts.push(
+                writer
+                    .join()
+                    .map_err(|_| "a writer panicked".to_owned())??,
+            );
+        }
+        let total = finished.load(Ordering::SeqCst);
+        // Every place holds the write that was acknowledged last there.
+        {
+            let file = direct(n)?;
+            let mut got = Buf::zeroed((MIB / BLOCK_SIZE) as usize);
+            for (w, last) in lasts.iter().enumerate() {
+                for (place, &fill) in last.iter().enumerate() {
+                    if fill == 0 {
+                        continue;
+                    }
+                    let at = (w as u64 * 4 + place as u64) * MIB;
+                    file.read_exact_at(&mut got, at)
+                        .map_err(|e| format!("reading back at {at}: {e}"))?;
+                    if let Some(bad) = got.iter().position(|&b| b != fill) {
+                        return Err(format!(
+                            "writer {w}, place {place}: byte {bad} is {} and the last \
+                             acknowledged write there was filled with {fill}",
+                            got[bad]
+                        ));
+                    }
+                }
+            }
+        }
+        let (serving, _device) = life;
+        serving.stopper().stop();
+        changed += serving.join().map_err(|e| e.to_string())?;
+        println!(
+            "control_stop_under_writers_detail\t{ROUNDS} stops under {WRITERS} writers of 1 MiB, \
+             {total} writes finished, {idle_rounds} rounds in which none finished before the stop, \
+             {changed} bytes changed in memory taken after a stop"
+        );
+        if changed != 0 {
+            return Err(format!(
+                "{changed} bytes of memory taken after a stop were written by the kernel"
+            ));
+        }
+        if total < u64::from(ROUNDS) {
+            return Err(format!(
+                "only {total} writes finished over {ROUNDS} stops: the writers were not writing"
+            ));
+        }
+        Ok(())
+    })();
+    clean(n);
+    property("stop_under_writers_leaves_later_memory_alone", || result);
+}
+
 /// One step of the control test program: its answer, without the step
 /// and the number.
 fn step(n: u32, line: &str) -> Result<String, String> {

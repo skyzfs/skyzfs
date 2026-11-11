@@ -2,8 +2,8 @@
 //!
 //! # The buffers: one copy per request
 //!
-//! The queue owns one [`Buf`] per tag, of the largest request's size,
-//! locked in memory (and unlocked again when the queue is dropped).
+//! The queue has one [`Buf`] per tag, of the largest request's size,
+//! locked in memory.
 //! [`Queue::take_buf`] lends the tag's buffer out at the request's
 //! length, the request carries it through the target, the completion
 //! brings it back, and [`Queue::commit`] puts it in its place before it
@@ -20,6 +20,40 @@
 //! borrowed. That is what makes it sound to give its address away, and
 //! it needs no `unsafe` here: the library's commit takes a slice and
 //! uses only its address.
+//!
+//! # The buffers are never freed
+//!
+//! A fetch command names a buffer's address, and the kernel copies a
+//! write's data to that address when a request arrives for the tag: on
+//! the queue's thread, whenever that thread next returns from the
+//! kernel, for as long as the command is with the driver. Nothing the
+//! library offers takes a fetch command back. Its ring is a
+//! thread-local of the queue's thread, and dropping its queue object
+//! unregisters files and unmaps the descriptors and cancels no
+//! command: the commands end only when the thread itself does. So when
+//! the queue is dropped (a stop, an error, a queue that could not be
+//! made whole) while the device is live, each tag's fetch still names
+//! its buffer, and a request that arrives while the thread goes on to
+//! other work (the store's shutdown runs on it) is copied to that
+//! address.
+//!
+//! Therefore **the tag buffers and the library's first buffers are
+//! never freed and never unlocked**: when the queue is dropped they are
+//! forgotten, and their memory stays mapped, locked and unused until
+//! the process ends. The argument for soundness is that short: an
+//! address the driver was ever told stays valid memory that nothing
+//! else in the process uses, so it does not matter when the kernel
+//! stops writing there. A buffer that is with the target when the
+//! queue is dropped is not in that set and is freed by whoever holds
+//! it: its tag's request was fetched and not committed, so no command
+//! of that tag is with the driver, and the driver copies nothing for a
+//! tag without one.
+//!
+//! The cost is `depth` buffers of each kind per life of a queue in one
+//! process: nothing for the daemon, which serves one device once and
+//! ends, also when its serve fails after the queue started; and
+//! 2 x `depth` x 1 MiB per served life for a process that serves
+//! several times (the kernel tests and the control test program).
 //!
 //! # The first request of each tag
 //!
@@ -54,7 +88,7 @@ use skyzfs_blk::{Buf, BLOCK_SIZE};
 use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Wake as Woken};
 use skyzfs_ublk::translate::Desc;
 
-use crate::mem::{self, Locked};
+use crate::mem;
 use crate::{io_error, Wake, FLAGS, MAX_IO};
 
 /// The user data of the wake descriptor's poll on the queue's ring:
@@ -292,33 +326,63 @@ impl Stopper {
 
 /// The queue, on its thread. See the [module documentation](self).
 pub struct KernelQueue<'q> {
-    // Declared first, so dropped first: the ring's commands are gone
-    // before the buffers they name.
     queue: UblkQueue<'q>,
-    /// The library's buffers: where each tag's first request arrives.
-    first: Vec<IoBuf<u8>>,
-    /// Each tag's own buffer; `None` while it is lent out.
-    own: Vec<Option<Buf>>,
+    bufs: Buffers,
     /// Whether the driver has been told the address of the tag's own
     /// buffer: after the tag's first commit.
     ours: Vec<bool>,
-    /// What was locked: unlocked when the queue is dropped.
-    _locked: Vec<Locked>,
     stopper: Stopper,
     /// Tags of the last wait, kept to spare an allocation.
     tags: Vec<u16>,
 }
 
+/// The memory whose addresses the driver is told: never freed. See
+/// "The buffers are never freed" in the [module documentation](self).
+struct Buffers {
+    /// The library's buffers: where each tag's first request arrives.
+    first: Vec<IoBuf<u8>>,
+    /// Each tag's own buffer; `None` while it is lent out.
+    own: Vec<Option<Buf>>,
+}
+
+impl Buffers {
+    /// Put `buf` in the tag's place. What was there, if anything, may
+    /// be named by nothing or by the tag's last commit: it is forgotten
+    /// like every buffer that was ever in a place, and not freed.
+    fn put(place: &mut Option<Buf>, buf: Buf) {
+        if let Some(old) = place.replace(buf) {
+            std::mem::forget(old);
+        }
+    }
+}
+
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        // Forgotten, not freed: commands that name these addresses may
+        // still be with the driver, and nothing takes them back.
+        for buf in self.first.drain(..) {
+            std::mem::forget(buf);
+        }
+        for buf in self.own.drain(..).flatten() {
+            std::mem::forget(buf);
+        }
+    }
+}
+
 impl<'q> KernelQueue<'q> {
     fn new(dev: &'q UblkDev, stopper: Stopper, require_locked: bool) -> io::Result<Self> {
-        let first = dev.alloc_queue_io_bufs();
-        let depth = first.len();
-        let mut own = Vec::with_capacity(depth);
-        let mut locked = Vec::with_capacity(depth);
+        // Made before the queue and its commands, and from here on
+        // forgotten whatever fails below.
+        let mut bufs = Buffers {
+            first: dev.alloc_queue_io_bufs(),
+            own: Vec::new(),
+        };
+        let depth = bufs.first.len();
+        bufs.own.reserve_exact(depth);
         for _ in 0..depth {
             let buf = Buf::with_capacity(MAX_BLOCKS);
             match mem::lock(&buf) {
-                Ok(lock) => locked.push(lock),
+                Ok(()) => {}
                 Err(e) if require_locked => {
                     return Err(io::Error::new(
                         e.kind(),
@@ -327,18 +391,16 @@ impl<'q> KernelQueue<'q> {
                 }
                 Err(_) => {}
             }
-            own.push(Some(buf));
+            bufs.own.push(Some(buf));
         }
         let queue = UblkQueue::new(0, dev)
             .map_err(io_error)?
-            .submit_fetch_commands_unified(BufDescList::Slices(Some(&first)))
+            .submit_fetch_commands_unified(BufDescList::Slices(Some(&bufs.first)))
             .map_err(io_error)?;
         let this = Self {
             queue,
-            first,
-            own,
+            bufs,
             ours: vec![false; depth],
-            _locked: locked,
             stopper,
             tags: Vec::with_capacity(depth),
         };
@@ -362,7 +424,7 @@ impl<'q> KernelQueue<'q> {
 
 impl Queue for KernelQueue<'_> {
     fn depth(&self) -> u16 {
-        self.own.len() as u16
+        self.bufs.own.len() as u16
     }
 
     fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Woken, QueueDown> {
@@ -425,7 +487,7 @@ impl Queue for KernelQueue<'_> {
         // is reached while both keep their word. Each still gives a
         // buffer of the right length with the right data, at the cost
         // of an allocation and, at the commit, a new address.
-        let mut buf = match self.own.get_mut(slot).and_then(Option::take) {
+        let mut buf = match self.bufs.own.get_mut(slot).and_then(Option::take) {
             Some(buf) => buf,
             None => Buf::with_capacity(MAX_BLOCKS.max(blocks)),
         };
@@ -437,7 +499,7 @@ impl Queue for KernelQueue<'_> {
             // The tag's first request since the start: the driver put
             // the data into the library's buffer. No fetch of this tag
             // is outstanding, so the kernel does not write there now.
-            if let Some(first) = self.first.get(slot) {
+            if let Some(first) = self.bufs.first.get(slot) {
                 let from = first.as_slice();
                 let len = buf.len().min(from.len());
                 buf[..len].copy_from_slice(&from[..len]);
@@ -449,11 +511,11 @@ impl Queue for KernelQueue<'_> {
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
         let slot = usize::from(tag);
-        let Some(place) = self.own.get_mut(slot) else {
+        let Some(place) = self.bufs.own.get_mut(slot) else {
             return;
         };
         if let Some(buf) = buf {
-            *place = Some(buf);
+            Buffers::put(place, buf);
         }
         // A request whose buffer never came back (the pump commits a
         // failed one without it) gets a new one: unlocked, and never
@@ -463,8 +525,9 @@ impl Queue for KernelQueue<'_> {
         // gives the driver the address of a slice that has a length,
         // and none otherwise.
         if own.set_blocks(own.capacity_blocks()).is_err() || own.is_empty() {
-            *own = Buf::with_capacity(MAX_BLOCKS);
+            Buffers::put(place, Buf::with_capacity(MAX_BLOCKS));
         }
+        let own = place.get_or_insert_with(|| Buf::with_capacity(MAX_BLOCKS));
         // The borrow ends with this call. After it the kernel may write
         // to the buffer at any time until the tag's next fetch
         // completes, and nothing here touches it until then: see the
