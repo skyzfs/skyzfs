@@ -1,0 +1,98 @@
+name: skyzfs-replay-rig
+
+# Power-cut replay (design §9, M1 exit criterion): a pool must import at
+# every record prefix of the write log, not only at flush boundaries.
+# The rig records a workload's writes with dm-log-writes over a ublk
+# device, rebuilds the device at sampled prefixes, and at each one
+# imports the pool read-only and verifies the files that were due; at
+# flush boundaries it also scrubs a throwaway copy. Two deliberately
+# wrong replays must be caught, or the job fails. All the logic is
+# `tests/kernel/replay-rig.sh` and `tests/kernel/replay_check.py`.
+#
+# Built against the reference ublk server, so that it is ready and
+# trusted when skyzfsd exists.
+on:
+  workflow_dispatch:
+    inputs:
+      budget_s:
+        description: "seconds for the main pass over the sampled prefixes"
+        default: "840"
+      deep_budget_s:
+        description: "seconds of scrubs at flush boundaries, on top"
+        default: "240"
+      syncs:
+        description: "pool syncs in the workload (transaction groups recorded)"
+        default: "40"
+  pull_request:
+    paths:
+      - tests/kernel/**
+      - .github/workflows/skyzfs-replay-rig.yml
+  # Until the workflow has run once it cannot be dispatched from a
+  # branch. This trigger goes away before the pull request is opened.
+  push:
+    branches: [skyzfs-testing]
+    paths:
+      - tests/kernel/replay*
+      - tests/kernel/logwrites.py
+      - .github/workflows/skyzfs-replay-rig.yml
+
+# The job runs branch code and third-party code as root: its token can
+# read the repository and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: log reader and planning (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_replay.py -v
+
+  replay:
+    name: replay on ubuntu-26.04
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    env:
+      UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install ZFS, build the ublk server and replay-log
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          sudo modprobe ublk_drv
+          sudo modprobe dm_log_writes
+          sudo modprobe dm_snapshot
+          tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
+          uname -r; sudo zfs version
+      - name: Record and replay
+        # Settings go in a file: ubuntu-26.04's sudo-rs does not carry
+        # the environment through.
+        env:
+          BUDGET_S: ${{ inputs.budget_s || '840' }}
+          DEEP_BUDGET_S: ${{ inputs.deep_budget_s || '240' }}
+          SYNCS: ${{ inputs.syncs || '40' }}
+        run: |
+          for v in "$BUDGET_S" "$DEEP_BUDGET_S" "$SYNCS"; do
+            [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
+          done
+          {
+            echo "export RIG_BUDGET_S=$BUDGET_S RIG_DEEP_BUDGET_S=$DEEP_BUDGET_S RIG_SYNCS=$SYNCS"
+            printf 'export RIG_REPLAY_LOG=%q\n' "$RUNNER_TEMP/bin/replay-log"
+          } > "$RUNNER_TEMP/rig.env"
+          sudo bash -c '. "$1" && exec tests/kernel/replay-rig.sh "$2" /mnt/skz-replay' \
+            rig "$RUNNER_TEMP/rig.env" "$PWD/replay-out"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX replay-out 2>/dev/null || true
+          cat replay-out/replay-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: replay-rig
+          path: replay-out/
+          retention-days: 90
