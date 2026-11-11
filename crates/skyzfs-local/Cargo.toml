@@ -1,0 +1,20 @@
+[package]
+name = "skyzfs-local"
+description = "The SkyZFS local store: the write log, and the simulated disk it is tested on (design §5.1)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+crc32c = { workspace = true }
+getrandom = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# For the value of O_DIRECT only: no call into libc, no unsafe.
+libc = "0.2"
