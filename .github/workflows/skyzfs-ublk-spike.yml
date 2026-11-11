@@ -21,6 +21,9 @@ on:
       hold_s:
         description: "seconds one request is held"
         default: "300"
+      red:
+        description: "true: run only the stop test against two builds that must FAIL it (the buffers freed at a stop; the last commits of a stop not handed over)"
+        default: "false"
 
 concurrency:
   group: daemon-first-run-${{ github.ref }}
@@ -34,6 +37,7 @@ permissions:
 jobs:
   rig:
     name: ${{ matrix.image }}
+    if: ${{ inputs.red != 'true' }}
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
     strategy:
@@ -115,3 +119,66 @@ jobs:
           name: daemon-first-run-${{ matrix.image }}
           path: rig-out/
           retention-days: 30
+
+
+  # The stop test against two builds with a defect put back. Each must
+  # FAIL the test: the job is green when the test fails with the words
+  # of the assertion the defect is for, and red when the test passes.
+  red:
+    name: red ${{ matrix.variant }}
+    if: ${{ inputs.red == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [buffers-freed, no-flush]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Put the defect back
+        run: |
+          python3 - "${{ matrix.variant }}" <<'PY'
+          import re, sys
+          variant = sys.argv[1]
+          if variant == "buffers-freed":
+              # The buffers are freed when the queue is dropped, as
+              # before the review: no Drop that forgets them.
+              path = "crates/skyzfs-ublk-sys/src/queue.rs"
+              text = open(path).read()
+              new, n = re.subn(r"impl Drop for Buffers \{.*?\n\}\n\n", "", text, count=1, flags=re.S)
+              assert n == 1, "the Drop of Buffers was not found"
+          else:
+              # The test's server does not hand its last commits over
+              # at a stop.
+              path = "crates/skyzfs-ublk-sys/tests/kernel.rs"
+              text = open(path).read()
+              new, n = re.subn(r"\n *let _ = queue\.flush\(\);", "", text)
+              assert n >= 1, "no flush was found"
+          open(path, "w").write(new)
+          print(f"{variant}: {n} place(s) changed in {path}")
+          PY
+          git diff --stat
+      - name: The stop test, which must fail
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          rustup update stable
+          sudo modprobe ublk_drv
+          bin=$(cargo test --release -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
+          [ -x "$bin" ] || { echo "::error::no test binary"; exit 2; }
+          rc=0
+          sudo "$bin" --ignored --test-threads 1 --nocapture --exact a_stop_under_writers_leaves_the_memory_taken_afterwards_alone > red.log 2>&1 || rc=$?
+          {
+            echo "### the stop test with ${{ matrix.variant }} (exit $rc)"
+            echo '```'
+            grep -E '^control_|^test |panicked' red.log || cat red.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat red.log
+          if [ "$rc" -eq 0 ]; then
+            echo "::error title=${{ matrix.variant }}::the stop test PASSED with the defect put back: it does not catch it"
+            exit 1
+          fi
+          grep -q '^control_stop_under_writers_leaves_later_memory_alone.FAIL' red.log || {
+            echo "::error title=${{ matrix.variant }}::the test did not end with its own FAIL line (exit $rc): a crash is not the assertion"
+            exit 3
+          }

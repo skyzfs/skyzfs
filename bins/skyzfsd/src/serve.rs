@@ -13,7 +13,8 @@
 //!    and queues its fetch commands (they reach the driver at the
 //!    queue's first wait), and the device is started (or its recovery
 //!    ended). Then, once this instance's status file was written or
-//!    the write was tried, one line on standard output, flushed:
+//!    the write was tried (waited for at most 5 s, then said with a
+//!    warning), one line on standard output, flushed:
 //!    `ready /dev/ublkbN`.
 //! 5. The main thread waits: for `SIGTERM` or `SIGINT`, for the store's
 //!    word that the volume failed, or for the queue's thread to end.
@@ -30,9 +31,10 @@
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted, the device's
 //! note is removed and the device is deleted ([`lifecycle::fail_serving`]),
-//! while the store still holds the volume's lock: the queue's thread
-//! gives the store back to the main thread, which keeps it until it
-//! returns.
+//! under the volume's lock: the main thread has a hold of its own on
+//! the lock the store took, from the start until it returns, so the
+//! lock does not depend on what becomes of the store on the queue's
+//! thread.
 //!
 //! A start that settles a failure of unknown holding deletes the
 //! failed volume's device and then looks for up to 5 s whether it goes
@@ -362,6 +364,17 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if let Some(reason) = ready.acknowledged {
         say(format_args!("a failure was acknowledged: {reason}"));
     }
+    // The main thread holds the volume's lock from here until this
+    // function returns, by a hold of its own on the lock the store
+    // took. Whatever becomes of the store (it goes to the queue's
+    // thread, and a panic there, in the pump or outside it, drops it
+    // there), the lock is not free before the main thread has done the
+    // cleanup after a failure: the failure note, the device's note and
+    // the delete of the device by its number. Without it a detach or
+    // another serve could act on the attachment in between.
+    let Some(_lock) = ready.store.share_lock() else {
+        return Err("the store holds no lock on the volume".into());
+    };
     let (number, shape) = (ready.number, ready.shape);
     let identity = ready.store.identity();
     // What the server before this one had applied and never answered:
@@ -535,9 +548,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     };
     if why == Why::Failed {
-        // The store still holds the volume's lock: it is in the pump on
-        // the queue's thread, or in that thread's result, which nobody
-        // has taken yet. It is let go of when this function returns.
+        // The volume's lock is held: by `_lock`, whatever the queue's
+        // thread has done with the store.
         let (failure, written) =
             lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
@@ -560,11 +572,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if why == Why::Stop {
         stopper.stop();
     }
-    // `_store` holds the volume's lock until this function returns:
-    // past the failure's cleanup below, which writes the failure note
-    // and deletes the device under its number. Without the lock a
-    // detach or another serve could act on the attachment in between,
-    // and this process would delete a device it no longer owns.
+    // The store comes back with the outcome and is dropped when this
+    // function returns. The volume's lock does not depend on it:
+    // `_lock` holds it past the failure's cleanup below also when the
+    // queue's thread panicked outside the pump or the queue was never
+    // made, and the store was dropped there.
     let (stopped, _store) = match serving.join() {
         Ok((Some(stopped), store)) => (Ok(stopped), Some(store)),
         Ok((None, store)) => (

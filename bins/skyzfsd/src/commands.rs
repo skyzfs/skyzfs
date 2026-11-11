@@ -438,6 +438,11 @@ pub fn in_directory<T>(
 /// volume: if another instance has the lock or made a volume here in
 /// the meantime, everything is left. The directory itself goes only if
 /// it is empty then, so a file of anybody else keeps it.
+///
+/// A second create that opened the lock file just before it is
+/// unlinked here gets its lock on a removed file and then fails with
+/// "no such file" when the directory goes: exit 1, nothing left
+/// behind. Left so; the two were racing for a directory neither had.
 fn unmake(path: &Path) {
     let Ok(dir) = FsDir::new(path) else {
         return;
