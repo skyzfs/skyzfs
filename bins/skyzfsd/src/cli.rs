@@ -74,9 +74,11 @@ pub const USAGE: &str = "usage:
 pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
 
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
-      Make a new, empty volume in DIR, which must exist and hold no
-      volume. BYTES is a multiple of 1 MiB. One line is printed: the
-      size, the volume's id and the store's identity.
+      Make a new, empty volume in DIR. DIR is made if it is missing
+      (its parent must exist) and must hold no volume; a create that
+      fails removes a DIR it made. BYTES is a multiple of 1 MiB. One
+      line is printed: the size, the volume's id and the store's
+      identity.
       If a volume in DIR failed in this boot, create warns: the note
       of that failure stays, and counts for the new volume.
 

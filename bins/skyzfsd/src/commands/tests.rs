@@ -488,25 +488,37 @@ fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
     assert_eq!(status(&volume, &mut kernel, &now).exit, Exit::Done);
 }
 
-/// `create` makes no directory and replaces no volume: both are an
-/// error, status 1, and nothing changes.
+/// `create` makes a missing directory (its last part, mode 0700), and
+/// refuses a missing parent, a path that is not a directory, and a
+/// directory that holds a volume: status 1, and nothing changes.
 #[test]
-fn create_refuses_a_missing_directory_and_a_directory_that_holds_a_volume() {
+fn create_makes_the_last_part_and_refuses_a_missing_parent_a_file_and_a_volume() {
+    use std::os::unix::fs::PermissionsExt;
     let keep = tempfile::tempdir().expect("a directory");
-    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    let run_dir = keep.path().join("run");
 
+    let deep = keep.path().join("missing").join("volume");
     let output = create(
-        &creating(&dir, &run_dir, 1 << 20, None),
+        &creating(&deep, &run_dir, 1 << 20, None),
         [1; 16],
         Some(BOOT),
     );
     assert_eq!((output.exit, output.out.as_str()), (Exit::Error, ""));
-    assert!(
-        output.err.contains("create makes no directory"),
-        "{}",
-        output.err
+    assert!(output.err.contains("parent"), "{}", output.err);
+    assert!(!keep.path().join("missing").exists());
+
+    let made = keep.path().join("made");
+    let output = create(
+        &creating(&made, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
     );
-    assert!(!dir.exists());
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    let mode = std::fs::metadata(&made).expect("made").permissions().mode();
+    assert_eq!(mode & 0o777, 0o700);
+    assert!(Store::open(FsDir::new(&made).expect("dir"), OpenOptions::default()).is_ok());
+
+    let dir = keep.path().join("volume");
 
     // A file is no directory either.
     std::fs::write(&dir, b"a file").expect("write");
@@ -622,4 +634,37 @@ fn create_warns_of_a_failure_note_of_this_boot_and_leaves_it() {
         let output = create(&creating(&old, &run_dir, 1 << 20, None), [entry; 16], boot);
         assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
     }
+}
+
+/// A create that fails after it made the directory removes it again if
+/// it is empty, and leaves one it did not make, or one that is not
+/// empty.
+#[test]
+fn a_failed_create_leaves_no_directory_it_made() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let fail = |_dir: FsDir| -> Result<(), Output> { Err(Output::error("no")) };
+
+    let made = keep.path().join("made");
+    assert!(in_directory(&made, fail).is_err());
+    assert!(!made.exists(), "the directory it made is gone");
+
+    let there = keep.path().join("there");
+    std::fs::create_dir(&there).expect("dir");
+    assert!(in_directory(&there, fail).is_err());
+    assert!(there.is_dir(), "a directory it did not make stays");
+
+    let left = keep.path().join("left");
+    let put = |dir: FsDir| -> Result<(), Output> {
+        std::fs::write(dir.path().join("x"), b"x").expect("write");
+        Err(Output::error("no"))
+    };
+    assert!(in_directory(&left, put).is_err());
+    assert!(
+        left.join("x").exists(),
+        "a directory with something in it stays"
+    );
+
+    let fine = keep.path().join("fine");
+    assert_eq!(in_directory(&fine, |_| Ok(7)).ok(), Some(7));
+    assert!(fine.is_dir());
 }

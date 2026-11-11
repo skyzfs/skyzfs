@@ -18,8 +18,12 @@
 //! [`SEGMENT_SIZE`], and the write unit of the system it is made on
 //! ([`Identity::system_write_unit`]). None of them is an option: they
 //! are recorded with the volume, and a later version that wants others
-//! makes new volumes with others. The directory must exist and hold no
-//! volume: `create` makes no directory and replaces nothing.
+//! makes new volumes with others. If the directory is missing, `create`
+//! makes it (its last component only, mode 0700); a missing parent, a
+//! path that is not a directory and a directory that holds a volume
+//! are errors. `create` replaces nothing, and a `create` that fails
+//! after it made the directory removes the directory again if it is
+//! empty, so that it leaves nothing behind.
 
 use std::fmt::Write as _;
 use std::io;
@@ -266,37 +270,11 @@ fn hex(bytes: &[u8; 16]) -> String {
 /// ([`Store::identity`]): what tells this volume from another made
 /// later in the same directory.
 pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
+    let made = match in_directory(&create.dir, |dir| make(create, dir, id)) {
+        Ok(made) => made,
+        Err(output) => return output,
+    };
     let shown = create.dir.display();
-    let dir = match FsDir::new(&create.dir) {
-        Ok(dir) => dir,
-        Err(e) => return Output::error(format_args!("{shown}: {e}: create makes no directory")),
-    };
-    let config = StoreConfig {
-        volume: id,
-        size_mib: create.size >> 20,
-        base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
-        align: ALIGN,
-        segment_size: SEGMENT_SIZE,
-        write_unit: Identity::system_write_unit(),
-    };
-    let store = match Store::create(dir, &config, OpenOptions::default()) {
-        Ok(store) => store,
-        Err(StoreError::Log(LogError::Exists)) => {
-            return Output::error(format_args!(
-                "{shown} holds a volume already. Nothing was done"
-            ))
-        }
-        Err(StoreError::Locked) => {
-            return Output::said(
-                Exit::RefusedHeld,
-                "",
-                &format!("{shown} is in use by another instance. Nothing was done"),
-            )
-        }
-        Err(e) => return Output::error(format_args!("creating a volume in {shown}: {e}")),
-    };
-    let identity = store.identity();
-    drop(store);
     let warning = boot
         .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
         .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
@@ -306,9 +284,66 @@ pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
             "created {shown}: {} bytes, volume {}, identity {}\n",
             create.size,
             hex(&id),
-            hex(&identity)
+            hex(&made)
         ),
         err: warning,
+    }
+}
+
+/// Run `work` in the directory `path`, made first (its last component
+/// only, mode 0700) if it is missing. If `work` fails and the directory
+/// was made here, it is removed again if it is empty.
+pub fn in_directory<T>(
+    path: &Path,
+    work: impl FnOnce(FsDir) -> Result<T, Output>,
+) -> Result<T, Output> {
+    use std::os::unix::fs::DirBuilderExt;
+    let shown = path.display();
+    let made = match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Err(Output::error(format_args!(
+                "{shown}: its parent directory does not exist: create makes only the last part"
+            )))
+        }
+        Err(e) => return Err(Output::error(format_args!("{shown}: {e}"))),
+    };
+    let result = match FsDir::new(path) {
+        Ok(dir) => work(dir),
+        Err(e) => Err(Output::error(format_args!("{shown}: {e}"))),
+    };
+    if result.is_err() && made {
+        // Fails, and leaves it, if anything was put in it.
+        let _ = std::fs::remove_dir(path);
+    }
+    result
+}
+
+/// Make the store of `create` in `dir`; its identity.
+fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
+    let shown = create.dir.display();
+    let config = StoreConfig {
+        volume: id,
+        size_mib: create.size >> 20,
+        base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
+        align: ALIGN,
+        segment_size: SEGMENT_SIZE,
+        write_unit: Identity::system_write_unit(),
+    };
+    match Store::create(dir, &config, OpenOptions::default()) {
+        Ok(store) => Ok(store.identity()),
+        Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
+            "{shown} holds a volume already. Nothing was done"
+        ))),
+        Err(StoreError::Locked) => Err(Output::said(
+            Exit::RefusedHeld,
+            "",
+            &format!("{shown} is in use by another instance. Nothing was done"),
+        )),
+        Err(e) => Err(Output::error(format_args!(
+            "creating a volume in {shown}: {e}"
+        ))),
     }
 }
 
