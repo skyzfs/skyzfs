@@ -728,6 +728,18 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             }
             done
         });
+        if !answered {
+            // Said before the delete and not with its outcome: the
+            // delete may now wait in the driver for as long as the
+            // queue's thread holds a request, and this line is then
+            // all an operator has.
+            say(format_args!(
+                "the volume failed, and the queue's thread did not answer what it held within \
+                 {} ms: device {number} is deleted all the same, and the delete waits in the \
+                 driver for as long as a request is held",
+                ANSWER_LOOKS * ANSWER_LOOK.as_millis() as u32
+            ));
+        }
         // The volume's lock is held: by `_lock`, whatever the queue's
         // thread has done with the store.
         let (failure, written) =
@@ -747,11 +759,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                     flags.answers.load(Ordering::SeqCst)
                 )
             } else {
-                format!(
-                    "the queue's thread did not answer what it held within {} ms: the delete \
-                     was sent all the same",
-                    ANSWER_LOOKS * ANSWER_LOOK.as_millis() as u32
-                )
+                "the delete has returned".to_string()
             }
         ));
         // The delete takes the queue down. A stop as well, for a
