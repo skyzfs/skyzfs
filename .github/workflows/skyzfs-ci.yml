@@ -81,7 +81,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: dm build headers (skynbd-agent "dm" feature)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
       # Its own cache, shared by every working branch. The `dev` cache
       # belongs to ci.yml's test job on main; a cache written on one
       # branch is not readable from another, so reusing that key here
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - name: dm build headers (skynbd-agent "dm" feature)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: skyzfs-test
