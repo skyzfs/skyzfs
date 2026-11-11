@@ -55,9 +55,20 @@ pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    match replay_text(&text, volume, size_mib) {
+        Ok(violations) => ExitCode::from(u8::from(violations > 0)),
+        Err(why) => {
+            eprintln!("{why}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// The replay of a trace's text: how many events the model objected
+/// to, or why the trace could not be replayed.
+fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String> {
     let Ok(geometry) = Geometry::new(size_mib, 64, false) else {
-        eprintln!("not a device size: {size_mib} MiB");
-        return ExitCode::from(2);
+        return Err(format!("not a device size: {size_mib} MiB"));
     };
     let mut model = Model::new(geometry);
     let mut ops: BTreeMap<u64, String> = BTreeMap::new();
@@ -94,8 +105,7 @@ pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
                     _ => None,
                 };
                 let Some(op) = op else {
-                    eprintln!("{ms}: cannot rebuild request {id}: {line}");
-                    return ExitCode::from(2);
+                    return Err(format!("{ms}: cannot rebuild request {id}: {line}"));
                 };
                 ops.insert(id, format!("{} {first}+{blocks}", f[4]));
                 if !outstanding.insert(id) {
@@ -133,8 +143,7 @@ pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
             ("delivered", _) if settling => continue,
             ("delivered", Some(id)) => {
                 let Some(d) = done.remove(&id) else {
-                    eprintln!("{ms}: {id} delivered before it was done");
-                    return ExitCode::from(2);
+                    return Err(format!("{ms}: {id} delivered before it was done"));
                 };
                 outstanding.remove(&id);
                 let buf = if d.seen.is_empty() {
@@ -175,5 +184,43 @@ pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
         }
     }
     println!("{violations} violations");
-    ExitCode::from(u8::from(violations > 0))
+    Ok(violations)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replay_text;
+
+    /// A write, the log fails, and a read that the kernel answers with
+    /// an I/O error: the suite is given `Failed` for it, and the trace
+    /// has that first and the system call's own result after it.
+    fn failed_log(read_result: &str) -> String {
+        [
+            "1\t7\tsubmit\t1\twrite\t3\t1\taaaa",
+            "2\t7\tdone\t1\tOk(())\t\tOk(())",
+            "3\t7\tdelivered\t1\t",
+            "4\t7\tfail\t\t",
+            "5\t7\tsubmit\t2\tread\t3\t1\t",
+            &format!("6\t7\tdone\t2\t{read_result}\t\tErr(Io(Other))"),
+            "7\t7\tdelivered\t2\t",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_failed_log_replays_as_the_suite_saw_it() {
+        assert_eq!(replay_text(&failed_log("Err(Failed)"), "7", 64), Ok(0));
+    }
+
+    /// What the replayer was given before: the system call's result. The
+    /// model does not accept an I/O error from a volume, failed or not.
+    #[test]
+    fn the_raw_result_of_a_failed_volume_is_a_violation() {
+        assert_eq!(replay_text(&failed_log("Err(Io(Other))"), "7", 64), Ok(1));
+    }
+
+    #[test]
+    fn another_volume_of_the_trace_is_not_replayed() {
+        assert_eq!(replay_text(&failed_log("Err(Io(Other))"), "8", 64), Ok(0));
+    }
 }

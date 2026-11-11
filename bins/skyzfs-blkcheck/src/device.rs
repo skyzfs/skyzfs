@@ -410,17 +410,25 @@ impl BlockTarget for DeviceTarget {
             if let Ok(mut returned) = returned.lock() {
                 returned.insert(id, std::time::Instant::now());
             }
+            // Looked at when the call has returned, not when it began:
+            // a request in flight while the log fails is answered by
+            // the failure.
+            let raw = format!("{result:?}");
+            let result = after_failure(result, failed.load(Ordering::SeqCst));
             if tracing() {
                 let seen = match &buf {
                     Some(buf) if is_read => digests(buf),
                     _ => String::new(),
                 };
-                trace(number, "done", Some(id), &format!("{result:?}\t{seen}"));
+                // What the suite is given, which the replayer reads,
+                // and then what the system call returned.
+                trace(
+                    number,
+                    "done",
+                    Some(id),
+                    &format!("{result:?}\t{seen}\t{raw}"),
+                );
             }
-            // Looked at when the call has returned, not when it began:
-            // a request in flight while the log fails is answered by
-            // the failure.
-            let result = after_failure(result, failed.load(Ordering::SeqCst));
             // The receiver is gone only when the target was dropped.
             let _ = tx.send(Completion { id, result, buf });
         });
