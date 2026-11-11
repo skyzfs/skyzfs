@@ -154,11 +154,28 @@ scenario_delete() {
 # name number image: the device comes back under the old name; first
 # without zpool clear, then with it.
 scenario_return() {
-    local name=$1 n=$2 img=$3 pool=skzf-$1 mnt=$WORK/mnt/skzf-$1 mark rc i st before v
+    local name=$1 n=$2 img=$3 pool=skzf-$1 mnt=$WORK/mnt/skzf-$1 mark rc i st before v m how
     mark=$(dmesg | wc -l)
     add_dev "$n" "$img" > "$OUT/$name-readd.log" 2>&1; rc=$?
+    if [ $rc != 0 ] || [ ! -b "/dev/ublkb$n" ]; then
+        # The old number cannot be had again. Write down what the kernel
+        # still holds, then bring the content back as another device and
+        # put it at the old path by hand, as an operator who wants the
+        # pool back might.
+        rec "${name}_old_number" "ublk add -n $n failed, rc $rc ($(tail -n 1 "$OUT/$name-readd.log")); ublk list -n $n: $(lim 20 ublk list -n "$n" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300); /dev: $(find /dev -maxdepth 1 -name 'ublk[bc]*' | sort | tr '\n' ' '); /sys/block: $(find /sys/block -maxdepth 1 -name 'ublkb*' | sort | tr '\n' ' '); kernel: $(dmesg | tail -n 400 | grep -i ublk | sed 's/^\[[^]]*\] //' | sort | uniq -c | head -n 5 | tr -s ' ' | tr '\n' ';')"
+        m=$((n + 10))
+        add_dev "$m" "$img" > "$OUT/$name-readd-other.log" 2>&1; rc=$?
+        for i in $(seq 1 40); do [ -b "/dev/ublkb$m" ] && break; sleep 0.25; done
+        how="as /dev/ublkb$m (ublk add rc $rc)"
+        if [ -b "/dev/ublkb$m" ] && [ ! -e "/dev/ublkb$n" ]; then
+            ln -s "/dev/ublkb$m" "/dev/ublkb$n" && how+=", with /dev/ublkb$n a symbolic link to it"
+        fi
+        rec "${name}_back_as" "$how"
+    else
+        rec "${name}_back_as" "under the old number, /dev/ublkb$n (ublk add rc 0)"
+    fi
     for i in $(seq 1 60); do st=$(pool_state "$pool"); [ "$st" = ONLINE ] && break; sleep 1; done
-    rec "${name}_back_without_clear" "ublk add under the old number rc $rc ($(tail -n 1 "$OUT/$name-readd.log")); device node $([ -b "/dev/ublkb$n" ] && echo present || echo absent); pool $st after $i s with no zpool clear; $(status_lines "$pool" "$OUT/$name-status-back.log")"
+    rec "${name}_back_without_clear" "pool $st after $i s with no zpool clear; $(status_lines "$pool" "$OUT/$name-status-back.log")"
     before=$(grep -c . "$WORK/$name.record")
     lim 120 zpool clear "$pool" > "$OUT/$name-clear.log" 2>&1; rc=$?
     for i in $(seq 1 30); do st=$(pool_state "$pool"); [ "$st" = ONLINE ] && break; sleep 1; done
