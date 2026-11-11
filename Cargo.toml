@@ -18,6 +18,7 @@ members = [
     "bins/skynbd-agent",
     "bins/skynbdctl",
     "bins/skynbd-csi-driver",
+    "bins/skyzfsd",
 ]
 
 [workspace.package]
