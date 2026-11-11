@@ -585,6 +585,9 @@ def blocks_at(bps, lo, hi):
     return out
 
 
+ZEC_MAGIC = 0x210da7ab10c7a11
+
+
 def victim_facts(log_path, records, victim, base_path=None):
     """What can be said from the log alone about the block a control withholds.
 
@@ -600,6 +603,9 @@ def victim_facts(log_path, records, victim, base_path=None):
         f.seek(v['pos'])
         data = f.read(v['bytes'])
         facts['zeros'] = not any(data)
+        # An intent-log block starts with a chain header whose checksum
+        # field begins, 144 bytes in, with the magic of an embedded checksum.
+        facts['intent_log'] = data[144:152] == struct.pack('<Q', ZEC_MAGIC)
         for r in records:
             if 'pos' not in r:
                 continue
@@ -635,6 +641,7 @@ def victim_facts(log_path, records, victim, base_path=None):
 def facts_text(facts):
     c = facts['copies']
     parts = ['all zeros' if facts['zeros'] else None,
+             'its bytes start as an intent-log block does' if facts.get('intent_log') else None,
              'the device already held the same bytes there' if facts['same_as_before'] else None,
              (f"the same bytes are also written at {len(c)} other place(s): "
               + ', '.join(f"record {x['record']} at byte {x['offset']}" for x in c[:4])) if c else 'no other write in the log carries the same bytes',

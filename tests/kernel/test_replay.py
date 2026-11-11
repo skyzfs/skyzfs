@@ -200,6 +200,13 @@ class Log(unittest.TestCase):
         f = replay_check.victim_facts(self.log, recs, 6, self.img)
         self.assertEqual((f['zeros'], f['same_as_before'], f['copies']), (True, True, []))
         self.assertIn('record 2 at byte', replay_check.facts_text(replay_check.victim_facts(self.log, recs, 1)))
+        self.assertFalse(f['intent_log'])
+        zil = bytearray(blk(3))
+        zil[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, bytes(zil)), ('flush',)])
+        f = replay_check.victim_facts(self.log, logwrites.index(self.log, DEV)['records'], 0)
+        self.assertTrue(f['intent_log'])
+        self.assertIn('intent-log block', replay_check.facts_text(f))
 
     def test_plan_is_repeatable(self):
         recs = self.idx['records']
