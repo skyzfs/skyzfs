@@ -1118,7 +1118,7 @@ check_d_scrub() {
 # d.6, second half: nothing held the device at the failure, so an
 # operator may acknowledge it. Also where the note is kept by default.
 check_d_not_held() {
-    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note w0 w1 wrote
+    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note w0 w1 wrote spid
     local VOL_RUN_ARGS=()       # this volume is served with the default run directory
     step "d: a volume that failed with no client attached"
     : > "$marker"
@@ -1168,8 +1168,20 @@ check_d_not_held() {
     # "Served and written" is the server's word, not dd's: its own count
     # of writes must go up by the write. dd exiting 0 shows only that
     # something at that path took 4096 bytes.
-    wrote="not tried"; w0=""; w1=""
+    # The count before the write must be the new server's: the status
+    # may still be the failed instance's last for a moment (the daemon
+    # writes it on an interval), and that instance had counted the
+    # writes that made it fail. The failed instance is gone, so the
+    # status is the new server's once the pid in it is alive.
+    wrote="not tried"; w0=""; w1=""; spid=""
     if [ -n "$BDEV" ] && [ -b "$BDEV" ]; then
+        for found in $(seq 1 50); do
+            spid=$(vol_stat "$SKYZFSD" "$dir" pid)
+            { [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; } && break
+            spid=""; sleep 0.1
+        done
+    fi
+    if [ -n "$spid" ]; then
         w0=$(vol_stat "$SKYZFSD" "$dir" writes)
         if lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 oflag=direct conv=nocreat status=none 2>/dev/null; then
             w1=$(vol_stat_least "$SKYZFSD" "$dir" writes $(( ${w0:-0} + 1 )))
@@ -1181,10 +1193,12 @@ check_d_not_held() {
     if [ -n "$BDEV" ] && [ ! -b "$BDEV" ]; then
         strays_note "at the acknowledged serve of $dir"
         pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve reported $BDEV, which is not a block device: $(ls -ld "$BDEV" 2>&1)"
+    elif [ -n "$BDEV" ] && [ -z "$spid" ]; then
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve made $BDEV ready, and for 5 s its status named no live server (pid '$(vol_stat "$SKYZFSD" "$dir" pid)'): the count of writes before the write would be the failed instance's"
     elif [ "$wrote" = "dd exit 0" ] && ! { [[ $w0 =~ ^[0-9]+$ ]] && [[ $w1 =~ ^[0-9]+$ ]]; }; then
         pin failed_unheld_volume_serves_when_acknowledged ERROR "status gave no count of writes (before '$w0', after '$w1')"
     elif [ "$rc" = "$EXIT_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ] && [ "$wrote" = "dd exit 0" ] && [ "$w1" -gt "$w0" ]; then
-        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it: the server's count of writes went from $w0 to $w1"
+        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it: the count of writes of the server now serving (pid $spid) went from $w0 to $w1"
     else
         pin failed_unheld_volume_serves_when_acknowledged FAIL "first serve exit $rc (wanted $EXIT_FAILED); without the acknowledgement exit $n (wanted $EXIT_REFUSED_FAILED); with it: $([ -n "$BDEV" ] && echo "ready $BDEV" || echo 'not ready'), the write: $wrote, the server's count of writes ${w0:-none} -> ${w1:-none}"
     fi
