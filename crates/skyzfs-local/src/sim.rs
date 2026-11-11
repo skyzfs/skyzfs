@@ -16,7 +16,7 @@
 //!   sector can survive while an earlier one is lost, and a write that
 //!   spans sectors can be torn at any sector boundary. Which, is the
 //!   [`Cut`]'s choice. A file's length ends up as it was at the last
-//!   sync or as it is now. Of the creations and removals since
+//!   sync or as it is now. Of the creations, removals and renames since
 //!   the last [`Dir::sync`], a prefix survives. What is left is durable,
 //!   and every handle opened before the cut is dead.
 //! - **A process kill** ([`SimDisk::kill`]). Every handle is dead and
@@ -98,7 +98,7 @@ pub trait Cut {
     /// the cut, or `None` if it had been removed.
     fn sector(&mut self, name: Option<&str>, index: u64, versions: usize) -> Fate;
 
-    /// How many of the `pending` creations and removals since the
+    /// How many of the `pending` creations, removals and renames since the
     /// last directory sync survive: the first so many. Anything above
     /// `pending` means all.
     fn names(&mut self, pending: usize) -> usize;
@@ -266,6 +266,7 @@ impl Inode {
 enum NameOp {
     Create(String, u64),
     Remove(String),
+    Rename(String, String),
 }
 
 impl NameOp {
@@ -276,6 +277,11 @@ impl NameOp {
             }
             NameOp::Remove(name) => {
                 names.remove(name);
+            }
+            NameOp::Rename(from, to) => {
+                if let Some(inode) = names.remove(from) {
+                    names.insert(to.clone(), inode);
+                }
             }
         }
     }
@@ -569,6 +575,18 @@ impl Dir for SimDisk {
             return Err(io::ErrorKind::NotFound.into());
         }
         state.pending_names.push(NameOp::Remove(name.to_owned()));
+        Ok(())
+    }
+
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        let mut state = self.lock();
+        let Some(inode) = state.names.remove(from) else {
+            return Err(io::ErrorKind::NotFound.into());
+        };
+        state.names.insert(to.to_owned(), inode);
+        state
+            .pending_names
+            .push(NameOp::Rename(from.to_owned(), to.to_owned()));
         Ok(())
     }
 
@@ -926,8 +944,8 @@ mod tests {
     }
 
     /// Names: of the directory operations since the last directory sync
-    /// a prefix survives, in order: here the first creation without the
-    /// removal and the creation that followed it.
+    /// a prefix survives, in order: here the creation without the rename
+    /// and the removal that followed it.
     #[test]
     fn directory_operations_survive_as_a_prefix() {
         struct FirstOnly;
@@ -945,11 +963,33 @@ mod tests {
         }
         let disk = disk_with(1, 1);
         disk.create("a").unwrap();
+        disk.rename("a", "b").unwrap();
         disk.remove("f").unwrap();
-        disk.create("b").unwrap();
-        assert_eq!(disk.list().unwrap(), vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(disk.list().unwrap(), vec!["b".to_owned()]);
         disk.power_cut(FirstOnly);
         assert_eq!(disk.list().unwrap(), vec!["a".to_owned(), "f".to_owned()]);
+    }
+
+    /// Names: a rename replaces its target, and is durable only after a
+    /// directory sync.
+    #[test]
+    fn a_rename_replaces_its_target_and_needs_a_directory_sync() {
+        let disk = disk_with(1, 1);
+        let mut g = disk.create("g").unwrap();
+        g.write_at(0, &[9; 4]).unwrap();
+        g.sync().unwrap();
+        Dir::sync(&disk).unwrap();
+        disk.rename("g", "f").unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), vec![9; 4]);
+        assert_eq!(disk.list().unwrap(), vec!["f".to_owned()]);
+        assert_eq!(
+            disk.rename("g", "h").unwrap_err().kind(),
+            io::ErrorKind::NotFound
+        );
+        let undone = disk.clone();
+        undone.power_cut(LoseAll);
+        assert_eq!(read(&undone, "f", 0, 4), vec![1; 4]);
+        assert_eq!(read(&undone, "g", 0, 4), vec![9; 4]);
     }
 
     /// Names: a removed file's open handle keeps working until the

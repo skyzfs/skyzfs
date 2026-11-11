@@ -15,4 +15,5 @@
 pub mod format;
 pub mod fs;
 pub mod io;
+pub mod log;
 pub mod sim;

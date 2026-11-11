@@ -68,6 +68,10 @@ impl Dir for FsDir {
         fs::remove_file(self.path.join(name))
     }
 
+    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
+        fs::rename(self.path.join(from), self.path.join(to))
+    }
+
     fn list(&self) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in fs::read_dir(&self.path)? {
@@ -347,12 +351,13 @@ mod tests {
             f.read_at(8190, &mut buf).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
-        assert_eq!(dir.list().unwrap(), vec!["a".to_owned()]);
-        let g = dir.open("a").unwrap();
+        dir.rename("a", "b").unwrap();
+        assert_eq!(dir.list().unwrap(), vec!["b".to_owned()]);
+        let g = dir.open("b").unwrap();
         g.read_at(3999, &mut buf).unwrap();
         assert_eq!(&buf, b"\0hello\0");
-        dir.remove("a").unwrap();
-        assert_eq!(dir.open("a").unwrap_err().kind(), io::ErrorKind::NotFound);
+        dir.remove("b").unwrap();
+        assert_eq!(dir.open("b").unwrap_err().kind(), io::ErrorKind::NotFound);
         assert!(FsDir::new(tmp.path().join("missing")).is_err());
     }
 }

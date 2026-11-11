@@ -41,6 +41,10 @@ pub trait Dir {
     /// Remove a file. Handles that are open on it keep working.
     fn remove(&self, name: &str) -> io::Result<()>;
 
+    /// Rename a file, replacing `to` if it exists. Durable, like every
+    /// change of names, only after [`Dir::sync`].
+    fn rename(&self, from: &str, to: &str) -> io::Result<()>;
+
     /// The names in the directory, sorted.
     fn list(&self) -> io::Result<Vec<String>>;
 
