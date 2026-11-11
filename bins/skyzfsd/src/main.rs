@@ -1,5 +1,7 @@
 //! The `skyzfsd` binary. See the library's documentation.
 
+#![forbid(unsafe_code)]
+
 use std::process::ExitCode;
 
 use skyzfs_ublk::lifecycle::Control;
@@ -70,8 +72,7 @@ fn main() -> ExitCode {
     let command = match cli::parse(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(error) => {
-            eprintln!("skyzfsd: {error}");
-            eprintln!("{}", cli::USAGE);
+            skyzfsd::to_stderr(&format!("skyzfsd: {error}\n{}\n", cli::USAGE));
             return Exit::Usage.code();
         }
     };
@@ -80,7 +81,7 @@ fn main() -> ExitCode {
         return skyzfsd::serve::serve(serve).code();
     }
     let output = run(&command);
-    print!("{}", output.out);
-    eprint!("{}", output.err);
+    skyzfsd::to_stdout(&output.out);
+    skyzfsd::to_stderr(&output.err);
     output.exit.code()
 }

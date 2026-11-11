@@ -579,7 +579,8 @@ fn main() -> std::process::ExitCode {
     let (name, n, step) = match parse(&args) {
         Ok(parsed) => parsed,
         Err(e) => {
-            eprintln!("skyzfs-ublk-control: {e}");
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "skyzfs-ublk-control: {e}");
             return std::process::ExitCode::from(2);
         }
     };
@@ -593,7 +594,8 @@ fn main() -> std::process::ExitCode {
     match done {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("skyzfs-ublk-control: {e}");
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "skyzfs-ublk-control: {e}");
             std::process::ExitCode::from(1)
         }
     }

@@ -40,7 +40,7 @@
 //!   recover a device leaves that device as it is: the next start
 //!   finds it by its record and its note.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -75,8 +75,10 @@ pub const STATUS_INTERVAL_MS: u64 = 100;
 /// thread and the failure flag when no signal arrives.
 const LOOK: Duration = Duration::from_millis(50);
 
+/// A line on standard error. A write that fails is ignored: nothing
+/// the daemon says may end it or change its exit status.
 fn say(text: impl std::fmt::Display) {
-    eprintln!("skyzfsd: {text}");
+    crate::to_stderr(&format!("skyzfsd: {text}\n"));
 }
 
 /// The type of the file system `path` is on, by the mount table in
@@ -388,8 +390,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
-    println!("ready {}", block_device(number));
-    let _ = io::stdout().flush();
+    // A `ready` that cannot be written (the starter is gone) does not
+    // stop the serve: the device is live and its clients are served.
+    crate::to_stdout(&format!("ready {}\n", block_device(number)));
     // Where the start's time went. `devices` is everything between the
     // store's open and the device being this instance's: the records,
     // the notes, the waiting while the device was still shown as live
