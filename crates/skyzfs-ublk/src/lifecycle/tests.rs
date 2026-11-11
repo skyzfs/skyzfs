@@ -1655,10 +1655,15 @@ fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is
     );
 }
 
+/// One case of [`successors`]: its name, the device, its note, whether
+/// the note is unreadable, and whether the deleted device then counts
+/// as still there.
+type Successor = (&'static str, DeviceInfo, Option<[u8; 16]>, bool, bool);
+
 /// What takes a number right after its device is gone, for the tests
 /// of the looks: the device, its note, whether the note is unreadable,
 /// and whether the deleted device then counts as still there.
-fn successors() -> Vec<(&'static str, DeviceInfo, Option<[u8; 16]>, bool, bool)> {
+fn successors() -> Vec<Successor> {
     let other = Shape {
         size: EARLIER.size * 2,
         ..EARLIER

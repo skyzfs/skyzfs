@@ -998,7 +998,7 @@ fn lingers<C: Control, R: Records>(
     retries: u32,
     mutants: Mutants,
 ) -> io::Result<bool> {
-    let mut look = |control: &mut C, records: &mut R| -> io::Result<bool> {
+    let look = |control: &mut C, records: &mut R| -> io::Result<bool> {
         let Some(info) = control.info(number)? else {
             return Ok(false);
         };
