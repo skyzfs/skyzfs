@@ -3473,3 +3473,66 @@ fn a_long_log_found_at_the_start_is_worked_off_without_a_request() {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
+/// The owner is woken for a completion only after the log state that
+/// has the completion's record is shown: a waker that looks at the
+/// shown state at each wake, on the worker's own thread, finds the
+/// log's end beyond where it was before the write, at the first wake
+/// after the write. And the caller of a checkpoint finds the log as
+/// the checkpoint left it when the call returns. No timing: the waker
+/// runs between the worker's send and its next look at its queue.
+#[test]
+fn the_log_shown_has_a_completion_when_the_owner_is_woken_for_it() {
+    use std::sync::Mutex;
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let shown: Arc<Mutex<Option<Arc<Shown>>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<LogState>>> = Arc::default();
+    let waker = Waker::new({
+        let (shown, seen) = (shown.clone(), seen.clone());
+        move || {
+            if let Some(shown) = shown.lock().unwrap().as_ref() {
+                seen.lock().unwrap().push(shown.state());
+            }
+        }
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    *shown.lock().unwrap() = Some(served.log.clone());
+    let before = served.log_state();
+    for (id, block) in [(1, 0), (2, 5)] {
+        let end = served.log_state().end;
+        let wakes = seen.lock().unwrap().len();
+        served
+            .submit(Request {
+                id: RequestId(id),
+                op: Op::Write {
+                    offset: block * BLOCK,
+                    data: Buf::filled(1, 9),
+                },
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        let at_the_wake = seen.lock().unwrap()[wakes];
+        assert!(
+            at_the_wake.end > end,
+            "write {id}: woken with the log shown ending at {}, as before the write ({end})",
+            at_the_wake.end
+        );
+    }
+    assert!(served.log_state().end > before.end);
+    served
+        .submit(Request {
+            id: RequestId(3),
+            op: Op::Flush,
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    served.checkpoint().unwrap();
+    let after = served.log_state();
+    assert!(
+        after.start > before.start,
+        "a checkpoint that has returned is shown: {after:?}, before {before:?}"
+    );
+}
