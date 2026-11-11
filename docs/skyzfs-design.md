@@ -58,7 +58,7 @@ flowchart TB
     ZPL --> POOL["Pool: one data vdev, type disk<br/>plus a local log device"]
     POOL --> T{"Transport"}
     T -->|"Linux"| UBLK["ublk block device<br/>stock ZFS, stock kernel"]
-    T -->|"macOS, Windows"| SHM["udev_shm frontend<br/>inside the OpenZFS port"]
+    T -->|"macOS, Windows"| SHM["udisk_shm frontend<br/>inside the OpenZFS port"]
     UBLK --> BT
     SHM --> BT
     subgraph Daemon["skyzfsd (Rust)"]
@@ -83,11 +83,11 @@ The design has four layers.
 | Layer | Role | Portability |
 |---|---|---|
 | ZFS | Filesystem, snapshots, compression, checksums, encryption | OpenZFS on Linux upstream. macOS and Windows from their ports. |
-| Transport | Carries block I/O from the kernel to the daemon | Per OS. ublk on Linux, `udev_shm` elsewhere. |
+| Transport | Carries block I/O from the kernel to the daemon | Per OS. ublk on Linux, `udisk_shm` elsewhere. |
 | Block target contract | The semantics every transport must provide | One definition, one conformance suite. |
 | Engine and local store | Write log, cache, cuts, upload, refs, garbage collection | One Rust codebase. |
 
-`udev_shm` is a working name. Linux already has an unrelated `udev`, so the name should change before anything ships.
+The frontend is called `udisk_shm`: a userspace-served disk over shared memory. (An earlier draft said `udev_shm`, which collided with Linux's unrelated `udev`.) Linux also has a disk-management daemon called `udisks`. The frontend ships only inside the macOS and Windows ports, so the two never meet outside a test build.
 
 ### 3.1 What carries over from SkyNBD
 
@@ -99,7 +99,7 @@ The design has four layers.
 | `skynbd-agent` | The dm-thin orchestration is replaced by ZFS orchestration. The capture state machine, watchdog and crash matrix tests are the model for the new agent. |
 | `skynbd-api`, `skynbdctl` | Kept, with snapshot publish reshaped around cuts (§5.2). |
 
-New code: `skyzfs-blk` (contract and conformance suite), `skyzfs-ublk`, `skyzfs-shm` (user side of the shared-memory transport), `skyzfs-local` (write log and cache), the `skyzfsd` binary, and `kmod/udev_shm` (the C frontend and its per-OS glue, kept as patches against the two ports).
+New code: `skyzfs-blk` (contract and conformance suite), `skyzfs-ublk`, `skyzfs-shm` (user side of the shared-memory transport), `skyzfs-local` (write log and cache), the `skyzfsd` binary, and `kmod/udisk_shm` (the C frontend and its per-OS glue, kept as patches against the two ports).
 
 ## 4. The block target
 
@@ -164,13 +164,13 @@ ublk is the in-kernel userspace block driver, driven by io_uring passthrough com
 - **Flushes must reach the daemon.** The device advertises a volatile write cache and a 4096-byte logical block. Without the first the block layer completes flushes itself, and there would be no durability and no cuts.
 - **One zio is not one request.** The kernel splits and merges to the advertised limits.
 - **Held requests.** A read may be held for as long as object storage is unreachable (§4.1). That the kernel lets a ublk device hold a request for minutes without timing it out is to be pinned by the kernel rig in M3.
-- **Labels at byte 0.** `zpool create` partitions only what it recognises as a whole disk, and its device table does not list ublk[^wholedisk], so the pool's labels sit at the start of the device, as they do through `udev_shm`. CI pins this (§6.2).
+- **Labels at byte 0.** `zpool create` partitions only what it recognises as a whole disk, and its device table does not list ublk[^wholedisk], so the pool's labels sit at the start of the device, as they do through `udisk_shm`. CI pins this (§6.2).
 - **Copies.** One copy per request to start with. The zero-copy modes are a later optimisation and are not needed to meet the study's numbers, which included a comparable per-request cost in dm-snapshot.
 - **Kernels.** ublk was merged in Linux 6.0. Feature flags and their kernel versions must be pinned during M1 against the kernel documentation, not from memory.
 - **Evidence so far.** A probe on GitHub's Ubuntu 24.04 and 26.04 runner images (kernel 7.0, ZFS module 2.4.1) put a pool on a ublk device served by the ublk project's reference server, not by `skyzfsd`[^probe]. On both images the pool was on the bare device with its first label at byte 0, and flush requests reached the ublk queue during `zpool sync`. The server was then killed with `kill -9` five times per image, each time with writes in flight. With reissue on recovery no application write failed, no error was counted on the vdev, and the pool scrubbed clean. Without reissue every kill left two write errors on the vdev, although the pool stayed online and no application write failed. That is one kernel line and a handful of runs. Older kernels are untested. In four paired comparisons on three machines the same pool ran on ublk at 0.94 to 1.09 of its throughput on a kernel loop device, one run per cell. Two of the machines drifted during their sequence by more than half of that spread. The data supports "between nothing and about 6%" for the hop and nothing finer, which is the first input to gate G1.
 - **Fallback.** Where ublk is missing, the existing NBD server on a local socket is the transport.
 
-### 4.3 macOS and Windows: `udev_shm`
+### 4.3 macOS and Windows: `udisk_shm`
 
 Neither system has an equivalent of ublk. Both have an OpenZFS port that the user must install in any case, and both ports are active and close to upstream: on 2026-11-10 the macOS port was at 2.4.3-rc3 and the Windows port at 2.4.4-rc3[^ports]. The proposal is a small frontend inside each port that hands zios to the daemon through shared memory.
 
@@ -191,7 +191,7 @@ The I/O path, common to both:
 ```mermaid
 sequenceDiagram
     participant Z as ZFS zio pipeline
-    participant F as udev_shm frontend (kernel)
+    participant F as udisk_shm frontend (kernel)
     participant R as Shared arena (rings and data)
     participant D as skyzfsd
 
@@ -371,7 +371,7 @@ ZFS's defaults assume a large pool and an uncapped ARC. A pool per volume is oft
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | ZFS | Distribution packages, unpatched | OpenZFS on OS X port, patched with the frontend | OpenZFS on Windows port, patched with the frontend |
-| Transport | ublk. NBD as fallback | `udev_shm` under the LDI | `udev_shm` under the disk vdev |
+| Transport | ublk. NBD as fallback | `udisk_shm` under the LDI | `udisk_shm` under the disk vdev |
 | Kernel code we ship | None | The ZFS kext with our patch | The ZFS driver with our patch |
 | Install barrier | A package | Apple silicon: the user must lower the security policy to Reduced Security in Recovery and approve the extension[^applekext] | A signed driver. Microsoft requires an EV certificate and attestation signing through the Hardware Dev Center[^winsign] |
 | Daemon | systemd service, io_uring | launchd daemon | Windows service |
@@ -397,7 +397,7 @@ flowchart LR
   M1 --> M2["M2 Cuts, upload,<br/>visible snapshots"]
   M2 --> M3["M3 Restore and<br/>clone anywhere"]
   M3 --> M4["M4 Efficiency and<br/>hardening"]
-  M2 --> M5["M5 udev_shm<br/>on Linux and libzpool"]
+  M2 --> M5["M5 udisk_shm<br/>on Linux and libzpool"]
   M5 --> M6["M6 macOS client"]
   M5 --> M7["M7 Windows client"]
   M4 --> M8["M8 Product beta"]
@@ -417,7 +417,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M2** Cuts and visibility | M | Uberblock detection, cuts, background upload, commit and ref swap, publish handshake in the agent. | A snapshot on node A is listed on node B once its ref is swapped, and imports read-only there with a clean scrub. A snapshot every minute changes p99.9 by no more than run-to-run noise. The crash matrix passes at every step of publish. |
 | **M3** Restore and clone | M | Lazy fetch with read-ahead, clone from a ref, offline GUID rewrite, import flow, throwaway clones for browsing, background hydration, both cache policies. | A restored volume mounts in under 30 s whatever its size. At a 10 ms origin tpcb reaches half its hydrated throughput within 5 minutes. A clone imports on the node that holds the original. Ten minutes without object storage, under load with the `cache` policy, produce no application error and no pool error, and work resumes when storage returns. |
 | **M4** Efficiency and hardening | L | Discard tracking, live-only upload, garbage collection and retention, encryption by default, dirty-data sizing in the agent, second object API, many pools on one node, metrics. | Bytes uploaded per cut within 1.5 times the live bytes ZFS reports. Seven-day soak with a snapshot every minute and no leak in store or log. Twenty pools on one node without a stalled second. |
-| **M5** `udev_shm` | M | Protocol specification. `skyzfs-shm`. Common C frontend built into `libzpool` and into a patched Linux module. | The conformance suite passes on ublk and on `udev_shm`. `ztest` runs 24 h against the daemon. Daemon restart recovery works. tpcb within 10% of ublk. |
+| **M5** `udisk_shm` | M | Protocol specification. `skyzfs-shm`. Common C frontend built into `libzpool` and into a patched Linux module. | The conformance suite passes on ublk and on `udisk_shm`. `ztest` runs 24 h against the daemon. Daemon restart recovery works. tpcb within 10% of ublk. |
 | **M6** macOS client, alpha | L | LDI provider in the port. Daemon on launchd. Local log and cache on APFS. Installer with the extension approval flow. Keychain for keys. | Mac snapshot restores on Linux and Linux snapshot restores on the Mac, verified by checksum. Survives sleep and wake, network loss and daemon restart. Commit latency measured with `F_FULLFSYNC`, and with `F_BARRIERFSYNC` only to price the weaker class of §5.1. |
 | **M7** Windows client, alpha | L | Path dispatch in the port's disk vdev. Daemon as a service. Signed driver. | The same cross-OS restore pairs with Windows. Loads with memory integrity enabled. |
 | **M8** Product beta | L | Client UI, snapshot browser, policies, two object-store targets at once, fleet view for small businesses, security review. | External beta users restore without help. |
