@@ -20,7 +20,10 @@
 //!   recovery makes all of it durable,
 //! - [`MemTarget::power_cut`] is a power cut at a point the test chooses:
 //!   it keeps the durable records and that many more, and nothing after,
-//! - [`MemTarget::fail_log`] loses the log for good,
+//! - [`MemTarget::fail_log`] loses the log for good, and the target
+//!   either fails everything from that instant or goes on answering from
+//!   memory until an append or a flush runs into the failure
+//!   ([`LogFailure`]),
 //! - a discard leaves the block, zeroes it, or returns it to the base
 //!   ([`DiscardPolicy`]).
 //!
@@ -54,6 +57,29 @@ pub enum Timing {
     AtSubmit,
     /// One or the other, request by request, from the target's seed.
     Seeded,
+}
+
+/// How a [`MemTarget`] behaves once [`MemTarget::fail_log`] has taken its
+/// log away. Both honour the contract (rule R11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogFailure {
+    /// The target knows at once: every request completed from then on
+    /// fails, whatever it had already done.
+    AtOnce,
+    /// The target learns of the failure as a store does, from the next
+    /// append or flush that needs the log. A read that has its data
+    /// still completes successfully. A mutation that was in the log
+    /// before the failure does too, unless its record is among what was
+    /// lost, which the seed decides: then it fails, and reads answered
+    /// from memory go on showing it. A flush that was in flight at the
+    /// failure succeeds if its sync had finished, which the seed decides.
+    /// A mutation that still has to be appended, and every flush received
+    /// after the failure, fail. Until one of those has reported the
+    /// failure a read is answered from memory. Everything received after
+    /// the first reported failure fails, reads included, and so does
+    /// everything a new instance receives; from then on an invalid
+    /// request still in flight is failed as well, not rejected.
+    WhenNoticed,
 }
 
 /// What a [`MemTarget`] does with a discarded block. All four honour the
@@ -156,6 +182,8 @@ pub struct MemConfig {
     pub read: Timing,
     /// Discard behaviour.
     pub discard: DiscardPolicy,
+    /// What happens to requests around a failure of the log.
+    pub failure: LogFailure,
     /// Seed for the schedule and the discard policy.
     pub seed: u64,
     /// A deliberate breach of the contract, or `None` for a correct target.
@@ -173,6 +201,7 @@ impl Default for MemConfig {
             apply: Timing::Seeded,
             read: Timing::Seeded,
             discard: DiscardPolicy::Seeded,
+            failure: LogFailure::AtOnce,
             seed: 0,
             fault: None,
         }
@@ -227,9 +256,12 @@ struct Queued {
     cover: usize,
     /// `Fault::SplitWrites`: this many leading blocks are already logged.
     split: usize,
-    /// The request was carried out when it was submitted: a mutation is
-    /// in the log, a read has its data.
+    /// The request's work is already done: a mutation is in the log, a
+    /// read has its data, or (only after the log failed) a flush had
+    /// finished its sync.
     early: bool,
+    /// The request was received after the volume reported its failure.
+    doomed: bool,
 }
 
 /// An in-memory block target. See the [module documentation](self).
@@ -247,8 +279,11 @@ pub struct MemTarget {
     image: Vec<u8>,
     pending: Vec<Queued>,
     rng: Rng,
-    /// The log is lost for good: every request fails.
+    /// The log is lost for good.
     failed: bool,
+    /// A request has been failed for it, or a new instance has found it:
+    /// every request received from now on fails.
+    reported: bool,
     /// `Fault::RejectReissued`: ids that were in flight at a kill.
     poisoned: Vec<u64>,
     /// `Fault::FlushJoinsOldSync`: what the previous flush saw.
@@ -278,6 +313,7 @@ impl MemTarget {
             pending: Vec::new(),
             rng: Rng(config.seed),
             failed: false,
+            reported: false,
             poisoned: Vec::new(),
             previous_cover: 0,
             instance_start: 0,
@@ -352,16 +388,46 @@ impl MemTarget {
         self
     }
 
-    /// The write log is lost for good (rule R11): every request fails from
-    /// now on.
+    /// The write log is lost for good (rule R11). What the requests in
+    /// flight and the next ones get is [`MemConfig::failure`]'s choice.
     pub fn fail_log(&mut self) {
+        if self.failed {
+            return;
+        }
         self.failed = true;
+        match self.config.failure {
+            LogFailure::AtOnce => self.reported = true,
+            LogFailure::WhenNoticed => {
+                let mut pending = std::mem::take(&mut self.pending);
+                for queued in &mut pending {
+                    let coin = self.rng.coin();
+                    match queued.request.op {
+                        Op::Read { .. } => {}
+                        // The sync of a flush in flight may just have
+                        // finished.
+                        Op::Flush => {
+                            if coin {
+                                self.flush(queued.cover);
+                                queued.early = true;
+                            }
+                        }
+                        // The record of a mutation in the log may be among
+                        // what was lost. It stays in memory, where reads
+                        // see it, and the request fails.
+                        _ => queued.early &= coin,
+                    }
+                }
+                self.pending = pending;
+            }
+        }
     }
 
     /// What every start does: replay the log and make it durable before
     /// serving.
     fn recover(&mut self) {
         self.pending.clear();
+        // A new instance finds a failed log before it serves anything.
+        self.reported = self.failed;
         self.rebuild();
         self.instance_start = self.log.len();
         self.previous_cover = self.previous_cover.min(self.log.len());
@@ -435,10 +501,19 @@ impl MemTarget {
     }
 
     /// Whether a valid request must fail because of the target's state.
-    fn refuse(&self, id: u64, op: &Op) -> Option<BlkError> {
+    /// `done`: its work is already done. `doomed`: it was received after
+    /// the volume reported its failure.
+    fn refuse(&self, id: u64, op: &Op, done: bool, doomed: bool) -> Option<BlkError> {
         let is_read = matches!(op, Op::Read { .. });
         if self.failed && !(is_read && self.fault(Fault::FailedServesReads)) {
-            return Some(BlkError::Failed);
+            let fails = match self.config.failure {
+                LogFailure::AtOnce => true,
+                // Only what still needs the log runs into the failure.
+                LogFailure::WhenNoticed => doomed || !(done || is_read),
+            };
+            if fails {
+                return Some(BlkError::Failed);
+            }
         }
         if self.poisoned.contains(&id) {
             return Some(BlkError::Io(std::io::ErrorKind::AlreadyExists));
@@ -457,16 +532,25 @@ impl MemTarget {
             cover,
             split,
             early,
+            doomed,
         } = queued;
         let id = request.id;
+        let noticed =
+            self.failed && self.reported && self.config.failure == LogFailure::WhenNoticed;
         let verdict = match self.admit(&request.op) {
+            // Which error wins is not specified: this target, once it
+            // knows it has failed, looks at nothing else.
+            Err(_) if noticed => Err(BlkError::Failed),
             Err(e) => Err(e),
             Ok(false) => Ok(false),
-            Ok(true) => match self.refuse(id.0, &request.op) {
+            Ok(true) => match self.refuse(id.0, &request.op, early, doomed) {
                 Some(e) => Err(e),
                 None => Ok(true),
             },
         };
+        if verdict == Err(BlkError::Failed) {
+            self.reported = true;
+        }
         if verdict == Ok(true) && !early {
             self.mutate(&request.op, split);
         }
@@ -636,8 +720,11 @@ impl BlockTarget for MemTarget {
         if let Some(kind) = kind {
             return Err(SubmitError { kind, request });
         }
+        let doomed = self.failed && self.reported;
         let admitted = self.geometry.validate(&request.op).is_ok()
-            && self.refuse(request.id.0, &request.op).is_none();
+            && self
+                .refuse(request.id.0, &request.op, false, doomed)
+                .is_none();
         let mut request = request;
         let mut split = 0;
         let mut early = false;
@@ -678,6 +765,7 @@ impl BlockTarget for MemTarget {
             cover: self.log.len(),
             split,
             early,
+            doomed,
         });
         Ok(())
     }
@@ -931,6 +1019,110 @@ mod tests {
         assert_eq!(run(&mut t, 3, read.clone()).result, Err(BlkError::Failed));
         let mut t = t.kill(0);
         assert_eq!(run(&mut t, 4, read).result, Err(BlkError::Failed));
+    }
+
+    /// R11: a target that notices the failure late completes or fails
+    /// what was already in its log, answers reads from memory with it
+    /// either way, fails the first request that needs the log, and from
+    /// then on fails everything.
+    #[test]
+    fn a_failure_noticed_late_spares_what_was_already_done() {
+        let read = |id| Request {
+            id: RequestId(id),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(1),
+            },
+        };
+        let write = |id, fill| Request {
+            id: RequestId(id),
+            op: Op::Write {
+                offset: 0,
+                data: Buf::filled(1, fill),
+            },
+        };
+        let mut logged_write = Vec::new();
+        for seed in 0..16 {
+            let mut t = MemTarget::new(MemConfig {
+                queue_depth: 8,
+                schedule: Schedule::Fifo,
+                apply: Timing::AtSubmit,
+                read: Timing::AtAck,
+                failure: LogFailure::WhenNoticed,
+                seed,
+                ..MemConfig::default()
+            })
+            .unwrap();
+            // Logged on receipt, not yet acknowledged.
+            t.submit(write(1, 0x11)).unwrap();
+            t.fail_log();
+            // Received after the failure: a read, a write that cannot be
+            // logged, a read behind it, and a misaligned request.
+            t.submit(read(2)).unwrap();
+            t.submit(write(3, 0x22)).unwrap();
+            t.submit(read(4)).unwrap();
+            t.submit(Request {
+                id: RequestId(5),
+                op: Op::Discard {
+                    offset: 1,
+                    len: BLOCK_SIZE,
+                },
+            })
+            .unwrap();
+            let mut out = Vec::new();
+            t.poll(&mut out);
+            assert_eq!(out.len(), 5);
+            // The logged write: acknowledged, or its record was lost.
+            assert!(matches!(out[0].result, Ok(()) | Err(BlkError::Failed)));
+            logged_write.push(out[0].result.is_ok());
+            // Reads see it either way, and not the write that could not
+            // be logged, also once the failure has been reported.
+            assert_eq!(out[2].result, Err(BlkError::Failed));
+            for read in [&out[1], &out[3]] {
+                assert_eq!(read.result, Ok(()));
+                assert_eq!(read.buf.as_ref().unwrap()[0], 0x11);
+            }
+            // Completed after the report: failed, not rejected.
+            assert_eq!(out[4].result, Err(BlkError::Failed));
+            // Received after the report: fails, and so does everything
+            // after a restart.
+            out.clear();
+            t.submit(read(6)).unwrap();
+            t.poll(&mut out);
+            assert_eq!(out[0].result, Err(BlkError::Failed));
+            let mut t = t.kill(0);
+            assert_eq!(run(&mut t, 7, Op::Flush).result, Err(BlkError::Failed));
+        }
+        assert!(logged_write.contains(&true) && logged_write.contains(&false));
+    }
+
+    /// R11: a flush received after the failure fails even when nothing
+    /// has reported the failure yet, and a new instance fails reads at
+    /// once.
+    #[test]
+    fn a_failure_noticed_late_fails_the_next_flush() {
+        let mut t = MemTarget::new(MemConfig {
+            schedule: Schedule::Fifo,
+            failure: LogFailure::WhenNoticed,
+            ..MemConfig::default()
+        })
+        .unwrap();
+        t.fail_log();
+        let read = Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        };
+        assert_eq!(run(&mut t.clone(), 1, read.clone()).result, Ok(()));
+        assert_eq!(run(&mut t, 2, Op::Flush).result, Err(BlkError::Failed));
+        assert_eq!(run(&mut t, 3, read.clone()).result, Err(BlkError::Failed));
+        let mut fresh = MemTarget::new(MemConfig {
+            failure: LogFailure::WhenNoticed,
+            ..MemConfig::default()
+        })
+        .unwrap();
+        fresh.fail_log();
+        let mut fresh = fresh.kill(0);
+        assert_eq!(run(&mut fresh, 4, read).result, Err(BlkError::Failed));
     }
 
     /// R3, R12: a target opened read-only on a base reads as the base and

@@ -62,10 +62,17 @@
 //!   order is still open.
 //! - One queue. Ordering across several queues of one target is not
 //!   tested.
-//! - A failed volume is tested only for what it answers. The suite does
-//!   not cut power on one, so it cannot tell whether a flush that was in
-//!   flight when the log failed, and succeeded, had made anything
-//!   durable.
+//! - A failed volume is tested only for what it answers. What a completed
+//!   flush covered must still be there after a later power cut, but a
+//!   failed volume fails every read, so the suite cannot look: it does
+//!   not cut power on one, and so it cannot tell whether a flush that was
+//!   in flight when the log failed, and succeeded, had made anything
+//!   durable. That needs a rig that can inspect the store, which comes
+//!   with the store (M1.2).
+//! - Above 4 MiB the read-back is a sample: the windows the suite works
+//!   in, the start and the end of the device, and two blocks at each of
+//!   63 evenly spaced places. Damage to a block that no request named and
+//!   that the sample misses is not seen.
 //! - [`Harness::power_cut`] can only keep a prefix of whole units. A rig
 //!   cannot yet ask for the device states a real log must turn into a
 //!   prefix: a torn last record, or a lost record followed by a surviving
@@ -1527,11 +1534,36 @@ fn reissue_after_kill_is_idempotent<H: Harness>(h: &mut H, cfg: &Config) -> Outc
 }
 
 fn failed_volume_fails_every_request<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
-    let mut d = Driver::new(h, cfg, &Spec::EMPTY)?;
+    // What the requests in flight at the failure get depends on the order
+    // the target completes them in: try several.
+    for seed in 0..16 {
+        failed_volume_round(h, cfg, seed)?;
+    }
+    Ok(())
+}
+
+fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcome {
+    let spec = Spec {
+        seed,
+        ..Spec::EMPTY
+    };
+    let mut d = Driver::new(h, cfg, &spec)?;
     d.write(0, 2)?;
     d.flush()?;
     d.write(2, 1)?;
+    // In flight when the log fails: each may complete either way, and a
+    // read that succeeds shows the model's content.
+    d.submit_with_room(Op::Discard {
+        offset: 1,
+        len: BLOCK_SIZE,
+    })?;
+    let write = d.write_op(6, 1);
+    d.submit_with_room(write)?;
+    d.submit_with_room(read_op(6, 1))?;
+    d.submit_with_room(Op::Flush)?;
+    d.submit_with_room(read_op(0, 8))?;
     d.fail_log()?;
+    d.drain()?;
     let every_request = |d: &mut Driver<'_, H>| -> Outcome {
         d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
         let write = d.write_op(4, 1);
@@ -1719,7 +1751,8 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, place: &Place, program: &[St
                 d.drain()?;
             }
             Step::Kill(seed) => d.kill(seed)?,
-            // What a failed volume holds after a power cut is not defined.
+            // A failed volume cannot be read, so what it kept cannot be
+            // checked.
             Step::PowerCut(_) if failed => {}
             Step::PowerCut(keep) => {
                 d.power_cut(keep)?;

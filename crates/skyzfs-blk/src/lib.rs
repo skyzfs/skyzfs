@@ -63,7 +63,8 @@
 //!   reported every later request fails, reads included, also after a
 //!   daemon restart. A request already in flight when the log fails may
 //!   complete either way; a flush among them succeeds only if its work
-//!   was done before the failure.
+//!   was done before the failure. A completed flush stays a promise: what
+//!   it covered is still there after a later power cut.
 //! - **R12 Read-only.** On a read-only target writes, write-zeroes and
 //!   discards fail and a flush succeeds.
 //!
@@ -153,8 +154,11 @@
 //!   after the first report, must fail. A client cannot tell a flush that
 //!   finished before the failure from one that claims to have, so the
 //!   suite cannot catch a target whose in-flight flush succeeds without
-//!   having made anything durable: what a failed volume holds after a
-//!   power cut is not defined, and the suite does not cut power on one.
+//!   having made anything durable. A completed flush stays a promise on
+//!   a failed volume (what it covered is still there after a later power
+//!   cut, and nothing else about the content is promised), but a failed
+//!   volume fails every read, so the suite has no way to look and does
+//!   not cut power on one.
 //! - **The base race** (a delayed fetch of a base block racing a write to
 //!   it) needs a base whose fetches a test can delay. The model and
 //!   `MemTarget` have a non-empty base; the race case is deferred to M3.

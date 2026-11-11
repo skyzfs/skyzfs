@@ -6,7 +6,7 @@
 //! restates design §4.1.
 
 use skyzfs_blk::conformance::{cases, run_all, run_case, Config, Status};
-use skyzfs_blk::mem::{DiscardPolicy, MemConfig, MemHarness, Schedule, Timing};
+use skyzfs_blk::mem::{DiscardPolicy, LogFailure, MemConfig, MemHarness, Schedule, Timing};
 
 /// The `MemTarget` configurations every case must pass against. Between
 /// them they use the freedoms the contract gives a target: completions
@@ -51,6 +51,14 @@ fn configurations() -> Vec<MemConfig> {
             apply: Timing::AtSubmit,
             read: Timing::AtSubmit,
             seed: 79,
+            ..base
+        },
+        // A store that learns its log has failed from the next append or
+        // flush: until then it completes what was already done and reads
+        // from memory, which rule R11 allows.
+        MemConfig {
+            failure: LogFailure::WhenNoticed,
+            seed: 80,
             ..base
         },
         // A target that takes one request at a time.

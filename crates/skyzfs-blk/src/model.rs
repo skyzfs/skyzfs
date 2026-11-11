@@ -269,7 +269,16 @@ impl World {
         let free: Vec<usize> = (0..n)
             .filter(|i| !must[*i] && cx.ops[self.tail[*i].op].overlaps(&cx.ops[inst.op]))
             .collect();
-        for choice in 0..1u64 << free.len().min(63) {
+        // One bit of `choice` for each. The suite keeps this far below the
+        // width of the mask; beyond it the enumeration would be incomplete
+        // and the model would reject correct targets, so stop instead.
+        assert!(
+            free.len() < 64,
+            "the model cannot place an operation among {} overlapping operations \
+             whose order is still open",
+            free.len()
+        );
+        for choice in 0..1u64 << free.len() {
             let chosen = |i: usize| {
                 free.iter()
                     .position(|f| *f == i)
