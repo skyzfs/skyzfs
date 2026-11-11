@@ -11,6 +11,13 @@
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
+//! The file has no checksum. It is replaced whole by a rename, lives
+//! on a memory file system for one boot, and is read only if its
+//! length and its magic are exactly a version's: a torn or foreign
+//! file is read as no status, and a damaged counter would mislead a
+//! reader of `status` and nothing else. The failure note
+//! ([`records`](crate::records)) is kept the same way.
+//!
 //! This is the file's second version. The first (`SKYZSTA1`, 128
 //! bytes) ended before the last two fields; a file of that version is
 //! read as no status.

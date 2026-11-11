@@ -44,7 +44,10 @@ const HOME_NEW_NAME: &str = "home.new";
 /// A creation removes these, by these exact names, and no other file.
 /// A directory that holds any other name is refused
 /// ([`StoreError::NotEmpty`]) with nothing removed and nothing written:
-/// the store cannot know whose `home.tar` or `log.txt` it is.
+/// the store cannot know whose `home.tar` or `log.txt` it is. A file
+/// that somebody else put under exactly one of these names, in a
+/// directory with no store, is removed as a leftover: the store cannot
+/// tell it from one.
 pub const CREATE_LEFTOVERS: [&str; 5] = [
     crate::fs::LOCK_NAME,
     HOME_NEW_NAME,

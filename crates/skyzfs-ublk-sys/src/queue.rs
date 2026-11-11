@@ -34,8 +34,8 @@
 //! the queue is dropped (a stop, an error, a queue that could not be
 //! made whole) while the device is live, each tag's fetch still names
 //! its buffer, and a request that arrives while the thread goes on to
-//! other work (whatever the caller's body does before it returns) is copied to that
-//! address. (Read in the driver's source, `ublk_drv.c`: a request
+//! other work (whatever the caller's body does before it returns) is
+//! copied to that address. (Read in the driver's source, `ublk_drv.c`: a request
 //! reaches the server through task work on the queue's task, where a
 //! write's data is copied to the address of the tag's fetch command.)
 //!
@@ -197,8 +197,9 @@ impl Device {
     }
 
     /// Start the queue's thread and run `body` on it with the queue.
-    /// Returns when the queue has given the driver its fetches, so that
-    /// [`Device::start`] can follow.
+    /// Returns when the queue's thread has queued its fetch commands on
+    /// its ring and is about to run `body`; the commands reach the
+    /// driver at the queue's first wait. [`Device::start`] can follow.
     ///
     /// `wake` wakes the queue's wait from other threads: give the same
     /// one to the target's waker. With `require_locked`, a buffer that

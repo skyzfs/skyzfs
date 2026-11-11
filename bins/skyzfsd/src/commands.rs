@@ -364,7 +364,12 @@ fn hex(bytes: &[u8; 16]) -> String {
 }
 
 /// `create`: make a new volume with the id `id` in a directory that
-/// exists and holds none. `boot` is this boot, if it could be read:
+/// exists and holds none. The directory may hold nothing but what an
+/// interrupted create leaves
+/// ([`CREATE_LEFTOVERS`](skyzfs_local::store::CREATE_LEFTOVERS)); any
+/// other file makes create refuse it and touch nothing. A file under
+/// exactly one of those names is removed as a leftover, also if it was
+/// an operator's: create cannot tell them apart. `boot` is this boot, if it could be read:
 /// with it, a failure note of this boot under the run directory is
 /// warned of on standard error (the volume is made all the same, and
 /// the note stays).

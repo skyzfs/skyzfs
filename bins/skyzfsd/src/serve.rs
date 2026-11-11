@@ -10,8 +10,10 @@
 //! 3. The lifecycle's start ([`lifecycle::start`]): the lock, the
 //!    failure note, the acknowledged position, the store, the device.
 //! 4. The store goes behind its worker, the queue's thread is started
-//!    and gives the driver its fetches, and the device is started (or
-//!    its recovery ended). Then one line on standard output, flushed:
+//!    and queues its fetch commands (they reach the driver at the
+//!    queue's first wait), and the device is started (or its recovery
+//!    ended). Then, once this instance's status file was written or
+//!    the write was tried, one line on standard output, flushed:
 //!    `ready /dev/ublkbN`.
 //! 5. The main thread waits: for `SIGTERM` or `SIGINT`, for the store's
 //!    word that the volume failed, or for the queue's thread to end.
@@ -28,14 +30,23 @@
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted, the device's
 //! note is removed and the device is deleted ([`lifecycle::fail_serving`]),
-//! while the store still holds the volume's lock.
+//! while the store still holds the volume's lock: the queue's thread
+//! gives the store back to the main thread, which keeps it until it
+//! returns.
+//!
+//! A start that settles a failure of unknown holding deletes the
+//! failed volume's device and then looks for up to 5 s whether it goes
+//! (the driver's delete does not wait): a start on a volume whose
+//! device a client still holds takes that much longer to refuse.
 //!
 //! # Readings where the design says no more
 //!
 //! - "Its own files off any pool it serves" is checked as: the volume's
 //!   directory and the run directory are not on a file system of type
-//!   `zfs`, by `/proc/self/mountinfo`. That refuses more than the rule
-//!   asks (a pool the daemon does not serve) and nothing it allows.
+//!   ZFS, by `statfs` ([`off_zfs`]). That refuses more than the rule
+//!   asks (a pool the daemon does not serve). It does not see a file
+//!   system of another type that itself lies on ZFS (on a zvol, or in
+//!   a loop file on a dataset).
 //! - A start that fails after the lifecycle has added or begun to
 //!   recover a device leaves that device as it is: the next start
 //!   finds it by its record and its note.

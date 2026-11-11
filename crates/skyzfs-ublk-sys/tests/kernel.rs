@@ -3,8 +3,11 @@
 //! driver. Ignored by default: they need root and the ublk driver.
 //!
 //! ```text
-//! sudo -E cargo test -p skyzfs-ublk-sys --test kernel -- --ignored --test-threads 1 --nocapture
+//! sudo -E cargo test -p skyzfs-ublk-sys --features control-test-program --test kernel -- --ignored --test-threads 1 --nocapture
 //! ```
+//!
+//! The feature builds the control test program and the test of it;
+//! without it the other tests run and that one is not there.
 //!
 //! Each test prints one line `control_<property>\tPASS` or
 //! `control_<property>\tFAIL: <why>` on standard output, for the rig,
@@ -1055,6 +1058,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
 
 /// One step of the control test program: its answer, without the step
 /// and the number.
+#[cfg(feature = "control-test-program")]
 fn step(n: u32, line: &str) -> Result<String, String> {
     let mut words = line.split_whitespace();
     let name = words.next().unwrap_or_default();
@@ -1077,6 +1081,7 @@ fn step(n: u32, line: &str) -> Result<String, String> {
 
 /// A server of the control test program: started, its first line read,
 /// then ended by `SIGTERM` and its second line read.
+#[cfg(feature = "control-test-program")]
 fn served(n: u32, line: &str) -> Result<(String, String), String> {
     use std::io::{BufRead, BufReader};
     let mut words = line.split_whitespace();
@@ -1125,6 +1130,7 @@ fn served(n: u32, line: &str) -> Result<(String, String), String> {
 /// handed, ends on a signal and leaves the device waiting; its
 /// take-over waits as told between the queue and the end of the
 /// recovery and is handed nothing in that time.
+#[cfg(feature = "control-test-program")]
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn the_control_test_program_answers_each_step_in_one_line() {
