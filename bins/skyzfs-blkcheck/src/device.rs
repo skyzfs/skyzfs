@@ -94,6 +94,48 @@ fn describe(op: &Op) -> String {
     )
 }
 
+/// A server process as the helper named it: its pid, and when that
+/// process started, so that the pid is not signalled once it has become
+/// another process's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Server {
+    pid: i32,
+    started: u64,
+}
+
+/// Field 22 of `/proc/PID/stat`: the start time of the process, in
+/// clock ticks since boot. The fields are counted after the command
+/// name, which is in brackets and may hold spaces.
+fn start_time(stat: &str) -> Option<u64> {
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    after_name.split_whitespace().nth(19)?.parse().ok()
+}
+
+impl Server {
+    /// The process `pid` as it is now, if there is one.
+    fn now(pid: i32) -> Option<Self> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        Some(Self {
+            pid,
+            started: start_time(&stat)?,
+        })
+    }
+
+    /// SIGKILL, if the pid is still the process it was when the helper
+    /// named it. Whether the signal was sent. Between this look and the
+    /// signal the process can still end and its pid be given away; the
+    /// tool runs as root on a machine that is the rig's own, and the
+    /// window is left at that.
+    fn kill(self) -> bool {
+        if Self::now(self.pid) != Some(self) {
+            return false;
+        }
+        rustix::process::Pid::from_raw(self.pid).is_some_and(|pid| {
+            rustix::process::kill_process(pid, rustix::process::Signal::KILL).is_ok()
+        })
+    }
+}
+
 /// A block device opened with `O_DIRECT`. Each request in flight is one
 /// thread in one system call.
 struct DeviceTarget {
@@ -103,7 +145,7 @@ struct DeviceTarget {
     /// requests are in flight. Through the helper the signal comes
     /// tens of milliseconds later, when a fast server has long
     /// answered everything.
-    server: Option<rustix::process::Pid>,
+    server: Option<Server>,
     file: Arc<File>,
     /// The path, if it is a block device and not a plain file.
     device: Option<Arc<str>>,
@@ -453,9 +495,9 @@ struct DeviceHarness {
 
 impl DeviceHarness {
     /// The server's pid from the helper's `pid`, if it has one to give.
-    fn server_of(&self, number: u64) -> Option<rustix::process::Pid> {
+    fn server_of(&self, number: u64) -> Option<Server> {
         let pid: i32 = self.helper("pid", number).ok()?.parse().ok()?;
-        rustix::process::Pid::from_raw(pid)
+        Server::now(pid)
     }
 
     /// Run the helper; the last line of its stdout.
@@ -544,10 +586,7 @@ impl Harness for DeviceHarness {
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
         let number = target.number;
         // The signal first, from here: nothing is faster.
-        let sent = target
-            .server
-            .take()
-            .map(|pid| rustix::process::kill_process(pid, rustix::process::Signal::KILL).is_ok());
+        let sent = target.server.take().map(Server::kill);
         trace(
             number,
             "kill",
@@ -918,6 +957,31 @@ mod tests {
             "the resubmission was not issued"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The start time is field 22 whatever the command is called, and a
+    /// pid is signalled only while it is the process the helper named.
+    #[test]
+    fn a_pid_is_signalled_only_while_it_is_the_same_process() {
+        let stat = "1234 (a b) c) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 18446744073709551615";
+        assert_eq!(start_time(stat), Some(987_654));
+        assert_eq!(start_time("garbage"), None);
+        let me = i32::try_from(std::process::id()).unwrap();
+        let this = Server::now(me).unwrap();
+        // The same pid with another start time is another process: no signal.
+        let other = Server {
+            started: this.started + 1,
+            ..this
+        };
+        assert!(!other.kill());
+        // A pid that is nobody's.
+        assert!(Server::now(i32::MAX - 7).is_none());
+        // A child of this test is killed when it is the process named.
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let named = Server::now(i32::try_from(child.id()).unwrap()).unwrap();
+        assert!(named.kill());
+        assert!(!child.wait().unwrap().success());
+        assert!(!named.kill(), "a process that is gone is not signalled");
     }
 
     /// The check on the sorting of calls at a kill.

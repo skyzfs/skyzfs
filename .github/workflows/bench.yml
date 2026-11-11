@@ -35,7 +35,7 @@ jobs:
           # `devmapper` — run 1 failed exactly there. Same line the
           # nightly Tier B job installs, for the same build.
           sudo apt-get install -y --no-install-recommends \
-            fio nbd-client dmsetup libdevmapper-dev libudev-dev
+            fio nbd-client dmsetup libdevmapper-dev libudev-dev libclang-dev
 
       - name: Load kernel NBD module
         run: |

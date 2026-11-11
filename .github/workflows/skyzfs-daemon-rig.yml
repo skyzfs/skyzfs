@@ -88,8 +88,12 @@ jobs:
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
-            # To run the rig on the daemon: build it here and add
+            # To run the rig on the daemon: build it before this block,
+            #   sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+            #   cargo build --release --locked -p skyzfsd --features test-hooks
+            # and add here
             #   printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
+            #   printf 'export RIG_SERVE_ARGS=%q\n' "--unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem"
           } > "$RUNNER_TEMP/rig.env"
           echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
           sudo bash -c '. "$1" && exec tests/kernel/daemon-rig.sh "$2" /mnt/skz-daemon-rig' \
