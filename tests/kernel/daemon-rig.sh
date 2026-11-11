@@ -141,7 +141,16 @@ serve_start() {
     SERVE_RC="none: neither ready nor gone after 120 s"
     # Neither ready nor gone: write down what it is doing.
     { echo "== serve $dir: not ready after 120 s"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
-      tail -n 20 "$dir.serve.log"; lim 20 ublk list; } >> "$OUT/serve-stuck.log" 2>&1
+      tail -n 20 "$dir.serve.log"; lim 20 ublk list
+      # Run-only diagnostics (not for the pull request): why the wait
+      # did not see the device.
+      echo "-- BDEV at the end of the wait: '$BDEV'"
+      ls -l "$dir.ready"; echo "-- content of $dir.ready:"; cat "$dir.ready"; echo "-- end"
+      ls -l /dev/ublkb* /dev/ublkc*
+      for i in /sys/block/ublkb*/dev; do echo "$i: $(cat "$i")"; done
+      lim 20 lsblk; ls /sys/class/ublk-char
+      lim 20 udevadm settle --timeout=5; echo "udevadm settle: $?"
+      ls -l /dev/ublkb*; } >> "$OUT/serve-stuck.log" 2>&1
     return 2
 }
 serve_wait() { # seconds: wait for the `serve` started last to exit; its status in SERVE_RC
