@@ -124,6 +124,17 @@ serve_wait() { # seconds: wait for the `serve` started last to exit; its status 
     return 1
 }
 vol_status() { lim 30 "$1" status --dir "$2" 2>/dev/null; }      # impl dir
+# check dir: `unstored` (completions waiting because the acknowledged
+# position could not be stored) is 0 in a healthy run. Counters are
+# since the instance started, so this reads the instance serving now.
+pin_unstored() {
+    local v; v=$(vol_stat "$SKYZFSD" "$2" unstored)
+    case $v in
+        0) pin "unstored_zero_$1" PASS "status says unstored 0 at the end of the check" ;;
+        '') pin "unstored_zero_$1" ERROR "status gave no unstored" ;;
+        *) pin "unstored_zero_$1" FAIL "status says unstored $v" ;;
+    esac
+}
 vol_stat() { vol_status "$1" "$2" | awk -v k="$3" '$1 == k { print $2; exit }'; }
 # The process to kill -9: the one `status` names, else the one started.
 server_pid() { local p; p=$(vol_stat "$1" "$2" pid); echo "${p:-$SERVE_PID}"; }
@@ -306,6 +317,7 @@ PY
     else
         pin flush_counted FAIL "the server counted $((f1 - f0)) flushes during one zpool sync"
     fi
+    pin_unstored a "$dir"
     lim 120 zpool export "$pool"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
@@ -466,6 +478,7 @@ check_b() {
             fi
         fi
     fi
+    if [ -n "$SERVE_PID" ]; then pin_unstored b "$dir"; else pin unstored_zero_b ERROR "no server at the end of the check"; fi
     [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool"
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
     vol_detach "$SKYZFSD" "$dir"
@@ -718,6 +731,8 @@ hold_test() {
     HT_ERR=""; HT_WHY=""
     mark=$(dmesg_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
+    # `held` in status is the number of requests in flight at the server
+    # right now: 1 while the read is held, 0 once it has completed.
     # The held request is the first read of the block at HOLD_AT, a
     # place nothing probes when a device appears.
     ( lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=16 skip=$((HOLD_AT / 4096)) iflag=direct status=none 2> "$OUT/$name-dd.err"; echo $? > "$WORK/$name.rc" ) &
@@ -728,7 +743,7 @@ hold_test() {
     [ "${held:-0}" -ge 1 ] || { HT_ERR="status never said a request was held"; return 2; }
     t0=$(now_ms)
     for i in $(seq 1 $(((secs + 90) * 2))); do
-        held=$(vol_stat "$SKYZFSD" "$dir" held); [ "$held" = 2 ] && break; sleep 0.5
+        held=$(vol_stat "$SKYZFSD" "$dir" held); [ "$held" = 0 ] && break; sleep 0.5
     done
     t1=$(now_ms)
     wait "$reader"
@@ -738,9 +753,10 @@ hold_test() {
     bad=$(grep -ciE 'I/O error|timeout|timed out|abort' "$OUT/$name-dmesg.log")
     obs "${name}_kernel_log" "$(wc -l < "$OUT/$name-dmesg.log") lines while a request was held ${secs} s; hung-task warnings: $(grep -c 'blocked for more than' "$OUT/$name-dmesg.log"); lines with an I/O error, a timeout or an abort: $bad"
     HT_WHY="held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s); the reader exited $rc; kernel log lines with an I/O error, a timeout or an abort: $bad"
+    [ "$name" != e ] || pin_unstored e "$dir"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
-    [ "$held" = 2 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
+    [ "$held" = 0 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
 }
 check_e() {
     local v

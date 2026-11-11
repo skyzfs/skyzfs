@@ -100,9 +100,14 @@ status)
     echo "queues 1"
     echo "depth 64"
     i=0
-    for k in reads writes flushes discards write_zeroes failed_requests held; do
+    for k in reads writes flushes discards write_zeroes failed_requests; do
         echo "$k $(stat_field $i)"; i=$((i + 1))
     done
+    # held: requests in flight at the server now. The patched server
+    # counts 1 when it starts to hold a request and 2 when it lets go.
+    [ "$(stat_field 6)" = 1 ] && echo "held 1" || echo "held 0"
+    # The stand-in stores no acknowledged position, so none ever waits.
+    echo "unstored 0"
     ;;
 detach)
     n=$(cat "$DEVREC" 2>/dev/null || true)

@@ -33,6 +33,7 @@ EXPECTED = {
     'pin_no_fua': ('a', 'PASS', SERVER, 'forced-unit-access writes are not advertised (§4.1)'),
     'pin_label_at_byte_0': ('a', 'PASS', KERNEL, 'the pool is on the bare device, its first label at byte 0 (§4.2)'),
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
+    'pin_unstored_zero_a': ('a', 'PASS', WAITING, 'no completion waits for the acknowledged position to be stored (status: unstored 0)'),
 
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
@@ -47,6 +48,7 @@ EXPECTED = {
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4 and the pool suspends', 'WAITING'),
+    'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
 
@@ -71,6 +73,7 @@ EXPECTED = {
     'pin_held_request_completes': ('e', 'PASS', SERVER,
                                    'a request held for minutes completes; the kernel neither times it out nor '
                                    'reports an error (§4.2, a pin for M3)'),
+    'pin_unstored_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes'),
     'ctl_hold_too_short': ('e', 'FAIL', SERVER, 'control: a request held 5 s is not accepted as one held for minutes'),
 }
 # Observations: recorded, not judged, but the run is incomplete without them.
