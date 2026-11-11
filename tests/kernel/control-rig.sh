@@ -489,7 +489,7 @@ own_device
 # line says how long the delete took, what the device was a second
 # after the delete was sent and at the end, and what the reader got.
 delete_under_a_held_request() {
-    local name=$1 n=$2 hold=$3 kill_after=${4:-} t0 t1 during after line ms v killed=""
+    local name=$1 n=$2 hold=$3 kill_after=${4:-} t0 t1 during other after line ms v killed=""
     truncate -s "$SIZE" "$WORK/$name.img"
     say add "$n" --depth 8
     if ! serve_bg "$name" serve "$n" --file "$WORK/$name.img" --hold-one-request "$hold:read:$HOLD_B"; then
@@ -508,7 +508,13 @@ delete_under_a_held_request() {
     # server, while the delete waits.
     { lim 90 "$CTL" delete "$n" > "$WORK/$name.del" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 )) > "$WORK/$name.del-ms"; } &
     sleep 1
-    info "$n"; during="$STATE$([ -e "$WORK/$name.del-ms" ] && echo ' (the delete had answered)')"
+    # Two looks while the delete waits, each in the background with its
+    # own clock: a lookup of this device and one of a free number. In
+    # run 43073076409 the lookup of this device, made in line, did not
+    # come back until the delete had, so the server was never killed.
+    rm -f "$WORK/$name.look" "$WORK/$name.look-ms" "$WORK/$name.other" "$WORK/$name.other-ms"
+    { lim 90 "$CTL" info "$n" > "$WORK/$name.look" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 - 1000 )) > "$WORK/$name.look-ms"; } &
+    { lim 90 "$CTL" info "$S_FREE" > "$WORK/$name.other" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 - 1000 )) > "$WORK/$name.other-ms"; } &
     if [ -n "$kill_after" ]; then
         sleep $((kill_after - 1))
         if [ -e "$WORK/$name.del-ms" ]; then killed="; the delete had answered before the server was to be killed"
@@ -519,8 +525,11 @@ delete_under_a_held_request() {
     ms=$(cat "$WORK/$name.del-ms" 2>/dev/null); v=$(head -n 1 "$WORK/$name.del" 2>/dev/null | cut -f3-)
     cat "$WORK/$name.del" >> "$OUT/steps.log" 2>/dev/null
     line=$(holder_answer 2 60)
+    for _ in $(seq 1 100); do [ -e "$WORK/$name.look-ms" ] && [ -e "$WORK/$name.other-ms" ] && break; sleep 0.1; done
+    during="a lookup of the device sent 1 s after the delete answered '$(kv "$(head -n 1 "$WORK/$name.look" | cut -f3-)" state)' after $(cat "$WORK/$name.look-ms" 2>/dev/null || echo '?') ms"
+    other="a lookup of the free number $S_FREE sent then answered '$(head -n 1 "$WORK/$name.other" | cut -f3- | cut -c1-40)' after $(cat "$WORK/$name.other-ms" 2>/dev/null || echo '?') ms"
     info "$n"; after=$STATE
-    obs "$name" "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing}, after ${ms:-more than 90000} ms$killed; the device read '$during' 1 s after the delete was sent and '$after' at the end; the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
+    obs "$name" "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing}, after ${ms:-more than 90000} ms$killed; $during; $other; the device read '$after' at the end; the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
     srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
     holder_end
     wait_state "$n" nothing 10 || { echo "   $n is still there: $ANSWER"; lim 20 "$CTL" delete "$n" > /dev/null 2>&1; }
