@@ -2332,7 +2332,9 @@ fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
         if store.recovered_unacknowledged() != 0 {
             return Err("a new store counts operations".into());
         }
-        if store.replayed() != (0, 0) {
+        // A new log holds no operation; its bytes are the log's own
+        // records (the mark a recovery or a creation leaves).
+        if store.replayed().1 != 0 {
             return Err(format!("a new store replayed {:?}", store.replayed()));
         }
         write(&mut store, 0, 1, 1)?;

@@ -1401,7 +1401,9 @@ impl<D: Dir> Store<D> {
     }
 
     /// What this open read back to build its index: the bytes of the
-    /// log from its start to its end, and the operations in it. Both
+    /// log from its start to its end (the log's own records and
+    /// padding included, so not zero for a log without operations), and
+    /// the operations in it. Both
     /// grow until a checkpoint gives up a part of the log, and the time
     /// of an open grows with them.
     pub fn replayed(&self) -> (u64, u64) {
