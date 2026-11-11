@@ -10,11 +10,16 @@
 //!   is given.
 //! - [`pump`]: moves requests between one queue and one block target,
 //!   generic over both. Tested with a fake queue.
+//! - [`ack`]: the record, outside the store, of the position of the
+//!   newest acknowledged log record, which every start compares with
+//!   what it recovered.
 //!
 //! The binding to the kernel is built on these.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[cfg(unix)]
+pub mod ack;
 pub mod pump;
 pub mod translate;
