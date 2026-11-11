@@ -1,0 +1,59 @@
+diff --git a/crates/skyzfs-local/src/log/tests.rs b/crates/skyzfs-local/src/log/tests.rs
+index fb5f32c..be5567a 100644
+--- a/crates/skyzfs-local/src/log/tests.rs
++++ b/crates/skyzfs-local/src/log/tests.rs
+@@ -1868,3 +1868,54 @@ fn a_lost_superblock_copy_is_noticed() {
+     }
+     holds(scenario);
+ }
++
++#[test]
++fn review_lost_newest_superblock_after_reclaims() {
++    for env in environments(0) {
++        let flip = |disk: &SimDisk, copy: u64| {
++            disk.corrupt(SUPER_NAME, copy * SUPER_COPY_STRIDE + 70, 0x01).unwrap()
++        };
++        let (disk, mut log) = env.fresh().unwrap();
++        let mut tag = 1u8;
++        // Segments 0, S and the start of 2S.
++        let a = fill_to_roll(&mut log, &env, &mut tag).unwrap();
++        let b = fill_to_roll(&mut log, &env, &mut tag).unwrap();
++        log.sync().unwrap();
++        let s1 = a.last().unwrap().1.start; // first record of segment S
++        let s2 = b.last().unwrap().1.start; // first record of segment 2S
++        assert_eq!(log.reclaim(s1).unwrap(), s1);
++        assert_eq!(log.reclaim(s2).unwrap(), s2);
++        // Into 3S (reuses the file of 0) and 4S (reuses the file of S).
++        let c = fill_to_roll(&mut log, &env, &mut tag).unwrap();
++        let d = fill_to_roll(&mut log, &env, &mut tag).unwrap();
++        log.sync().unwrap();
++        let s4 = d.last().unwrap().1.start;
++        let _ = c;
++        assert_eq!(log.reclaim(s4).unwrap(), s4);
++        // Into 5S: the first free file is the one that held 3S.
++        let e = fill_to_roll(&mut log, &env, &mut tag).unwrap();
++        log.sync().unwrap();
++        let synced_tags = tags(&log).unwrap();
++        let (floor, durable) = (log.floor(), log.durable());
++        let _ = e;
++        drop(log);
++        disk.kill();
++        flip(&disk, current_copy(&disk));
++        match Log::open(disk.clone(), env.options()) {
++            Err(err) => eprintln!("REVIEW {env:?}: refused: {err}"),
++            Ok((log, rec)) => {
++                eprintln!(
++                    "REVIEW {env:?}: OPENED. before: floor {floor} durable {durable} tags {synced_tags:?}; now: floor {} end {} stopped {:?} tags {:?}",
++                    log.floor(), rec.end, rec.stopped, tags(&log).unwrap()
++                );
++                drop(log);
++                disk.kill();
++                // and what is left of the real log afterwards, with the true superblock gone for good
++                match Log::open(disk.clone(), env.options()) {
++                    Ok((log, _)) => eprintln!("REVIEW   reopened: tags {:?}", tags(&log).unwrap()),
++                    Err(err) => eprintln!("REVIEW   reopen: {err}"),
++                }
++            }
++        }
++    }
++}
