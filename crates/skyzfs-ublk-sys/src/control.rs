@@ -38,7 +38,9 @@ use crate::{raw, FLAGS, MAX_IO};
 ///   held. It succeeds with no holder and with a holder that is not
 ///   exclusive, so anything else is "cannot be told", never "not held".
 #[derive(Debug, Default, Clone, Copy)]
-pub struct Kernel;
+pub struct Kernel {
+    busy: u32,
+}
 
 impl Kernel {
     /// The driver, if its control device is there.
@@ -49,7 +51,13 @@ impl Kernel {
                 format!("{}: {e} (is the ublk driver loaded?)", raw::CONTROL),
             )
         })?;
-        Ok(Self)
+        Ok(Self::default())
+    }
+
+    /// How often the driver answered "busy" to the begin of a recovery
+    /// through this object, and was asked again.
+    pub fn busy_answers(&self) -> u32 {
+        self.busy
     }
 }
 
@@ -138,6 +146,7 @@ impl Control for Kernel {
             match raw::begin_recovery(number) {
                 Err(e) if e.raw_os_error() == Some(libc::EBUSY) && tries < BUSY_RETRIES => {
                     tries += 1;
+                    self.busy += 1;
                     std::thread::sleep(BUSY_PAUSE);
                 }
                 other => return other,
