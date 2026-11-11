@@ -23,6 +23,47 @@ const SUPER_NEW_NAME: &str = "log.super.new";
 /// The name of the file whose existence says that the log has failed.
 pub const MARKER_NAME: &str = "log.failed";
 
+/// The names a creation of a log that was interrupted can leave in the
+/// directory: the first segment and the superblock under the name it
+/// has before it is whole. A creation removes these, by these exact
+/// names, and no other file. Any other name that begins `log.` is in
+/// the log's own name space and is not the log's: a creation refuses
+/// the directory ([`LogError::NotEmpty`]) and removes nothing.
+pub const CREATE_LEFTOVERS: [&str; 2] = ["log.000000", SUPER_NEW_NAME];
+
+/// The first name in `names` that begins `log.` and is not one of
+/// [`CREATE_LEFTOVERS`].
+pub fn stranger(names: &[String]) -> Option<&str> {
+    names
+        .iter()
+        .map(String::as_str)
+        .find(|name| name.starts_with("log.") && !CREATE_LEFTOVERS.contains(name))
+}
+
+/// The key in the superblock of the log in `dir`, read without opening
+/// the log: nothing is locked, recovered or written. `None` if there
+/// is no superblock file or neither copy in it is valid. The key is
+/// the same in both copies for the whole life of a log.
+pub(crate) fn key_of<D: Dir>(dir: &D) -> io::Result<Option<Key>> {
+    let superblock = match dir.open(SUPER_NAME) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    for copy in 0..2u64 {
+        let mut raw = [0u8; SECTOR_LEN];
+        match superblock.read_at(copy * SUPER_COPY_STRIDE, &mut raw) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => continue,
+            Err(e) => return Err(e),
+        }
+        if let Ok(block) = Superblock::decode(&raw) {
+            return Ok(Some(block.key));
+        }
+    }
+    Ok(None)
+}
+
 /// The name of the `index`-th segment file. The name says nothing about
 /// which part of the log the file holds; its header does.
 pub fn slot_name(index: usize) -> String {
@@ -181,6 +222,10 @@ pub enum LogError {
     /// `create`: the directory already holds a log.
     #[error("the directory already holds a log")]
     Exists,
+    /// `create`: the directory holds a file that no creation leaves.
+    /// Nothing was removed or written.
+    #[error("the directory holds a file that is not a log's")]
+    NotEmpty,
     /// `open`: the directory holds no log.
     #[error("the directory holds no log")]
     NotFound,
@@ -226,6 +271,9 @@ pub enum LogError {
         /// Whether the failure could be recorded in the marker file. If
         /// not, a later open cannot know that the log failed.
         marker_written: bool,
+        /// Whether the log has failed by this error: a write or a sync
+        /// failed. If not, a read failed, which fails only the call.
+        failed: bool,
     },
     /// The log's content is damaged.
     #[error("the log is corrupt: {0}")]
@@ -588,6 +636,7 @@ fn read_error(during: &'static str, e: &io::Error) -> LogError {
         during,
         kind: e.kind(),
         marker_written: false,
+        failed: false,
     }
 }
 
@@ -680,10 +729,16 @@ impl<D: Dir> Log<D> {
         if names.iter().any(|name| name == SUPER_NAME) {
             return Err(LogError::Exists);
         }
-        // What an interrupted creation left behind. The superblock's
-        // name is what makes a log, and it is given last.
-        for name in names.iter().filter(|name| name.starts_with("log.")) {
-            dir.remove(name).map_err(io("removing leftovers"))?;
+        if stranger(&names).is_some() {
+            return Err(LogError::NotEmpty);
+        }
+        // What an interrupted creation left behind, by its exact names
+        // and nothing else. The superblock's name is what makes a log,
+        // and it is given last.
+        for name in CREATE_LEFTOVERS {
+            if names.iter().any(|found| found == name) {
+                dir.remove(name).map_err(io("removing leftovers"))?;
+            }
         }
         let mut segment = dir
             .create(&slot_name(0))
@@ -757,6 +812,7 @@ impl<D: Dir> Log<D> {
             during,
             kind: e.kind(),
             marker_written: write_marker(dir, mutants),
+            failed: true,
         };
         let mut superblock = dir
             .open(SUPER_NAME)
@@ -1230,6 +1286,7 @@ impl<D: Dir> Log<D> {
             during,
             kind: e.kind(),
             marker_written: self.announce(),
+            failed: true,
         }
     }
 

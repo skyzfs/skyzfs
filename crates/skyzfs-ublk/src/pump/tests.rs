@@ -26,6 +26,9 @@ enum Event {
     Stored(u64),
     /// The queue was given a result for a tag.
     Committed(u16, i32),
+    /// The queue handed the driver the commits it held: at a wait or
+    /// at a flush.
+    Sent,
 }
 
 type Events = Rc<RefCell<Vec<Event>>>;
@@ -48,6 +51,10 @@ struct FakeQueue {
     pauses: u32,
     /// The record can be written again after this many pauses.
     heals: Option<(u32, Rc<Cell<bool>>)>,
+    /// The queue cannot hand its commits over at a flush.
+    flush_fails: bool,
+    /// The tag the queue has no buffer for.
+    no_buf: Option<u16>,
 }
 
 impl Queue for FakeQueue {
@@ -56,6 +63,7 @@ impl Queue for FakeQueue {
     }
 
     fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+        self.events.borrow_mut().push(Event::Sent);
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
                 fetched.extend(more);
@@ -71,9 +79,12 @@ impl Queue for FakeQueue {
     }
 
     /// A write's data names its tag.
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
+        if self.no_buf == Some(tag) {
+            return None;
+        }
         self.taken += 1;
-        Buf::filled(blocks, 0x40 + tag as u8)
+        Some(Buf::filled(blocks, 0x40 + tag as u8))
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
@@ -81,6 +92,14 @@ impl Queue for FakeQueue {
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
         }
+    }
+
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        self.events.borrow_mut().push(Event::Sent);
+        if self.flush_fails {
+            return Err(QueueDown);
+        }
+        Ok(())
     }
 
     fn pause(&mut self) {
@@ -100,6 +119,8 @@ struct FakeTarget {
     ready: Vec<(Completion, Option<u64>)>,
     acknowledged: Option<u64>,
     gone: bool,
+    /// Its worker ends in the moment of the next submit.
+    goes_at_submit: bool,
     /// The most requests it ever held.
     most: usize,
 }
@@ -144,6 +165,9 @@ impl BlockTarget for FakeTarget {
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
         let held = self.pending.len() + self.ready.len();
         self.most = self.most.max(held + 1);
+        if self.goes_at_submit {
+            self.gone = true;
+        }
         // As the served store does: once its worker has ended it
         // refuses everything as busy.
         if self.gone || held >= self.geometry.queue_depth() as usize {
@@ -220,6 +244,8 @@ impl Rig {
             taken: 0,
             pauses: 0,
             heals: None,
+            flush_fails: false,
+            no_buf: None,
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -228,6 +254,7 @@ impl Rig {
             ready: Vec::new(),
             acknowledged: None,
             gone: false,
+            goes_at_submit: false,
             most: 0,
         };
         let ack = FakeAck {
@@ -620,6 +647,81 @@ fn an_orderly_stop_completes_what_was_accepted() {
     caught(scenario, Mutants::STOP_AT_ONCE);
 }
 
+/// A read or a write the queue has no buffer for fails with `EIO` and
+/// never reaches the target: a buffer made up in its place would give
+/// a write zeros for its data. The requests beside it are served.
+/// Mutant: it is handed to the target with a buffer of zeros.
+#[test]
+fn a_request_the_queue_has_no_buffer_for_fails_and_does_not_reach_the_target() {
+    fn scenario(mutants: u32) -> Outcome {
+        for unbuffered in [write(1, 1), request(1, op::READ, 0, 1, 1)] {
+            let mut rig = Rig::new(mutants, 8, 4);
+            rig.pump.queue().no_buf = Some(1);
+            rig.fetch(&[write(0, 0), unbuffered, write(2, 2)]);
+            let ids: Vec<u64> = rig.submitted().into_iter().map(|(id, _)| id).collect();
+            expect(ids, vec![0, 2], "only the requests with a buffer")?;
+            rig.complete(0, Some(100));
+            rig.complete(2, Some(200));
+            rig.turn();
+            let mut committed = rig.committed();
+            committed.sort();
+            expect(
+                committed,
+                vec![(0, BLOCK), (1, -EIO), (2, BLOCK)],
+                "the one without a buffer failed",
+            )?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::UNBUFFERED_SUBMITTED);
+}
+
+/// The last commits of a stop reach the driver: a queue keeps a commit
+/// until its next wait, and after the last commit of a stop there is
+/// none, so the pump has the queue hand them over before it ends. And
+/// a stop whose commits could not be handed over is not called
+/// orderly. Mutant: the pump ends with its last commits in the queue.
+#[test]
+fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 2);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.pump.queue().script.push_back(Step::Stop(vec![]));
+        expect(
+            rig.pump.turn(),
+            None,
+            "the stop, with requests in the target",
+        )?;
+        rig.complete(0, Some(100));
+        rig.complete(1, Some(200));
+        expect(rig.turn(), Some(Stopped::Orderly), "drained")?;
+        let events = rig.events.borrow().clone();
+        let last_commit = events
+            .iter()
+            .rposition(|e| matches!(e, Event::Committed(..)))
+            .ok_or("nothing was committed")?;
+        if !events[last_commit..].contains(&Event::Sent) {
+            return Err(format!(
+                "the pump ended with commits still in the queue: {events:?}"
+            ));
+        }
+
+        // The same stop on a queue that cannot hand them over.
+        let mut rig = Rig::new(mutants, 8, 2);
+        rig.pump.queue().flush_fails = true;
+        rig.fetch(&[write(0, 0)]);
+        rig.pump.queue().script.push_back(Step::Stop(vec![]));
+        expect(rig.pump.turn(), None, "the stop")?;
+        rig.complete(0, Some(100));
+        expect(
+            rig.turn(),
+            Some(Stopped::QueueDown),
+            "a stop whose commits were not handed over",
+        )
+    }
+    caught(scenario, Mutants::STOP_UNSENT);
+}
+
 /// A stop while the position cannot be stored, and then can: the pump
 /// tries again by itself, paced by the queue's pause and with no
 /// further wait on the queue, stores the position, commits everything
@@ -814,6 +916,24 @@ fn a_target_that_is_gone_is_gone_also_when_a_request_waits() {
         expect(rig.committed(), vec![], "nothing is committed")
     }
     caught(scenario, Mutants::GONE_AFTER_SUBMIT);
+}
+
+/// The window between the pump's look and its submit: the worker ends
+/// in that moment, and the refusal is that of a target that is gone.
+/// Mutant: a refusal with room is always a fault.
+#[test]
+fn a_target_that_goes_in_the_moment_of_a_submit_is_gone() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.pump.target().goes_at_submit = true;
+        expect(
+            rig.fetch(&[write(0, 0)]),
+            Some(Stopped::TargetGone),
+            "the worker ended as the request was submitted",
+        )?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(scenario, Mutants::REFUSAL_IS_FAULT);
 }
 
 /// Two guards against the other side. A queue that hands over a tag

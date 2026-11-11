@@ -6,6 +6,11 @@ edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
+[features]
+# For test rigs only: lets the owner of a served store fail its log on
+# demand (`Served::fail_now`). Never on in a build that serves data.
+test-hooks = []
+
 [dependencies]
 thiserror = { workspace = true }
 crc32c = { workspace = true }

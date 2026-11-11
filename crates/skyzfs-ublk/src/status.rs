@@ -7,13 +7,24 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 128
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 144
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
+//! The file has no checksum. It is replaced whole by a rename, lives
+//! on a memory file system for one boot, and is read only if its
+//! length and its magic are exactly a version's: a torn or foreign
+//! file is read as no status, and a damaged counter would mislead a
+//! reader of `status` and nothing else. The failure note
+//! ([`records`](crate::records)) is kept the same way.
+//!
+//! This is the file's second version. The first (`SKYZSTA1`, 128
+//! bytes) ended before the last two fields; a file of that version is
+//! read as no status.
+//!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA1` |
+//! | 0 | 8 | magic `SKYZSTA2` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -29,6 +40,8 @@
 //! | 104 | 8 | `held`: requests fetched and not committed yet |
 //! | 112 | 8 | `unstored`: completions waiting because the acknowledged position could not be stored |
 //! | 120 | 8 | writes of this file that failed |
+//! | 128 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
+//! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
 //!
 //! # The rules
 //!
@@ -64,14 +77,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::lifecycle::{DeviceState, Located, Whose};
+use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::Counters;
+use crate::records::StoredFailure;
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA1";
-const LEN: usize = 128;
+const MAGIC: &[u8; 8] = b"SKYZSTA2";
+const LEN: usize = 144;
+/// The first version: read as no status.
+const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
+const OLD_LEN: usize = 128;
 
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +109,13 @@ pub struct Status {
     pub counters: Counters,
     /// Writes of the file that failed.
     pub failures: u64,
+    /// First writes of a tag that were copied once more, from the
+    /// transport's own buffer, since this daemon started serving.
+    pub first_write_copies: u64,
+    /// Operations this daemon's start found in the log beyond the
+    /// acknowledged position: applied by the daemon before it and never
+    /// answered. A lower bound.
+    pub recovered_unacknowledged: u64,
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -120,6 +144,8 @@ fn encode(status: &Status) -> [u8; LEN] {
         c.in_flight,
         c.unstored,
         status.failures,
+        status.first_write_copies,
+        status.recovered_unacknowledged,
     ];
     for (i, field) in fields.iter().enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
@@ -153,17 +179,23 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             unstored: u64_at(bytes, 112),
         },
         failures: u64_at(bytes, 120),
+        first_write_copies: u64_at(bytes, 128),
+        recovered_unacknowledged: u64_at(bytes, 136),
     })
 }
 
-/// Read the file at `path`. `Ok(None)` if there is none. A file that is
-/// not a whole record is an error.
+/// Read the file at `path`. `Ok(None)` if there is none, or one of the
+/// first version. Any other file that is not a whole record is an
+/// error.
 pub fn read(path: &Path) -> io::Result<Option<Status>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
+    if bytes.len() == OLD_LEN && &bytes[..8] == OLD_MAGIC {
+        return Ok(None);
+    }
     decode(&bytes)
         .map(Some)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a status file"))
@@ -296,6 +328,9 @@ impl Pace {
 struct Posted {
     counters: Counters,
     stop: bool,
+    /// How often [`Board::publish`] has tried to write the file, done
+    /// or failed.
+    attempts: u64,
 }
 
 /// Where the queue thread puts its counters for the thread that writes
@@ -331,6 +366,30 @@ impl Board {
         }
     }
 
+    /// Wait until [`Board::publish`] has tried to write the file at
+    /// least once, done or failed, for at most `limit`; whether it
+    /// has. The daemon says `ready` after this: until the new
+    /// instance's first write the file is the one the instance before
+    /// left, and `status` would show that instance's pid and counters
+    /// as the serving daemon's. A write that failed counts: writing the
+    /// status holds nothing up.
+    pub fn first_write_tried(&self, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        let mut posted = self.lock();
+        while posted.attempts == 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            posted = self
+                .changed
+                .wait_timeout(posted, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        true
+    }
+
     /// Tell [`Board::publish`] to write what is posted and return.
     pub fn stop(&self) {
         self.lock().stop = true;
@@ -356,7 +415,11 @@ impl Board {
             if matches!(due, Due::Now) || (last && due != Due::Never) {
                 let counters = posted.counters;
                 drop(posted);
-                match write(&counters, failures) {
+                let written = write(&counters, failures);
+                posted = self.lock();
+                posted.attempts += 1;
+                self.changed.notify_all();
+                match written {
                     Ok(()) => pace.wrote(counters, now()),
                     Err(_) => {
                         failures += 1;
@@ -366,7 +429,6 @@ impl Board {
                         }
                     }
                 }
-                posted = self.lock();
                 continue;
             }
             if last {
@@ -390,7 +452,26 @@ impl Board {
     }
 }
 
+/// The volume's failure note, as `status` found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    /// There is none.
+    Nothing,
+    /// One is there and is not a whole record: it counts as a failure
+    /// while a client held the device.
+    Unreadable,
+    /// One is there. It counts if it is of this boot.
+    Whole(StoredFailure),
+}
+
 /// What `status` prints: keys and values, in order.
+///
+/// `pid` is there while the kernel shows a live server for this
+/// volume's device: the process that wrote the file.
+///
+/// A failure note of this boot decides the state, and is printed after
+/// everything else: its boot, whether a client held the device, why,
+/// and how long ago. A note of another boot is not shown.
 ///
 /// `located` is the device under the volume's recorded number
 /// ([`lifecycle::locate`](crate::lifecycle::locate)), `status` the
@@ -401,11 +482,24 @@ impl Board {
 pub fn report(
     located: Option<&Located>,
     status: Option<&Status>,
+    noted: Noted,
     boot: &[u8; 16],
     uptime_ms: u64,
 ) -> Vec<(&'static str, String)> {
     let ours = located.filter(|l| l.whose == Whose::Ours);
+    let failure = match noted {
+        Noted::Whole(stored) if stored.boot == *boot => Some(Some(stored)),
+        Noted::Unreadable => Some(None),
+        _ => None,
+    };
     let state = match (located, ours) {
+        _ if failure.is_some_and(|f| f.is_none_or(|f| f.failure.held == Held::Yes)) => {
+            "failed, held by a client: not served again in this boot".to_string()
+        }
+        _ if failure.is_some_and(|f| f.is_some_and(|f| f.failure.held == Held::Unknown)) => {
+            "failed, not known whether a client holds it: the next serve finds out".to_string()
+        }
+        _ if failure.is_some() => "failed: needs --acknowledge-failure".to_string(),
         (None, _) => "detached".to_string(),
         (Some(l), None) if l.whose == Whose::Unsure => format!(
             "unknown: device {} has this volume's values and no note",
@@ -418,8 +512,7 @@ pub fn report(
         (_, Some(l)) => match l.state {
             DeviceState::Live => "serving",
             DeviceState::Waiting => "waiting for a server",
-            DeviceState::Added => "added, never started",
-            DeviceState::Dead => "deleted, still held by a client",
+            DeviceState::Dead => "dead: never started, or deleted and still held",
         }
         .to_string(),
     };
@@ -446,18 +539,42 @@ pub fn report(
             ("refused", c.refused),
             ("held", c.in_flight),
             ("unstored", c.unstored),
+            ("first_write_copies", s.first_write_copies),
+            ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
         ] {
             lines.push((key, value.to_string()));
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);
+        if live {
+            lines.push(("pid", s.pid.to_string()));
+        }
         let counters = if live {
             format!("of the serving daemon, pid {}", s.pid)
         } else {
             format!("left by a daemon that is gone, pid {}", s.pid)
         };
         lines.push(("counters", counters));
+    }
+    match failure {
+        None => {}
+        Some(None) => lines.push(("failure", "the failure note cannot be read".to_string())),
+        Some(Some(stored)) => {
+            let boot: String = stored.boot.iter().map(|b| format!("{b:02x}")).collect();
+            let held = match stored.failure.held {
+                Held::Yes => "yes",
+                Held::No => "no",
+                Held::Unknown => "unknown",
+            };
+            lines.push(("failure", stored.failure.reason.to_string()));
+            lines.push(("failure_held", held.to_string()));
+            lines.push(("failure_boot", boot));
+            lines.push((
+                "failure_age_ms",
+                uptime_ms.saturating_sub(stored.written_ms).to_string(),
+            ));
+        }
     }
     lines
 }

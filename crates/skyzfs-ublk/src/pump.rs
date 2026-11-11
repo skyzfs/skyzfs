@@ -36,9 +36,9 @@
 //!   its own. The retry rides on the queue waking: for a request, for
 //!   the target, or, with no traffic at all, for the idle time-out of
 //!   the queue's own wait. In `libublk` 0.4.8 that is 20 seconds
-//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), read from the source and
-//!   still to be seen in a run; so the longest wait for a retry with
-//!   no traffic is 20 seconds.
+//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), and the kernel spike saw
+//!   it: two wakes in 45 idle seconds, 20 s apart. So the longest wait
+//!   for a retry with no traffic is 20 seconds.
 //! - **An orderly stop** completes what it accepted: once the queue
 //!   says stop, nothing more is accepted, what is in the target is
 //!   waited for and committed, and the pump ends. Requests that were
@@ -115,7 +115,13 @@ pub trait Queue {
     /// The buffer of the request with `tag`, `blocks` blocks long. For a
     /// write it holds the data. Called once for a read or a write that
     /// is submitted.
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf;
+    ///
+    /// `None` if the queue has no buffer that holds this request's
+    /// data: the request is longer than the queue's buffers, or the
+    /// tag's buffer is not in its place. The pump then fails the
+    /// request (`EIO`) and hands the target nothing: a buffer made up
+    /// in its place would give a write zeros for its data.
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf>;
 
     /// Complete the request with `tag`: `result` is the byte count or a
     /// negated error. `buf` is the buffer [`Queue::take_buf`] gave, back
@@ -126,6 +132,15 @@ pub trait Queue {
     /// to store the acknowledged position. Not the queue's wait: it
     /// fetches nothing and returns after its time whatever happens.
     fn pause(&mut self);
+
+    /// Hand the driver every commit made so far, without waiting for
+    /// anything. A queue may keep a commit until its next
+    /// [`Queue::wait`]; the pump calls this once when it ends for a
+    /// stop, after its last commit, because no wait follows that one.
+    /// A request whose commit never reached the driver is issued again
+    /// to the next instance: safe, but not what an orderly stop says
+    /// it did. `Err` if they could not be handed over.
+    fn flush(&mut self) -> Result<(), QueueDown>;
 }
 
 /// What the pump needs of a target beyond the contract.
@@ -153,7 +168,8 @@ pub trait AckRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
     /// A stop was asked, and everything the target had accepted is
-    /// completed and committed.
+    /// completed and committed, and the commits were handed to the
+    /// driver ([`Queue::flush`]).
     Orderly,
     /// A stop was asked, the target has drained, and the acknowledged
     /// position could not be stored in the stated number of tries.
@@ -237,6 +253,14 @@ impl Mutants {
     pub(crate) const TAG_REUSED: u32 = 1 << 12;
     /// A completion nobody waits for is ignored.
     pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
+    /// A refusal with room is a fault, also when the target went in
+    /// that moment.
+    pub(crate) const REFUSAL_IS_FAULT: u32 = 1 << 14;
+    /// A stop ends with its last commits still in the queue.
+    pub(crate) const STOP_UNSENT: u32 = 1 << 15;
+    /// A request the queue has no buffer for is handed to the target
+    /// with a buffer of zeros.
+    pub(crate) const UNBUFFERED_SUBMITTED: u32 = 1 << 16;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -340,6 +364,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         &mut self.target
     }
 
+    /// End the pump and give its target back: for a caller that must
+    /// keep the target alive (the store holds the volume's lock) beyond
+    /// the thread the pump ran on. The queue and the record are
+    /// dropped.
+    pub fn into_target(self) -> T {
+        self.target
+    }
+
     /// The record of what was acknowledged.
     pub fn ack(&mut self) -> &mut A {
         &mut self.ack
@@ -412,6 +444,13 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             self.queue.pause();
             self.commit_finished();
         }
+        // The last commits of a stop have no wait behind them that
+        // would send them: the queue hands them over now. A stop whose
+        // commits could not be handed over completed nothing in the
+        // kernel's eyes and is not orderly.
+        if !self.mutants.has(Mutants::STOP_UNSENT) && self.queue.flush().is_err() {
+            return Some(Stopped::QueueDown);
+        }
         if self.finished.is_empty() {
             Some(Stopped::Orderly)
         } else {
@@ -428,7 +467,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// The target refused a request it had room for: because its worker
     /// ended in that moment, or against the contract.
     fn refused(&self) -> Stopped {
-        if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+        let fault = self.mutants.has(Mutants::GONE_AFTER_SUBMIT)
+            || self.mutants.has(Mutants::REFUSAL_IS_FAULT);
+        if self.is_gone() && !fault {
             Stopped::TargetGone
         } else {
             Stopped::TargetFault
@@ -534,18 +575,31 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if self.room() == 0 {
             return Ok(false);
         }
-        let op = match plan.action {
-            Action::Read { offset, len } => Op::Read {
-                offset,
-                buf: self.queue.take_buf(tag, blocks(len)),
-            },
-            Action::Write { offset, len } => Op::Write {
-                offset,
-                data: self.queue.take_buf(tag, blocks(len)),
-            },
-            Action::Flush => Op::Flush,
-            Action::Discard { offset, len } => Op::Discard { offset, len },
-            Action::WriteZeroes { offset, len } => Op::WriteZeroes { offset, len },
+        let buf = match plan.action {
+            Action::Read { len, .. } | Action::Write { len, .. } => {
+                match self.queue.take_buf(tag, blocks(len)) {
+                    Some(buf) => Some(buf),
+                    None if self.mutants.has(Mutants::UNBUFFERED_SUBMITTED) => {
+                        Some(Buf::zeroed(blocks(len)))
+                    }
+                    None => {
+                        // The queue has no buffer with this request's
+                        // data: it fails, and the target sees nothing.
+                        self.finish(tag, &plan, &Err(BlkError::Failed), None);
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => None,
+        };
+        let op = match (plan.action, buf) {
+            (Action::Read { offset, .. }, Some(buf)) => Op::Read { offset, buf },
+            (Action::Write { offset, .. }, Some(data)) => Op::Write { offset, data },
+            // Not reached: a read or a write has its buffer here.
+            (Action::Read { .. } | Action::Write { .. }, None) => return Ok(true),
+            (Action::Flush, _) => Op::Flush,
+            (Action::Discard { offset, len }, _) => Op::Discard { offset, len },
+            (Action::WriteZeroes { offset, len }, _) => Op::WriteZeroes { offset, len },
         };
         let request = Request {
             id: RequestId(u64::from(tag)),

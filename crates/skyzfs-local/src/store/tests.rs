@@ -1496,6 +1496,49 @@ fn an_interrupted_creation_leaves_no_store_or_a_whole_one() {
     assert!(none > 0 && whole > 0, "none {none}, whole {whole}");
 }
 
+/// A creation removes only what a creation leaves, by its exact names.
+/// A directory with any other name in it, also one that begins like a
+/// store's own, is refused with every file as it was and nothing made,
+/// not even the lock file.
+#[test]
+fn a_creation_refuses_a_directory_with_a_file_that_is_not_its_own() {
+    let env = environments(0)[0];
+    let key = Key(*b"a key for tests!");
+    for stranger in [
+        "home.tar",
+        "home.pre",
+        "home.img.bak",
+        "log.txt",
+        "log.000001",
+        "log.failed",
+        "log.super.old",
+        "notes",
+    ] {
+        let disk = SimDisk::new(1);
+        for name in [stranger, "home.new", "log.000000"] {
+            let mut file = disk.create(name).unwrap();
+            file.write_at(0, name.as_bytes()).unwrap();
+            file.sync().unwrap();
+        }
+        disk.sync().unwrap();
+        let before = disk.list().unwrap();
+        let created = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+        assert!(
+            matches!(created, Err(StoreError::NotEmpty)),
+            "{stranger}: {:?}",
+            created.err()
+        );
+        assert_eq!(disk.list().unwrap(), before, "{stranger}");
+        for name in &before {
+            let mut bytes = vec![0u8; name.len()];
+            disk.open(name).unwrap().read_at(0, &mut bytes).unwrap();
+            assert_eq!(bytes, name.as_bytes(), "{stranger}: {name}");
+        }
+    }
+    assert_eq!(crate::log::CREATE_LEFTOVERS[0], crate::log::slot_name(0));
+    assert!(super::stranger(&CREATE_LEFTOVERS.map(str::to_owned)).is_none());
+}
+
 /// A checkpoint that cannot make its preimages durable has not touched
 /// the home image: after a power cut that garbles everything unsynced,
 /// every flushed block is there.
@@ -2254,4 +2297,128 @@ fn the_lock_is_taken_apart_from_the_open_and_comes_back_held_when_the_open_fails
     assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
     drop(store);
     drop(Store::lock_volume(&disk).unwrap());
+}
+
+/// The hook for test rigs: a served store whose owner fails it on
+/// demand answers what it completed before as completed, fails every
+/// later request, tells its owner, and is found marked as failed by
+/// the next open.
+#[test]
+fn a_served_store_failed_on_demand_fails_every_later_request_and_is_found_marked() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    let write = |id: u64, block: u64| Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(1, 9),
+        },
+    };
+    let mut done = Vec::new();
+    served.submit(write(1, 0)).unwrap();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    assert_eq!(done[0].result, Ok(()));
+    let woken = calls.load(Ordering::SeqCst);
+
+    served.fail_now();
+    assert!(
+        calls.load(Ordering::SeqCst) > woken,
+        "the owner is woken by the failure"
+    );
+    assert!(
+        !served.gone(),
+        "the worker lives: it answers with the failure"
+    );
+
+    let flush = Request {
+        id: RequestId(3),
+        op: Op::Flush,
+    };
+    let read = Request {
+        id: RequestId(4),
+        op: Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        },
+    };
+    for request in [write(2, 1), flush, read] {
+        done.clear();
+        served.submit(request).unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Err(BlkError::Failed), "{:?}", done[0].id);
+    }
+    // Failing twice is failing once.
+    served.fail_now();
+    drop(served);
+
+    match Store::open(disk.clone(), env.options()) {
+        Err(StoreError::Log(LogError::MarkedFailed)) => {}
+        other => panic!("the next open: {:?}", other.map(|_| ())),
+    }
+}
+
+/// An open that is told the acknowledged position counts the
+/// operations the log holds beyond it: what the life before appended
+/// whole and never acknowledged. Told nothing, or a position recorded
+/// for another store, it counts none.
+#[test]
+fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if store.recovered_unacknowledged() != 0 {
+            return Err("a new store counts operations".into());
+        }
+        // A new log holds no operation; its bytes are the log's own
+        // records (the mark a recovery or a creation leaves).
+        if store.replayed().1 != 0 {
+            return Err(format!("a new store replayed {:?}", store.replayed()));
+        }
+        write(&mut store, 0, 1, 1)?;
+        let first = store.acknowledged();
+        write(&mut store, 1, 1, 2)?;
+        let second = store.acknowledged();
+        write(&mut store, 2, 1, 3)?;
+        let last = store.acknowledged();
+        let identity = store.identity();
+        drop(store);
+        disk.kill();
+        for (must_reach, recorded_for, want) in [
+            (first, None, 2),
+            (second, None, 1),
+            (last, None, 0),
+            (None, None, 0),
+            (first, Some(identity), 2),
+            (first, Some(*b"some other store"), 0),
+        ] {
+            let options = OpenOptions {
+                must_reach,
+                must_reach_identity: recorded_for,
+                ..env.options()
+            };
+            let (store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
+            let got = store.recovered_unacknowledged();
+            let (bytes, records) = store.replayed();
+            if records != 3 || bytes == 0 {
+                return Err(format!(
+                    "replayed {records} records in {bytes} bytes, not 3"
+                ));
+            }
+            drop(store);
+            disk.kill();
+            if got != want {
+                return Err(format!(
+                    "must reach {must_reach:?} for {recorded_for:?}: counted {got}, not {want}"
+                ));
+            }
+        }
+        Ok(())
+    }
+    holds(scenario);
 }

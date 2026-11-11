@@ -36,6 +36,34 @@ use crate::log::{Log, LogError, Observer, Options, Recovery};
 pub const HOME_NAME: &str = "home.img";
 /// The home image while it is being created.
 const HOME_NEW_NAME: &str = "home.new";
+
+/// Every name a creation of a store that was interrupted can leave in
+/// the directory, and so every name [`Store::create`] accepts in it:
+/// the lock file, the home image under its first and its final name,
+/// and what the log's creation leaves ([`crate::log::CREATE_LEFTOVERS`]).
+/// A creation removes these, by these exact names, and no other file.
+/// A directory that holds any other name is refused
+/// ([`StoreError::NotEmpty`]) with nothing removed and nothing written:
+/// the store cannot know whose `home.tar` or `log.txt` it is. A file
+/// that somebody else put under exactly one of these names, in a
+/// directory with no store, is removed as a leftover: the store cannot
+/// tell it from one.
+pub const CREATE_LEFTOVERS: [&str; 5] = [
+    crate::fs::LOCK_NAME,
+    HOME_NEW_NAME,
+    HOME_NAME,
+    crate::log::CREATE_LEFTOVERS[0],
+    crate::log::CREATE_LEFTOVERS[1],
+];
+
+/// The first name in `names` that is not one of [`CREATE_LEFTOVERS`]:
+/// what makes [`Store::create`] refuse a directory that holds no store.
+pub fn stranger(names: &[String]) -> Option<&str> {
+    names
+        .iter()
+        .map(String::as_str)
+        .find(|name| !CREATE_LEFTOVERS.contains(name))
+}
 /// The preimages of a checkpoint in progress: see [the crate documentation](crate#the-preimage-file).
 pub const PREIMAGE_NAME: &str = "home.pre";
 
@@ -265,6 +293,11 @@ pub enum StoreError {
     /// written.
     #[error("the store is open in another instance")]
     Locked,
+    /// `create`: the directory holds a file that no creation leaves
+    /// ([`CREATE_LEFTOVERS`]). Nothing was removed or written, not even
+    /// the lock file.
+    #[error("the directory holds a file that is not a store's")]
+    NotEmpty,
     /// The store's files do not fit together.
     #[error("the store is damaged: {0}")]
     Damaged(&'static str),
@@ -1082,9 +1115,25 @@ pub struct Store<D: Dir> {
     /// Where the newest record starts among the mutations whose
     /// completions have been handed out.
     acknowledged: Option<Lsn>,
+    /// See [`Store::recovered_unacknowledged`].
+    unacknowledged: u64,
+    /// See [`Store::replayed`].
+    replayed: (u64, u64),
     queue: VecDeque<Request>,
     /// The ids in flight: submitted and not yet returned.
     ids: BTreeSet<RequestId>,
+}
+
+impl Store<crate::fs::FsDir> {
+    /// Another hold on the volume's lock this store has
+    /// ([`FsLock::share`](crate::fs::FsLock::share)): the directory
+    /// stays locked until the store and every such hold are gone. For
+    /// an owner that has work to do under the lock after the store has
+    /// ended, on whatever thread it ended. `None` if the store was
+    /// opened without the lock, which only a test's defect does.
+    pub fn share_lock(&self) -> Option<crate::fs::FsLock> {
+        self.core._lock.as_ref().map(crate::fs::FsLock::share)
+    }
 }
 
 impl<D: Dir> Store<D> {
@@ -1103,16 +1152,26 @@ impl<D: Dir> Store<D> {
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
         let identity = config.identity().ok_or(StoreError::InvalidConfig)?;
-        let lock = Self::lock(&dir, &options)?;
-        let names = dir.list().map_err(io_error("listing the directory"))?;
-        if names.iter().any(|name| name == crate::log::SUPER_NAME) {
-            return Err(LogError::Exists.into());
+        // Before the lock, which makes a file: a directory with a file
+        // of somebody else is refused and left exactly as it was. A
+        // directory that holds a store has its lock file already, and
+        // whether that store is in use is what the lock says first.
+        // Then everything again under the lock, for what another
+        // instance did in between.
+        let found = dir.list().map_err(io_error("listing the directory"))?;
+        if !found.iter().any(|name| name == crate::log::SUPER_NAME) && stranger(&found).is_some() {
+            return Err(StoreError::NotEmpty);
         }
+        let lock = Self::lock(&dir, &options)?;
+        let names = Self::creatable(&dir)?;
         // The log's superblock is what makes a store, and it is made
-        // last. Whatever else is here is left from a creation that was
-        // interrupted.
-        for name in names.iter().filter(|name| name.starts_with("home.")) {
-            dir.remove(name).map_err(io_error("removing leftovers"))?;
+        // last. What is here under one of a creation's own names is
+        // left from a creation that was interrupted; nothing is removed
+        // under any other name.
+        for name in [HOME_NEW_NAME, HOME_NAME] {
+            if names.iter().any(|found| found == name) {
+                dir.remove(name).map_err(io_error("removing leftovers"))?;
+            }
         }
         let creating = io_error("creating the home image");
         let mut home = dir.create(HOME_NEW_NAME).map_err(&creating)?;
@@ -1147,6 +1206,19 @@ impl<D: Dir> Store<D> {
     /// Take the directory's lock: one instance per volume (design
     /// §4.2). Opening a store is a recovery that writes, so this comes
     /// before anything is read or written.
+    /// The names in `dir`, if a store can be created there: no store
+    /// yet, and no name but a creation's own.
+    fn creatable(dir: &D) -> Result<Vec<String>, StoreError> {
+        let names = dir.list().map_err(io_error("listing the directory"))?;
+        if names.iter().any(|name| name == crate::log::SUPER_NAME) {
+            return Err(LogError::Exists.into());
+        }
+        if stranger(&names).is_some() {
+            return Err(StoreError::NotEmpty);
+        }
+        Ok(names)
+    }
+
     fn lock(dir: &D, options: &OpenOptions) -> Result<Option<D::Lock>, StoreError> {
         if options.mutants.has(Mutants::NO_LOCK) {
             return Ok(None);
@@ -1255,11 +1327,26 @@ impl<D: Dir> Store<D> {
         // The index: every record of the log, in order. After an open
         // the whole log is durable.
         let mut index = Index::default();
+        // A position recorded for another store counts as none, as in
+        // the log's own comparison.
+        let core_identity = crate::format::store_identity(log.key());
+        let acknowledged = options.must_reach.filter(|_| {
+            options
+                .must_reach_identity
+                .is_none_or(|recorded_for| recorded_for == core_identity)
+        });
+        let mut unacknowledged = 0u64;
+        let mut replayed = 0u64;
+        let replayed_bytes = log.tail().0.saturating_sub(log.floor().0);
         if !options.mutants.has(Mutants::NO_INDEX_REBUILD) {
             log.replay(log.floor(), log.tail(), &mut |record| {
                 let start = record.offset / BLOCK_SIZE;
                 let blocks = record.length / BLOCK_SIZE;
                 let at = record.start;
+                replayed += 1;
+                if acknowledged.is_some_and(|position| at > position) {
+                    unacknowledged += 1;
+                }
                 match record.kind {
                     Kind::Write => index.insert(
                         start,
@@ -1288,6 +1375,8 @@ impl<D: Dir> Store<D> {
                 appended: None,
                 mutants: options.mutants,
             },
+            unacknowledged,
+            replayed: (replayed_bytes, replayed),
             acknowledged: None,
             queue: VecDeque::new(),
             ids: BTreeSet::new(),
@@ -1359,6 +1448,47 @@ impl<D: Dir> Store<D> {
     /// recorded for another store counts as none.
     pub fn identity(&self) -> [u8; 16] {
         self.core.identity()
+    }
+
+    /// The identity ([`Store::identity`]) of the store in `dir`, read
+    /// from the log's superblock without opening the store: no lock is
+    /// taken, nothing is recovered and nothing is written. For whoever
+    /// must tell which store a directory holds while a daemon may be
+    /// serving it. `None` if the directory holds no store or neither
+    /// superblock copy can be read as one.
+    ///
+    /// A store's key never changes, so either valid copy gives the
+    /// same answer, also while the serving instance rewrites one.
+    pub fn identity_of(dir: &D) -> io::Result<Option<[u8; 16]>> {
+        Ok(crate::log::key_of(dir)?.map(|key| crate::format::store_identity(&key)))
+    }
+
+    /// How many operations this open found in the log beyond the
+    /// position it was told was acknowledged
+    /// ([`OpenOptions::must_reach`]): writes, write-zeroes and discards
+    /// that the life before appended whole and whose completion it
+    /// never passed on. Zero when the open was told no position, or
+    /// one recorded for another store.
+    ///
+    /// **It is a lower bound** on what that life applied without
+    /// answering its client. An operation at or before the position
+    /// may also have gone unanswered: the position is recorded before
+    /// the answers of a batch are given, and a kill between the two
+    /// leaves answers ungiven that this count does not see. So does an
+    /// operation that a checkpoint has already taken out of the log. A
+    /// flush leaves no record and is never counted.
+    pub fn recovered_unacknowledged(&self) -> u64 {
+        self.unacknowledged
+    }
+
+    /// What this open read back to build its index: the bytes of the
+    /// log from its start to its end (the log's own records and
+    /// padding included, so not zero for a log without operations), and
+    /// the operations in it. Both
+    /// grow until a checkpoint gives up a part of the log, and the time
+    /// of an open grows with them.
+    pub fn replayed(&self) -> (u64, u64) {
+        self.replayed
     }
 
     /// Execute up to `limit` queued requests, in order, and collect
@@ -1448,6 +1578,9 @@ enum Command {
     /// For tests: the worker panics.
     #[cfg(test)]
     Panic,
+    /// For test rigs: fail the log now.
+    #[cfg(any(test, feature = "test-hooks"))]
+    Fail(mpsc::Sender<()>),
 }
 
 /// The store behind a worker thread.
@@ -1510,6 +1643,8 @@ where
         let Store {
             mut core,
             acknowledged,
+            unacknowledged: _,
+            replayed: _,
             mut queue,
             ids,
         } = self;
@@ -1570,6 +1705,22 @@ where
                         }
                         #[cfg(test)]
                         Some(Command::Panic) => panic!("a test asked the worker to panic"),
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        Some(Command::Fail(reply)) => {
+                            // As a failed sync does: the volume has
+                            // failed and the log is marked. A request
+                            // that was held gets its answer now.
+                            core.fail();
+                            held = false;
+                            // The owner is woken before the caller is
+                            // answered: when `fail_now` returns, the
+                            // owner has been told.
+                            if let Some(Waker(wake)) = &waker {
+                                wake();
+                            }
+                            let _ = reply.send(());
+                            continue;
+                        }
                         None => {}
                     }
                     let Some(Request { id, op }) = queue.pop_front() else {
@@ -1664,6 +1815,21 @@ impl Served {
     /// "busy" from then on. The owner is told through the [`Waker`].
     pub fn gone(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
+    }
+
+    /// For test rigs, under the cargo feature `test-hooks`: fail the
+    /// log now, as if its next sync had returned an error. It takes
+    /// effect behind the request the worker is executing, and this
+    /// waits for that; then the owner's waker is called. Every later
+    /// request fails, and a later open finds the volume marked as
+    /// failed. Requests completed before stay completed. With the
+    /// worker gone there is nothing to fail.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn fail_now(&self) {
+        let (reply, done) = mpsc::channel();
+        if self.send(Command::Fail(reply)) {
+            let _ = done.recv();
+        }
     }
 
     /// For tests: make the worker panic, and wait until it has.

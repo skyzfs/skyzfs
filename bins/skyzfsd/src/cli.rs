@@ -1,11 +1,12 @@
 //! The command line of `skyzfsd`, and its exit statuses.
 //!
 //! ```text
-//! skyzfsd create --dir DIR --size BYTES
+//! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
 //!                [--queues 1] [--depth N]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
+//! skyzfsd help
 //! ```
 //!
 //! `--queues` takes only 1: this milestone serves one queue.
@@ -26,14 +27,19 @@
 //! is a usage error:
 //!
 //! - `create --base-pattern SEED`: a base that is not zeros;
-//! - `serve --fail-log-after N`: the log fails after N more requests;
+//! - `serve --fail-log-after N`: the log fails once N requests that
+//!   append to it are completed: writes, write-zeroes and discards.
+//!   Reads and flushes do not count;
 //! - `serve --hold-one-request SECONDS:read:OFFSET`,
 //!   `SECONDS:write:OFFSET` or `SECONDS:flush`: the first request of
 //!   that kind that covers that byte is held for so long;
 //! - `serve --boot-id-file PATH`: read the boot id from this file and
 //!   not from the kernel;
 //! - `serve --recover-short N`: this instance's recovery counts the log
-//!   as N records shorter than it found it.
+//!   as N records shorter than it found it;
+//! - `serve --commit-delay-ms N`: every request's result is given to
+//!   the kernel N ms after the store completed it, and the acknowledged
+//!   position is stored then and not before. Nothing else waits.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -58,11 +64,62 @@ const MIB: u64 = 1 << 20;
 
 /// What is printed with a usage error.
 pub const USAGE: &str = "usage:
-  skyzfsd create --dir DIR --size BYTES
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
-  skyzfsd status --dir DIR [--run-dir DIR]";
+  skyzfsd status --dir DIR [--run-dir DIR]
+  skyzfsd help";
+
+/// What `help` prints: the usage, and what an operator has to know
+/// before using a command.
+pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
+
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+      Make a new, empty volume in DIR. DIR is made if it is missing
+      (its parent must exist) and must hold no volume and no file but
+      what an interrupted create leaves (lock, home.new, home.img,
+      log.000000, log.super.new: files under exactly these names are
+      removed, whoever put them there); a create that fails removes a
+      DIR it made. BYTES is a multiple of 1 MiB. One
+      line is printed: the size, the volume's id and the store's
+      identity.
+      If a volume in DIR failed in this boot, create warns: the note
+      of that failure stays, and counts for the new volume.
+
+  skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+      Serve the volume until SIGTERM. When the device serves, one line
+      is printed: ready /dev/ublkbN.
+      If another instance holds the volume, serve tries again for 2 s
+      (20 times, 100 ms apart) and then exits with status 5.
+      If the volume's own device is still shown as live by the kernel
+      (the server before this one was killed a moment ago), serve asks
+      again for up to 5 s before it gives up with status 5.
+      A volume whose log failed in this boot is not served again
+      (status 4). If no client held its device, --acknowledge-failure
+      serves it: what was acknowledged to nobody may be gone. If a
+      client held the device, the volume is not served again before a
+      reboot, whatever is given.
+      One queue is all this version serves.
+
+  skyzfsd detach --dir DIR [--run-dir DIR]
+      Delete the volume's device if no server serves it. It never stops
+      a daemon: stop the daemon first (SIGTERM).
+      Export the pool first. A pool whose device is deleted under it
+      stays suspended, and the device keeps its number for as long as
+      the pool holds it: detach then waits up to 5 s for the number to
+      come free before it says so, with exit status 6.
+
+  skyzfsd status --dir DIR [--run-dir DIR]
+      Print the volume's state and the serving daemon's counters, one
+      `key value` per line. It opens no store and asks no daemon.
+
+Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
+3 the volume failed while it was served; 4 refused, the volume failed
+in this boot; 5 refused, another instance or a live server holds the
+volume; 6 detach deleted the device and a client still holds it open.
+After a detach only 0 says that nothing of the volume is left attached
+on this node.";
 
 /// The exit statuses. The kernel rig depends on each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +136,9 @@ pub enum Exit {
     RefusedFailed,
     /// 5: refused: another instance holds the volume.
     RefusedHeld,
+    /// 6: `detach` deleted the volume's device and a client still holds
+    /// it open: the device keeps its number until the client lets go.
+    DeletedHeld,
 }
 
 impl Exit {
@@ -91,6 +151,7 @@ impl Exit {
             Exit::Failed => 3,
             Exit::RefusedFailed => 4,
             Exit::RefusedHeld => 5,
+            Exit::DeletedHeld => 6,
         }
     }
 
@@ -130,6 +191,9 @@ pub struct Create {
     pub dir: PathBuf,
     /// The size in bytes: a multiple of 1 MiB, not zero.
     pub size: u64,
+    /// The daemon's run directory: looked at for a failure note, and
+    /// not written.
+    pub run_dir: PathBuf,
     /// Test hook: a base that is not zeros, from this seed.
     pub base_pattern: Option<u64>,
 }
@@ -160,7 +224,8 @@ pub struct Serve {
 /// The fault hooks of `serve`: all off in a default build.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hooks {
-    /// The log fails after this many more requests.
+    /// The log fails once this many requests that append to it
+    /// (writes, write-zeroes, discards) are completed.
     pub fail_log_after: Option<u64>,
     /// One request to hold.
     pub hold: Option<Hold>,
@@ -168,6 +233,8 @@ pub struct Hooks {
     pub boot_id_file: Option<PathBuf>,
     /// The recovery counts the log as so many records shorter.
     pub recover_short: u32,
+    /// Every commit is delayed by so many milliseconds.
+    pub commit_delay_ms: Option<u64>,
 }
 
 /// One request to hold for a while.
@@ -210,6 +277,8 @@ pub enum Command {
     Detach(Volume),
     /// `status`.
     Status(Volume),
+    /// `help`, `--help` or `-h`: print [`HELP`].
+    Help,
 }
 
 impl Command {
@@ -220,6 +289,7 @@ impl Command {
             Command::Serve(_) => "serve",
             Command::Detach(_) => "detach",
             Command::Status(_) => "status",
+            Command::Help => "help",
         }
     }
 }
@@ -245,6 +315,7 @@ const fn opt(name: &'static str, value: bool, hook: bool) -> Opt {
 const CREATE: &[Opt] = &[
     opt("--dir", true, false),
     opt("--size", true, false),
+    opt("--run-dir", true, false),
     opt("--base-pattern", true, true),
 ];
 
@@ -260,6 +331,7 @@ const SERVE: &[Opt] = &[
     opt("--hold-one-request", true, true),
     opt("--boot-id-file", true, true),
     opt("--recover-short", true, true),
+    opt("--commit-delay-ms", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -362,12 +434,16 @@ fn hold(text: &str) -> Result<Hold, UsageError> {
     Ok(Hold { seconds, what })
 }
 
+fn run_dir(given: &Given) -> PathBuf {
+    given
+        .get("--run-dir")
+        .map_or_else(|| PathBuf::from(DEFAULT_RUN_DIR), PathBuf::from)
+}
+
 fn volume(given: &Given) -> Result<Volume, UsageError> {
     Ok(Volume {
         dir: given.path("--dir")?,
-        run_dir: given
-            .get("--run-dir")
-            .map_or_else(|| PathBuf::from(DEFAULT_RUN_DIR), PathBuf::from),
+        run_dir: run_dir(given),
     })
 }
 
@@ -375,6 +451,10 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
     let mut args = args.into_iter();
     let command = args.next().ok_or(UsageError::Command)?;
     match command.as_str() {
+        "help" | "--help" | "-h" => match args.next() {
+            None => Ok(Command::Help),
+            Some(more) => Err(UsageError::Unknown(more)),
+        },
         "create" => {
             let given = Given::collect(CREATE, args, hooks)?;
             let dir = given.path("--dir")?;
@@ -390,6 +470,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             Ok(Command::Create(Create {
                 dir,
                 size,
+                run_dir: run_dir(&given),
                 base_pattern: given.number("--base-pattern")?,
             }))
         }
@@ -421,6 +502,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     hold: given.get("--hold-one-request").map(hold).transpose()?,
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     recover_short,
+                    commit_delay_ms: given.number("--commit-delay-ms")?,
                 },
             }))
         }

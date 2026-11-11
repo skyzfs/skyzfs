@@ -1,0 +1,27 @@
+[package]
+name = "skyzfs-ublk-sys"
+description = "The SkyZFS binding to the kernel's ublk driver: the control commands and one queue, over libublk (design §4.2). The only SkyZFS crate with unsafe code"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[features]
+# Builds `skyzfs-ublk-control`, the control test program the kernel rig
+# drives, and the kernel test of it. Not in an ordinary build: the
+# program adds, serves and deletes whatever device number it is given.
+control-test-program = []
+
+[[bin]]
+name = "skyzfs-ublk-control"
+path = "src/bin/skyzfs-ublk-control.rs"
+required-features = ["control-test-program"]
+
+[dependencies]
+skyzfs-blk = { workspace = true }
+skyzfs-ublk = { workspace = true }
+# The pin is the design's (§4.2, "Library"). The build needs libclang:
+# libublk-rs-sys makes its bindings from the header it ships.
+libublk = "=0.4.8"
+io-uring = "0.7.12"
+libc = "0.2"

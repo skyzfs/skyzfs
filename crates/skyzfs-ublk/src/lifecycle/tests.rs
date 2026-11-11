@@ -25,8 +25,12 @@ enum Event {
     RemoveAttachment,
     Delete(u32),
     BeginRecovery(u32),
+    WriteFailure(Held, Reason),
+    RemoveFailure,
+    RemoveAcknowledged,
 }
 
+#[derive(Clone)]
 struct World {
     events: Vec<Event>,
     can_reissue: bool,
@@ -38,6 +42,16 @@ struct World {
     /// A live device whose server is seen to be gone once it has been
     /// asked for this many more times.
     settles: Option<(u32, usize)>,
+    /// A delete of a device nobody holds returns before the device is
+    /// gone: it is still there for this many looks.
+    delete_takes: Option<u32>,
+    /// The device that is going, and for how many looks it is there.
+    going: Option<(u32, u32)>,
+    /// What takes the number at the very look at which the going
+    /// device is gone, so that the number is never seen free: another
+    /// volume's device, the note its start wrote for it if it has, and
+    /// whether the note cannot be read from then on.
+    successor: Option<(DeviceInfo, Option<[u8; 16]>, bool)>,
     /// Who holds the volume's lock.
     lock_holder: Option<u64>,
     locks: u64,
@@ -58,15 +72,35 @@ struct World {
     disowned: Vec<u32>,
     attachment: Option<Attachment>,
     notes: BTreeMap<u32, [u8; 16]>,
+    /// The attachment record is there and is not a whole record.
+    torn_attachment: bool,
     /// The note of this device is there and is not a whole record.
     torn_note: Option<u32>,
     acknowledged: Result<Option<MustReach>, ()>,
+    /// The record of what was acknowledged cannot be read once, and can
+    /// from then on.
+    ack_unreadable_once: bool,
     /// Where the store's valid log ends.
     log_end: u64,
     identity: [u8; 16],
     /// Errors of the next opens, before the store answers by itself.
     opens: VecDeque<OpenError>,
     nonces: u8,
+    /// The failure note of this boot. `Err`: it is there and is not a
+    /// whole record.
+    failure: Result<Option<Failure>, ()>,
+    /// The failure note cannot be written.
+    failure_unwritable: bool,
+    /// For each reading of the failure note: how many things had
+    /// happened, and whether the lock was held.
+    failure_reads: Vec<(usize, bool)>,
+    /// How many things had happened at each writing of a failure note
+    /// where there was none: not the settling of one that said unknown.
+    fresh_notes: Vec<usize>,
+    /// The store's log carries the marker of a failure.
+    marked: bool,
+    /// What the kernel says about a client holding a device.
+    client_holds: Option<bool>,
 }
 
 fn killed() -> io::Error {
@@ -100,6 +134,9 @@ impl World {
             late: Vec::new(),
             held: Vec::new(),
             settles: None,
+            delete_takes: None,
+            going: None,
+            successor: None,
             lock_holder: None,
             locks: 0,
             locked_tries: 0,
@@ -111,12 +148,20 @@ impl World {
             disowned: Vec::new(),
             attachment: None,
             notes: BTreeMap::new(),
+            torn_attachment: false,
             torn_note: None,
             acknowledged: Ok(None),
+            ack_unreadable_once: false,
             log_end: 1000,
             identity: [3; 16],
             opens: VecDeque::new(),
             nonces: 0,
+            failure: Ok(None),
+            failure_unwritable: false,
+            failure_reads: Vec::new(),
+            fresh_notes: Vec::new(),
+            marked: false,
+            client_holds: None,
         }
     }
 
@@ -206,6 +251,23 @@ impl Control for Fake {
                 w.settles = Some((settling, left - 1));
             }
         }
+        match w.going {
+            Some((going, 0)) if going == number => {
+                w.devices.remove(&number);
+                w.going = None;
+                if let Some((device, note, torn)) = w.successor.take() {
+                    w.devices.insert(number, device);
+                    if let Some(nonce) = note {
+                        w.notes.insert(number, nonce);
+                    }
+                    if torn {
+                        w.torn_note = Some(number);
+                    }
+                }
+            }
+            Some((going, left)) if going == number => w.going = Some((going, left - 1)),
+            _ => {}
+        }
         Ok(w.devices
             .get(&number)
             .filter(|_| !w.late.contains(&number))
@@ -224,7 +286,7 @@ impl Control for Fake {
         w.devices.insert(
             number,
             DeviceInfo {
-                state: DeviceState::Added,
+                state: DeviceState::Dead,
                 shape: *shape,
             },
         );
@@ -244,6 +306,13 @@ impl Control for Fake {
             if let Some(device) = w.devices.get_mut(&number) {
                 device.state = DeviceState::Dead;
             }
+        } else if let Some(looks) = w.delete_takes {
+            // Nobody holds it, and the delete has returned before the
+            // device is gone: it is there, dead, for `looks` looks.
+            if let Some(device) = w.devices.get_mut(&number) {
+                device.state = DeviceState::Dead;
+            }
+            w.going = Some((number, looks));
         } else {
             w.devices.remove(&number);
         }
@@ -253,6 +322,9 @@ impl Control for Fake {
         self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::BeginRecovery(number))
+    }
+    fn client_holds(&mut self, _number: u32) -> Option<bool> {
+        self.0.borrow().client_holds
     }
 }
 
@@ -266,7 +338,11 @@ impl Records for Fake {
         Ok([w.nonces; 16])
     }
     fn attachment(&mut self) -> io::Result<Option<Attachment>> {
-        Ok(self.0.borrow().attachment)
+        let w = self.0.borrow();
+        if w.torn_attachment {
+            return Err(io::Error::other("not a whole record"));
+        }
+        Ok(w.attachment)
     }
     fn write_attachment(&mut self, attachment: &Attachment) -> io::Result<()> {
         self.intrude();
@@ -307,8 +383,44 @@ impl Records for Fake {
         self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Acknowledged)?;
+        if std::mem::take(&mut w.ack_unreadable_once) {
+            return Err(io::Error::other("not a whole record"));
+        }
         w.acknowledged
             .map_err(|()| io::Error::other("not a whole record"))
+    }
+    fn remove_acknowledged(&mut self) -> io::Result<()> {
+        self.intrude();
+        let mut w = self.0.borrow_mut();
+        w.happens(Event::RemoveAcknowledged)?;
+        w.acknowledged = Ok(None);
+        Ok(())
+    }
+    fn failure(&mut self) -> io::Result<Option<Failure>> {
+        let mut w = self.0.borrow_mut();
+        let read = (w.events.len(), w.lock_holder.is_some());
+        w.failure_reads.push(read);
+        w.failure
+            .map_err(|()| io::Error::other("not a whole record"))
+    }
+    fn write_failure(&mut self, failure: &Failure) -> io::Result<()> {
+        self.intrude();
+        let mut w = self.0.borrow_mut();
+        if w.failure_unwritable {
+            return Err(io::Error::other("no space"));
+        }
+        let fresh = (w.failure == Ok(None)).then_some(w.events.len());
+        w.happens(Event::WriteFailure(failure.held, failure.reason))?;
+        w.fresh_notes.extend(fresh);
+        w.failure = Ok(Some(*failure));
+        Ok(())
+    }
+    fn remove_failure(&mut self) -> io::Result<()> {
+        self.intrude();
+        let mut w = self.0.borrow_mut();
+        w.happens(Event::RemoveFailure)?;
+        w.failure = Ok(None);
+        Ok(())
     }
     fn pause(&mut self) {
         let _ = self.0.borrow_mut().happens(Event::Pause);
@@ -363,11 +475,13 @@ impl Volume for Fake {
         &mut self,
         lock: FakeLock,
         must_reach: Option<MustReach>,
+        acknowledge_failure: bool,
     ) -> Result<(Opened, u64), (OpenError, FakeLock)> {
         self.intrude();
         let mut w = self.0.borrow_mut();
         let result = match w.opens.pop_front() {
             Some(error) => Err(error),
+            None if w.marked && !acknowledge_failure => Err(OpenError::MarkedFailed),
             // As the store does: the log must end beyond the position,
             // if the position was recorded for this store.
             None => match must_reach {
@@ -378,7 +492,11 @@ impl Volume for Fake {
             },
         };
         let result = match w.happens(Event::Open(must_reach, result.is_ok())) {
-            Ok(()) => result,
+            Ok(()) => {
+                // An open that acknowledges takes the marker away.
+                w.marked &= result.is_err();
+                result
+            }
             Err(_) => Err(OpenError::Other("killed".into())),
         };
         drop(w);
@@ -389,12 +507,23 @@ impl Volume for Fake {
     }
 }
 
+/// How often the tests' lifecycle looks again at a deleted device.
+const GONE: u32 = 4;
+
 const WANTED: Wanted = Wanted {
     queues: 1,
     depth: 64,
     flags: FLAGS,
     lock_retries: 3,
     live_retries: 5,
+    gone_retries: GONE,
+    acknowledge_failure: false,
+};
+
+/// The same, with `--acknowledge-failure`.
+const ACKNOWLEDGING: Wanted = Wanted {
+    acknowledge_failure: true,
+    ..WANTED
 };
 
 /// What an earlier instance was started with: not what `WANTED` asks.
@@ -411,6 +540,10 @@ struct Outcome {
 }
 
 fn run(world: World, mutants: u32) -> Outcome {
+    run_as(world, &WANTED, mutants)
+}
+
+fn run_as(world: World, wanted: &Wanted, mutants: u32) -> Outcome {
     let shared = Rc::new(RefCell::new(world));
     let (mut c, mut r, mut v) = (
         Fake(shared.clone()),
@@ -418,7 +551,7 @@ fn run(world: World, mutants: u32) -> Outcome {
         Fake(shared.clone()),
     );
     // The process ends with the start: its lock goes with it.
-    let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants(mutants)).map(|mut ready| {
+    let result = start_with(&mut c, &mut r, &mut v, wanted, Mutants(mutants)).map(|mut ready| {
         ready.store.lock = None;
         ready
     });
@@ -474,6 +607,23 @@ fn rules(outcome: &Outcome) -> Result<(), String> {
                 &format!("{event:?} happened without the volume's lock"),
             )?;
         }
+    }
+    // The failure note is read under the lock and before the store is
+    // opened, and a start that writes one writes it before it deletes.
+    for (read_at, locked) in &outcome.world.failure_reads {
+        let opened = at(&|e| matches!(e, Event::Open(..)));
+        check(
+            *locked && opened.is_none_or(|o| *read_at <= o),
+            "the failure note was read without the lock or after the store was opened",
+        )?;
+    }
+    let noted = outcome.world.fresh_notes.first().copied();
+    let deleted = at(&|e| matches!(e, Event::RemoveNote(_) | Event::Delete(_)));
+    if let (Some(noted), Some(deleted)) = (noted, deleted) {
+        check(
+            noted < deleted,
+            "a failed volume's device was deleted before the failure was noted",
+        )?;
     }
     // A device is deleted only after its note is gone.
     for (i, event) in events.iter().enumerate() {
@@ -736,7 +886,7 @@ fn left_alone(world: World, number: u32, mutants: u32) -> Result<(), String> {
     )
 }
 
-const STATES: [DeviceState; 3] = [DeviceState::Added, DeviceState::Live, DeviceState::Waiting];
+const STATES: [DeviceState; 3] = [DeviceState::Dead, DeviceState::Live, DeviceState::Waiting];
 
 fn another_nonce(mutants: u32) -> Result<(), String> {
     for state in STATES {
@@ -772,7 +922,7 @@ fn no_note_same_values(mutants: u32) -> Result<(), String> {
             |s| matches!(s, Stop::Error(e) if e.contains("no note")),
         )?;
     }
-    let mut world = World::new().attached(0, DeviceState::Added, EARLIER);
+    let mut world = World::new().attached(0, DeviceState::Dead, EARLIER);
     world.notes.clear();
     left_alone(world, 0, mutants)
 }
@@ -804,7 +954,7 @@ fn a_device_that_is_not_surely_this_volumes_is_neither_taken_over_nor_replaced()
 
 #[test]
 fn this_volumes_device_that_was_never_started_is_deleted_and_replaced() {
-    let world = World::new().attached(4, DeviceState::Added, EARLIER);
+    let world = World::new().attached(4, DeviceState::Dead, EARLIER);
     let outcome = run(world, 0);
     assert_eq!(rules(&outcome), Ok(()));
     let ready = outcome.result.expect("serves");
@@ -885,23 +1035,28 @@ fn a_deleted_device_that_is_still_held_keeps_its_number_and_is_never_taken_over(
         Some(DeviceState::Dead)
     );
 
-    // The failure is acknowledged and the volume served again: the dead
-    // device is not taken over, not deleted again, and its number is
-    // passed by.
-    let mut next = outcome.world;
-    next.events.clear();
-    let outcome = run(next, 0);
-    assert_eq!(rules(&outcome), Ok(()));
-    let ready = outcome.result.expect("serves");
-    assert_eq!((ready.number, ready.took_over), (1, false));
-    assert!(!outcome.world.events.iter().any(|e| matches!(
-        e,
-        Event::BeginRecovery(_) | Event::Delete(_) | Event::Add(0, _)
-    )));
     assert_eq!(
-        outcome.world.devices.get(&0).map(|d| d.state),
-        Some(DeviceState::Dead)
+        outcome.world.failure.map(|f| f.map(|f| f.held)),
+        Ok(Some(Held::Yes))
     );
+
+    // The volume is not served again in this boot, whatever the
+    // operator says: the store is not opened, the dead device is not
+    // taken over and not deleted again.
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        let mut next = outcome.world.clone();
+        next.events.clear();
+        next.failure_reads.clear();
+        next.fresh_notes.clear();
+        let outcome = run_as(next, &wanted, 0);
+        assert_eq!(rules(&outcome), Ok(()));
+        assert!(matches!(outcome.result, Err(Stop::Failed(_))));
+        assert_eq!(outcome.world.events, [Event::Features, Event::Info(0)]);
+        assert_eq!(
+            outcome.world.devices.get(&0).map(|d| d.state),
+            Some(DeviceState::Dead)
+        );
+    }
 }
 
 #[test]
@@ -1085,7 +1240,7 @@ fn an_error_that_may_pass_stops_the_daemon_and_leaves_the_device() {
 
 #[test]
 fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
-    for state in [DeviceState::Waiting, DeviceState::Added, DeviceState::Live] {
+    for state in [DeviceState::Waiting, DeviceState::Dead, DeviceState::Live] {
         let mut world = World::new().attached(4, state, EARLIER);
         world.torn_note = Some(4);
         assert_eq!(
@@ -1144,7 +1299,7 @@ fn killed_anywhere(
             .collect();
         for number in &extra {
             let never_started =
-                outcome.world.devices.get(number).map(|d| d.state) == Some(DeviceState::Added);
+                outcome.world.devices.get(number).map(|d| d.state) == Some(DeviceState::Dead);
             check(
                 never_started && !outcome.world.notes.contains_key(number),
                 &format!("killed after {at} steps: device {number} was left behind"),
@@ -1271,7 +1426,7 @@ fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), Str
             &mut control,
             &mut records,
             &mut Fake(shared.clone()),
-            3,
+            (3, GONE),
             Mutants(mutants),
         );
         drop((control, records));
@@ -1303,7 +1458,13 @@ fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
-        let _ = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+        let _ = detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE,
+        );
         drop((control, records));
         let mut world = match Rc::try_unwrap(shared) {
             Ok(cell) => cell.into_inner(),
@@ -1340,7 +1501,7 @@ fn fakes(world: World) -> (Fake, Fake, Rc<RefCell<World>>) {
 #[test]
 fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
     let all = [
-        DeviceState::Added,
+        DeviceState::Dead,
         DeviceState::Live,
         DeviceState::Waiting,
         DeviceState::Dead,
@@ -1401,61 +1562,309 @@ fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
     assert!(locate(&mut control, &mut records).is_err());
 }
 
-#[test]
-fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
-    for state in [DeviceState::Waiting, DeviceState::Added] {
-        for held in [false, true] {
+/// What the driver does with a delete, for the tests of the look that
+/// follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Going {
+    /// Nobody holds the device and it is gone when the delete returns.
+    AtOnce,
+    /// Nobody holds it, and it is still there for two looks: the
+    /// driver's delete does not wait.
+    Late,
+    /// A client holds it: it stays, dead.
+    Held,
+}
+
+/// A detach deletes without waiting and then looks until the device is
+/// gone or the stated looks are used: a device that goes late was held
+/// by nobody, one that outlasts them is held. Mutant: the first look
+/// after the delete decides.
+fn detach_says_held_only_of_a_device_that_stays(mutants: u32) -> Result<(), String> {
+    for state in [DeviceState::Waiting, DeviceState::Dead] {
+        for going in [Going::AtOnce, Going::Late, Going::Held] {
             let mut world = World::new().attached(4, state, EARLIER);
-            if held {
-                world.held.push(4);
+            match going {
+                Going::AtOnce => {}
+                Going::Late => world.delete_takes = Some(2),
+                Going::Held => world.held.push(4),
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached =
-                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
+            let detached = detach_with(
+                &mut control,
+                &mut records,
+                &mut Fake(shared.clone()),
+                (3, GONE),
+                Mutants(mutants),
+            )
+            .map_err(|e| e.to_string())?;
             let world = shared.borrow();
-            if held {
-                assert_eq!(detached, Detached::DeletedHeld(4));
-                assert_eq!(
-                    world.devices.get(&4).map(|d| d.state),
-                    Some(DeviceState::Dead)
-                );
+            let what = format!("{state:?}, {going:?}");
+            // The looks after the delete: one, and one more after a
+            // pause for each time the device was still there.
+            let looks = match going {
+                Going::AtOnce => 0,
+                Going::Late => 2,
+                Going::Held => GONE as usize,
+            };
+            if going == Going::Held {
+                check(
+                    detached == Detached::DeletedHeld(4),
+                    &format!("{what}: {detached:?}"),
+                )?;
+                check(
+                    world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
+                    &format!("{what}: the held device is dead"),
+                )?;
             } else {
-                assert_eq!(detached, Detached::Deleted(4));
-                assert!(world.devices.is_empty());
+                check(
+                    detached == Detached::Deleted(4),
+                    &format!("{what}: {detached:?}"),
+                )?;
+                check(world.devices.is_empty(), &format!("{what}: gone"))?;
             }
-            assert!(world.notes.is_empty(), "the note is gone");
-            assert_eq!(world.attachment, None, "the record is gone");
-            // The note first, one delete, one look after it, and the
-            // record last.
-            assert_eq!(
-                world.events,
-                [
-                    Event::Info(4),
-                    Event::RemoveNote(4),
-                    Event::Delete(4),
-                    Event::Info(4),
-                    Event::RemoveAttachment
-                ]
-            );
+            check(world.notes.is_empty(), "the note is gone")?;
+            check(world.attachment.is_none(), "the record is gone")?;
+            // The note first, one delete, the looks, the record last.
+            let mut want = vec![
+                Event::Info(4),
+                Event::RemoveNote(4),
+                Event::Delete(4),
+                Event::Info(4),
+            ];
+            for _ in 0..looks {
+                want.extend([Event::Pause, Event::Info(4)]);
+            }
+            want.push(Event::RemoveAttachment);
+            check(
+                world.events == want,
+                &format!("{what}: the steps were {:?}", world.events),
+            )?;
         }
     }
+    Ok(())
+}
+
+#[test]
+fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
+    holds(
+        detach_says_held_only_of_a_device_that_stays,
+        &[(
+            "held decided by the first look after the delete",
+            Mutants::HELD_AT_FIRST_LOOK,
+        )],
+    );
+}
+
+/// One case of [`successors`]: its name, the device, its note, whether
+/// the note is unreadable, and whether the deleted device then counts
+/// as still there.
+type Successor = (&'static str, DeviceInfo, Option<[u8; 16]>, bool, bool);
+
+/// What takes a number right after its device is gone, for the tests
+/// of the looks: the device, its note, whether the note is unreadable,
+/// and whether the deleted device then counts as still there.
+fn successors() -> Vec<Successor> {
+    let other = Shape {
+        size: EARLIER.size * 2,
+        ..EARLIER
+    };
+    let device = |state, shape| DeviceInfo { state, shape };
+    vec![
+        // Another volume's device: gone, and nobody held it.
+        (
+            "waiting, the same values, with its note",
+            device(DeviceState::Waiting, EARLIER),
+            Some([0x5A; 16]),
+            false,
+            false,
+        ),
+        (
+            "dead, the same values, with its note",
+            device(DeviceState::Dead, EARLIER),
+            Some([0x5A; 16]),
+            false,
+            false,
+        ),
+        (
+            "live, the same values, no note yet",
+            device(DeviceState::Live, EARLIER),
+            None,
+            false,
+            false,
+        ),
+        (
+            "dead, other values, no note yet",
+            device(DeviceState::Dead, other),
+            None,
+            false,
+            false,
+        ),
+        // Not told apart from the deleted device: still there.
+        (
+            "dead, the same values, no note",
+            device(DeviceState::Dead, EARLIER),
+            None,
+            false,
+            true,
+        ),
+        (
+            "waiting, the same values, no note",
+            device(DeviceState::Waiting, EARLIER),
+            None,
+            false,
+            true,
+        ),
+        (
+            "dead, the same values, a note that cannot be read",
+            device(DeviceState::Dead, EARLIER),
+            Some([0x5A; 16]),
+            true,
+            true,
+        ),
+    ]
+}
+
+/// The looks after a delete ask about the deleted device, not about
+/// the number: nobody holds the device, it is there at the first look
+/// and gone at the second, and at that very look another volume's
+/// device stands under the number. A detach then says deleted, not
+/// held, unless what stands there cannot be told from the deleted
+/// device; and it leaves the other device and its note alone. Mutant:
+/// whatever stands under the number counts.
+fn detach_is_not_held_by_another_volumes_device(mutants: u32) -> Result<(), String> {
+    for (what, device, note, torn, stays) in successors() {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.delete_takes = Some(0);
+        world.successor = Some((device, note, torn));
+        let (mut control, mut records, shared) = fakes(world);
+        let detached = detach_with(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            (3, GONE),
+            Mutants(mutants),
+        )
+        .map_err(|e| e.to_string())?;
+        let world = shared.borrow();
+        let wanted = if stays {
+            Detached::DeletedHeld(4)
+        } else {
+            Detached::Deleted(4)
+        };
+        check(detached == wanted, &format!("{what}: {detached:?}"))?;
+        check(
+            world.devices.get(&4) == Some(&device),
+            &format!("{what}: the other device is as it was"),
+        )?;
+        check(
+            world.notes.get(&4).copied() == note,
+            &format!("{what}: the other device's note is as it was"),
+        )?;
+        check(
+            world
+                .events
+                .iter()
+                .filter(|e| **e == Event::Delete(4))
+                .count()
+                == 1,
+            &format!("{what}: one delete"),
+        )?;
+        check(world.attachment.is_none(), "the record is gone")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_number_taken_by_another_volume_after_a_delete_does_not_make_the_deleted_device_held() {
+    holds(
+        detach_is_not_held_by_another_volumes_device,
+        &[(
+            "whatever stands under the number counts as the deleted device",
+            Mutants::ANY_OCCUPANT_LINGERS,
+        )],
+    );
+    holds(
+        settling_is_not_held_by_another_volumes_device,
+        &[(
+            "whatever stands under the number counts as the deleted device",
+            Mutants::ANY_OCCUPANT_LINGERS,
+        )],
+    );
+}
+
+/// The same for a start that settles a failure of unknown holding: the
+/// failing daemon died before it deleted the device, this start
+/// deletes it, and another volume's device takes the number as it
+/// goes. The failure is settled as not held and acknowledged, and this
+/// volume gets a device under another number (or the start stops on
+/// its own rule for a device with this volume's values and no note,
+/// which refuses nothing for the boot); what cannot be told from the
+/// deleted device keeps the volume refused for the boot.
+fn settling_is_not_held_by_another_volumes_device(mutants: u32) -> Result<(), String> {
+    for (what, device, note, torn, stays) in successors() {
+        let mut world = unknown_world();
+        world.notes.insert(4, [0xA5; 16]);
+        if let Some(own) = world.devices.get_mut(&4) {
+            own.state = DeviceState::Waiting;
+        }
+        world.delete_takes = Some(0);
+        world.successor = Some((device, note, torn));
+        let outcome = run_as(world, &ACKNOWLEDGING, mutants);
+        if stays {
+            check(
+                refusal(&outcome)?.contains("not served again in this boot"),
+                &format!("{what}: refused for the boot"),
+            )?;
+            check(
+                settled_as(&outcome)? == Held::Yes,
+                &format!("{what}: written down as held"),
+            )?;
+        } else {
+            // Not written down as held, whatever the start then does.
+            check(
+                !matches!(outcome.world.failure, Ok(Some(failure)) if failure.held == Held::Yes),
+                &format!("{what}: written down as held"),
+            )?;
+            match &outcome.result {
+                Ok(ready) => check(
+                    !ready.took_over && ready.number != 4,
+                    &format!("{what}: a fresh device under another number"),
+                )?,
+                // The start's own rule for a device under the recorded
+                // number with this volume's values and no note: whose
+                // it is cannot be told, and the start stops. That is
+                // not the looks' verdict, and nothing is refused for
+                // the boot.
+                Err(Stop::Error(why))
+                    if device.shape == EARLIER && note.is_none() && why.contains("no note") => {}
+                other => return Err(format!("{what}: {other:?}")),
+            }
+        }
+        check(
+            outcome.world.devices.get(&4) == Some(&device),
+            &format!("{what}: the other device is as it was"),
+        )?;
+    }
+    Ok(())
 }
 
 #[test]
 fn detach_touches_nothing_it_may_not() {
-    // Live under a server, and deleted before and still held.
-    for (state, expected) in [
-        (DeviceState::Live, Detached::Live(4)),
-        (DeviceState::Dead, Detached::Held(4)),
-    ] {
-        let world = World::new().attached(4, state, EARLIER);
-        let (mut control, mut records, shared) = fakes(world);
-        assert_eq!(
-            detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
-            expected
-        );
-        assert_eq!(shared.borrow().events, [Event::Info(4)]);
-    }
+    // Live under a server.
+    let world = World::new().attached(4, DeviceState::Live, EARLIER);
+    let (mut control, mut records, shared) = fakes(world);
+    assert_eq!(
+        detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE
+        )
+        .expect("detach"),
+        Detached::Live(4)
+    );
+    assert_eq!(shared.borrow().events, [Event::Info(4)]);
     // Not known to be this volume's, in any state.
     for state in STATES {
         for note in [None, Some([0x5A; 16])] {
@@ -1465,9 +1874,22 @@ fn detach_touches_nothing_it_may_not() {
                 world.notes.insert(4, note);
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached =
-                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
-            assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
+            let detached = detach(
+                &mut control,
+                &mut records,
+                &mut Fake(shared.clone()),
+                3,
+                GONE,
+            )
+            .expect("detach");
+            if state == DeviceState::Dead && note.is_none() {
+                // How this volume's device looks once it was deleted
+                // while something held it: said apart, and left.
+                assert_eq!(detached, Detached::DeadNoNote(4));
+                assert!(shared.borrow().attachment.is_some(), "the record stays");
+            } else {
+                assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
+            }
             assert_eq!(shared.borrow().events, [Event::Info(4)]);
             assert_eq!(shared.borrow().notes.get(&4).copied(), note);
         }
@@ -1475,7 +1897,14 @@ fn detach_touches_nothing_it_may_not() {
     // No device.
     let (mut control, mut records, shared) = fakes(World::new());
     assert_eq!(
-        detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
+        detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE
+        )
+        .expect("detach"),
         Detached::Nothing
     );
     assert!(shared.borrow().events.is_empty());
@@ -1487,6 +1916,10 @@ fn served_intact(world: &World) -> Result<(), String> {
     let Some(Ok((number, _))) = world.intruder else {
         return Ok(());
     };
+    check(
+        world.failure == Ok(None),
+        "a daemon serves a volume that is noted as failed in this boot",
+    )?;
     check(
         world.devices.get(&number).map(|d| d.state) == Some(DeviceState::Live),
         &format!("the serving daemon's device {number} was taken from it"),
@@ -1510,7 +1943,7 @@ fn unwrap(shared: Rc<RefCell<World>>) -> World {
 /// two has the lock, the other finds the volume locked: a daemon that
 /// came to serve keeps its device, its record and its note.
 fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
-    for state in [DeviceState::Waiting, DeviceState::Added] {
+    for state in [DeviceState::Waiting, DeviceState::Dead] {
         for at in 0..=6 {
             let mut world = World::new().attached(4, state, EARLIER);
             world.intrude_at = Some(at);
@@ -1519,7 +1952,7 @@ fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
                 &mut control,
                 &mut records,
                 &mut Fake(shared.clone()),
-                3,
+                (3, GONE),
                 Mutants(mutants),
             );
             drop((control, records));
@@ -1570,11 +2003,28 @@ fn a_daemon_starts_during_a_failing_start(mutants: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The same, for a start that fails because the record of what was
+/// acknowledged cannot be read. The second start can read it.
+fn a_daemon_starts_during_a_start_that_cannot_read_the_position(
+    mutants: u32,
+) -> Result<(), String> {
+    for at in 0..=8 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.ack_unreadable_once = true;
+        world.intrude_at = Some(at);
+        let outcome = run(world, mutants);
+        served_intact(&outcome.world).map_err(|e| format!("after {at} steps: {e}"))?;
+    }
+    Ok(())
+}
+
 #[test]
 fn a_start_that_fails_deletes_under_the_lock() {
+    let defect = [("unlocked before the delete", Mutants::UNLOCK_BEFORE_FAILED)];
+    holds(a_daemon_starts_during_a_failing_start, &defect);
     holds(
-        a_daemon_starts_during_a_failing_start,
-        &[("unlocked before the delete", Mutants::UNLOCK_BEFORE_FAILED)],
+        a_daemon_starts_during_a_start_that_cannot_read_the_position,
+        &defect,
     );
 }
 
@@ -1622,7 +2072,13 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
     world.locked_tries = 10;
     let (mut control, mut records, shared) = fakes(world);
-    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    let detached = detach(
+        &mut control,
+        &mut records,
+        &mut Fake(shared.clone()),
+        3,
+        GONE,
+    );
     assert_eq!(detached.expect("detach"), Detached::Locked);
     assert_eq!(shared.borrow().events, vec![Event::Pause; 3]);
 
@@ -1630,7 +2086,13 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
     world.locked_tries = 3;
     let (mut control, mut records, shared) = fakes(world);
-    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    let detached = detach(
+        &mut control,
+        &mut records,
+        &mut Fake(shared.clone()),
+        3,
+        GONE,
+    );
     assert_eq!(detached.expect("detach"), Detached::Deleted(4));
     // Every step of it under the lock, which is free again afterwards.
     let world = shared.borrow();
@@ -1650,30 +2112,56 @@ fn a_record_of_another_boot(mutants: u32) -> Result<(), String> {
     if let Some(attachment) = world.attachment.as_mut() {
         attachment.boot = [9; 16];
     }
-    world.opens.push_back(OpenError::MarkedFailed);
+    world.opens.push_back(OpenError::SyncFailed);
     untouched(world, mutants, |s| matches!(s, Stop::Failed(_)))
 }
 
-/// This volume's device, with its note, that is deleted and still held
-/// is not taken over.
+/// This volume's device, with its note, that has no server and waits
+/// for none (never started, or deleted and still held) is not taken
+/// over: it is deleted, again if need be, and the daemon attaches
+/// afresh, passing its number by while it is held.
 fn our_dead_device(mutants: u32) -> Result<(), String> {
-    let world = World::new().attached(4, DeviceState::Dead, EARLIER);
-    let outcome = run(world, mutants);
-    rules(&outcome)?;
-    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
-    check(!ready.took_over && ready.number == 0, "a fresh device")?;
-    check(
-        !outcome
-            .world
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::BeginRecovery(_) | Event::Delete(_))),
-        "no recovery and no delete",
-    )?;
-    check(
-        outcome.world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
-        "the dead device is as it was",
-    )
+    for held in [false, true] {
+        let mut world = World::new().attached(4, DeviceState::Dead, EARLIER);
+        // Number 0 is another's, so that "afresh" is seen to pass over
+        // taken numbers.
+        world.devices.insert(
+            0,
+            DeviceInfo {
+                state: DeviceState::Live,
+                shape: EARLIER,
+            },
+        );
+        if held {
+            world.held.push(4);
+        }
+        let outcome = run(world, mutants);
+        rules(&outcome)?;
+        let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+        check(
+            !ready.took_over && ready.number != 0 && (ready.number != 4 || !held),
+            "a fresh device under a free number",
+        )?;
+        check(
+            !any(&outcome.world, |e| matches!(e, Event::BeginRecovery(_))),
+            "no recovery",
+        )?;
+        let events = &outcome.world.events;
+        let removed = events.iter().position(|e| *e == Event::RemoveNote(4));
+        let deleted = events.iter().position(|e| *e == Event::Delete(4));
+        check(
+            removed.is_some() && removed < deleted,
+            "the note is removed, then the device deleted",
+        )?;
+        check(
+            outcome.world.devices.get(&4).map(|d| d.state)
+                == held
+                    .then_some(DeviceState::Dead)
+                    .filter(|_| ready.number != 4),
+            "the dead device is gone, or stays while it is held",
+        )?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -1725,4 +2213,893 @@ fn a_device_that_is_not_of_the_stores_size_is_not_taken_over() {
         ),
         Ok(())
     );
+}
+
+// The failure note.
+
+fn note(held: bool) -> Failure {
+    Failure {
+        held: held.into(),
+        reason: Reason::LogFailed,
+        identity: [3; 16],
+    }
+}
+
+/// A position the fake's log does not reach.
+fn beyond() -> MustReach {
+    MustReach {
+        identity: [3; 16],
+        position: 5000,
+    }
+}
+
+/// The volume's log failed in this boot while it was served, and the
+/// daemon died before it deleted the device: the note, the marker in
+/// the log, a position the log does not reach, and the device, waiting.
+fn failed_world(held: bool) -> World {
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.failure = Ok(Some(note(held)));
+    world.marked = true;
+    world.acknowledged = Ok(Some(beyond()));
+    world
+}
+
+fn any(world: &World, wanted: fn(&Event) -> bool) -> bool {
+    world.events.iter().any(wanted)
+}
+
+fn refusal(outcome: &Outcome) -> Result<&str, String> {
+    match &outcome.result {
+        Err(Stop::Failed(why)) => Ok(why),
+        other => Err(format!("not refused as failed: {other:?}")),
+    }
+}
+
+/// Point 3: a note of this boot that says held. Status 4 whatever the
+/// flag says, the store is not opened, and the delete is finished.
+fn a_held_failure(mutants: u32) -> Result<(), String> {
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        let outcome = run_as(failed_world(true), &wanted, mutants);
+        rules(&outcome)?;
+        check(
+            refusal(&outcome)?.contains("not served again in this boot"),
+            "says that it is not served again in this boot",
+        )?;
+        check(
+            !any(&outcome.world, |e| matches!(e, Event::Open(..))),
+            "the store is not opened",
+        )?;
+        check(
+            outcome.world.events
+                == [
+                    Event::Features,
+                    Event::Info(4),
+                    Event::RemoveNote(4),
+                    Event::Delete(4),
+                ],
+            "the delete is finished and nothing else is done",
+        )?;
+        check(
+            outcome.world.failure == Ok(Some(note(true)))
+                && outcome.world.acknowledged == Ok(Some(beyond()))
+                && outcome.world.marked,
+            "the note, the position and the marker stay",
+        )?;
+    }
+    Ok(())
+}
+
+/// A note that is not a whole record counts as held.
+fn a_torn_failure_note(mutants: u32) -> Result<(), String> {
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        let mut world = failed_world(false);
+        world.failure = Err(());
+        let outcome = run_as(world, &wanted, mutants);
+        rules(&outcome)?;
+        check(
+            refusal(&outcome)?.contains("not served again in this boot"),
+            "says that it is not served again in this boot",
+        )?;
+        check(
+            !any(&outcome.world, |e| matches!(e, Event::Open(..))),
+            "the store is not opened",
+        )?;
+        check(outcome.world.devices.is_empty(), "the device is deleted")?;
+        check(outcome.world.failure == Err(()), "the note stays")?;
+    }
+    Ok(())
+}
+
+/// Point 4, without the flag: status 4 and nothing is touched.
+fn an_unheld_failure_not_acknowledged(mutants: u32) -> Result<(), String> {
+    let world = failed_world(false);
+    let devices = world.devices.clone();
+    let outcome = run(world, mutants);
+    rules(&outcome)?;
+    check(
+        refusal(&outcome)?.contains("--acknowledge-failure"),
+        "names the flag",
+    )?;
+    check(outcome.world.events == [Event::Features], "nothing is done")?;
+    check(
+        outcome.world.devices == devices
+            && outcome.world.failure == Ok(Some(note(false)))
+            && outcome.world.acknowledged == Ok(Some(beyond()))
+            && outcome.world.marked,
+        "everything is as it was",
+    )
+}
+
+/// Point 4, with the flag: the waiting device goes before the open,
+/// the open has no position to reach, then the position is emptied,
+/// then the note is removed.
+fn an_unheld_failure_acknowledged(mutants: u32) -> Result<(), String> {
+    let outcome = run_as(failed_world(false), &ACKNOWLEDGING, mutants);
+    rules(&outcome)?;
+    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+    check(
+        ready.acknowledged == Some(Reason::LogFailed),
+        "says which failure was acknowledged",
+    )?;
+    check(!ready.took_over, "the device is a fresh one")?;
+    check(
+        !any(&outcome.world, |e| matches!(e, Event::BeginRecovery(_))),
+        "no device is taken over",
+    )?;
+    check(
+        outcome.world.events[..7]
+            == [
+                Event::Features,
+                Event::Info(4),
+                Event::RemoveNote(4),
+                Event::Delete(4),
+                Event::Open(None, true),
+                Event::RemoveAcknowledged,
+                Event::RemoveFailure,
+            ],
+        "the device, the open without a position, the position, the note: in that order",
+    )?;
+    check(
+        outcome.world.failure == Ok(None)
+            && outcome.world.acknowledged == Ok(None)
+            && !outcome.world.marked,
+        "the note, the position and the marker are gone",
+    )
+}
+
+#[test]
+fn a_noted_failure_is_refused_or_acknowledged_by_what_the_note_says() {
+    let late = (
+        "the note read after the open",
+        Mutants::NOTE_READ_AFTER_OPEN,
+    );
+    holds(
+        a_held_failure,
+        &[
+            ("a held note acknowledged", Mutants::HELD_ACKNOWLEDGED),
+            late,
+        ],
+    );
+    holds(a_torn_failure_note, &[late]);
+    holds(an_unheld_failure_not_acknowledged, &[late]);
+    holds(
+        an_unheld_failure_acknowledged,
+        &[("the position kept", Mutants::POSITION_KEPT), late],
+    );
+}
+
+#[test]
+fn an_acknowledged_volume_whose_device_a_client_holds_gets_another_number() {
+    // No client held the device at the failure; one opened it since.
+    // It was acknowledged nothing: the device is not taken over.
+    let mut world = failed_world(false);
+    world.held.push(4);
+    let outcome = run_as(world, &ACKNOWLEDGING, 0);
+    assert_eq!(rules(&outcome), Ok(()));
+    let ready = outcome.result.expect("serves");
+    assert!(!ready.took_over && ready.number != 4);
+    assert_eq!(
+        outcome.world.devices.get(&4).map(|d| d.state),
+        Some(DeviceState::Dead)
+    );
+    assert!(!any(&outcome.world, |e| matches!(
+        e,
+        Event::BeginRecovery(_)
+    )));
+}
+
+/// Something that makes a start fail.
+type Breaks = fn(&mut World);
+
+/// Point 5: a failure found at the start, with no note. The note is
+/// written first, and "held" is what the attachment record says.
+fn a_start_notes_its_failure(mutants: u32) -> Result<(), String> {
+    // (the record, the device's state if there is one, held)
+    let cells: [(u8, Option<DeviceState>, bool); 6] = [
+        (0, None, false),
+        (1, Some(DeviceState::Waiting), true),
+        (1, Some(DeviceState::Live), true),
+        (1, None, true),
+        (2, Some(DeviceState::Waiting), false),
+        (3, Some(DeviceState::Waiting), true),
+    ];
+    for (record, state, held) in cells {
+        let mut world = World::new();
+        if record != 0 {
+            world = world.attached(4, state.unwrap_or(DeviceState::Waiting), EARLIER);
+        }
+        if state.is_none() {
+            world.devices.clear();
+        }
+        if let (2, Some(attachment)) = (record, world.attachment.as_mut()) {
+            attachment.boot = [9; 16];
+        }
+        world.torn_attachment = record == 3;
+        world.acknowledged = Ok(Some(beyond()));
+        let ours_and_waiting = record == 1 && state == Some(DeviceState::Waiting);
+        let devices = world.devices.clone();
+        let outcome = run(world, mutants);
+        let cell = format!("record {record}, device {state:?}");
+        rules(&outcome).map_err(|e| format!("{cell}: {e}"))?;
+        refusal(&outcome)?;
+        let noted = Failure {
+            held: held.into(),
+            reason: Reason::Short,
+            identity: [0; 16],
+        };
+        check(
+            outcome.world.failure == Ok(Some(noted)),
+            &format!("{cell}: the note says held = {held}"),
+        )?;
+        check(
+            if ours_and_waiting {
+                outcome.world.devices.is_empty()
+            } else {
+                outcome.world.devices == devices
+            },
+            &format!("{cell}: only this volume's waiting device is deleted"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failure_found_at_the_start_is_noted_before_the_device_is_deleted() {
+    holds(
+        a_start_notes_its_failure,
+        &[(
+            "the failure note written after the delete",
+            Mutants::FAILURE_NOTE_AFTER_DELETE,
+        )],
+    );
+
+    // Each reason is noted as itself.
+    let reasons: [(Breaks, Reason); 3] = [
+        (
+            |w| w.opens.push_back(OpenError::SyncFailed),
+            Reason::RecoveryFailed,
+        ),
+        (|w| w.acknowledged = Err(()), Reason::PositionUnreadable),
+        (|w| w.torn_note = Some(4), Reason::DeviceNoteUnreadable),
+    ];
+    for (fails, reason) in reasons {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        fails(&mut world);
+        let outcome = run(world, 0);
+        assert_eq!(rules(&outcome), Ok(()));
+        assert!(matches!(outcome.result, Err(Stop::Failed(_))));
+        assert_eq!(
+            outcome.world.failure.map(|f| f.map(|f| (f.held, f.reason))),
+            Ok(Some((Held::Yes, reason)))
+        );
+    }
+
+    // The note cannot be written: the device goes all the same, and the
+    // daemon says so.
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.acknowledged = Ok(Some(beyond()));
+    world.failure_unwritable = true;
+    let outcome = run(world, 0);
+    assert!(refusal(&outcome)
+        .expect("failed")
+        .contains("the failure note could not be written"));
+    assert!(outcome.world.devices.is_empty());
+}
+
+/// Point 6: the log's marker and no note of this boot.
+fn a_marker_and_a_record_of_this_boot(mutants: u32) -> Result<(), String> {
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        for gone in [false, true] {
+            let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+            world.marked = true;
+            if gone {
+                world.devices.clear();
+            }
+            let outcome = run_as(world, &wanted, mutants);
+            rules(&outcome)?;
+            refusal(&outcome)?;
+            check(
+                outcome.world.failure.map(|f| f.map(|f| (f.held, f.reason)))
+                    == Ok(Some((Held::Yes, Reason::Marked))),
+                "noted as held",
+            )?;
+            check(
+                outcome.world.devices.is_empty() && outcome.world.marked,
+                "the device is deleted and the marker stays",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn a_marker_and_no_record_of_this_boot(mutants: u32) -> Result<(), String> {
+    for another_boot in [false, true] {
+        let world = || {
+            let mut world = World::new();
+            if another_boot {
+                world = world.attached(4, DeviceState::Waiting, EARLIER);
+                if let Some(attachment) = world.attachment.as_mut() {
+                    attachment.boot = [9; 16];
+                }
+            }
+            world.marked = true;
+            world
+        };
+        // Without the flag: status 4, no note, nothing touched.
+        let devices = world().devices;
+        let outcome = run(world(), mutants);
+        rules(&outcome)?;
+        check(
+            refusal(&outcome)?.contains("--acknowledge-failure"),
+            "names the flag",
+        )?;
+        check(
+            outcome.world.failure == Ok(None)
+                && outcome.world.marked
+                && outcome.world.devices == devices,
+            "no note is written and nothing is touched",
+        )?;
+        check(
+            outcome.world.events
+                == [
+                    Event::Features,
+                    Event::Acknowledged,
+                    Event::Open(None, false),
+                ],
+            "only the open is tried",
+        )?;
+
+        // With it: the store opens.
+        let outcome = run_as(world(), &ACKNOWLEDGING, mutants);
+        rules(&outcome)?;
+        let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+        check(
+            ready.acknowledged == Some(Reason::Marked) && !ready.took_over,
+            "says which failure was acknowledged, and serves a fresh device",
+        )?;
+        check(
+            !outcome.world.marked && outcome.world.failure == Ok(None),
+            "the marker is gone and there is no note",
+        )?;
+        check(
+            !any(&outcome.world, |e| {
+                matches!(e, Event::Delete(_) | Event::BeginRecovery(_))
+            }),
+            "no device of another boot is touched",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_marked_log_without_a_note_is_held_if_a_record_of_this_boot_names_a_device() {
+    holds(a_marker_and_a_record_of_this_boot, &[]);
+    holds(a_marker_and_no_record_of_this_boot, &[]);
+}
+
+#[test]
+fn the_flag_changes_nothing_when_nothing_has_failed() {
+    for world in [World::new, || {
+        World::new().attached(4, DeviceState::Waiting, EARLIER)
+    }] {
+        let plain = run(world(), 0);
+        let flagged = run_as(world(), &ACKNOWLEDGING, 0);
+        assert_eq!(rules(&flagged), Ok(()));
+        assert_eq!(flagged.world.events, plain.world.events);
+        let (plain, flagged) = (
+            plain.result.expect("serves"),
+            flagged.result.expect("serves"),
+        );
+        assert_eq!(flagged.acknowledged, None);
+        assert_eq!(
+            (flagged.number, flagged.took_over),
+            (plain.number, plain.took_over)
+        );
+    }
+}
+
+/// The log fails while the volume is served.
+fn fails_while_serving(
+    client_holds: Option<bool>,
+    dies_at: Option<usize>,
+    mutants: u32,
+) -> (World, (Failure, bool)) {
+    let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
+    world.client_holds = client_holds;
+    world.dies_at = dies_at;
+    let (mut control, mut records, shared) = fakes(world);
+    // The serving daemon holds the lock.
+    let lock = Volume::lock(&mut control.clone()).ok();
+    let said = fail_serving_with(&mut control, &mut records, 4, [3; 16], Mutants(mutants));
+    drop(lock);
+    drop((control, records));
+    (unwrap(shared), said)
+}
+
+#[test]
+fn a_failure_while_serving_is_noted_with_what_the_kernel_says_and_then_the_device_goes() {
+    // The kernel says that a client holds the device, or cannot tell;
+    // a control interface that could say "nobody" would be believed.
+    for (says, held) in [
+        (None, Held::Unknown),
+        (Some(true), Held::Yes),
+        (Some(false), Held::No),
+    ] {
+        let (world, (failure, written)) = fails_while_serving(says, None, 0);
+        let noted = Failure {
+            held,
+            reason: Reason::LogFailed,
+            identity: [3; 16],
+        };
+        assert_eq!((failure, written), (noted, true));
+        assert_eq!(world.failure, Ok(Some(noted)));
+        assert_eq!(
+            world.events,
+            [
+                Event::WriteFailure(held, Reason::LogFailed),
+                Event::RemoveNote(4),
+                Event::Delete(4),
+            ]
+        );
+        assert_eq!(world.under_lock, [true; 3]);
+        assert!(world.devices.is_empty());
+    }
+
+    // The note cannot be written: the device goes, and the caller is
+    // told.
+    let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
+    world.failure_unwritable = true;
+    let (mut control, mut records, shared) = fakes(world);
+    let (_, written) = fail_serving(&mut control, &mut records, 4, [3; 16]);
+    drop((control, records));
+    let world = unwrap(shared);
+    assert!(!written);
+    assert!(world.devices.is_empty() && world.failure == Ok(None));
+}
+
+/// What must hold after a daemon that was failing its volume is
+/// killed: if the volume's device is gone, the volume is not served in
+/// this boot without an acknowledgement, and never if a client held it.
+/// A start that refuses finishes the delete.
+fn refused_once_given_up(mut between: World, mutants: u32, at: usize) -> Result<(), String> {
+    between.dies_at = None;
+    between.events.clear();
+    between.failure_reads.clear();
+    between.fresh_notes.clear();
+    // The server is gone: a device that was live waits.
+    for device in between.devices.values_mut() {
+        if device.state == DeviceState::Live {
+            device.state = DeviceState::Waiting;
+        }
+    }
+    let given_up = !between.devices.contains_key(&4) || !between.notes.contains_key(&4);
+    // Killed between the note's removal and the delete: the device can
+    // no longer be shown to be this volume's, and stays.
+    let orphan = between.devices.contains_key(&4) && !between.notes.contains_key(&4);
+    // Nothing holds a device open in these worlds: a failure of which
+    // it was not known settles to "not held" once the device is gone.
+    let held =
+        between.failure.is_err() || matches!(between.failure, Ok(Some(f)) if f.held == Held::Yes);
+    let noted = between.failure != Ok(None);
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        let outcome = run_as(between.clone(), &wanted, mutants);
+        let after = format!(
+            "killed after {at} steps, acknowledging = {}",
+            wanted.acknowledge_failure
+        );
+        rules(&outcome).map_err(|e| format!("{after}: {e}"))?;
+        match &outcome.result {
+            Ok(ready) if !noted => check(
+                !given_up && ready.took_over && ready.number == 4,
+                &format!("{after}: the volume's device is gone and the volume is served"),
+            )?,
+            Ok(ready) => check(
+                !held && wanted.acknowledge_failure && !ready.took_over,
+                &format!("{after}: a noted failure was passed over"),
+            )?,
+            Err(Stop::Failed(why)) if orphan => check(
+                outcome.world.devices == between.devices
+                    && (!held || why.contains("device 4") && why.contains("was left")),
+                &format!("{after}: a device without a note was touched, or left and not said"),
+            )?,
+            Err(Stop::Failed(_)) => check(
+                !(noted && held) || outcome.world.devices.is_empty(),
+                &format!("{after}: refused, and the delete is not finished"),
+            )?,
+            Err(Stop::Error(_)) if orphan => check(
+                outcome.world.devices == between.devices,
+                &format!("{after}: a device without a note was touched"),
+            )?,
+            Err(other) => return Err(format!("{after}: {other:?}")),
+        }
+    }
+    Ok(())
+}
+
+/// A start whose recovery fails, killed after each number of steps.
+fn a_failing_start_killed_anywhere(mutants: u32) -> Result<(), String> {
+    for lasting in [false, true] {
+        let world = || {
+            let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+            if lasting {
+                world.acknowledged = Ok(Some(beyond()));
+            } else {
+                world.opens.push_back(OpenError::SyncFailed);
+            }
+            world
+        };
+        let steps = run(world(), 0).world.events.len();
+        for at in 0..=steps {
+            let mut first = world();
+            first.dies_at = Some(at);
+            let between = run(first, mutants).world;
+            if lasting {
+                // The log is still short: every next start refuses and
+                // leaves no device.
+                let mut next = between.clone();
+                next.dies_at = None;
+                next.events.clear();
+                next.failure_reads.clear();
+                next.fresh_notes.clear();
+                let (next_notes, next_devices) = (next.notes.clone(), next.devices.clone());
+                let outcome = run(next, mutants);
+                refusal(&outcome).map_err(|e| format!("killed after {at} steps: {e}"))?;
+                let orphan = !next_notes.contains_key(&4) && next_devices.contains_key(&4);
+                check(
+                    (outcome.world.devices.is_empty() || orphan)
+                        && matches!(outcome.world.failure, Ok(Some(f)) if f.held == Held::Yes),
+                    &format!("killed after {at} steps: the delete is not finished"),
+                )?;
+            }
+            refused_once_given_up(between, mutants, at)?;
+        }
+    }
+    Ok(())
+}
+
+/// The failure of a serving daemon, killed after each number of steps.
+fn a_failing_server_killed_anywhere(mutants: u32) -> Result<(), String> {
+    for says in [None, Some(false)] {
+        for at in 0..=3 {
+            let (between, _) = fails_while_serving(says, Some(at), mutants);
+            refused_once_given_up(between, mutants, at)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_daemon_killed_while_it_fails_its_volume_is_followed_by_one_that_refuses() {
+    let defect = [(
+        "the failure note written after the delete",
+        Mutants::FAILURE_NOTE_AFTER_DELETE,
+    )];
+    holds(a_failing_start_killed_anywhere, &defect);
+    holds(a_failing_server_killed_anywhere, &defect);
+}
+
+/// An acknowledgement killed after each number of steps: while the note
+/// is there the next start asks again, and one that is told serves a
+/// fresh device with nothing left of the failure.
+fn an_acknowledgement_killed_anywhere(mutants: u32) -> Result<(), String> {
+    let steps = run_as(failed_world(false), &ACKNOWLEDGING, 0)
+        .world
+        .events
+        .len();
+    for at in 0..=steps {
+        let mut first = failed_world(false);
+        first.dies_at = Some(at);
+        let mut between = run_as(first, &ACKNOWLEDGING, mutants).world;
+        between.dies_at = None;
+        between.events.clear();
+        between.failure_reads.clear();
+        between.fresh_notes.clear();
+        let after = format!("killed after {at} steps");
+
+        if between.failure != Ok(None) {
+            let devices = between.devices.clone();
+            let outcome = run(between.clone(), mutants);
+            rules(&outcome).map_err(|e| format!("{after}: {e}"))?;
+            check(
+                refusal(&outcome)?.contains("--acknowledge-failure"),
+                &format!("{after}: the next start does not ask again"),
+            )?;
+            check(
+                outcome.world.events == [Event::Features] && outcome.world.devices == devices,
+                &format!("{after}: a start that asks touched something"),
+            )?;
+        } else {
+            check(
+                between.acknowledged == Ok(None),
+                &format!("{after}: the note is gone and the position is not"),
+            )?;
+        }
+
+        // Killed between the note's removal and the delete: the device
+        // can no longer be shown to be this volume's. It is left, and
+        // the daemon stops and says so until someone deletes it.
+        let orphan = between.devices.contains_key(&4) && !between.notes.contains_key(&4);
+        let devices = between.devices.clone();
+        let outcome = run_as(between, &ACKNOWLEDGING, mutants);
+        rules(&outcome).map_err(|e| format!("{after}: {e}"))?;
+        if orphan {
+            check(
+                matches!(&outcome.result, Err(Stop::Error(why)) if why.contains("no note"))
+                    && outcome.world.devices == devices,
+                &format!("{after}: a device without a note was served or touched"),
+            )?;
+            continue;
+        }
+        let ready = outcome
+            .result
+            .as_ref()
+            .map_err(|e| format!("{after}: {e:?}"))?;
+        check(
+            !ready.took_over && !outcome.world.devices.contains_key(&4),
+            &format!("{after}: the failed volume's device is served or left"),
+        )?;
+        check(
+            outcome.world.failure == Ok(None)
+                && outcome.world.acknowledged == Ok(None)
+                && !outcome.world.marked,
+            &format!("{after}: something of the failure is left"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn an_acknowledgement_killed_at_any_step_is_asked_for_again() {
+    holds(
+        an_acknowledgement_killed_anywhere,
+        &[("the position kept", Mutants::POSITION_KEPT)],
+    );
+}
+
+// The failure note's third value: not known whether a client held the
+// device. A later start settles it by the driver.
+
+/// The log failed while the volume was served and the kernel could not
+/// say whether a client held device 4: the note says unknown, and the
+/// daemon has removed the device's note and deleted the device.
+fn unknown_world() -> World {
+    let mut world = World::new().attached(4, DeviceState::Dead, EARLIER);
+    world.notes.clear();
+    world.failure = Ok(Some(Failure {
+        held: Held::Unknown,
+        ..note(false)
+    }));
+    world.marked = true;
+    world.acknowledged = Ok(Some(beyond()));
+    world
+}
+
+/// What became of an unknown failure: how the start ended, and what
+/// the note says now.
+fn settled_as(outcome: &Outcome) -> Result<Held, String> {
+    match outcome.world.failure {
+        Ok(Some(failure)) => Ok(failure.held),
+        other => Err(format!("the note is {other:?}")),
+    }
+}
+
+/// Still dead under the recorded number with the recorded values:
+/// held, whatever the flag says, and written down as held.
+fn unknown_and_still_dead(mutants: u32) -> Result<(), String> {
+    for wanted in [WANTED, ACKNOWLEDGING] {
+        let outcome = run_as(unknown_world(), &wanted, mutants);
+        rules(&outcome)?;
+        check(
+            refusal(&outcome)?.contains("not served again in this boot"),
+            "refused for the boot",
+        )?;
+        check(settled_as(&outcome)? == Held::Yes, "written down as held")?;
+        check(
+            !any(&outcome.world, |e| {
+                matches!(e, Event::Open(..) | Event::Delete(_) | Event::Add(..))
+            }),
+            "the store is not opened and no device is touched",
+        )?;
+        check(
+            outcome.world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
+            "the dead device is as it was",
+        )?;
+    }
+    Ok(())
+}
+
+/// The number is free, or holds a device that is not this volume's:
+/// nobody holds this volume's device any more. Not held: refused
+/// without the flag, served with it.
+fn unknown_and_gone(mutants: u32) -> Result<(), String> {
+    for case in 0..3 {
+        let world = || {
+            let mut world = unknown_world();
+            match case {
+                0 => world.devices.clear(),
+                1 => {
+                    if let Some(device) = world.devices.get_mut(&4) {
+                        device.shape.depth = 16;
+                        device.state = DeviceState::Live;
+                    }
+                }
+                _ => {
+                    world.notes.insert(4, [0x5A; 16]);
+                    if let Some(device) = world.devices.get_mut(&4) {
+                        device.state = DeviceState::Waiting;
+                    }
+                }
+            }
+            world
+        };
+        let devices = world().devices;
+        let outcome = run(world(), mutants);
+        rules(&outcome)?;
+        check(
+            refusal(&outcome)?.contains("--acknowledge-failure"),
+            &format!("case {case}: names the flag"),
+        )?;
+        check(
+            settled_as(&outcome)? == Held::No && outcome.world.devices == devices,
+            &format!("case {case}: written down as not held, and nothing touched"),
+        )?;
+        check(
+            !any(&outcome.world, |e| matches!(e, Event::Open(..))),
+            &format!("case {case}: the store is not opened"),
+        )?;
+
+        let outcome = run_as(world(), &ACKNOWLEDGING, mutants);
+        rules(&outcome)?;
+        let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+        check(
+            ready.acknowledged == Some(Reason::LogFailed) && !ready.took_over,
+            &format!("case {case}: acknowledged, and a fresh device"),
+        )?;
+        check(
+            outcome.world.failure == Ok(None) && outcome.world.acknowledged == Ok(None),
+            &format!("case {case}: the note and the position are gone"),
+        )?;
+    }
+    Ok(())
+}
+
+/// The failing daemon died before it deleted the device: this start
+/// removes the note, deletes, and looks again until the device is gone
+/// or the stated looks are used. A device that goes late was held by
+/// nobody. Mutant: the first look after the delete decides, and the
+/// answer is written down for the boot.
+fn unknown_and_not_yet_deleted(mutants: u32) -> Result<(), String> {
+    for going in [Going::AtOnce, Going::Late, Going::Held] {
+        let held = going == Going::Held;
+        for state in [DeviceState::Waiting, DeviceState::Dead] {
+            let mut world = unknown_world();
+            world.notes.insert(4, [0xA5; 16]);
+            if let Some(device) = world.devices.get_mut(&4) {
+                device.state = state;
+            }
+            match going {
+                Going::AtOnce => {}
+                // The driver's delete does not wait: nobody holds the
+                // device, and it is still there for two looks.
+                Going::Late => world.delete_takes = Some(2),
+                Going::Held => world.held.push(4),
+            }
+            let outcome = run_as(world, &ACKNOWLEDGING, mutants);
+            rules(&outcome)?;
+            let events = &outcome.world.events;
+            check(
+                events.get(1..4) == Some(&[Event::Info(4), Event::RemoveNote(4), Event::Delete(4)]),
+                "the note is removed and the device deleted",
+            )?;
+            if held {
+                check(
+                    refusal(&outcome)?.contains("not served again in this boot"),
+                    "still there: refused for the boot",
+                )?;
+                check(settled_as(&outcome)? == Held::Yes, "written down as held")?;
+            } else {
+                let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+                check(!ready.took_over, "gone: acknowledged, a fresh device")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_failure_of_unknown_holding_is_settled_by_what_the_driver_says_now() {
+    holds(
+        unknown_and_still_dead,
+        &[(
+            "unknown acknowledged while the device is still dead",
+            Mutants::UNKNOWN_WHILE_DEAD,
+        )],
+    );
+    holds(unknown_and_gone, &[]);
+    holds(
+        unknown_and_not_yet_deleted,
+        &[(
+            "held decided by the first look after the delete",
+            Mutants::HELD_AT_FIRST_LOOK,
+        )],
+    );
+}
+
+#[test]
+fn an_unknown_failure_that_cannot_be_settled_stays_unknown() {
+    // A device that waits or is live, with the recorded values and no
+    // note: whose it is cannot be told. The start stops with an error,
+    // touches nothing, and the note still says unknown.
+    for state in [DeviceState::Waiting, DeviceState::Live] {
+        for wanted in [WANTED, ACKNOWLEDGING] {
+            let mut world = unknown_world();
+            if let Some(device) = world.devices.get_mut(&4) {
+                device.state = state;
+            }
+            let devices = world.devices.clone();
+            let outcome = run_as(world, &wanted, 0);
+            assert_eq!(rules(&outcome), Ok(()));
+            assert!(
+                matches!(&outcome.result, Err(Stop::Error(why)) if why.contains("cannot be told")),
+                "{:?}",
+                outcome.result.as_ref().err()
+            );
+            assert_eq!(settled_as(&outcome), Ok(Held::Unknown));
+            assert_eq!(outcome.world.devices, devices);
+            assert!(!any(&outcome.world, |e| matches!(
+                e,
+                Event::Open(..) | Event::Delete(_) | Event::WriteFailure(..)
+            )));
+        }
+    }
+
+    // No record of this boot, or one that cannot be read: there is no
+    // number to ask about, and the failure counts as held.
+    for case in 0..3 {
+        let mut world = unknown_world();
+        match case {
+            0 => world.attachment = None,
+            1 => {
+                if let Some(attachment) = world.attachment.as_mut() {
+                    attachment.boot = [9; 16];
+                }
+            }
+            _ => world.torn_attachment = true,
+        }
+        let outcome = run_as(world, &ACKNOWLEDGING, 0);
+        assert!(refusal(&outcome)
+            .expect("refused")
+            .contains("not served again in this boot"));
+        assert_eq!(settled_as(&outcome), Ok(Held::Yes), "case {case}");
+    }
+
+    // The settled value cannot be written: held.
+    let mut world = unknown_world();
+    world.devices.clear();
+    world.failure_unwritable = true;
+    let outcome = run_as(world, &ACKNOWLEDGING, 0);
+    assert!(refusal(&outcome)
+        .expect("refused")
+        .contains("not served again in this boot"));
+    assert_eq!(settled_as(&outcome), Ok(Held::Unknown));
 }

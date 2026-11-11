@@ -677,6 +677,40 @@ fn a_full_log_says_so_and_goes_on_after_a_reclaim() {
     holds(scenario);
 }
 
+/// A log's creation removes its own two leftovers by name. Another
+/// name that begins `log.` makes it refuse the directory, with nothing
+/// removed; a name outside the log's name space is not its business.
+#[test]
+fn a_creation_removes_only_its_own_leftovers() {
+    for (stranger, refused) in [
+        ("log.txt", true),
+        ("log.000001", true),
+        ("log.failed", true),
+        ("log.super.old", true),
+        ("logbook", false),
+        ("home.img", false),
+    ] {
+        let disk = SimDisk::new(1);
+        for name in [stranger, "log.000000", "log.super.new"] {
+            let mut file = disk.create(name).unwrap();
+            file.write_at(0, name.as_bytes()).unwrap();
+            file.sync().unwrap();
+        }
+        disk.sync().unwrap();
+        let before = disk.list().unwrap();
+        let created = Log::create(disk.clone(), environments(0)[0].identity());
+        if refused {
+            assert!(matches!(created, Err(LogError::NotEmpty)), "{stranger}");
+            assert_eq!(disk.list().unwrap(), before, "{stranger}");
+        } else {
+            assert!(created.is_ok(), "{stranger}: {:?}", created.err());
+        }
+        let mut bytes = vec![0u8; stranger.len()];
+        disk.open(stranger).unwrap().read_at(0, &mut bytes).unwrap();
+        assert_eq!(bytes, stranger.as_bytes(), "{stranger}");
+    }
+}
+
 /// Create, interrupted: a power cut during creation leaves either no
 /// log, and then creating again works, or a whole empty one.
 #[test]
@@ -2028,6 +2062,7 @@ fn a_power_cut_during_recovery_is_recovered_from() {
         match Log::open(disk.clone(), env.options()) {
             Err(LogError::Io {
                 during: "writing the superblock",
+                failed: true,
                 ..
             }) => {}
             Err(other) => return Err(format!("the test's count of syncs is off: {other}")),

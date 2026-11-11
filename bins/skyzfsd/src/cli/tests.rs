@@ -36,6 +36,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::Failed, 3),
         (Exit::RefusedFailed, 4),
         (Exit::RefusedHeld, 5),
+        (Exit::DeletedHeld, 6),
     ];
     for (exit, status) in all {
         assert_eq!(exit.status(), status);
@@ -50,10 +51,17 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     let want = Command::Create(Create {
         dir: "/v/a".into(),
         size: 64 << 20,
+        run_dir: DEFAULT_RUN_DIR.into(),
         base_pattern: None,
     });
     assert_eq!(plain("create --dir /v/a --size 67108864"), Ok(want.clone()));
     assert_eq!(plain("create --size=67108864 --dir=/v/a"), Ok(want));
+    // The run directory is looked at for a failure note.
+    let elsewhere = plain("create --dir /v/a --size 1048576 --run-dir /r");
+    assert!(matches!(
+        elsewhere,
+        Ok(Command::Create(Create { ref run_dir, .. })) if run_dir.as_os_str() == "/r"
+    ));
     assert_eq!(
         plain("create --size 1048576"),
         Err(UsageError::Missing("--dir"))
@@ -145,7 +153,7 @@ fn serve_has_the_agreed_defaults_and_options() {
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1",
+         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20",
     )
     .hooks;
     assert_eq!(
@@ -158,6 +166,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             }),
             boot_id_file: Some("/tmp/boot".into()),
             recover_short: 1,
+            commit_delay_ms: Some(20),
         }
     );
     let held = |spec: &str| {
@@ -201,6 +210,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --hold-one-request 300:flush",
         "serve --dir /v/a --boot-id-file /tmp/boot",
         "serve --dir /v/a --recover-short 1",
+        "serve --dir /v/a --commit-delay-ms 20",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(
@@ -268,4 +278,30 @@ fn anything_else_is_a_usage_error() {
         };
         assert!(matches, "{line}: {got:?}");
     }
+}
+
+#[test]
+fn help_is_a_command_and_says_what_the_rig_asks_it_to_say() {
+    for line in ["help", "--help", "-h"] {
+        assert_eq!(plain(line), Ok(Command::Help));
+    }
+    assert_eq!(
+        plain("help serve"),
+        Err(UsageError::Unknown("serve".into()))
+    );
+    // The lock is tried for 2 s, a live device of the volume's own for
+    // 5 s, and a pool is exported before a detach.
+    for needle in [
+        "2 s",
+        "20 times, 100 ms apart",
+        "up to 5 s",
+        "Export the pool first",
+        "stays suspended",
+        "ready /dev/ublkbN",
+        "--acknowledge-failure",
+    ] {
+        assert!(HELP.contains(needle), "help does not say: {needle}");
+    }
+    // A figure that was measured wrongly and is not to be quoted.
+    assert!(!HELP.contains("130"));
 }

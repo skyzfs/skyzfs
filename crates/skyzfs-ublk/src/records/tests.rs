@@ -298,3 +298,125 @@ fn what_belongs_to_a_volume_in_a_shared_run_directory_is_under_the_volumes_own_n
     // on the machine.
     assert_eq!(note_path(&dirs.run, 7), dirs.run.join("ublk7.note"));
 }
+
+fn failure(held: bool, reason: Reason) -> Failure {
+    Failure {
+        held: held.into(),
+        reason,
+        identity: [3; 16],
+    }
+}
+
+#[test]
+fn the_failure_note_has_the_documented_layout() {
+    let stored = StoredFailure {
+        boot: [7; 16],
+        failure: failure(true, Reason::RecoveryFailed),
+        written_ms: 0x0102_0304_0506_0708,
+    };
+    let bytes = encode_failure(&stored);
+    let mut expected = Vec::new();
+    expected.extend(b"SKYZFAI1");
+    expected.extend([7; 16]);
+    expected.extend([3; 16]);
+    expected.extend([1, 3, 0, 0, 0, 0, 0, 0]);
+    expected.extend([8, 7, 6, 5, 4, 3, 2, 1]);
+    expected.extend([0; 8]);
+    assert_eq!(bytes.to_vec(), expected);
+    assert_eq!(decode_failure(&bytes), Some(stored));
+
+    // Every reason has its own code and comes back.
+    let mut codes = Vec::new();
+    for (code, reason) in REASONS {
+        for held in [false, true] {
+            let stored = StoredFailure {
+                failure: failure(held, reason),
+                ..stored
+            };
+            let bytes = encode_failure(&stored);
+            assert_eq!((bytes[40], bytes[41]), (u8::from(held), code));
+            assert_eq!(decode_failure(&bytes), Some(stored));
+        }
+        codes.push(code);
+    }
+    codes.dedup();
+    assert_eq!(codes, [1, 2, 3, 4, 5, 6]);
+
+    // Not known whether a client held the device: its own value.
+    let unknown = StoredFailure {
+        failure: Failure {
+            held: Held::Unknown,
+            ..stored.failure
+        },
+        ..stored
+    };
+    let bytes = encode_failure(&unknown);
+    assert_eq!(bytes[40], 2);
+    assert_eq!(decode_failure(&bytes), Some(unknown));
+}
+
+#[test]
+fn the_failure_note_counts_in_its_boot_and_a_torn_one_is_an_error() {
+    let dirs = dirs();
+    // The volume's directory under the run directory need not exist.
+    let mut here = Files::new(&dirs.volume, &dirs.run, BOOT, Duration::ZERO).expect("the volume");
+    assert_eq!(here.failure().expect("read"), None);
+    here.remove_failure().expect("nothing to remove");
+    here.write_failure(&failure(false, Reason::Marked))
+        .expect("write");
+    assert_eq!(
+        here.failure().expect("read"),
+        Some(failure(false, Reason::Marked))
+    );
+    assert_eq!(here.failure_path(), here.volume_run_dir().join("failed"));
+    let on_file = read_failure(&here.failure_path())
+        .expect("read")
+        .expect("a note");
+    assert_eq!(on_file.boot, BOOT);
+
+    // A later one replaces it.
+    here.write_failure(&failure(true, Reason::Short))
+        .expect("write");
+    assert_eq!(
+        here.failure().expect("read"),
+        Some(failure(true, Reason::Short))
+    );
+
+    // Another boot: none.
+    let mut later =
+        Files::new(&dirs.volume, &dirs.run, [8; 16], Duration::ZERO).expect("the volume");
+    assert_eq!(later.failure().expect("read"), None);
+
+    // Not a whole note: an error, never "no failure".
+    let whole = fs::read(here.failure_path()).expect("read");
+    for len in 0..whole.len() {
+        fs::write(here.failure_path(), &whole[..len]).expect("write");
+        assert!(here.failure().is_err(), "{len} bytes were read as a note");
+        assert!(later.failure().is_err(), "whatever the boot");
+    }
+    for (at, value) in [(40, 3), (41, 0), (41, 7), (42, 1), (63, 1)] {
+        let mut changed = whole.clone();
+        changed[at] = value;
+        fs::write(here.failure_path(), changed).expect("write");
+        assert!(here.failure().is_err(), "byte {at} = {value}");
+    }
+
+    fs::write(here.failure_path(), &whole).expect("write");
+    here.remove_failure().expect("remove");
+    assert_eq!(here.failure().expect("read"), None);
+}
+
+#[test]
+fn emptying_what_was_acknowledged_leaves_no_position() {
+    let dirs = dirs();
+    let mut files = files(&dirs, 0);
+    files.remove_acknowledged().expect("nothing to remove");
+    let mut ack = AckFile::open(&files.acknowledged_path(), [3; 16], BOOT).expect("open");
+    ack.advance(4096).expect("advance");
+    assert!(files.acknowledged().expect("read").is_some());
+    files.remove_acknowledged().expect("remove");
+    assert_eq!(files.acknowledged().expect("read"), None);
+    // The next daemon makes a new, empty record.
+    let ack = AckFile::open(&files.acknowledged_path(), [3; 16], BOOT).expect("open");
+    assert_eq!(ack.position(), None);
+}
