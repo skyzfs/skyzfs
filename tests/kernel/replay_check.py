@@ -949,15 +949,16 @@ class Rig:
 
     SNAP = 'skz-replay-snap'
 
-    def deep(self, fsynced=0):
+    def deep(self, fsynced=0, scrub=True):
         """Writable import of a throwaway snapshot, and a scrub -> (failure or None, detail, seconds).
 
         With `fsynced` files, also the fsync promise: mounting the
         writable pool replays the intent log, and after that every file
         whose fsync had returned must be there and whole. This is only
-        asked where the intent log is on the image.
+        asked where the intent log is on the image. Without `scrub`,
+        only that: the import, the replay and the files.
         """
-        self.fsynced = fsynced
+        self.fsynced, self.scrub = fsynced, scrub
         t0 = time.monotonic()
         left = self.leftover()
         if left:
@@ -1017,15 +1018,16 @@ class Rig:
         return res
 
     def deep_imported(self):
-        rc, out, _ = run(['zpool', 'scrub', '-w', self.a.pool], 600)
-        if rc:
-            return stage('scrub', rc), out.strip()[-400:]
-        rc, out, _ = run(['zpool', 'status', '-p', self.a.pool], 60)
-        if rc:
-            return 'status', out.strip()[-400:]
-        bad = scrub_verdict(out)
-        if bad:
-            return 'scrub', bad
+        if self.scrub:
+            rc, out, _ = run(['zpool', 'scrub', '-w', self.a.pool], 600)
+            if rc:
+                return stage('scrub', rc), out.strip()[-400:]
+            rc, out, _ = run(['zpool', 'status', '-p', self.a.pool], 60)
+            if rc:
+                return 'status', out.strip()[-400:]
+            bad = scrub_verdict(out)
+            if bad:
+                return 'scrub', bad
         if self.fsynced:
             rc, out, _ = run(['zfs', 'mount', self.a.pool], 120)
             if rc:
@@ -1043,14 +1045,20 @@ class Rig:
         return failed, detail, time.monotonic() - t0, counts
 
     def point(self, n, files, deep, copies=False, fsynced=0):
-        """All the checks due at prefix n. A check runs only if those before it passed."""
+        """All the checks due at prefix n. A check runs only if those before it passed.
+
+        `deep` is True for the scrub (with the fsync check, where there
+        are fsynced files to ask for), 'fsync' for the fsync check
+        without the scrub, False for neither.
+        """
         res = {'n': n, 'files': files, 't_advance': self.advance(n)}
         t0 = time.monotonic()
         failed, detail, t = self.light(files)
         res['t_light'] = time.monotonic() - t0
         res['t'] = t
         if failed is None and deep:
-            failed, detail, res['t_deep'] = self.deep(fsynced)
+            failed, detail, t = self.deep(fsynced, scrub=deep is True)
+            res['t_deep' if deep is True else 't_fsync'] = t
             res['fsynced'] = fsynced
             if failed:
                 failed = 'fsync: files' if failed == 'fsync' else 'deep: ' + failed
@@ -1167,9 +1175,12 @@ def main():
     # transaction group may already hold the file, and a lost intent-log
     # block would no longer show.
     fsync_at = {pos for pos, _ in fmarks}
-    deep |= fsync_at
     for n in fsync_at:
         kind.setdefault(n, 'fsync')
+
+    def how_deep(n, scrub_at):
+        """The scrub where it is due; at a file's fsync mark the fsync check alone; else nothing."""
+        return True if n in scrub_at else 'fsync' if n in fsync_at else False
     avail['groups'] = len(groups)
     res['calibration'] = {'points': len(cal), 't_light_mean': t_light, 't_deep_mean': t_deep, 't_copies_mean': t_copies,
                           'budget_points': budget_points, 'deep_points': deep_points, 'copies_points': len(copies_at)}
@@ -1184,7 +1195,7 @@ def main():
     start = time.monotonic()
     skipped = 0
     extra = 0.0                         # seconds spent in scrubs, fsync checks and every-copy checks
-    required = deep | copies_at         # these carry a check that a coverage floor asks for
+    required = deep | copies_at | fsync_at      # these carry a check that a coverage floor asks for
     for j, n in enumerate(sorted(kind)):
         over = time.monotonic() - start - extra
         # Out of time for light checks: random prefixes go first; a
@@ -1193,8 +1204,8 @@ def main():
                                   or kind[n] == 'ub_window' and over > args.budget_s * 1.25):
             skipped += 1
             continue
-        r = rig.point(n, files_at(marks, n), n in deep, n in copies_at, due(n))
-        extra += r.get('t_deep', 0) + r.get('t_copies', 0)
+        r = rig.point(n, files_at(marks, n), how_deep(n, deep), n in copies_at, due(n))
+        extra += r.get('t_deep', 0) + r.get('t_fsync', 0) + r.get('t_copies', 0)
         r['kind'] = kind[n]
         points.append(r)
         if not r['ok']:
@@ -1275,8 +1286,15 @@ def main():
         ctl_fsync = {n for n in range(max(lo, 1), hi + 1)
                      if fmarks and records[c['schedule'][n - 1]].get('mark', '').startswith('fsync-')}
         pts = sorted(set(c['points']) | ctl_copies | ctl_fsync)
-        deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']} | ctl_fsync
-        results = [rig.point(n, files_at(marks, n), n in deep_at, n in ctl_copies, due(n)) for n in pts]
+        deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']}
+        results = [rig.point(n, files_at(marks, n), True if n in deep_at else 'fsync' if n in ctl_fsync else False,
+                             n in ctl_copies, due(n)) for n in pts]
+        # What was withheld, kept whole: an uncaught control can then be explained after the run.
+        v = records[c['victim']]
+        if 'pos' in v and not args.provider:
+            with open(args.log, 'rb') as f, open(os.path.join(args.out, f"victim-{c['name']}.bin"), 'wb') as o:
+                f.seek(v['pos'])
+                o.write(f.read(v['bytes']))
         checked = len(results)
         by, rig_errors, first = tally_control(results)
         facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
@@ -1354,13 +1372,16 @@ def summary(res):
     fs = [p for p in pts if p.get('fsynced')]
     if fs:
         ahead = [p['fsynced'] - p['files'] for p in fs]
+        alone = [p['t_fsync'] for p in fs if 't_fsync' in p]
         cv = res.get('coverage', {})
         out.append(f"\nFsync check (in the same writable import, after the intent log is replayed: every file whose fsync had "
                    f"returned): {len(fs)} prefixes, among them {cv.get('fsync_checked', '?')} of {cv.get('fsync_marks', '?')} "
                    f"that end with a file's fsync mark (all are required), "
                    f"{sum(1 for p in fs if p.get('failed') == 'fsync: files')} failed. "
                    f"At {sum(1 for a in ahead if a > 0)} of them it covered files that no completed sync had yet promised, "
-                   f"up to {max(ahead)} such files.")
+                   f"up to {max(ahead)} such files."
+                   + (f" Where it ran without the scrub (at fsync marks that are not flush boundaries): {len(alone)} times, "
+                      f"{statistics.mean(alone):.2f} s each on average." if alone else ''))
     cp = [p for p in pts if 't_copies' in p]
     if cp:
         tc = [p['t_copies'] for p in cp]

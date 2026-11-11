@@ -625,6 +625,15 @@ class Log(unittest.TestCase):
             self.assertIn(r['failed'], replay_check.JUDGING)
             self.assertIn('f.0', r['detail'])
             self.assertFalse(state['imported'])
+            # at an fsync mark the same promise is judged without the scrub
+            n = len(state['calls'])
+            r = rig.point(0, 0, 'fsync', False, 1)
+            self.assertEqual((r['failed'], 't_fsync' in r, 't_deep' in r), ('fsync: files', True, False))
+            self.assertNotIn(['zpool', 'scrub'], state['calls'][n:])
+            self.assertIn(['zpool', 'import'], state['calls'][n:])
+            n = len(state['calls'])
+            rig.point(0, 0, True, False, 1)
+            self.assertIn(['zpool', 'scrub'], state['calls'][n:])
             rig.manifest = []
             # and with nothing failing, both checks pass
             state.update(imported=False, fail=set())
