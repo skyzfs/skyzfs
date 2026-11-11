@@ -10,7 +10,8 @@
 //! `control_<property>\tFAIL: <why>` on standard output, for the rig,
 //! and fails with the same words. They use device numbers from
 //! `SKYZFS_KERNEL_TEST_BASE` (default 200) on, one per test, and delete
-//! what they add. These are the cases that need no stranger; the ones
+//! what they add and nothing else: a test whose number is not free
+//! when it begins fails and leaves the device there. These are the cases that need no stranger; the ones
 //! that need a device of another server, or one held open by another
 //! process, are the rig's.
 #![cfg(target_os = "linux")]
@@ -87,7 +88,27 @@ fn until(
     }
 }
 
-/// Delete whatever the test left, and wait until it is gone.
+/// The number `n` for the test whose property is `name`: free, or the
+/// test fails here and deletes nothing. The numbers from
+/// `SKYZFS_KERNEL_TEST_BASE` on are the tests' only by the word of
+/// whoever runs them, so a device found under one before the test has
+/// added anything is taken to be somebody else's, also when it is the
+/// leftover of a test run that was killed: it is for a person to
+/// delete, not for a test.
+fn claim(n: u32, name: &str) {
+    let found = kernel().and_then(|mut kernel| info(&mut kernel, n));
+    if !matches!(found, Ok(None)) {
+        property(name, || {
+            Err(format!(
+                "device {n} is not free before the test ({found:?}): it is not this test's \
+                 and was not deleted. Delete it, or set SKYZFS_KERNEL_TEST_BASE to free numbers"
+            ))
+        });
+    }
+}
+
+/// Delete what the test added under `n`, which [`claim`] found free
+/// before, and wait until it is gone.
 fn clean(n: u32) {
     if let Ok(mut kernel) = Kernel::new() {
         let _ = kernel.delete(n);
@@ -108,7 +129,7 @@ fn the_driver_can_reissue() {
 #[ignore = "needs root and the ublk driver"]
 fn a_free_number_has_nothing() {
     let n = number(0);
-    clean(n);
+    claim(n, "lookup_free_is_none");
     property("lookup_free_is_none", || match info(&mut kernel()?, n)? {
         None => Ok(()),
         Some(found) => Err(format!("device {n} reported: {found:?}")),
@@ -123,7 +144,7 @@ fn a_free_number_has_nothing() {
 #[ignore = "needs root and the ublk driver"]
 fn add_reports_what_was_asked_a_second_add_is_taken_and_delete_frees() {
     let n = number(1);
-    clean(n);
+    claim(n, "add_taken_delete");
     let result = (|| {
         let mut kernel = kernel()?;
         kernel
@@ -203,7 +224,7 @@ fn zeros(mut queue: impl Queue) -> u64 {
 #[ignore = "needs root and the ublk driver"]
 fn a_device_added_by_the_binding_is_started_and_outlives_its_server() {
     let n = number(2);
-    clean(n);
+    claim(n, "start_no_flag_and_keep");
     let result = (|| {
         let mut kernel = kernel()?;
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
@@ -266,30 +287,60 @@ fn a_device_added_by_the_binding_is_started_and_outlives_its_server() {
     property("start_no_flag_and_keep", || result);
 }
 
+/// What a [`memory_gathering`] server counted.
+#[derive(Default)]
+struct Seen {
+    /// The write requests it was handed.
+    handed: std::sync::atomic::AtomicU64,
+    /// The tags whose first request of this life was a write: what the
+    /// queue's count of first-write copies must equal.
+    first_writes: std::sync::atomic::AtomicU64,
+}
+
 /// A server that keeps the device's content in memory, shared between
 /// the lives of a device: what one life was written, the next reads.
 /// Returns the longest write it was handed, in bytes.
-fn memory(queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
-    memory_counting(queue, content, &std::sync::atomic::AtomicU64::new(0))
-}
-
-/// [`memory`], counting in `handed` the write requests it was handed.
-fn memory_counting(
+///
+/// It counts in `seen`, and answers no write until `gather` writes are
+/// in its hands at once: every one of them then has a tag of its own. Reads are answered as they come (something
+/// else may read a device that appears, and a tag whose first request
+/// was such a read has no first write). If a wait brings nothing while
+/// it gathers (the queue's idle time-out, 20 s), it answers what it
+/// has, so that a test that did not send enough fails and does not
+/// hang.
+fn memory_gathering(
     mut queue: impl Queue,
     content: Arc<Mutex<Vec<u8>>>,
-    handed: &std::sync::atomic::AtomicU64,
+    seen: &Seen,
+    gather: usize,
 ) -> u64 {
+    use std::sync::atomic::Ordering;
     let mut fetched: Vec<Fetched> = Vec::new();
+    let mut gathered: Vec<Fetched> = Vec::new();
+    let mut gathering = gather > 0;
+    let mut used = vec![false; usize::from(queue.depth())];
     let mut longest = 0;
     loop {
         fetched.clear();
         let Ok(woken) = queue.wait(&mut fetched) else {
             return longest;
         };
+        if gathering {
+            let brought = !fetched.is_empty();
+            let (writes, others): (Vec<_>, Vec<_>) =
+                fetched.drain(..).partition(|f| f.desc.op() == op::WRITE);
+            gathered.extend(writes);
+            fetched.extend(others);
+            if gathered.len() >= gather || !brought || woken == Woken::Stop {
+                gathering = false;
+                fetched.append(&mut gathered);
+            }
+        }
         for f in fetched.drain(..) {
             let at = (f.desc.start_sector * 512) as usize;
             let bytes = f.desc.nr_sectors as usize * 512;
             let mut content = content.lock().expect("the content");
+            let first = !std::mem::replace(&mut used[usize::from(f.tag)], true);
             let buf = match f.desc.op() {
                 op::READ => {
                     let mut buf = queue
@@ -304,7 +355,10 @@ fn memory_counting(
                         .expect("the tag's buffer");
                     content[at..at + bytes].copy_from_slice(&buf);
                     longest = longest.max(bytes as u64);
-                    handed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    seen.handed.fetch_add(1, Ordering::SeqCst);
+                    if first {
+                        seen.first_writes.fetch_add(1, Ordering::SeqCst);
+                    }
                     Some(buf)
                 }
                 _ => None,
@@ -323,10 +377,22 @@ fn memory_counting(
 /// One life of a device over `content`: opened, served, started.
 struct Life {
     serving: skyzfs_ublk_sys::queue::Serving<u64>,
+    seen: Arc<Seen>,
     _device: Device,
 }
 
 fn life(n: u32, take_over: bool, content: &Arc<Mutex<Vec<u8>>>) -> Result<Life, String> {
+    life_gathering(n, take_over, content, 0)
+}
+
+/// [`life`] over a server that gathers its first `gather` writes: see
+/// [`memory_gathering`].
+fn life_gathering(
+    n: u32,
+    take_over: bool,
+    content: &Arc<Mutex<Vec<u8>>>,
+    gather: usize,
+) -> Result<Life, String> {
     let device = Device::open(&Open {
         number: n,
         size: SIZE,
@@ -335,8 +401,12 @@ fn life(n: u32, take_over: bool, content: &Arc<Mutex<Vec<u8>>>) -> Result<Life, 
     .map_err(|e| format!("open: {e}"))?;
     let wake = Wake::new().map_err(|e| e.to_string())?;
     let content = content.clone();
+    let seen = Arc::new(Seen::default());
     let serving = device
-        .serve(&wake, false, move |queue| memory(queue, content))
+        .serve(&wake, false, {
+            let seen = seen.clone();
+            move |queue| memory_gathering(queue, content, &seen, gather)
+        })
         .map_err(|e| format!("serve: {e}"))?;
     if let Err(e) = device.start() {
         serving.stopper().stop();
@@ -352,28 +422,62 @@ fn life(n: u32, take_over: bool, content: &Arc<Mutex<Vec<u8>>>) -> Result<Life, 
     }
     Ok(Life {
         serving,
+        seen,
         _device: device,
     })
 }
 
 impl Life {
     /// End the life in order; the longest write, and the first-write
-    /// copies.
+    /// copies. The queue's count of copies must be the number of tags
+    /// whose first request the server saw to be a write, exactly.
     fn end(self) -> Result<(u64, u64), String> {
         let stopper = self.serving.stopper();
         stopper.stop();
         let longest = self.serving.join().map_err(|e| e.to_string())?;
-        Ok((longest, stopper.first_write_copies()))
+        let copies = stopper.first_write_copies();
+        let first_writes = self
+            .seen
+            .first_writes
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if copies != first_writes {
+            return Err(format!(
+                "the queue counted {copies} first-write copies and the server saw \
+                 {first_writes} tags begin with a write"
+            ));
+        }
+        Ok((longest, copies))
     }
 }
 
-/// A buffer of `bytes` whose content depends on `seed` and the place.
-fn pattern(bytes: usize, seed: u8) -> Buf {
+/// What the write number `round` puts at the device's byte `at`, for
+/// `bytes` bytes: every eight bytes are a mix of their own place on
+/// the device and of the round. Data that arrives at another place, in
+/// another order within a request, or from an earlier round does not
+/// compare equal.
+fn pattern(bytes: usize, at: u64, round: u64) -> Buf {
     let mut buf = Buf::zeroed(bytes / BLOCK_SIZE as usize);
-    for (i, b) in buf.iter_mut().enumerate() {
-        *b = (i as u8).wrapping_mul(31).wrapping_add(seed) ^ (i >> 12) as u8;
+    for (i, word) in buf.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+        let mut x = (at + 8 * i as u64) ^ round.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+        *word = (x ^ (x >> 31)).to_le_bytes();
     }
     buf
+}
+
+/// Write the round's pattern at `at` and read it back.
+fn write_and_read_back(
+    file: &std::fs::File,
+    bytes: usize,
+    at: u64,
+    round: u64,
+    what: &str,
+) -> Result<(), String> {
+    let data = pattern(bytes, at, round);
+    file.write_all_at(&data, at)
+        .map_err(|e| format!("{what}: writing {bytes} bytes at {at}: {e}"))?;
+    written_reads_back(file, at, &data, what)
 }
 
 fn direct(n: u32) -> Result<std::fs::File, String> {
@@ -399,10 +503,18 @@ fn written_reads_back(file: &std::fs::File, at: u64, want: &Buf, what: &str) -> 
 /// The buffers across a take-over, by name: writes and reads of 4 KiB
 /// and of 1 MiB come back as written in the first life (where each
 /// tag's first request arrives in the library's buffer and every later
-/// one in the tag's own) and across a take-over, where the first
-/// requests of the new life are writes of each size. A 1 MiB write
-/// arrives as one request. The copies of first writes are counted and
-/// are at most the depth, in each life.
+/// one in the tag's own) and across a take-over. Every write's data
+/// depends on its place on the device and on its round, so data that
+/// lands elsewhere or is left from an earlier round is seen. A 1 MiB
+/// write arrives as one request.
+///
+/// The first requests of the life after the take-over are `depth`
+/// writes of 1 MiB sent together, which the server holds until all are
+/// in its hands, so that all tags hold a first write at once. In every
+/// life the queue's count of first-write copies must equal the number
+/// of tags the server saw begin with a write: `depth` after the
+/// take-over, unless something else read the device first (the detail
+/// line gives the count).
 ///
 /// The first life ends in order and not by a kill: the test is its own
 /// server. The device waits for a server either way, and the take-over
@@ -411,30 +523,38 @@ fn written_reads_back(file: &std::fs::File, at: u64, want: &Buf, what: &str) -> 
 #[ignore = "needs root and the ublk driver"]
 fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
     let n = number(3);
-    clean(n);
+    claim(n, "buffers_4k_1m_across_take_over");
     const MIB: usize = 1 << 20;
     let result = (|| {
         let mut kernel = kernel()?;
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
         let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
         let first = life(n, false, &content)?;
-        let (small, large) = (pattern(4096, 1), pattern(MIB, 2));
+        let mut round = 0u64;
+        let mut left_small = pattern(4096, 0, 0);
         {
             let file = direct(n)?;
-            // Twice round the tags and more, so that tags are used
-            // after their first commit too.
-            for round in 0..3 * u64::from(DEPTH) {
-                let at = (round % 8) * 8192;
-                file.write_all_at(&small, at)
-                    .map_err(|e| format!("a 4 KiB write: {e}"))?;
-                written_reads_back(&file, at, &small, "4 KiB")?;
+            // Three times round the tags, so that tags are used after
+            // their first commit too, and the same places again with
+            // another round's data.
+            for turn in 0..3 * u64::from(DEPTH) {
+                round += 1;
+                let at = (turn % 8) * 8192;
+                write_and_read_back(&file, 4096, at, round, "4 KiB")?;
+                if at == 0 {
+                    left_small = pattern(4096, 0, round);
+                }
             }
-            for at in [8 << 20, 16 << 20] {
-                file.write_all_at(&large, at)
-                    .map_err(|e| format!("a 1 MiB write: {e}"))?;
-                written_reads_back(&file, at, &large, "1 MiB")?;
+            for at in [8 << 20, 16 << 20, 8 << 20] {
+                round += 1;
+                write_and_read_back(&file, MIB, at, round, "1 MiB")?;
             }
         }
+        // What the first life leaves at the places the second reads.
+        let (left_large_8, left_large_16) = (
+            pattern(MIB, 8 << 20, round),
+            pattern(MIB, 16 << 20, round - 1),
+        );
         let (longest, copies) = first.end()?;
         if longest != MIB as u64 {
             return Err(format!("the longest write handed over was {longest} bytes"));
@@ -449,28 +569,55 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
         kernel
             .begin_recovery(n)
             .map_err(|e| format!("begin of recovery: {e}"))?;
-        let second = life(n, true, &content)?;
-        let (small2, large2) = (pattern(4096, 3), pattern(MIB, 4));
+        let second = life_gathering(n, true, &content, usize::from(DEPTH))?;
         {
-            let file = direct(n)?;
-            // The first requests of this life: a write of each size.
-            file.write_all_at(&large2, 24 << 20)
-                .map_err(|e| format!("a 1 MiB write after the take-over: {e}"))?;
-            file.write_all_at(&small2, 4096)
-                .map_err(|e| format!("a 4 KiB write after the take-over: {e}"))?;
-            written_reads_back(&file, 24 << 20, &large2, "1 MiB after the take-over")?;
-            written_reads_back(&file, 4096, &small2, "4 KiB after the take-over")?;
-            // What the first life was written.
-            written_reads_back(&file, 8 << 20, &large, "1 MiB of the first life")?;
-            written_reads_back(&file, 16 << 20, &large, "1 MiB of the first life")?;
-            written_reads_back(&file, 0, &small, "4 KiB of the first life")?;
-            for round in 0..2 * u64::from(DEPTH) {
-                let at = (32 << 20) + round * 8192;
-                file.write_all_at(&small2, at)
-                    .map_err(|e| format!("a 4 KiB write: {e}"))?;
-                written_reads_back(&file, at, &small2, "4 KiB")?;
+            // The first requests of this life: one write of 1 MiB per
+            // tag, all in flight together.
+            let together = Arc::new(std::sync::Barrier::new(usize::from(DEPTH)));
+            let writers: Vec<_> = (0..u64::from(DEPTH))
+                .map(|w| {
+                    let together = together.clone();
+                    std::thread::spawn(move || -> Result<(), String> {
+                        let file = direct(n)?;
+                        let at = (24 + w) << 20;
+                        let data = pattern(MIB, at, 1000 + w);
+                        together.wait();
+                        file.write_all_at(&data, at)
+                            .map_err(|e| format!("a first write at {at}: {e}"))
+                    })
+                })
+                .collect();
+            for writer in writers {
+                writer
+                    .join()
+                    .map_err(|_| "a writer panicked".to_owned())??;
             }
+            let file = direct(n)?;
+            for w in 0..u64::from(DEPTH) {
+                let at = (24 + w) << 20;
+                written_reads_back(
+                    &file,
+                    at,
+                    &pattern(MIB, at, 1000 + w),
+                    "a first write of the life after the take-over",
+                )?;
+            }
+            // What the first life was written.
+            written_reads_back(&file, 8 << 20, &left_large_8, "1 MiB of the first life")?;
+            written_reads_back(&file, 16 << 20, &left_large_16, "1 MiB of the first life")?;
+            written_reads_back(&file, 0, &left_small, "4 KiB of the first life")?;
+            for turn in 0..2 * u64::from(DEPTH) {
+                round += 1;
+                let at = (40 << 20) + (turn % 5) * 8192;
+                write_and_read_back(&file, 4096, at, round, "4 KiB after the take-over")?;
+            }
+            round += 1;
+            write_and_read_back(&file, MIB, 16 << 20, round, "1 MiB after the take-over")?;
         }
+        // `end` has compared the copies with the tags the server saw
+        // begin with a write. All of them did, unless something else
+        // read the device first (udev, when a device appears): such a
+        // tag has no first write, and the line below says how many.
         let (_, copies2) = second.end()?;
         if copies2 == 0 || copies2 > u64::from(DEPTH) {
             return Err(format!("{copies2} first-write copies after the take-over"));
@@ -489,11 +636,13 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
 /// the shape such a server writes and one of garbage, under both ways
 /// of writing the number. The take-over works, and the files are as
 /// they were: this daemon neither believes, changes nor removes them.
+/// Each life that was taken over reads what the life before wrote and
+/// has a write of its own read back.
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
     let n = number(4);
-    clean(n);
+    claim(n, "take_over_beside_stale_file");
     let dir = std::path::Path::new("/run/ublksrvd");
     let made_dir = !dir.exists();
     let files = [
@@ -510,7 +659,9 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
         let mut kernel = kernel()?;
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
         let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
-        life(n, false, &content)?.end()?;
+        let first = life(n, false, &content)?;
+        write_and_read_back(&direct(n)?, 8192, 4096, 1, "in the first life")?;
+        first.end()?;
         until(&mut kernel, n, "waiting", |i| {
             i.is_some_and(|i| i.state == DeviceState::Waiting)
         })?;
@@ -531,6 +682,19 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
             })?;
             if live.map(|i| i.shape) != Some(shape()) {
                 return Err(format!("taken over as {live:?}, not {:?}", shape()));
+            }
+            // The life that was taken over serves: what the life
+            // before wrote is there, and a write of its own comes back.
+            let round = 1 + u64::from(garbage_in_the_librarys_name);
+            {
+                let file = direct(n)?;
+                written_reads_back(
+                    &file,
+                    4096,
+                    &pattern(8192, 4096, round),
+                    "what the life before wrote",
+                )?;
+                write_and_read_back(&file, 8192, 4096, round + 1, "after the take-over")?;
             }
             taken.end()?;
             until(&mut kernel, n, "waiting", |i| {
@@ -577,7 +741,7 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
 #[ignore = "needs root and the ublk driver"]
 fn a_device_with_larger_requests_than_the_buffers_is_not_opened() {
     let n = number(8);
-    clean(n);
+    claim(n, "larger_requests_than_the_buffers_refused");
     let result = (|| {
         let larger = 2 * skyzfs_ublk_sys::MAX_IO;
         skyzfs_ublk_sys::raw::add(n, DEPTH, larger, FLAGS)
@@ -616,7 +780,7 @@ fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_g
     const DELETES: usize = 40;
     const LIMIT: Duration = Duration::from_secs(5);
     let n = number(7);
-    clean(n);
+    claim(n, "delete_frees_the_number_within");
     let result = (|| {
         let mut kernel = kernel()?;
         let mut lines = Vec::new();
@@ -743,12 +907,12 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
     const WRITERS: u64 = 4;
     const MIB: u64 = 1 << 20;
     let n = number(6);
-    clean(n);
+    claim(n, "stop_under_writers_leaves_later_memory_alone");
     let result = (|| {
         let mut kernel = kernel()?;
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
         let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
-        let handed = Arc::new(AtomicU64::new(0));
+        let seen = Arc::new(Seen::default());
         let serve = |take_over: bool| -> Result<_, String> {
             let device = Device::open(&Open {
                 number: n,
@@ -757,11 +921,11 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             })
             .map_err(|e| format!("open: {e}"))?;
             let wake = Wake::new().map_err(|e| e.to_string())?;
-            let (content, handed) = (content.clone(), handed.clone());
+            let (content, seen) = (content.clone(), seen.clone());
             let serving = device
                 .serve(&wake, false, move |queue| {
                     // The queue is dropped when this returns.
-                    memory_counting(queue, content, &handed);
+                    memory_gathering(queue, content, &seen, 0);
                     canaries(4 * usize::from(DEPTH), Duration::from_millis(150))
                 })
                 .map_err(|e| format!("serve: {e}"))?;
@@ -859,7 +1023,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         serving.stopper().stop();
         changed += serving.join().map_err(|e| e.to_string())?;
         // The reads of the check above are not writes: not counted.
-        let handed = handed.load(Ordering::SeqCst);
+        let handed = seen.handed.load(Ordering::SeqCst);
         println!(
             "control_stop_under_writers_detail\t{ROUNDS} stops under {WRITERS} writers of 1 MiB, \
              {total} writes finished, {handed} write requests handed to the servers, \
@@ -936,7 +1100,7 @@ fn served(n: u32, line: &str) -> Result<(String, String), String> {
     }
     // Something for the server to count: a write and a read through
     // the block device.
-    let data = pattern(4096, 9);
+    let data = pattern(4096, 4096, 9);
     let io = direct(n).and_then(|file| {
         file.write_all_at(&data, 4096)
             .map_err(|e| format!("a write: {e}"))?;
@@ -965,7 +1129,7 @@ fn served(n: u32, line: &str) -> Result<(String, String), String> {
 #[ignore = "needs root and the ublk driver"]
 fn the_control_test_program_answers_each_step_in_one_line() {
     let n = number(5);
-    clean(n);
+    claim(n, "test_program_steps");
     let file = std::env::temp_dir().join(format!("skyzfs-ublk-control-{n}.img"));
     let _ = std::fs::remove_file(&file);
     let path = file.display().to_string();
