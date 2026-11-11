@@ -273,6 +273,68 @@ class Log(unittest.TestCase):
         self.assertIn('ok', out)
         self.assertEqual(replay_check.run(['sh', '-c', 'echo no; exit 3'])[:2], (3, 'no\n'))
 
+    # ------------------------------------------- what may count as a result
+    def test_only_stages_that_judge_the_image_catch_a_control(self):
+        def pt(n, failed=None):
+            return {'n': n, 'ok': failed is None, **({'failed': failed, 'detail': 'd'} if failed else {})}
+        by, rig, first = replay_check.tally_control(
+            [pt(1), pt(2, 'verify'), pt(3, 'deep: scrub'), pt(4, 'deep: import (writable)'), pt(5, 'import'), pt(6, 'mount')])
+        self.assertEqual((by, rig, first['n']), ({'verify': 1, 'deep': 2, 'import': 1, 'mount': 1}, [], 2))
+        # the rig failing is not the image being judged
+        for failed in ('losetup', 'export', 'deep: losetup', 'deep: dm-snapshot', 'deep: status',
+                       replay_check.stage('import', 124), replay_check.stage('mount', 127),
+                       'deep: ' + replay_check.stage('scrub', 124), 'deep: ' + replay_check.stage('import (writable)', 127)):
+            by, rig, first = replay_check.tally_control([pt(1), pt(2, failed)])
+            self.assertEqual((by, first, len(rig)), ({}, None, 1), failed)
+            # and a control with a rig error is neither "caught" nor "as expected", whatever the table says
+            for name in ('drop', 'reorder'):
+                c = {'name': name, 'caught': False, 'failed_by': {}, 'rig_errors': rig}
+                rows = replay_check.judge_controls([c], {name: replay_check.EXPECTED[name]})
+                self.assertFalse(rows[2], (name, failed))
+                self.assertIn('the rig failed', rows[0][0]['observed'])
+            c = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}, 'rig_errors': rig}
+            self.assertFalse(replay_check.judge_controls([c], {'drop': replay_check.EXPECTED['drop']})[2])
+        self.assertEqual(replay_check.stage('import', 1), 'import')
+        self.assertNotIn(replay_check.stage('import', 124), replay_check.JUDGING)
+
+    def test_coverage_has_a_floor(self):
+        recs = self.idx['records']
+        flush = replay_check.flush_points(recs)
+        self.assertEqual(len(flush), 12)
+        full = [{'n': n, 't_deep': 0.1} for n in flush] + [{'n': 0}, {'n': len(recs)}]
+        cov = replay_check.coverage(recs, full)
+        self.assertEqual((cov['errors'], cov['warnings'], cov['deep'], cov['deep_floor']), ([], [], 12, 6))
+        # a flush boundary that was not checked fails the job
+        cov = replay_check.coverage(recs, full[1:])
+        self.assertEqual(cov['flush_unchecked'], [flush[0]])
+        self.assertEqual(len(cov['errors']), 1)
+        # the deep check at half of them: allowed, with a warning
+        half = [{'n': n, **({'t_deep': 0.1} if i % 2 == 0 else {})} for i, n in enumerate(flush)]
+        cov = replay_check.coverage(recs, half)
+        self.assertEqual((cov['errors'], len(cov['warnings']), cov['deep']), ([], 1, 6))
+        # below half: a failure
+        fewer = [{'n': n, **({'t_deep': 0.1} if i % 3 == 0 else {})} for i, n in enumerate(flush)]
+        cov = replay_check.coverage(recs, fewer)
+        self.assertEqual((len(cov['errors']), cov['deep']), (1, 4))
+        # a plan squeezed by a slow check drops flush boundaries, and that is caught here
+        kind, deep, _ = replay_check.plan(recs, 6, 1, window=2)
+        cov = replay_check.coverage(recs, [{'n': n, **({'t_deep': 1} if n in deep else {})} for n in kind])
+        self.assertEqual(len(cov['errors']), 2)
+
+    def test_an_absent_witness_does_not_pass_when_required(self):
+        self.assertEqual(replay_check.witness_verdict([], True), (False, 'witness not run although it is required'))
+        self.assertEqual(replay_check.witness_verdict([], False), (True, 'witness not run'))
+        self.assertTrue(replay_check.witness_verdict([{'same': True}, {'same': True}], True)[0])
+        self.assertFalse(replay_check.witness_verdict([{'same': True}, {'same': False}], False)[0])
+
+    def test_marks_must_fit_the_manifest(self):
+        marks = replay_check.parse_marks(self.idx['records'])          # promise up to 18 files
+        self.assertIsNone(replay_check.manifest_trouble(marks, 18))
+        self.assertIsNone(replay_check.manifest_trouble(marks, 40))
+        self.assertIn('promises 18 files but the manifest lists 17', replay_check.manifest_trouble(marks, 17))
+        self.assertIn('no sync marks', replay_check.manifest_trouble([], 5))
+        self.assertIn('promises no files', replay_check.manifest_trouble([(3, 1, 0), (9, 2, 0)], 5))
+
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
                  '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')

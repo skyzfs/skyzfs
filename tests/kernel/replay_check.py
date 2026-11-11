@@ -47,6 +47,7 @@ Needs root, ZFS, losetup, dmsetup with dm-snapshot.
 import argparse
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -232,10 +233,94 @@ EXPECTED = {
     'drop': {'by': 'any'},
     'reorder': {'by': None,
                 'gap': 'this rig does not yet detect a device that delays or loses one copy of redundant pool '
-                       'metadata: the withheld block is one of three copies, the read-only import reads '
-                       'another, and the scrub runs after a writable import. To be closed by work package M1.T3 '
-                       '(a deep check that reads every copy without writing first).'},
+                       'metadata. Measured: the withheld write is one of three in its transaction group that '
+                       'carry the same bytes, and no check fails. Likely explanation, not verified: the '
+                       'read-only import reads another copy, and the scrub runs after a writable import that '
+                       'rewrites that metadata first. To be closed by work package M1.T3 (a deep check that '
+                       'reads every copy without writing first).'},
 }
+
+
+# A failed check says something about the image only when the stage that
+# failed is one of these. Anything else (a loop device, the snapshot, an
+# export, a command that timed out or could not start) is the rig
+# failing: never a caught control, and never a pass.
+JUDGING = {'import', 'mount', 'verify', 'deep: import (writable)', 'deep: scrub'}
+RIG_RC = (124, 127)             # run(): timed out, could not start
+
+# The deep check must run at no less than this share of the flush
+# boundaries. Half, evenly spread: the one fault the deep check has
+# caught so far (the drop control) showed at 2 of the 6 to 8 flush
+# boundaries after it, so a thinner sample could step over such a fault.
+# In practice the budget covers every boundary, and a run in which any
+# boundary goes without says so in a warning.
+DEEP_FLOOR = 0.5
+
+
+def stage(name, rc):
+    """The stage to report for a failed command: its own name, unless the command never judged anything."""
+    if rc == 124:
+        return f'rig: {name} timed out'
+    if rc == 127:
+        return f'rig: {name} could not start'
+    return name
+
+
+def tally_control(results):
+    """Results of a control's points -> (failures by judging stage, rig errors, first judging failure)."""
+    by, rig_errors, first = {}, [], None
+    for r in results:
+        if r['ok']:
+            continue
+        if r['failed'] in JUDGING:
+            key = 'deep' if r['failed'].startswith('deep: ') else r['failed']
+            by[key] = by.get(key, 0) + 1
+            if first is None:
+                first = {'n': r['n'], 'failed': r['failed'], 'detail': r['detail']}
+        else:
+            rig_errors.append({'n': r['n'], 'failed': r['failed'], 'detail': r['detail']})
+    return by, rig_errors, first
+
+
+def coverage(records, points, floor=DEEP_FLOOR):
+    """What the pass over `points` left out -> dict with 'errors' (fail the job) and 'warnings'."""
+    flush = set(flush_points(records))
+    checked = {p['n'] for p in points}
+    deep = {p['n'] for p in points if 't_deep' in p}
+    missed = sorted(flush - checked)
+    need = math.ceil(len(flush) * floor)
+    cov = {'flush': len(flush), 'flush_unchecked': missed, 'deep': len(flush & deep), 'deep_floor': need,
+           'errors': [], 'warnings': []}
+    if missed:
+        cov['errors'].append(f'{len(missed)} of {len(flush)} flush boundaries were not checked (first: prefix {missed[0]})')
+    if len(flush & deep) < need:
+        cov['errors'].append(f'the deep check ran at {len(flush & deep)} of {len(flush)} flush boundaries, '
+                             f'below the floor of {need}')
+    elif len(flush & deep) < len(flush):
+        cov['warnings'].append(f'the deep check ran at {len(flush & deep)} of {len(flush)} flush boundaries; '
+                               f'{len(flush) - len(flush & deep)} went without it')
+    return cov
+
+
+def witness_verdict(witness, required):
+    """-> (ok, text). No comparison at all passes only when the witness was not required."""
+    if not witness:
+        return (not required), 'witness not run' + (' although it is required' if required else '')
+    if all(w['same'] for w in witness):
+        return True, 'same image at every compared prefix'
+    return False, 'DIFFERENT image'
+
+
+def manifest_trouble(marks, n_files):
+    """Why the marks and the manifest cannot be checked against each other, or None."""
+    if not marks:
+        return 'the log has no sync marks: nothing to check against'
+    worst = max(c for _, _, c in marks)
+    if worst > n_files:
+        return f'a mark promises {worst} files but the manifest lists {n_files}'
+    if marks[-1][2] == 0:
+        return 'the last mark promises no files: the checks would verify nothing'
+    return None
 
 
 def judge_controls(ctl, expected=None):
@@ -247,6 +332,9 @@ def judge_controls(ctl, expected=None):
         want, c = expected.get(name), seen.get(name)
         if c is None:
             got = 'not run'
+        elif c.get('rig_errors'):
+            e = c['rig_errors'][0]
+            got = f"the rig failed at {len(c['rig_errors'])} prefix(es), first at {e['n']}: {e['failed']}"
         elif not c['caught']:
             got = 'not caught'
         else:
@@ -262,7 +350,7 @@ def judge_controls(ctl, expected=None):
             exp = 'caught by ' + want['by']
         match = exp == got
         if want and want['by'] == 'any':
-            exp, match = 'caught', bool(c and c['caught'])
+            exp, match = 'caught', bool(c and c['caught'] and not c.get('rig_errors'))
         ok = ok and match
         rows.append({'name': name, 'expected': exp, 'observed': got, 'match': match})
         if want and want.get('gap') and match:
@@ -416,11 +504,11 @@ class Rig:
             rc, out, t['import'] = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none',
                                         '-N', '-m', '-f', '-R', self.alt, self.a.pool], 180)
             if rc:
-                return 'import', out.strip()[-400:], t
+                return stage('import', rc), out.strip()[-400:], t
             try:
                 rc, out, t['mount'] = run(['zfs', 'mount', self.a.pool], 60)
                 if rc:
-                    return 'mount', out.strip()[-400:], t
+                    return stage('mount', rc), out.strip()[-400:], t
                 t0 = time.monotonic()
                 root = self.alt + self.a.mountpoint
                 for want, name in self.manifest[:files]:
@@ -464,12 +552,14 @@ class Rig:
                 rc, out, _ = run(['zpool', 'import', '-d', f'/dev/mapper/{name}', '-o', 'cachefile=none', '-N', '-m', '-f',
                                   '-R', self.alt, self.a.pool], 180)
                 if rc:
-                    return 'import (writable)', out.strip()[-400:], time.monotonic() - t0
+                    return stage('import (writable)', rc), out.strip()[-400:], time.monotonic() - t0
                 try:
                     rc, out, _ = run(['zpool', 'scrub', '-w', self.a.pool], 600)
                     if rc:
-                        return 'scrub', out.strip()[-400:], time.monotonic() - t0
+                        return stage('scrub', rc), out.strip()[-400:], time.monotonic() - t0
                     rc, out, _ = run(['zpool', 'status', '-p', self.a.pool], 60)
+                    if rc:
+                        return 'status', out.strip()[-400:], time.monotonic() - t0
                     bad = scrub_verdict(out)
                     if bad:
                         return 'scrub', bad, time.monotonic() - t0
@@ -539,6 +629,7 @@ def main():
     ap.add_argument('--deep-budget-s', type=float, default=240, help='seconds of deep checks inside the main pass')
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--replay-log', default='', help='path of xfstests replay-log, as a witness for the provider')
+    ap.add_argument('--require-witness', action='store_true', help='fail when the witness comparison did not run')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     rig = Rig(args)
@@ -550,8 +641,9 @@ def main():
            'write_bytes': sum(r['bytes'] for r in records if 'pos' in r),
            'discards': sum(1 for r in records if 'discard' in r['flags'])}
     print(f"log: {total} records, {len(marks)} marks, {res['write_bytes'] >> 20} MiB written, {len(rig.manifest)} files", flush=True)
-    if not marks:
-        sys.exit('the log has no sync marks: nothing to check against')
+    trouble = manifest_trouble(marks, len(rig.manifest))
+    if trouble:
+        sys.exit(trouble)
 
     # Calibration: a few prefixes spread over the log, two with the deep check.
     rig.reset()
@@ -599,6 +691,11 @@ def main():
         if j % 200 == 0:
             print(f'  {j} of {len(kind)} prefixes, {time.monotonic() - start:.0f}s', flush=True)
     res['main_pass_s'] = time.monotonic() - start
+    res['coverage'] = cov = coverage(records, points)
+    for e in cov['errors']:
+        print(f'::error title=replay rig, coverage::{e}', flush=True)
+    for w in cov['warnings']:
+        print(f'::warning title=replay rig, coverage::{w}', flush=True)
     res['skipped_for_time'] = skipped
 
     # zdb as a possible deep check without the kernel: timed, not judged.
@@ -628,25 +725,26 @@ def main():
         if os.path.exists(other):
             os.unlink(other)
     res['witness'] = witness
+    witness_ok, res['witness_verdict'] = witness_verdict(witness, args.require_witness)
+    if not witness_ok:
+        print(f"::error title=replay rig::provider against replay-log: {res['witness_verdict']}", flush=True)
 
     # Negative controls: wrong replays, judged against EXPECTED.
     ctl = []
     for c in controls(records, marks):
         rig.reset(c['schedule'])
         deep_at = {n for n in c['points'] if 'flush' in records[c['schedule'][n - 1]]['flags']} if c['points'] else set()
-        first, by, checked = None, {}, 0
-        for n in c['points']:
-            r = rig.point(n, files_at(marks, n), n in deep_at)
-            checked += 1
-            if not r['ok']:
-                by[r['failed'].split(':')[0]] = by.get(r['failed'].split(':')[0], 0) + 1
-                if first is None:
-                    first = {'n': n, 'failed': r['failed'], 'detail': r['detail']}
+        results = [rig.point(n, files_at(marks, n), n in deep_at) for n in c['points']]
+        checked = len(results)
+        by, rig_errors, first = tally_control(results)
         facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
         ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
-                    'deep_points': len(deep_at), 'caught': first is not None, 'first': first, 'failed_by': by})
+                    'deep_points': len(deep_at), 'caught': first is not None, 'first': first, 'failed_by': by,
+                    'rig_errors': rig_errors})
         print(f"control {c['name']}: {'caught' if first else 'NOT CAUGHT'} over {checked} prefixes"
-              + (f", first at {first['n']} by {first['failed']}" if first else ''), flush=True)
+              + (f", first at {first['n']} by {first['failed']}" if first else '')
+              + (f"; THE RIG FAILED at {len(rig_errors)} prefixes, first: {rig_errors[0]['failed']}" if rig_errors else ''),
+              flush=True)
     res['controls'] = ctl
     res['control_rows'], res['gaps'], controls_ok = judge_controls(ctl)
     for g in res['gaps']:
@@ -664,7 +762,7 @@ def main():
     with open(os.path.join(args.out, 'replay-summary.md'), 'w') as f:
         f.write(summary(res))
     print(summary(res))
-    ok = not failures and controls_ok and all(w['same'] for w in witness)
+    ok = not failures and controls_ok and witness_ok and not cov['errors']
     sys.exit(0 if ok else 1)
 
 
@@ -704,6 +802,16 @@ def summary(res):
         bad = [z for z in res['zdb'] if z['rc']]
         if bad:
             out.append(f"zdb said: `{bad[0].get('said') or bad[0]['tail']}`")
+    cov = res.get('coverage')
+    if cov:
+        out.append(f"\nCoverage: {cov['flush'] - len(cov['flush_unchecked'])} of {cov['flush']} flush boundaries checked "
+                   f"(all are required), the deep check at {cov['deep']} of them (at least {cov['deep_floor']} are required).")
+        for e in cov['errors']:
+            out.append(f'\n> [!CAUTION]\n> Coverage: {e}.')
+        for w in cov['warnings']:
+            out.append(f'\n> [!WARNING]\n> Coverage: {w}.')
+    if not res.get('witness'):
+        out.append(f"\nProvider against xfstests `replay-log`: **{res.get('witness_verdict', 'witness not run')}**.")
     if res.get('witness'):
         out.append('\nProvider against xfstests `replay-log`: '
                    + '; '.join(f"prefix {w['n']}: {'same image' if w['same'] else 'DIFFERENT'}" for w in res['witness']) + '.')
@@ -716,6 +824,8 @@ def summary(res):
         for c in res['controls']:
             first = f"prefix {c['first']['n']}: {c['first']['failed']}: {c['first']['detail'][:160]}" if c['first'] else '–'
             by = ', '.join(f'{k} {v}' for k, v in c['failed_by'].items())
+            if c.get('rig_errors'):
+                first += f"; **the rig failed** at {len(c['rig_errors'])} prefixes, first {c['rig_errors'][0]['failed']}"
             out.append(f"| {c['name']} | {c['what']} | {c['points']} ({c['deep_points']}) | "
                        f"{'yes, ' + by if c['caught'] else 'no'} | {first.replace('|', '/')} |")
         out.append('\nAgainst what each control is expected to do today (`EXPECTED` in `replay_check.py`; '

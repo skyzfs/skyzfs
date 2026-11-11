@@ -31,7 +31,8 @@
 # (seconds between files), RIG_SYNC_SLEEP=0.6 (seconds between syncs),
 # RIG_BUDGET_S=840 and RIG_DEEP_BUDGET_S=240 (the check's main pass),
 # RIG_REPLAY_LOG (path of xfstests replay-log, a witness for the
-# provider; skipped when unset).
+# provider; skipped when unset, which RIG_REQUIRE_WITNESS=1 makes a
+# failure).
 #
 # Needs root, ZFS, dm-log-writes, dm-snapshot, and `ublk` unless
 # RIG_DEVICE is set. For a throwaway machine: it creates a pool named
@@ -177,5 +178,6 @@ args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MAN
       --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}")
 [ -z "${RIG_PROVIDER:-}" ] || args+=(--provider "$RIG_PROVIDER")
 [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
+[ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)
 mkdir -p "$WORK/check"
 python3 "$HERE/replay_check.py" "${args[@]}"
