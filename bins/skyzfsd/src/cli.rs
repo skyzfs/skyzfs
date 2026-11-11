@@ -584,11 +584,21 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             };
             let log_high = segments("--log-high", DEFAULT_LOG_HIGH)?;
             let log_low = segments("--log-low", DEFAULT_LOG_LOW.min(log_high.max(2) - 1))?;
-            if log_low >= log_high {
+            // The refusal names an option that was given, and the
+            // default it collided with if the other was not.
+            if log_high < 2 {
                 return Err(UsageError::Value(
-                    "--log-low".into(),
-                    "not below --log-high",
+                    "--log-high".into(),
+                    "at least 2: the low mark is at least 1 and below it",
                 ));
+            }
+            if log_low >= log_high {
+                let why = if given.get("--log-high").is_some() {
+                    "not below --log-high"
+                } else {
+                    "not below --log-high, which is 2 unless given"
+                };
+                return Err(UsageError::Value("--log-low".into(), why));
             }
             let step_pause = match (
                 given.number("--step-pause-ms")?,

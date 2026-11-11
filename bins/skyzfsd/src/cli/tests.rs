@@ -180,6 +180,29 @@ fn serve_takes_the_marks_of_the_log_and_refuses_marks_that_cannot_work() {
             "{bad} was taken"
         );
     }
+    // The refusal names an option the user gave, and the default it
+    // collided with when the other mark was not given.
+    for (line, said) in [
+        (
+            "--log-high 1",
+            "--log-high: at least 2: the low mark is at least 1 and below it",
+        ),
+        (
+            "--log-high 1 --log-low 1",
+            "--log-high: at least 2: the low mark is at least 1 and below it",
+        ),
+        (
+            "--log-low 2",
+            "--log-low: not below --log-high, which is 2 unless given",
+        ),
+        (
+            "--log-high 4 --log-low 4",
+            "--log-low: not below --log-high",
+        ),
+    ] {
+        let refused = plain(&format!("serve --dir /v/a {line}")).expect_err(line);
+        assert_eq!(refused.to_string(), said, "{line}");
+    }
 }
 
 /// `serve --dir DIR` with its defaults: the run directory `/run/skyzfsd`,

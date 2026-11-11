@@ -18,8 +18,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -747,19 +747,22 @@ impl<D: Dir> Core<D> {
         let mut end = target;
         let (mut saved, mut records, mut payload) = (0u64, 0u64, 0u64);
         let scanned = self.log.replay_until(floor, target, limit, &mut |record| {
-            if !matches!(record.kind, Kind::Write | Kind::WriteZeroes) {
-                return ControlFlow::Continue(());
-            }
+            // Every record counts as one, so that the step's walk is
+            // bounded whatever the log holds. Only what the step
+            // writes into the home image counts in bytes: a discard
+            // writes nothing there.
+            let writes = matches!(record.kind, Kind::Write | Kind::WriteZeroes);
+            let length = if writes { record.length } else { 0 };
             // The blocks to save beside it: at most the rest of its
             // first and of its last unit.
             let first = record.offset / BLOCK_SIZE;
             let last = first + record.length / BLOCK_SIZE;
-            let own = if per_unit <= 1 {
+            let own = if per_unit <= 1 || !writes {
                 0
             } else {
                 first % per_unit + (last.div_ceil(per_unit) * per_unit - last)
             };
-            let full = payload + record.length > bound.payload
+            let full = payload + length > bound.payload
                 || records >= bound.records
                 || saved + own > PREIMAGE_BATCH as u64;
             if records > 0 && full {
@@ -768,7 +771,7 @@ impl<D: Dir> Core<D> {
             }
             saved += own;
             records += 1;
-            payload += record.length;
+            payload += length;
             ControlFlow::Continue(())
         });
         if scanned.is_err() {
@@ -1107,8 +1110,11 @@ struct Preimages;
 pub struct StepBound {
     /// The most bytes of writes and write-zeroes, by the length each
     /// covers on the volume: what the step writes into the home image.
+    /// A discard counts zero bytes: a step writes nothing for it.
     pub payload: u64,
-    /// The most such records.
+    /// The most records, of every kind: a discard is one record too,
+    /// so a log of discards alone is worked off in bounded steps and a
+    /// step never walks more than this many records and one.
     pub records: u64,
 }
 
@@ -1229,9 +1235,10 @@ pub struct LogState {
 }
 
 impl LogState {
-    /// The live size: what a start replays.
+    /// The live size: what a start replays. Zero for a state whose
+    /// start is beyond its end, which no store shows.
     pub fn live(&self) -> u64 {
-        self.end - self.start
+        self.end.saturating_sub(self.start)
     }
 }
 
@@ -1240,9 +1247,10 @@ impl LogState {
 pub struct Step {
     /// Where the log starts now.
     pub start: Lsn,
-    /// The writes and write-zeroes it applied to the home image.
+    /// The records it took, of every kind.
     pub records: u64,
-    /// The bytes of the volume they cover.
+    /// The bytes of the volume its writes and write-zeroes cover: what
+    /// it wrote into the home image.
     pub payload: u64,
     /// Whether a step right after this one would find something to
     /// take: durable records below the hold are left.
@@ -1862,8 +1870,11 @@ impl<D: Dir> Store<D> {
     /// may also have gone unanswered: the position is recorded before
     /// the answers of a batch are given, and a kill between the two
     /// leaves answers ungiven that this count does not see. So does an
-    /// operation that a checkpoint has already taken out of the log. A
-    /// flush leaves no record and is never counted.
+    /// operation that a checkpoint has already taken out of the log:
+    /// with the rule of the marks ([`Marks`]) that includes a record
+    /// which a step took before its answer was stored, when the kill
+    /// came between the two. A flush leaves no record and is never
+    /// counted.
     pub fn recovered_unacknowledged(&self) -> u64 {
         self.unacknowledged
     }
@@ -2004,48 +2015,36 @@ pub struct Served {
 
 /// The log's state as the worker last published it: read by the owner
 /// without a round trip through the worker, which a step can keep busy.
+///
+/// It is one value behind a lock that is held for a copy and for
+/// nothing else, so a reader gets the state of one moment: never a
+/// start beyond the end (a step can move the start past the end that
+/// was published before it), never a step that has ended as under way.
 #[derive(Debug, Default)]
-struct Shown {
-    start: AtomicU64,
-    end: AtomicU64,
-    durable: AtomicU64,
-    /// The steps taken, twice, plus one while a step is under way:
-    /// one word, so that a reader never sees the count of one moment
-    /// beside the "under way" of another. It only grows.
-    step: AtomicU64,
-    own_syncs: AtomicU64,
-}
+struct Shown(Mutex<LogState>);
 
 impl Shown {
     fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
-        let state = core.log_state();
-        self.start.store(state.start, Ordering::SeqCst);
-        self.end.store(state.end, Ordering::SeqCst);
-        self.durable.store(state.durable, Ordering::SeqCst);
-        self.own_syncs.store(state.own_syncs, Ordering::SeqCst);
-        self.set_step(state.steps, stepping);
+        self.set(LogState {
+            stepping,
+            ..core.log_state()
+        });
     }
 
-    fn set_step(&self, steps: u64, stepping: bool) {
-        self.step
-            .store(steps * 2 + u64::from(stepping), Ordering::SeqCst);
+    fn set(&self, state: LogState) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = state;
     }
 
-    /// A step begins: the count stays, and it is under way.
+    /// A step begins: everything else stays, and it is under way.
     fn begin(&self) {
-        self.step.fetch_or(1, Ordering::SeqCst);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .stepping = true;
     }
 
     fn state(&self) -> LogState {
-        let step = self.step.load(Ordering::SeqCst);
-        LogState {
-            start: self.start.load(Ordering::SeqCst),
-            end: self.end.load(Ordering::SeqCst),
-            durable: self.durable.load(Ordering::SeqCst),
-            steps: step / 2,
-            own_syncs: self.own_syncs.load(Ordering::SeqCst),
-            stepping: step % 2 == 1,
-        }
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -2206,8 +2205,13 @@ where
                     });
                     busy = stepped == Ok(true);
                     if stepped != Ok(false) {
-                        // A step may have made room for a request that
-                        // was held, and a failure answers it.
+                        // Only a safeguard: a request is held when
+                        // the log is full behind a hold, after the log
+                        // was made durable and checkpointed up to the
+                        // hold, so the rule finds nothing to take and
+                        // nothing to sync while one is held, and never
+                        // gets here. If that ever changes, the request
+                        // is tried again and not left waiting.
                         held = false;
                         shown.publish(&core, false);
                         wake();
@@ -2238,11 +2242,10 @@ impl Served {
     /// The log as the worker last showed it: its start, end and
     /// durable position, the steps the rule of the marks has taken
     /// ([`Store::set_marks`]), and whether one is under way. It asks
-    /// the worker nothing and returns at once, also during a step. The
-    /// count of steps and "under way" are of one moment: a step that
-    /// has ended is never shown under way, and one that waits in its
-    /// hook is. The positions are read one after the other and may be
-    /// of other moments.
+    /// the worker nothing and returns at once, also during a step. All
+    /// of it is of one moment: the start is never beyond the end, a
+    /// step that has ended is never shown under way, and one that
+    /// waits in its hook is.
     pub fn log_state(&self) -> LogState {
         self.log.state()
     }

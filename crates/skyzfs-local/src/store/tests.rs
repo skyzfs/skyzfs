@@ -2634,6 +2634,114 @@ fn a_checkpoint_step_reads_only_what_it_takes() {
     assert!(walked <= 40, "a step of 4 records walked {walked}");
 }
 
+/// A discard is a record of the bound like any other: after one write
+/// and 5000 discards a step of one record takes one record, the log
+/// still ends where it did, and the step walks a few records and not
+/// the log. Steps of the daemon's bound work the log off in about five
+/// steps and never take more than the bound's records. A discard
+/// counts no bytes: a step writes nothing for it.
+#[test]
+fn discards_count_as_records_of_a_steps_bound() {
+    const DISCARDS: u64 = 5000;
+    let env = environments(0).remove(0);
+    let (_disk, mut store) = env.fresh().expect("a store");
+    write(&mut store, 3, 1, 7).expect("write");
+    for n in 0..DISCARDS {
+        ok(
+            &mut store,
+            Op::Discard {
+                offset: (8 + n % 32) * BLOCK,
+                len: BLOCK,
+            },
+        )
+        .expect("discard");
+    }
+    flush(&mut store).expect("flush");
+    let one = StepBound {
+        payload: u64::MAX,
+        records: 1,
+    };
+    let end = store.log_state().end;
+    let before = store.core.log.walked();
+    let done = step(&mut store, one).expect("step");
+    let walked = store.core.log.walked() - before;
+    assert_eq!((done.records, done.payload), (1, BLOCK), "the write");
+    assert!(done.more);
+    assert!(done.start.0 < end, "a step of one record took the log");
+    assert!(walked <= 10, "a step of one record walked {walked}");
+    // The next one is a discard: a record, and no bytes.
+    let before = store.core.log.walked();
+    let done = step(&mut store, one).expect("step");
+    let walked = store.core.log.walked() - before;
+    assert_eq!((done.records, done.payload), (1, 0), "a discard");
+    assert!(walked <= 10, "a step of one discard walked {walked}");
+    // A bound of no bytes at all still takes discards, up to its
+    // records.
+    let none = StepBound {
+        payload: 0,
+        records: 100,
+    };
+    let done = step(&mut store, none).expect("step");
+    assert_eq!((done.records, done.payload), (100, 0));
+    let mut steps = 0;
+    loop {
+        let before = store.core.log.walked();
+        let done = step(&mut store, StepBound::DAEMON).expect("step");
+        let walked = store.core.log.walked() - before;
+        assert!(done.records <= StepBound::DAEMON.records, "{done:?}");
+        assert!(
+            walked <= 5 * (StepBound::DAEMON.records + 1),
+            "a step of {} records walked {walked}",
+            done.records
+        );
+        steps += 1;
+        if !done.more {
+            break;
+        }
+    }
+    assert_eq!(steps, (DISCARDS - 101).div_ceil(StepBound::DAEMON.records));
+    let state = store.log_state();
+    assert_eq!(state.live(), 0, "{state:?}");
+    expect(&mut store, 3, 1, 7, "after the steps").expect("the write");
+}
+
+/// What the worker shows of the log is of one moment: a reader never
+/// sees a start beyond the end, also when each state published starts
+/// beyond the end of the one before, as after a step that took a log
+/// which was longer than the one last shown. And the live size of a
+/// state that no store shows, with its start beyond its end, is zero
+/// and no overflow.
+#[test]
+fn the_log_shown_never_starts_beyond_its_end() {
+    const STATES: u64 = 200_000;
+    let shown = Shown::default();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for n in 1..=STATES {
+                shown.set(LogState {
+                    start: 10 * n,
+                    end: 10 * n + 5,
+                    ..LogState::default()
+                });
+            }
+        });
+        loop {
+            let state = shown.state();
+            assert!(state.start <= state.end, "{state:?}");
+            assert!(state.live() <= 5, "{state:?}");
+            if state.start == 10 * STATES {
+                break;
+            }
+        }
+    });
+    let torn = LogState {
+        start: 20,
+        end: 15,
+        ..LogState::default()
+    };
+    assert_eq!(torn.live(), 0);
+}
+
 /// A checkpoint done in steps can be cut anywhere, as one done in one
 /// call: the volume is filled and checkpointed, one block in each of
 /// its 256 write units is written again, and the steps that apply them
@@ -2872,7 +2980,10 @@ fn the_steps_shown_never_go_back() {
         scope.spawn(|| {
             for step in 0..STEPS {
                 shown.begin();
-                shown.set_step(step + 1, false);
+                shown.set(LogState {
+                    steps: step + 1,
+                    ..LogState::default()
+                });
             }
         });
         let mut last = 0;
@@ -3214,8 +3325,20 @@ fn a_write_zeroes_beyond_the_daemons_bound_is_a_step_of_its_own() {
 /// older content, durably, and the log starts where it did. The next
 /// open reads the newer content, and still does after the step is
 /// applied again and after the steps that follow.
+///
+/// The loss is made in two ways, and each half asserts that the log
+/// starts where it did before the step, which is what makes the step
+/// be applied again:
+///
+/// - a kill: the store's worker takes the step and is held by the hook
+///   after the home image is synced, before the new start is written,
+///   and the process is lost there;
+/// - a power cut: the step runs to the sync of the log's superblock,
+///   which fails, and the power cut takes the new start that was
+///   written and not synced.
 #[test]
 fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_its_new_start() {
+    static NUMBER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     fn scenario(env: &Env) -> Outcome {
         let one = StepBound {
             payload: u64::MAX,
@@ -3227,24 +3350,59 @@ fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_it
             write(&mut store, 9, 1, 3)?;
             write(&mut store, 5, 1, 2)?;
             flush(&mut store)?;
-            // The step takes the first record alone, writes block 5
-            // as 1 into the home image and syncs it; the log's new
-            // start cannot be made durable.
-            disk.fail_sync_of(crate::log::SUPER_NAME);
-            if store.checkpoint_step(one).is_ok() {
-                return Err("the step ended although its new start was not durable".into());
-            }
-            drop(store);
-            // The fault stood for the loss; the restart has none.
-            disk.clear_faults();
+            let before = store.log_state();
             if power_cut {
+                // The step takes the first record alone, writes block
+                // 5 as 1 into the home image and syncs it; the log's
+                // new start cannot be made durable.
+                disk.fail_sync_of(crate::log::SUPER_NAME);
+                if store.checkpoint_step(one).is_ok() {
+                    return Err("the step ended although its new start was not durable".into());
+                }
+                drop(store);
+                // The fault stood for the loss; the restart has none.
+                disk.clear_faults();
                 let lost = env.lost();
                 disk.power_cut(BySector(move |_: Option<&str>, _| lost));
                 disk.set_write_unit(u64::from(env.unit));
             } else {
+                // The worker finds the log at the high mark and takes
+                // its first step, of one record, before any request.
+                let gate = std::env::temp_dir().join(format!(
+                    "skyzfs-newer-gate-{}-{}",
+                    std::process::id(),
+                    NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                ));
+                let _ = std::fs::remove_file(&gate);
+                store.set_marks(Some(Marks {
+                    high: before.live(),
+                    low: 1,
+                    step: one,
+                }));
+                store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Synced);
+                let served = store.serve().map_err(|e| e.to_string())?;
+                let began = std::time::Instant::now();
+                while !served.log_state().stepping {
+                    if began.elapsed() > Duration::from_secs(20) {
+                        return Err(format!("no step: {:?}", served.log_state()));
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                // Held behind the sync of the home image: lost there.
                 disk.kill();
+                std::fs::write(&gate, b"").map_err(|e| e.to_string())?;
+                drop(served);
+                let _ = std::fs::remove_file(&gate);
             }
             let mut store = env.reopen_ack(&disk)?;
+            let found = store.log_state();
+            if found.start != before.start {
+                return Err(format!(
+                    "power cut {power_cut}: the log started at {} and starts at {} after \
+                     the loss: the step is not applied again",
+                    before.start, found.start
+                ));
+            }
             let check = |store: &mut SimStore, when: &str| -> Outcome {
                 let when = format!("{when} (power cut {power_cut})");
                 expect(store, 5, 1, 2, &when)?;
@@ -3253,7 +3411,7 @@ fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_it
             };
             check(&mut store, "after the loss")?;
             let again = step(&mut store, one)?;
-            if again.records > 1 {
+            if again.records != 1 || again.start.0 <= before.start {
                 return Err(format!("the step applied again took {again:?}"));
             }
             check(&mut store, "after the step applied again")?;
