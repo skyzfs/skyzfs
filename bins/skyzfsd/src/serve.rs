@@ -333,6 +333,16 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
+/// The store's log state as the status file shows it.
+fn log_shown(log: &skyzfs_local::store::LogState) -> LogShown {
+    LogShown {
+        live: log.live(),
+        steps: log.steps,
+        stepping: log.stepping,
+        own_syncs: log.own_syncs,
+    }
+}
+
 /// Put the pump's counters up for the status file. A result the test
 /// build keeps back is a request the kernel still waits for: it counts
 /// as in flight.
@@ -347,13 +357,7 @@ fn post<Q: skyzfs_ublk::pump::Queue>(
     // The log, as the store's worker last showed it. The worker wakes
     // this thread when a checkpoint step begins and when it ends; those
     // two are written to the status file at once.
-    let log = pump.target().log_state();
-    let now = LogShown {
-        live: log.live(),
-        steps: log.steps,
-        stepping: log.stepping,
-        own_syncs: log.own_syncs,
-    };
+    let now = log_shown(&pump.target().log_state());
     let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
     board.post_log(now, step_changed);
     *shown = now;
@@ -546,6 +550,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
     let board = Arc::new(Board::new());
+    // The log as the start found it, on the board before the status
+    // thread's first write: without it the file says a live size of 0
+    // until the queue's thread has had its first turn, which on an
+    // idle device is the first request (seen on a kernel: `log_live 0`
+    // right after a start that had replayed 81 MB).
+    let first_log = log_shown(&served.log_state());
+    board.post_log(first_log, false);
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let hold = serve.hooks.hold;
@@ -558,7 +569,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main
                 // thread lets go of it.
-                let mut shown = LogShown::default();
+                let mut shown = first_log;
                 pumped(Pump::new(queue, served, ack), |pump, ended| {
                     post(&board, pump, &mut shown);
                     if !ended {
@@ -636,7 +647,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // queue's thread has posted by then); the device starts; the
     // queue's thread posts its counters after every turn, and each
     // post replaces the board's with newer ones of its own; `ready`
-    // follows the first write. Only the queue's thread posts.
+    // follows the first write. Only the queue's thread posts, but for
+    // the log's state at the start, which the main thread put on the
+    // board before either thread existed.
     //
     // `ready` only after this instance's first status write was tried,
     // done or failed: until then the status file is the one the

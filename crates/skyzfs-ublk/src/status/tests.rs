@@ -736,3 +736,111 @@ fn write_again_writes_what_is_posted_once_more_and_replaces_nothing() {
         "{seen:?}"
     );
 }
+
+/// A board that publishes with `pace` and a write that fails at its
+/// second attempt only; the times of the attempts go to the list.
+fn fails_second(
+    pace: Pace,
+) -> (
+    Arc<Board>,
+    Arc<Mutex<Vec<Instant>>>,
+    std::thread::JoinHandle<u64>,
+) {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let tried = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, tried) = (board.clone(), tried.clone());
+        std::thread::spawn(move || {
+            board.publish(pace, |_, _| {
+                let mut tried = tried.lock().expect("lock");
+                tried.push(Instant::now());
+                if tried.len() == 2 {
+                    Err(io::Error::other("the second write fails"))
+                } else {
+                    Ok(())
+                }
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    (board, tried, thread)
+}
+
+/// A write asked for with `write_again` is owed until one succeeds. On
+/// an idle board (nothing posted changes) the write that fails is
+/// tried again, an interval later and not at once. Before, nothing
+/// remembered it: the counters and the log equalled what was written
+/// last, so the value the write was asked for (the start's time)
+/// stayed out of the file for as long as the volume was idle. Mutants:
+/// the owed write is forgotten; a failed write is tried again at once.
+#[test]
+fn a_write_asked_for_again_that_fails_is_tried_again_an_interval_later() {
+    const INTERVAL: Duration = Duration::from_millis(400);
+    fn scenario(mutants: u32) -> Result<(), String> {
+        let pace = Pace::new(INTERVAL.as_millis() as u64).with(mutants);
+        let (board, tried, thread) = fails_second(pace);
+        // Beyond the interval of the first write, so that what holds
+        // the retry back is the failed write's own interval.
+        std::thread::sleep(INTERVAL + Duration::from_millis(50));
+        board.write_again();
+        let began = Instant::now();
+        let third = loop {
+            if let Some(third) = tried.lock().expect("lock").get(2).copied() {
+                break Some(third);
+            }
+            if began.elapsed() > Duration::from_secs(4) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let second = tried.lock().expect("lock").get(1).copied();
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        let (Some(second), Some(third)) = (second, third) else {
+            return Err("the write that failed was not tried again in 4 s".into());
+        };
+        // The pace counts the interval from when the failed write
+        // returned, which is after the time noted inside it.
+        if third.duration_since(second) < INTERVAL {
+            return Err(format!(
+                "tried again after {:?}, sooner than the interval",
+                third.duration_since(second)
+            ));
+        }
+        if failures != 1 {
+            return Err(format!("{failures} failures"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
+    assert!(scenario(Mutants::RETRIES_AT_ONCE).is_err(), "at once");
+}
+
+/// A write that is still owed at the stop is written by the stop, also
+/// when the interval has not passed. Mutant: the owed write is
+/// forgotten, and the stop writes nothing.
+#[test]
+fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
+    fn scenario(mutants: u32) -> Result<(), String> {
+        let (board, tried, thread) = fails_second(Pace::new(3_600_000).with(mutants));
+        board.write_again();
+        let began = Instant::now();
+        while tried.lock().expect("lock").len() < 2 {
+            if began.elapsed() > Duration::from_secs(20) {
+                return Err("not written again".into());
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        let attempts = tried.lock().expect("lock").len();
+        if (attempts, failures) != (3, 1) {
+            return Err(format!("{attempts} attempts, {failures} failures"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
+}
