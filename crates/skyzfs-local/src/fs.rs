@@ -86,8 +86,34 @@ impl FsDir {
     }
 }
 
+/// The file the directory's lock is taken on. It holds nothing.
+pub const LOCK_NAME: &str = "lock";
+
+/// The directory's lock, held: see [`Dir::try_lock`].
+#[derive(Debug)]
+pub struct FsLock {
+    _file: fs::File,
+}
+
 impl Dir for FsDir {
     type File = FsFile;
+    type Lock = FsLock;
+
+    /// An advisory lock (`flock`, `LockFileEx`) on the file `lock`,
+    /// which is created if it is not there. The operating system drops
+    /// it when the process ends.
+    fn try_lock(&self) -> io::Result<FsLock> {
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(self.path.join(LOCK_NAME))?;
+        match file.try_lock() {
+            Ok(()) => Ok(FsLock { _file: file }),
+            Err(fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
+            Err(fs::TryLockError::Error(e)) => Err(e),
+        }
+    }
 
     fn create(&self, name: &str) -> io::Result<FsFile> {
         let mut options = fs::OpenOptions::new();

@@ -232,7 +232,7 @@ fn acknowledged_writes_survive_kill_9() {
     let dir = FsDir::new(tmp.path()).unwrap();
     let mut options = OpenOptions::default();
     options.log_segments = Some(2);
-    drop(Store::create(dir.clone(), &config(16, 64), options).unwrap());
+    drop(Store::create(dir.clone(), &config(16, 64), options.clone()).unwrap());
     let exe = std::env::current_exe().unwrap();
     // What each block must hold: the number of the last write to it.
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];
@@ -294,7 +294,7 @@ fn acknowledged_writes_survive_kill_9() {
         let pending = acked + 1;
         let (pending_block, pending_count, _) = kill_write(pending);
 
-        let (store, _) = Store::open(dir.clone(), options).unwrap();
+        let (store, _) = Store::open(dir.clone(), options.clone()).unwrap();
         let mut store = store.serve().unwrap();
         let got = read(&mut store, 0, KILL_BLOCKS as usize);
         let mut pending_seen = 0;

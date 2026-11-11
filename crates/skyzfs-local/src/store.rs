@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 
@@ -26,9 +26,10 @@ use skyzfs_blk::{
     SubmitErrorKind, BLOCK_SIZE, BLOCK_USIZE, MAX_IO_BYTES, SIZE_UNIT,
 };
 
+use crate::format::siphash24;
 use crate::format::{Identity, Key, Kind, Lsn};
 use crate::io::{Dir, File};
-use crate::log::{Log, LogError, Options, Recovery};
+use crate::log::{Log, LogError, Observer, Options, Recovery};
 
 /// The home image's file.
 pub const HOME_NAME: &str = "home.img";
@@ -70,6 +71,13 @@ impl Mutants {
     /// A checkpoint's preimages are not made durable before the home
     /// image is written.
     pub(crate) const PREIMAGES_UNSYNCED: u32 = 1 << 10;
+    /// An open does not take the directory's lock.
+    pub(crate) const NO_LOCK: u32 = 1 << 11;
+    /// An open takes a preimage file for the current one whatever
+    /// start of the log it was written for.
+    pub(crate) const STALE_PREIMAGES: u32 = 1 << 12;
+    /// An open does not write the preimages back.
+    pub(crate) const NO_RESTORE: u32 = 1 << 13;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -109,8 +117,26 @@ impl StoreConfig {
     }
 }
 
+/// Who is told that the volume has failed: see
+/// [`OpenOptions::on_failure`].
+#[derive(Clone)]
+pub struct FailureObserver(Arc<dyn Fn() + Send + Sync>);
+
+impl FailureObserver {
+    /// An observer that calls `f`.
+    pub fn new(f: impl Fn() + Send + Sync + 'static) -> Self {
+        Self(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for FailureObserver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FailureObserver")
+    }
+}
+
 /// How a store is opened.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct OpenOptions {
     /// How many requests may be in flight.
     pub queue_depth: u32,
@@ -122,6 +148,14 @@ pub struct OpenOptions {
     /// The most segment files the log may have: at least two. When the
     /// log is full the store checkpoints to make room.
     pub log_segments: Option<usize>,
+    /// Called once, at the moment the store decides that the volume
+    /// has failed, and before the failure marker is attempted: the
+    /// marker needs the disk that has just failed and may take minutes
+    /// or never be written, and a transport has to give up its
+    /// attachment at once (design §4.2). It is called from the thread
+    /// that executes the store's requests, inside the request that
+    /// failed, and is expected to return quickly.
+    pub on_failure: Option<FailureObserver>,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -133,6 +167,7 @@ impl Default for OpenOptions {
             read_only: false,
             acknowledge_failure: false,
             log_segments: None,
+            on_failure: None,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -156,6 +191,10 @@ pub enum StoreError {
         /// The error's kind.
         kind: io::ErrorKind,
     },
+    /// Another instance has the store open. Nothing was read or
+    /// written.
+    #[error("the store is open in another instance")]
+    Locked,
     /// The store's files do not fit together.
     #[error("the store is damaged: {0}")]
     Damaged(&'static str),
@@ -291,6 +330,8 @@ struct Core<D: Dir> {
     home: D::File,
     /// The preimage file, once a checkpoint has needed one.
     preimages: Option<D::File>,
+    /// The directory's lock, held for as long as the store lives.
+    _lock: Option<D::Lock>,
     index: Index,
     geometry: Geometry,
     /// The volume has failed: nothing is served any more.
@@ -514,6 +555,65 @@ impl<D: Dir> Core<D> {
         if target <= floor {
             return Ok(floor);
         }
+        let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        let ends = if per_unit <= 1 {
+            vec![target]
+        } else {
+            match self.batches(floor, target, limit, per_unit) {
+                Ok(ends) => ends,
+                Err(()) => return Err(self.fail()),
+            }
+        };
+        let mut start = floor;
+        for end in ends {
+            start = self.apply(start, end, limit, hold)?;
+        }
+        Ok(start)
+    }
+
+    /// Where the batches of a checkpoint from `floor` to `target` end.
+    /// A batch is as many records as keep the blocks to save in the
+    /// preimage file within [`PREIMAGE_BATCH`], and at least one.
+    fn batches(
+        &mut self,
+        floor: Lsn,
+        target: Lsn,
+        limit: Lsn,
+        per_unit: u64,
+    ) -> Result<Vec<Lsn>, ()> {
+        let mut ends = Vec::new();
+        let (mut saved, mut records) = (0u64, 0usize);
+        self.log
+            .replay_within(floor, target, limit, &mut |record| {
+                if !matches!(record.kind, Kind::Write | Kind::WriteZeroes) {
+                    return;
+                }
+                // At most the rest of its first and of its last unit.
+                let start = record.offset / BLOCK_SIZE;
+                let end = start + record.length / BLOCK_SIZE;
+                let own = start % per_unit + (end.div_ceil(per_unit) * per_unit - end);
+                if records > 0 && (saved + own > PREIMAGE_BATCH as u64 || records >= BATCH_RECORDS)
+                {
+                    ends.push(record.start);
+                    (saved, records) = (0, 0);
+                }
+                saved += own;
+                records += 1;
+            })
+            .map_err(|_| ())?;
+        ends.push(target);
+        Ok(ends)
+    }
+
+    /// One batch of a checkpoint: the records from `floor`, where the
+    /// log starts, to `target`.
+    fn apply(
+        &mut self,
+        floor: Lsn,
+        target: Lsn,
+        limit: Lsn,
+        hold: Option<Lsn>,
+    ) -> Result<Lsn, BlkError> {
         if self.protect_neighbours(floor, target, limit).is_err() {
             return Err(self.fail());
         }
@@ -536,13 +636,9 @@ impl<D: Dir> Core<D> {
         if !early && self.home.sync().is_err() {
             return Err(self.fail());
         }
-        // The home image is durable: the preimages have done their work,
-        // and must be gone before the home image is written again.
-        if let Some(file) = self.preimages.as_mut() {
-            if Preimages::invalidate(file).is_err() {
-                return Err(self.fail());
-            }
-        }
+        // The home image is durable. The reclaim moves the log's start,
+        // and with that the preimages, which are bound to the start
+        // they were written for, have done their work.
         if self.mutants.has(Mutants::CHECKPOINT_PAST_HOLD) {
             self.log.set_hold(None);
         }
@@ -601,7 +697,16 @@ impl<D: Dir> Core<D> {
                     .range(..=block)
                     .next_back()
                     .is_some_and(|(_, e)| *e > block);
-                if !covered && neighbours.last() != Some(&block) {
+                // A block that a durable record of the log writes is
+                // covered by the log, whatever becomes of its copy here.
+                let durable = self.log.durable();
+                let logged = self
+                    .index
+                    .lookup(block, 1)
+                    .first()
+                    .and_then(|(_, _, source)| *source)
+                    .is_some_and(|source| source.record() < durable);
+                if !covered && !logged && neighbours.last() != Some(&block) {
                     neighbours.push(block);
                 }
             }
@@ -634,7 +739,7 @@ impl<D: Dir> Core<D> {
         };
         let file = self.preimages.insert(file);
         let volume = self.log.identity().volume;
-        let image = Preimages::encode(&volume, &neighbours, &blocks);
+        let image = Preimages::encode(self.log.key(), &volume, floor, &neighbours, &blocks);
         file.write_at(0, &image).map_err(|_| ())?;
         if !self.mutants.has(Mutants::PREIMAGES_UNSYNCED) {
             file.sync().map_err(|_| ())?;
@@ -662,7 +767,7 @@ fn add_run(runs: &mut BTreeMap<u64, u64>, mut start: u64, mut end: u64) {
 }
 
 /// The preimage file: blocks of the home image as they were before a
-/// checkpoint began to rewrite their write units.
+/// batch of a checkpoint began to rewrite their write units.
 ///
 /// | Offset | Bytes | Field |
 /// |---|---|---|
@@ -670,21 +775,32 @@ fn add_run(runs: &mut BTreeMap<u64, u64>, mut start: u64, mut end: u64) {
 /// | 8 | 4 | version, 1 |
 /// | 12 | 4 | number of blocks, `n` |
 /// | 16 | 16 | volume id |
-/// | 32 | 4 | CRC32C of the table |
-/// | 36 | 472 | reserved |
-/// | 508 | 4 | CRC32C of bytes 0..508 |
-/// | 4096 | 16 `n` | the table: for each block its number (8), the CRC32C of its content (4), reserved (4) |
+/// | 32 | 8 | the log's start when the batch began |
+/// | 40 | 8 | tag of the table |
+/// | 48 | 456 | reserved, zero |
+/// | 504 | 8 | tag of bytes 0..504 |
+/// | 4096 | 16 `n` | the table: for each block its number (8) and its tag (8) |
 /// | 4096 + the table, rounded up to 4096 | 4096 `n` | the blocks |
 ///
-/// Every integer is little-endian. The file is whole if the header, the
-/// table and every block match their checksums; anything else is a file
-/// that was being written, or one that was invalidated (its first
-/// sector zeroed), and is ignored: the home image had not been touched.
+/// Every integer is little-endian. A tag is SipHash-2-4 under the
+/// volume's key: of the header's first 504 bytes; of the log's start
+/// followed by the table; and for a block, of the log's start, the
+/// block's number and its content. The file is whole if every tag
+/// matches, and it is the current one if its start is where the log
+/// starts now. Anything else is a file that was being written, or one
+/// whose batch is finished, and is ignored.
 struct Preimages;
 
 const PREIMAGE_MAGIC: &[u8; 8] = b"SKYZPRE\0";
 const PREIMAGE_VERSION: u32 = 1;
 const PREIMAGE_HEADER: usize = 512;
+/// Where the header's own tag is.
+const PREIMAGE_TAG: usize = PREIMAGE_HEADER - 8;
+/// The most blocks one batch of a checkpoint saves: the file is never
+/// larger than these, their table and the header.
+pub(crate) const PREIMAGE_BATCH: usize = 256;
+/// The most records in one batch.
+const BATCH_RECORDS: usize = 1024;
 
 /// Saved blocks: each with its number in the volume.
 type Saved = Vec<(u64, Vec<u8>)>;
@@ -694,8 +810,24 @@ impl Preimages {
         (count * 16).div_ceil(BLOCK_USIZE) * BLOCK_USIZE
     }
 
-    /// The file's bytes for `numbers` and their content in `blocks`.
-    fn encode(volume: &[u8; 16], numbers: &[u64], blocks: &[u8]) -> Vec<u8> {
+    fn table_tag(key: &Key, start: Lsn, table: &[u8]) -> u64 {
+        let mut input = Vec::with_capacity(8 + table.len());
+        input.extend_from_slice(&start.0.to_le_bytes());
+        input.extend_from_slice(table);
+        siphash24(key, &input)
+    }
+
+    fn block_tag(key: &Key, start: Lsn, number: u64, block: &[u8]) -> u64 {
+        let mut input = Vec::with_capacity(16 + block.len());
+        input.extend_from_slice(&start.0.to_le_bytes());
+        input.extend_from_slice(&number.to_le_bytes());
+        input.extend_from_slice(block);
+        siphash24(key, &input)
+    }
+
+    /// The file's bytes for `numbers` and their content in `blocks`, of
+    /// a batch that began with the log starting at `start`.
+    fn encode(key: &Key, volume: &[u8; 16], start: Lsn, numbers: &[u64], blocks: &[u8]) -> Vec<u8> {
         let table_len = Self::table_len(numbers.len());
         let mut out = vec![0u8; BLOCK_USIZE + table_len + blocks.len()];
         let (head, rest) = out.split_at_mut(BLOCK_USIZE);
@@ -707,30 +839,36 @@ impl Preimages {
             .zip(table.chunks_mut(16))
         {
             entry[..8].copy_from_slice(&number.to_le_bytes());
-            entry[8..12].copy_from_slice(&crc32c::crc32c(block).to_le_bytes());
+            let tag = Self::block_tag(key, start, *number, block);
+            entry[8..].copy_from_slice(&tag.to_le_bytes());
         }
         head[..8].copy_from_slice(PREIMAGE_MAGIC);
         head[8..12].copy_from_slice(&PREIMAGE_VERSION.to_le_bytes());
         head[12..16].copy_from_slice(&(numbers.len() as u32).to_le_bytes());
         head[16..32].copy_from_slice(volume);
-        head[32..36].copy_from_slice(&crc32c::crc32c(table).to_le_bytes());
-        let crc = crc32c::crc32c(&head[..PREIMAGE_HEADER - 4]);
-        head[PREIMAGE_HEADER - 4..PREIMAGE_HEADER].copy_from_slice(&crc.to_le_bytes());
+        head[32..40].copy_from_slice(&start.0.to_le_bytes());
+        head[40..48].copy_from_slice(&Self::table_tag(key, start, table).to_le_bytes());
+        let tag = siphash24(key, &head[..PREIMAGE_TAG]);
+        head[PREIMAGE_TAG..PREIMAGE_HEADER].copy_from_slice(&tag.to_le_bytes());
         out
     }
 
-    /// The blocks of a whole file, with their numbers; `None` for
-    /// anything else.
+    /// The blocks of a whole file written for the log's start `start`
+    /// (for any start, if `start` is `None`), with their numbers;
+    /// `None` for anything else.
     fn decode<F: File>(
         file: &F,
+        key: &Key,
         volume: &[u8; 16],
+        start: Option<Lsn>,
         device_blocks: u64,
     ) -> io::Result<Option<Saved>> {
-        let word = |bytes: &[u8]| {
-            let mut raw = [0u8; 4];
-            raw.copy_from_slice(&bytes[..4]);
-            u32::from_le_bytes(raw)
+        let long = |bytes: &[u8]| {
+            let mut raw = [0u8; 8];
+            raw.copy_from_slice(&bytes[..8]);
+            u64::from_le_bytes(raw)
         };
+        let word = |bytes: &[u8]| long(&[&bytes[..4], &[0u8; 4][..]].concat()) as u32;
         let len = file.len()?;
         if len < BLOCK_SIZE {
             return Ok(None);
@@ -740,31 +878,33 @@ impl Preimages {
         let count = word(&head[12..16]) as usize;
         let table_len = Self::table_len(count);
         let whole = (BLOCK_USIZE + table_len + count * BLOCK_USIZE) as u64;
+        let written_for = Lsn(long(&head[32..40]));
         if &head[..8] != PREIMAGE_MAGIC
-            || word(&head[PREIMAGE_HEADER - 4..]) != crc32c::crc32c(&head[..PREIMAGE_HEADER - 4])
+            || long(&head[PREIMAGE_TAG..]) != siphash24(key, &head[..PREIMAGE_TAG])
             || word(&head[8..12]) != PREIMAGE_VERSION
             || &head[16..32] != volume
-            || head[36..PREIMAGE_HEADER - 4].iter().any(|b| *b != 0)
+            || start.is_some_and(|start| start != written_for)
+            || head[48..PREIMAGE_TAG].iter().any(|b| *b != 0)
             || len < whole
         {
             return Ok(None);
         }
         let mut table = vec![0u8; table_len];
         file.read_at(BLOCK_SIZE, &mut table)?;
-        if word(&head[32..36]) != crc32c::crc32c(&table) {
+        if long(&head[40..48]) != Self::table_tag(key, written_for, &table) {
             return Ok(None);
         }
         let mut out = Vec::with_capacity(count);
         for (i, entry) in table.chunks(16).take(count).enumerate() {
-            let mut number = [0u8; 8];
-            number.copy_from_slice(&entry[..8]);
-            let number = u64::from_le_bytes(number);
+            let number = long(&entry[..8]);
             let mut block = vec![0u8; BLOCK_USIZE];
             file.read_at(
                 (BLOCK_USIZE + table_len + i * BLOCK_USIZE) as u64,
                 &mut block,
             )?;
-            if number >= device_blocks || word(&entry[8..12]) != crc32c::crc32c(&block) {
+            if number >= device_blocks
+                || long(&entry[8..]) != Self::block_tag(key, written_for, number, &block)
+            {
                 return Ok(None);
             }
             out.push((number, block));
@@ -772,35 +912,34 @@ impl Preimages {
         Ok(Some(out))
     }
 
-    /// Make the file say nothing, durably.
-    fn invalidate<F: File>(file: &mut F) -> io::Result<()> {
-        file.write_at(0, &[0u8; PREIMAGE_HEADER])?;
-        file.sync()
-    }
-
-    /// At an open: if a checkpoint left its preimages whole, write them
-    /// back into the home image, make that durable, and invalidate the
-    /// file. A checkpoint that was cut off may have damaged these
-    /// blocks; one that was not has left them as the file has them.
+    /// At an open: if a batch of a checkpoint left its preimages whole
+    /// and the log still starts where that batch began, write them back
+    /// into the home image and make that durable. A batch that was cut
+    /// off may have damaged these blocks; one that was not has left
+    /// them as the file has them. The file stays as it is: a cut during
+    /// the writing back is repaired by the next open, and the file
+    /// stops counting when the log's start moves.
     fn restore<D: Dir>(
-        dir: &D,
+        log: &Log<D>,
         home: &mut D::File,
-        volume: &[u8; 16],
-        device_blocks: u64,
+        mutants: Mutants,
     ) -> io::Result<Option<D::File>> {
-        let mut file = match dir.open(PREIMAGE_NAME) {
+        let file = match log.dir().open(PREIMAGE_NAME) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        if let Some(blocks) = Self::decode(&file, volume, device_blocks)? {
-            for (number, block) in &blocks {
+        if mutants.has(Mutants::NO_RESTORE) {
+            return Ok(Some(file));
+        }
+        let identity = log.identity();
+        let start = (!mutants.has(Mutants::STALE_PREIMAGES)).then(|| log.floor());
+        let blocks = identity.device_size / BLOCK_SIZE;
+        if let Some(saved) = Self::decode(&file, log.key(), &identity.volume, start, blocks)? {
+            for (number, block) in &saved {
                 home.write_at(number * BLOCK_SIZE, block)?;
             }
             home.sync()?;
-        }
-        if file.len()? >= PREIMAGE_HEADER as u64 {
-            Self::invalidate(&mut file)?;
         }
         Ok(Some(file))
     }
@@ -851,6 +990,7 @@ impl<D: Dir> Store<D> {
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
         let identity = config.identity().ok_or(StoreError::InvalidConfig)?;
+        let lock = Self::lock(&dir, &options)?;
         let names = dir.list().map_err(io_error("listing the directory"))?;
         if names.iter().any(|name| name == crate::log::SUPER_NAME) {
             return Err(LogError::Exists.into());
@@ -888,12 +1028,28 @@ impl<D: Dir> Store<D> {
             .dir()
             .open(HOME_NAME)
             .map_err(io_error("opening the home image"))?;
-        Self::assemble(log, home, options)
+        Self::assemble(log, home, lock, options)
     }
 
-    /// Open the store in `dir`: recover the log, and rebuild the index
-    /// from it.
+    /// Take the directory's lock: one instance per volume (design
+    /// §4.2). Opening a store is a recovery that writes, so this comes
+    /// before anything is read or written.
+    fn lock(dir: &D, options: &OpenOptions) -> Result<Option<D::Lock>, StoreError> {
+        if options.mutants.has(Mutants::NO_LOCK) {
+            return Ok(None);
+        }
+        match dir.try_lock() {
+            Ok(lock) => Ok(Some(lock)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(StoreError::Locked),
+            Err(e) => Err(io_error("locking the directory")(e)),
+        }
+    }
+
+    /// Open the store in `dir`: take its lock, recover the log, and
+    /// rebuild the index from it. While another instance has the store
+    /// open this fails with [`StoreError::Locked`] and changes nothing.
     pub fn open(dir: D, options: OpenOptions) -> Result<(Self, Recovery), StoreError> {
+        let lock = Self::lock(&dir, &options)?;
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
             mutants: options.log_mutants,
@@ -906,14 +1062,18 @@ impl<D: Dir> Store<D> {
             }
             Err(e) => return Err(io_error("opening the home image")(e)),
         };
-        Ok((Self::assemble(log, home, options)?, recovery))
+        Ok((Self::assemble(log, home, lock, options)?, recovery))
     }
 
     fn assemble(
         mut log: Log<D>,
         mut home: D::File,
+        lock: Option<D::Lock>,
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
+        if let Some(FailureObserver(call)) = options.on_failure.clone() {
+            log.set_observer(Observer::new(move || call()));
+        }
         let identity = *log.identity();
         let size = home.len().map_err(io_error("reading the home image"))?;
         if size != identity.device_size {
@@ -923,13 +1083,8 @@ impl<D: Dir> Store<D> {
         }
         // What a checkpoint that was cut off may have damaged beside
         // its own blocks, before anything reads the home image.
-        let preimages = Preimages::restore(
-            log.dir(),
-            &mut home,
-            &identity.volume,
-            identity.device_size / BLOCK_SIZE,
-        )
-        .map_err(io_error("restoring the home image"))?;
+        let preimages = Preimages::restore(&log, &mut home, options.mutants)
+            .map_err(io_error("restoring the home image"))?;
         if options.log_segments.is_some_and(|limit| limit < 2) {
             return Err(StoreError::InvalidConfig);
         }
@@ -967,6 +1122,7 @@ impl<D: Dir> Store<D> {
                 log,
                 home,
                 preimages,
+                _lock: lock,
                 index,
                 geometry,
                 failed: false,
@@ -1076,13 +1232,20 @@ impl<D: Dir> BlockTarget for Store<D> {
         Ok(())
     }
 
-    fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
-        self.run(usize::MAX, out)
+    /// Does nothing and returns 0: this driver executes requests only
+    /// in [`BlockTarget::wait`], which hands out every completion it
+    /// produces, so there is never one waiting here. The contract says
+    /// `poll` never blocks, and executing a request is file I/O.
+    fn poll(&mut self, _out: &mut Vec<Completion>) -> usize {
+        0
     }
 
+    /// Execute what is queued, in order, and return the completions.
+    /// This is where the store's I/O happens, so it can take as long as
+    /// a sync takes; it never sleeps, and returns 0 only when nothing
+    /// is queued or the first request is held behind a hold, which only
+    /// this thread can release.
     fn wait(&mut self, out: &mut Vec<Completion>, _timeout: Duration) -> usize {
-        // Everything that can complete does so in `run`. What is left is
-        // held behind a hold, which only this thread can release.
         self.run(usize::MAX, out)
     }
 }
@@ -1120,6 +1283,7 @@ impl<D> Store<D>
 where
     D: Dir + Send + 'static,
     D::File: Send,
+    D::Lock: Send,
 {
     /// Put the store behind a worker thread. Requests that are queued
     /// are executed first.

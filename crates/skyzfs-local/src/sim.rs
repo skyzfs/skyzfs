@@ -354,6 +354,9 @@ struct State {
     read_fault: Option<Fault>,
     /// The machine stops after this many more writes and syncs.
     halt: Option<u64>,
+    /// Who holds the directory's lock, and the next holder's number.
+    lock: Option<u64>,
+    next_lock: u64,
     /// How many live handles are open on each inode.
     open: BTreeMap<u64, u64>,
     device_reads: bool,
@@ -427,6 +430,7 @@ impl State {
     fn close_all(&mut self) {
         self.generation += 1;
         self.open.clear();
+        self.lock = None;
     }
 }
 
@@ -454,6 +458,8 @@ impl SimDisk {
                 sync_fault_of: None,
                 read_fault: None,
                 halt: None,
+                lock: None,
+                next_lock: 0,
                 open: BTreeMap::new(),
                 device_reads: true,
                 write_unit: SECTOR,
@@ -710,8 +716,42 @@ impl SimDisk {
     }
 }
 
+/// The simulated directory's lock, held. A kill and a power cut release
+/// it, as the end of a process does; a holder that is dropped after
+/// that releases nothing.
+#[derive(Debug)]
+pub struct SimLock {
+    disk: SimDisk,
+    holder: u64,
+}
+
+impl Drop for SimLock {
+    fn drop(&mut self) {
+        let mut state = self.disk.lock();
+        if state.lock == Some(self.holder) {
+            state.lock = None;
+        }
+    }
+}
+
 impl Dir for SimDisk {
     type File = SimFile;
+    type Lock = SimLock;
+
+    /// The lock is no file here: taking it leaves the disk as it was.
+    fn try_lock(&self) -> io::Result<SimLock> {
+        let mut state = self.lock();
+        if state.lock.is_some() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let holder = state.next_lock;
+        state.next_lock += 1;
+        state.lock = Some(holder);
+        Ok(SimLock {
+            disk: self.clone(),
+            holder,
+        })
+    }
 
     fn create(&self, name: &str) -> io::Result<SimFile> {
         let mut state = self.lock();
@@ -1398,6 +1438,29 @@ mod tests {
         g.sync().unwrap();
         disk.power_cut(LoseAll);
         assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
+    }
+
+    /// The lock: one holder at a time; dropping it, a kill and a power
+    /// cut release it, and a holder from before a kill releases nothing
+    /// that was taken after.
+    #[test]
+    fn the_directory_lock_has_one_holder_and_dies_with_the_process() {
+        let disk = disk_with(1, 1);
+        let first = disk.try_lock().unwrap();
+        let refused = disk.try_lock().unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        let second = disk.try_lock().unwrap();
+        disk.kill();
+        let third = disk.try_lock().unwrap();
+        drop(second);
+        assert!(disk.try_lock().is_err());
+        disk.power_cut(LoseAll);
+        let fourth = disk.try_lock().unwrap();
+        drop(third);
+        assert!(disk.try_lock().is_err());
+        drop(fourth);
+        disk.try_lock().unwrap();
     }
 
     /// Injected errors: a halted disk takes the writes and syncs it was

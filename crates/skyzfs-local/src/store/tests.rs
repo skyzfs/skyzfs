@@ -508,8 +508,9 @@ fn a_checkpoint_applies_only_durable_records() {
 /// written again and flushed, and the checkpoint that applies it is
 /// cut off before its sync. All four must still read as what was
 /// flushed: the checkpoint saved the neighbours first, durably, and the
-/// open writes them back. Mutants: a checkpoint without preimages, and
-/// one whose preimages are not synced before the home image is written.
+/// open writes them back. Mutants: a checkpoint without preimages, one
+/// whose preimages are not synced before the home image is written, and
+/// an open that does not write them back.
 #[test]
 fn a_checkpoint_puts_only_its_own_blocks_at_risk() {
     fn scenario(env: &Env) -> Outcome {
@@ -533,6 +534,273 @@ fn a_checkpoint_puts_only_its_own_blocks_at_risk() {
     }
     caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
     caught_where(scenario, Mutants::PREIMAGES_UNSYNCED, garbled_neighbours);
+    caught_where(scenario, Mutants::NO_RESTORE, garbled_neighbours);
+}
+
+/// Where a write rewrites more than its own block.
+fn large_units(env: &Env) -> bool {
+    env.unit > 4096
+}
+
+/// A preimage file counts only for the batch it was written for. The
+/// file is bound to the log's start, and stays on the disk, whole,
+/// after its batch: once the log's start has moved it must not be
+/// written back, because the blocks it saved may have been written
+/// since. Here a checkpoint saves the neighbours of one block; then the
+/// whole unit is written again, flushed and checkpointed, which needs
+/// no preimages and leaves the old file alone; then the store is opened
+/// again. The unit must hold what was written last. Mutant: an open
+/// that takes a preimage file whatever start it was written for.
+#[test]
+fn a_preimage_file_of_an_earlier_batch_is_never_written_back() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 4, 4, 1)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        write(&mut store, 5, 1, 2)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        let saved = disk
+            .list()
+            .is_ok_and(|n| n.iter().any(|n| n == PREIMAGE_NAME));
+        if saved != (env.unit > 4096) {
+            return Err(format!("a preimage file was written: {saved}"));
+        }
+        write(&mut store, 4, 4, 3)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        drop(store);
+        let mut store = env.reopen(&disk)?;
+        expect(&mut store, 4, 4, 3, "the unit written last")
+    }
+    caught_where(scenario, Mutants::STALE_PREIMAGES, large_units);
+}
+
+/// Where the write unit is one block a checkpoint needs no preimages:
+/// there is no preimage file, and a checkpoint costs two syncs, of the
+/// home image and of the log's superblock.
+#[test]
+fn a_checkpoint_at_four_kib_units_has_no_preimages_and_no_extra_sync() {
+    for env in environments(0).into_iter().filter(|env| env.unit == 4096) {
+        let (disk, mut store) = env.fresh().unwrap();
+        write(&mut store, 4, 4, 1).unwrap();
+        flush(&mut store).unwrap();
+        checkpoint(&mut store).unwrap();
+        write(&mut store, 5, 1, 2).unwrap();
+        write(&mut store, 9, 1, 2).unwrap();
+        flush(&mut store).unwrap();
+        let before = disk.stats();
+        checkpoint(&mut store).unwrap();
+        let after = disk.stats();
+        assert_eq!(after.syncs - before.syncs, 2, "{env:?}");
+        assert_eq!(after.dir_syncs, before.dir_syncs, "{env:?}");
+        assert!(!disk.list().unwrap().iter().any(|n| n == PREIMAGE_NAME));
+    }
+}
+
+/// A checkpoint works in batches, so the preimage file has a largest
+/// size, and a power cut at any point of any batch, and again during
+/// the writing back at the next open, loses nothing. The volume is
+/// filled and checkpointed; then one block in each of its 256 write
+/// units is written again, which gives three neighbours to save for
+/// each; the checkpoint that applies them is stopped after a number of
+/// writes and syncs, the power is cut, the open that follows is stopped
+/// as well and the power cut again. After the next open every block
+/// reads as what was flushed, and the preimage file never held more
+/// than one batch.
+#[test]
+fn a_checkpoint_in_batches_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let largest = (4096 + Preimages::table_len(PREIMAGE_BATCH) + PREIMAGE_BATCH * 4096) as u64;
+        for stop in (0..40).chain([55, 80, 120, 400]) {
+            let (disk, mut store) = env.fresh()?;
+            for mib in 0..4 {
+                write(&mut store, mib * 256, 256, 9)?;
+            }
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for unit in 0..256u64 {
+                write(&mut store, unit * 4 + 1, 1, (unit % 200) as u8 + 10)?;
+            }
+            flush(&mut store)?;
+            let start = store.log_start();
+            disk.halt_after(stop);
+            let cut_off = store.checkpoint().is_err();
+            if !cut_off && stop < 3 {
+                return Err(format!("the checkpoint was not stopped at {stop}"));
+            }
+            if cut_off && store.log_start() == start && stop > 200 && env.unit > 4096 {
+                return Err("after 200 writes and syncs no batch was done".into());
+            }
+            if let Ok(file) = disk.open(PREIMAGE_NAME) {
+                let len = file.len().map_err(|e| e.to_string())?;
+                if len > largest {
+                    return Err(format!("the preimage file has {len} bytes"));
+                }
+                if env.unit == 4096 {
+                    return Err("a preimage file at 4 KiB units".into());
+                }
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            // The open that writes the preimages back is cut off too.
+            disk.halt_after(stop % 7);
+            drop(Store::open(disk.clone(), env.options()));
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            for unit in [0u64, 1, 63, 64, 65, 127, 128, 200, 254, 255] {
+                let what = format!("unit {unit} after a cut at {stop}");
+                expect(&mut store, unit * 4, 1, 9, &what)?;
+                expect(&mut store, unit * 4 + 1, 1, (unit % 200) as u8 + 10, &what)?;
+                expect(&mut store, unit * 4 + 2, 2, 9, &what)?;
+            }
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+// ---------------------------------------------------------------------
+// One instance, and failure announced.
+
+/// One instance per volume (design §4.2): while a store is open, a
+/// second open of its directory is refused at once and leaves every
+/// byte of the directory as it was; after the first instance's process
+/// is lost the open succeeds. Opening is a recovery that writes, so a
+/// second instance under a live writer would damage the log. Mutant: an
+/// open without the lock.
+#[test]
+fn a_second_instance_is_refused_and_changes_nothing() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 1, 1, 1)?;
+        flush(&mut store)?;
+        write(&mut store, 2, 1, 2)?;
+        let before = disk.image();
+        match Store::open(disk.clone(), env.options()) {
+            Err(StoreError::Locked) => {}
+            Err(other) => return Err(format!("the second open: {other}")),
+            Ok(_) => return Err("a second instance opened the store".into()),
+        }
+        let config = env.config();
+        match Store::create_keyed(disk.clone(), &config, Key([1; 16]), env.options()) {
+            Err(StoreError::Locked) => {}
+            Err(other) => return Err(format!("a creation over it: {other}")),
+            Ok(_) => return Err("a store was created over a live one".into()),
+        }
+        if disk.image() != before {
+            return Err("the refused open changed the directory".into());
+        }
+        // The first instance goes on.
+        write(&mut store, 3, 1, 3)?;
+        flush(&mut store)?;
+        let mut store = env.reopen(&disk)?;
+        expect(&mut store, 1, 1, 1, "after the first instance")?;
+        expect(&mut store, 2, 1, 2, "after the first instance")?;
+        expect(&mut store, 3, 1, 3, "after the first instance")?;
+        // And when an instance is dropped, the next may open.
+        drop(store);
+        Store::open(disk.clone(), env.options())
+            .map(|_| ())
+            .map_err(|e| format!("after a drop: {e}"))
+    }
+    caught(scenario, Mutants::NO_LOCK);
+}
+
+/// What an observer saw when it was called: whether the failure marker
+/// was in the directory.
+type Seen = std::sync::Arc<std::sync::Mutex<Vec<bool>>>;
+
+fn observed(env: &Env, disk: &SimDisk, log_mutants: u32) -> (OpenOptions, Seen) {
+    let seen = Seen::default();
+    let (watch, record) = (disk.clone(), seen.clone());
+    let options = OpenOptions {
+        on_failure: Some(FailureObserver::new(move || {
+            let there = watch
+                .list()
+                .is_ok_and(|names| names.iter().any(|n| n == crate::log::MARKER_NAME));
+            record.lock().unwrap().push(there);
+        })),
+        log_mutants: crate::log::Mutants(log_mutants),
+        ..env.options()
+    };
+    (options, seen)
+}
+
+/// Failure is announced before the marker is attempted (design §4.2):
+/// the store's observer is called once, at the moment the volume fails,
+/// while the marker is not yet in the directory, whether the failure is
+/// the log's (a sync) or the store's own (the home image), and whether
+/// the marker can then be written or the disk takes nothing more. A
+/// healthy volume never calls it. Mutant: the call placed after the
+/// marker.
+#[test]
+fn the_failure_is_announced_before_the_marker_is_attempted() {
+    fn scenario(env: &Env, log_mutants: u32) -> Outcome {
+        for case in 0..3 {
+            let (disk, store) = env.fresh()?;
+            drop(store);
+            disk.kill();
+            let (options, seen) = observed(env, &disk, log_mutants);
+            let (mut store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
+            write(&mut store, 1, 1, 1)?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            write(&mut store, 2, 1, 2)?;
+            if !seen.lock().unwrap().is_empty() {
+                return Err("a healthy volume called the observer".into());
+            }
+            let failed = match case {
+                // The log's own failure.
+                0 => {
+                    disk.fail_sync(0, false);
+                    run(&mut store, Op::Flush)?.result.is_err()
+                }
+                // The store's: the home image.
+                1 => {
+                    flush(&mut store)?;
+                    disk.fail_sync_of(HOME_NAME);
+                    store.checkpoint().is_err()
+                }
+                // A disk that takes nothing more, the marker included.
+                _ => {
+                    disk.halt_after(0);
+                    run(&mut store, Op::Flush)?.result.is_err()
+                }
+            };
+            if !failed || !store.is_failed() {
+                return Err(format!("case {case}: the volume did not fail"));
+            }
+            // Later requests fail and announce nothing more.
+            if run(&mut store, Op::Flush)?.result.is_ok() {
+                return Err("a flush succeeded on a failed volume".into());
+            }
+            let seen = seen.lock().unwrap().clone();
+            if seen != [false] {
+                return Err(format!("case {case}: the observer saw {seen:?}"));
+            }
+            let marked = disk
+                .list()
+                .is_ok_and(|n| n.iter().any(|n| n == crate::log::MARKER_NAME));
+            if marked != (case < 2) {
+                return Err(format!("case {case}: the marker is there: {marked}"));
+            }
+        }
+        Ok(())
+    }
+    for env in environments(0) {
+        if let Err(why) = scenario(&env, 0) {
+            panic!("in {env:?}: {why}");
+        }
+        assert!(
+            scenario(&env, crate::log::Mutants::OBSERVE_AFTER_MARKER).is_err(),
+            "the late call was not noticed in {env:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -773,7 +1041,7 @@ fn a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one() {
                 })
                 .map_err(|e| e.to_string())?;
             submitted += 1;
-            if store.poll(&mut done) == 0 {
+            if store.wait(&mut done, Duration::ZERO) == 0 {
                 held = Some(round);
                 break;
             }
@@ -799,7 +1067,10 @@ fn a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one() {
             return Err("a full log failed the volume".into());
         }
         store.set_hold(None);
-        if store.poll(&mut done) != 2 || store.poll(&mut done) != 0 {
+        if store.poll(&mut done) != 0
+            || store.wait(&mut done, Duration::ZERO) != 2
+            || store.wait(&mut done, Duration::ZERO) != 0
+        {
             return Err("the held requests did not complete once each".into());
         }
         let ids: Vec<u64> = done.iter().map(|c| c.id.0).collect();
@@ -895,64 +1166,93 @@ fn a_checkpoint_writes_the_home_image_only_behind_durable_preimages() {
 }
 
 /// The preimage file's bytes, version 1, for two blocks: the layout the
-/// documentation gives, field by field, and back.
+/// documentation gives, field by field, and back. Every part is tagged
+/// under the volume's key and bound to the log's start and to each
+/// block's place, so a file that is torn, stale, moved or for another
+/// key is not taken for a whole one.
 #[test]
 fn the_preimage_file_golden_bytes() {
+    let key = Key(*b"a key for tests!");
     let volume = *b"0123456789abcdef";
+    let start = Lsn(0x1122_3344_5566);
     let mut blocks = vec![0xAAu8; BLOCK as usize];
     blocks.extend(vec![0xBBu8; BLOCK as usize]);
-    let bytes = Preimages::encode(&volume, &[7, 1 << 33], &blocks);
+    let bytes = Preimages::encode(&key, &volume, start, &[7, 1 << 33], &blocks);
     assert_eq!(bytes.len(), 4 * 4096);
     assert_eq!(&bytes[..8], b"SKYZPRE\0");
     assert_eq!(bytes[8..16], [1, 0, 0, 0, 2, 0, 0, 0]);
     assert_eq!(&bytes[16..32], &volume);
-    assert!(bytes[36..508].iter().all(|b| *b == 0));
+    assert_eq!(bytes[32..40], start.0.to_le_bytes());
+    assert!(bytes[48..504].iter().all(|b| *b == 0));
+    assert!(bytes[512..4096].iter().all(|b| *b == 0));
     assert_eq!(bytes[4096..4104], 7u64.to_le_bytes());
-    assert_eq!(
-        bytes[4104..4108],
-        crc32c::crc32c(&blocks[..4096]).to_le_bytes()
-    );
     assert_eq!(bytes[4112..4120], (1u64 << 33).to_le_bytes());
     assert!(bytes[4128..8192].iter().all(|b| *b == 0));
     assert_eq!(&bytes[8192..], &blocks[..]);
+    let tagged = |parts: &[&[u8]]| siphash24(&key, &parts.concat()).to_le_bytes();
+    let at = start.0.to_le_bytes();
     assert_eq!(
-        bytes[32..36],
-        crc32c::crc32c(&bytes[4096..8192]).to_le_bytes()
+        bytes[4104..4112],
+        tagged(&[&at, &7u64.to_le_bytes(), &blocks[..4096]])
     );
-    assert_eq!(bytes[508..512], crc32c::crc32c(&bytes[..508]).to_le_bytes());
+    assert_eq!(
+        bytes[4120..4128],
+        tagged(&[&at, &(1u64 << 33).to_le_bytes(), &blocks[4096..]])
+    );
+    assert_eq!(bytes[40..48], tagged(&[&at, &bytes[4096..8192]]));
+    assert_eq!(bytes[504..512], tagged(&[&bytes[..504]]));
+    // The bytes themselves, so that a change of the tag function or of
+    // the layout does not pass unnoticed.
+    assert_eq!(
+        crc32c::crc32c(&bytes),
+        GOLDEN_PREIMAGE_CRC,
+        "{:#010x}",
+        crc32c::crc32c(&bytes)
+    );
 
-    // Whole: decoded. Damaged anywhere, for another volume, or with a
-    // block beyond the device: nothing.
+    // Whole: decoded. Damaged anywhere, for another volume, another
+    // key or another start of the log, or with a block beyond the
+    // device: nothing.
     let disk = SimDisk::new(0);
     let mut file = disk.create("p").unwrap();
     file.write_at(0, &bytes).unwrap();
-    let decoded = Preimages::decode(&file, &volume, 1 << 34).unwrap().unwrap();
+    let decode = |file: &crate::sim::SimFile, key: &Key, volume: &[u8; 16], start, blocks| {
+        Preimages::decode(file, key, volume, start, blocks).unwrap()
+    };
+    let decoded = decode(&file, &key, &volume, Some(start), 1 << 34).unwrap();
     assert_eq!(decoded.len(), 2);
     assert_eq!((decoded[0].0, decoded[1].0), (7, 1 << 33));
     assert_eq!(decoded[1].1, vec![0xBB; 4096]);
-    assert!(Preimages::decode(&file, &volume, 1 << 33)
-        .unwrap()
-        .is_none());
-    assert!(Preimages::decode(&file, b"another volume!!", 1 << 34)
-        .unwrap()
-        .is_none());
-    for at in [0, 9, 13, 20, 33, 40, 509, 4096, 4105, 8192, 16383] {
+    assert!(decode(&file, &key, &volume, None, 1 << 34).is_some());
+    assert!(decode(&file, &key, &volume, Some(start), 1 << 33).is_none());
+    assert!(decode(&file, &key, b"another volume!!", Some(start), 1 << 34).is_none());
+    assert!(decode(&file, &Key::PUBLIC, &volume, Some(start), 1 << 34).is_none());
+    assert!(decode(&file, &key, &volume, Some(Lsn(start.0 + 64)), 1 << 34).is_none());
+    for at in [
+        0, 9, 13, 20, 33, 41, 100, 505, 4096, 4105, 4113, 8192, 12288, 16383,
+    ] {
         let mut damaged = bytes.clone();
         damaged[at] ^= 1;
         file.write_at(0, &damaged).unwrap();
         assert!(
-            Preimages::decode(&file, &volume, 1 << 34)
-                .unwrap()
-                .is_none(),
+            decode(&file, &key, &volume, Some(start), 1 << 34).is_none(),
             "byte {at}"
         );
     }
-    file.write_at(0, &bytes).unwrap();
-    Preimages::invalidate(&mut file).unwrap();
-    assert!(Preimages::decode(&file, &volume, 1 << 34)
-        .unwrap()
-        .is_none());
+    // The two blocks exchanged, each still with its own tag: a block is
+    // bound to its place.
+    let mut swapped = bytes.clone();
+    swapped[4096..4104].copy_from_slice(&(1u64 << 33).to_le_bytes());
+    swapped[4112..4120].copy_from_slice(&7u64.to_le_bytes());
+    let table_tag = tagged(&[&at, &swapped[4096..8192]]);
+    swapped[40..48].copy_from_slice(&table_tag);
+    let head_tag = tagged(&[&swapped[..504]]);
+    swapped[504..512].copy_from_slice(&head_tag);
+    file.write_at(0, &swapped).unwrap();
+    assert!(decode(&file, &key, &volume, Some(start), 1 << 34).is_none());
 }
+
+const GOLDEN_PREIMAGE_CRC: u32 = 0x71c8_1c1e;
 
 // ---------------------------------------------------------------------
 // The conformance suite.

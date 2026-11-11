@@ -50,6 +50,16 @@ pub trait Dir {
 
     /// Make every creation, removal and rename so far durable.
     fn sync(&self) -> io::Result<()>;
+
+    /// What holds the directory's lock: dropping it releases the lock.
+    type Lock;
+
+    /// Take the directory's exclusive lock, without waiting. While the
+    /// lock is held a second call fails with
+    /// [`io::ErrorKind::WouldBlock`] and changes nothing. The lock is
+    /// advisory: it keeps out whoever asks for it, and it is gone when
+    /// its holder's process is, however that ends.
+    fn try_lock(&self) -> io::Result<Self::Lock>;
 }
 
 /// An open file, read and written at explicit offsets.

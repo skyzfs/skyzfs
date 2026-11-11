@@ -154,8 +154,11 @@ impl BlockTarget for OnSim {
         }
     }
 
-    fn wait(&mut self, out: &mut Vec<Completion>, _: Duration) -> usize {
-        self.poll(out)
+    fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        match &mut self.inner {
+            Inner::Live(store) => store.wait(out, timeout),
+            Inner::Gone(_) => self.poll(out),
+        }
     }
 }
 
@@ -278,7 +281,7 @@ impl Harness for SimHarness {
                     op,
                 })
                 .map_err(|e| HarnessError(e.to_string()))?;
-            store.poll(&mut done);
+            store.wait(&mut done, Duration::ZERO);
         }
         if done.iter().any(|c| c.result.is_err()) {
             return Err(HarnessError("ageing the log failed".into()));
