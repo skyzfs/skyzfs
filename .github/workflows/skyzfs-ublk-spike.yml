@@ -21,6 +21,9 @@ on:
       hold_s:
         description: "seconds one request is held"
         default: "300"
+      preludes:
+        description: "the checkpoint step's runs, each with what goes before the pool: none; zero128 (blkdiscard -z over 128 MiB); zerofill (blkdiscard -z over the whole device eight times: a log at the high mark of write-zeroes records)"
+        default: "none"
       red:
         description: "true: run only the stop test against two builds that must FAIL it (the buffers freed at a stop; the last commits of a stop not handed over)"
         default: "false"
@@ -104,7 +107,9 @@ jobs:
             rig "$RUNNER_TEMP/rig.env" "$PWD/rig-out"
       - name: A checkpoint step on a kernel, by the daemon's default marks (M1.3c)
         if: ${{ !cancelled() }}
-        timeout-minutes: 20
+        timeout-minutes: 50
+        env:
+          PRELUDES: ${{ inputs.preludes || 'none' }}
         # Not the rig's and judged by nobody but the reader: a pool on
         # the daemon's device, a write load of several times the high
         # mark, the daemon's status, a scrub, an orderly stop, a second
@@ -113,7 +118,7 @@ jobs:
           cargo build --release --locked -p skyzfsd --features test-hooks
           cat > "$RUNNER_TEMP/ckpt.sh" <<'SCRIPT'
           set -u
-          d=$1; base=/mnt/skz-ckpt; pool=skzckpt
+          d=$1; base=/mnt/skz-ckpt; pool=skzckpt; pre=$3
           # shellcheck source=tests/lib/lim.sh
           . "$2/tests/lib/lim.sh"
           rm -rf "$base"; mkdir -p "$base/run"
@@ -142,16 +147,46 @@ jobs:
           say "create $("$d" create --dir "$base/vol" --size $((4 << 30)) --run-dir "$base/run" 2>&1 | tr '\n' ';')"
           serve
           status at_start
+          say "prelude $pre"
+          # Write-zeroes before the pool (M1.3e): each request of up to
+          # 1 MiB is one header in the log. zerofill is 32768 of them
+          # at 4 KiB each: the high mark of 128 MiB.
+          t0=$(date +%s)
+          case $pre in
+            none) ;;
+            zero128)
+              lim 300 blkdiscard -z -o 0 -l $((128 << 20)) "$dev" || fail "blkdiscard -z"
+              ;;
+            zerofill)
+              for pass in 1 2 3 4 5 6 7 8; do
+                lim 600 blkdiscard -z "$dev" || fail "blkdiscard -z, pass $pass"
+                status "after_zero_pass_$pass"
+              done
+              ;;
+            *) fail "no such prelude: $pre" ;;
+          esac
+          say "prelude_took $(( $(date +%s) - t0 )) s"
+          status after_prelude
           lim 180 zpool create -f -o ashift=12 -o cachefile=none -O compression=off -O mountpoint="$base/mnt" "$pool" "$dev" || fail "zpool create"
           # 640 MiB that do not compress: five times the high mark of
           # two 64 MiB segments.
           for i in 1 2 3 4 5; do
             # The status three times while the file is written, so
             # that a step under way is seen if it can be.
+            t0=$(date +%s)
             dd if=/dev/urandom of="$base/mnt/f$i" bs=1M count=128 conv=fsync status=none &
             writer=$!
             for look in 1 2 3; do sleep 0.3; status "during_${i}_look_$look"; done
+            # Behind a prelude the file can take minutes: a look every
+            # ten seconds until it is written.
+            look=3
+            while kill -0 "$writer" 2>/dev/null; do
+              sleep 10
+              kill -0 "$writer" 2>/dev/null || break
+              look=$((look + 1)); status "during_${i}_look_$look"
+            done
             wait "$writer" || fail "dd $i"
+            say "file_$i took $(( $(date +%s) - t0 )) s"
             status "after_${i}x128MiB"
           done
           lim 120 zpool sync "$pool" || fail "zpool sync"
@@ -187,10 +222,15 @@ jobs:
           case $health in *"state: ONLINE"*"errors: No known data errors"*) ;; *) fail "the pool is not healthy: $health" ;; esac
           say "verdict PASS: $steps steps, pool healthy, content the same after a restart"
           SCRIPT
+          [[ $PRELUDES =~ ^(none|zero128|zerofill)(\ (none|zero128|zerofill))*$ ]] || { echo "::error::preludes are none, zero128, zerofill with a space between: '$PRELUDES'"; exit 64; }
           rc=0
+          : > ckpt.log
           set +o pipefail
-          sudo bash "$RUNNER_TEMP/ckpt.sh" "$PWD/target/release/skyzfsd" "$PWD" 2>&1 | tee ckpt.log
-          rc=${PIPESTATUS[0]}
+          for pre in $PRELUDES; do
+            sudo bash "$RUNNER_TEMP/ckpt.sh" "$PWD/target/release/skyzfsd" "$PWD" "$pre" 2>&1 | tee -a ckpt.log
+            one=${PIPESTATUS[0]}
+            [ "$one" -eq 0 ] || rc=$one
+          done
           set -o pipefail
           {
             echo "### a checkpoint step on ${{ matrix.image }} (exit $rc)"

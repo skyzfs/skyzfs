@@ -808,12 +808,33 @@ impl<D: Dir> Core<D> {
         }
     }
 
+    /// Whether the log's live size is at or above the high mark of a
+    /// volume that has marks and has not failed: where no request is
+    /// executed while the rule of the marks still finds a step to take
+    /// ([`Marks`]).
+    fn at_the_high_mark(&self) -> bool {
+        let live = self.log.tail().0 - self.log.floor().0;
+        !self.failed && self.marks.is_some_and(|marks| live >= marks.high)
+    }
+
+    /// The rule of the marks after a request, for a store that is not
+    /// served: one step, and further steps for as long as the log is
+    /// at or above the high mark and a step took something. The worker
+    /// of a served store does the same between two requests.
+    fn tend_after_a_request(&mut self) {
+        // A step that fails has failed the volume, which the next
+        // request is told.
+        while self.tend(&mut || {}) == Ok(true) && self.at_the_high_mark() {}
+    }
+
     /// The rule of the marks, once: if the log's live size has reached
     /// the high mark and is not yet below the low one, take one step,
     /// after making the log durable if less than a step of it is and
-    /// more could be. `before` is called just before a step that has
-    /// something to take. Returns whether a step was taken: if so the
-    /// rule wants to be asked again.
+    /// more could be. `before` is called once, before the step and
+    /// before that sync if there is one: the rule's own sync is the
+    /// beginning of its step, and can take as long as any sync.
+    /// Returns whether a step was taken: if so the rule wants to be
+    /// asked again.
     ///
     /// The sync is the log's, as a flush's is, and is nobody's request:
     /// it has no place in the volume's order.
@@ -840,14 +861,20 @@ impl<D: Dir> Core<D> {
         let takeable = reach(durable).0.saturating_sub(floor.0);
         // A sync helps only if the hold is not what stands in the way.
         let more_if_synced = reach(self.log.tail()) > reach(durable);
-        if takeable < marks.step.payload && more_if_synced {
+        let syncs = takeable < marks.step.payload && more_if_synced;
+        if syncs {
+            // More becomes durable below the hold, so a step follows
+            // unless the sync fails the volume.
+            before();
             self.flush()?;
             self.own_syncs += 1;
         }
         if reach(self.log.durable()) <= floor {
             return Ok(false);
         }
-        before();
+        if !syncs {
+            before();
+        }
         let step = self.checkpoint_step(marks.step)?;
         self.steps += 1;
         // Below the low mark the rule rests until the high one.
@@ -1120,8 +1147,14 @@ pub struct StepBound {
 
 impl StepBound {
     /// The daemon's step (design §5.1): 8 MiB or 1024 records,
-    /// whichever comes first. More than the largest request adds to
-    /// the log, so a step after every request shortens the log.
+    /// whichever comes first. For writes that is more than the largest
+    /// request adds to the log, so a step after every request shortens
+    /// the log. For records that are short in the log it is not: eight
+    /// write-zeroes of 1 MiB are 32 KiB of log at a record alignment
+    /// of 4096, and 1024 discards are 64 KiB at an alignment of 64.
+    /// The log's bound then rests on the rule and not on the step
+    /// ([`Marks`]): at the high mark it takes as many steps as it
+    /// needs before the next request.
     pub const DAEMON: Self = Self {
         payload: 8 << 20,
         records: 1024,
@@ -1195,7 +1228,15 @@ impl StepPause {
 /// checkpoints"): two marks on the log's live size, the bytes from its
 /// start to its end. At or above `high` the store takes steps of
 /// `step`, one after every request it executes and whenever it has
-/// none, until the live size is below `low`.
+/// none, until the live size is below `low`. And while the live size
+/// is at or above `high`, no request is executed as long as a step
+/// still takes something: the log is brought back below `high` first.
+/// So before every request the log is below `high`, and it never
+/// holds more than `high` and what one request adds, whatever its
+/// records are. Two things end the steps with the log still at
+/// `high`, as they end them anywhere: a hold in front of the log, and
+/// a failed volume. The request is then executed, and behind a hold
+/// the log grows until it is full and the request is held.
 ///
 /// # What it costs a client
 ///
@@ -1213,6 +1254,30 @@ impl StepPause {
 /// Before a step the worker also syncs the log itself when less than
 /// a step of it is durable and more could be ([`LogState::own_syncs`]
 /// counts these).
+///
+/// At the high mark a request waits for more than one step when a
+/// step takes less log than the request before it added. For writes
+/// it does not: a step of the daemon's takes at least 7 MiB of them.
+/// For records that are short in the log it does. With the daemon's
+/// step, a record alignment of 4096 and requests of at most 1 MiB:
+///
+/// - behind write-zeroes of 1 MiB each a step takes eight records,
+///   32 KiB of log, and writes 8 MiB of zeros into the home image; a
+///   write of 1 MiB adds 1 MiB and 4 KiB, so the next request waits
+///   for 33 steps: 264 MiB of zeros written and 33 syncs of the home
+///   image. A log filled to a high mark of 128 MiB with such records
+///   holds 32 768 of them, 32 GiB of zeros to write in 4096 steps,
+///   and writes are served at that pace until they are gone;
+/// - behind discards a step takes 1024 records, 4 MiB of log and
+///   nothing to write: one step a request, as for writes. At a record
+///   alignment of 64 it is 64 KiB of log a step, and a write of 1 MiB
+///   waits for 17 steps, each with its syncs and nothing written.
+///
+/// The first of these is long. It is the price of writing zeros into
+/// the home image for a record that names them in one header; the
+/// bound of a step does not hide it. What would remove it is to
+/// deallocate the range in the home image and write nothing, which is
+/// not done here: see the note where the zeros are written.
 ///
 /// This cost is the design's choice of a bounded log and a bounded
 /// start over an even latency (design §5.1). It has not been measured
@@ -1245,7 +1310,9 @@ pub struct LogState {
     /// flush of the client's had come: what a client that does not
     /// flush costs the store.
     pub own_syncs: u64,
-    /// Whether such a step is under way now.
+    /// Whether such a step is under way now. A step begins with the
+    /// rule's own sync of the log, when it needs one: that sync can
+    /// take as long as any, and is shown as the step it is for.
     pub stepping: bool,
 }
 
@@ -1428,6 +1495,18 @@ impl Preimages {
 }
 
 /// Write `len` zeros at `offset`.
+///
+/// This is what a write-zeroes record costs a step: its whole length
+/// in zeros written, for a record that is one header in the log. It is
+/// why a log of such records is worked off slowly ([`Marks`], "what it
+/// costs a client"). The home image is a sparse file, so the range
+/// could be deallocated instead (a hole reads as zeros, and blocks of
+/// 4 KiB are whole blocks of the file): nothing written, nothing of a
+/// write unit rewritten and so no preimages for it, and the record
+/// would count no bytes in a step, as a discard does. That needs a
+/// call of [`File`] that this crate does not have yet, and a model of
+/// its loss at a power cut in the simulated disk. Not done here: it is
+/// proposed in the description of M1.3e.
 fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
     const CHUNK: u64 = 1 << 20;
     let zeros = vec![0u8; len.min(CHUNK) as usize];
@@ -1921,10 +2000,10 @@ impl<D: Dir> Store<D> {
                     out.push(Completion { id, result, buf });
                     done += 1;
                     // The rule of the marks, as the worker of a served
-                    // store applies it: one step after every request.
-                    // A step that fails has failed the volume, which
-                    // the next request is told.
-                    let _ = self.core.tend(&mut || {});
+                    // store applies it: a step after every request,
+                    // and at the high mark steps until the log is
+                    // below it before the next request.
+                    self.core.tend_after_a_request();
                 }
                 Err(op) => {
                     self.queue.push_front(Request { id, op });
@@ -2210,7 +2289,19 @@ where
                         }
                         None => {}
                     }
-                    let next = if held { None } else { queue.pop_front() };
+                    // At or above the high mark no request is executed
+                    // while the rule still takes steps: `busy` says
+                    // that its last step took something, or that it is
+                    // yet to be asked. A rule that finds nothing to
+                    // take (a hold, or a failed volume) does not keep
+                    // a request waiting: the request is executed, and
+                    // is held or refused by what it finds.
+                    let steps_first = busy && core.at_the_high_mark();
+                    let next = if held || steps_first {
+                        None
+                    } else {
+                        queue.pop_front()
+                    };
                     if let Some(Request { id, op }) = next {
                         match core.execute(op) {
                             Ok((result, buf)) => {
@@ -2239,20 +2330,25 @@ where
                         }
                     }
                     // The rule of the marks: one step after every
-                    // request, and whenever there is none. The owner
-                    // is woken when a step begins and when it ends, so
-                    // that it can show both.
+                    // request and whenever there is none, and at the
+                    // high mark steps until the log is below it before
+                    // the next request (above). The owner is woken
+                    // when a step begins, which is before the rule's
+                    // own sync of the log if it needs one, and when it
+                    // ends, so that it can show both.
                     let wake = || {
                         if let Some(Waker(wake)) = &waker {
                             wake();
                         }
                     };
+                    let mut begun = false;
                     let stepped = core.tend(&mut || {
+                        begun = true;
                         shown.begin();
                         wake();
                     });
                     busy = stepped == Ok(true);
-                    if stepped != Ok(false) {
+                    if stepped != Ok(false) || begun {
                         // Only a safeguard: a request is held when
                         // the log is full behind a hold, after the log
                         // was made durable and checkpointed up to the
