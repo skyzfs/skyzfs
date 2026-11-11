@@ -64,11 +64,26 @@ pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
     }
 }
 
+/// The size in MiB and the depth the tool opened the volume with, from
+/// the trace's "open" line. A trace without one is replayed at the size
+/// given and the tool's own depth.
+fn opened_with(text: &str, volume: &str) -> Option<(u64, u32)> {
+    text.lines().find_map(|line| {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() >= 6 && f[1] == volume && f[2] == "open" {
+            Some((f[4].parse().ok()?, f[5].parse().ok()?))
+        } else {
+            None
+        }
+    })
+}
+
 /// The replay of a trace's text: how many events the model objected
 /// to, or why the trace could not be replayed.
 fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String> {
-    let Ok(geometry) = Geometry::new(size_mib, 64, false) else {
-        return Err(format!("not a device size: {size_mib} MiB"));
+    let (size_mib, depth) = opened_with(text, volume).unwrap_or((size_mib, crate::device::DEPTH));
+    let Ok(geometry) = Geometry::new(size_mib, depth, false) else {
+        return Err(format!("not a geometry: {size_mib} MiB, depth {depth}"));
     };
     let mut model = Model::new(geometry);
     let mut ops: BTreeMap<u64, String> = BTreeMap::new();
@@ -168,6 +183,10 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
                 "the model is told the log failed".to_string()
             }
             ("reopen", _) => {
+                // Nothing is outstanding at a volume that is opened
+                // again: an id from before is a new request.
+                outstanding.clear();
+                done.clear();
                 model.reopened();
                 "the model is told of the reopen".to_string()
             }
@@ -189,7 +208,7 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
 
 #[cfg(test)]
 mod tests {
-    use super::replay_text;
+    use super::{opened_with, replay_text};
 
     /// A write, the log fails, and a read that the kernel answers with
     /// an I/O error: the suite is given `Failed` for it, and the trace
@@ -217,6 +236,34 @@ mod tests {
     #[test]
     fn the_raw_result_of_a_failed_volume_is_a_violation() {
         assert_eq!(replay_text(&failed_log("Err(Io(Other))"), "7", 64), Ok(1));
+    }
+
+    /// The geometry is the one the volume was opened with. The model
+    /// does not use the depth today; it is read all the same, so that
+    /// the replay and the live run cannot come apart when it does.
+    #[test]
+    fn the_geometry_is_read_from_the_open_line() {
+        let trace = "1\t7\topen\t\t128\t16\n1\t8\topen\t\t64\t32";
+        assert_eq!(opened_with(trace, "7"), Some((128, 16)));
+        assert_eq!(opened_with(trace, "8"), Some((64, 32)));
+        assert_eq!(opened_with(trace, "9"), None);
+        assert_eq!(opened_with("1\t7\topen\t\tx\t16", "7"), None);
+    }
+
+    /// An id that was outstanding when the volume failed is a new
+    /// request after the volume is opened again, not one issued again.
+    #[test]
+    fn an_id_outstanding_before_a_reopen_is_new_after_it() {
+        let trace = [
+            "1\t7\tsubmit\t1\twrite\t3\t1\taaaa",
+            "2\t7\tfail\t\t",
+            "3\t7\treopen\t\t",
+            "4\t7\tsubmit\t1\tread\t3\t1\t",
+            "5\t7\tdone\t1\tOk(())\tzero\tOk(())",
+            "6\t7\tdelivered\t1\t",
+        ]
+        .join("\n");
+        assert_eq!(replay_text(&trace, "7", 64), Ok(0));
     }
 
     #[test]

@@ -264,6 +264,15 @@ impl DeviceTarget {
             .metadata()
             .map(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type()))
             .map_err(|e| err("type of", &e))?;
+        if tracing() {
+            // For the replayer: the model is built for this geometry.
+            trace(
+                number,
+                "open",
+                None,
+                &format!("{}\t{depth}", size / SIZE_UNIT),
+            );
+        }
         let (done_tx, done_rx) = channel();
         Ok(Self {
             number,
@@ -336,6 +345,16 @@ impl DeviceTarget {
     /// at a server that died: the kernel issued them again by itself,
     /// which is their application after the kill.
     fn settle(&mut self, timeout: Duration) -> Result<(), HarnessError> {
+        if let Some(what) = self.settle_checked(timeout)? {
+            rig_error(&what);
+        }
+        Ok(())
+    }
+
+    /// `settle`, returning instead of exiting: `Some(why)` when a call
+    /// carried across the kill had returned before the sorting.
+    fn settle_checked(&mut self, timeout: Duration) -> Result<Option<String>, HarnessError> {
+        let mut wrong = None;
         let mut got = Vec::new();
         self.drain(&mut got);
         while !self.in_flight.is_empty() {
@@ -358,12 +377,12 @@ impl DeviceTarget {
                 &format!("{:?}", c.result),
             );
             if let Some(what) = sorted_wrongly(returned.get(&c.id).copied(), self.sorted_at) {
-                rig_error(&format!("volume {}, request {}: {what}", self.number, c.id));
+                wrong.get_or_insert(format!("volume {}, request {}: {what}", self.number, c.id));
             }
             self.carried.insert(c.id, c);
         }
         self.sorted_at = None;
-        Ok(())
+        Ok(wrong)
     }
 }
 
@@ -454,6 +473,10 @@ impl BlockTarget for DeviceTarget {
     }
 }
 
+/// The depth the tool gives the suite when none is asked for, and the
+/// one a trace without an "open" line is replayed at.
+pub const DEPTH: u32 = 16;
+
 /// The sorting of the calls outstanding at a kill cannot be trusted:
 /// say so and stop, with a status the rig reports as its own error. The
 /// suite must not judge a server on a history the tool got wrong.
@@ -510,18 +533,19 @@ impl DeviceHarness {
 
     /// Run the helper; the last line of its stdout.
     fn helper(&self, verb: &str, number: u64) -> Result<String, HarnessError> {
-        self.helper_watched(verb, number, &mut |_| {})
+        self.helper_watched(verb, number, &mut |_| None)
     }
 
     /// Run the helper and call `on_line` with each line of its stdout as
-    /// it is printed; the last line of its stdout.
+    /// it is printed; what `on_line` returns is written to the helper's
+    /// stdin as a line. The last line of its stdout.
     fn helper_watched(
         &self,
         verb: &str,
         number: u64,
-        on_line: &mut dyn FnMut(&str),
+        on_line: &mut dyn FnMut(&str) -> Option<&'static str>,
     ) -> Result<String, HarnessError> {
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Write};
         use std::process::Stdio;
         let failed = |e: &dyn std::fmt::Display| {
             HarnessError(format!("{} {verb} {number}: {e}", self.command))
@@ -529,15 +553,21 @@ impl DeviceHarness {
         let mut child = Command::new(&self.command)
             .arg(verb)
             .arg(number.to_string())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| failed(&e))?;
         let mut printed = Vec::new();
+        let mut stdin = child.stdin.take();
         if let Some(stdout) = child.stdout.take() {
             for line in BufReader::new(stdout).lines() {
                 let line = line.map_err(|e| failed(&e))?;
-                on_line(&line);
+                if let (Some(reply), Some(stdin)) = (on_line(&line), stdin.as_mut()) {
+                    // A helper that does not read has gone on by itself.
+                    let _ = writeln!(stdin, "{reply}");
+                    let _ = stdin.flush();
+                }
                 printed.extend_from_slice(line.as_bytes());
                 printed.push(b'\n');
             }
@@ -603,6 +633,7 @@ impl Harness for DeviceHarness {
         );
         // The helper says "dead R W" when the old server is gone and
         // the new one is not started: no request completes in between.
+        // It serves again only when it has read "sorted" from here.
         // R and W are the kernel's counts of reads and writes in flight
         // at the device at that moment. They are written down and not
         // used: the kernel counts 0 there whatever waits to be issued
@@ -611,7 +642,7 @@ impl Harness for DeviceHarness {
         self.helper_watched("kill", number, &mut |line| {
             let mut words = line.split_whitespace();
             if words.next() != Some("dead") {
-                return;
+                return None;
             }
             target.returned_before_kill();
             let counts: Vec<u64> = words.filter_map(|w| w.parse().ok()).collect();
@@ -622,6 +653,7 @@ impl Harness for DeviceHarness {
                 None,
                 &format!("outstanding {outstanding}\tkernel in flight {counts:?}"),
             );
+            Some("sorted")
         })?;
         trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
@@ -691,7 +723,7 @@ fn flat(s: &str) -> String {
 
 pub fn main() -> ExitCode {
     let mut command = None;
-    let mut depth = 16u32;
+    let mut depth = DEPTH;
     let mut config = Config {
         cases: 16,
         rounds: 4,
@@ -853,6 +885,51 @@ mod tests {
             on_device[..8 * BLOCK_USIZE].iter().all(|b| *b == 0xaa),
             "the resubmission was issued"
         );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A call that is carried across a kill as "in flight at the death"
+    /// and had returned before the sorting is a rig error from `settle`.
+    /// The sorting is the real one, and the call is one that returned
+    /// after it; its time of return is then put before the sorting, as
+    /// for a thread that returned under the old server and was not seen
+    /// by the sorting. Without the look in `settle`, or with a sorting
+    /// that does not keep its time, this fails.
+    #[test]
+    fn settle_reports_a_call_that_returned_before_the_sorting() {
+        let (mut t, path) = target("settle");
+        let before = std::time::Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(t.returned_before_kill(), 0, "nothing was outstanding");
+        let id = RequestId(9);
+        let op = Op::Write {
+            offset: 0,
+            data: filled(0x11),
+        };
+        t.submit(Request { id, op }).unwrap();
+        for _ in 0..3000 {
+            if t.returned.lock().unwrap().contains_key(&id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Returned after the sorting: carried, and nothing to report.
+        // Its stamp moved before the sorting: reported.
+        t.returned.lock().unwrap().insert(id, before);
+        let said = t.settle_checked(Duration::from_secs(30)).unwrap();
+        assert!(
+            said.as_deref().is_some_and(|s| s.contains("request #9")),
+            "{said:?}"
+        );
+        // And the same call with its own stamp is not reported.
+        assert_eq!(t.returned_before_kill(), 0);
+        let id = RequestId(10);
+        let op = Op::Write {
+            offset: 0,
+            data: filled(0x22),
+        };
+        t.submit(Request { id, op }).unwrap();
+        assert_eq!(t.settle_checked(Duration::from_secs(30)).unwrap(), None);
         std::fs::remove_file(&path).unwrap();
     }
 
@@ -1024,6 +1101,7 @@ mod tests {
                 if line == "dead 0 0" {
                     at = Some(started.elapsed());
                 }
+                None
             })
             .unwrap();
         assert_eq!(last, "/dev/null");
