@@ -2623,3 +2623,226 @@ fn a_checkpoint_in_steps_can_be_cut_anywhere() {
     caught(scenario, Mutants::RECLAIM_BEFORE_HOME_SYNC);
     caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
 }
+
+// ---------------------------------------------------------------------
+// The rule of the marks.
+
+/// Marks for a volume of the tests' size: steps begin at 512 KiB of
+/// log and end below 256 KiB; a step takes at most 128 KiB or 8
+/// records, twice what the test's request adds.
+const MARKS: Marks = Marks {
+    high: 512 << 10,
+    low: 256 << 10,
+    step: StepBound {
+        payload: 128 << 10,
+        records: 8,
+    },
+};
+
+/// What one request of 16 blocks adds to the log at most: its data, its
+/// header, and the padding to the next write unit and segment.
+const ONE_REQUEST: u64 = (64 << 10) + (2 * 16 << 10);
+
+/// Under a write load that lasts and never flushes, with the rule
+/// asked once after every request, the log's live size stays below
+/// the high mark and one request: the log stops growing, whatever
+/// the load. No step is taken while the log is below the low mark,
+/// steps are taken, the store syncs the log itself to have something
+/// durable to take, and every block reads as written at the end and
+/// after a restart.
+#[test]
+fn under_a_lasting_write_load_the_log_stays_at_the_high_mark() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        store.set_marks(Some(MARKS));
+        let mut newest = [0u8; 64];
+        let (mut largest, mut below_low, mut was_high) = (0, 0u64, false);
+        for n in 0..300u64 {
+            let slot = (n * 7) % 64;
+            let byte = (n % 250) as u8 + 1;
+            write(&mut store, slot * 16, 16, byte)?;
+            newest[slot as usize] = byte;
+            let before = store.log_state();
+            let stepped = store.tend().map_err(|e| format!("tend: {e}"))?;
+            let after = store.log_state();
+            largest = largest.max(before.live());
+            was_high |= before.live() >= MARKS.high;
+            if before.live() > MARKS.high + ONE_REQUEST {
+                return Err(format!(
+                    "after write {n} the log holds {} bytes",
+                    before.live()
+                ));
+            }
+            if stepped && !was_high {
+                return Err(format!(
+                    "a step at write {n}, before the high mark was reached"
+                ));
+            }
+            if stepped != (after.steps > before.steps) || (stepped && after.start <= before.start) {
+                return Err(format!(
+                    "write {n}: stepped {stepped}, {before:?} to {after:?}"
+                ));
+            }
+            if after.live() < MARKS.low {
+                below_low += 1;
+                // Below the low mark the rule rests until the high one.
+                was_high = false;
+            }
+        }
+        let state = store.log_state();
+        if state.steps < 20 || largest < MARKS.high || below_low == 0 {
+            return Err(format!(
+                "the load did not exercise the rule: {state:?}, largest {largest}, below the low mark {below_low} times"
+            ));
+        }
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            for (slot, byte) in newest.iter().enumerate() {
+                expect(store, slot as u64 * 16, 16, *byte, when)?;
+            }
+            Ok(())
+        };
+        check(&mut store, "under the load")?;
+        // Nothing the client was never promised durable is needed
+        // after a kill, and what the steps took is in the home image.
+        drop(store);
+        disk.kill();
+        let mut store = env.reopen_ack(&disk)?;
+        check(&mut store, "after a kill")
+    }
+    holds(scenario);
+}
+
+/// Without marks the store never checkpoints by itself, and a hold in
+/// front of the log stops the rule without a sync or a spin.
+#[test]
+fn the_rule_rests_without_marks_and_behind_a_hold() {
+    let env = environments(0).remove(0);
+    let (disk, mut store) = env.fresh().expect("a store");
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, 1).expect("write");
+    }
+    assert!(store.log_state().live() > MARKS.high);
+    assert_eq!(store.tend(), Ok(false), "no marks, no step");
+    let start = store.log_start();
+    store.set_hold(Some(start)).expect("a hold at the start");
+    store.set_marks(Some(MARKS));
+    let syncs = disk.stats().syncs;
+    assert_eq!(store.tend(), Ok(false), "nothing below the hold");
+    assert_eq!(disk.stats().syncs, syncs, "and no sync that could not help");
+    store.set_hold(None).expect("released");
+    assert_eq!(store.tend(), Ok(true));
+    assert_eq!(store.log_state().steps, 1);
+}
+
+/// A step that fails fails the volume: the rule returns the failure,
+/// the store serves nothing more, and the next open finds it marked.
+#[test]
+fn a_step_that_fails_fails_the_volume() {
+    let env = environments(0).remove(0);
+    let (disk, mut store) = env.fresh().expect("a store");
+    store.set_marks(Some(MARKS));
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, 1).expect("write");
+    }
+    disk.fail_sync_of(HOME_NAME);
+    assert_eq!(store.tend(), Err(BlkError::Failed));
+    assert!(store.is_failed());
+    assert_eq!(store.tend(), Ok(false), "a failed volume is left alone");
+    let done = run(&mut store, Op::Flush).expect("answered");
+    assert_eq!(done.result, Err(BlkError::Failed));
+    drop(store);
+    disk.clear_faults();
+    assert!(Store::open(disk.clone(), env.options()).is_err());
+}
+
+/// The served store applies the rule on its worker: after every
+/// request, and with no request at all until the log is below the low
+/// mark. Requests are answered between the steps, the owner is woken
+/// when a step begins and ends, and the log's state can be read while
+/// the worker works.
+#[test]
+fn a_served_store_steps_between_requests_and_when_idle() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let mut served = store
+        .serve_with(Some(Waker::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })))
+        .unwrap();
+    assert_eq!(served.log_state().steps, 0);
+    let mut done = Vec::new();
+    let mut largest = 0;
+    for n in 0..200u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(n),
+                op: Op::Write {
+                    offset: (n % 64) * 16 * BLOCK,
+                    data: Buf::filled(16, (n % 250) as u8 + 1),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()), "write {n}");
+        largest = largest.max(served.log_state().live());
+    }
+    // The state is published a moment after the completion, so one
+    // request more than the bound may be seen.
+    assert!(
+        largest <= MARKS.high + 2 * ONE_REQUEST,
+        "the log reached {largest} bytes"
+    );
+    // No request any more: the worker goes on until the low mark.
+    let began = std::time::Instant::now();
+    loop {
+        let state = served.log_state();
+        if state.live() < MARKS.low && !state.stepping {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "idle, the log stayed at {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let state = served.log_state();
+    assert!(state.steps >= 10, "{state:?}");
+    // 200 completions, and two wake-ups a step.
+    assert!(
+        u64::from(calls.load(Ordering::SeqCst)) >= 200 + 2 * state.steps,
+        "{} wake-ups for 200 requests and {} steps",
+        calls.load(Ordering::SeqCst),
+        state.steps
+    );
+    // It rests there: no step without a reason.
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(served.log_state().steps, state.steps);
+    for slot in 0..64u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(1000 + slot),
+                op: Op::Read {
+                    offset: slot * 16 * BLOCK,
+                    buf: Buf::zeroed(16),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        // The last write to the slot: of 200, number slot + 192 or + 128.
+        let newest = (slot + if slot < 8 { 192 } else { 128 }) % 250 + 1;
+        let buf = done[0].buf.as_ref().expect("the read's buffer");
+        assert!(
+            buf.iter().all(|b| u64::from(*b) == newest),
+            "slot {slot} does not hold its newest write"
+        );
+    }
+    drop(served);
+    disk.kill();
+    env.reopen_ack(&disk).expect("opens after a kill");
+}

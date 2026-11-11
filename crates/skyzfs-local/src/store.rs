@@ -18,7 +18,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -416,6 +416,14 @@ struct Core<D: Dir> {
     /// Where the record of the mutation that was just executed starts:
     /// taken by the driver when it hands out the completion.
     appended: Option<Lsn>,
+    /// When the store checkpoints by itself, if it does: see
+    /// [`Store::set_marks`].
+    marks: Option<Marks>,
+    /// The log was found at or above the high mark and is not yet
+    /// below the low one: steps are due.
+    working: bool,
+    /// The steps the rule has taken.
+    steps: u64,
     mutants: Mutants,
 }
 
@@ -736,6 +744,65 @@ impl<D: Dir> Core<D> {
         })
     }
 
+    /// The log's state, for whoever shows it.
+    fn log_state(&self) -> LogState {
+        LogState {
+            start: self.log.floor().0,
+            end: self.log.tail().0,
+            durable: self.log.durable().0,
+            steps: self.steps,
+            stepping: false,
+        }
+    }
+
+    /// The rule of the marks, once: if the log's live size has reached
+    /// the high mark and is not yet below the low one, take one step,
+    /// after making the log durable if less than a step of it is and
+    /// more could be. `before` is called just before a step that has
+    /// something to take. Returns whether a step was taken: if so the
+    /// rule wants to be asked again.
+    ///
+    /// The sync is the log's, as a flush's is, and is nobody's request:
+    /// it has no place in the volume's order.
+    fn tend(&mut self, before: &mut dyn FnMut()) -> Result<bool, BlkError> {
+        let Some(marks) = self.marks else {
+            return Ok(false);
+        };
+        if self.failed {
+            return Ok(false);
+        }
+        let floor = self.log.floor();
+        let live = self.log.tail().0 - floor.0;
+        if live >= marks.high {
+            self.working = true;
+        } else if live < marks.low {
+            self.working = false;
+        }
+        if !self.working {
+            return Ok(false);
+        }
+        let hold = self.log.hold();
+        let reach = |durable: Lsn| hold.map_or(durable, |hold| durable.min(hold));
+        let durable = self.log.durable();
+        let takeable = reach(durable).0.saturating_sub(floor.0);
+        // A sync helps only if the hold is not what stands in the way.
+        let more_if_synced = reach(self.log.tail()) > reach(durable);
+        if takeable < marks.step.payload && more_if_synced {
+            self.flush()?;
+        }
+        if reach(self.log.durable()) <= floor {
+            return Ok(false);
+        }
+        before();
+        let step = self.checkpoint_step(marks.step)?;
+        self.steps += 1;
+        // Below the low mark the rule rests until the high one.
+        if self.log.tail().0 - step.start.0 < marks.low {
+            self.working = false;
+        }
+        Ok(true)
+    }
+
     /// Where the batches of a checkpoint from `floor` to `target` end.
     /// A batch is as many records as keep the blocks to save in the
     /// preimage file within [`PREIMAGE_BATCH`], and at least one.
@@ -979,6 +1046,43 @@ impl StepBound {
         payload: 8 << 20,
         records: 1024,
     };
+}
+
+/// When the store checkpoints by itself (design §5.1, "when the daemon
+/// checkpoints"): two marks on the log's live size, the bytes from its
+/// start to its end. At or above `high` the store takes steps of
+/// `step`, one after every request it executes and whenever it has
+/// none, until the live size is below `low`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marks {
+    /// The live size at which steps begin, in bytes.
+    pub high: u64,
+    /// The live size below which they end, in bytes: below `high`.
+    pub low: u64,
+    /// What one step may take.
+    pub step: StepBound,
+}
+
+/// The log as a store shows it to its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogState {
+    /// Where the log starts: everything before is in the home image.
+    pub start: u64,
+    /// Where it ends.
+    pub end: u64,
+    /// Up to where it is durable.
+    pub durable: u64,
+    /// The steps the rule of the marks has taken since the open.
+    pub steps: u64,
+    /// Whether such a step is under way now.
+    pub stepping: bool,
+}
+
+impl LogState {
+    /// The live size: what a start replays.
+    pub fn live(&self) -> u64 {
+        self.end - self.start
+    }
 }
 
 /// What one step of a checkpoint did.
@@ -1402,6 +1506,9 @@ impl<D: Dir> Store<D> {
                 unsynced: Vec::new(),
                 deferred: None,
                 appended: None,
+                marks: None,
+                working: false,
+                steps: 0,
                 mutants: options.mutants,
             },
             unacknowledged,
@@ -1450,6 +1557,27 @@ impl<D: Dir> Store<D> {
             return Err(BlkError::Failed);
         }
         self.core.flush()
+    }
+
+    /// Let the store checkpoint by itself, by `marks`, or not at all.
+    /// Not at all is how a store is opened. A served store applies the
+    /// rule on its worker; a store that is not served applies it when
+    /// [`Store::tend`] is called.
+    pub fn set_marks(&mut self, marks: Option<Marks>) {
+        self.core.marks = marks;
+        self.core.working = false;
+    }
+
+    /// Apply the rule of the marks once: see [`Marks`]. Returns whether
+    /// a step was taken. On a failed volume it does nothing; if it
+    /// fails the volume, an error.
+    pub fn tend(&mut self) -> Result<bool, BlkError> {
+        self.core.tend(&mut || {})
+    }
+
+    /// The log's start, end and durable position, and the steps taken.
+    pub fn log_state(&self) -> LogState {
+        self.core.log_state()
     }
 
     /// Up to where the log is durable: what a checkpoint can take, as
@@ -1656,7 +1784,41 @@ pub struct Served {
     acknowledged: Option<Lsn>,
     /// Set by the worker as it ends, however it ends.
     ended: Arc<AtomicBool>,
+    /// What the worker shows of the log.
+    log: Arc<Shown>,
     worker: Option<thread::JoinHandle<()>>,
+}
+
+/// The log's state as the worker last published it: read by the owner
+/// without a round trip through the worker, which a step can keep busy.
+#[derive(Debug, Default)]
+struct Shown {
+    start: AtomicU64,
+    end: AtomicU64,
+    durable: AtomicU64,
+    steps: AtomicU64,
+    stepping: AtomicBool,
+}
+
+impl Shown {
+    fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
+        let state = core.log_state();
+        self.start.store(state.start, Ordering::SeqCst);
+        self.end.store(state.end, Ordering::SeqCst);
+        self.durable.store(state.durable, Ordering::SeqCst);
+        self.steps.store(state.steps, Ordering::SeqCst);
+        self.stepping.store(stepping, Ordering::SeqCst);
+    }
+
+    fn state(&self) -> LogState {
+        LogState {
+            start: self.start.load(Ordering::SeqCst),
+            end: self.end.load(Ordering::SeqCst),
+            durable: self.durable.load(Ordering::SeqCst),
+            steps: self.steps.load(Ordering::SeqCst),
+            stepping: self.stepping.load(Ordering::SeqCst),
+        }
+    }
 }
 
 /// Says that the worker has ended, when the worker's closure is left:
@@ -1704,6 +1866,9 @@ where
         let (commands, inbox) = mpsc::channel::<Command>();
         let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>)>();
         let ended = Arc::new(AtomicBool::new(false));
+        let shown = Arc::new(Shown::default());
+        shown.publish(&core, false);
+        let log = shown.clone();
         let ending = Ending {
             ended: ended.clone(),
             waker: waker.clone(),
@@ -1715,10 +1880,14 @@ where
                 // Whether the request at the head was tried and cannot
                 // proceed until something changes.
                 let mut held = false;
+                // Whether the rule of the marks took a step and is to
+                // be asked again, request or no request.
+                let mut busy = false;
                 loop {
+                    shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
                     // to do.
-                    let command = if queue.is_empty() || held {
+                    let command = if (queue.is_empty() || held) && !busy {
                         match inbox.recv() {
                             Ok(command) => Some(command),
                             Err(_) => return,
@@ -1774,24 +1943,45 @@ where
                         }
                         None => {}
                     }
-                    let Some(Request { id, op }) = queue.pop_front() else {
-                        continue;
+                    let next = if held { None } else { queue.pop_front() };
+                    if let Some(Request { id, op }) = next {
+                        match core.execute(op) {
+                            Ok((result, buf)) => {
+                                let start = core.appended.take();
+                                let completion = Completion { id, result, buf };
+                                if outbox.send((completion, start)).is_err() {
+                                    return;
+                                }
+                                if let Some(Waker(wake)) = &waker {
+                                    wake();
+                                }
+                            }
+                            Err(op) => {
+                                queue.push_front(Request { id, op });
+                                held = true;
+                            }
+                        }
+                    }
+                    // The rule of the marks: one step after every
+                    // request, and whenever there is none. The owner
+                    // is woken when a step begins and when it ends, so
+                    // that it can show both.
+                    let wake = || {
+                        if let Some(Waker(wake)) = &waker {
+                            wake();
+                        }
                     };
-                    match core.execute(op) {
-                        Ok((result, buf)) => {
-                            let start = core.appended.take();
-                            let completion = Completion { id, result, buf };
-                            if outbox.send((completion, start)).is_err() {
-                                return;
-                            }
-                            if let Some(Waker(wake)) = &waker {
-                                wake();
-                            }
-                        }
-                        Err(op) => {
-                            queue.push_front(Request { id, op });
-                            held = true;
-                        }
+                    let stepped = core.tend(&mut || {
+                        shown.stepping.store(true, Ordering::SeqCst);
+                        wake();
+                    });
+                    busy = stepped == Ok(true);
+                    if stepped != Ok(false) {
+                        // A step may have made room for a request that
+                        // was held, and a failure answers it.
+                        held = false;
+                        shown.publish(&core, false);
+                        wake();
                     }
                 }
             })?;
@@ -1803,6 +1993,7 @@ where
             ids,
             acknowledged,
             ended,
+            log,
             worker: Some(worker),
         })
     }
@@ -1813,6 +2004,15 @@ impl Served {
         self.commands
             .as_ref()
             .is_some_and(|commands| commands.send(command).is_ok())
+    }
+
+    /// The log as the worker last showed it: its start, end and
+    /// durable position, the steps the rule of the marks has taken
+    /// ([`Store::set_marks`]), and whether one is under way. It asks
+    /// the worker nothing and returns at once, also during a step. The
+    /// fields are read one after the other and may be of two moments.
+    pub fn log_state(&self) -> LogState {
+        self.log.state()
     }
 
     /// Set or release the hold: see [`Store::set_hold`]. It takes
