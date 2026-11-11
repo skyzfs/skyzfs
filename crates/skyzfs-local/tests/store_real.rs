@@ -553,3 +553,30 @@ fn store_sanity_numbers() {
         );
     }
 }
+
+/// A share of the store's lock keeps the volume locked after the store
+/// is gone, also when the store ends on another thread and behind its
+/// worker: what an owner needs that has work to do under the lock when
+/// the store has ended.
+#[test]
+fn a_share_of_the_stores_lock_outlives_the_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let store = Store::create(dir.clone(), &config(16, 64), OpenOptions::default()).unwrap();
+    let share = store.share_lock().expect("the store holds the lock");
+    let served = store.serve().unwrap();
+    // The store ends on another thread, by a panic.
+    let ended = std::thread::spawn(move || {
+        let _served = served;
+        panic!("the thread that owns the store panics, as the test asks");
+    })
+    .join();
+    assert!(ended.is_err());
+    assert!(matches!(Store::lock_volume(&dir), Err(StoreError::Locked)));
+    assert!(matches!(
+        Store::open(dir.clone(), OpenOptions::default()),
+        Err(StoreError::Locked)
+    ));
+    drop(share);
+    assert!(Store::open(dir, OpenOptions::default()).is_ok());
+}

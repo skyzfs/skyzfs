@@ -90,12 +90,33 @@ impl FsDir {
 pub const LOCK_NAME: &str = "lock";
 
 /// The directory's lock, held: see [`Dir::try_lock`].
+///
+/// The lock can be shared inside the process ([`FsLock::share`]): it
+/// is then held until the last share is dropped. That is for a caller
+/// that must keep a directory locked beyond the life of the store that
+/// took the lock, whatever thread that store ends on.
 #[derive(Debug)]
 pub struct FsLock {
+    file: std::sync::Arc<Locked>,
+}
+
+impl FsLock {
+    /// Another hold on the same lock. The directory stays locked until
+    /// this one and every other share are dropped.
+    pub fn share(&self) -> Self {
+        Self {
+            file: self.file.clone(),
+        }
+    }
+}
+
+/// The locked file: unlocked when the last [`FsLock`] on it goes.
+#[derive(Debug)]
+struct Locked {
     file: fs::File,
 }
 
-impl Drop for FsLock {
+impl Drop for Locked {
     /// Unlocks, and does not leave it to the close. A lock belongs to
     /// the open file, not to this descriptor, and a child process
     /// started by another thread holds a copy of the descriptor from
@@ -125,7 +146,9 @@ impl Dir for FsDir {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let file = options.open(self.path.join(LOCK_NAME))?;
         match file.try_lock() {
-            Ok(()) => Ok(FsLock { file }),
+            Ok(()) => Ok(FsLock {
+                file: std::sync::Arc::new(Locked { file }),
+            }),
             Err(fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
             Err(fs::TryLockError::Error(e)) => Err(e),
         }
@@ -389,6 +412,25 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// A shared lock is held until its last share is dropped, whichever
+    /// that is, and on whatever thread the others went.
+    #[test]
+    fn a_shared_lock_is_held_until_the_last_share_goes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let refused =
+            |dir: &FsDir| matches!(dir.try_lock(), Err(e) if e.kind() == io::ErrorKind::WouldBlock);
+        let first = dir.try_lock().unwrap();
+        let share = first.share();
+        std::thread::spawn(move || drop(first)).join().unwrap();
+        assert!(refused(&dir), "free although a share is held");
+        let another = share.share();
+        drop(share);
+        assert!(refused(&dir));
+        drop(another);
+        assert!(dir.try_lock().is_ok());
     }
 
     /// The lock is free as soon as its holder is dropped, also while
