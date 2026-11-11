@@ -323,6 +323,17 @@ if want gone && scenario_start gone 2; then
     lim 60 zpool destroy -f skzf-gone > "$OUT/gone-destroy.log" 2>&1; rc=$?
     rec gone_destroy "zpool destroy -f: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-destroy.log")); pool $(pool_state skzf-gone); pools listed: $(lim 30 zpool list -H -o name,health 2>&1 | tr '\t\n' ' ;' | cut -c1-200)"
     rec gone_device_at_end "$(device_state 2)"
+    # The same after the pool's datasets are unmounted by hand first.
+    lim 60 zfs unmount -f skzf-gone > "$OUT/gone-zfs-unmount.log" 2>&1; rc=$?
+    lim 60 umount -l "$WORK/mnt/skzf-gone" > "$OUT/gone-umount-l.log" 2>&1; n=$?
+    rec gone_unmount "zfs unmount -f: rc $rc ($(tail -n 1 "$OUT/gone-zfs-unmount.log")); umount -l: rc $n ($(tail -n 1 "$OUT/gone-umount-l.log")); still mounted: $(grep -c " $WORK/mnt/skzf-gone " /proc/mounts)"
+    t0=$(date +%s)
+    lim 60 zpool destroy -f skzf-gone > "$OUT/gone-destroy2.log" 2>&1; rc=$?
+    rec gone_destroy_after_unmount "zpool destroy -f: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-destroy2.log")); pool $(pool_state skzf-gone)"
+    t0=$(date +%s)
+    lim 60 zpool export -f skzf-gone > "$OUT/gone-export2.log" 2>&1; rc=$?
+    rec gone_export_after_unmount "zpool export -f: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-export2.log")); pool $(pool_state skzf-gone); pools listed: $(lim 30 zpool list -H -o name,health 2>&1 | tr '\t\n' ' ;' | cut -c1-200)"
+    rec gone_device_after_unmount "$(device_state 2)"
 fi
 touch "$WORK/gone.stop"
 
