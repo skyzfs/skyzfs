@@ -157,6 +157,10 @@ jobs:
       TB_OUT: ${{ github.workspace }}/topology-bench-out
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
 
       - name: Reclaim runner disk
         # One 72 GB root disk with ~14 GB free; the images need room.

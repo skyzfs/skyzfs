@@ -42,6 +42,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - uses: dtolnay/rust-toolchain@stable
       # Restores the ci test job's workspace build; saves nothing.
       - uses: Swatinem/rust-cache@v2
