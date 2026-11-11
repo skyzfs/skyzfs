@@ -175,10 +175,20 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat red.log
           if [ "$rc" -eq 0 ]; then
+            echo "verdict: FINDING: the stop test PASSED with the defect put back; its detail line is above" >> "$GITHUB_STEP_SUMMARY"
             echo "::error title=${{ matrix.variant }}::the stop test PASSED with the defect put back: it does not catch it"
             exit 1
           fi
-          grep -q '^control_stop_under_writers_leaves_later_memory_alone.FAIL' red.log || {
-            echo "::error title=${{ matrix.variant }}::the test did not end with its own FAIL line (exit $rc): a crash is not the assertion"
+          # Green with any FAIL line of the test, whatever its reason
+          # (changed bytes, a wrong read-back, a writer's error, more
+          # handed than finished): the line is quoted. A process that
+          # died without one also shows the defect; the job stays red
+          # (exit 3) so that the report names which it was.
+          line=$(grep -m1 '^control_stop_under_writers_leaves_later_memory_alone.FAIL' red.log || true)
+          if [ -z "$line" ]; then
+            echo "verdict: the test process died without a FAIL line (exit $rc): the defect shows, not by an assertion" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=${{ matrix.variant }}::the test died without its FAIL line (exit $rc)"
             exit 3
-          }
+          fi
+          echo "verdict: the defect is caught: $line" >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=${{ matrix.variant }}::$line"
