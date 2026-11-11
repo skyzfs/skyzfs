@@ -560,7 +560,11 @@ truncate -s "$SIZE" "$WORK/own2.img"
 say add "$OWN2" --depth 8
 if serve_bg own2-1 serve "$OWN2" --file "$WORK/own2.img"; then
     kill -TERM "$SRV_PID"; srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
-    info "$OWN2"; before=$STATE
+    # A device still reads live for a moment after its server's process
+    # has ended (up to 136 ms seen); the step is about a waiting one.
+    # In run 43074927907 one image looked too soon and judged a delete
+    # of a live device.
+    wait_state "$OWN2" waiting 10; before=$STATE
     t0=$(now_ms); say delete "$OWN2"; v=$ANSWER; ms=$(( $(now_ms) - t0 ))
     if wait_state "$OWN2" nothing 10; then got="nothing there after $WAITED_MS ms"; else got="still: $ANSWER"; fi
     obs delete_ms "$DELETE_HELD; unheld and waiting: ${v:-no answer} ($ms ms by the rig's clock)"
