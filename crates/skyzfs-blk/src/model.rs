@@ -1055,6 +1055,8 @@ impl Model {
             }
         }
         self.set_worlds(next);
+        // Recovery has made the whole log durable.
+        self.last_ack = None;
         for pending in self.pending.values_mut() {
             if let Pending::Read { since, .. } = pending {
                 *since = now;
@@ -1069,6 +1071,8 @@ impl Model {
     pub fn power_cut(&mut self) {
         self.now += 1;
         self.pending.clear();
+        // What recovery exposes is durable.
+        self.last_ack = None;
         let mut worlds = BTreeSet::new();
         for world in &self.worlds {
             worlds.extend(world.settle(&self.cx, self.now, &|_| true, None));

@@ -1068,26 +1068,6 @@ impl<D: Dir> Log<D> {
         self.slots.len()
     }
 
-    /// Ask the disk whether the log can still be made durable, when
-    /// there is nothing to sync: a sync of the file the log ends in. A
-    /// failure fails the log, like any failed sync.
-    ///
-    /// [`Log::sync`] with nothing to do does not touch the disk. An
-    /// owner that must not report success on a log that has died
-    /// (design §4.1: no flush succeeds once the log has failed) calls
-    /// this in that case.
-    pub fn probe(&mut self) -> Result<(), LogError> {
-        if self.failed {
-            return Err(LogError::Failed);
-        }
-        let base = self.current.identity.base_of(self.tail);
-        let synced = match self.live.get(&base) {
-            Some(&index) => self.slots[index].file.sync(),
-            None => self.superblock.sync(),
-        };
-        synced.map_err(|e| self.fail("probing the log", &e))
-    }
-
     /// Fail the log on behalf of its owner: something the owner keeps
     /// beside the log has failed, and what the log holds must not be
     /// served or extended any more. As after a failure of the log's own

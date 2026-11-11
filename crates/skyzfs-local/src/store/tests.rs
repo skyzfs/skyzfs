@@ -857,26 +857,35 @@ fn a_failed_read_fails_the_volume() {
     caught(scenario, Mutants::READ_ERROR_SERVED);
 }
 
-/// No flush succeeds once the disk has stopped taking syncs (R11), also
-/// one that has nothing new to make durable: the store asks the disk.
-/// Mutant: such a flush returns without asking.
+/// A flush that has nothing to make durable promises nothing and does
+/// not touch the disk; one that has, on a disk that takes no more
+/// syncs, fails and fails the volume (R11).
 #[test]
-fn a_flush_with_nothing_to_do_still_asks_the_disk() {
+fn a_flush_with_nothing_to_do_costs_nothing_and_one_with_work_finds_the_failure() {
     fn scenario(env: &Env) -> Outcome {
         let (disk, mut store) = env.fresh()?;
         write(&mut store, 1, 1, 1)?;
         flush(&mut store)?;
+        let before = disk.stats();
         flush(&mut store)?;
-        disk.fail_sync(0, true);
-        if run(&mut store, Op::Flush)?.result.is_ok() {
-            return Err("a flush succeeded on a disk that takes no syncs".into());
+        let after = disk.stats();
+        if (after.syncs, after.dir_syncs, after.writes)
+            != (before.syncs, before.dir_syncs, before.writes)
+        {
+            return Err("a flush with nothing to do touched the disk".into());
         }
-        if !store.is_failed() {
-            return Err("the volume did not fail".into());
+        disk.fail_sync(0, true);
+        flush(&mut store)?;
+        if store.is_failed() {
+            return Err("a flush with nothing to do failed the volume".into());
+        }
+        write(&mut store, 2, 1, 2)?;
+        if run(&mut store, Op::Flush)?.result.is_ok() || !store.is_failed() {
+            return Err("a flush with work to do succeeded on a disk that takes no syncs".into());
         }
         Ok(())
     }
-    caught(scenario, Mutants::FLUSH_NO_PROBE);
+    caught(scenario, Mutants::FLUSH_NO_SYNC);
 }
 
 /// A hold is taken only where a record starts or ends. A position

@@ -563,18 +563,11 @@
 //! once (design §4.2). So the store calls an observer
 //! ([`store::OpenOptions::on_failure`]) once, when it decides, from
 //! the thread that executes requests; the observer is to return
-//! quickly. A flush asks the disk even
-//! when the log has nothing new to make durable
-//! ([`Log::probe`](log::Log::probe)), because R11 lets no flush
-//! succeed once the log has failed, and the conformance suite holds
-//! the store to it: without the probe, a flush that follows a
-//! completed flush succeeds on a disk that takes no more syncs. What
-//! it costs: a sync of a file with nothing dirty, for a flush that
-//! follows a flush. On ext4 and XFS that writes no data and may still
-//! send the device a cache flush, which is not free on drives without
-//! power-loss protection. And it is a weak probe: a sync of a clean
-//! file need not touch a disk that has died, so the next write or
-//! sync that has work to do is what finds out for certain.
+//! quickly. A flush that finds nothing to make durable does not touch
+//! the disk and succeeds: it promises nothing new, and a disk that
+//! would refuse the next sync and has not been asked has not failed
+//! yet (design §4.1). The next write or sync that has work to do is
+//! what finds a dead disk.
 //! A full log is not a failure. The next open refuses the volume
 //! unless it is told that the client knows
 //! ([`store::OpenOptions::acknowledge_failure`]); then promise 4 gives

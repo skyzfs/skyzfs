@@ -86,8 +86,6 @@ impl Mutants {
     /// A read that fails on the store's files fails alone: the volume
     /// goes on serving.
     pub(crate) const READ_ERROR_SERVED: u32 = 1 << 16;
-    /// A flush with nothing to make durable does not ask the disk.
-    pub(crate) const FLUSH_NO_PROBE: u32 = 1 << 17;
     /// A hold is taken at any position.
     pub(crate) const HOLD_UNCHECKED: u32 = 1 << 18;
 
@@ -508,16 +506,10 @@ impl<D: Dir> Core<D> {
             return Ok(());
         }
         // With nothing to make durable the log's sync does not touch
-        // the disk, and would report success on a disk that has died.
-        // The contract lets no flush succeed once the log has failed,
-        // so the store asks the disk every time. (The conservative
-        // reading: such a flush would promise nothing false.)
-        let idle = self.log.durable() == self.log.tail();
-        let synced = if idle && !self.mutants.has(Mutants::FLUSH_NO_PROBE) {
-            self.log.probe()
-        } else {
-            self.log.sync().map(|_| ())
-        };
+        // the disk, and such a flush promises nothing new: a disk that
+        // would refuse the next sync and has not been asked has not
+        // failed yet (design §4.1).
+        let synced = self.log.sync().map(|_| ());
         match synced {
             Ok(()) => {
                 self.unsynced.clear();
