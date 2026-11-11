@@ -573,6 +573,75 @@ class Log(unittest.TestCase):
             self.assertEqual(without[name]['victim'], with_data[name]['victim'], name)
             self.assertEqual(without[name]['schedule'], with_data[name]['schedule'], name)
 
+    def test_a_write_no_uberblock_reaches_has_its_own_class(self):
+        recs = self.idx['records']
+        v = 1                                                # an ordinary write of the first group
+        block = [{'copy': 0, 'of': 2, 'type': 'DMU dnode', 'level': 0, 'objset': 0, 'object': 0}]
+        base = {'copies': [], 'earlier': None, 'later': None, 'same_as_before': False, 'zeros': False, 'intent_log': False}
+        cls = replay_check.victim_class
+        # listed in its own group, or at the end: an uberblock reached it
+        self.assertEqual(cls(recs, v, dict(base, blocks=[], blocks_in_group=block)), 'block')
+        self.assertEqual(cls(recs, v, dict(base, blocks=block, blocks_in_group=[])), 'block')
+        # listed nowhere: never reached
+        self.assertEqual(cls(recs, v, dict(base, blocks=[], blocks_in_group=[])), 'never reached')
+        # zdb could not be asked at one of the two points: not known, so it stays a block, expected caught
+        self.assertEqual(cls(recs, v, dict(base, blocks=[], blocks_in_group=None)), 'block')
+        self.assertEqual(cls(recs, v, dict(base, blocks=None, blocks_in_group=[])), 'block')
+        self.assertEqual(cls(recs, v, dict(base, blocks=[])), 'block')
+        # the point asked: right after the first uberblock write that follows the victim
+        firsts = [f for f, _ in replay_check.group_points(recs)]
+        self.assertEqual(replay_check.own_group_point(recs, v), firsts[0])
+        self.assertEqual(replay_check.own_group_point(recs, firsts[0]), firsts[1])
+        self.assertIsNone(replay_check.own_group_point(recs, len(recs) - 1))
+        # the row is strict: not caught is as expected, a catch fails the job
+        for name in ('drop', 'reorder'):
+            c = {'name': name, 'class': 'never reached', 'caught': False, 'failed_by': {}, 'rig_errors': []}
+            rows, _, _ = replay_check.judge_controls([c], absent={'data': 'x', 'intent': 'x', 'reorder' if name == 'drop' else 'drop': 'x'})
+            row = next(r for r in rows if r['name'] == name)
+            self.assertTrue(row['match'])
+            self.assertIn('no uberblock ever reaches it', row['note'])
+            c.update(caught=True, failed_by={'copies': 1})
+            rows, _, ok = replay_check.judge_controls([c], absent={'data': 'x', 'intent': 'x', 'reorder' if name == 'drop' else 'drop': 'x'})
+            self.assertFalse(ok)
+        self.assertIn('no uberblock reached it', replay_check.facts_text(dict(base, blocks=[], blocks_in_group=[])))
+
+    def test_the_head_of_a_write_does_not_speak_for_an_aggregated_write(self):
+        recs = [{'i': 0, 'flags': [], 'offset': 1 << 20, 'bytes': 4096, 'pos': 0},
+                {'i': 1, 'flags': [], 'offset': 2 << 20, 'bytes': 3 * 4096, 'pos': 0}]
+        zil = {'copy': 0, 'of': 1, 'type': 'ZIL intent log', 'level': 0, 'objset': 54, 'object': 0}
+        other = dict(zil, type='ZFS plain file')
+        base = {'copies': [], 'earlier': None, 'later': None, 'same_as_before': False, 'zeros': False, 'intent_log': True}
+        cls = replay_check.victim_class
+        # one block long: its head is all of it
+        self.assertEqual(cls(recs, 0, dict(base, blocks=[], blocks_in_group=[])), 'intent-log block')
+        # longer: only if zdb lists blocks there and all are intent-log blocks
+        self.assertEqual(cls(recs, 1, dict(base, blocks=[], blocks_in_group=[zil, zil])), 'intent-log block')
+        self.assertEqual(cls(recs, 1, dict(base, blocks=[other], blocks_in_group=[zil])), 'block')
+        self.assertEqual(cls(recs, 1, dict(base, blocks=[], blocks_in_group=[zil, other])), 'block')
+        # longer and zdb lists nothing: not known, so it is judged as a block; and never as "never reached"
+        self.assertEqual(cls(recs, 1, dict(base, blocks=[], blocks_in_group=[])), 'block')
+        self.assertEqual(cls(recs, 1, dict(base, blocks=None, blocks_in_group=None)), 'block')
+
+    def test_superseded_needs_no_mark_before_the_rewrite(self):
+        ents = [('write', 1 << 20, blk(1, 2)), ('write', 1 << 20, blk(2, 2)),           # 0 rewritten at once by 1
+                ('write', 2 << 20, blk(3)), ('mark', 'fsync-0'), ('write', 2 << 20, blk(4))]   # 2 rewritten by 4, a mark between
+        ents += txg(1)
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        got = [replay_check.victim_class(recs, i, replay_check.victim_facts(self.log, recs, i)) for i in (0, 2)]
+        self.assertEqual(got, ['superseded', 'block'])
+
+    def test_zdb_aborting_on_a_control_is_a_catch(self):
+        res = [{'n': 5, 'ok': True},
+               {'n': 6, 'ok': False, 'failed': 'rig: zdb died with signal 6', 'detail': 'ASSERT at ...'},
+               {'n': 7, 'ok': False, 'failed': 'rig: zdb died with signal 9', 'detail': ''},
+               {'n': 8, 'ok': False, 'failed': 'rig: zdb timed out', 'detail': ''}]
+        by, rig_errors, first = replay_check.tally_control(res)
+        self.assertEqual(by, {'copies': 1})
+        self.assertEqual((first['n'], first['failed']), (6, 'copies: zdb aborted'))
+        # any other death of zdb, and a timeout, stay rig errors
+        self.assertEqual([e['n'] for e in rig_errors], [7, 8])
+
     def test_each_kind_of_trouble_fails_the_job_by_itself(self):
         good = dict(failures=[], controls_ok=True, witness_ok=True, coverage_errors=[], zdb_cc_rc=0)
         self.assertEqual(replay_check.job_verdict(**good), (True, []))

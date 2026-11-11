@@ -3802,6 +3802,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-blkcheck"
+version = "0.0.1"
+dependencies = [
+ "libc",
+ "rustix",
+ "skyzfs-blk",
+]
+
+[[package]]
 name = "skyzfs-local"
 version = "0.0.1"
 dependencies = [

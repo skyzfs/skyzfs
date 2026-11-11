@@ -112,6 +112,27 @@ when it merges.
   rig catches means changing that table on purpose. A newer push to a
   pull request cancels the older run. The dispatch input `discard`
   chooses whether a discarded range is zeroed or left as it was.
+- **The daemon rig.** `skyzfs-daemon-rig.yml` runs on a pull request
+  that touches `tests/kernel/`, `bins/skyzfsd/`, `crates/skyzfs-ublk/`,
+  `crates/skyzfs-blk/` or `bins/skyzfs-blkcheck/`, and by dispatch (input
+  `checks`, for example `c` alone). It drives a server through the
+  kernel and ZFS on Ubuntu 24.04 and 26.04, about sixteen minutes per
+  image: parameters, `kill -9` under load, the conformance suite through
+  the block device, a failed volume, a held request. Until `skyzfsd`
+  serves, the server is a stand-in (`tests/kernel/skyzfsd-ref.sh`); the
+  variables `RIG_SKYZFSD` and `RIG_SERVE_ARGS` point the rig at the
+  daemon. The summary says for each line whether it rests on the kernel,
+  on the server, or only shows that the check works. Exit 2 is an error
+  of the rig and not a verdict on the server. Read the summary's table
+  and not the colour: a dispatched run whose `checks` names nothing the
+  rig knows is green having run nothing.
+- **Failed-volume observations.** `skyzfs-failed-volume.yml` runs by
+  dispatch only. It records what a pool does when its device is deleted
+  under it and judges nothing.
+- **A command on a suspended pool may never return and cannot be
+  killed**, and `timeout(1)` waits for such a child. Scripts that touch a
+  pool after a failure use `lim` from `tests/lib/lim.sh`, with the
+  command's output in files and not in a command substitution.
 - **The benchmark runs by dispatch only** on `zfs-topology` and
   `skyzfs-*` branches: dispatch `topology-bench.yml` with the branch as
   the ref. A push no longer starts it there. On any other branch but
