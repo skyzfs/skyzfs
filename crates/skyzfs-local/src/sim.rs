@@ -351,6 +351,9 @@ struct State {
     sync_fault: Option<Fault>,
     /// The file whose syncs all fail.
     sync_fault_of: Option<String>,
+    /// The file whose writes all fail, and the one whose reads do.
+    write_fault_of: Option<String>,
+    read_fault_of: Option<String>,
     read_fault: Option<Fault>,
     /// The machine stops after this many more writes and syncs.
     halt: Option<u64>,
@@ -456,6 +459,8 @@ impl SimDisk {
                 write_fault: None,
                 sync_fault: None,
                 sync_fault_of: None,
+                write_fault_of: None,
+                read_fault_of: None,
                 read_fault: None,
                 halt: None,
                 lock: None,
@@ -494,6 +499,8 @@ impl SimDisk {
         state.write_fault = None;
         state.sync_fault = None;
         state.sync_fault_of = None;
+        state.write_fault_of = None;
+        state.read_fault_of = None;
         state.halt = None;
         state.read_fault = None;
         let inodes: Vec<u64> = state.inodes.keys().copied().collect();
@@ -571,6 +578,20 @@ impl SimDisk {
     /// [`SimDisk::fail_sync`].
     pub fn fail_sync_of(&self, name: &str) {
         self.lock().sync_fault_of = Some(name.to_owned());
+    }
+
+    /// Every write to the file called `name` fails from now on and
+    /// writes nothing, until the faults are cleared or the power is
+    /// cut: for a test that needs one particular file to refuse.
+    pub fn fail_write_of(&self, name: &str) {
+        self.lock().write_fault_of = Some(name.to_owned());
+    }
+
+    /// Every read of the file called `name` fails from now on, through
+    /// the cache and from the device, until the faults are cleared or
+    /// the power is cut.
+    pub fn fail_read_of(&self, name: &str) {
+        self.lock().read_fault_of = Some(name.to_owned());
     }
 
     /// The machine stops taking anything: after the next `after` writes
@@ -658,6 +679,8 @@ impl SimDisk {
         state.write_fault = None;
         state.sync_fault = None;
         state.sync_fault_of = None;
+        state.write_fault_of = None;
+        state.read_fault_of = None;
         state.halt = None;
         state.read_fault = None;
     }
@@ -876,6 +899,11 @@ impl SimFile {
         if device && !state.device_reads {
             return Err(io::ErrorKind::Unsupported.into());
         }
+        if state.read_fault_of.is_some()
+            && state.read_fault_of.as_deref() == state.name_of(self.inode)
+        {
+            return Err(injected("read"));
+        }
         if State::strikes(&mut state.read_fault) {
             return Err(injected("read"));
         }
@@ -920,6 +948,11 @@ impl File for SimFile {
         self.check(state)?;
         if state.halted(true) {
             return Err(injected("halt"));
+        }
+        if state.write_fault_of.is_some()
+            && state.write_fault_of.as_deref() == state.name_of(self.inode)
+        {
+            return Err(injected("write"));
         }
         state.stats.writes += 1;
         let failing = State::strikes(&mut state.write_fault);
@@ -1487,6 +1520,28 @@ mod tests {
         let mut f = disk.open("f").unwrap();
         f.write_at(0, &[4; 4]).unwrap();
         f.sync().unwrap();
+    }
+
+    /// Injected errors: the writes and the reads of one file can fail
+    /// while the others work, and a write that fails so leaves nothing.
+    #[test]
+    fn the_writes_and_reads_of_one_file_can_fail() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        let mut g = disk.create("g").unwrap();
+        f.write_at(0, &[1; 4]).unwrap();
+        disk.fail_write_of("f");
+        assert!(f.write_at(0, &[2; 4]).is_err());
+        g.write_at(0, &[3; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [1; 4]);
+        disk.fail_read_of("f");
+        let mut buf = [0u8; 4];
+        assert!(f.read_at(0, &mut buf).is_err());
+        assert!(f.read_device_at(0, &mut buf).is_err());
+        assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
+        disk.clear_faults();
+        f.write_at(0, &[2; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
     }
 
     /// Length: growth that was not synced can be lost at a power cut,

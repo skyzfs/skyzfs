@@ -462,16 +462,24 @@ impl Harness for SimHarness {
             2 => {
                 let _ = store.core.flush();
                 if bounded {
-                    store.set_hold(mark.filter(|mark| *mark >= store.log_start()));
+                    store
+                        .set_hold(mark.filter(|mark| *mark >= store.log_start()))
+                        .map_err(|e| HarnessError(e.to_string()))?;
                     let _ = store.checkpoint();
-                    store.set_hold(None);
+                    store
+                        .set_hold(None)
+                        .map_err(|e| HarnessError(e.to_string()))?;
                 } else {
-                    store.set_hold(Some(store.position()));
+                    store
+                        .set_hold(Some(store.position()))
+                        .map_err(|e| HarnessError(e.to_string()))?;
                 }
             }
             _ => {
                 let _ = store.checkpoint();
-                store.set_hold(None);
+                store
+                    .set_hold(None)
+                    .map_err(|e| HarnessError(e.to_string()))?;
             }
         }
         target.mark = Some(here);

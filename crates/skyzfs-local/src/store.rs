@@ -78,6 +78,18 @@ impl Mutants {
     pub(crate) const STALE_PREIMAGES: u32 = 1 << 12;
     /// An open does not write the preimages back.
     pub(crate) const NO_RESTORE: u32 = 1 << 13;
+    /// A checkpoint does not look at the result of its writes into the
+    /// home image.
+    pub(crate) const IGNORE_HOME_WRITE: u32 = 1 << 14;
+    /// A volume that fails on its own files does not mark the log.
+    pub(crate) const FAIL_UNMARKED: u32 = 1 << 15;
+    /// A read that fails on the store's files fails alone: the volume
+    /// goes on serving.
+    pub(crate) const READ_ERROR_SERVED: u32 = 1 << 16;
+    /// A flush with nothing to make durable does not ask the disk.
+    pub(crate) const FLUSH_NO_PROBE: u32 = 1 << 17;
+    /// A hold is taken at any position.
+    pub(crate) const HOLD_UNCHECKED: u32 = 1 << 18;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -173,6 +185,12 @@ impl Default for OpenOptions {
         }
     }
 }
+
+/// A hold was asked for at a position inside the log where no record
+/// starts or ends. Nothing changed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{0} is not a record boundary: the hold was not set")]
+pub struct NotABoundary(pub Lsn);
 
 /// Why a store could not be created or opened.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -388,10 +406,31 @@ impl<D: Dir> Core<D> {
     /// says so to the next instance.
     fn fail(&mut self) -> BlkError {
         self.failed = true;
-        if !self.log.is_failed() {
+        if !self.log.is_failed() && !self.mutants.has(Mutants::FAIL_UNMARKED) {
             self.log.mark_failed();
         }
         BlkError::Failed
+    }
+
+    /// Set or release the hold. A position inside the log must be a
+    /// record boundary: a checkpoint reclaims up to the hold, and a
+    /// reclaim takes nothing else. One at or below the log's start
+    /// holds the whole log and is taken as it is.
+    fn set_hold(&mut self, hold: Option<Lsn>) -> Result<(), NotABoundary> {
+        if let Some(position) = hold {
+            let inside = position > self.log.floor();
+            if inside && !self.mutants.has(Mutants::HOLD_UNCHECKED) {
+                let tail = self.log.tail();
+                let found = self
+                    .log
+                    .replay_within(position, position, tail, &mut |_| {});
+                if matches!(found, Err(LogError::BadPosition(_))) {
+                    return Err(NotABoundary(position));
+                }
+            }
+        }
+        self.log.set_hold(hold);
+        Ok(())
     }
 
     /// Append a record and point the index at it. `None`: the log is
@@ -473,7 +512,8 @@ impl<D: Dir> Core<D> {
         // The contract lets no flush succeed once the log has failed,
         // so the store asks the disk every time. (The conservative
         // reading: such a flush would promise nothing false.)
-        let synced = if self.log.durable() == self.log.tail() {
+        let idle = self.log.durable() == self.log.tail();
+        let synced = if idle && !self.mutants.has(Mutants::FLUSH_NO_PROBE) {
             self.log.probe()
         } else {
             self.log.sync().map(|_| ())
@@ -514,6 +554,9 @@ impl<D: Dir> Core<D> {
             if !read {
                 // A store that cannot read its own files does not go on
                 // serving.
+                if self.mutants.has(Mutants::READ_ERROR_SERVED) {
+                    return Err(BlkError::Failed);
+                }
                 return Err(self.fail());
             }
         }
@@ -629,7 +672,8 @@ impl<D: Dir> Core<D> {
                 _ => Ok(()),
             };
         });
-        if replayed.is_err() || written.is_err() {
+        let written = written.is_err() && !self.mutants.has(Mutants::IGNORE_HOME_WRITE);
+        if replayed.is_err() || written {
             return Err(self.fail());
         }
         let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
@@ -885,6 +929,7 @@ impl Preimages {
             || &head[16..32] != volume
             || start.is_some_and(|start| start != written_for)
             || head[48..PREIMAGE_TAG].iter().any(|b| *b != 0)
+            || count > PREIMAGE_BATCH
             || len < whole
         {
             return Ok(None);
@@ -1166,10 +1211,12 @@ impl<D: Dir> Store<D> {
     }
 
     /// Set or release the hold. A position is one [`Store::position`]
-    /// returned. The hold is not stored: after an open it is set again
-    /// before the first checkpoint.
-    pub fn set_hold(&mut self, hold: Option<Lsn>) {
-        self.core.log.set_hold(hold);
+    /// returned: a position inside the log that is not a record
+    /// boundary is refused, and the hold stays as it was. The hold is
+    /// not stored: after an open it is set again before the first
+    /// checkpoint.
+    pub fn set_hold(&mut self, hold: Option<Lsn>) -> Result<(), NotABoundary> {
+        self.core.set_hold(hold)
     }
 
     /// Whether the volume has failed.
@@ -1255,7 +1302,7 @@ impl<D: Dir> BlockTarget for Store<D> {
 /// What the owner of a [`Served`] store asks of its worker.
 enum Command {
     Request(Request),
-    Hold(Option<Lsn>),
+    Hold(Option<Lsn>, mpsc::Sender<Result<(), NotABoundary>>),
     Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
     Position(mpsc::Sender<Lsn>),
 }
@@ -1324,8 +1371,8 @@ where
                             queue.push_back(request);
                             continue;
                         }
-                        Some(Command::Hold(hold)) => {
-                            core.log.set_hold(hold);
+                        Some(Command::Hold(hold, reply)) => {
+                            let _ = reply.send(core.set_hold(hold));
                             held = false;
                             continue;
                         }
@@ -1379,9 +1426,14 @@ impl Served {
     }
 
     /// Set or release the hold: see [`Store::set_hold`]. It takes
-    /// effect behind the request the worker is executing.
-    pub fn set_hold(&self, hold: Option<Lsn>) {
-        self.send(Command::Hold(hold));
+    /// effect behind the request the worker is executing, and this
+    /// waits for that. With the worker gone there is nothing to hold.
+    pub fn set_hold(&self, hold: Option<Lsn>) -> Result<(), NotABoundary> {
+        let (reply, result) = mpsc::channel();
+        if !self.send(Command::Hold(hold, reply)) {
+            return Ok(());
+        }
+        result.recv().unwrap_or(Ok(()))
     }
 
     /// Checkpoint, behind the request the worker is executing: see

@@ -30,6 +30,8 @@ struct Env {
     garbage: bool,
     base: Base,
     segments: Option<usize>,
+    /// Defects of the log under the store.
+    log_mutants: u32,
 }
 
 impl Env {
@@ -49,6 +51,7 @@ impl Env {
             queue_depth: 16,
             log_segments: self.segments,
             mutants: Mutants(self.mutants),
+            log_mutants: crate::log::Mutants(self.log_mutants),
             ..OpenOptions::default()
         }
     }
@@ -112,6 +115,7 @@ fn environments(mutants: u32) -> Vec<Env> {
                     garbage,
                     base: Base::Empty,
                     segments: None,
+                    log_mutants: 0,
                 });
             }
         }
@@ -380,7 +384,7 @@ fn a_checkpoint_stops_at_the_hold() {
         let (_disk, mut store) = env.fresh()?;
         write(&mut store, 0, 2, 1)?;
         let hold = store.position();
-        store.set_hold(Some(hold));
+        store.set_hold(Some(hold)).map_err(|e| e.to_string())?;
         write(&mut store, 1, 2, 2)?;
         flush(&mut store)?;
         let start = checkpoint(&mut store)?;
@@ -394,7 +398,7 @@ fn a_checkpoint_stops_at_the_hold() {
         }
         expect(&mut store, 0, 1, 1, "below the hold")?;
         expect(&mut store, 1, 2, 2, "above the hold")?;
-        store.set_hold(None);
+        store.set_hold(None).map_err(|e| e.to_string())?;
         if checkpoint(&mut store)? != store.position() {
             return Err("without a hold the checkpoint did not take the whole log".into());
         }
@@ -414,7 +418,9 @@ fn the_index_lets_go_only_of_what_was_applied() {
     fn scenario(env: &Env) -> Outcome {
         let (disk, mut store) = env.fresh()?;
         write(&mut store, 5, 2, 1)?;
-        store.set_hold(Some(store.position()));
+        store
+            .set_hold(Some(store.position()))
+            .map_err(|e| e.to_string())?;
         write(&mut store, 5, 1, 2)?;
         flush(&mut store)?;
         checkpoint(&mut store)?;
@@ -662,6 +668,264 @@ fn a_checkpoint_in_batches_can_be_cut_anywhere() {
         Ok(())
     }
     holds(scenario);
+    // The reclaim that ends a batch is durable before the next batch
+    // writes the home image. If it were not, a cut could bring back the
+    // old start of the log beside a preimage file bound to the new one,
+    // and the later batch's neighbours would have no protection. With a
+    // log whose reclaim moves the start in memory only, this shows.
+    for env in environments(0).into_iter().filter(garbled_neighbours) {
+        let env = Env {
+            log_mutants: crate::log::Mutants::REUSE_BEFORE_FLOOR_SYNC,
+            ..env
+        };
+        assert!(
+            scenario(&env).is_err(),
+            "a reclaim that is not durable was not noticed in {env:?}"
+        );
+    }
+}
+
+/// The preimage file and the memory for it stay bounded however many
+/// blocks a checkpoint has to save: 2048 isolated one-block
+/// write-zeroes records on a volume of 2048 write units of 16 KiB make
+/// 6144 blocks to save, and the file never holds more than one batch
+/// of them. After a restart every block is right.
+#[test]
+fn many_isolated_records_do_not_grow_the_preimage_file() {
+    let env = Env {
+        base: Base::Pattern(3),
+        ..environments(0)[3]
+    };
+    assert!(env.unit == 16384 && env.garbage);
+    let config = StoreConfig {
+        size_mib: 32,
+        ..env.config()
+    };
+    let disk = SimDisk::new(11);
+    disk.set_write_unit(u64::from(env.unit));
+    let key = Key(*b"a key for tests!");
+    let mut store = Store::create_keyed(disk.clone(), &config, key, env.options()).unwrap();
+    for unit in 0..2048u64 {
+        let zeroes = Op::WriteZeroes {
+            offset: (unit * 4 + 1) * BLOCK,
+            len: BLOCK,
+        };
+        ok(&mut store, zeroes).unwrap();
+    }
+    flush(&mut store).unwrap();
+    let before = disk.stats();
+    checkpoint(&mut store).unwrap();
+    let batches = (disk.stats().syncs - before.syncs) / 3;
+    assert!(batches >= 24, "{batches} batches");
+    let largest = (4096 + Preimages::table_len(PREIMAGE_BATCH) + PREIMAGE_BATCH * 4096) as u64;
+    let len = disk.open(PREIMAGE_NAME).unwrap().len().unwrap();
+    assert!(len <= largest && len > 0, "{len} bytes");
+    drop(store);
+    let mut store = env.reopen(&disk).unwrap();
+    for unit in [0u64, 1, 85, 86, 1023, 1024, 2047] {
+        let mut want = vec![env.base_block(unit * 4), vec![0u8; BLOCK as usize]];
+        want.push(env.base_block(unit * 4 + 2));
+        want.push(env.base_block(unit * 4 + 3));
+        expect_blocks(&mut store, unit * 4, &want, "after the checkpoint").unwrap();
+    }
+}
+
+// ---------------------------------------------------------------------
+// Errors on the store's own files.
+
+/// A write into the home image that fails, fails the volume, and the
+/// log is not given up: the records the checkpoint was applying are
+/// still there for the next instance. Mutant: a checkpoint that does
+/// not look at the result of its writes, syncs, reclaims, and has the
+/// records in neither place.
+#[test]
+fn a_failed_write_into_the_home_image_fails_the_volume_and_loses_nothing() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 4, 4, 1)?;
+        flush(&mut store)?;
+        disk.fail_write_of(HOME_NAME);
+        let failed = store.checkpoint().is_err();
+        let start = store.log_start();
+        disk.clear_faults();
+        if failed != store.is_failed() {
+            return Err("the checkpoint's result and the volume disagree".into());
+        }
+        if failed && run(&mut store, Op::Flush)?.result.is_ok() {
+            return Err("a failed volume served a flush".into());
+        }
+        drop(store);
+        let mut store = env.reopen_ack(&disk)?;
+        expect(&mut store, 4, 4, 1, "what was flushed")?;
+        if !failed {
+            return Err(format!(
+                "the checkpoint did not notice the failed write; the log starts at {start}"
+            ));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::IGNORE_HOME_WRITE);
+}
+
+/// A volume that failed on its own files, and not on the log's, is as
+/// failed for the next instance: the store marks the log, so an open
+/// without an acknowledgement is refused after a restart, and one with
+/// it finds what was flushed. Mutant: a failure that is not marked.
+#[test]
+fn a_volume_that_failed_on_its_own_files_stays_failed_after_a_restart() {
+    fn scenario(env: &Env) -> Outcome {
+        for file in [HOME_NAME, PREIMAGE_NAME] {
+            if file == PREIMAGE_NAME && env.unit == 4096 {
+                continue;
+            }
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 4, 4, 1)?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            write(&mut store, 5, 1, 2)?;
+            flush(&mut store)?;
+            disk.fail_sync_of(file);
+            if store.checkpoint().is_ok() || !store.is_failed() {
+                return Err(format!("a failed sync of {file} did not fail the volume"));
+            }
+            drop(store);
+            disk.clear_faults();
+            disk.kill();
+            match Store::open(disk.clone(), env.options()) {
+                Err(StoreError::Log(LogError::MarkedFailed)) => {}
+                Err(other) => return Err(format!("after {file} failed: {other}")),
+                Ok(_) => {
+                    return Err(format!(
+                        "a volume that failed on {file} opened unasked after a restart"
+                    ))
+                }
+            }
+            let mut store = env.reopen_ack(&disk)?;
+            expect(&mut store, 4, 1, 1, "what was flushed")?;
+            expect(&mut store, 5, 1, 2, "what was flushed")?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::FAIL_UNMARKED);
+}
+
+/// A read that fails on the store's own files fails the volume: the
+/// read is answered with an error and so is every request after it,
+/// whether the block was in the home image or in the log. A store that
+/// cannot read its files does not go on serving the rest. Mutant: the
+/// read fails alone.
+#[test]
+fn a_failed_read_fails_the_volume() {
+    fn scenario(env: &Env) -> Outcome {
+        for from_home in [true, false] {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 4, 4, 1)?;
+            flush(&mut store)?;
+            if from_home {
+                checkpoint(&mut store)?;
+                disk.fail_read_of(HOME_NAME);
+            } else {
+                disk.fail_read(0, false);
+            }
+            let read = Op::Read {
+                offset: 4 * BLOCK,
+                buf: Buf::zeroed(1),
+            };
+            if run(&mut store, read)?.result != Err(BlkError::Failed) {
+                return Err("a read that could not be done succeeded".into());
+            }
+            disk.clear_faults();
+            let again = Op::Read {
+                offset: 5 * BLOCK,
+                buf: Buf::zeroed(1),
+            };
+            if run(&mut store, again)?.result.is_ok() || !store.is_failed() {
+                return Err(format!(
+                    "after a failed read (from the home image: {from_home}) the volume served"
+                ));
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::READ_ERROR_SERVED);
+}
+
+/// No flush succeeds once the disk has stopped taking syncs (R11), also
+/// one that has nothing new to make durable: the store asks the disk.
+/// Mutant: such a flush returns without asking.
+#[test]
+fn a_flush_with_nothing_to_do_still_asks_the_disk() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 1, 1, 1)?;
+        flush(&mut store)?;
+        flush(&mut store)?;
+        disk.fail_sync(0, true);
+        if run(&mut store, Op::Flush)?.result.is_ok() {
+            return Err("a flush succeeded on a disk that takes no syncs".into());
+        }
+        if !store.is_failed() {
+            return Err("the volume did not fail".into());
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::FLUSH_NO_PROBE);
+}
+
+/// A hold is taken only where a record starts or ends. A position
+/// inside a record, or beyond the end of the log, is refused, the hold
+/// stays as it was, and the volume is not harmed: a caller's mistake
+/// does not become a failed volume at the next checkpoint. A position
+/// at or below the log's start is taken. Mutant: any position is
+/// taken, and the checkpoint that follows fails the volume.
+#[test]
+fn a_hold_is_taken_only_at_a_record_boundary() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 2, 1)?;
+        let boundary = store.position();
+        write(&mut store, 2, 2, 2)?;
+        let end = store.position();
+        flush(&mut store)?;
+        store.set_hold(Some(boundary)).map_err(|e| e.to_string())?;
+        for bad in [
+            Lsn(boundary.0 + 1),
+            Lsn(boundary.0 + 4096),
+            Lsn(end.0 + (1 << 20)),
+        ] {
+            if store.set_hold(Some(bad)) != Err(NotABoundary(bad)) {
+                return Err(format!("a hold at {bad} was taken"));
+            }
+            if store.hold() != Some(boundary) {
+                return Err("a refused hold changed the hold".into());
+            }
+        }
+        store.set_hold(Some(end)).map_err(|e| e.to_string())?;
+        store
+            .set_hold(Some(store.log_start()))
+            .map_err(|e| e.to_string())?;
+        store.set_hold(Some(Lsn(0))).map_err(|e| e.to_string())?;
+        store.set_hold(Some(boundary)).map_err(|e| e.to_string())?;
+        checkpoint(&mut store)?;
+        if store.is_failed() {
+            return Err("the checkpoint failed the volume".into());
+        }
+        expect(&mut store, 0, 2, 1, "below the hold")?;
+        expect(&mut store, 2, 2, 2, "above the hold")
+    }
+    holds(scenario);
+    // With the defect the mistake is taken, and shows as the reviewer
+    // found it: the next checkpoint writes the home image and then
+    // fails at the reclaim, which fails the volume.
+    for env in environments(Mutants::HOLD_UNCHECKED) {
+        let (_disk, mut store) = env.fresh().unwrap();
+        write(&mut store, 0, 2, 1).unwrap();
+        let inside = Lsn(store.position().0 + 4096);
+        write(&mut store, 2, 2, 2).unwrap();
+        flush(&mut store).unwrap();
+        assert_eq!(store.set_hold(Some(inside)), Ok(()), "{env:?}");
+        assert!(store.checkpoint().is_err() && store.is_failed(), "{env:?}");
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -1025,7 +1289,9 @@ fn a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one() {
         expect(&mut store, 256, 256, 5, "megabyte 1")?;
         expect(&mut store, 512, 256, 6, "megabyte 2")?;
         // A hold where the log ends now.
-        store.set_hold(Some(store.position()));
+        store
+            .set_hold(Some(store.position()))
+            .map_err(|e| e.to_string())?;
         let mut done = Vec::new();
         let mut submitted = 0;
         let mut held = None;
@@ -1066,7 +1332,7 @@ fn a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one() {
         if store.is_failed() {
             return Err("a full log failed the volume".into());
         }
-        store.set_hold(None);
+        store.set_hold(None).map_err(|e| e.to_string())?;
         if store.poll(&mut done) != 0
             || store.wait(&mut done, Duration::ZERO) != 2
             || store.wait(&mut done, Duration::ZERO) != 0
