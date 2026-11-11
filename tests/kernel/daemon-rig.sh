@@ -194,6 +194,7 @@ writer() { # mountpoint record log stopfile
     done
     unlink "/dev/shm/skz-writer.$$" 2>/dev/null
 }
+# shellcheck disable=SC2317,SC2329  # reached through lim
 files_match() { # mountpoint record -> "ok N files" or "MISMATCH ..."
     python3 -I - "$1" "$2" <<'PY'
 import hashlib, sys
@@ -433,7 +434,11 @@ kill_test() {
     [ "$KT_STATE" = ONLINE ] || lim 120 zpool clear "$pool" > /dev/null 2>&1
     lim 900 zpool scrub -w "$pool" > "$OUT/$name-scrub.log" 2>&1
     KT_SCRUB=$(pool_errors "$pool")
-    KT_FILES=$(files_match "$mnt" "$WORK/$name.record")
+    # Under a limit, like the clear and the scrub: when a serve did not
+    # come back or the pool is still suspended, these reads block, and
+    # that is what this test exists to report, not to hang on.
+    KT_FILES=$(lim 300 files_match "$mnt" "$WORK/$name.record" 2>&1)
+    [ $? != 124 ] || KT_FILES="not read: the pool (${KT_STATE:-unknown} after the kills, $(pool_state "$pool") now) did not answer in 300 s"
     rec "${name}_result" "$KT_DONE of $kills kills served again, $KT_INFLIGHT with writes in flight; failed writes $KT_FAILED_WRITES; pool $KT_STATE, $KT_VDEV; after scrub: $KT_SCRUB; files: $KT_FILES"
     [ -z "$KT_ERR" ]
 }
@@ -563,7 +568,8 @@ fail_setup() {
         lim 120 "$DD" if=/dev/urandom of="$mnt/base.$i" bs=1M count=32 conv=fsync status=none || { FS_ERR="writing the first files failed"; return 1; }
     done
     lim 120 zpool sync "$pool"
-    (cd "$mnt" && sha256sum base.* > "$WORK/$name.sums")
+    # shellcheck disable=SC2016  # expanded by the inner shell
+    lim 120 bash -c 'cd "$1" && sha256sum base.* > "$2"' _ "$mnt" "$WORK/$name.sums" || { FS_ERR="reading the first files back failed or did not finish"; return 1; }
     : > "$OUT/$name-reader.log"; : > "$OUT/$name-writer.log"; : > "$WORK/$name.record"
     [ ! -e "$WORK/$name.stop" ] || unlink "$WORK/$name.stop"
     # The reader: any error it gets is an application seeing a read fail.
