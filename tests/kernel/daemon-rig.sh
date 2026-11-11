@@ -764,6 +764,13 @@ refused_snap() {
 txg_say() {
     awk 'NR > 1 { n++; if ($3 != "C") open++; last = $1 " in state " $3 } END { if (n) printf "newest transaction group %s, %d of the last %d not committed", last, open, n; else printf "transaction groups not read" }' "$1" 2>/dev/null
 }
+# status file, device number -> the vdev's error counters as zpool
+# status has them: "read R write W cksum C (state S)". ZFS's "zio ...
+# error" lines in the kernel log are rate-limited and cannot count
+# failed writes; these counters can.
+vdev_say() {
+    awk -v d="ublkb$2" '$1 == d { printf "read %s write %s cksum %s (state %s)", $3, $4, $5, $2; f = 1 } END { if (!f) printf "not in the status (which gave %d lines)", NR }' "$1" 2>/dev/null || printf 'no status file'
+}
 # The course after a refused start. With the daemon only.
 #   refused_start_arm TAG LOGDEV    TAG bs: the control's pool, with a
 #   separate log device (yes). TAG bn: the same with none (no).
@@ -854,6 +861,9 @@ refused_start_arm() {
         case $i in
             10) refused_snap "$pool" "$tag" 10s ;;
             60) refused_snap "$pool" "$tag" 60s ;;
+            115) refused_snap "$pool" "$tag" 115s ;;
+            175) refused_snap "$pool" "$tag" 175s ;;
+            235) refused_snap "$pool" "$tag" 235s ;;
             120) ( t=$(now_ms); lim 170 "$DD" if=/dev/zero of="$WORK/mnt/$pool/second-writer" bs=1M count=4 conv=fsync status=none 2> "$OUT/$tag-writer2.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/$tag.writer2" ) &
                  did+="writer2 " ;;
             180) ( t=$(now_ms); lim 110 "$DD" if="$WORK/mnt/$pool/cold/file" of=/dev/null bs=1M status=none 2> "$OUT/$tag-reader.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/$tag.reader" ) &
@@ -875,7 +885,7 @@ refused_start_arm() {
     case $did in *writer2*) io+="a second writer (4 MiB, synced) at 120 s: $(cat "$WORK/$tag.writer2" 2>/dev/null || echo "had not ended at $end s (hung)"); " ;; esac
     case $did in *reader*) io+="a read of the uncached file at 180 s: $(cat "$WORK/$tag.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-reader.err" 2>/dev/null | tr '\n' ' '); " ;; esac
     case $did in *scrub*) io+="a scrub at 240 s: $(cat "$WORK/$tag.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-scrub.log" 2>/dev/null | tr '\n' ' '); " ;; esac
-    RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
+    RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. The device's error counters in zpool status at 10 s: $(vdev_say "$OUT/$tag-10s-status.txt" "$num"); 60 s: $(vdev_say "$OUT/$tag-60s-status.txt" "$num"); 115 s: $(vdev_say "$OUT/$tag-115s-status.txt" "$num"); 175 s: $(vdev_say "$OUT/$tag-175s-status.txt" "$num"); 235 s: $(vdev_say "$OUT/$tag-235s-status.txt" "$num"); the end: $(vdev_say "$OUT/$tag-end-status.txt" "$num"). Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end (and just before each of the three probes) are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
     if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ]; then
         RS_CTL="FAIL killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
     else
