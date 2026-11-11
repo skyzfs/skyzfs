@@ -745,7 +745,7 @@ kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
 # pool has work when its device is refused. If the server never came
 # to rest, the control is the rig's error and not a verdict.
 check_b_short() {
-    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet=""
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" arm="" fails mark zios
     if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
     slog=$(new_slog bs)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
@@ -764,15 +764,40 @@ check_b_short() {
         return
     fi
     pid=$(server_pid "$SKYZFSD" "$dir")
+    mark=$(klog_mark)
     kill -9 "$pid" 2>/dev/null
     [ -z "$SERVE_PID" ] || serve_wait 30
     rm -f "$WORK/bs.stop"
     writer "$WORK/mnt/$pool" "$WORK/bs.record" "$OUT/bs-writer.log" "$WORK/bs.stop" &
+    num=${BDEV#/dev/ublkb}
     serve_start "$SKYZFSD" "$dir" --recover-short 1; rc=$?
-    for i in $(seq 1 120); do st=$(pool_state "$pool"); [ "$st" = SUSPENDED ] && break; sleep 1; done
+    # What the pool and the device do after the refusal, looked at every
+    # second: the only requests waiting at the device are the writer's
+    # writes, and a pool whose writes alone failed did not suspend in
+    # 118 s (run 43086281904, both images), where every pool that had a
+    # read or a flush fail suspended within 17 ms. First arm: writes
+    # only, 300 s. Second arm, if the pool is still not suspended: a
+    # read that must reach the device (a scrub), 60 s more.
+    t0=$(now_ms); was=""
+    for i in $(seq 1 360); do
+        st=$(pool_state "$pool")
+        if [ -e "/dev/ublkb$num" ]; then dev="node there, $(ublk_state "/dev/ublkb$num")"; else dev="no node"; fi
+        lim 20 ublk list -n "$num" 2>/dev/null | grep -q '^dev id' || dev+=", unknown to the driver"
+        if [ "$st; $dev" != "$was" ]; then was="$st; $dev"; line+="at $(( ($(now_ms) - t0) / 1000 )) s: pool $st, device $num: $dev. "; fi
+        [ "$st" = SUSPENDED ] && break
+        if [ "$i" = 300 ]; then
+            arm="a scrub was started at 300 s to bring a read to the device (rc $(lim 30 zpool scrub "$pool" > "$OUT/bs-scrub.log" 2>&1; echo $?)). "
+            line+="$arm"
+        fi
+        sleep 1
+    done
     touch "$WORK/bs.stop"
+    fails=$(grep -c . "$OUT/bs-writer.log")
+    klog_since "$mark" > "$OUT/bs-klog.txt" 2>/dev/null
+    zios=$(grep "$pool" "$OUT/bs-klog.txt" | grep -o 'type=[0-9]*' | sort | uniq -c | tr -s ' \n' ' ')
+    obs b_refused_start_under_writes "after the refusal (serve rc $rc, exit ${SERVE_RC:-none}) with only the writer's writes waiting at the device: ${line}At the end, $(( ($(now_ms) - t0) / 1000 )) s: pool $st$([ "$st" = SUSPENDED ] && { [ -n "$arm" ] && echo ' (only after the read)' || echo ' (writes alone)'; }); the writer's failed writes: $fails; failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
     if [ $rc = 1 ] && [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && [ "$st" = SUSPENDED ]; then
-        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and the pool is $st"
+        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and the pool is $st $([ -n "$arm" ] && echo 'after a read was sent (not by the writes alone; see obs_b_refused_start_under_writes)' || echo 'by the writes alone')"
     elif [ $rc = 2 ]; then
         ctl recovered_log_too_short ERROR "serve --recover-short 1 neither became ready nor exited"
     else
@@ -1644,6 +1669,7 @@ case $CHECKS in *" b "*)
     step "b, control: a recovered log that is too short"
     if [ "$IMPL" = reference ]; then
         ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
+        obs b_refused_start_under_writes "not run: the stand-in refuses no start"
     else
         check_b_short
     fi ;;

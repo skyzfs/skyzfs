@@ -4,12 +4,23 @@ name: skyzfs-daemon-rig
 # and ZFS do with a ublk device served through the daemon's command
 # line. Parameters; kill -9 under load; a second serve; an orderly
 # stop; the conformance suite of skyzfs-blk through the block device; a
-# failed volume; one request held for minutes. Until the daemon
-# exists the server is a stand-in on the reference ublk server
-# (`tests/kernel/skyzfsd-ref.sh`); the summary says for every pin what
-# it rests on. The job fails unless every pin and every control is as
-# the table `EXPECTED` in `tests/kernel/daemon_check.py` has it.
-# All the logic is `tests/kernel/daemon-rig.sh`.
+# failed volume; one request held for minutes. The job fails unless
+# every pin and every control is as the table `EXPECTED` in
+# `tests/kernel/daemon_check.py` has it. All the logic is
+# `tests/kernel/daemon-rig.sh`.
+#
+# Which server is behind the device (the job `plan` decides, and its
+# summary says):
+#   - a pull request: the daemon. A pull request that changes the rig
+#     (`tests/kernel/` or this file) also runs the stand-in on the
+#     reference ublk server (`tests/kernel/skyzfsd-ref.sh`): the
+#     stand-in is what shows that the rig still catches what it caught,
+#     the controls among it, and the daemon run tries the rig's lines
+#     that only the daemon can carry. One that changes nothing but the
+#     rig's files therefore runs both.
+#   - by dispatch: the input `server` (daemon, stand-in or both).
+#   - a push that changes this file on a testing branch: the stand-in.
+# The summary says for every pin what it rests on.
 on:
   workflow_dispatch:
     inputs:
@@ -22,9 +33,11 @@ on:
       hold_s:
         description: "seconds one request is held"
         default: "300"
-      daemon:
-        description: "true: build skyzfsd with its test hooks and run the rig on it. Otherwise the stand-in"
-        default: "false"
+      server:
+        description: "what serves the device: daemon (skyzfsd built with its test hooks), stand-in (the reference ublk server), or both"
+        type: choice
+        options: [daemon, stand-in, both]
+        default: daemon
   # A workflow that has never run cannot be dispatched from a branch.
   # A push that changes this file runs it once on the testing branch.
   push:
@@ -65,14 +78,57 @@ jobs:
       - run: bash tests/kernel/test_looks.sh
       - run: bash tests/kernel/test_ublksrvd_look.sh
 
+  # Which servers this run drives; see the head of this file.
+  plan:
+    name: which server
+    runs-on: ubuntu-latest
+    outputs:
+      servers: ${{ steps.plan.outputs.servers }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          SERVER: ${{ inputs.server }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case $EVENT in
+            workflow_dispatch)
+              case $SERVER in
+                daemon) servers='["daemon"]'; why="by dispatch: the daemon" ;;
+                stand-in) servers='["stand-in"]'; why="by dispatch: the stand-in" ;;
+                both) servers='["daemon","stand-in"]'; why="by dispatch: both" ;;
+                *) echo "::error::server is daemon, stand-in or both: '$SERVER'"; exit 64 ;;
+              esac ;;
+            pull_request)
+              # The files the pull request changes against its base. If
+              # they cannot be told, both servers run.
+              if changed=$(git diff --name-only "$BASE...HEAD"); then
+                if printf '%s\n' "$changed" | grep -q -E '^(tests/kernel/|\.github/workflows/skyzfs-daemon-rig\.yml$)'; then
+                  servers='["daemon","stand-in"]'; why="a pull request that changes the rig: the daemon and the stand-in"
+                else
+                  servers='["daemon"]'; why="a pull request that does not change the rig: the daemon"
+                fi
+              else
+                servers='["daemon","stand-in"]'; why="the pull request's changed files could not be told: both"
+              fi ;;
+            *) servers='["stand-in"]'; why="a push: the stand-in" ;;
+          esac
+          echo "servers=$servers" >> "$GITHUB_OUTPUT"
+          echo "Server behind the device: $why." | tee -a "$GITHUB_STEP_SUMMARY"
+
   rig:
-    name: ${{ matrix.image }}
+    name: ${{ matrix.image }}, ${{ matrix.server }}
+    needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         image: [ubuntu-26.04, ubuntu-24.04]
+        server: ${{ fromJSON(needs.plan.outputs.servers) }}
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,
@@ -86,7 +142,7 @@ jobs:
           CHECKS: ${{ inputs.checks || 'a b c d e' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
-          DAEMON: ${{ inputs.daemon || 'false' }}
+          SERVER: ${{ matrix.server }}
         run: |
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
@@ -98,15 +154,15 @@ jobs:
           if [[ $CHECKS == *c* ]]; then
             cargo build --release --locked -p skyzfs-blkcheck
           fi
-          case $DAEMON in
-            true)
+          case $SERVER in
+            daemon)
               # The workspace's system packages, and libclang for the
               # binding's library.
               sudo apt-get update
               sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
               cargo build --release --locked -p skyzfsd --features test-hooks ;;
-            false) ;;
-            *) echo "::error::daemon is true or false: '$DAEMON'"; exit 64 ;;
+            stand-in) ;;
+            *) echo "::error::server is daemon or stand-in: '$SERVER'"; exit 64 ;;
           esac
           {
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
@@ -114,7 +170,7 @@ jobs:
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
             # On the daemon, with its own defaults: no --unsafe-allow-*
             # override until a run shows that one is needed.
-            if [ "$DAEMON" = true ]; then
+            if [ "$SERVER" = daemon ]; then
               printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
             fi
           } > "$RUNNER_TEMP/rig.env"
@@ -137,6 +193,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: daemon-rig-${{ matrix.image }}
+          name: daemon-rig-${{ matrix.image }}-${{ matrix.server }}
           path: rig-out/
           retention-days: 90

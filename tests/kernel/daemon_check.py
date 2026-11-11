@@ -134,7 +134,9 @@ EXPECTED = {
                                          '(§4.2): a false alarm would suspend a healthy pool'),
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
-                                    'refused with status 4 and the pool suspends. The server is killed at rest '
+                                    'refused with status 4 and the pool suspends, by the writes that wait at the '
+                                    'device within 300 s or else after a read is sent (the line says which; '
+                                    'obs_b_refused_start_under_writes has the course). The server is killed at rest '
                                     '(writer stopped, pool synced, writes and requests in flight still for a '
                                     'second, unstored 0), so that the log\'s last data record is the newest '
                                     'acknowledged one. --recover-short N takes the log\'s end as if its last N data '
@@ -206,6 +208,10 @@ EXPECTED = {
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with only writes '
+                                              'waiting at the device: the pool\'s and the device\'s state second by '
+                                              'second, and whether the pool suspends by the writes alone (300 s) or '
+                                              'only after a read is sent'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
