@@ -45,7 +45,7 @@
 //! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
 //! | 144 | 8 | `log_live`: the bytes of the log from its start to its end, which the next start replays |
 //! | 152 | 8 | `checkpoint_steps`: the steps the store's checkpoint rule has taken since this daemon started serving |
-//! | 160 | 8 | 1 while such a step is under way, else 0 |
+//! | 160 | 8 | 1 while such a step is under way, else 0; a step begins with the rule's own sync of the log when it needs one |
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
