@@ -176,7 +176,9 @@ fn zeros(mut queue: impl Queue) -> u64 {
             let bytes = u64::from(f.desc.nr_sectors) * 512;
             let carries = matches!(f.desc.op(), op::READ | op::WRITE);
             let buf = carries.then(|| {
-                let mut buf = queue.take_buf(f.tag, (bytes / BLOCK_SIZE) as usize);
+                let mut buf = queue
+                    .take_buf(f.tag, (bytes / BLOCK_SIZE) as usize)
+                    .expect("the tag's buffer");
                 if f.desc.op() == op::READ {
                     buf.fill(0);
                 }
@@ -290,12 +292,16 @@ fn memory_counting(
             let mut content = content.lock().expect("the content");
             let buf = match f.desc.op() {
                 op::READ => {
-                    let mut buf = queue.take_buf(f.tag, bytes / BLOCK_SIZE as usize);
+                    let mut buf = queue
+                        .take_buf(f.tag, bytes / BLOCK_SIZE as usize)
+                        .expect("the tag's buffer");
                     buf.copy_from_slice(&content[at..at + bytes]);
                     Some(buf)
                 }
                 op::WRITE => {
-                    let buf = queue.take_buf(f.tag, bytes / BLOCK_SIZE as usize);
+                    let buf = queue
+                        .take_buf(f.tag, bytes / BLOCK_SIZE as usize)
+                        .expect("the tag's buffer");
                     content[at..at + bytes].copy_from_slice(&buf);
                     longest = longest.max(bytes as u64);
                     handed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -562,6 +568,38 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
     }
     clean(n);
     property("take_over_beside_stale_file", || result);
+}
+
+/// A device whose largest request is above what the tag buffers hold
+/// is not opened for serving, and is left as it is: the driver would
+/// copy a request of that size past a buffer's end.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn a_device_with_larger_requests_than_the_buffers_is_not_opened() {
+    let n = number(8);
+    clean(n);
+    let result = (|| {
+        let larger = 2 * skyzfs_ublk_sys::MAX_IO;
+        skyzfs_ublk_sys::raw::add(n, DEPTH, larger, FLAGS)
+            .map_err(|e| format!("adding a device with requests of {larger} bytes: {e}"))?;
+        let before = info(&mut kernel()?, n)?;
+        match Device::open(&Open {
+            number: n,
+            size: SIZE,
+            take_over: false,
+        }) {
+            Ok(_) => return Err("the device was opened".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {}
+            Err(e) => return Err(format!("refused, but with: {e}")),
+        }
+        let after = info(&mut kernel()?, n)?;
+        if after != before || after.is_none() {
+            return Err(format!("the device was {before:?} and is {after:?}"));
+        }
+        Ok(())
+    })();
+    clean(n);
+    property("larger_requests_than_the_buffers_refused", || result);
 }
 
 /// How long the number of a device nobody holds takes to come free

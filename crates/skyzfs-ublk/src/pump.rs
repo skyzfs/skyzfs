@@ -115,7 +115,13 @@ pub trait Queue {
     /// The buffer of the request with `tag`, `blocks` blocks long. For a
     /// write it holds the data. Called once for a read or a write that
     /// is submitted.
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf;
+    ///
+    /// `None` if the queue has no buffer that holds this request's
+    /// data: the request is longer than the queue's buffers, or the
+    /// tag's buffer is not in its place. The pump then fails the
+    /// request (`EIO`) and hands the target nothing: a buffer made up
+    /// in its place would give a write zeros for its data.
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf>;
 
     /// Complete the request with `tag`: `result` is the byte count or a
     /// negated error. `buf` is the buffer [`Queue::take_buf`] gave, back
@@ -252,6 +258,9 @@ impl Mutants {
     pub(crate) const REFUSAL_IS_FAULT: u32 = 1 << 14;
     /// A stop ends with its last commits still in the queue.
     pub(crate) const STOP_UNSENT: u32 = 1 << 15;
+    /// A request the queue has no buffer for is handed to the target
+    /// with a buffer of zeros.
+    pub(crate) const UNBUFFERED_SUBMITTED: u32 = 1 << 16;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -558,18 +567,31 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if self.room() == 0 {
             return Ok(false);
         }
-        let op = match plan.action {
-            Action::Read { offset, len } => Op::Read {
-                offset,
-                buf: self.queue.take_buf(tag, blocks(len)),
-            },
-            Action::Write { offset, len } => Op::Write {
-                offset,
-                data: self.queue.take_buf(tag, blocks(len)),
-            },
-            Action::Flush => Op::Flush,
-            Action::Discard { offset, len } => Op::Discard { offset, len },
-            Action::WriteZeroes { offset, len } => Op::WriteZeroes { offset, len },
+        let buf = match plan.action {
+            Action::Read { len, .. } | Action::Write { len, .. } => {
+                match self.queue.take_buf(tag, blocks(len)) {
+                    Some(buf) => Some(buf),
+                    None if self.mutants.has(Mutants::UNBUFFERED_SUBMITTED) => {
+                        Some(Buf::zeroed(blocks(len)))
+                    }
+                    None => {
+                        // The queue has no buffer with this request's
+                        // data: it fails, and the target sees nothing.
+                        self.finish(tag, &plan, &Err(BlkError::Failed), None);
+                        return Ok(true);
+                    }
+                }
+            }
+            _ => None,
+        };
+        let op = match (plan.action, buf) {
+            (Action::Read { offset, .. }, Some(buf)) => Op::Read { offset, buf },
+            (Action::Write { offset, .. }, Some(data)) => Op::Write { offset, data },
+            // Not reached: a read or a write has its buffer here.
+            (Action::Read { .. } | Action::Write { .. }, None) => return Ok(true),
+            (Action::Flush, _) => Op::Flush,
+            (Action::Discard { offset, len }, _) => Op::Discard { offset, len },
+            (Action::WriteZeroes { offset, len }, _) => Op::WriteZeroes { offset, len },
         };
         let request = Request {
             id: RequestId(u64::from(tag)),

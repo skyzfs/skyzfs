@@ -35,7 +35,9 @@
 //! made whole) while the device is live, each tag's fetch still names
 //! its buffer, and a request that arrives while the thread goes on to
 //! other work (the store's shutdown runs on it) is copied to that
-//! address.
+//! address. (Read in the driver's source, `ublk_drv.c`: a request
+//! reaches the server through task work on the queue's task, where a
+//! write's data is copied to the address of the tag's fetch command.)
 //!
 //! Therefore **the tag buffers and the library's first buffers are
 //! never freed and never unlocked**: when the queue is dropped they are
@@ -141,11 +143,15 @@ impl Device {
     /// here: 4096-byte blocks, a volatile write cache (so that flushes
     /// arrive), requests of at most [`MAX_IO`], and
     /// discard and write-zeroes of at most that, one segment each.
+    ///
+    /// A device whose largest request is above [`MAX_IO`] is refused
+    /// (`InvalidInput`) and left as it is: see [`fits`].
     pub fn open(open: &Open) -> io::Result<Self> {
         let Ok(id) = i32::try_from(open.number) else {
             return Err(io::Error::other("no such device number"));
         };
         let current = crate::raw::info(open.number)?;
+        fits(open.number, current.max_io_buf_bytes)?;
         let control = UblkCtrlBuilder::default()
             .name(NAME)
             .id(id)
@@ -249,6 +255,25 @@ impl Device {
             _ => Ok(()),
         }
     }
+}
+
+/// Whether a device whose largest request is `largest` bytes can be
+/// served: the tag buffers hold [`MAX_IO`] bytes, the driver copies a
+/// request of the device's largest size to the address it is told, and
+/// a larger one would be written past the buffer's end. Every device
+/// this daemon adds has [`MAX_IO`]; one that does not was added by
+/// something else, or by a build with another figure.
+fn fits(number: u32, largest: u32) -> io::Result<()> {
+    if largest > MAX_IO {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "device {number} takes requests of up to {largest} bytes and this server's \
+                 buffers hold {MAX_IO}: it is not served"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The parameters every device of ours gets, for `size` bytes: see
@@ -484,19 +509,21 @@ impl Queue for KernelQueue<'_> {
         }
     }
 
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
         let slot = usize::from(tag);
-        // The pump takes a tag's buffer once per request, and the
-        // driver was told the largest request: neither fallback below
-        // is reached while both keep their word. Each still gives a
-        // buffer of the right length with the right data, at the cost
-        // of an allocation and, at the commit, a new address.
-        let mut buf = match self.bufs.own.get_mut(slot).and_then(Option::take) {
-            Some(buf) => buf,
-            None => Buf::with_capacity(MAX_BLOCKS.max(blocks)),
-        };
+        // The tag's own buffer, at the request's length, or nothing.
+        // It is not in its place only if it was taken for this request
+        // already, which the pump does not do; and it is too short only
+        // for a request beyond the largest the driver was told, which
+        // the driver does not issue and [`Device::open`] refuses a
+        // device for. Neither is answered with another buffer: for a
+        // write on a tag whose address the driver knows, the data is
+        // in this buffer and nowhere else.
+        let place = self.bufs.own.get_mut(slot)?;
+        let mut buf = place.take()?;
         if buf.set_blocks(blocks).is_err() {
-            buf = Buf::with_capacity(blocks);
+            *place = Some(buf);
+            return None;
         }
         let ours = self.ours.get(slot).copied().unwrap_or(false);
         if !ours && self.is_write(tag) {
@@ -510,7 +537,7 @@ impl Queue for KernelQueue<'_> {
                 self.stopper.copies.fetch_add(1, Ordering::Relaxed);
             }
         }
-        buf
+        Some(buf)
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
@@ -565,5 +592,26 @@ impl Queue for KernelQueue<'_> {
 
     fn pause(&mut self) {
         std::thread::sleep(PAUSE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device is served only if its largest request fits the tag
+    /// buffers.
+    #[test]
+    fn a_device_with_larger_requests_than_the_buffers_is_refused() {
+        assert!(fits(3, MAX_IO).is_ok());
+        assert!(fits(3, MAX_IO / 2).is_ok());
+        let refused = fits(3, MAX_IO + 4096).expect_err("too large");
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+        let said = refused.to_string();
+        assert!(
+            said.contains("device 3") && said.contains("not served"),
+            "{said}"
+        );
+        assert_eq!(MAX_BLOCKS as u64 * BLOCK_SIZE, u64::from(MAX_IO));
     }
 }

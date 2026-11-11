@@ -278,13 +278,17 @@ mod run {
         let (done, buf) = match f.desc.op() {
             op::READ => {
                 counts.reads.fetch_add(1, Ordering::Relaxed);
-                let mut buf = queue.take_buf(f.tag, blocks);
-                (file.read_exact_at(&mut buf, at), Some(buf))
+                match queue.take_buf(f.tag, blocks) {
+                    Some(mut buf) => (file.read_exact_at(&mut buf, at), Some(buf)),
+                    None => (Err(io::Error::from_raw_os_error(libc::EIO)), None),
+                }
             }
             op::WRITE => {
                 counts.writes.fetch_add(1, Ordering::Relaxed);
-                let buf = queue.take_buf(f.tag, blocks);
-                (file.write_all_at(&buf, at), Some(buf))
+                match queue.take_buf(f.tag, blocks) {
+                    Some(buf) => (file.write_all_at(&buf, at), Some(buf)),
+                    None => (Err(io::Error::from_raw_os_error(libc::EIO)), None),
+                }
             }
             op::FLUSH => {
                 counts.flushes.fetch_add(1, Ordering::Relaxed);

@@ -238,7 +238,7 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
         Ok(woken)
     }
 
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
         self.inner.take_buf(tag, blocks)
     }
 
@@ -358,8 +358,8 @@ mod tests {
             fetched.extend(self.fetches.drain(..));
             Ok(self.wakes.pop_front().unwrap_or(Wake::Work))
         }
-        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Buf {
-            Buf::zeroed(blocks)
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
+            Some(Buf::zeroed(blocks))
         }
         fn commit(&mut self, tag: u16, _result: i32, _buf: Option<Buf>) {
             self.committed.push(tag);

@@ -53,6 +53,8 @@ struct FakeQueue {
     heals: Option<(u32, Rc<Cell<bool>>)>,
     /// The queue cannot hand its commits over at a flush.
     flush_fails: bool,
+    /// The tag the queue has no buffer for.
+    no_buf: Option<u16>,
 }
 
 impl Queue for FakeQueue {
@@ -77,9 +79,12 @@ impl Queue for FakeQueue {
     }
 
     /// A write's data names its tag.
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
+        if self.no_buf == Some(tag) {
+            return None;
+        }
         self.taken += 1;
-        Buf::filled(blocks, 0x40 + tag as u8)
+        Some(Buf::filled(blocks, 0x40 + tag as u8))
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
@@ -240,6 +245,7 @@ impl Rig {
             pauses: 0,
             heals: None,
             flush_fails: false,
+            no_buf: None,
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -639,6 +645,35 @@ fn an_orderly_stop_completes_what_was_accepted() {
         expect(ids, vec![0, 1, 1 | FLUSH_ID], "nothing new after the stop")
     }
     caught(scenario, Mutants::STOP_AT_ONCE);
+}
+
+/// A read or a write the queue has no buffer for fails with `EIO` and
+/// never reaches the target: a buffer made up in its place would give
+/// a write zeros for its data. The requests beside it are served.
+/// Mutant: it is handed to the target with a buffer of zeros.
+#[test]
+fn a_request_the_queue_has_no_buffer_for_fails_and_does_not_reach_the_target() {
+    fn scenario(mutants: u32) -> Outcome {
+        for unbuffered in [write(1, 1), request(1, op::READ, 0, 1, 1)] {
+            let mut rig = Rig::new(mutants, 8, 4);
+            rig.pump.queue().no_buf = Some(1);
+            rig.fetch(&[write(0, 0), unbuffered, write(2, 2)]);
+            let ids: Vec<u64> = rig.submitted().into_iter().map(|(id, _)| id).collect();
+            expect(ids, vec![0, 2], "only the requests with a buffer")?;
+            rig.complete(0, Some(100));
+            rig.complete(2, Some(200));
+            rig.turn();
+            let mut committed = rig.committed();
+            committed.sort();
+            expect(
+                committed,
+                vec![(0, BLOCK), (1, -EIO), (2, BLOCK)],
+                "the one without a buffer failed",
+            )?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::UNBUFFERED_SUBMITTED);
 }
 
 /// The last commits of a stop reach the driver: a queue keeps a commit
