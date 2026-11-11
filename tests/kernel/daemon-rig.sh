@@ -1145,7 +1145,7 @@ check_b() {
     # pin will compare: the last five against the first five.
     obs b_takeover_ms "$(medians "$KT_MS")"
     for v in takeover_time_does_not_grow log_stays_below_high_mark kills_inside_steps_lose_nothing; do
-        pin "$v" WAITING "the daemon does not checkpoint yet (M1.3c); see obs_b_takeover_ms"
+        pin "$v" WAITING "the rig's code for this pin is not built (M1.T8); the daemon checkpoints since M1.3c, and a green rig says nothing of it yet; see obs_b_takeover_ms"
     done
     # The check of what was acknowledged (§4.2) must not refuse a log
     # that a kill left whole. Kills around a change of log segment and
@@ -1793,7 +1793,7 @@ case $CHECKS in *" c "*)
     check_c
     # A third pass of the suite with the daemon's marks set low, so
     # that it checkpoints while the suite runs: waits for M1.3c.
-    pin c_suite_with_low_marks WAITING "the daemon does not checkpoint yet (M1.3c)" ;;
+    pin c_suite_with_low_marks WAITING "the rig's code for this pin is not built (M1.T8); the daemon checkpoints since M1.3c, and a green rig says nothing of it yet" ;;
 esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.

@@ -292,10 +292,10 @@ NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 # Pins the daemon cannot carry yet: expected WAITING on the daemon too.
 WAITS_FOR_THE_DAEMON = {
-    'pin_takeover_time_does_not_grow': 'M1.3c: checkpoints',
-    'pin_log_stays_below_high_mark': 'M1.3c: checkpoints',
-    'pin_kills_inside_steps_lose_nothing': 'M1.3c: checkpoints',
-    'pin_c_suite_with_low_marks': 'M1.3c: checkpoints',
+    'pin_takeover_time_does_not_grow': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_log_stays_below_high_mark': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_kills_inside_steps_lose_nothing': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_c_suite_with_low_marks': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
     'pin_failed_volume_while_a_request_is_held': 'the author\'s answer on what the failure path does while the '
                                                  'pump holds a request',
 }
