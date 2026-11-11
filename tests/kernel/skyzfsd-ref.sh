@@ -132,6 +132,10 @@ serve)
             echo "the volume failed in this boot: $(tr '\n' ' ' < "$NOTE")" >&2; exit 4
         fi
     fi
+    # No note, and yet the counters say failed: the note was emptied, as
+    # a reboot empties /run. The stand-in has no log to check, so the
+    # volume simply starts again.
+    [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || : > "$STATS"
     export SKZ_STATS=$STATS
     [ -z "$FAIL_AFTER" ] || export SKZ_FAIL_AFTER=$FAIL_AFTER
     [ -z "$HOLD" ] || export SKZ_HOLD=$HOLD
