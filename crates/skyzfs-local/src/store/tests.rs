@@ -2860,6 +2860,41 @@ fn a_step_that_fails_fails_the_volume() {
     assert!(Store::open(disk.clone(), env.options()).is_err());
 }
 
+/// What the worker shows of its steps is of one moment: a reader that
+/// looks while steps begin and end never sees a step that has ended
+/// as under way, nor the count go back. Seen as one number (twice the
+/// steps, plus one while a step is under way) the state only grows.
+#[test]
+fn the_steps_shown_never_go_back() {
+    const STEPS: u64 = 200_000;
+    let shown = Shown::default();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for step in 0..STEPS {
+                shown.begin();
+                shown.set_step(step + 1, false);
+            }
+        });
+        let mut last = 0;
+        loop {
+            let state = shown.state();
+            let now = state.steps * 2 + u64::from(state.stepping);
+            assert!(
+                now >= last,
+                "after {last}: {} steps, under way {}",
+                state.steps,
+                state.stepping
+            );
+            last = now;
+            if now == STEPS * 2 {
+                break;
+            }
+        }
+    });
+    let state = shown.state();
+    assert_eq!((state.steps, state.stepping), (STEPS, false));
+}
+
 /// The served store applies the rule on its worker: after every
 /// request, and with no request at all until the log is below the low
 /// mark. Requests are answered between the steps, the owner is woken

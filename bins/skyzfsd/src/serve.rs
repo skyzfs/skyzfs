@@ -271,6 +271,7 @@ fn post<Q: skyzfs_ublk::pump::Queue>(
         live: log.live(),
         steps: log.steps,
         stepping: log.stepping,
+        own_syncs: log.own_syncs,
     };
     let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
     board.post_log(now, step_changed);
@@ -398,16 +399,22 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         step: StepBound::DAEMON,
     }));
     #[cfg(feature = "test-hooks")]
-    ready
-        .store
-        .set_step_pause(serve.hooks.step_pause.as_ref().map(|pause| match pause {
-            crate::cli::StepPause::Ms(ms) => {
-                skyzfs_local::store::StepPause::For(Duration::from_millis(*ms))
-            }
-            crate::cli::StepPause::Until(path) => {
-                skyzfs_local::store::StepPause::Until(path.clone())
-            }
-        }));
+    if let Some(pause) = &serve.hooks.step_pause {
+        use crate::cli::StepPoint as At;
+        use skyzfs_local::store::{StepPause, StepPoint};
+        let pause = match pause {
+            crate::cli::StepPause::Ms(ms) => StepPause::For(Duration::from_millis(*ms)),
+            crate::cli::StepPause::Until(path) => StepPause::Until(path.clone()),
+        };
+        let at = match serve.hooks.step_pause_at {
+            At::Saved => StepPoint::Saved,
+            At::Written => StepPoint::Written,
+            At::Synced => StepPoint::Synced,
+            At::StartWritten => StepPoint::StartWritten,
+            At::StartDurable => StepPoint::StartDurable,
+        };
+        ready.store.set_step_pause_at(pause, at);
+    }
     let identity = ready.store.identity();
     // What the server before this one had applied and never answered:
     // the kernel issues those requests again, and they are applied a

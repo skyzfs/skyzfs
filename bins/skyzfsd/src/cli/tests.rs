@@ -116,6 +116,41 @@ fn the_step_pause_is_a_time_or_a_file() {
     }
 }
 
+/// Where the step waits: after the home image is written unless given,
+/// one of the five cuts by name, and only beside a pause.
+#[test]
+fn the_step_pause_has_a_point() {
+    let at = |line: &str| {
+        serve(&format!("serve --dir /v/a --step-pause-ms 5 {line}"))
+            .hooks
+            .step_pause_at
+    };
+    assert_eq!(at(""), StepPoint::Written);
+    for (name, point) in [
+        ("saved", StepPoint::Saved),
+        ("written", StepPoint::Written),
+        ("synced", StepPoint::Synced),
+        ("start-written", StepPoint::StartWritten),
+        ("start-durable", StepPoint::StartDurable),
+    ] {
+        assert_eq!(at(&format!("--step-pause-at {name}")), point);
+    }
+    for line in [
+        "serve --dir /v/a --step-pause-ms 5 --step-pause-at later",
+        "serve --dir /v/a --step-pause-ms 5 --step-pause-at Saved",
+        "serve --dir /v/a --step-pause-at saved",
+    ] {
+        assert!(
+            parse_with(line.split(' ').map(str::to_string), true).is_err(),
+            "{line} was taken"
+        );
+    }
+    assert!(
+        plain("serve --dir /v/a --step-pause-ms 5 --step-pause-at saved").is_err(),
+        "the point was taken by a default build"
+    );
+}
+
 /// The two marks of the checkpoint rule: two segments and one unless
 /// given, each at least one, low below high. A high mark of one is
 /// refused without a low mark too: nothing is below it.
@@ -226,6 +261,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             boot_id_file: Some("/tmp/boot".into()),
             recover_short: 1,
             step_pause: None,
+            step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
         }
     );

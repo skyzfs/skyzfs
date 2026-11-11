@@ -38,9 +38,13 @@
 //! - `serve --recover-short N`: this instance's recovery counts the log
 //!   as N records shorter than it found it;
 //! - `serve --step-pause-ms N` or `serve --step-pause-until PATH`:
-//!   every checkpoint step waits in its middle, after it has written
-//!   the home image and before it syncs it, for N ms or until a file
-//!   of that path exists. One of the two at most;
+//!   every checkpoint step waits for N ms or until a file of that
+//!   path exists. One of the two at most. `--step-pause-at POINT`
+//!   says where, and needs one of them: `saved` (the blocks the step
+//!   writes over are saved), `written` (the home image is written and
+//!   not synced; this unless given), `synced` (the home image is
+//!   durable and the log starts where it did), `start-written` (the
+//!   log's new start is written and not durable) or `start-durable`;
 //! - `serve --commit-delay-ms N`: every request's result is given to
 //!   the kernel N ms after the store completed it, and the acknowledged
 //!   position is stored then and not before. Nothing else waits.
@@ -263,8 +267,10 @@ pub struct Hooks {
     pub boot_id_file: Option<PathBuf>,
     /// The recovery counts the log as so many records shorter.
     pub recover_short: u32,
-    /// Every checkpoint step waits in its middle.
+    /// Every checkpoint step waits.
     pub step_pause: Option<StepPause>,
+    /// Where it waits.
+    pub step_pause_at: StepPoint,
     /// Every commit is delayed by so many milliseconds.
     pub commit_delay_ms: Option<u64>,
 }
@@ -276,6 +282,38 @@ pub enum StepPause {
     Ms(u64),
     /// Until a file of this path exists.
     Until(PathBuf),
+}
+
+/// Where a checkpoint step waits: the cuts between its parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StepPoint {
+    /// The blocks it writes over are saved.
+    Saved,
+    /// The home image is written and not synced.
+    #[default]
+    Written,
+    /// The home image is durable; the log starts where it did.
+    Synced,
+    /// The log's new start is written and not durable.
+    StartWritten,
+    /// The log's new start is durable.
+    StartDurable,
+}
+
+impl StepPoint {
+    fn parse(text: &str) -> Result<Self, UsageError> {
+        match text {
+            "saved" => Ok(Self::Saved),
+            "written" => Ok(Self::Written),
+            "synced" => Ok(Self::Synced),
+            "start-written" => Ok(Self::StartWritten),
+            "start-durable" => Ok(Self::StartDurable),
+            _ => Err(UsageError::Value(
+                "--step-pause-at".into(),
+                "one of saved, written, synced, start-written, start-durable",
+            )),
+        }
+    }
 }
 
 /// One request to hold for a while.
@@ -377,6 +415,7 @@ const SERVE: &[Opt] = &[
     opt("--commit-delay-ms", true, true),
     opt("--step-pause-ms", true, true),
     opt("--step-pause-until", true, true),
+    opt("--step-pause-at", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -565,6 +604,16 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 (None, Some(path)) => Some(StepPause::Until(PathBuf::from(path))),
                 (None, None) => None,
             };
+            let step_pause_at = match given.get("--step-pause-at") {
+                Some(_) if step_pause.is_none() => {
+                    return Err(UsageError::Value(
+                        "--step-pause-at".into(),
+                        "only with --step-pause-ms or --step-pause-until",
+                    ))
+                }
+                Some(text) => StepPoint::parse(text)?,
+                None => StepPoint::default(),
+            };
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -581,6 +630,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     recover_short,
                     step_pause,
+                    step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                 },
             }))

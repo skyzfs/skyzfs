@@ -1175,6 +1175,29 @@ impl StepPause {
 /// start to its end. At or above `high` the store takes steps of
 /// `step`, one after every request it executes and whenever it has
 /// none, until the live size is below `low`.
+///
+/// # What it costs a client
+///
+/// Between the marks every request waits for one step before the next
+/// request is executed, and a step ends with a sync of the home image
+/// and one of the log's superblock. The worst case is therefore one
+/// home-image sync per request until the low mark: with a small step
+/// bound, or with requests that each append little while the step
+/// finds little durable, a burst that reaches the high mark is served
+/// at the pace of the volume's syncs until the log is below the low
+/// mark again. A step takes up to its bound, so a log that grows by
+/// less per request than a step takes shrinks, and the phase ends;
+/// with [`StepBound::DAEMON`] a step takes up to 8 MiB or 1024
+/// records. One record larger than the bound is a step of its own.
+/// Before a step the worker also syncs the log itself when less than
+/// a step of it is durable and more could be ([`LogState::own_syncs`]
+/// counts these).
+///
+/// This cost is the design's choice of a bounded log and a bounded
+/// start over an even latency (design §5.1). It has not been measured
+/// on a device yet. Do not soften it (steps less often, a larger
+/// bound, no step while requests wait) without a measurement that
+/// shows what the change costs the log's bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Marks {
     /// The live size at which steps begin, in bytes.
@@ -1734,14 +1757,6 @@ impl<D: Dir> Store<D> {
         self.core.working = false;
     }
 
-    /// For test rigs: make every step wait in its middle, after it
-    /// has written the home image and before it syncs it. See
-    /// [`StepPause`].
-    #[cfg(any(test, feature = "test-hooks"))]
-    pub fn set_step_pause(&mut self, pause: Option<StepPause>) {
-        self.core.pause = pause.map(|pause| (pause, StepPoint::default()));
-    }
-
     /// For test rigs: make every step wait at `point`.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_step_pause_at(&mut self, pause: StepPause, point: StepPoint) {
@@ -1994,9 +2009,11 @@ struct Shown {
     start: AtomicU64,
     end: AtomicU64,
     durable: AtomicU64,
-    steps: AtomicU64,
+    /// The steps taken, twice, plus one while a step is under way:
+    /// one word, so that a reader never sees the count of one moment
+    /// beside the "under way" of another. It only grows.
+    step: AtomicU64,
     own_syncs: AtomicU64,
-    stepping: AtomicBool,
 }
 
 impl Shown {
@@ -2005,19 +2022,29 @@ impl Shown {
         self.start.store(state.start, Ordering::SeqCst);
         self.end.store(state.end, Ordering::SeqCst);
         self.durable.store(state.durable, Ordering::SeqCst);
-        self.steps.store(state.steps, Ordering::SeqCst);
         self.own_syncs.store(state.own_syncs, Ordering::SeqCst);
-        self.stepping.store(stepping, Ordering::SeqCst);
+        self.set_step(state.steps, stepping);
+    }
+
+    fn set_step(&self, steps: u64, stepping: bool) {
+        self.step
+            .store(steps * 2 + u64::from(stepping), Ordering::SeqCst);
+    }
+
+    /// A step begins: the count stays, and it is under way.
+    fn begin(&self) {
+        self.step.fetch_or(1, Ordering::SeqCst);
     }
 
     fn state(&self) -> LogState {
+        let step = self.step.load(Ordering::SeqCst);
         LogState {
             start: self.start.load(Ordering::SeqCst),
             end: self.end.load(Ordering::SeqCst),
             durable: self.durable.load(Ordering::SeqCst),
-            steps: self.steps.load(Ordering::SeqCst),
+            steps: step / 2,
             own_syncs: self.own_syncs.load(Ordering::SeqCst),
-            stepping: self.stepping.load(Ordering::SeqCst),
+            stepping: step % 2 == 1,
         }
     }
 }
@@ -2174,7 +2201,7 @@ where
                         }
                     };
                     let stepped = core.tend(&mut || {
-                        shown.stepping.store(true, Ordering::SeqCst);
+                        shown.begin();
                         wake();
                     });
                     busy = stepped == Ok(true);
@@ -2212,7 +2239,10 @@ impl Served {
     /// durable position, the steps the rule of the marks has taken
     /// ([`Store::set_marks`]), and whether one is under way. It asks
     /// the worker nothing and returns at once, also during a step. The
-    /// fields are read one after the other and may be of two moments.
+    /// count of steps and "under way" are of one moment: a step that
+    /// has ended is never shown under way, and one that waits in its
+    /// hook is. The positions are read one after the other and may be
+    /// of other moments.
     pub fn log_state(&self) -> LogState {
         self.log.state()
     }

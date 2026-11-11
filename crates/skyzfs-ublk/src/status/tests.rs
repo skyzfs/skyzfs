@@ -37,6 +37,7 @@ fn sample() -> Status {
                 live: 13,
                 steps: 14,
                 stepping: true,
+                own_syncs: 18,
             },
             start_ms: 16,
             replayed_bytes: 17,
@@ -53,10 +54,10 @@ fn the_file_has_the_documented_layout() {
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
-    for field in (1..=14u64).chain([1, 16, 17]) {
+    for field in (1..=14u64).chain([1, 16, 17, 18]) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 184);
+    assert_eq!(bytes.len(), 192);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
 }
@@ -107,6 +108,7 @@ fn the_report_shows_the_log_and_the_start() {
     );
     assert_eq!(value(&lines, "log_live"), Some("13"));
     assert_eq!(value(&lines, "checkpoint_steps"), Some("14"));
+    assert_eq!(value(&lines, "checkpoint_syncs"), Some("18"));
     assert_eq!(value(&lines, "checkpoint_step"), Some("under way"));
     assert_eq!(value(&lines, "start_ms"), Some("16"));
     assert_eq!(value(&lines, "replayed_bytes"), Some("17"));
@@ -148,6 +150,7 @@ fn a_steps_begin_and_end_are_written_at_once() {
         live: 100,
         steps: 0,
         stepping: true,
+        own_syncs: 0,
     };
     board.post_log(begun, true);
     assert_eq!(written.recv_timeout(wait), Ok(begun));
@@ -155,6 +158,7 @@ fn a_steps_begin_and_end_are_written_at_once() {
         live: 60,
         steps: 1,
         stepping: false,
+        own_syncs: 1,
     };
     board.post_log(ended, true);
     assert_eq!(written.recv_timeout(wait), Ok(ended));
@@ -475,6 +479,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "age_ms",
             "log_live",
             "checkpoint_steps",
+            "checkpoint_syncs",
             "checkpoint_step",
             "start_ms",
             "replayed_bytes",

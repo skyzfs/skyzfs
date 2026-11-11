@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 184
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 192
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -48,6 +48,7 @@
 //! | 160 | 8 | 1 while such a step is under way, else 0 |
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
+//! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //!
 //! # The rules
 //!
@@ -93,7 +94,7 @@ use crate::records::StoredFailure;
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA3";
-const LEN: usize = 184;
+const LEN: usize = 192;
 /// The second version: without the fields from offset 144 on.
 const SECOND_MAGIC: &[u8; 8] = b"SKYZSTA2";
 const SECOND_LEN: usize = 144;
@@ -153,6 +154,9 @@ pub struct LogShown {
     pub steps: u64,
     /// Whether a step is under way.
     pub stepping: bool,
+    /// The syncs of the log the worker issued for its steps: its own,
+    /// apart from the flushes clients asked for.
+    pub own_syncs: u64,
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -189,6 +193,7 @@ fn encode(status: &Status) -> [u8; LEN] {
         u64::from(log.shown.stepping),
         log.start_ms,
         log.replayed_bytes,
+        log.shown.own_syncs,
     ];
     for (i, field) in fields.iter().enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
@@ -207,6 +212,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             live: u64_at(bytes, 144),
             steps: u64_at(bytes, 152),
             stepping: u64_at(bytes, 160) != 0,
+            own_syncs: u64_at(bytes, 184),
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
@@ -659,6 +665,7 @@ pub fn report(
             for (key, value) in [
                 ("log_live", log.shown.live.to_string()),
                 ("checkpoint_steps", log.shown.steps.to_string()),
+                ("checkpoint_syncs", log.shown.own_syncs.to_string()),
                 (
                     "checkpoint_step",
                     if log.shown.stepping {
