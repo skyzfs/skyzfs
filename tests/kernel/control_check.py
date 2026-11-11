@@ -230,7 +230,15 @@ def main(argv):
     if len(argv) != 2:
         print(__doc__, file=sys.stderr)
         return 2
-    results, twice = read_results(os.path.join(argv[1], 'results.tsv'))
+    try:
+        results, twice = read_results(os.path.join(argv[1], 'results.tsv'))
+    except OSError as e:
+        # No results at all: the rig did not run (its build or its
+        # setup failed). That is the rig's failure, exit 2, and never
+        # "the results differ".
+        print('## Control rig\n\n**The rig failed. This is not a verdict on the binding.**\n\n'
+              f'- The rig left no results: {e}')
+        return 2
     rows, differs, errors = judge(results)
     errors = twice + errors
     sys.stdout.write(summary(results, rows, differs, errors))

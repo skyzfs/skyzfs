@@ -103,6 +103,14 @@ class Main(unittest.TestCase):
         r['pin_delete_fails_requests'] = 'ERROR: no holder'
         self.assertEqual(self.run_on(r.items()), 2)
 
+    def test_no_results_file_is_a_rig_error_and_not_a_difference(self):
+        import contextlib
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cc.main(['control_check.py', os.path.join(d, 'none')]), 2)
+        self.assertIn('not a verdict', out.getvalue())
+
     def test_a_line_written_twice_with_two_results_is_a_rig_error(self):
         r = list(as_expected().items()) + [('control_can_reissue', 'FAIL: no')]
         self.assertEqual(self.run_on(r), 2)

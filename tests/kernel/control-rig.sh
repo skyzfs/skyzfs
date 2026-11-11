@@ -225,18 +225,27 @@ rec kernel "$(uname -r)"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
 SETUP_OK=1
-apt-get update > /dev/null 2>&1
-if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
-    rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver")"
+# Installing packages and cloning need the network, and the runners'
+# name resolution fails for minutes at a time: three tries, a minute
+# apart. A setup that still fails is the rig's error, with its reason.
+built=""
+for try in 1 2 3; do
+    apt-get update > "$OUT/apt.log" 2>&1
+    if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then built=1; break; fi
+    cp "$OUT/ublksrv-build.log" "$OUT/ublksrv-build-try$try.log"
+    [ "$try" = 3 ] || sleep 60
+done
+if [ -n "$built" ]; then
+    rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver") (built at try $try)"
 else
-    rec ublk_server "BUILD FAILED: $(tail -n 1 "$OUT/ublksrv-build.log")"; SETUP_OK=""
+    rec ublk_server "BUILD FAILED in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|E: ' "$OUT/ublksrv-build.log" || tail -n 1 "$OUT/ublksrv-build.log")"; SETUP_OK=""
 fi
 modprobe ublk_drv 2>> "$OUT/control.err" || true
 [ -e /dev/ublk-control ] || { rec ublk_driver "no /dev/ublk-control after modprobe ublk_drv"; SETUP_OK=""; }
 { [ -n "$CTL" ] && [ -x "$CTL" ]; } || { rec test_program "RIG_CONTROL is not a program: '${CTL}'"; SETUP_OK=""; }
 { [ -n "$KTEST" ] && [ -x "$KTEST" ]; } || { rec kernel_tests "RIG_KERNEL_TESTS is not a program: '${KTEST}'"; SETUP_OK=""; }
 if [ -z "$SETUP_OK" ]; then
-    rec setup "FAILED: see the lines above, apt and ublksrv-build.log"
+    rec setup "FAILED: $(grep -E '^(ublk_server|ublk_driver|test_program|kernel_tests)\b' "$R" | grep -E 'FAILED|no /dev|is not a program' | cut -f2 | tr '\n' ';')"
     exit 2
 fi
 rec setup ok

@@ -66,8 +66,13 @@ jobs:
         run: |
           # The workspace's system packages, and libclang for the
           # binding's library.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          # The runners' name resolution fails for minutes at a time
+          # (seen 2026-11-11): three tries, a minute apart.
+          for try in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev; then break; fi
+            [ "$try" = 3 ] && { echo "::error title=control rig::apt could not install the build's packages in three tries; this is not a verdict on the binding"; exit 2; }
+            sleep 60
+          done
           rustup update stable
           # Built as the runner's user, run as root below. The kernel
           # tests' binary is named by cargo; the test program is built
