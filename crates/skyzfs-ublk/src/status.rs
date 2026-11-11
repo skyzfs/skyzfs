@@ -66,6 +66,7 @@ use std::time::{Duration, Instant};
 
 use crate::lifecycle::{DeviceState, Located, Whose};
 use crate::pump::Counters;
+use crate::records::StoredFailure;
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
@@ -390,7 +391,23 @@ impl Board {
     }
 }
 
+/// The volume's failure note, as `status` found it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Noted {
+    /// There is none.
+    Nothing,
+    /// One is there and is not a whole record: it counts as a failure
+    /// while a client held the device.
+    Unreadable,
+    /// One is there. It counts if it is of this boot.
+    Whole(StoredFailure),
+}
+
 /// What `status` prints: keys and values, in order.
+///
+/// A failure note of this boot decides the state, and is printed after
+/// everything else: its boot, whether a client held the device, why,
+/// and how long ago. A note of another boot is not shown.
 ///
 /// `located` is the device under the volume's recorded number
 /// ([`lifecycle::locate`](crate::lifecycle::locate)), `status` the
@@ -401,11 +418,21 @@ impl Board {
 pub fn report(
     located: Option<&Located>,
     status: Option<&Status>,
+    noted: Noted,
     boot: &[u8; 16],
     uptime_ms: u64,
 ) -> Vec<(&'static str, String)> {
     let ours = located.filter(|l| l.whose == Whose::Ours);
+    let failure = match noted {
+        Noted::Whole(stored) if stored.boot == *boot => Some(Some(stored)),
+        Noted::Unreadable => Some(None),
+        _ => None,
+    };
     let state = match (located, ours) {
+        _ if failure.is_some_and(|f| f.is_none_or(|f| f.failure.held)) => {
+            "failed, held by a client: not served again in this boot".to_string()
+        }
+        _ if failure.is_some() => "failed: needs --acknowledge-failure".to_string(),
         (None, _) => "detached".to_string(),
         (Some(l), None) if l.whose == Whose::Unsure => format!(
             "unknown: device {} has this volume's values and no note",
@@ -458,6 +485,21 @@ pub fn report(
             format!("left by a daemon that is gone, pid {}", s.pid)
         };
         lines.push(("counters", counters));
+    }
+    match failure {
+        None => {}
+        Some(None) => lines.push(("failure", "the failure note cannot be read".to_string())),
+        Some(Some(stored)) => {
+            let boot: String = stored.boot.iter().map(|b| format!("{b:02x}")).collect();
+            let held = if stored.failure.held { "yes" } else { "no" };
+            lines.push(("failure", stored.failure.reason.to_string()));
+            lines.push(("failure_held", held.to_string()));
+            lines.push(("failure_boot", boot));
+            lines.push((
+                "failure_age_ms",
+                uptime_ms.saturating_sub(stored.written_ms).to_string(),
+            ));
+        }
     }
     lines
 }

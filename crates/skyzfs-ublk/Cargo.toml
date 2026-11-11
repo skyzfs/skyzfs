@@ -12,5 +12,7 @@ skyzfs-local = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# The integration tests fail a served store's log at will.
+skyzfs-local = { workspace = true, features = ["test-hooks"] }
 proptest = { workspace = true }
 tempfile = { workspace = true }
