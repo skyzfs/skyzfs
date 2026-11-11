@@ -269,3 +269,29 @@ fn anything_else_is_a_usage_error() {
         assert!(matches, "{line}: {got:?}");
     }
 }
+
+#[test]
+fn help_is_a_command_and_says_what_the_rig_asks_it_to_say() {
+    for line in ["help", "--help", "-h"] {
+        assert_eq!(plain(line), Ok(Command::Help));
+    }
+    assert_eq!(
+        plain("help serve"),
+        Err(UsageError::Unknown("serve".into()))
+    );
+    // The lock is tried for 2 s, a live device of the volume's own for
+    // 5 s, and a pool is exported before a detach.
+    for needle in [
+        "2 s",
+        "20 times, 100 ms apart",
+        "up to 5 s",
+        "Export the pool first",
+        "stays suspended",
+        "ready /dev/ublkbN",
+        "--acknowledge-failure",
+    ] {
+        assert!(HELP.contains(needle), "help does not say: {needle}");
+    }
+    // A figure that was measured wrongly and is not to be quoted.
+    assert!(!HELP.contains("130"));
+}

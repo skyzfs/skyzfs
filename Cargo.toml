@@ -40,6 +40,7 @@ skynbd-nbd = { path = "crates/skynbd-nbd" }
 skynbd-api = { path = "crates/skynbd-api" }
 skyzfs-blk = { path = "crates/skyzfs-blk" }
 skyzfs-local = { path = "crates/skyzfs-local" }
+skyzfs-ublk = { path = "crates/skyzfs-ublk" }
 
 # Core dependencies (design §11). Heavier deps (aws-sdk-s3, axum, redb,
 # tokio-rustls, moka) enter with the milestone that needs them (M1+), not

@@ -405,6 +405,9 @@ pub enum Noted {
 
 /// What `status` prints: keys and values, in order.
 ///
+/// `pid` is there while the kernel shows a live server for this
+/// volume's device: the process that wrote the file.
+///
 /// A failure note of this boot decides the state, and is printed after
 /// everything else: its boot, whether a client held the device, why,
 /// and how long ago. A note of another boot is not shown.
@@ -479,6 +482,9 @@ pub fn report(
             lines.push((key, value.to_string()));
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);
+        if live {
+            lines.push(("pid", s.pid.to_string()));
+        }
         let counters = if live {
             format!("of the serving daemon, pid {}", s.pid)
         } else {
