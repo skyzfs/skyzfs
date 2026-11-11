@@ -24,7 +24,7 @@ jobs:
   observe:
     name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 45
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

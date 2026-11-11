@@ -11,15 +11,22 @@
 # It needs only the stock reference ublk server (`ublk add`, `ublk del`):
 # no stand-in for the daemon and no patch. Everything it writes is an
 # observation, one "key<TAB>value" line per finding in OUT/results.tsv;
-# it judges nothing and exits 0 unless it could not set up. Three
-# scenarios, each on its own pool with failmode=wait, a local log
-# device, a reader, and a writer that keeps its own record:
+# it judges nothing and exits 0 unless it could not set up. Each
+# scenario has its own pool with failmode=wait, a local log device, a
+# reader, and a writer that keeps its own record:
 #
-#   same     the device is deleted; it comes back with the same content.
-#            First nobody runs zpool clear (does zed bring it back?),
-#            then zpool clear.
-#   older    the same, but the device comes back with a copy of its
-#            image taken earlier: less than ZFS was told.
+#   other    the device is deleted; the same content comes back. The old
+#            number is tried first; if the kernel refuses it, the
+#            content comes back under another number with nothing at the
+#            old path. First nobody runs zpool clear, then zpool clear.
+#   link     the same, with the old path a symbolic link to the new device.
+#   gone     the device is deleted for good, with a delete that waits:
+#            zpool clear with no device, what is stuck with it, and
+#            whether export -f or destroy -f gets rid of the pool.
+#   zed      the first again with the event daemon running: what zed
+#            does when the device goes and when one comes back.
+#   older    the device comes back, by a route that resumed the pool,
+#            with a copy of its image taken earlier: less than ZFS was told.
 #   scrub    the device is deleted while a scrub is running.
 #
 # Meant for a throwaway machine: it leaves suspended pools behind.
@@ -58,7 +65,6 @@ status_lines() { # pool file: zpool status, kept whole in the file, the lines th
 kernel_lines() { # line count before -> what the kernel said since, most frequent first
     dmesg | tail -n +"$(($1 + 1))" | sed 's/^\[[^]]*\] //; s/[0-9]\{4,\}/N/g' | sort | uniq -c | sort -rn | head -n 8 | tr -s ' ' | tr '\n' ';'
 }
-events() { lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }'; }
 add_dev() { lim 60 ublk add -t loop -n "$1" -f "$2" -q 1 -d 64 --max_io_buf_bytes 1048576 -r 1 -i 1; }   # number image
 
 SLOGS=()
@@ -137,53 +143,83 @@ scenario_start() {
     ( while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do lim 30 zpool sync "$pool" 2>/dev/null; sleep 0.2; done ) &
     sleep 8
 }
-# name number: delete the device under the pool and write down what follows.
+# What the kernel still has of device number N.
+device_state() {
+    local n=$1
+    echo "ublk list: $(lim 20 ublk list -n "$n" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-260); /dev: $(find /dev -maxdepth 1 -name "ublk[bc]$n" | sort | tr '\n' ' '); /sys/block/ublkb$n: $([ -e "/sys/block/ublkb$n" ] && echo present || echo absent); holders: $(find "/sys/block/ublkb$n/holders" -mindepth 1 2>/dev/null | tr '\n' ' '); ublk control devices: $(find /sys/class/ublk-char -mindepth 1 -maxdepth 1 2>/dev/null | sed 's|.*/||' | sort | tr '\n' ' ')"
+}
+# name number [how]: delete the device under the pool and write down what
+# follows. how is async (ublk del --async, the default) or wait (ublk
+# del, which waits for the device to be gone).
 scenario_delete() {
-    local name=$1 n=$2 pool=skzf-$1 mark i st rc
+    local name=$1 n=$2 how=${3:-async} pool=skzf-$1 mark i st rc t0
     mark=$(dmesg | wc -l)
     rec "${name}_before" "pool $(pool_state "$pool"); $(grep -c . "$WORK/$name.record") files acknowledged; $(cat "$WORK/$name.reads") reads done"
-    lim 60 ublk del --async -n "$n" > "$OUT/$name-del.log" 2>&1; rc=$?
+    t0=$(date +%s)
+    if [ "$how" = wait ]; then
+        lim 90 ublk del -n "$n" > "$OUT/$name-del.log" 2>&1; rc=$?
+        rec "${name}_del_waiting" "ublk del -n $n without --async: rc $rc after $(( $(date +%s) - t0 )) s (124: it had not returned after 90 s)"
+    else
+        lim 60 ublk del --async -n "$n" > "$OUT/$name-del.log" 2>&1; rc=$?
+    fi
     for i in $(seq 1 180); do st=$(pool_state "$pool"); [ "$st" = SUSPENDED ] && break; sleep 1; done
     sleep 3
-    rec "${name}_after_delete" "ublk del rc $rc; pool $st after $i s; device node $([ -b "/dev/ublkb$n" ] && echo present || echo gone); read errors seen by the reader: $(grep -c . "$OUT/$name-reader.log"); writes failed for the writer: $(grep -c failed "$OUT/$name-writer.log"); $(grep -c . "$WORK/$name.record") files acknowledged"
+    rec "${name}_after_delete" "ublk del rc $rc; pool $st $(( $(date +%s) - t0 )) s after the delete began; read errors seen by the reader: $(grep -c . "$OUT/$name-reader.log"); writes failed for the writer: $(grep -c failed "$OUT/$name-writer.log"); $(grep -c . "$WORK/$name.record") files acknowledged"
+    rec "${name}_device_after_delete" "$(device_state "$n")"
     rec "${name}_status_suspended" "$(status_lines "$pool" "$OUT/$name-status-suspended.log")"
     rec "${name}_kernel_log" "$(kernel_lines "$mark")"
-    rec "${name}_events" "$(events)"
+    rec "${name}_events" "$(lim 60 zpool events -H 2>/dev/null | wc -l) events in all so far; by class: $(lim 60 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }' | cut -c1-300)"
     [ "$st" = SUSPENDED ]
 }
-# name number image: the device comes back under the old name; first
-# without zpool clear, then with it.
-scenario_return() {
-    local name=$1 n=$2 img=$3 pool=skzf-$1 mnt=$WORK/mnt/skzf-$1 mark rc i st before v m how
+# name number image route: the content comes back as a device. First the
+# old number is tried. If the kernel refuses it, the route decides:
+#   other   another number, and nothing at the old path
+#   link    another number, and the old path a symbolic link to it
+# Sets BACK to how it came back.
+bring_back() {
+    local name=$1 n=$2 img=$3 route=$4 mark rc m=$(($2 + 10)) i
     mark=$(dmesg | wc -l)
     add_dev "$n" "$img" > "$OUT/$name-readd.log" 2>&1; rc=$?
-    if [ $rc != 0 ] || [ ! -b "/dev/ublkb$n" ]; then
-        # The old number cannot be had again. Write down what the kernel
-        # still holds, then bring the content back as another device and
-        # put it at the old path by hand, as an operator who wants the
-        # pool back might.
-        rec "${name}_old_number" "ublk add -n $n failed, rc $rc ($(tail -n 1 "$OUT/$name-readd.log")); ublk list -n $n: $(lim 20 ublk list -n "$n" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300); /dev: $(find /dev -maxdepth 1 -name 'ublk[bc]*' | sort | tr '\n' ' '); /sys/block: $(find /sys/block -maxdepth 1 -name 'ublkb*' | sort | tr '\n' ' '); kernel: $(dmesg | tail -n 400 | grep -i ublk | sed 's/^\[[^]]*\] //' | sort | uniq -c | head -n 5 | tr -s ' ' | tr '\n' ';')"
-        m=$((n + 10))
+    for i in $(seq 1 20); do [ -b "/dev/ublkb$n" ] && break; sleep 0.25; done
+    if [ $rc = 0 ] && [ -b "/dev/ublkb$n" ]; then
+        BACK="under the old number, /dev/ublkb$n"
+        rec "${name}_old_number" "ublk add -n $n succeeded"
+    else
+        rec "${name}_old_number" "ublk add -n $n refused: rc $rc ($(tr -s ' \t\n' ' ' < "$OUT/$name-readd.log" | cut -c1-200)); $(device_state "$n"); kernel at the add: $(dmesg | tail -n +"$((mark + 1))" | grep -vi 'zio\|WARNING: Pool' | sed 's/^\[[^]]*\] //' | sort | uniq -c | head -n 6 | tr -s ' ' | tr '\n' ';')"
         add_dev "$m" "$img" > "$OUT/$name-readd-other.log" 2>&1; rc=$?
         for i in $(seq 1 40); do [ -b "/dev/ublkb$m" ] && break; sleep 0.25; done
-        how="as /dev/ublkb$m (ublk add rc $rc)"
-        if [ -b "/dev/ublkb$m" ] && [ ! -e "/dev/ublkb$n" ]; then
-            ln -s "/dev/ublkb$m" "/dev/ublkb$n" && how+=", with /dev/ublkb$n a symbolic link to it"
+        BACK="as /dev/ublkb$m (ublk add rc $rc), nothing at /dev/ublkb$n"
+        if [ "$route" = link ] && [ -b "/dev/ublkb$m" ] && [ ! -e "/dev/ublkb$n" ]; then
+            ln -s "/dev/ublkb$m" "/dev/ublkb$n" && BACK="as /dev/ublkb$m (ublk add rc $rc), with /dev/ublkb$n a symbolic link to it"
         fi
-        rec "${name}_back_as" "$how"
-    else
-        rec "${name}_back_as" "under the old number, /dev/ublkb$n (ublk add rc 0)"
     fi
-    for i in $(seq 1 60); do st=$(pool_state "$pool"); [ "$st" = ONLINE ] && break; sleep 1; done
+    rec "${name}_back_as" "$BACK"
+}
+# name seconds: with the device back and no zpool clear, does the pool resume by itself?
+wait_unaided() {
+    local name=$1 secs=$2 pool=skzf-$1 i st
+    for i in $(seq 1 "$secs"); do st=$(pool_state "$pool"); [ "$st" = ONLINE ] && break; sleep 1; done
     rec "${name}_back_without_clear" "pool $st after $i s with no zpool clear; $(status_lines "$pool" "$OUT/$name-status-back.log")"
+}
+# name: zpool clear, and what the pool is afterwards.
+clear_and_see() {
+    local name=$1 pool=skzf-$1 mnt=$WORK/mnt/skzf-$1 mark rc i st before v t0
+    mark=$(dmesg | wc -l)
     before=$(grep -c . "$WORK/$name.record")
+    t0=$(date +%s)
     lim 120 zpool clear "$pool" > "$OUT/$name-clear.log" 2>&1; rc=$?
     for i in $(seq 1 30); do st=$(pool_state "$pool"); [ "$st" = ONLINE ] && break; sleep 1; done
     sleep 10
-    v=failed; lim 120 "$DD" if=/dev/zero of="$mnt/after-clear" bs=1M count=4 conv=fsync status=none 2>/dev/null && v=completed
-    rec "${name}_after_clear" "zpool clear rc $rc ($(tail -n 1 "$OUT/$name-clear.log")); pool $st; a new write with fsync $v; files acknowledged $before before the clear, $(grep -c . "$WORK/$name.record") ten seconds after; read errors seen by the reader: $(grep -c . "$OUT/$name-reader.log"); writes failed for the writer: $(grep -c failed "$OUT/$name-writer.log")"
+    v="not tried: the pool is $st"
+    if [ "$st" = ONLINE ]; then
+        v=failed; lim 120 "$DD" if=/dev/zero of="$mnt/after-clear" bs=1M count=4 conv=fsync status=none 2>/dev/null && v=completed
+    fi
+    rec "${name}_after_clear" "zpool clear rc $rc after $(( $(date +%s) - t0 )) s (124: it had not returned after 120 s, and could not be killed) ($(tail -n 1 "$OUT/$name-clear.log")); pool $st; a new write with fsync: $v; files acknowledged $before before the clear, $(grep -c . "$WORK/$name.record") after; read errors seen by the reader: $(grep -c . "$OUT/$name-reader.log"); writes failed for the writer: $(grep -c failed "$OUT/$name-writer.log")"
     rec "${name}_status_after_clear" "$(status_lines "$pool" "$OUT/$name-status-after-clear.log")"
-    touch "$WORK/$name.stop"; sleep 5
+    rec "${name}_kernel_log_return" "$(kernel_lines "$mark")"
+    touch "$WORK/$name.stop"
+    [ "$st" = ONLINE ] || return 1
+    sleep 5
     lim 600 zpool scrub -w "$pool" > "$OUT/$name-scrub.log" 2>&1; rc=$?
     rec "${name}_scrub_after" "zpool scrub rc $rc; $(status_lines "$pool" "$OUT/$name-status-scrubbed.log")"
     rec "${name}_files_after" "$(lim 300 python3 -I - "$mnt" "$WORK/$name.record" <<'PY' 2>&1 | tail -n 1
@@ -204,34 +240,94 @@ print(f'all {len(want)} files are as the writer recorded them' if not bad else
       f'{len(bad)} of {len(want)} files are not as the writer recorded them: {"; ".join(bad)}')
 PY
     )"
-    rec "${name}_kernel_log_return" "$(kernel_lines "$mark")"
 }
 
-step "same: the device is deleted and comes back with the same content"
-if scenario_start same 0; then
-    scenario_delete same 0 || rec same_note "the pool did not suspend; the rest is recorded as it went"
-    scenario_return same 0 "$WORK/same.img"
+# The routes by which the content can come back, each on its own pool.
+RESUMED=""
+for route in other link; do
+    step "$route: the device is deleted; the same content comes back ($route)"
+    n=0; [ "$route" = link ] && n=1
+    if scenario_start "$route" "$n"; then
+        scenario_delete "$route" "$n" || rec "${route}_note" "the pool did not suspend; the rest is recorded as it went"
+        bring_back "$route" "$n" "$WORK/$route.img" "$route"
+        wait_unaided "$route" 60
+        if clear_and_see "$route"; then RESUMED+="$route "; fi
+    fi
+    touch "$WORK/$route.stop"
+done
+rec routes_that_resumed "${RESUMED:-none}"
+
+step "gone: the device is deleted for good, with a delete that waits"
+if scenario_start gone 2; then
+    scenario_delete gone 2 wait || rec gone_note "the pool did not suspend"
+    # zpool clear with no device behind the pool, and what is stuck with it.
+    ( lim 100 zpool clear skzf-gone > "$OUT/gone-clear.log" 2>&1; echo $? > "$WORK/gone-clear.rc" ) &
+    sleep 15
+    t0=$(date +%s)
+    lim 30 zpool status skzf-gone > "$OUT/gone-status-during-clear.log" 2>&1; rc=$?
+    rec gone_status_during_clear "zpool status while the first zpool clear has run 15 s: rc $rc after $(( $(date +%s) - t0 )) s; first clear $([ -e "$WORK/gone-clear.rc" ] && echo "already returned $(cat "$WORK/gone-clear.rc")" || echo 'still running')"
+    t0=$(date +%s)
+    lim 30 zpool clear skzf-gone > "$OUT/gone-clear2.log" 2>&1; rc=$?
+    rec gone_second_clear "a second zpool clear: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-clear2.log"))"
+    wait
+    rec gone_first_clear "zpool clear with no device: rc $(cat "$WORK/gone-clear.rc" 2>/dev/null) (124: not returned after 100 s) ($(tail -n 1 "$OUT/gone-clear.log")); pool $(pool_state skzf-gone)"
+    # Is there a way to be rid of the pool short of a reboot?
+    t0=$(date +%s)
+    lim 60 zpool export -f skzf-gone > "$OUT/gone-export.log" 2>&1; rc=$?
+    rec gone_export "zpool export -f: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-export.log")); pool $(pool_state skzf-gone)"
+    t0=$(date +%s)
+    lim 60 zpool destroy -f skzf-gone > "$OUT/gone-destroy.log" 2>&1; rc=$?
+    rec gone_destroy "zpool destroy -f: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-destroy.log")); pool $(pool_state skzf-gone); pools listed: $(lim 30 zpool list -H -o name,health 2>&1 | tr '\t\n' ' ;' | cut -c1-200)"
+    rec gone_device_at_end "$(device_state 2)"
 fi
-touch "$WORK/same.stop"
+touch "$WORK/gone.stop"
+
+step "zed: the same with the event daemon running"
+zed_log() { journalctl -u zfs-zed --since "$1" --no-pager -o cat 2>/dev/null | sed 's/[0-9]\{4,\}/N/g' | sort | uniq -c | sort -rn | head -n 8 | tr -s ' ' | tr '\n' ';'; }
+systemctl start zfs-zed > "$OUT/zed-start.log" 2>&1
+sleep 2
+rec zed_started "$(systemctl is-active zfs-zed 2>/dev/null || echo unknown); $(pgrep -c -x zed 2>/dev/null || echo 0) zed process(es); $(tail -n 1 "$OUT/zed-start.log")"
+if scenario_start zed 3; then
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    scenario_delete zed 3 || rec zed_note "the pool did not suspend"
+    sleep 30
+    rec zed_after_delete "30 s after the delete: pool $(pool_state skzf-zed); zed $(systemctl is-active zfs-zed 2>/dev/null), cpu and memory: $(ps -o pcpu=,rss= -C zed 2>/dev/null | tr -s ' \n' ' '); events in all: $(lim 60 zpool events -H 2>/dev/null | wc -l); zed said: $(zed_log "$since"); $(status_lines skzf-zed "$OUT/zed-status-30s.log")"
+    since=$(date '+%Y-%m-%d %H:%M:%S')
+    bring_back zed 3 "$WORK/zed.img" other
+    wait_unaided zed 60
+    rec zed_after_return "with the device back as another number for 60 s: zed said: $(zed_log "$since")"
+    if [ "$(pool_state skzf-zed)" != ONLINE ] && [ -b /dev/ublkb13 ] && [ ! -e /dev/ublkb3 ]; then
+        since=$(date '+%Y-%m-%d %H:%M:%S')
+        ln -s /dev/ublkb13 /dev/ublkb3
+        udevadm trigger --action=change /dev/ublkb13 2>/dev/null
+        for i in $(seq 1 60); do [ "$(pool_state skzf-zed)" = ONLINE ] && break; sleep 1; done
+        rec zed_after_link "with /dev/ublkb3 a symbolic link to it, and a udev change event, for $i s: pool $(pool_state skzf-zed); zed said: $(zed_log "$since")"
+    fi
+    clear_and_see zed
+fi
+touch "$WORK/zed.stop"
+systemctl stop zfs-zed > /dev/null 2>&1
 
 step "older: the device comes back with an earlier copy of its image"
-if scenario_start older 1; then
+route=${RESUMED%% *}; route=${route:-link}
+if scenario_start older 4; then
     lim 120 zpool sync skzf-older
     cp --sparse=always "$WORK/older.img" "$WORK/older-copy.img"
-    rec older_copy "taken with $(grep -c . "$WORK/older.record") files acknowledged"
+    rec older_copy "taken with $(grep -c . "$WORK/older.record") files acknowledged; it comes back by the route '$route'"
     sleep 20
-    scenario_delete older 1 || rec older_note "the pool did not suspend; the rest is recorded as it went"
-    scenario_return older 1 "$WORK/older-copy.img"
+    scenario_delete older 4 || rec older_note "the pool did not suspend; the rest is recorded as it went"
+    bring_back older 4 "$WORK/older-copy.img" "$route"
+    clear_and_see older
 fi
 touch "$WORK/older.stop"
 
 step "scrub: the device is deleted while a scrub is running"
-if scenario_start scrub 2; then
+if scenario_start scrub 5; then
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzf-scrub/big" bs=1M count=2048 conv=fsync status=none
     lim 30 zpool scrub skzf-scrub
     sleep 1
     rec scrub_running "$(status_lines skzf-scrub "$OUT/scrub-status-running.log")"
-    scenario_delete scrub 2 || rec scrub_note "the pool did not suspend"
+    scenario_delete scrub 5 || rec scrub_note "the pool did not suspend"
 fi
 touch "$WORK/scrub.stop"
 
