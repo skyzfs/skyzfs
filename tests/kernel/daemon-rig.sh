@@ -99,13 +99,10 @@ step() { printf '\n######## %s\n' "$*"; }
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
-# The kernel log from a point on. The point is a line of our own
-# written to the log, not a line count: once the ring buffer has
-# wrapped the count stops growing and a cut by count would be empty.
-# dmesg_since returns 3, with nothing printed, when the marker is no
-# longer in the log.
-dmesg_mark() { local m; m="skz-rig-mark-$$-$(date +%s%N)"; echo "$m" > /dev/kmsg; echo "$m"; }
-dmesg_since() { dmesg | awk -v m="$1" 'found { print } index($0, m) { found = 1 } END { exit found ? 0 : 3 }'; }
+# The kernel log of an interval: klog_mark, klog_since, klog_bad,
+# klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
+# shellcheck source=tests/kernel/klog.sh
+. "$HERE/klog.sh"
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -170,13 +167,6 @@ pin_unstored() {
         *) pin "unstored_zero_$1" FAIL "status says unstored $v" ;;
     esac
 }
-# What the kernel log says went wrong with a device, in a file cut from
-# it: I/O errors, requests timed out, aborts. Not the bare word
-# "timeout": a hung-task report is full of it (hung_task_timeout_secs,
-# schedule_timeout in its stack) and says only that a task waited.
-klog_bad() { grep -vE '^\[[^]]*\] +(\? )?[A-Za-z0-9_.]+\+0x|hung_task_timeout_secs' "$1" 2>/dev/null | grep -ciE 'I/O error|timed out|abort'; }
-# The tasks the kernel reported as blocked, "name:pid" each, counted.
-klog_hung() { sed -n 's/.*INFO: task \([^ ]*\) blocked for more than \([0-9]*\) seconds.*/\1/p' "$1" 2>/dev/null | sort | uniq -c | tr -s ' \n' ' '; }
 # impl dir key least [ms]: a counter of `status`, read again until it
 # is at least `least` or the limit has passed (2 s). The daemon writes
 # its status file on an interval, so a counter read at once after the
@@ -491,7 +481,7 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
     KT_WAITED=""; KT_WAIT_LOOKS=0; KT_WAIT_OTHER=0; KT_WAIT_BAD=0
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
@@ -548,16 +538,19 @@ kill_test() {
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
         # KT_WAIT_S: after the first kill no server comes for that long.
         if [ "${KT_WAIT_S:-0}" -gt 0 ] && [ "$n" = 1 ]; then
-            mark=$(dmesg_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
+            mark=$(klog_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
             hw=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
             while [ $(( $(now_ms) - t0 )) -lt $((KT_WAIT_S * 1000)) ]; do
                 states+="$(ublk_state "$BDEV") "
                 sleep 10
             done
-            dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
+            # No marker in the kernel log is no log of the wait: "lost",
+            # which the pin reports as the rig's error and not as 0 lines.
+            KT_WAIT_BAD=$(klog_bad_since "$mark" "$OUT/$name-wait-dmesg.log")
             KT_WAIT_LOOKS=$(echo "$states" | wc -w); KT_WAIT_OTHER=$(echo "$states" | tr ' ' '\n' | grep . | grep -vcx QUIESCED)
-            KT_WAIT_BAD=$(klog_bad "$OUT/$name-wait-dmesg.log")
-            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(klog_bad "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")(the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
+            if [ "$KT_WAIT_BAD" = lost ]; then klog="lost: the rig's marker was not found in it at the end of the wait"
+            else klog="$(wc -l < "$OUT/$name-wait-dmesg.log") lines, $KT_WAIT_BAD with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")"; fi
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $klog (the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
@@ -822,6 +815,8 @@ check_b() {
         # reports of blocked tasks are the observation's.
         if [ "$KT_VERDICT" = ERROR ]; then
             pin device_waits_for_a_server ERROR "$KT_WHY"
+        elif [ "$KT_WAIT_BAD" = lost ]; then
+            pin device_waits_for_a_server ERROR "the rig's marker was not found in the kernel log at the end of the wait (the log wrapped, or dmesg failed), so there is no kernel log of the ${RIG_WAIT_S:-300} s to judge"
         else
             if [ "$KT_VERDICT" = PASS ] && [ "$KT_WAIT_LOOKS" -ge 10 ] && [ "$KT_WAIT_OTHER" = 0 ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
             pin device_waits_for_a_server "$v" "$KT_WAIT_LOOKS looks in ${RIG_WAIT_S:-300} s with no server, $KT_WAIT_OTHER of them not QUIESCED; kernel log lines with an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
@@ -872,9 +867,11 @@ fail_wait() {
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
     lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1
-    dmesg_since "$mark" > "$OUT/$name-dmesg.log" || echo "the rig's marker is no longer in the kernel log" >> "$OUT/$name-dmesg.log"
+    klog_since "$mark" > "$OUT/$name-dmesg.log"; i=$?
     rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
-    rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
+    if [ "$i" != 0 ]; then rec "${name}_kernel_log" "lost: the rig's marker was not found in the kernel log, so nothing is counted"
+    else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
+    fi
     rec "${name}_events" "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
     FS_WHY="pool $st after at most ${secs} s; reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr; writes failed for the writer: $werr"
     [ "$st" = SUSPENDED ] && [ "$rerr" = 0 ] && [ "$werr" = 0 ]
@@ -903,7 +900,7 @@ check_d() {
     local mark rc n v dir st0 st1 before after
     # d.1, first form: every request answered with a plain I/O error.
     step "d: every request fails with an I/O error (the device stays)"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if SKZ_REF_FAIL_STYLE=eio fail_setup d1 "$REF" --fail-log-after 8000; then
         if fail_wait d1 300 "$mark"; then pin suspends_on_io_errors PASS "$FS_WHY"; else pin suspends_on_io_errors FAIL "$FS_WHY"; fi
         rec d1_server "$(vol_status "$REF" "$WORK/vol-d1" | tr '\n' ';')"
@@ -949,7 +946,7 @@ check_d() {
 
     # The control: the same wait on a volume that does not fail.
     step "d, control: a volume that does not fail"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if fail_setup d0 "$REF"; then
         if fail_wait d0 30 "$mark"; then ctl volume_that_does_not_fail PASS "$FS_WHY"; else ctl volume_that_does_not_fail FAIL "$FS_WHY"; fi
     else
@@ -964,7 +961,7 @@ check_d() {
     # d.1, second form, with the server under test: the log fails, the
     # daemon deletes its device and exits.
     step "d: the volume fails and its device is deleted"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     dir=$WORK/vol-d2
     if fail_setup d2 "$SKYZFSD" --fail-log-after 8000; then
         if fail_wait d2 300 "$mark"; then pin suspends_on_deleted_device PASS "$FS_WHY"; else pin suspends_on_deleted_device FAIL "$FS_WHY"; fi
@@ -1001,7 +998,7 @@ check_d_shorter() {
     # the observation is of the kernel and ZFS, and needs the flat
     # image only the reference server has.
     step "d: the device comes back with older content"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if ! SKZ_REF_FAIL_STYLE=eio fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
     # The older content: a copy of the image now. Everything the writer
     # is told from here on is missing from it.
@@ -1027,7 +1024,7 @@ check_d_shorter() {
 check_d_scrub() {
     local mark st rc before
     step "d: a scrub in progress at the failure"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if ! fail_setup d5 "$SKYZFSD"; then obs scrub_in_progress_at_failure "not run: $FS_ERR"; fail_stop d5; return; fi
     # More to scrub, then the failure a little after the scrub begins.
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzd-d5/big" bs=1M count=1024 conv=fsync status=none
@@ -1102,7 +1099,7 @@ check_d_not_held() {
 hold_test() {
     local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader took rpid
     HT_ERR=""; HT_WHY=""
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
     # `held` in status is the number of requests in flight at the server
     # right now: 1 while the read is held, 0 once it has completed.
@@ -1127,7 +1124,7 @@ hold_test() {
     wait "$reader"
     read -r rc took < "$WORK/$name.rc" 2>/dev/null || { rc=""; took=0; }
     udevadm settle --timeout=30 2>/dev/null
-    if ! dmesg_since "$mark" > "$OUT/$name-dmesg.log"; then
+    if ! klog_since "$mark" > "$OUT/$name-dmesg.log"; then
         HT_ERR="the rig's marker is no longer in the kernel log, so the log of this time cannot be cut out"
         kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; vol_detach "$SKYZFSD" "$dir"
         return 2

@@ -58,6 +58,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_daemon_check.py -v
+      - run: bash tests/kernel/test_klog.sh
 
   rig:
     name: ${{ matrix.image }}
