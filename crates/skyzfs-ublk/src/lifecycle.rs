@@ -599,6 +599,10 @@ impl Mutants {
     /// A device that is still there at the first look after its delete
     /// counts as held.
     pub(crate) const HELD_AT_FIRST_LOOK: u32 = 1 << 24;
+    /// Whatever stands under the number after a delete counts as the
+    /// deleted device, also another volume's device that took the
+    /// number.
+    pub(crate) const ANY_OCCUPANT_LINGERS: u32 = 1 << 25;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -904,7 +908,14 @@ fn settle<C: Control, R: Records>(
         Some(_) => {
             delete(control, records, number, mutants)
                 .map_err(error("deleting the failed volume's device"))?;
-            lingers(control, records, number, wanted.gone_retries, mutants).map_err(&asking)
+            lingers(
+                control,
+                records,
+                (number, info.shape),
+                wanted.gone_retries,
+                mutants,
+            )
+            .map_err(&asking)
         }
         None if info.state == DeviceState::Dead => Ok(!mutants.has(Mutants::UNKNOWN_WHILE_DEAD)),
         None => Err(Stop::Error(format!(
@@ -952,19 +963,54 @@ fn settled<C: Control, R: Records>(
     Ok(info)
 }
 
-/// Whether the device `number` is still there a stated time after its
-/// delete: looked at, and while it is there looked at again `retries`
-/// times with the records' pause between. The driver's delete returns
-/// before the device is gone, so a device nobody holds can still be
-/// there at the first look; only one that outlasts the time is held.
+/// Whether the device that was just deleted under `number` is still
+/// there a stated time after its delete: looked at, and while it is
+/// there looked at again `retries` times with the records' pause
+/// between. The driver's delete returns before the device is gone, so
+/// a device nobody holds can still be there at the first look; only
+/// one that outlasts the time is held.
+///
+/// **It asks about the deleted device, not about the number.** An
+/// unheld device is gone some tens of milliseconds after its delete,
+/// and another volume's start can take the freed number between two
+/// looks: a device under the number is then somebody else's, the
+/// deleted one is gone, and nobody held it. What stands under the
+/// number counts as the deleted device unless it is known to be
+/// another:
+///
+/// - it has other values than the deleted device had (`shape`);
+/// - or the number has a note: the deleted device's note was removed
+///   before the delete, and a start writes one for a device it adds;
+/// - or it is live: a deleted device has no server.
+///
+/// Anything else stays "still there", the safe side: a dead or waiting
+/// device with the deleted one's values and no note. Besides the held
+/// device that can be another volume's device of the same values
+/// whose start was killed between its add and its note, or has not
+/// written the note yet; it is left so, and that volume is then
+/// called held for the boot although nobody held it. A note that
+/// cannot be read is the safe side as well, as elsewhere in this
+/// file.
 fn lingers<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
-    number: u32,
+    (number, shape): (u32, Shape),
     retries: u32,
     mutants: Mutants,
 ) -> io::Result<bool> {
-    let mut there = control.info(number)?.is_some();
+    let mut look = |control: &mut C, records: &mut R| -> io::Result<bool> {
+        let Some(info) = control.info(number)? else {
+            return Ok(false);
+        };
+        if mutants.has(Mutants::ANY_OCCUPANT_LINGERS) {
+            return Ok(true);
+        }
+        if info.shape != shape || info.state == DeviceState::Live {
+            return Ok(false);
+        }
+        Ok(!matches!(records.note(number), Ok(Some(_))))
+    };
+    let mut there = look(control, records)?;
     if mutants.has(Mutants::HELD_AT_FIRST_LOOK) {
         return Ok(there);
     }
@@ -973,7 +1019,7 @@ fn lingers<C: Control, R: Records>(
             break;
         }
         records.pause();
-        there = control.info(number)?.is_some();
+        there = look(control, records)?;
     }
     Ok(there)
 }
@@ -1502,7 +1548,13 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
         DeviceState::Live => Ok(Detached::Live(number)),
         DeviceState::Waiting | DeviceState::Dead => {
             delete(control, records, number, mutants)?;
-            let held = lingers(control, records, number, gone_retries, mutants)?;
+            let held = lingers(
+                control,
+                records,
+                (number, located.shape),
+                gone_retries,
+                mutants,
+            )?;
             records.remove_attachment()?;
             Ok(if held {
                 Detached::DeletedHeld(number)
