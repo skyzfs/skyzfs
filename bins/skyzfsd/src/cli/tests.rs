@@ -89,6 +89,32 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     }
 }
 
+/// The hook that makes a checkpoint step wait: a time or a file, not
+/// both, and not in a default build.
+#[test]
+fn the_step_pause_is_a_time_or_a_file() {
+    let pause = |line: &str| serve(&format!("serve --dir /v/a {line}")).hooks.step_pause;
+    assert_eq!(pause(""), None);
+    assert_eq!(pause("--step-pause-ms 250"), Some(StepPause::Ms(250)));
+    assert_eq!(
+        pause("--step-pause-until /tmp/go"),
+        Some(StepPause::Until("/tmp/go".into()))
+    );
+    assert!(parse_with(
+        "serve --dir /v/a --step-pause-ms 1 --step-pause-until /tmp/go"
+            .split(' ')
+            .map(str::to_string),
+        true
+    )
+    .is_err());
+    for hook in ["--step-pause-ms 1", "--step-pause-until /tmp/go"] {
+        assert!(
+            plain(&format!("serve --dir /v/a {hook}")).is_err(),
+            "{hook} was taken by a default build"
+        );
+    }
+}
+
 /// The two marks of the checkpoint rule: two segments and one unless
 /// given, each at least one, low below high. A high mark of one is
 /// refused without a low mark too: nothing is below it.
@@ -198,6 +224,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             }),
             boot_id_file: Some("/tmp/boot".into()),
             recover_short: 1,
+            step_pause: None,
             commit_delay_ms: Some(20),
         }
     );

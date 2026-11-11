@@ -311,6 +311,17 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         low: u64::from(serve.log_low) * SEGMENT_SIZE,
         step: StepBound::DAEMON,
     }));
+    #[cfg(feature = "test-hooks")]
+    ready
+        .store
+        .set_step_pause(serve.hooks.step_pause.as_ref().map(|pause| match pause {
+            crate::cli::StepPause::Ms(ms) => {
+                skyzfs_local::store::StepPause::For(Duration::from_millis(*ms))
+            }
+            crate::cli::StepPause::Until(path) => {
+                skyzfs_local::store::StepPause::Until(path.clone())
+            }
+        }));
     let identity = ready.store.identity();
     // What the server before this one had applied and never answered:
     // the kernel issues those requests again, and they are applied a

@@ -37,6 +37,10 @@
 //!   not from the kernel;
 //! - `serve --recover-short N`: this instance's recovery counts the log
 //!   as N records shorter than it found it;
+//! - `serve --step-pause-ms N` or `serve --step-pause-until PATH`:
+//!   every checkpoint step waits in its middle, after it has written
+//!   the home image and before it syncs it, for N ms or until a file
+//!   of that path exists. One of the two at most;
 //! - `serve --commit-delay-ms N`: every request's result is given to
 //!   the kernel N ms after the store completed it, and the acknowledged
 //!   position is stored then and not before. Nothing else waits.
@@ -249,8 +253,19 @@ pub struct Hooks {
     pub boot_id_file: Option<PathBuf>,
     /// The recovery counts the log as so many records shorter.
     pub recover_short: u32,
+    /// Every checkpoint step waits in its middle.
+    pub step_pause: Option<StepPause>,
     /// Every commit is delayed by so many milliseconds.
     pub commit_delay_ms: Option<u64>,
+}
+
+/// How long a checkpoint step waits in its middle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepPause {
+    /// For so many milliseconds.
+    Ms(u64),
+    /// Until a file of this path exists.
+    Until(PathBuf),
 }
 
 /// One request to hold for a while.
@@ -350,6 +365,8 @@ const SERVE: &[Opt] = &[
     opt("--boot-id-file", true, true),
     opt("--recover-short", true, true),
     opt("--commit-delay-ms", true, true),
+    opt("--step-pause-ms", true, true),
+    opt("--step-pause-until", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -524,6 +541,20 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     "not below --log-high",
                 ));
             }
+            let step_pause = match (
+                given.number("--step-pause-ms")?,
+                given.get("--step-pause-until"),
+            ) {
+                (Some(_), Some(_)) => {
+                    return Err(UsageError::Value(
+                        "--step-pause-until".into(),
+                        "not together with --step-pause-ms",
+                    ))
+                }
+                (Some(ms), None) => Some(StepPause::Ms(ms)),
+                (None, Some(path)) => Some(StepPause::Until(PathBuf::from(path))),
+                (None, None) => None,
+            };
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -539,6 +570,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     hold: given.get("--hold-one-request").map(hold).transpose()?,
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     recover_short,
+                    step_pause,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                 },
             }))
