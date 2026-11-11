@@ -66,6 +66,53 @@
 //!    call deletes it, and only then is the note for the device written
 //!    in the run directory, before the device is started.
 //!
+//! # The failure note
+//!
+//! A volume whose log failed says so in a note in its directory under
+//! the run directory ([`Failure`]). The note says whether a client held
+//! the volume's device at the failure; when that cannot be told, it
+//! says that one did.
+//!
+//! - **It is read under the lock, before the acknowledged position and
+//!   before the store is opened.** A note of another boot counts as
+//!   none. A note that cannot be read counts as "failed while held".
+//! - **Failed while held: not served again in this boot**, whatever
+//!   `--acknowledge-failure` says. The store is not opened. A device of
+//!   this volume that still waits (the daemon died before it deleted
+//!   it) is deleted now.
+//! - **Failed, and no client held it:** without the acknowledgement
+//!   the start refuses and touches nothing. With it, a waiting device
+//!   of this volume is deleted and never taken over, the store is
+//!   opened **without** a position to reach (the acknowledgement is
+//!   the operator saying that what was acknowledged to nobody may be
+//!   gone), then the stored position is emptied, then the note is
+//!   removed. A kill anywhere in that leaves the note, and the next
+//!   start asks again.
+//! - **A failure found by a start** (the log is short, the recovery
+//!   failed the log, a record cannot be read, the log's own marker is
+//!   found): the failure note is written **first**, then the device's
+//!   note is removed, then the device is deleted. If the failure note
+//!   cannot be written the device is deleted all the same, and the
+//!   reason says so. Whether a client held the device is decided by
+//!   the attachment record: held if the record is of this boot or
+//!   cannot be read, not held if there is none of this boot, since
+//!   then no client of this boot can have a device of this volume.
+//! - **The log's marker and no note of this boot**, with no record of
+//!   this boot: no note is written (the marker is the memory); the
+//!   start refuses without the acknowledgement and opens with it.
+//! - **A failure while serving** ([`fail_serving`]): whether a client
+//!   holds the device is the kernel's to say ([`Control::client_holds`]),
+//!   and the order is the same: failure note, device's note, delete.
+//! - **A daemon killed between removing the device's note and the
+//!   delete** leaves a device with the recorded values and no note. No
+//!   later start can show it to be this volume's (the delete may have
+//!   been done and the number given out again), so none deletes it: a
+//!   start that refuses for the failure leaves it and says so, and a
+//!   start that would serve stops with the error of "whose device it
+//!   is". It goes when someone deletes it by hand, or at a reboot.
+//! - The identity in the note gates nothing: the note is honoured
+//!   whatever store it names. A detach does not touch it.
+//!
 //! # A live device is waited for
 //!
 //! A server that was killed lets go of the store's lock when its
@@ -177,6 +224,49 @@ pub enum AddError {
     Other(io::Error),
 }
 
+/// Why a volume failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reason {
+    /// The log failed while the volume was served.
+    LogFailed,
+    /// A start found the log shorter than what was acknowledged.
+    Short,
+    /// The recovery of a start failed the log.
+    RecoveryFailed,
+    /// A start found the log marked as failed.
+    Marked,
+    /// A start could not read the record of what was acknowledged.
+    PositionUnreadable,
+    /// A start could not read the note for the volume's device.
+    DeviceNoteUnreadable,
+}
+
+impl std::fmt::Display for Reason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Reason::LogFailed => "the log failed while the volume was served",
+            Reason::Short => "the log is shorter than what was acknowledged",
+            Reason::RecoveryFailed => "the recovery's sync failed",
+            Reason::Marked => "the volume is marked as failed",
+            Reason::PositionUnreadable => "the record of what was acknowledged cannot be read",
+            Reason::DeviceNoteUnreadable => "the note for the volume's device cannot be read",
+        })
+    }
+}
+
+/// What the failure note says: see "the failure note" in the
+/// [module documentation](self).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failure {
+    /// Whether a client held the volume's device at the failure. True
+    /// also when that could not be told.
+    pub held: bool,
+    /// Why the volume failed.
+    pub reason: Reason,
+    /// The store's identity, or zeros where it was not known.
+    pub identity: [u8; 16],
+}
+
 /// The steps the daemon needs of the kernel's control interface. A
 /// guess: see the [module documentation](self).
 ///
@@ -204,6 +294,11 @@ pub trait Control {
     fn delete(&mut self, number: u32) -> io::Result<()>;
     /// Begin the recovery of a device that waits for a server.
     fn begin_recovery(&mut self, number: u32) -> io::Result<()>;
+    /// Whether a client holds the device open, without doing I/O on
+    /// it. `None` when that cannot be told, which is written down as
+    /// "held". (Whether the kernel lets this be asked at all is on the
+    /// spike's list; until then the real answer is `None`.)
+    fn client_holds(&mut self, number: u32) -> Option<bool>;
 }
 
 /// Which device is a volume's: recorded in the volume's directory.
@@ -251,6 +346,17 @@ pub trait Records {
     /// What was acknowledged in this boot, if anything was recorded.
     /// An error if the record is there and cannot be read.
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>>;
+    /// Empty the record of what was acknowledged: after a failure of a
+    /// volume that no client held was acknowledged.
+    fn remove_acknowledged(&mut self) -> io::Result<()>;
+    /// The failure note of this boot, if there is one. A note of
+    /// another boot counts as none. An error if a note is there and
+    /// cannot be read.
+    fn failure(&mut self) -> io::Result<Option<Failure>>;
+    /// Write the failure note.
+    fn write_failure(&mut self, failure: &Failure) -> io::Result<()>;
+    /// Remove the failure note, if there is one.
+    fn remove_failure(&mut self) -> io::Result<()>;
     /// Wait a moment before the store's lock is tried again.
     fn pause(&mut self);
 }
@@ -287,13 +393,16 @@ pub trait Volume {
     /// nothing is read or written.
     fn lock(&mut self) -> Result<Self::Lock, LockError>;
     /// Open the store under `lock`: recover, make the recovery
-    /// durable. The log must reach `must_reach`. Returns the store,
-    /// which takes the lock over, and its size. If the open fails the
-    /// lock comes back with the error, still held.
+    /// durable. The log must reach `must_reach`. With
+    /// `acknowledge_failure` a store that is marked as failed is
+    /// opened all the same. Returns the store, which takes the lock
+    /// over, and its size. If the open fails the lock comes back with
+    /// the error, still held.
     fn open(
         &mut self,
         lock: Self::Lock,
         must_reach: Option<MustReach>,
+        acknowledge_failure: bool,
     ) -> Result<(Self::Open, u64), (OpenError, Self::Lock)>;
 }
 
@@ -313,6 +422,9 @@ pub struct Ready<S> {
     /// left alone because it could not be shown to be this volume's,
     /// and why: for the daemon's log.
     pub left: Option<(u32, &'static str)>,
+    /// A failure of the volume that was acknowledged by this start, for
+    /// the daemon's log.
+    pub acknowledged: Option<Reason>,
 }
 
 /// The daemon does not serve.
@@ -346,6 +458,10 @@ pub struct Wanted {
     /// How often the volume's own device is asked for again while it is
     /// live.
     pub live_retries: u32,
+    /// Whether the operator acknowledges a failure of the volume. It
+    /// has no effect when nothing has failed, and none on a volume that
+    /// failed while a client held it.
+    pub acknowledge_failure: bool,
 }
 
 /// Defects, for the tests that show each rule is tested.
@@ -393,6 +509,14 @@ impl Mutants {
     pub(crate) const FAILED_ANY_BOOT: u32 = 1 << 17;
     /// A noted device that is deleted and still held is taken over.
     pub(crate) const TAKE_DEAD: u32 = 1 << 18;
+    /// The failure note is written after the device is deleted.
+    pub(crate) const FAILURE_NOTE_AFTER_DELETE: u32 = 1 << 19;
+    /// A failure while a client held the device is acknowledged.
+    pub(crate) const HELD_ACKNOWLEDGED: u32 = 1 << 20;
+    /// The stored position is kept across an acknowledgement.
+    pub(crate) const POSITION_KEPT: u32 = 1 << 21;
+    /// The failure note is read after the store is opened.
+    pub(crate) const NOTE_READ_AFTER_OPEN: u32 = 1 << 22;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -445,22 +569,23 @@ pub(crate) fn start_with<C: Control, R: Records, V: Volume>(
         // The defect: the device first.
         let found = find(control, records, wanted, mutants)?;
         let attached = attach(control, records, found, 0, wanted, mutants)?;
-        let (store, _) = open(control, records, volume, wanted, mutants)?;
-        return Ok(ready(store, attached));
+        let (store, _, acknowledged) = open(control, records, volume, wanted, mutants)?;
+        return Ok(ready(store, attached, acknowledged));
     }
-    let (store, size) = open(control, records, volume, wanted, mutants)?;
+    let (store, size, acknowledged) = open(control, records, volume, wanted, mutants)?;
     let found = find(control, records, wanted, mutants)?;
     let attached = attach(control, records, found, size, wanted, mutants)?;
-    Ok(ready(store, attached))
+    Ok(ready(store, attached, acknowledged))
 }
 
-fn ready<S>(store: S, attached: Attached) -> Ready<S> {
+fn ready<S>(store: S, attached: Attached, acknowledged: Option<Reason>) -> Ready<S> {
     Ready {
         store,
         number: attached.number,
         shape: attached.shape,
         took_over: attached.took_over,
         left: attached.left,
+        acknowledged,
     }
 }
 
@@ -486,48 +611,158 @@ fn lock<R: Records, V: Volume>(
     }
 }
 
-/// Steps 2 and 3: the lock, the record of what was acknowledged, then
-/// the store.
+/// Steps 2 and 3: the lock, the failure note, the record of what was
+/// acknowledged, then the store. Returns the store, its size, and the
+/// failure that was acknowledged, if one was.
 fn open<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
     volume: &mut V,
     wanted: &Wanted,
     mutants: Mutants,
-) -> Result<(V::Open, u64), Stop> {
+) -> Result<(V::Open, u64, Option<Reason>), Stop> {
     let early = mutants
         .has(Mutants::POSITION_BEFORE_LOCK)
         .then(|| records.acknowledged());
-    let held = lock(records, volume, wanted.lock_retries)?;
-    let must_reach = match early.unwrap_or_else(|| records.acknowledged()) {
-        Ok(must_reach) => must_reach,
+    let mut held = lock(records, volume, wanted.lock_retries)?;
+
+    // The failure note: under the lock, before the position and before
+    // anything is recovered.
+    let late = mutants.has(Mutants::NOTE_READ_AFTER_OPEN);
+    let mut acknowledging = None;
+    if !late {
+        acknowledging = noted_failure(control, records, wanted, mutants)?;
+    }
+
+    let mut early = early;
+    let (store, size) = loop {
+        // An acknowledgement opens without a position to reach: what
+        // was acknowledged to nobody may be gone.
+        let forgets = acknowledging.is_some() && !mutants.has(Mutants::POSITION_KEPT);
+        let must_reach = if forgets {
+            None
+        } else {
+            match early.take().unwrap_or_else(|| records.acknowledged()) {
+                Ok(must_reach) => must_reach,
+                Err(_) => {
+                    let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
+                    let stop = failed(
+                        control,
+                        records,
+                        wanted,
+                        mutants,
+                        Reason::PositionUnreadable,
+                    );
+                    drop(held);
+                    return Err(stop);
+                }
+            }
+        };
+        let must_reach = must_reach.filter(|_| !mutants.has(Mutants::NO_MUST_REACH));
+        let (reason, lock) = match volume.open(held, must_reach, acknowledging.is_some()) {
+            Ok(opened) => break opened,
+            Err((OpenError::Other(e), _)) => {
+                return Err(Stop::Error(format!("opening the store: {e}")))
+            }
+            Err((OpenError::SyncFailed, _)) if mutants.has(Mutants::SYNC_ERROR_MAY_PASS) => {
+                return Err(Stop::Error("opening the store: a sync failed".into()))
+            }
+            Err((OpenError::SyncFailed, lock)) => (Reason::RecoveryFailed, lock),
+            Err((OpenError::Short, lock)) => (Reason::Short, lock),
+            Err((OpenError::MarkedFailed, lock)) => (Reason::Marked, lock),
+        };
+        // The log's own marker, and no failure note of this boot: if
+        // no record of this boot names a device, no client of this
+        // boot can hold one, and the failure can be acknowledged.
+        if reason == Reason::Marked && acknowledging.is_none() && !held_by_record(records) {
+            if !wanted.acknowledge_failure {
+                return Err(Stop::Failed(format!(
+                    "{reason}; no client holds its device. It is served again with \
+                     --acknowledge-failure"
+                )));
+            }
+            acknowledging = Some(reason);
+            held = lock;
+            continue;
+        }
+        // The lock is held while the failed volume's device is deleted:
+        // a second start cannot take the device over in between.
+        let lock = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(lock);
+        let stop = failed(control, records, wanted, mutants, reason);
+        drop(lock);
+        return Err(stop);
+    };
+    if late {
+        // The defect: the note is looked at only now.
+        acknowledging = noted_failure(control, records, wanted, mutants)?;
+    }
+    if acknowledging.is_some() {
+        // The position first, then the note: a kill in between leaves
+        // the note, and the next start asks again.
+        if !mutants.has(Mutants::POSITION_KEPT) {
+            records
+                .remove_acknowledged()
+                .map_err(error("emptying the record of what was acknowledged"))?;
+        }
+        records
+            .remove_failure()
+            .map_err(error("removing the failure note"))?;
+    }
+    Ok((store, size, acknowledging))
+}
+
+/// What the failure note of this boot means for this start. `Ok(None)`:
+/// there is none. `Ok(Some(reason))`: a failure that no client held is
+/// acknowledged by this start; a waiting device of the volume has been
+/// deleted. `Err`: the start refuses. Called with the lock held.
+fn noted_failure<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    wanted: &Wanted,
+    mutants: Mutants,
+) -> Result<Option<Reason>, Stop> {
+    let failure = match records.failure() {
+        Ok(None) => return Ok(None),
+        Ok(Some(failure)) => failure,
         Err(_) => {
-            let why = "the record of what was acknowledged cannot be read";
-            let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
-            let stop = failed(control, records, wanted, mutants, why);
-            drop(held);
-            return Err(stop);
+            let left = give_up_device(control, records, wanted, mutants);
+            return Err(Stop::Failed(format!(
+                "the failure note cannot be read: the volume counts as failed while a client \
+                 held its device, and is not served again in this boot{left}"
+            )));
         }
     };
-    let must_reach = must_reach.filter(|_| !mutants.has(Mutants::NO_MUST_REACH));
-    let (why, held) = match volume.open(held, must_reach) {
-        Ok(opened) => return Ok(opened),
-        Err((OpenError::Other(e), _)) => {
-            return Err(Stop::Error(format!("opening the store: {e}")))
-        }
-        Err((OpenError::SyncFailed, _)) if mutants.has(Mutants::SYNC_ERROR_MAY_PASS) => {
-            return Err(Stop::Error("opening the store: a sync failed".into()))
-        }
-        Err((OpenError::SyncFailed, held)) => ("the recovery's sync failed", held),
-        Err((OpenError::Short, held)) => ("the log is shorter than what was acknowledged", held),
-        Err((OpenError::MarkedFailed, held)) => ("the volume is marked as failed", held),
-    };
-    // The lock is held while the failed volume's device is deleted: a
-    // second start cannot take the device over in between.
-    let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
-    let stop = failed(control, records, wanted, mutants, why);
-    drop(held);
-    Err(stop)
+    let reason = failure.reason;
+    let acknowledges = wanted.acknowledge_failure;
+    if failure.held && !(acknowledges && mutants.has(Mutants::HELD_ACKNOWLEDGED)) {
+        // The daemon that noted the failure may have died before it
+        // deleted the device.
+        let left = give_up_device(control, records, wanted, mutants);
+        return Err(Stop::Failed(format!(
+            "{reason}, while a client held its device: it is not served again in this boot, \
+             and the failure cannot be acknowledged{left}"
+        )));
+    }
+    if !acknowledges {
+        return Err(Stop::Failed(format!(
+            "{reason}; no client held its device. It is served again with --acknowledge-failure"
+        )));
+    }
+    // Whoever opened a device of this volume after the failure was
+    // acknowledged nothing: the device is deleted, never taken over.
+    let _ = give_up_device(control, records, wanted, mutants);
+    Ok(Some(reason))
+}
+
+/// Whether a client of this boot may hold a device of this volume, as
+/// far as the attachment record says: it is of this boot, or it cannot
+/// be read.
+fn held_by_record<R: Records>(records: &mut R) -> bool {
+    match records.attachment() {
+        Ok(Some(attachment)) => attachment.boot == records.boot(),
+        Ok(None) => false,
+        Err(_) => true,
+    }
 }
 
 /// The device `number`, once it is no longer live, or still live after
@@ -571,50 +806,129 @@ fn delete<C: Control, R: Records>(
     control.delete(number)
 }
 
-/// The volume has failed: a device of it that waits for a server is
-/// deleted, never taken over. The delete does not wait: a device that
-/// a client still holds keeps its number, deleted. Called with the
-/// volume's lock held.
-///
-/// The device is deleted only if the record is of this boot, the note
-/// carries the record's nonce, and the kernel reports the recorded
-/// values. A noted device with other values is left, and the reason
-/// says so: a note should never outlive its device, and if one did (a
-/// device deleted by hand), what stands under the number now is not
-/// this volume's.
+/// A start found the volume failed: the failure note first, then the
+/// device's note, then the device. Called with the volume's lock held.
+/// If the failure note cannot be written the device goes all the same,
+/// and the reason says so.
 fn failed<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     wanted: &Wanted,
     mutants: Mutants,
-    why: &'static str,
+    reason: Reason,
 ) -> Stop {
+    let failure = Failure {
+        held: held_by_record(records),
+        reason,
+        identity: [0; 16],
+    };
+    let after = mutants.has(Mutants::FAILURE_NOTE_AFTER_DELETE);
+    let mut written = after || records.write_failure(&failure).is_ok();
+    let left = give_up_device(control, records, wanted, mutants);
+    if after {
+        written = records.write_failure(&failure).is_ok();
+    }
+    let unwritten = if written {
+        ""
+    } else {
+        "; the failure note could not be written"
+    };
+    Stop::Failed(format!("{reason}{left}{unwritten}"))
+}
+
+/// Delete the failed volume's device if it waits for a server or was
+/// never started: never taken over. The delete does not wait: a device
+/// that a client still holds keeps its number, deleted.
+///
+/// The device is deleted only if the record is of this boot, the note
+/// carries the record's nonce, and the kernel reports the recorded
+/// values. A noted device with other values is left, and the answer
+/// says so: a note should never outlive its device, and if one did (a
+/// device deleted by hand), what stands under the number now is not
+/// this volume's. A device with the recorded values and no note is left
+/// too, and the answer says so: it is this volume's if a daemon was
+/// killed between removing the note and the delete, and another's if
+/// the delete was done and the number given out again, and nothing
+/// tells the two apart. The answer is empty otherwise.
+fn give_up_device<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    wanted: &Wanted,
+    mutants: Mutants,
+) -> String {
     let Ok(Some(attachment)) = records.attachment() else {
-        return Stop::Failed(why.into());
+        return String::new();
     };
     let number = attachment.number;
     let this_boot = attachment.boot == records.boot() || mutants.has(Mutants::FAILED_ANY_BOOT);
-    let noted = matches!(records.note(number), Ok(Some(nonce)) if nonce == attachment.nonce);
-    if !(this_boot && noted) {
-        return Stop::Failed(why.into());
+    let note = records.note(number);
+    let noted = matches!(note, Ok(Some(nonce)) if nonce == attachment.nonce);
+    let no_note = matches!(note, Ok(None));
+    if !(this_boot && (noted || no_note)) {
+        return String::new();
     }
     let info = control
         .info(number)
         .and_then(|info| settled(control, records, number, info, wanted, Mutants::default()));
     let Ok(Some(info)) = info else {
-        return Stop::Failed(why.into());
+        return String::new();
     };
     if !matches!(info.state, DeviceState::Waiting | DeviceState::Added) {
-        return Stop::Failed(why.into());
+        return String::new();
+    }
+    if !noted {
+        if info.shape != attachment.shape {
+            return String::new();
+        }
+        return format!(
+            "; device {number} has this volume's size, queues, depth and flags and no note,              and was left: deleting it by hand, or a reboot, resolves it"
+        );
     }
     if info.shape != attachment.shape {
-        return Stop::Failed(format!(
-            "{why}; device {number} carries this volume's note and not the recorded values, \
-             and was left"
-        ));
+        return format!(
+            "; device {number} carries this volume's note and not the recorded values, and \
+             was left"
+        );
     }
     let _ = delete(control, records, number, mutants);
-    Stop::Failed(why.into())
+    String::new()
+}
+
+/// The log failed while the volume was served: the volume gives up its
+/// attachment. The failure note first, with what the kernel says about
+/// a client holding the device (held, when it cannot say), then the
+/// device's note, then the device, without waiting. The caller holds
+/// the volume's lock (the store does) and exits afterwards.
+///
+/// Returns what was noted, and whether the note could be written.
+pub fn fail_serving<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    identity: [u8; 16],
+) -> (Failure, bool) {
+    fail_serving_with(control, records, number, identity, Mutants::default())
+}
+
+pub(crate) fn fail_serving_with<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    identity: [u8; 16],
+    mutants: Mutants,
+) -> (Failure, bool) {
+    let failure = Failure {
+        held: control.client_holds(number).unwrap_or(true),
+        reason: Reason::LogFailed,
+        identity,
+    };
+    let after = mutants.has(Mutants::FAILURE_NOTE_AFTER_DELETE);
+    let mut written = after || records.write_failure(&failure).is_ok();
+    let _ = delete(control, records, number, mutants);
+    if after {
+        written = records.write_failure(&failure).is_ok();
+    }
+    (failure, written)
 }
 
 /// Step 4: whose is the device the record names.
@@ -645,9 +959,20 @@ fn find<C: Control, R: Records>(
     // device is: the volume counts as failed while held, and the device
     // is left, since it cannot be shown to be this volume's.
     let Ok(note) = records.note(number) else {
-        return Err(Stop::Failed(
-            "the note for the volume's device cannot be read".into(),
-        ));
+        // The record is of this boot: noted as held. The device stays.
+        let failure = Failure {
+            held: true,
+            reason: Reason::DeviceNoteUnreadable,
+            identity: [0; 16],
+        };
+        let unwritten = match records.write_failure(&failure) {
+            Ok(()) => "",
+            Err(_) => "; the failure note could not be written",
+        };
+        return Err(Stop::Failed(format!(
+            "{}{unwritten}",
+            Reason::DeviceNoteUnreadable
+        )));
     };
     if note != Some(attachment.nonce) {
         let left = |why| {

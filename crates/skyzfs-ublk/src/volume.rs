@@ -39,8 +39,9 @@ pub struct StoreVolume {
 
 impl StoreVolume {
     /// The volume in `dir`, to be opened with `options`. The position
-    /// the log must reach is the lifecycle's to give: whatever
-    /// `options` says about it is replaced at the open.
+    /// the log must reach and whether a failure is acknowledged are
+    /// the lifecycle's to give: whatever `options` says about them is
+    /// replaced at the open.
     pub fn new(dir: &Path, options: OpenOptions) -> Self {
         Self {
             dir: dir.into(),
@@ -82,12 +83,14 @@ impl Volume for StoreVolume {
         &mut self,
         lock: FsLock,
         must_reach: Option<MustReach>,
+        acknowledge_failure: bool,
     ) -> Result<(Store<FsDir>, u64), (OpenError, FsLock)> {
         let dir = match FsDir::new(&self.dir) {
             Ok(dir) => dir,
             Err(e) => return Err((OpenError::Other(e.to_string()), lock)),
         };
         let mut options = self.options.clone();
+        options.acknowledge_failure = acknowledge_failure;
         options.must_reach = must_reach.map(|m| Lsn(m.position));
         options.must_reach_identity = must_reach.map(|m| m.identity);
         match Store::open_locked(dir, lock, options) {

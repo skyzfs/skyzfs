@@ -1,5 +1,5 @@
 use super::*;
-use crate::lifecycle::Shape;
+use crate::lifecycle::{Failure, Reason, Shape};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -313,6 +313,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
         Some(&status),
+        Noted::Nothing,
         &[7; 16],
         251,
     );
@@ -360,6 +361,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
         let lines = report(
             Some(&located(state, Whose::Ours)),
             Some(&status),
+            Noted::Nothing,
             &[7; 16],
             251,
         );
@@ -374,18 +376,18 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
 #[test]
 fn the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_another_boot() {
     let status = sample();
-    let lines = report(None, None, &[7; 16], 0);
+    let lines = report(None, None, Noted::Nothing, &[7; 16], 0);
     assert_eq!(lines, [("state", "detached".to_string())]);
 
     // Detached, with the file a daemon left: its counters, marked.
-    let lines = report(None, Some(&status), &[7; 16], 251);
+    let lines = report(None, Some(&status), Noted::Nothing, &[7; 16], 251);
     assert_eq!(value(&lines, "state"), Some("detached"));
     assert_eq!(value(&lines, "device"), None);
     assert_eq!(value(&lines, "queues"), Some("4370"));
     assert!(value(&lines, "counters").is_some_and(|c| c.starts_with("left by")));
 
     // A file of another boot says nothing about this one.
-    let lines = report(None, Some(&status), &[8; 16], 251);
+    let lines = report(None, Some(&status), Noted::Nothing, &[8; 16], 251);
     assert_eq!(lines, [("state", "detached".to_string())]);
 
     for (whose, begins) in [
@@ -395,6 +397,7 @@ fn the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_anothe
         let lines = report(
             Some(&located(DeviceState::Live, whose)),
             Some(&status),
+            Noted::Nothing,
             &[7; 16],
             251,
         );
@@ -402,4 +405,66 @@ fn the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_anothe
         assert_eq!(value(&lines, "device"), None, "not shown as this volume's");
         assert!(value(&lines, "counters").is_some_and(|c| c.starts_with("left by")));
     }
+}
+
+#[test]
+fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
+    let stored = |held| StoredFailure {
+        boot: [7; 16],
+        failure: Failure {
+            held,
+            reason: Reason::LogFailed,
+            identity: [3; 16],
+        },
+        written_ms: 1000,
+    };
+    let dead = located(DeviceState::Dead, Whose::Ours);
+    for (found, noted, state) in [
+        (
+            Some(&dead),
+            Noted::Whole(stored(true)),
+            "failed, held by a client: not served again in this boot",
+        ),
+        (
+            None,
+            Noted::Whole(stored(false)),
+            "failed: needs --acknowledge-failure",
+        ),
+        (
+            None,
+            Noted::Unreadable,
+            "failed, held by a client: not served again in this boot",
+        ),
+    ] {
+        let lines = report(found, None, noted, &[7; 16], 1250);
+        assert_eq!(value(&lines, "state"), Some(state));
+        assert_eq!(value(&lines, "device").is_some(), found.is_some());
+        if noted == Noted::Unreadable {
+            assert_eq!(
+                value(&lines, "failure"),
+                Some("the failure note cannot be read")
+            );
+            assert_eq!(value(&lines, "failure_held"), None);
+            continue;
+        }
+        let held = matches!(noted, Noted::Whole(s) if s.failure.held);
+        assert_eq!(
+            value(&lines, "failure"),
+            Some("the log failed while the volume was served")
+        );
+        assert_eq!(
+            value(&lines, "failure_held"),
+            Some(if held { "yes" } else { "no" })
+        );
+        assert_eq!(
+            value(&lines, "failure_boot"),
+            Some("07070707070707070707070707070707")
+        );
+        assert_eq!(value(&lines, "failure_age_ms"), Some("250"));
+    }
+
+    // A note of another boot is not shown and decides nothing.
+    let lines = report(None, None, Noted::Whole(stored(true)), &[8; 16], 1250);
+    assert_eq!(value(&lines, "state"), Some("detached"));
+    assert_eq!(value(&lines, "failure"), None);
 }

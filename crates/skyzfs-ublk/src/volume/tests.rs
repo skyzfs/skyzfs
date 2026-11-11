@@ -57,7 +57,7 @@ fn the_lock_is_a_step_of_its_own_and_the_open_takes_it_over() {
         identity,
         position: end,
     };
-    let lock = match volume.open(lock, Some(beyond)) {
+    let lock = match volume.open(lock, Some(beyond), false) {
         Err((OpenError::Short, lock)) => lock,
         other => panic!("{:?}", other.map(|(_, size)| size).map_err(|(e, _)| e)),
     };
@@ -68,7 +68,7 @@ fn the_lock_is_a_step_of_its_own_and_the_open_takes_it_over() {
         identity: [9; 16],
         position: end,
     };
-    let (store, size) = match volume.open(lock, Some(anothers)) {
+    let (store, size) = match volume.open(lock, Some(anothers), false) {
         Ok(opened) => opened,
         Err((e, _)) => panic!("{e:?}"),
     };
@@ -88,7 +88,7 @@ fn the_lock_is_a_step_of_its_own_and_the_open_takes_it_over() {
         identity,
         position: end - 1,
     };
-    assert!(volume.open(lock, Some(reached)).is_ok());
+    assert!(volume.open(lock, Some(reached), false).is_ok());
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn a_directory_that_is_not_a_volume_is_an_error_that_deletes_nothing() {
     let mut volume = StoreVolume::new(keep.path(), OpenOptions::default());
     let lock = volume.lock().expect("free");
     assert!(matches!(
-        volume.open(lock, None),
+        volume.open(lock, None, false),
         Err((OpenError::Other(_), _))
     ));
 }
