@@ -98,6 +98,11 @@ kill)
     ;;
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
+    if ! kill -0 "$pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+        # The log has failed already and the server is gone: it stays failed.
+        echo "fail $N: the log had failed already" >> "$WORK/helper.log"
+        exit 0
+    fi
     kill -USR1 "$pid" 2>/dev/null || die "serve ($pid) was not there"
     # A failed log is not a state the server stays in: it writes its
     # note, deletes the device without waiting for whoever holds it,

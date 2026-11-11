@@ -178,10 +178,12 @@ serve)
     if [ -n "$n" ] && [ "$(dev_state "$n")" = QUIESCED ]; then
         lim 90 ublk recover -n "$n" >&2 9>&- || { echo "recovery of /dev/ublkb$n failed" >&2; exit 1; }
     else
-        # A number no device has: one deleted under an open pool keeps
-        # its number in the driver after its names are gone from /dev.
-        taken=" $(lim 20 ublk list 2>/dev/null | sed -n 's/^dev id \([0-9]*\):.*/\1/p' | tr '\n' ' ')"
-        n=0; while [ -e "/dev/ublkc$n" ] || [[ $taken == *" $n "* ]]; do n=$((n + 1)); done
+        # A number no device has. One deleted under an open pool keeps
+        # its number in the driver after its names are gone from /dev,
+        # and the list of all devices did not show it (run 42983817746):
+        # each number is asked for by itself.
+        n=0
+        while [ -e "/dev/ublkc$n" ] || lim 20 ublk list -n "$n" 2>/dev/null | grep -q '^dev id'; do n=$((n + 1)); done
         echo "$n" > "$DEVREC"
         # fsync of this one file. Not sync(1): where it syncs every
         # filesystem it never returns while a pool is suspended.
