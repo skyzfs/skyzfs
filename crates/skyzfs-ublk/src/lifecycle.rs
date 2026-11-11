@@ -13,20 +13,28 @@
 //! 1. The kernel must be able to reissue requests after a recovery.
 //!    If it cannot, the daemon refuses, naming the feature. It never
 //!    falls back to the recovery that fails requests.
-//! 2. The record of what was acknowledged is read. A record that cannot
-//!    be read is the worst case: the volume counts as failed while a
-//!    client held it.
-//! 3. **The store is opened**, with the position it must reach, before
-//!    any step that touches a device. Its open takes the lock, recovers
-//!    and makes the recovery durable. The store is never opened without
-//!    the stored position.
+//! 2. **The volume's lock is taken**, as a step of its own and without
+//!    a recovery ([`Volume::lock`]). Everything that changes the
+//!    volume's attachment is done under it: its record, its notes,
+//!    adding and deleting its device. It is held until the start has
+//!    finished, also when the start fails, and by the store from then
+//!    on.
 //!    - Locked: tried again a few times ([`Records::pause`] between),
 //!      since a lock can outlive a killed daemon for a moment; then the
-//!      daemon refuses and touches no device.
+//!      daemon refuses and touches nothing.
+//! 3. The record of what was acknowledged is read, **under the lock**:
+//!    read before it, the position could be older than what an
+//!    instance that was still serving went on to acknowledge. A record
+//!    that cannot be read is the worst case: the volume counts as
+//!    failed while a client held it. Then **the store is opened**
+//!    ([`Volume::open`]) with the position it must reach, before any
+//!    step that touches a device: it recovers and makes the recovery
+//!    durable. The store is never opened without the stored position.
 //!    - The log is shorter than what was acknowledged, or the
 //!      recovery's own sync failed, or the volume is marked failed: the
 //!      volume has failed. A device of this volume that waits for a
-//!      server is deleted, and the daemon refuses.
+//!      server is deleted, still under the lock, and the daemon
+//!      refuses.
 //!    - Any other error: the daemon stops and leaves every device
 //!      alone.
 //! 4. The attachment record in the volume's directory says which device
@@ -247,11 +255,18 @@ pub trait Records {
     fn pause(&mut self);
 }
 
+/// Why the volume's lock could not be taken.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockError {
+    /// Another instance holds it.
+    Locked,
+    /// Anything else.
+    Other(String),
+}
+
 /// Why the store could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
-    /// Another instance holds it.
-    Locked,
     /// Its log ends at or before what was acknowledged.
     Short,
     /// The recovery's own sync failed.
@@ -264,11 +279,22 @@ pub enum OpenError {
 
 /// The store, as the lifecycle needs it.
 pub trait Volume {
-    /// The open store.
+    /// The volume's lock, held. Dropping it releases the lock.
+    type Lock;
+    /// The open store. It holds the lock for as long as it lives.
     type Open;
-    /// Open it: take its lock, recover, make the recovery durable. The
-    /// log must reach `must_reach`. Returns the store and its size.
-    fn open(&mut self, must_reach: Option<MustReach>) -> Result<(Self::Open, u64), OpenError>;
+    /// Take the volume's lock, without waiting and without a recovery:
+    /// nothing is read or written.
+    fn lock(&mut self) -> Result<Self::Lock, LockError>;
+    /// Open the store under `lock`: recover, make the recovery
+    /// durable. The log must reach `must_reach`. Returns the store,
+    /// which takes the lock over, and its size. If the open fails the
+    /// lock comes back with the error, still held.
+    fn open(
+        &mut self,
+        lock: Self::Lock,
+        must_reach: Option<MustReach>,
+    ) -> Result<(Self::Open, u64), (OpenError, Self::Lock)>;
 }
 
 /// The daemon may serve: the store is open and a device is its.
@@ -294,14 +320,14 @@ pub struct Ready<S> {
 pub enum Stop {
     /// The kernel cannot reissue requests after a recovery.
     CannotReissue,
-    /// Another instance holds the volume, or its device is live under
-    /// another server. Nothing was changed. Exit status 5.
+    /// Another instance holds the volume's lock, or its device is live
+    /// under another server. Nothing was changed. Exit status 5.
     Held,
     /// The volume has failed: its log is short, its recovery's sync
     /// failed, it is marked, or the record of what was acknowledged
     /// cannot be read. A waiting device of the volume was deleted.
     /// Exit status 4.
-    Failed(&'static str),
+    Failed(String),
     /// Something else went wrong. No device was deleted. Exit status 1.
     Error(String),
 }
@@ -357,6 +383,16 @@ impl Mutants {
     pub(crate) const NO_NOTE_IS_A_STRANGER: u32 = 1 << 12;
     /// A device is deleted before its note is removed.
     pub(crate) const DELETE_BEFORE_NOTE: u32 = 1 << 13;
+    /// A detach acts without the volume's lock.
+    pub(crate) const DETACH_WITHOUT_LOCK: u32 = 1 << 14;
+    /// The acknowledged position is read before the lock is taken.
+    pub(crate) const POSITION_BEFORE_LOCK: u32 = 1 << 15;
+    /// A start that fails lets go of the lock before it deletes.
+    pub(crate) const UNLOCK_BEFORE_FAILED: u32 = 1 << 16;
+    /// A failed volume deletes by a record of another boot.
+    pub(crate) const FAILED_ANY_BOOT: u32 = 1 << 17;
+    /// A noted device that is deleted and still held is taken over.
+    pub(crate) const TAKE_DEAD: u32 = 1 << 18;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -428,7 +464,30 @@ fn ready<S>(store: S, attached: Attached) -> Ready<S> {
     }
 }
 
-/// Step 2 and 3: the record of what was acknowledged, then the store.
+/// Take the volume's lock, trying again while another instance has it.
+fn lock<R: Records, V: Volume>(
+    records: &mut R,
+    volume: &mut V,
+    retries: u32,
+) -> Result<V::Lock, Stop> {
+    let mut tries = 0;
+    loop {
+        match volume.lock() {
+            Ok(lock) => return Ok(lock),
+            Err(LockError::Locked) if tries < retries => {
+                tries += 1;
+                records.pause();
+            }
+            Err(LockError::Locked) => return Err(Stop::Held),
+            Err(LockError::Other(e)) => {
+                return Err(Stop::Error(format!("locking the volume: {e}")))
+            }
+        }
+    }
+}
+
+/// Steps 2 and 3: the lock, the record of what was acknowledged, then
+/// the store.
 fn open<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
@@ -436,39 +495,38 @@ fn open<C: Control, R: Records, V: Volume>(
     wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<(V::Open, u64), Stop> {
-    let must_reach = match records.acknowledged() {
+    let early = mutants
+        .has(Mutants::POSITION_BEFORE_LOCK)
+        .then(|| records.acknowledged());
+    let held = lock(records, volume, wanted.lock_retries)?;
+    let must_reach = match early.unwrap_or_else(|| records.acknowledged()) {
         Ok(must_reach) => must_reach,
         Err(_) => {
-            return Err(failed(
-                control,
-                records,
-                wanted,
-                mutants,
-                "the record of what was acknowledged cannot be read",
-            ))
+            let why = "the record of what was acknowledged cannot be read";
+            let stop = failed(control, records, wanted, mutants, why);
+            drop(held);
+            return Err(stop);
         }
     };
     let must_reach = must_reach.filter(|_| !mutants.has(Mutants::NO_MUST_REACH));
-    let mut tries = 0;
-    loop {
-        let why = match volume.open(must_reach) {
-            Ok(opened) => return Ok(opened),
-            Err(OpenError::Locked) if tries < wanted.lock_retries => {
-                tries += 1;
-                records.pause();
-                continue;
-            }
-            Err(OpenError::Locked) => return Err(Stop::Held),
-            Err(OpenError::Other(e)) => return Err(Stop::Error(format!("opening the store: {e}"))),
-            Err(OpenError::SyncFailed) if mutants.has(Mutants::SYNC_ERROR_MAY_PASS) => {
-                return Err(Stop::Error("opening the store: a sync failed".into()))
-            }
-            Err(OpenError::SyncFailed) => "the recovery's sync failed",
-            Err(OpenError::Short) => "the log is shorter than what was acknowledged",
-            Err(OpenError::MarkedFailed) => "the volume is marked as failed",
-        };
-        return Err(failed(control, records, wanted, mutants, why));
-    }
+    let (why, held) = match volume.open(held, must_reach) {
+        Ok(opened) => return Ok(opened),
+        Err((OpenError::Other(e), _)) => {
+            return Err(Stop::Error(format!("opening the store: {e}")))
+        }
+        Err((OpenError::SyncFailed, _)) if mutants.has(Mutants::SYNC_ERROR_MAY_PASS) => {
+            return Err(Stop::Error("opening the store: a sync failed".into()))
+        }
+        Err((OpenError::SyncFailed, held)) => ("the recovery's sync failed", held),
+        Err((OpenError::Short, held)) => ("the log is shorter than what was acknowledged", held),
+        Err((OpenError::MarkedFailed, held)) => ("the volume is marked as failed", held),
+    };
+    // The lock is held while the failed volume's device is deleted: a
+    // second start cannot take the device over in between.
+    let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
+    let stop = failed(control, records, wanted, mutants, why);
+    drop(held);
+    Err(stop)
 }
 
 /// The device `number`, once it is no longer live, or still live after
@@ -514,7 +572,15 @@ fn delete<C: Control, R: Records>(
 
 /// The volume has failed: a device of it that waits for a server is
 /// deleted, never taken over. The delete does not wait: a device that
-/// a client still holds keeps its number, deleted.
+/// a client still holds keeps its number, deleted. Called with the
+/// volume's lock held.
+///
+/// The device is deleted only if the record is of this boot, the note
+/// carries the record's nonce, and the kernel reports the recorded
+/// values. A noted device with other values is left, and the reason
+/// says so: a note should never outlive its device, and if one did (a
+/// device deleted by hand), what stands under the number now is not
+/// this volume's.
 fn failed<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
@@ -522,24 +588,32 @@ fn failed<C: Control, R: Records>(
     mutants: Mutants,
     why: &'static str,
 ) -> Stop {
-    if let Ok(Some(attachment)) = records.attachment() {
-        let ours = attachment.boot == records.boot()
-            && matches!(records.note(attachment.number), Ok(Some(nonce)) if nonce == attachment.nonce);
-        if ours {
-            let number = attachment.number;
-            let info = control.info(number).and_then(|info| {
-                settled(control, records, number, info, wanted, Mutants::default())
-            });
-            if let Ok(Some(DeviceInfo {
-                state: DeviceState::Waiting | DeviceState::Added,
-                ..
-            })) = info
-            {
-                let _ = delete(control, records, number, mutants);
-            }
-        }
+    let Ok(Some(attachment)) = records.attachment() else {
+        return Stop::Failed(why.into());
+    };
+    let number = attachment.number;
+    let this_boot = attachment.boot == records.boot() || mutants.has(Mutants::FAILED_ANY_BOOT);
+    let noted = matches!(records.note(number), Ok(Some(nonce)) if nonce == attachment.nonce);
+    if !(this_boot && noted) {
+        return Stop::Failed(why.into());
     }
-    Stop::Failed(why)
+    let info = control
+        .info(number)
+        .and_then(|info| settled(control, records, number, info, wanted, Mutants::default()));
+    let Ok(Some(info)) = info else {
+        return Stop::Failed(why.into());
+    };
+    if !matches!(info.state, DeviceState::Waiting | DeviceState::Added) {
+        return Stop::Failed(why.into());
+    }
+    if info.shape != attachment.shape {
+        return Stop::Failed(format!(
+            "{why}; device {number} carries this volume's note and not the recorded values, \
+             and was left"
+        ));
+    }
+    let _ = delete(control, records, number, mutants);
+    Stop::Failed(why.into())
 }
 
 /// Step 4: whose is the device the record names.
@@ -571,7 +645,7 @@ fn find<C: Control, R: Records>(
     // is left, since it cannot be shown to be this volume's.
     let Ok(note) = records.note(number) else {
         return Err(Stop::Failed(
-            "the note for the volume's device cannot be read",
+            "the note for the volume's device cannot be read".into(),
         ));
     };
     if note != Some(attachment.nonce) {
@@ -633,6 +707,9 @@ fn find<C: Control, R: Records>(
             stale: Some(number),
             left: None,
         }),
+        DeviceState::Dead if mutants.has(Mutants::TAKE_DEAD) => {
+            Ok(Found::TakeOver(number, info.shape))
+        }
         // Deleted, and still held by whoever had it open: gone, as far
         // as a server is concerned.
         DeviceState::Dead => Ok(afresh),
@@ -658,6 +735,14 @@ fn attach<C: Control, R: Records>(
 ) -> Result<Attached, Stop> {
     let (stale, left) = match found {
         Found::TakeOver(number, shape) => {
+            // The device's size is the store's, or it is not the
+            // device of this store.
+            if shape.size != size {
+                return Err(Stop::Error(format!(
+                    "device {number} is {} bytes and the store is {size}: it is left as it is",
+                    shape.size
+                )));
+            }
             control
                 .begin_recovery(number)
                 .map_err(error("beginning the recovery"))?;
@@ -769,7 +854,8 @@ pub struct Located {
 }
 
 /// Find the device the volume's record names: for `status` and
-/// `detach`. Opens no store, changes nothing and does not wait.
+/// `detach`. Opens no store, takes no lock, changes nothing and does
+/// not wait.
 /// `Ok(None)` if there is no record of this boot or the kernel has no
 /// device under the recorded number. An error if a record or the note
 /// cannot be read.
@@ -816,11 +902,20 @@ pub enum Detached {
     /// The device under the recorded number is not known to be this
     /// volume's. Nothing was done.
     NotOurs(Located),
+    /// A daemon holds this volume: its lock could not be taken.
+    /// Nothing was done.
+    Locked,
 }
 
 /// Give up the volume's device: delete it if it is this volume's and
-/// no server serves it. It never stops a daemon. Opens no store and
-/// does not touch what was acknowledged.
+/// no server serves it. It never stops a daemon. It opens no store,
+/// recovers nothing and does not touch what was acknowledged.
+///
+/// **It holds the volume's lock from its first look to its last step**
+/// ([`Volume::lock`], tried again `lock_retries` times), and answers
+/// [`Detached::Locked`] if a daemon has it. Without the lock a daemon
+/// that starts in between has its device deleted under it, or its
+/// fresh record removed.
 ///
 /// The steps, for this volume's device that waits for a server or was
 /// never started: the note is removed, the device is deleted without
@@ -836,15 +931,31 @@ pub enum Detached {
 ///
 /// Not decided here, and on the list for the kernel spike: whether a
 /// detach can know beforehand that a client holds a waiting device.
-pub fn detach<C: Control, R: Records>(control: &mut C, records: &mut R) -> io::Result<Detached> {
-    detach_with(control, records, Mutants::default())
-}
-
-pub(crate) fn detach_with<C: Control, R: Records>(
+pub fn detach<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
+    volume: &mut V,
+    lock_retries: u32,
+) -> io::Result<Detached> {
+    detach_with(control, records, volume, lock_retries, Mutants::default())
+}
+
+pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
+    control: &mut C,
+    records: &mut R,
+    volume: &mut V,
+    lock_retries: u32,
     mutants: Mutants,
 ) -> io::Result<Detached> {
+    let _held = if mutants.has(Mutants::DETACH_WITHOUT_LOCK) {
+        None
+    } else {
+        match lock(records, volume, lock_retries) {
+            Ok(held) => Some(held),
+            Err(Stop::Held) => return Ok(Detached::Locked),
+            Err(other) => return Err(io::Error::other(format!("{other:?}"))),
+        }
+    };
     let Some(located) = locate(control, records)? else {
         return Ok(Detached::Nothing);
     };
