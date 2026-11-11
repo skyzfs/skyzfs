@@ -4,7 +4,7 @@
 //! [crate documentation](crate). This module is the log as an object that
 //! one writer owns.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 
 use crate::format::{
@@ -120,6 +120,9 @@ impl Mutants {
     pub(crate) const STALE_CURSOR: u64 = 1 << 32;
     /// A position inside a segment's header passes for a boundary.
     pub(crate) const HEADER_IS_BOUNDARY: u64 = 1 << 33;
+    /// The position the log must reach is compared after the recovery
+    /// has sealed the prefix, and not before it writes anything.
+    pub(crate) const COMPARE_AFTER_SEAL: u64 = 1 << 34;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u64 = 1 << 23;
 
@@ -192,6 +195,17 @@ pub enum LogError {
     /// acknowledge it.
     #[error("the log is marked as failed")]
     MarkedFailed,
+    /// `open`: the valid prefix ends at or before the position it must
+    /// reach ([`Options::must_reach`]). Something that was in the log is
+    /// gone. Nothing was written.
+    #[error("the log's valid prefix ends at {end}, at or before {must_reach} which it must reach")]
+    Short {
+        /// Where the valid prefix ends (as compared: see
+        /// [`Options::pretend_short_by`]).
+        end: Lsn,
+        /// The position it had to end beyond.
+        must_reach: Lsn,
+    },
     /// `append`: the record needs another segment file, and the log has
     /// as many as it may have, none of them free. Nothing was written
     /// and the log has not failed: a reclaim makes room.
@@ -318,6 +332,32 @@ pub struct Options {
     /// the marker stood for: not to serve the log to a client that was
     /// told more than the log holds.
     pub acknowledge_failure: bool,
+    /// A position the valid prefix must end beyond: where a record
+    /// starts that someone was told is in the log. If the prefix the
+    /// recovery finds ends at or before it, the open fails with
+    /// [`LogError::Short`] before the recovery has written anything:
+    /// no new epoch, no seal, nothing erased, the failure marker left.
+    /// The log's files are then as they were, and every later open with
+    /// the same position fails the same way.
+    ///
+    /// The comparison has to be made here and not by the caller with
+    /// [`Recovery::end`]. A recovery seals the prefix with a mark, which
+    /// is a record: the next open finds a prefix that ends behind that
+    /// mark, beyond the place of a record that was lost, and a caller
+    /// that died between the open and its own comparison would have
+    /// destroyed the evidence.
+    pub must_reach: Option<Lsn>,
+    /// The store the position was recorded for, as its identity (two
+    /// keyed tags under the log's key). If this log's is another, the
+    /// position counts as none: a volume made again in the same place
+    /// is another store, with a log that rightly ends lower. `None`
+    /// applies the position to whatever log is opened.
+    pub must_reach_identity: Option<[u8; 16]>,
+    /// For test rigs, to stand for a log that came back shorter: the
+    /// prefix end that is compared with [`Options::must_reach`] is
+    /// taken as if the last so many writes, write-zeroes and discards
+    /// of the prefix were not there. Nothing else changes. Leave it 0.
+    pub pretend_short_by: u32,
     pub(crate) mutants: Mutants,
 }
 
@@ -849,6 +889,10 @@ impl<D: Dir> Log<D> {
         if mutants.has(Mutants::NO_SEGMENT_EPOCH_CHECK) {
             cursor.min_epoch = 0;
         }
+        // The starts of the last records, for a rig that pretends the
+        // log came back shorter.
+        let pretend = options.pretend_short_by as usize;
+        let mut last_starts: VecDeque<Lsn> = VecDeque::new();
         let stopped = loop {
             let file = &slots[index].file;
             // A read error is an error, never the end of the log: what
@@ -866,6 +910,12 @@ impl<D: Dir> Log<D> {
                 Err(stop) => break stop,
             };
             cursor.min_epoch = cursor.min_epoch.max(found.header.epoch);
+            if pretend > 0 && !matches!(found.header.kind, Kind::Pad | Kind::Mark) {
+                if last_starts.len() == pretend {
+                    last_starts.pop_front();
+                }
+                last_starts.push_back(cursor.position);
+            }
             if found.header.kind != Kind::Pad {
                 cursor.position = found.end;
                 cursor.chain = found.crc;
@@ -912,6 +962,30 @@ impl<D: Dir> Log<D> {
                 stopped,
             }
             .into());
+        }
+        // What the caller was told is in the log must be in the prefix.
+        // Compared before anything is written: a recovery that sealed a
+        // short prefix would leave the next open nothing to notice.
+        let same_store = options
+            .must_reach_identity
+            .is_none_or(|identity| identity == crate::format::store_identity(&current.key));
+        let must_reach = options.must_reach.filter(|_| same_store);
+        let short = must_reach.and_then(|must_reach| {
+            let compared = match last_starts.front() {
+                Some(start) if last_starts.len() == pretend => *start,
+                // Fewer records than are to be pretended away.
+                Some(_) => current.floor,
+                None => end,
+            };
+            (compared <= must_reach).then_some(LogError::Short {
+                end: compared,
+                must_reach,
+            })
+        });
+        if let Some(short) = short {
+            if !mutants.has(Mutants::COMPARE_AFTER_SEAL) {
+                return Err(short);
+            }
         }
         let follows = Self::scan(&identity, &slots[index].file, &mut reader, &mut window, end)
             .map_err(|e| read_error("reading the log", &e))?;
@@ -988,6 +1062,9 @@ impl<D: Dir> Log<D> {
                     return Err(log.fail("erasing a stale segment", &e));
                 }
             }
+        }
+        if let Some(short) = short {
+            return Err(short);
         }
         if marker_found {
             let removed = log.dir.remove(MARKER_NAME).and_then(|()| log.dir.sync());

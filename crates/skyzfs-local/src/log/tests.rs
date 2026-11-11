@@ -62,6 +62,7 @@ impl Env {
         Options {
             acknowledge_failure: false,
             mutants: self.mutants,
+            ..Options::default()
         }
     }
 

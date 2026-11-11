@@ -95,6 +95,16 @@ impl fmt::Debug for Key {
     }
 }
 
+/// An identity of the store whose log has this key: two keyed tags of
+/// fixed labels. The same wherever it is computed for one key, and it
+/// does not give the key away.
+pub(crate) fn store_identity(key: &Key) -> [u8; 16] {
+    let mut identity = [0u8; 16];
+    identity[..8].copy_from_slice(&siphash24(key, b"skyzfs store identity 1").to_le_bytes());
+    identity[8..].copy_from_slice(&siphash24(key, b"skyzfs store identity 2").to_le_bytes());
+    identity
+}
+
 /// SipHash-2-4 with a 64-bit result (Aumasson and Bernstein, 2012): the
 /// keyed function behind every tag.
 pub fn siphash24(key: &Key, data: &[u8]) -> u64 {

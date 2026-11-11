@@ -12,14 +12,6 @@ on:
       scenarios:
         description: "which scenarios: sync gone zed routes older scrub"
         default: "sync gone zed routes older scrub"
-  # A push that changes the script runs it once on the testing branch:
-  # these observations are inputs to the design and are wanted before
-  # the rig around them is reviewed.
-  push:
-    branches: ['skyzfs-testing*']
-    paths:
-      - tests/kernel/failed-volume-obs.sh
-      - .github/workflows/skyzfs-failed-volume.yml
 
 permissions:
   contents: read

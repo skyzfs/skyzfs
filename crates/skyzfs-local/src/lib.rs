@@ -233,6 +233,14 @@
 //! every record it covers was durable; no later write touches those
 //! units; so each such record is still valid, and the walk passes it.
 //!
+//! **A sync is of a file or a directory this crate owns, never wider.**
+//! Every durability call here is `sync_data` or `sync_all` on one file
+//! or one directory handle. Nothing calls `sync()` or `syncfs()`, and
+//! nothing may: while any ZFS pool on the machine is suspended, a
+//! system-wide sync does not return, so a daemon that issued one would
+//! be stalled by a failed pool that is not its own. The same holds for
+//! `skyzfs-ublk` and `skyzfsd`.
+//!
 //! **The prefix is durable when recovery returns** because step 1
 //! synced everything and step 2 validated what the device holds. This
 //! matters after a failed sync: an operating system may then mark the

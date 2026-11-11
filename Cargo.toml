@@ -13,11 +13,13 @@ members = [
     "crates/skynbd-agent",
     "crates/skyzfs-blk",
     "crates/skyzfs-local",
+    "crates/skyzfs-ublk",
     "bins/skynbdd",
     "bins/skynbd-agent",
     "bins/skynbdctl",
     "bins/skynbd-csi-driver",
     "bins/skyzfs-blkcheck",
+    "bins/skyzfsd",
 ]
 
 [workspace.package]
