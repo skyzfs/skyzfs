@@ -1,48 +1,69 @@
 #!/usr/bin/env python3
-"""Power-cut replay check: does the pool import at every prefix of the write log?
+"""Power-cut replay check: is the pool whole at every prefix of the write log?
 
 The recording half of the rig (replay-rig.sh) ran a workload on a pool
 whose data vdev sat on dm-log-writes, marked the log at each completed
-`zpool sync`, and noted which files existed at each mark. This half
-rebuilds the device as it was after N records, for many N, and checks
-each one:
+`zpool sync` and after each file's fsync, and noted each file's
+checksum. This half rebuilds the device as it was after N records, for
+many N, and checks each one. Three promises are checked, each where it
+starts to hold:
 
-  light check, every sampled prefix
-      a read-only loop device over the image; `zpool import -o
-      readonly=on -N -m -f` must succeed; the dataset must mount; every
-      file recorded at the last mark at or before the prefix must have
-      its checksum.
-  deep check, at flush boundaries
-      a throwaway dm-snapshot over the image; a writable import and
-      `zpool scrub -w`, which reads every block the pool can reach;
-      no error may be counted and nothing repaired.
+  the pool imports, and synced files are intact: every sampled prefix
+      (the light check) a read-only loop device over the image; `zpool
+      import -o readonly=on -N -m -f` must succeed; the dataset must
+      mount; every file recorded at the last sync mark at or before the
+      prefix must have its checksum.
+  every block the newest uberblock reaches is on the device, in every
+  copy: around each transaction group's uberblock writes
+      (the every-copy check; see the comment above every_copy_verdict)
+      zdb lists every reachable block, the rig checksums every copy on
+      the image. Nothing is imported or written. Right after a group's
+      first uberblock write, and just before the next group's.
+  an fsynced file survives: at each file's fsync mark
+      (the fsync check) a throwaway dm-snapshot over the image, a
+      writable import and a mount, which replays the intent log; every
+      file whose fsync had returned must have its checksum. Only where
+      the intent log is on the device under test (--fsync-check).
 
-Which prefixes: every flush boundary, every prefix within WINDOW records
-of an uberblock write, and random others, as many as the time budget
-allows after a short calibration. One image is advanced record by
-record; the checks are serial, because one kernel cannot import the
-same pool twice.
+  and at flush boundaries, the scrub
+      on the same kind of snapshot, a writable import and `zpool scrub
+      -w`; no error may be counted and nothing repaired; then the fsync
+      check, where it applies.
+
+Which prefixes get the light check: every flush boundary, every prefix
+within WINDOW records of an uberblock write, and random others, as many
+as the time budget allows after a short calibration. A prefix that
+carries one of the other checks is always taken. One image is advanced
+record by record; the checks are serial, because one kernel cannot
+import the same pool twice.
 
 Negative controls. A rig that cannot catch a wrong replay proves
-nothing, so two wrong replays are run through the same checks:
+nothing, so wrong replays are run through the same checks:
   drop      one data write from the middle of a transaction group is
             never applied
   reorder   the last data write before the flush that precedes a
             group's uberblocks is held back until that group is
             complete, so the uberblocks land without it
-The victims are picked by a fixed rule (see controls()), not chosen to
-be caught. What each is expected to do today is the table EXPECTED; the
-job fails when a result differs from it in either direction. Today the
-rig shows that the pool imports and that the promised files are intact
-at every prefix. It does not yet show that every block the newest
-uberblock reaches is on the device in every copy: `reorder`, whose
-block is one of three copies of pool metadata, is not caught.
+  data      the write that carries the first block of a file a sync
+            mark promises is never applied
+  intent    an intent-log write that a file's fsync depends on is never
+            applied (only where the intent log is under test)
+The victims are picked by fixed rules (see controls()), not chosen to
+be caught. What each is expected to do, by the kind of write its rule
+happened to pick, is the table EXPECTED; the job fails when a result
+differs from it. A failure of the rig itself (a loop device, an export,
+a command that timed out) is never a verdict in either direction.
+
+What the rig does not show: anything about the uberblock's own four
+label copies beyond the import choosing one; intent-log blocks'
+checksums; and, where the log device is local and not under test, the
+fsync promise, which then rests on that device.
 
 The image comes from a provider (default logwrites.py over the
 dm-log-writes log; see its header for the two commands). The same checks
 will run on images from skyzfsd's own log replay.
 
-Needs root, ZFS, losetup, dmsetup with dm-snapshot.
+Needs root, ZFS with zdb, losetup, dmsetup with dm-snapshot.
 """
 import argparse
 import hashlib

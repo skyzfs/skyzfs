@@ -27,6 +27,17 @@ commands, and this is the reference implementation of both:
 A provider for another source of write order (skyzfsd's own write log)
 implements the same two commands with the same INDEX.json.
 
+Several devices in one order. This log records one device. A daemon
+that serves several devices from one log (a pool's data device and its
+log device) has their writes in one order, so one prefix gives an image
+of each. The contract's shape for that, which this reference does not
+need and does not implement: a record carries `dev`, the number of the
+device it belongs to (absent means 0), INDEX.json carries `devices`, a
+list of their sizes, and `advance` takes `--image` once per device, in
+that order. The rig today passes one `--image`, and where the pool has
+a log device that is not recorded it places that device's image from
+the time of the base image beside each prefix.
+
 On-disk format (drivers/md/dm-log-writes.c; xfstests src/log-writes):
 a superblock in the first block, then entries. An entry is one block
 holding a header, followed by nr_sectors blocks of data for a write. A
