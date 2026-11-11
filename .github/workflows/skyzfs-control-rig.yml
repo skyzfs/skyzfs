@@ -119,8 +119,21 @@ jobs:
             *) echo "::error title=control rig::the rig itself failed; this is not a verdict on the binding"; exit 2 ;;
           esac
       - uses: actions/upload-artifact@v6
+        id: upload
         if: always()
+        continue-on-error: true
         with:
           name: control-rig-${{ matrix.image }}
           path: rig-out/
           retention-days: 90
+      # GitHub's artifact service failed for ten minutes at a time on
+      # 2026-11-11 and the results of four jobs were lost. One more try,
+      # and this one decides the step's colour.
+      - name: Upload again if the first upload failed
+        uses: actions/upload-artifact@v6
+        if: always() && steps.upload.outcome == 'failure'
+        with:
+          name: control-rig-${{ matrix.image }}
+          path: rig-out/
+          retention-days: 90
+          overwrite: true

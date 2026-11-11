@@ -785,8 +785,20 @@ check_b_short() {
         return
     elif [ $rc = 0 ]; then
         touch "$WORK/bs.stop"
-        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 served ($BDEV)"
-        obs b_refused_start_under_writes "not run: the start was not refused"
+        # The start is refused only if the log's last mutation had been
+        # acknowledged. A kill that leaves that write applied and not
+        # acknowledged makes the start serve, by design, and the server
+        # then says so (recovered_unacknowledged 1 or more): the control
+        # did not happen. At rest that should not occur; if it does it
+        # is the rig's error. A start that serves and found nothing
+        # unacknowledged let a short log through: that is the finding.
+        i=$(vol_stat "$SKYZFSD" "$dir" recovered_unacknowledged)
+        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ]; then
+            ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through"
+        else
+            ctl recovered_log_too_short ERROR "the control did not happen: killed at rest ($quiet), yet serve --recover-short 1 served and says recovered_unacknowledged '${i:-nothing}': the log's last mutation was not an acknowledged one"
+        fi
+        obs b_refused_start_under_writes "the start was not refused, so there is no course after a refusal to report"
         return
     fi
     # The course after the refusal, looked at every second for 300 s or
@@ -1714,6 +1726,16 @@ case $CHECKS in *" b "*)
         check_b_short
     fi ;;
 esac
+
+# The files a reading needs most often, in the job's log as well: an
+# artifact can be lost (GitHub's upload failed for a run's four jobs on
+# 2026-11-11, and the serve logs went with them).
+step "the servers' own lines"
+for f in "$WORK"/vol-*.serve.log; do
+    [ -s "$f" ] || continue
+    echo "-- ${f##*/} ($(grep -c . "$f") lines; the last 6):"
+    tail -n 6 "$f" | cut -c1-400
+done
 
 step "done"
 # Nothing but block devices under the names of ublk devices in /dev,
