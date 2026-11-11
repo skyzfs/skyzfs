@@ -41,6 +41,15 @@ EXPECTED = {
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
     'pin_unstored_zero_a': ('a', 'PASS', WAITING, 'no completion waits for the acknowledged position to be stored (status: unstored 0)'),
 
+    'pin_overlapping_writes_apply_whole': ('a', 'PASS', SERVER,
+                                           'two writes at one range in flight together apply whole: after both, '
+                                           'every block of the range is from one of them, in every round of a '
+                                           'minute of rounds, with and without the commit delay (§4.1)'),
+
+    'ctl_torn_overlapping_writes': ('a', 'FAIL', KERNEL,
+                                    'control: a server that applies only the first half of a write that follows '
+                                    'another of the same range is caught by the same load, in every run'),
+
     'pin_c_max_request': ('c', 'PASS', SERVER,
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
                           'cases about a 1 MiB request and a discard across the device test only the block layer'),
@@ -50,6 +59,14 @@ EXPECTED = {
                                            'at a third or more of the kills of a live server a call is outstanding '
                                            'when it dies and is left to the kernel to issue again. Below that the '
                                            'kill cases test little more than a restart, and the run is a rig error'),
+    'pin_c_kill_with_applied_unacknowledged': ('c', 'PASS', SERVER,
+                                               'with a server that acknowledges a write some milliseconds after '
+                                               'applying it, the suite\'s kills leave writes applied and not '
+                                               'acknowledged, by the next server\'s own count at its take-over; the '
+                                               'kernel issues them again and they are applied a second time. A run '
+                                               'where the count is zero, or is not given, is a rig error'),
+    'pin_c_delay_cases': ('c', 'PASS', SERVER,
+                          'every case of the suite ends with that delay as it does without it'),
 
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
@@ -73,8 +90,27 @@ EXPECTED = {
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4 and the pool suspends', 'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
+    'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
+                                          'the daemon causes no file under /run/ublksrvd, the reference server\'s '
+                                          'directory: after each of its serves there is no entry for the device\'s '
+                                          'number newer than that serve (§4.2, Library)', 'WAITING'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
+    'pin_kill_under_load_applied_unacknowledged': ('b', 'PASS', SERVER,
+                                                   'kills under a pool\'s load of a server that acknowledges a write '
+                                                   'some milliseconds after applying it: the pool comes through as in '
+                                                   'the plain kill test, and the servers that took over found writes '
+                                                   'applied and not acknowledged (status: recovered_unacknowledged), '
+                                                   'more than 0 over the run, or the run is a rig error'),
+    'pin_device_waits_for_a_server': ('b', 'PASS', KERNEL,
+                                      'a killed server\'s device with no server for 300 s under a pool: it reads '
+                                      'as waiting at every look, the kernel log has no I/O error, request timed '
+                                      'out or abort, and the take-over afterwards is as clean as after any kill '
+                                      '(§4.2, the states of a device: waiting, no server comes)'),
+    'ctl_delay_before_apply': ('b', 'FAIL', SERVER,
+                               'control: with the same delay taken before the write is applied, the servers that '
+                               'take over find nothing applied and unacknowledged: the count above is not one '
+                               'that is always positive'),
 
     'pin_suspends_on_io_errors': ('d', 'PASS', KERNEL,
                                   'every request fails with a plain I/O error: the pool suspends under '
@@ -112,6 +148,10 @@ OBSERVED = {
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
+    'obs_a_unordered_overlapping_writes': ('a', 'how often the reference server without the ordering tears the same load, '
+                                                'on this runner: the pin on overlapping writes means as much as this shows'),
+    'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
+    'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
 }
 # Check c. skyzfs-blkcheck says for each case what the suite declares for

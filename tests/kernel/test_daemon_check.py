@@ -29,6 +29,10 @@ def as_expected(impl='reference'):
     r.update(impl='reference: x', setup='ok')
     r.update(c_run='ok: 26 cases', c_declared=dc.C_DECLARED[impl])
     r.update({f'case_{k}': v for k, v in cases(impl).items()})
+    if impl == 'daemon':
+        # A pin only the daemon can carry; the tests below set the
+        # other one that waits on the stand-in by hand.
+        r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: seen'
     return r
 
 
@@ -87,6 +91,7 @@ class Cases(unittest.TestCase):
         # the stand-in's counts, from a suite that was told it can reopen a failed volume
         r = as_expected('reference')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: none'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -222,6 +227,9 @@ class Judge(unittest.TestCase):
         self.assertEqual((differs, len(errors)), ([], 1))
         r['ctl_recovered_log_too_short'] = 'FAIL: refused with status 4, pool suspended'
         self.assertEqual(dc.judge(r, ALL, impl='daemon')[1:], ([], []))
+        # and a pin that waits for the daemon may not wait on the daemon
+        r['pin_no_ublksrvd_entry_from_daemon'] = 'WAITING: the stand-in'
+        self.assertEqual(len(dc.judge(r, ALL, impl='daemon')[2]), 1)
         r['ctl_recovered_log_too_short'] = 'PASS: served'
         self.assertEqual(len(dc.judge(r, ALL, impl='daemon')[1]), 1)
 
