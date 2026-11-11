@@ -1036,14 +1036,23 @@ fn say_stop(round: usize, stop: &Stop) {
 /// nothing is in flight, and let go only when that memory is taken:
 /// their next writes are then issued to tags whose fetch commands name
 /// the old addresses, and the test fails if none was issued in such a
-/// stop. With the buffers kept, the count is zero. With the buffers
-/// freed it can only be other than zero where the allocator has handed
-/// the freed memory out again (glibc unmaps blocks this large at their
-/// first free and reuses them from then on); the line printed for
-/// each stop says whether the told ranges were still mapped, how many
-/// blocks taken afterwards lay where one was, and how many writes were
-/// in flight at the device. A zero here is not evidence that the
-/// buffers were kept: the allocator check is.
+/// stop. With the buffers kept, the count is zero.
+///
+/// With the buffers freed the test never gets that far: it ends at the
+/// first stop, on the allocator check. What going on does was seen
+/// once, before the test ended there (run 43076882940, Ubuntu 24.04,
+/// with the buffers' `Drop` removed): at the first stop the freed
+/// blocks were unmapped and nothing showed; at the second, the first
+/// with the writers held, glibc reported `corrupted size vs.
+/// prev_size` as soon as the writers were let go, and the process
+/// hung. So the driver does copy to the addresses of commands that
+/// are still with it after the queue is dropped, and what it hits is
+/// whatever the allocator has put there, its own bookkeeping
+/// included. In the runs before, without the held stops, the same
+/// freed memory was in other hands and no byte changed (run
+/// 43073520161): a zero in this count is not evidence that the
+/// buffers were kept. The allocator check is.
+///
 /// At the other stops the writers' next writes arrive within
 /// microseconds of the stop, before any memory is taken, and block:
 /// those stops are for the commits of a stop, below.
@@ -1166,6 +1175,16 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             stops.push(serving.join().map_err(|e| format!("round {round}: {e}"))?);
             if let Some(stop) = stops.last() {
                 say_stop(stops.len() - 1, stop);
+                // The certain check, at once: with told memory given
+                // back, going on lets the kernel write into this
+                // process's heap (see the test's documentation).
+                if stop.freed != 0 {
+                    return Err(format!(
+                        "{} deallocations gave memory back whose address the driver had been \
+                         told, at stop {round}",
+                        stop.freed
+                    ));
+                }
             }
             drop(device);
             until(&mut kernel, n, "waiting", |i| {

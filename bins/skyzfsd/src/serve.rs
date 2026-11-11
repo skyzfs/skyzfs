@@ -130,6 +130,11 @@ pub fn nearest_existing(dir: &Path, cwd: &Path) -> io::Result<std::path::PathBuf
 /// point with a tab, a newline or a backslash in its name, which the
 /// table escapes). An answer that cannot be had is a refusal.
 ///
+/// The rule guards against a deployment mistake. It is not a boundary
+/// against someone who can write where the directories are: a
+/// directory swapped for another between the check and its use is not
+/// seen.
+///
 /// What the check sees and what it does not: a directory on any file
 /// system of type ZFS is refused, whatever pool it is. A file system
 /// of another type that itself lies on ZFS (ext4 on a zvol, or in a
@@ -142,6 +147,36 @@ pub fn off_zfs(
     kind: impl Fn(&Path) -> io::Result<u64>,
 ) -> Result<(), String> {
     let real = nearest_existing(dir, cwd).map_err(|e| format!("{what} {}: {e}", dir.display()))?;
+    match kind(&real) {
+        Ok(ZFS_SUPER_MAGIC) => Err(format!(
+            "{what} {} is on ZFS: the daemon keeps its files off any pool",
+            dir.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the file system of {what} {} cannot be told ({}: {e})",
+            dir.display(),
+            real.display()
+        )),
+    }
+}
+
+/// The rule for a directory that must exist already, the volume's:
+/// the directory itself is resolved and judged, and nothing above it
+/// in its place. A path that does not resolve is refused: judged by a
+/// directory above it, `missing/../pool/vol` would pass while there is
+/// no `missing`, and name a volume on a pool as soon as there is one
+/// (the run directory, made later, can be what makes it).
+pub fn existing_off_zfs(
+    dir: &Path,
+    what: &str,
+    cwd: &Path,
+    kind: impl Fn(&Path) -> io::Result<u64>,
+) -> Result<(), String> {
+    let real = cwd
+        .join(dir)
+        .canonicalize()
+        .map_err(|e| format!("{what} {} does not exist ({e})", dir.display()))?;
     match kind(&real) {
         Ok(ZFS_SUPER_MAGIC) => Err(format!(
             "{what} {} is on ZFS: the daemon keeps its files off any pool",
@@ -328,17 +363,18 @@ pub fn serve(serve: &Serve) -> Exit {
         }
     }
     if !serve.allow_any_filesystem {
-        for (dir, what) in [
-            (&serve.dir, "the volume's directory"),
-            (&serve.run_dir, "the run directory"),
-        ] {
-            let checked = std::env::current_dir()
-                .map_err(|e| format!("the current directory: {e}"))
-                .and_then(|cwd| off_zfs(dir, what, &cwd, statfs_kind));
-            if let Err(why) = checked {
-                say(why);
-                return Exit::Error;
-            }
+        // The volume's directory exists and is judged as itself; the
+        // run directory is judged here by where it will be made, and
+        // again in `run` once it is made.
+        let checked = std::env::current_dir()
+            .map_err(|e| format!("the current directory: {e}"))
+            .and_then(|cwd| {
+                existing_off_zfs(&serve.dir, "the volume's directory", &cwd, statfs_kind)?;
+                off_zfs(&serve.run_dir, "the run directory", &cwd, statfs_kind)
+            });
+        if let Err(why) = checked {
+            say(why);
+            return Exit::Error;
         }
     }
     if let Err(e) = signals::block() {
@@ -368,8 +404,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // the store is opened or a device is touched. The status file,
         // the failure note and the record of what was acknowledged are
         // all in this one directory. The volume's own directory needs
-        // no second look: it exists and holds the volume, so the first
-        // check asked about the directory itself.
+        // no second look: its check resolved the directory itself and
+        // refused a path that did not resolve.
         let cwd = std::env::current_dir().map_err(|e| format!("the current directory: {e}"))?;
         make_off_zfs(
             records.volume_run_dir(),
@@ -865,6 +901,39 @@ mod tests {
         )
         .expect_err("made behind a link");
         assert!(refused.contains("was made on ZFS"), "{refused}");
+        // The volume's directory through a directory that does not
+        // exist is refused as it is, and not judged by a directory
+        // above it: `missing/../pool/vol` with a run directory under
+        // `missing`, whose making would make the path resolve onto
+        // the pool afterwards.
+        std::fs::create_dir(pool.join("vol")).expect("vol");
+        let volume = Path::new("absent/../pool/vol");
+        assert_eq!(
+            off_zfs(volume, "the volume's directory", &cwd, kind),
+            Ok(()),
+            "the old check, which judged the directory above"
+        );
+        let refused = existing_off_zfs(volume, "the volume's directory", &cwd, kind)
+            .expect_err("it does not resolve");
+        assert!(refused.contains("does not exist"), "{refused}");
+        assert_eq!(
+            make_off_zfs(
+                Path::new("absent/run/v-1"),
+                "the run directory",
+                &cwd,
+                || std::fs::create_dir_all(cwd.join("absent/run/v-1")),
+                kind,
+            ),
+            Ok(())
+        );
+        // Now it resolves, onto the pool: refused as what it is.
+        let refused =
+            existing_off_zfs(volume, "the volume's directory", &cwd, kind).expect_err("on ZFS");
+        assert!(refused.contains("is on ZFS"), "{refused}");
+        assert_eq!(
+            existing_off_zfs(Path::new("run"), "the volume's directory", &cwd, kind),
+            Ok(())
+        );
         // An answer that cannot be had for what was made is a refusal.
         let unknown = make_off_zfs(
             Path::new("run/v-3"),
