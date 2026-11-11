@@ -37,6 +37,8 @@ on:
       - bins/skyzfs-blkcheck/**
       - crates/skyzfs-blk/**
       - crates/skyzfs-ublk/**
+      - crates/skyzfs-ublk-sys/**
+      - crates/skyzfs-local/**
       - bins/skyzfsd/**
       - .github/workflows/skyzfs-daemon-rig.yml
 

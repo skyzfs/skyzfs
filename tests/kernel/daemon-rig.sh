@@ -1170,7 +1170,7 @@ check_d_shorter() {
 }
 # d.5, an observation: a scrub in progress when the volume fails.
 check_d_scrub() {
-    local mark st rc before
+    local mark st rc before running
     step "d: a scrub in progress at the failure"
     mark=$(klog_mark)
     if ! fail_setup d5 "$SKYZFSD"; then obs scrub_in_progress_at_failure "not run: $FS_ERR"; fail_stop d5; return; fi
@@ -1184,9 +1184,17 @@ check_d_scrub() {
     lim 30 zpool scrub skzd-d5; rc=$?
     sleep 2
     before=$(lim 30 zpool status skzd-d5 2>&1 | grep -A2 'scan:' | tr -s ' ' | tr '\n' ' ')
+    # The line is about a scrub in progress only when one was. A scrub
+    # that had ended before the failure says nothing about that, and the
+    # line then says so first.
+    case "$before" in
+        *"scrub in progress"*) running="the scrub was still running at the failure" ;;
+        *"scrub repaired"*|*"scrub canceled"*) running="NOT a scrub in progress: the scrub had ended before the failure, so this line shows only a failure after a scrub" ;;
+        *) running="whether the scrub was running at the failure is not known (no scan line that says so)" ;;
+    esac
     kill -USR1 "$SERVE_PID" 2>/dev/null || { obs scrub_in_progress_at_failure "not run: no server to signal (serve pid '${SERVE_PID:-}')"; fail_stop d5; return; }
     fail_wait d5 180 "$mark"; st=$?
-    obs scrub_in_progress_at_failure "zpool scrub rc $rc; scan line 2 s later, just before the failure: ${before:-none}; $FS_WHY; scan line when suspended: $(grep -A2 'scan:' "$OUT/d5-status-suspended.log" | tr -s ' ' | tr '\n' ' '); $(pool_errors skzd-d5)"
+    obs scrub_in_progress_at_failure "$running; zpool scrub rc $rc; scan line 2 s later, just before the failure: ${before:-none}; $FS_WHY; scan line when suspended: $(grep -A2 'scan:' "$OUT/d5-status-suspended.log" | tr -s ' ' | tr '\n' ' '); $(pool_errors skzd-d5)"
     fail_stop d5
     return $st
 }
