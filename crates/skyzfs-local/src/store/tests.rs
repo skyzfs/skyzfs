@@ -2320,3 +2320,51 @@ fn a_served_store_failed_on_demand_fails_every_later_request_and_is_found_marked
         other => panic!("the next open: {:?}", other.map(|_| ())),
     }
 }
+
+/// An open that is told the acknowledged position counts the
+/// operations the log holds beyond it: what the life before appended
+/// whole and never acknowledged. Told nothing, or a position recorded
+/// for another store, it counts none.
+#[test]
+fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if store.recovered_unacknowledged() != 0 {
+            return Err("a new store counts operations".into());
+        }
+        write(&mut store, 0, 1, 1)?;
+        let first = store.acknowledged();
+        write(&mut store, 1, 1, 2)?;
+        let second = store.acknowledged();
+        write(&mut store, 2, 1, 3)?;
+        let last = store.acknowledged();
+        let identity = store.identity();
+        drop(store);
+        disk.kill();
+        for (must_reach, recorded_for, want) in [
+            (first, None, 2),
+            (second, None, 1),
+            (last, None, 0),
+            (None, None, 0),
+            (first, Some(identity), 2),
+            (first, Some(*b"some other store"), 0),
+        ] {
+            let options = OpenOptions {
+                must_reach,
+                must_reach_identity: recorded_for,
+                ..env.options()
+            };
+            let (store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
+            let got = store.recovered_unacknowledged();
+            drop(store);
+            disk.kill();
+            if got != want {
+                return Err(format!(
+                    "must reach {must_reach:?} for {recorded_for:?}: counted {got}, not {want}"
+                ));
+            }
+        }
+        Ok(())
+    }
+    holds(scenario);
+}

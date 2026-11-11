@@ -152,7 +152,7 @@ fn serve_has_the_agreed_defaults_and_options() {
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1",
+         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20",
     )
     .hooks;
     assert_eq!(
@@ -165,6 +165,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             }),
             boot_id_file: Some("/tmp/boot".into()),
             recover_short: 1,
+            commit_delay_ms: Some(20),
         }
     );
     let held = |spec: &str| {
@@ -208,6 +209,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --hold-one-request 300:flush",
         "serve --dir /v/a --boot-id-file /tmp/boot",
         "serve --dir /v/a --recover-short 1",
+        "serve --dir /v/a --commit-delay-ms 20",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(

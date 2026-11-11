@@ -81,6 +81,7 @@ pub struct Device {
     control: UblkCtrl,
     dev: Arc<UblkDev>,
     number: u32,
+    take_over: bool,
 }
 
 /// How a device is opened.
@@ -114,12 +115,11 @@ impl Device {
             .depth(current.queue_depth)
             .io_buf_bytes(current.max_io_buf_bytes)
             .ctrl_flags(FLAGS)
-            // Never the add flag: see the crate documentation.
-            .dev_flags(if open.take_over {
-                UblkFlags::UBLK_DEV_F_RECOVER_DEV
-            } else {
-                UblkFlags::empty()
-            })
+            // No flag: not the add flag, so that the object owns no
+            // device and deletes none, and not the recover flag, so
+            // that the library writes no file of its own. See the
+            // crate documentation.
+            .dev_flags(UblkFlags::empty())
             .build()
             .map_err(io_error)?;
         let size = open.size;
@@ -137,6 +137,7 @@ impl Device {
             control,
             dev: Arc::new(dev),
             number: open.number,
+            take_over: open.take_over,
         })
     }
 
@@ -198,6 +199,13 @@ impl Device {
     /// parameters and is started; a device that is taken over has its
     /// recovery ended. From here on the kernel issues requests.
     pub fn start(&self) -> io::Result<()> {
+        if self.take_over {
+            // What the library's start does before its command: wait
+            // until the queue's thread has given the driver its
+            // buffers. Then the end of the recovery, sent from here.
+            self.dev.wait_for_buffer_registration(1).map_err(io_error)?;
+            return crate::raw::end_recovery(self.number);
+        }
         match self.control.start_dev(&self.dev).map_err(io_error)? {
             refused if refused < 0 => Err(io::Error::from_raw_os_error(-refused)),
             _ => Ok(()),

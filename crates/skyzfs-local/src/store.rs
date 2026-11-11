@@ -1082,6 +1082,8 @@ pub struct Store<D: Dir> {
     /// Where the newest record starts among the mutations whose
     /// completions have been handed out.
     acknowledged: Option<Lsn>,
+    /// See [`Store::recovered_unacknowledged`].
+    unacknowledged: u64,
     queue: VecDeque<Request>,
     /// The ids in flight: submitted and not yet returned.
     ids: BTreeSet<RequestId>,
@@ -1255,11 +1257,23 @@ impl<D: Dir> Store<D> {
         // The index: every record of the log, in order. After an open
         // the whole log is durable.
         let mut index = Index::default();
+        // A position recorded for another store counts as none, as in
+        // the log's own comparison.
+        let core_identity = crate::format::store_identity(log.key());
+        let acknowledged = options.must_reach.filter(|_| {
+            options
+                .must_reach_identity
+                .is_none_or(|recorded_for| recorded_for == core_identity)
+        });
+        let mut unacknowledged = 0u64;
         if !options.mutants.has(Mutants::NO_INDEX_REBUILD) {
             log.replay(log.floor(), log.tail(), &mut |record| {
                 let start = record.offset / BLOCK_SIZE;
                 let blocks = record.length / BLOCK_SIZE;
                 let at = record.start;
+                if acknowledged.is_some_and(|position| at > position) {
+                    unacknowledged += 1;
+                }
                 match record.kind {
                     Kind::Write => index.insert(
                         start,
@@ -1288,6 +1302,7 @@ impl<D: Dir> Store<D> {
                 appended: None,
                 mutants: options.mutants,
             },
+            unacknowledged,
             acknowledged: None,
             queue: VecDeque::new(),
             ids: BTreeSet::new(),
@@ -1359,6 +1374,24 @@ impl<D: Dir> Store<D> {
     /// recorded for another store counts as none.
     pub fn identity(&self) -> [u8; 16] {
         self.core.identity()
+    }
+
+    /// How many operations this open found in the log beyond the
+    /// position it was told was acknowledged
+    /// ([`OpenOptions::must_reach`]): writes, write-zeroes and discards
+    /// that the life before appended whole and whose completion it
+    /// never passed on. Zero when the open was told no position, or
+    /// one recorded for another store.
+    ///
+    /// **It is a lower bound** on what that life applied without
+    /// answering its client. An operation at or before the position
+    /// may also have gone unanswered: the position is recorded before
+    /// the answers of a batch are given, and a kill between the two
+    /// leaves answers ungiven that this count does not see. So does an
+    /// operation that a checkpoint has already taken out of the log. A
+    /// flush leaves no record and is never counted.
+    pub fn recovered_unacknowledged(&self) -> u64 {
+        self.unacknowledged
     }
 
     /// Execute up to `limit` queued requests, in order, and collect
@@ -1513,6 +1546,7 @@ where
         let Store {
             mut core,
             acknowledged,
+            unacknowledged: _,
             mut queue,
             ids,
         } = self;

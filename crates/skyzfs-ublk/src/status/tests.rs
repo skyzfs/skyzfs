@@ -30,6 +30,8 @@ fn sample() -> Status {
             unstored: 9,
         },
         failures: 10,
+        first_write_copies: 11,
+        recovered_unacknowledged: 12,
     }
 }
 
@@ -37,15 +39,32 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA1");
+    expected.extend(b"SKYZSTA2");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
-    for field in 1..=10u64 {
+    for field in 1..=12u64 {
         expected.extend(field.to_le_bytes());
     }
+    assert_eq!(bytes.len(), 144);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
+}
+
+/// A file of the first version (128 bytes, `SKYZSTA1`) is no status,
+/// and not an error: nothing that wrote one ever served.
+#[test]
+fn a_file_of_the_first_version_reads_as_no_status() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut old = encode(&sample())[..128].to_vec();
+    old[..8].copy_from_slice(b"SKYZSTA1");
+    fs::write(&path, &old).expect("write");
+    assert_eq!(read(&path).expect("read"), None);
+    // The new magic at the old length is a part of a file: an error.
+    old[..8].copy_from_slice(b"SKYZSTA2");
+    fs::write(&path, &old).expect("write");
+    assert!(read(&path).is_err());
 }
 
 #[test]
@@ -333,6 +352,8 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "refused",
             "held",
             "unstored",
+            "first_write_copies",
+            "recovered_unacknowledged",
             "status_write_failures",
             "age_ms",
             "pid",
