@@ -15,5 +15,6 @@
 
 pub mod cli;
 pub mod commands;
+pub mod delay;
 #[cfg(target_os = "linux")]
 pub mod serve;

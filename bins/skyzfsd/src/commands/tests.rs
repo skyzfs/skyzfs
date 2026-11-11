@@ -168,6 +168,8 @@ fn sample() -> Status {
             unstored: 0,
         },
         failures: 0,
+        first_write_copies: 0,
+        recovered_unacknowledged: 0,
     }
 }
 
@@ -225,6 +227,8 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
         ("write_zeroes", "9"),
         ("held", "2"),
         ("unstored", "0"),
+        ("first_write_copies", "0"),
+        ("recovered_unacknowledged", "0"),
         ("pid", "4242"),
         ("age_ms", "250"),
     ] {

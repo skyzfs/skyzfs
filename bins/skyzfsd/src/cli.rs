@@ -34,7 +34,10 @@
 //! - `serve --boot-id-file PATH`: read the boot id from this file and
 //!   not from the kernel;
 //! - `serve --recover-short N`: this instance's recovery counts the log
-//!   as N records shorter than it found it.
+//!   as N records shorter than it found it;
+//! - `serve --commit-delay-ms N`: every request's result is given to
+//!   the kernel N ms after the store completed it and the acknowledged
+//!   position was stored. Nothing else waits.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -215,6 +218,8 @@ pub struct Hooks {
     pub boot_id_file: Option<PathBuf>,
     /// The recovery counts the log as so many records shorter.
     pub recover_short: u32,
+    /// Every commit is delayed by so many milliseconds.
+    pub commit_delay_ms: Option<u64>,
 }
 
 /// One request to hold for a while.
@@ -311,6 +316,7 @@ const SERVE: &[Opt] = &[
     opt("--hold-one-request", true, true),
     opt("--boot-id-file", true, true),
     opt("--recover-short", true, true),
+    opt("--commit-delay-ms", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -481,6 +487,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     hold: given.get("--hold-one-request").map(hold).transpose()?,
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     recover_short,
+                    commit_delay_ms: given.number("--commit-delay-ms")?,
                 },
             }))
         }

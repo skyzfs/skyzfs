@@ -7,13 +7,17 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 128
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 144
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
+//! This is the file's second version. The first (`SKYZSTA1`, 128
+//! bytes) ended before the last two fields; a file of that version is
+//! read as no status.
+//!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA1` |
+//! | 0 | 8 | magic `SKYZSTA2` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -29,6 +33,8 @@
 //! | 104 | 8 | `held`: requests fetched and not committed yet |
 //! | 112 | 8 | `unstored`: completions waiting because the acknowledged position could not be stored |
 //! | 120 | 8 | writes of this file that failed |
+//! | 128 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
+//! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
 //!
 //! # The rules
 //!
@@ -71,8 +77,11 @@ use crate::records::StoredFailure;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA1";
-const LEN: usize = 128;
+const MAGIC: &[u8; 8] = b"SKYZSTA2";
+const LEN: usize = 144;
+/// The first version: read as no status.
+const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
+const OLD_LEN: usize = 128;
 
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +102,13 @@ pub struct Status {
     pub counters: Counters,
     /// Writes of the file that failed.
     pub failures: u64,
+    /// First writes of a tag that were copied once more, from the
+    /// transport's own buffer, since this daemon started serving.
+    pub first_write_copies: u64,
+    /// Operations this daemon's start found in the log beyond the
+    /// acknowledged position: applied by the daemon before it and never
+    /// answered. A lower bound.
+    pub recovered_unacknowledged: u64,
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -121,6 +137,8 @@ fn encode(status: &Status) -> [u8; LEN] {
         c.in_flight,
         c.unstored,
         status.failures,
+        status.first_write_copies,
+        status.recovered_unacknowledged,
     ];
     for (i, field) in fields.iter().enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
@@ -154,17 +172,23 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             unstored: u64_at(bytes, 112),
         },
         failures: u64_at(bytes, 120),
+        first_write_copies: u64_at(bytes, 128),
+        recovered_unacknowledged: u64_at(bytes, 136),
     })
 }
 
-/// Read the file at `path`. `Ok(None)` if there is none. A file that is
-/// not a whole record is an error.
+/// Read the file at `path`. `Ok(None)` if there is none, or one of the
+/// first version. Any other file that is not a whole record is an
+/// error.
 pub fn read(path: &Path) -> io::Result<Option<Status>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
+    if bytes.len() == OLD_LEN && &bytes[..8] == OLD_MAGIC {
+        return Ok(None);
+    }
     decode(&bytes)
         .map(Some)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "not a status file"))
@@ -478,6 +502,8 @@ pub fn report(
             ("refused", c.refused),
             ("held", c.in_flight),
             ("unstored", c.unstored),
+            ("first_write_copies", s.first_write_copies),
+            ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
         ] {

@@ -61,6 +61,7 @@ use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
 use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
+use crate::delay::Delayed;
 
 /// How often a start asks again about a device of its own that is
 /// still shown as live: 50 times, 100 ms apart, 5 s.
@@ -273,6 +274,20 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }
     let (number, shape) = (ready.number, ready.shape);
     let identity = ready.store.identity();
+    // What the server before this one had applied and never answered:
+    // the kernel issues those requests again, and they are applied a
+    // second time (design §4.1). A lower bound.
+    let recovered = ready.store.recovered_unacknowledged();
+    if ready.took_over || recovered > 0 {
+        say(format_args!(
+            "{} device {number}; recovered_unacknowledged {recovered}",
+            if ready.took_over {
+                "took over"
+            } else {
+                "added"
+            }
+        ));
+    }
     let ack = AckFile::open(&records.acknowledged_path(), identity, boot)
         .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
     let served = ready
@@ -291,10 +306,12 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     .map_err(|e| format!("opening device {number}: {e}"))?;
     let board = Arc::new(Board::new());
     let mut fail_after = serve.hooks.fail_log_after;
+    let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let serving = device
         .serve(&wake, !serve.allow_unlocked_memory, {
-            let (board, flags) = (board.clone(), flags.clone());
+            let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
+                let queue = Delayed::new(queue, delay, move || wake.wake());
                 let mut pump = Pump::new(queue, served, SharedAck::new(ack));
                 let stopped = loop {
                     if let Some(stopped) = pump.turn() {
@@ -317,6 +334,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let board = board.clone();
             let path = records.volume_run_dir().join(status::STATUS);
             let (queues, depth) = (shape.queues, shape.depth);
+            let stopper = stopper.clone();
             move || {
                 board.publish(Pace::new(STATUS_INTERVAL_MS), |counters, failures| {
                     let status = Status {
@@ -328,6 +346,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                         written_ms: status::uptime_ms()?,
                         counters: *counters,
                         failures,
+                        first_write_copies: stopper.first_write_copies(),
+                        recovered_unacknowledged: recovered,
                     };
                     status::write(&path, &status)
                 })

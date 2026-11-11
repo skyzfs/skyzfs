@@ -9,14 +9,16 @@
 //! # What is the library's and what is ours
 //!
 //! The queue is `libublk` `=0.4.8`: the fetch, the commit, the ring and
-//! its idle time-out. So are four control steps, through a control
+//! its idle time-out. So are three control steps, through a control
 //! object of the library that is made **only for a device that already
-//! exists and never with the library's add flag**: the parameters, the
-//! start, and the begin and end of a recovery.
+//! exists and with none of the library's flags**: the parameters and
+//! the start of a device that was never started, and the begin of a
+//! recovery.
 //!
-//! Three control commands are sent by this crate itself ([`raw`]): the
-//! add, the lookup (a device's info and its parameters) and the
-//! asynchronous delete. The kernel spike (`docs/skyzfs-ublk-spike.md`)
+//! Four control commands are sent by this crate itself ([`raw`]): the
+//! add, the lookup (a device's info and its parameters), the
+//! asynchronous delete, and the end of a recovery (for the reason
+//! given with the library's file, below). The kernel spike (`docs/skyzfs-ublk-spike.md`)
 //! showed why. The library answers every failed control command with
 //! "not supported", so a taken number cannot be told from any other
 //! failure; and its failed add deletes whatever device stands under the
@@ -31,10 +33,20 @@
 //! - Making a control object for a device prints `device reload json
 //!   failed` on standard error, once. It means nothing here: the
 //!   library looks for a file of its own that this daemon never needs.
-//! - A take-over (a control object with the library's recover flag)
-//!   writes `/run/ublksrvd/NNNN.json` when the device is started. The
-//!   daemon reads nothing from it. A device this instance added is
-//!   started through an object with no flag, which writes no file.
+//! - **The library's file, `/run/ublksrvd/NNNN.json`, is never written
+//!   and never removed by this daemon.** The library writes it only
+//!   through a control object made with its add or its recover flag
+//!   (and would make the directory, mode 777, if it were missing), and
+//!   removes it only in its own stop and delete; this crate makes no
+//!   such object and calls neither. That is why the end of a recovery
+//!   is sent from here: the library ends one only through an object
+//!   with the recover flag. What remains is a read: every control
+//!   object, when it is made, tries to read the file of its device's
+//!   number. A file that is there (another server's, of a device that
+//!   once had the number) is parsed and kept in the object's memory;
+//!   nothing this crate calls uses what it says, and the object is
+//!   never asked to write it back. A file that is missing or is not
+//!   JSON gives the line on standard error above, and nothing else.
 //! - `UblkCtrl::run_target` is not used: it stops the device when the
 //!   queue threads end, and a device of ours must outlive its server.
 //! - The library allocates one buffer per tag of its own and gives the

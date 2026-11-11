@@ -19,12 +19,18 @@ pub const CONTROL: &str = "/dev/ublk-control";
 /// Send one control command for device `number` and return the
 /// driver's result (zero or more) with the structure as the driver
 /// left it, or the error the driver answered with, as it answered it.
-/// `data` is the structure the command reads or fills.
+/// `data` is the structure the command reads or fills, and `word` the
+/// one number some commands take in the header instead.
 ///
 /// `T` is one of the plain C structures of `libublk::sys` that the
 /// driver defines for the command: this module's callers see to that,
 /// and the function is not public.
-fn command<T: Copy>(op: u32, number: u32, data: Option<T>) -> io::Result<(i32, Option<T>)> {
+fn command<T: Copy>(
+    op: u32,
+    number: u32,
+    word: u64,
+    data: Option<T>,
+) -> io::Result<(i32, Option<T>)> {
     let control = OpenOptions::new().read(true).write(true).open(CONTROL)?;
     let mut ring = IoUring::<squeue::Entry128>::builder().build(2)?;
     // The structure is on the heap, so that it can be left there if the
@@ -42,6 +48,7 @@ fn command<T: Copy>(op: u32, number: u32, data: Option<T>) -> io::Result<(i32, O
         queue_id: u16::MAX,
         len,
         addr,
+        data: [word],
         ..Default::default()
     };
     let mut bytes = [0u8; 80];
@@ -124,7 +131,7 @@ pub fn add(number: u32, depth: u16, max_io: u32, flags: u64) -> io::Result<()> {
         flags,
         ..Default::default()
     };
-    command(sys::UBLK_U_CMD_ADD_DEV, number, Some(info)).map(|_| ())
+    command(sys::UBLK_U_CMD_ADD_DEV, number, 0, Some(info)).map(|_| ())
 }
 
 /// The device under `number` as the driver reports it. An error is the
@@ -134,7 +141,7 @@ pub fn info(number: u32) -> io::Result<sys::ublksrv_ctrl_dev_info> {
         dev_id: number,
         ..Default::default()
     };
-    filled(command(sys::UBLK_U_CMD_GET_DEV_INFO, number, Some(info))?.1)
+    filled(command(sys::UBLK_U_CMD_GET_DEV_INFO, number, 0, Some(info))?.1)
 }
 
 /// The parameters of the device under `number`. A device that was
@@ -144,12 +151,31 @@ pub fn params(number: u32) -> io::Result<sys::ublk_params> {
         len: std::mem::size_of::<sys::ublk_params>() as u32,
         ..Default::default()
     };
-    filled(command(sys::UBLK_U_CMD_GET_PARAMS, number, Some(params))?.1)
+    filled(command(sys::UBLK_U_CMD_GET_PARAMS, number, 0, Some(params))?.1)
 }
 
 /// Delete the device under `number` without waiting for whoever holds
 /// it: the driver's asynchronous delete. A device that is held keeps
 /// its number until the holder lets go.
 pub fn delete(number: u32) -> io::Result<()> {
-    command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, None).map(|_| ())
+    command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, 0, None).map(|_| ())
+}
+
+/// End the recovery of the device under `number`, whose queue this
+/// process has given its fetches: the device is live again, served by
+/// this process. The driver waits until the queue is ready.
+///
+/// This is sent from here and not through the library because the
+/// library ends a recovery only through a control object made with its
+/// recover flag, and such an object writes a file of the library's own
+/// (`/run/ublksrvd/NNNN.json`) when it does. Without the flag the
+/// library writes nothing: see the crate documentation.
+pub fn end_recovery(number: u32) -> io::Result<()> {
+    command::<u8>(
+        sys::UBLK_U_CMD_END_USER_RECOVERY,
+        number,
+        u64::from(std::process::id()),
+        None,
+    )
+    .map(|_| ())
 }
