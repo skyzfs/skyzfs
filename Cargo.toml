@@ -14,6 +14,7 @@ members = [
     "crates/skyzfs-blk",
     "crates/skyzfs-local",
     "crates/skyzfs-ublk",
+    "crates/skyzfs-ublk-sys",
     "bins/skynbdd",
     "bins/skynbd-agent",
     "bins/skynbdctl",
@@ -41,6 +42,7 @@ skynbd-api = { path = "crates/skynbd-api" }
 skyzfs-blk = { path = "crates/skyzfs-blk" }
 skyzfs-local = { path = "crates/skyzfs-local" }
 skyzfs-ublk = { path = "crates/skyzfs-ublk" }
+skyzfs-ublk-sys = { path = "crates/skyzfs-ublk-sys" }
 
 # Core dependencies (design §11). Heavier deps (aws-sdk-s3, axum, redb,
 # tokio-rustls, moka) enter with the milestone that needs them (M1+), not

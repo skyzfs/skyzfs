@@ -6,10 +6,16 @@ use skyzfs_ublk::lifecycle::Control;
 use skyzfsd::cli::{self, Command, Exit};
 use skyzfsd::commands::{self, Now, Output};
 
-/// The kernel's control interface. It is not built yet: the binding
-/// follows the libublk spike (work package M1.3b).
+/// The kernel's control interface.
 fn kernel() -> Result<Box<dyn Control>, String> {
-    Err("the ublk control interface is not built yet".into())
+    #[cfg(target_os = "linux")]
+    {
+        skyzfs_ublk_sys::control::Kernel::new()
+            .map(|kernel| Box::new(kernel) as Box<dyn Control>)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("ublk is a Linux driver: nothing to ask on this system".into())
 }
 
 fn run(command: &Command) -> Output {
@@ -55,9 +61,8 @@ fn run(command: &Command) -> Output {
             // note; the volume is made all the same.
             commands::create(create, id, Now::read().ok().map(|now| now.boot))
         }
-        // The other commands are built on the transport, which is not
-        // here yet.
-        other => failed(format!("{} is not built yet", other.name())),
+        // `serve` prints for itself: see `main`.
+        Command::Serve(_) => failed("serve is run by main".into()),
     }
 }
 
@@ -70,6 +75,10 @@ fn main() -> ExitCode {
             return Exit::Usage.code();
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Command::Serve(serve) = &command {
+        return skyzfsd::serve::serve(serve).code();
+    }
     let output = run(&command);
     print!("{}", output.out);
     eprint!("{}", output.err);
