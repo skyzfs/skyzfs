@@ -130,6 +130,11 @@ pub fn nearest_existing(dir: &Path, cwd: &Path) -> io::Result<std::path::PathBuf
 /// point with a tab, a newline or a backslash in its name, which the
 /// table escapes). An answer that cannot be had is a refusal.
 ///
+/// The rule guards against a deployment mistake. It is not a boundary
+/// against someone who can write where the directories are: a
+/// directory swapped for another between the check and its use is not
+/// seen.
+///
 /// What the check sees and what it does not: a directory on any file
 /// system of type ZFS is refused, whatever pool it is. A file system
 /// of another type that itself lies on ZFS (ext4 on a zvol, or in a
@@ -146,6 +151,82 @@ pub fn off_zfs(
         Ok(ZFS_SUPER_MAGIC) => Err(format!(
             "{what} {} is on ZFS: the daemon keeps its files off any pool",
             dir.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the file system of {what} {} cannot be told ({}: {e})",
+            dir.display(),
+            real.display()
+        )),
+    }
+}
+
+/// The rule for a directory that must exist already, the volume's:
+/// the directory itself is resolved and judged, and nothing above it
+/// in its place. A path that does not resolve is refused: judged by a
+/// directory above it, `missing/../pool/vol` would pass while there is
+/// no `missing`, and name a volume on a pool as soon as there is one
+/// (the run directory, made later, can be what makes it).
+pub fn existing_off_zfs(
+    dir: &Path,
+    what: &str,
+    cwd: &Path,
+    kind: impl Fn(&Path) -> io::Result<u64>,
+) -> Result<(), String> {
+    let real = cwd
+        .join(dir)
+        .canonicalize()
+        .map_err(|e| format!("{what} {} does not exist ({e})", dir.display()))?;
+    match kind(&real) {
+        Ok(ZFS_SUPER_MAGIC) => Err(format!(
+            "{what} {} is on ZFS: the daemon keeps its files off any pool",
+            dir.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the file system of {what} {} cannot be told ({}: {e})",
+            dir.display(),
+            real.display()
+        )),
+    }
+}
+
+/// Make a directory of the daemon's own under the same rule, checked
+/// on both sides of the making: where it will be made, by
+/// [`off_zfs`], so that the common refusal leaves nothing behind; and
+/// then the directory that was made, by its own real path.
+///
+/// The second check is the one that counts. The first predicts where
+/// the directory will land from the nearest directory that exists, and
+/// a path can land elsewhere than predicted: `missing/../pool/run`
+/// with no `missing` is judged by the directory above `missing`, and
+/// the making then creates `missing`, walks through it and back, and
+/// makes `run` in `pool`. A link or a mount that appears between the
+/// check and the making does the same. What was made is asked of the
+/// kernel as it is.
+///
+/// When the second check refuses, the directories just made stay,
+/// empty: the daemon has written nothing into them, and it does not
+/// remove directories it cannot be sure it made.
+pub fn make_off_zfs(
+    dir: &Path,
+    what: &str,
+    cwd: &Path,
+    make: impl FnOnce() -> io::Result<()>,
+    kind: impl Fn(&Path) -> io::Result<u64>,
+) -> Result<(), String> {
+    off_zfs(dir, what, cwd, &kind)?;
+    make().map_err(|e| format!("{}: {e}", dir.display()))?;
+    let real = cwd
+        .join(dir)
+        .canonicalize()
+        .map_err(|e| format!("{what} {}: {e}", dir.display()))?;
+    match kind(&real) {
+        Ok(ZFS_SUPER_MAGIC) => Err(format!(
+            "{what} {} was made on ZFS ({}): the daemon keeps its files off any pool. \
+             Nothing was written there; the empty directory is left",
+            dir.display(),
+            real.display()
         )),
         Ok(_) => Ok(()),
         Err(e) => Err(format!(
@@ -296,17 +377,18 @@ pub fn serve(serve: &Serve) -> Exit {
         }
     }
     if !serve.allow_any_filesystem {
-        for (dir, what) in [
-            (&serve.dir, "the volume's directory"),
-            (&serve.run_dir, "the run directory"),
-        ] {
-            let checked = std::env::current_dir()
-                .map_err(|e| format!("the current directory: {e}"))
-                .and_then(|cwd| off_zfs(dir, what, &cwd, statfs_kind));
-            if let Err(why) = checked {
-                say(why);
-                return Exit::Error;
-            }
+        // The volume's directory exists and is judged as itself; the
+        // run directory is judged here by where it will be made, and
+        // again in `run` once it is made.
+        let checked = std::env::current_dir()
+            .map_err(|e| format!("the current directory: {e}"))
+            .and_then(|cwd| {
+                existing_off_zfs(&serve.dir, "the volume's directory", &cwd, statfs_kind)?;
+                off_zfs(&serve.run_dir, "the run directory", &cwd, statfs_kind)
+            });
+        if let Err(why) = checked {
+            say(why);
+            return Exit::Error;
         }
     }
     if let Err(e) = signals::block() {
@@ -326,9 +408,27 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
     let mut records = Files::new(&serve.dir, &serve.run_dir, boot, LOCK_PAUSE)
         .map_err(|e| format!("{}: {e}", serve.dir.display()))?;
-    records
-        .create_run_dirs()
-        .map_err(|e| format!("{}: {e}", serve.run_dir.display()))?;
+    if serve.allow_any_filesystem {
+        records
+            .create_run_dirs()
+            .map_err(|e| format!("{}: {e}", serve.run_dir.display()))?;
+    } else {
+        // The run directory was judged before by where it would be
+        // made; here it is made and judged again as what it is, before
+        // the store is opened or a device is touched. The status file,
+        // the failure note and the record of what was acknowledged are
+        // all in this one directory. The volume's own directory needs
+        // no second look: its check resolved the directory itself and
+        // refused a path that did not resolve.
+        let cwd = std::env::current_dir().map_err(|e| format!("the current directory: {e}"))?;
+        make_off_zfs(
+            records.volume_run_dir(),
+            "the run directory",
+            &cwd,
+            || records.create_run_dirs(),
+            statfs_kind,
+        )?;
+    }
     let wake = Wake::new().map_err(|e| format!("an event descriptor: {e}"))?;
     let flags = Arc::new(Flags::default());
 
@@ -773,6 +873,144 @@ mod tests {
             nearest_existing(&absolute, Path::new("/nowhere")).expect("absolute"),
             cwd.join("there")
         );
+    }
+
+    /// A run directory whose path goes through a directory that does
+    /// not exist and back (`missing/../pool/run`) is predicted to land
+    /// where `missing` would be made, and lands in `pool`. The check
+    /// before the making is fooled; the check of what was made refuses
+    /// it. With the real `create_dir_all` in a temporary directory, and
+    /// a file system type keyed on the real path: everything under
+    /// `pool` is "ZFS".
+    #[test]
+    fn a_run_directory_that_lands_elsewhere_than_predicted_is_refused_once_made() {
+        const EXT4: u64 = 0xef53;
+        let keep = tempfile::tempdir().expect("a directory");
+        let cwd = keep.path().canonicalize().expect("real");
+        let pool = cwd.join("pool");
+        std::fs::create_dir(&pool).expect("pool");
+        let kind = |path: &Path| -> io::Result<u64> {
+            Ok(if path.starts_with(&pool) {
+                ZFS_SUPER_MAGIC
+            } else {
+                EXT4
+            })
+        };
+        let dir = Path::new("missing/../pool/run/v-1");
+        // The prediction alone passes: the old check, and why it was
+        // not enough.
+        assert_eq!(off_zfs(dir, "the run directory", &cwd, kind), Ok(()));
+        let refused = make_off_zfs(
+            dir,
+            "the run directory",
+            &cwd,
+            || std::fs::create_dir_all(cwd.join(dir)),
+            kind,
+        )
+        .expect_err("made on ZFS");
+        assert!(refused.contains("was made on ZFS"), "{refused}");
+        assert!(refused.contains("the empty directory is left"), "{refused}");
+        // What it left: the directories, empty.
+        assert!(pool.join("run/v-1").is_dir());
+        assert_eq!(
+            std::fs::read_dir(pool.join("run/v-1"))
+                .expect("listing")
+                .count(),
+            0
+        );
+        // A directory predicted on ZFS is refused before anything is
+        // made.
+        let made = std::cell::Cell::new(false);
+        let refused = make_off_zfs(
+            Path::new("pool/other/v-1"),
+            "the run directory",
+            &cwd,
+            || {
+                made.set(true);
+                Ok(())
+            },
+            kind,
+        )
+        .expect_err("predicted on ZFS");
+        assert!(refused.contains("is on ZFS"), "{refused}");
+        assert!(!made.get() && !pool.join("other").exists());
+        // One that lands where it was predicted is made and passes.
+        assert_eq!(
+            make_off_zfs(
+                Path::new("run/v-1"),
+                "the run directory",
+                &cwd,
+                || std::fs::create_dir_all(cwd.join("run/v-1")),
+                kind,
+            ),
+            Ok(())
+        );
+        // A link planted where the directory is to be made: the same.
+        std::os::unix::fs::symlink(&pool, cwd.join("link")).expect("link");
+        std::fs::remove_dir(pool.join("run/v-1")).expect("remove");
+        let refused = make_off_zfs(
+            Path::new("fresh/v-2"),
+            "the run directory",
+            &cwd,
+            || {
+                // Between the check and the making, `fresh` becomes a
+                // link into the pool.
+                std::os::unix::fs::symlink(&pool, cwd.join("fresh"))?;
+                std::fs::create_dir_all(cwd.join("fresh/v-2"))
+            },
+            kind,
+        )
+        .expect_err("made behind a link");
+        assert!(refused.contains("was made on ZFS"), "{refused}");
+        // The volume's directory through a directory that does not
+        // exist is refused as it is, and not judged by a directory
+        // above it: `missing/../pool/vol` with a run directory under
+        // `missing`, whose making would make the path resolve onto
+        // the pool afterwards.
+        std::fs::create_dir(pool.join("vol")).expect("vol");
+        let volume = Path::new("absent/../pool/vol");
+        assert_eq!(
+            off_zfs(volume, "the volume's directory", &cwd, kind),
+            Ok(()),
+            "the old check, which judged the directory above"
+        );
+        let refused = existing_off_zfs(volume, "the volume's directory", &cwd, kind)
+            .expect_err("it does not resolve");
+        assert!(refused.contains("does not exist"), "{refused}");
+        assert_eq!(
+            make_off_zfs(
+                Path::new("absent/run/v-1"),
+                "the run directory",
+                &cwd,
+                || std::fs::create_dir_all(cwd.join("absent/run/v-1")),
+                kind,
+            ),
+            Ok(())
+        );
+        // Now it resolves, onto the pool: refused as what it is.
+        let refused =
+            existing_off_zfs(volume, "the volume's directory", &cwd, kind).expect_err("on ZFS");
+        assert!(refused.contains("is on ZFS"), "{refused}");
+        assert_eq!(
+            existing_off_zfs(Path::new("run"), "the volume's directory", &cwd, kind),
+            Ok(())
+        );
+        // An answer that cannot be had for what was made is a refusal.
+        let unknown = make_off_zfs(
+            Path::new("run/v-3"),
+            "the run directory",
+            &cwd,
+            || std::fs::create_dir_all(cwd.join("run/v-3")),
+            |path: &Path| {
+                if path.ends_with("v-3") {
+                    Err(io::Error::other("no answer"))
+                } else {
+                    Ok(EXT4)
+                }
+            },
+        )
+        .expect_err("no answer");
+        assert!(unknown.contains("cannot be told"), "{unknown}");
     }
 
     /// A queue that says stop at its first wait, or panics there.

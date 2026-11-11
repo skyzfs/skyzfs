@@ -385,6 +385,18 @@ impl Buffers {
             std::mem::forget(old);
         }
     }
+
+    /// Where the buffers are, as start and length: the library's, and
+    /// each tag's own that is in its place.
+    fn ranges(&self) -> Vec<(usize, usize)> {
+        let first = self.first.iter().map(|b| (b.as_ptr() as usize, b.len()));
+        let own = self
+            .own
+            .iter()
+            .flatten()
+            .map(|b| (b.as_ptr() as usize, b.len()));
+        first.chain(own).collect()
+    }
 }
 
 impl Drop for Buffers {
@@ -437,6 +449,17 @@ impl<'q> KernelQueue<'q> {
         };
         this.arm()?;
         Ok(this)
+    }
+
+    /// Not API: for the kernel tests only. The memory whose addresses
+    /// the driver may hold right now, as start and length: the
+    /// library's first buffers, which the fetch commands of the start
+    /// name, and each tag's own buffer that is in its place, which the
+    /// tag's commits name from its first commit on. None of it is ever
+    /// freed.
+    #[doc(hidden)]
+    pub fn ranges_told_for_tests(&self) -> Vec<(usize, usize)> {
+        self.bufs.ranges()
     }
 
     /// Put a poll of the wake descriptor on the ring: it completes
@@ -615,5 +638,69 @@ mod tests {
             "{said}"
         );
         assert_eq!(MAX_BLOCKS as u64 * BLOCK_SIZE, u64::from(MAX_IO));
+    }
+
+    /// The buffers whose addresses the driver is told are never given
+    /// back to the allocator: not when the queue's buffers are dropped,
+    /// which is how the queue drops them (they are its field) and how
+    /// a queue that could not be made whole drops them, and not when a
+    /// tag's buffer is replaced. All three kinds are watched: the
+    /// library's first buffers, each tag's own, and one that was
+    /// replaced. The test binary's
+    /// allocator counts every deallocation that gives back a byte of a
+    /// watched range; a block freed on purpose shows that it counts.
+    ///
+    /// This is the check that is certain: it does not wait for freed
+    /// memory to be handed out again or for the driver to write to it.
+    #[test]
+    fn the_buffers_are_never_given_back_to_the_allocator() {
+        use crate::watch;
+        const DEPTH: usize = 4;
+        let mut bufs = Buffers {
+            first: (0..DEPTH).map(|_| IoBuf::new(MAX_IO as usize)).collect(),
+            own: (0..DEPTH)
+                .map(|_| Some(Buf::with_capacity(MAX_BLOCKS)))
+                .collect(),
+        };
+        let ranges = bufs.ranges();
+        assert_eq!(ranges.len(), 2 * DEPTH);
+        for &(start, len) in &ranges {
+            assert_eq!(len, MAX_IO as usize);
+            assert!(watch::watch(start, len), "no room to watch");
+        }
+        // A tag's buffer is replaced, as when the one in its place was
+        // lent out and another had to be told: the old one stays.
+        let new = Buf::with_capacity(MAX_BLOCKS);
+        assert!(watch::watch(new.as_ptr() as usize, new.len()));
+        Buffers::put(&mut bufs.own[0], new);
+        drop(bufs);
+        // A queue that could not be made whole: `KernelQueue::new`
+        // makes the library's buffers, then the tags' own one by one,
+        // and returns early when one cannot be locked or the library's
+        // queue cannot be made; what exists by then is dropped there.
+        let mut partial = Buffers {
+            first: (0..DEPTH).map(|_| IoBuf::new(MAX_IO as usize)).collect(),
+            own: Vec::new(),
+        };
+        partial.own.push(Some(Buf::with_capacity(MAX_BLOCKS)));
+        for (start, len) in partial.ranges() {
+            assert!(watch::watch(start, len), "no room to watch");
+        }
+        drop(partial);
+        assert_eq!(
+            watch::freed(),
+            0,
+            "memory whose address the driver was told went back to the allocator"
+        );
+        // And it is all still this process's memory.
+        for &(start, len) in &ranges {
+            assert!(watch::mapped(start, len), "a buffer is no longer mapped");
+        }
+        assert!(!watch::mapped(0, 4096));
+        // The count counts: a watched block that is freed is seen.
+        let freed = Buf::with_capacity(MAX_BLOCKS);
+        assert!(watch::watch(freed.as_ptr() as usize, freed.len()));
+        drop(freed);
+        assert!(watch::freed() >= 1, "a freed block was not counted");
     }
 }
