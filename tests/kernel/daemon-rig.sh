@@ -854,7 +854,10 @@ refused_start_arm() {
         # drop: with none in it the hook compares the log's end, serves
         # and says 0, rightly. A daemon without the key does not
         # checkpoint and cannot have emptied its log.
-        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ] && { [ -z "$ll" ] || { [[ $ll =~ ^[0-9]+$ ]] && [ "$ll" -gt 8192 ] && [ "${step:-0}" = 0 ]; }; }; then
+        # `checkpoint_step` is the text "none" when no step is under
+        # way; anything else, or the key missing beside log_live, is
+        # "cannot tell".
+        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ] && { [ -z "$ll" ] || { [[ $ll =~ ^[0-9]+$ ]] && [ "$ll" -gt 8192 ] && [ "$step" = none ]; }; }; then
             RS_CTL="PASS killed at rest ($quiet; $logsay); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through"
         elif [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ]; then
             RS_CTL="ERROR the control did not happen: killed at rest ($quiet), serve --recover-short 1 served with recovered_unacknowledged 0, but the log may have held no mutation to drop ($logsay; an empty log is 8192 bytes)"
