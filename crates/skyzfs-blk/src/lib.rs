@@ -63,8 +63,14 @@
 //!   reported every later request fails, reads included, also after a
 //!   daemon restart. A request already in flight when the log fails may
 //!   complete either way; a flush among them succeeds only if its work
-//!   was done before the failure. A completed flush stays a promise: what
-//!   it covered is still there after a later power cut.
+//!   was done before the failure. A completed flush stays a promise,
+//!   whichever side of the failure it completed on: when the volume is
+//!   next opened for a new client, after a power cut or a repair, it
+//!   holds a prefix of the daemon's order that includes at least what
+//!   every completed flush covered, exactly as after a power cut. A
+//!   daemon restart in between changes nothing about that: on a failed
+//!   volume it recovers nothing, and what was acknowledged and not
+//!   flushed may be gone.
 //! - **R12 Read-only.** On a read-only target writes, write-zeroes and
 //!   discards fail and a flush succeeds.
 //!

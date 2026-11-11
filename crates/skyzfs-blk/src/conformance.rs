@@ -66,7 +66,7 @@
 //!   only once it is opened again ([`Harness::reopen_failed`]). Where a
 //!   rig cannot do that, the suite cannot tell whether a flush that was
 //!   in flight when the log failed, and succeeded, had made anything
-//!   durable. Where it can, the suite asks for more than the contract:
+//!   durable. Where it can, the suite asks what rule R11 promises:
 //!   a prefix of the daemon's order, as after a power cut (see
 //!   [`Model::reopened`](crate::model::Model::reopened)). The suite does
 //!   not cut the power on a failed volume before it is reopened.

@@ -565,9 +565,16 @@
 //! the thread that executes requests; the observer is to return
 //! quickly. A flush asks the disk even
 //! when the log has nothing new to make durable
-//! ([`Log::probe`](log::Log::probe)), so that no flush succeeds on a
-//! disk that has stopped taking syncs; this is the conservative
-//! reading of R11 and costs a sync for a flush that follows a flush.
+//! ([`Log::probe`](log::Log::probe)), because R11 lets no flush
+//! succeed once the log has failed, and the conformance suite holds
+//! the store to it: without the probe, a flush that follows a
+//! completed flush succeeds on a disk that takes no more syncs. What
+//! it costs: a sync of a file with nothing dirty, for a flush that
+//! follows a flush. On ext4 and XFS that writes no data and may still
+//! send the device a cache flush, which is not free on drives without
+//! power-loss protection. And it is a weak probe: a sync of a clean
+//! file need not touch a disk that has died, so the next write or
+//! sync that has work to do is what finds out for certain.
 //! A full log is not a failure. The next open refuses the volume
 //! unless it is told that the client knows
 //! ([`store::OpenOptions::acknowledge_failure`]); then promise 4 gives
@@ -629,6 +636,38 @@
 //!   it, and then the home image's copy is not read.
 //! - **A cut while writing back** leaves the file as it was, and the
 //!   next open writes it back again.
+//! - **Every point a batch can be cut at.** Let the log start at F
+//!   when the batch begins, and at G when it has ended.
+//!   1. *While the file is written, before its sync.* The home image
+//!      is untouched. The file may be torn, or whole for F by chance
+//!      of what survived; neither harms.
+//!   2. *After the file's sync, while the home image is written.* The
+//!      blocks the batch writes are in the log; the other blocks of
+//!      their units are in the file or in a durable record. The open
+//!      finds the file whole and bound to F, the log starts at F, and
+//!      it writes them back.
+//!   3. *After the home image's sync, before the reclaim.* As 2, and
+//!      the writing back changes nothing.
+//!   4. *During the reclaim.* The reclaim writes one copy of the
+//!      superblock and syncs it. After a cut the log starts at F, and
+//!      this is point 3, or at G, and this is point 5. It cannot start
+//!      anywhere else, and once G is durable it never shows F again:
+//!      every superblock that is written starts a new epoch, and a
+//!      copy that is behind is known to be behind (see "Why recovery
+//!      yields a prefix").
+//!   5. *After the reclaim.* The log starts at G, the file is bound to
+//!      F and counts for nothing. The home image was synced before the
+//!      reclaim began, so everything below G is durably in it.
+//!   6. *The next batch.* It writes its own file, bound to G, and syncs
+//!      it before it touches the home image; if it has nothing to
+//!      save it writes no file, and the old one, bound to F, stays
+//!      dead. **The reclaim is durable before the next batch writes the
+//!      home image**: `Log::reclaim` returns only after the superblock
+//!      is synced. If it were not, a cut could bring back F beside a
+//!      file bound to G, the file would not be written back, and that
+//!      batch's neighbours would be unprotected. A test runs the
+//!      batches on a log whose reclaim is not durable and sees exactly
+//!      that.
 //! - **Bounded.** A batch saves at most 256 blocks, so the file is at
 //!   most 1 MiB and two blocks. A batch is as many records as fit that
 //!   bound, counting for each record the rest of its first and last
@@ -669,6 +708,18 @@
 //!   and holds one entry for each run of blocks, in memory.
 //! - **A read error fails the volume**, also where another copy could
 //!   have served the read. Nothing is repaired here.
+//! - **A read from the log does not check the record again.** A
+//!   payload corrupted in the log after it was validated is served to
+//!   a read as it is, and fails the volume at the next checkpoint,
+//!   which checks every record before anything is made permanent.
+//! - **A full file system fails the volume for good.** The home image
+//!   is sparse, so a checkpoint's write into it can run out of space,
+//!   and that is a failed write like any other. Design §4.1 holds a
+//!   condition that can recover and does not fail on it, and a full
+//!   file system is one: a known gap, for the package that accounts
+//!   for space.
+//! - **A hold is checked only inside the log.** A position at or below
+//!   the log's start is taken as it is and holds the whole log.
 //! - **No upload, no cuts, no eviction**: the home image is always
 //!   complete (cache policy `complete`), and the hold is whatever the
 //!   caller sets.

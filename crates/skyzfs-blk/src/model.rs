@@ -56,8 +56,8 @@
 //! - Once the log has failed ([`Model::log_failed`]) and the first failure
 //!   has been delivered, nothing can be observed any more; the model then
 //!   only requires that everything fails, until the volume is opened
-//!   again ([`Model::reopened`]). There it asks for a prefix, which is
-//!   more than the contract promises.
+//!   again ([`Model::reopened`]). There it asks for a prefix, as rule
+//!   R11 does.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -1077,13 +1077,11 @@ impl Model {
     /// and holds at least what every completed flush covered, on either
     /// side of the failure.
     ///
-    /// The model asks for more than the contract does: it requires, as
-    /// after a power cut, a prefix of the daemon's order that includes
-    /// everything flushed, and a read-back to learn which (see
-    /// [`Model::readback`]). The contract promises nothing about the
-    /// operations no flush covered. A target that keeps a log gives a
-    /// prefix; one that keeps some unflushed operations and not earlier
-    /// ones would be refused here without breaking the contract.
+    /// As after a power cut, the volume holds a prefix of the daemon's
+    /// order that includes everything flushed, and the model learns
+    /// which from a read-back (see [`Model::readback`]). Of the
+    /// operations no flush covered, any may be missing, but not an
+    /// earlier one without the later ones.
     pub fn reopened(&mut self) {
         self.health = Health::Healthy;
         self.power_cut();
