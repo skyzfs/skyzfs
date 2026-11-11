@@ -8,8 +8,10 @@
 # These seeds were saved before the programs got more operations and
 # before a power cut drew each name operation on its own. They still
 # run, but no longer replay the histories they were saved for (shown
-# behind each seed). The failures they came from were errors in the
-# simulated disk's model or in the test's model, not in the log.
+# behind each seed). Of the four failures they came from, one was a
+# defect of the log (an append into a unit that held durable records),
+# which now has its own scenario test and mutant; one was an error in
+# the test's model, and two were errors in the simulated disk's model.
 cc 67a290837f9a323cd657e9b0259dd689543c96df46cffc4fae42470086c42c72 # shrinks to (seed, program) = (0, [Append(1, 1, 1), Kill, Append(0, 1, 1), Cut(10438024022568471832, true)])
 cc b65e9d5fb0e4dbe5358fd3ea9cb733e3af63677612f5ddb07dfbd682daf6d8e4 # shrinks to (seed, program) = (3046006999217044033, [Append(0, 1, 1), Append(0, 1, 1), Append(0, 1, 1), FailWrite(0), Cut(15222693584046454812, false), FailWrite(1), Append(0, 1, 1), Reclaim(2183441764419607579), Append(0, 1, 1)])
 cc bb3a72e1d12b759a9f7ea382da8972587735e9ae4d9f8eb2ca8a81610bec0e28 # shrinks to (seed, program) = (5603477306560707191, [Append(0, 1, 1), Sync, Append(0, 1, 1), Append(0, 4032, 1), Append(0, 1, 1), Append(0, 1, 1), Append(0, 1, 1), Cut(9452829671536109137, true), Cut(9206621591371067720, false), Append(0, 4096, 1), Sync, Append(0, 1, 1), Sync, FailSync(0), Append(0, 1, 1), Append(0, 1, 1), Append(0, 1, 1), Append(0, 1, 1), Append(0, 1, 1), Sync, Kill, Append(1, 1, 1), Append(0, 448, 1), Append(0, 1, 1), Cut(7000349395529423530, false)])
