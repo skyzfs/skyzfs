@@ -44,6 +44,10 @@ struct FakeQueue {
     /// The buffers committed back, by tag.
     returned: HashMap<u16, Buf>,
     taken: u32,
+    /// Pauses so far.
+    pauses: u32,
+    /// The record can be written again after this many pauses.
+    heals: Option<(u32, Rc<Cell<bool>>)>,
 }
 
 impl Queue for FakeQueue {
@@ -76,6 +80,15 @@ impl Queue for FakeQueue {
         self.events.borrow_mut().push(Event::Committed(tag, result));
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
+        }
+    }
+
+    fn pause(&mut self) {
+        self.pauses += 1;
+        if let Some((after, fails)) = &self.heals {
+            if self.pauses >= *after {
+                fails.set(false);
+            }
         }
     }
 }
@@ -203,6 +216,8 @@ impl Rig {
             events: events.clone(),
             returned: HashMap::new(),
             taken: 0,
+            pauses: 0,
+            heals: None,
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -601,6 +616,88 @@ fn an_orderly_stop_completes_what_was_accepted() {
         expect(ids, vec![0, 1, 1 | FLUSH_ID], "nothing new after the stop")
     }
     caught(scenario, Mutants::STOP_AT_ONCE);
+}
+
+/// A stop while the position cannot be stored, and then can: the pump
+/// tries again by itself, paced by the queue's pause and with no
+/// further wait on the queue, stores the position, commits everything
+/// and only then is the stop orderly. Mutant: the stop is called
+/// orderly with completions waiting.
+#[test]
+fn a_stop_tries_again_to_store_the_position_and_is_orderly_only_when_all_is_committed() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
+        rig.ack_fails.set(true);
+        rig.pump.queue().heals = Some((3, rig.ack_fails.clone()));
+        rig.complete(0, Some(4096));
+        rig.complete(1, None);
+        rig.pump.queue().script.push_back(Step::Stop(vec![]));
+        // One turn: the script holds nothing more, so a pump that went
+        // back to the queue's wait would not get there.
+        expect(rig.pump.turn(), Some(Stopped::Orderly), "the stop")?;
+        expect(rig.pump.queue().pauses, 3, "a pause before each try")?;
+        rig.before(&Event::Stored(4096), &Event::Committed(0, BLOCK))?;
+        expect(rig.committed().len(), 2, "everything is committed")?;
+        expect(rig.pump.counters().unstored, 0, "none waiting")?;
+        expect(rig.pump.counters().in_flight, 0, "none in flight")
+    }
+    caught(scenario, Mutants::ORDERLY_UNSTORED);
+}
+
+/// A stop while the position can never be stored ends, after the
+/// stated number of tries, with a result of its own. Nothing is
+/// committed, so nothing is lost: the kernel has every request still
+/// and issues it again to the next instance.
+#[test]
+fn a_stop_that_can_never_store_the_position_ends_and_commits_nothing() {
+    let mut rig = Rig::new(0, 8, 8);
+    rig.pump.stop_tries = 7;
+    rig.fetch(&[write(0, 0), write(1, 1), request(2, op::READ, 0, 0, 1)]);
+    rig.ack_fails.set(true);
+    rig.complete(0, Some(4096));
+    rig.complete(1, Some(8192));
+    rig.complete(2, None);
+    rig.pump.queue().script.push_back(Step::Stop(vec![]));
+    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 3 }));
+    assert_eq!(rig.pump.queue().pauses, 7, "the stated number of tries");
+    assert!(rig.committed().is_empty(), "nothing is committed");
+    assert!(
+        !rig.events().iter().any(|e| matches!(e, Event::Stored(_))),
+        "nothing is stored"
+    );
+    assert_eq!(rig.pump.counters().unstored, 3);
+    assert_eq!(rig.pump.counters().in_flight, 3, "left for a reissue");
+
+    // The default: twenty tries.
+    let mut rig = Rig::new(0, 8, 8);
+    rig.fetch(&[write(0, 0)]);
+    rig.ack_fails.set(true);
+    rig.complete(0, Some(4096));
+    rig.pump.queue().script.push_back(Step::Stop(vec![]));
+    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 1 }));
+    assert_eq!(rig.pump.queue().pauses, 20);
+}
+
+/// The other endings leave completions that waited uncommitted.
+#[test]
+fn every_ending_but_the_orderly_one_commits_nothing_that_waited() {
+    for ending in [Stopped::QueueDown, Stopped::TargetGone] {
+        let mut rig = Rig::new(0, 8, 8);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.ack_fails.set(true);
+        rig.complete(0, Some(4096));
+        assert_eq!(rig.turn(), None);
+        assert_eq!(rig.pump.counters().unstored, 1);
+        // The record would take the position now: it is not asked.
+        rig.ack_fails.set(false);
+        match ending {
+            Stopped::QueueDown => rig.pump.queue().script.push_back(Step::Down),
+            _ => rig.pump.target().gone = true,
+        }
+        assert_eq!(rig.pump.turn(), Some(ending));
+        assert!(rig.committed().is_empty(), "{ending:?}");
+    }
 }
 
 /// What was acknowledged (§4.2): the position of the newest
