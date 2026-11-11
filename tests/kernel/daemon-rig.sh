@@ -103,6 +103,9 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
 # shellcheck source=tests/kernel/klog.sh
 . "$HERE/klog.sh"
+# Device paths: dev_strays, and why every dd to a device has conv=nocreat.
+# shellcheck source=tests/kernel/devnode.sh
+. "$HERE/devnode.sh"
 # The looks at a device over a wait: look_word, looks_judge.
 # shellcheck source=tests/kernel/looks.sh
 . "$HERE/looks.sh"
@@ -122,6 +125,7 @@ vol_up() { # impl dir [serve arguments]: create a volume and serve it
 # first, with SERVE_RC; 2 if neither happened in time.
 serve_start() {
     local impl=$1 dir=$2 i t0; shift 2
+    strays_note "before the serve of $dir"
     : > "$dir.ready"
     t0=$(( $(date +%s) - 1 ))
     "$impl" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" "$@" > "$dir.ready" 2>> "$dir.serve.log" &
@@ -136,13 +140,46 @@ serve_start() {
             wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""
             return 1
         fi
+        # The server said ready and the path is something else than a
+        # block device: no waiting will change that.
+        if [ -n "$BDEV" ] && [ -e "$BDEV" ] && [ ! -b "$BDEV" ]; then
+            SERVE_RC="none: the server reported $BDEV, which is not a block device: $(ls -ld "$BDEV" 2>&1)"
+            strays_note "at the serve of $dir"
+            serve_stuck "$dir" "$BDEV is not a block device"
+            return 2
+        fi
         sleep 0.25
     done
     SERVE_RC="none: neither ready nor gone after 120 s"
-    # Neither ready nor gone: write down what it is doing.
-    { echo "== serve $dir: not ready after 120 s"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
-      tail -n 20 "$dir.serve.log"; lim 20 ublk list; } >> "$OUT/serve-stuck.log" 2>&1
+    serve_stuck "$dir" "not ready after 120 s"
     return 2
+}
+# dir why: the rig gives up on a serve; write down what the server, the
+# driver, /dev and udev have to say, each under a limit of its own.
+serve_stuck() {
+    local dir=$1 rc
+    { echo "== serve $dir: $2"
+      echo "-- BDEV as the rig read it: '${BDEV:-}'"
+      echo "-- $dir.ready:"; ls -l "$dir.ready"; cat "$dir.ready"
+      echo "-- processes:"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
+      echo "-- the serve log's end:"; tail -n 20 "$dir.serve.log"
+      echo "-- ublk list:"; lim 20 ublk list
+      echo "-- ls -l /dev/ublkb* /dev/ublkc*:"; ls -l /dev/ublkb* /dev/ublkc*
+      echo "-- /sys/block/ublkb*/dev:"; grep -H . /sys/block/ublkb*/dev
+      echo "-- lsblk:"; lim 20 lsblk
+      echo "-- /sys/class/ublk-char:"; ls /sys/class/ublk-char
+      echo "-- udevadm settle --timeout=5:"; lim 20 udevadm settle --timeout=5; rc=$?; echo "exit $rc"
+      echo "-- ls -l /dev/ublkb* after the settle:"; ls -l /dev/ublkb*
+    } >> "$OUT/serve-stuck.log" 2>&1
+}
+# where: write down every entry of /dev under a ublk block device's name
+# that is not a block device. Any is the rig's error (devnode.sh); the
+# run's line `dev_strays` is judged at the end.
+STRAYS=$OUT/dev-strays.log
+strays_note() {
+    local found
+    found=$(dev_strays /dev)
+    [ -z "$found" ] || printf '%s: %s\n' "$1" "$found" >> "$STRAYS"
 }
 serve_wait() { # seconds: wait for the `serve` started last to exit; its status in SERVE_RC
     local i
@@ -1081,12 +1118,13 @@ check_d_scrub() {
 # d.6, second half: nothing held the device at the failure, so an
 # operator may acknowledge it. Also where the note is kept by default.
 check_d_not_held() {
-    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note
+    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note w0 w1 wrote spid
     local VOL_RUN_ARGS=()       # this volume is served with the default run directory
     step "d: a volume that failed with no client attached"
     : > "$marker"
     # No --run-dir here: the default must be under /run.
     vol_create "$SKYZFSD" "$dir" || { pin failed_unheld_volume_serves_when_acknowledged ERROR "create failed"; pin failure_note_under_run ERROR "create failed"; return; }
+    strays_note "before the first serve of $dir"
     : > "$dir.ready"
     "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --fail-log-after 10 > "$dir.ready" 2>> "$dir.serve.log" &
     SERVE_PID=$!
@@ -1096,9 +1134,15 @@ check_d_not_held() {
     done
     [ -n "$BDEV" ] || { pin failed_unheld_volume_serves_when_acknowledged ERROR "serve did not become ready"; pin failure_note_under_run ERROR "serve did not become ready"; return; }
     # Writes straight to the device until it fails; dd then exits, so
-    # nothing holds the device when the server takes note.
+    # nothing holds the device when the server takes note. The device
+    # may be failed or gone before the first write (whatever the server
+    # counts towards its failure, the kernel's own reads at the start
+    # may be enough) and is deleted at some moment between two writes:
+    # a write goes only to a block device, and dd must not create the
+    # path (devnode.sh).
     for n in $(seq 1 40); do
-        lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 seek="$n" oflag=direct status=none 2>/dev/null || break
+        [ -b "$BDEV" ] || break
+        lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 seek="$n" oflag=direct conv=nocreat status=none 2>/dev/null || break
     done
     serve_wait 30
     rc=$SERVE_RC
@@ -1112,19 +1156,51 @@ check_d_not_held() {
     else pin failure_note_under_run FAIL "no $note after a failure without --run-dir (serve exit $rc); new files under /run with skyzfs in the path: ${found:-none}"; fi
     lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" > /dev/null 2> "$OUT/d6-noack.err"; n=$?
     serve_start_default() { "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --acknowledge-failure > "$dir.ready" 2>> "$dir.serve.log" & SERVE_PID=$!; }
+    strays_note "before the acknowledged serve of $dir"
     : > "$dir.ready"; serve_start_default
     BDEV=""
     for found in $(seq 1 120); do
         BDEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$dir.ready" | head -n 1)
-        [ -n "$BDEV" ] && break
+        [ -n "$BDEV" ] && [ -b "$BDEV" ] && break
         kill -0 "$SERVE_PID" 2>/dev/null || break
         sleep 0.25
     done
-    if [ "$rc" = "$EXIT_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ] && [ -n "$BDEV" ] \
-        && lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 oflag=direct status=none 2>/dev/null; then
-        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it"
+    # "Served and written" is the server's word, not dd's: its own count
+    # of writes must go up by the write. dd exiting 0 shows only that
+    # something at that path took 4096 bytes.
+    # The count before the write must be the new server's: the status
+    # may still be the failed instance's last for a moment (the daemon
+    # writes it on an interval), and that instance had counted the
+    # writes that made it fail. The failed instance is gone, so the
+    # status is the new server's once the pid in it is alive.
+    wrote="not tried"; w0=""; w1=""; spid=""
+    if [ -n "$BDEV" ] && [ -b "$BDEV" ]; then
+        for found in $(seq 1 50); do
+            spid=$(vol_stat "$SKYZFSD" "$dir" pid)
+            { [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; } && break
+            spid=""; sleep 0.1
+        done
+    fi
+    if [ -n "$spid" ]; then
+        w0=$(vol_stat "$SKYZFSD" "$dir" writes)
+        if lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 oflag=direct conv=nocreat status=none 2>/dev/null; then
+            w1=$(vol_stat_least "$SKYZFSD" "$dir" writes $(( ${w0:-0} + 1 )))
+            wrote="dd exit 0"
+        else
+            wrote="dd failed"
+        fi
+    fi
+    if [ -n "$BDEV" ] && [ ! -b "$BDEV" ]; then
+        strays_note "at the acknowledged serve of $dir"
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve reported $BDEV, which is not a block device: $(ls -ld "$BDEV" 2>&1)"
+    elif [ -n "$BDEV" ] && [ -z "$spid" ]; then
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve made $BDEV ready, and for 5 s its status named no live server (pid '$(vol_stat "$SKYZFSD" "$dir" pid)'): the count of writes before the write would be the failed instance's"
+    elif [ "$wrote" = "dd exit 0" ] && ! { [[ $w0 =~ ^[0-9]+$ ]] && [[ $w1 =~ ^[0-9]+$ ]]; }; then
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "status gave no count of writes (before '$w0', after '$w1')"
+    elif [ "$rc" = "$EXIT_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ] && [ "$wrote" = "dd exit 0" ] && [ "$w1" -gt "$w0" ]; then
+        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it: the count of writes of the server now serving (pid $spid) went from $w0 to $w1"
     else
-        pin failed_unheld_volume_serves_when_acknowledged FAIL "first serve exit $rc (wanted $EXIT_FAILED); without the acknowledgement exit $n (wanted $EXIT_REFUSED_FAILED); with it: $([ -n "$BDEV" ] && echo "ready $BDEV" || echo 'not ready')"
+        pin failed_unheld_volume_serves_when_acknowledged FAIL "first serve exit $rc (wanted $EXIT_FAILED); without the acknowledgement exit $n (wanted $EXIT_REFUSED_FAILED); with it: $([ -n "$BDEV" ] && echo "ready $BDEV" || echo 'not ready'), the write: $wrote, the server's count of writes ${w0:-none} -> ${w1:-none}"
     fi
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
@@ -1341,6 +1417,12 @@ case $CHECKS in *" b "*)
 esac
 
 step "done"
+# Nothing but block devices under the names of ublk devices in /dev,
+# at any serve and now: a regular file there is a leftover of a tool
+# that created the path, and what was "written to the device" after it
+# went to that file.
+strays_note "at the end of the run"
+if [ -s "$STRAYS" ]; then rec dev_strays "ERROR: $(tr '\n' ';' < "$STRAYS" | cut -c1-1500)"; else rec dev_strays none; fi
 # What the reference server's tool leaves under its own run directory:
 # the daemon's library writes files of the same kind there, and the two
 # servers follow each other on one machine under reused numbers.
