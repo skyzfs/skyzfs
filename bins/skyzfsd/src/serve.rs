@@ -71,6 +71,10 @@ pub const LIVE_RETRIES: u32 = 50;
 /// How often the status file is written at most: every 100 ms.
 pub const STATUS_INTERVAL_MS: u64 = 100;
 
+/// How long `ready` waits at most for the status thread's first write
+/// of this instance.
+const READY_WAITS_FOR_STATUS: Duration = Duration::from_secs(5);
+
 /// How long the main thread sleeps between two looks at the queue's
 /// thread and the failure flag when no signal arrives.
 const LOOK: Duration = Duration::from_millis(50);
@@ -409,6 +413,20 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
+    // `ready` only after this instance's first status write was tried,
+    // done or failed: until then the status file is the one the
+    // instance before left, and `status` would name that instance's
+    // pid and counters as the serving daemon's. The device is live
+    // already and its clients are served meanwhile. The wait is
+    // bounded, so that a status thread that never writes holds `ready`
+    // for a stated time and not for good.
+    if !board.first_write_tried(READY_WAITS_FOR_STATUS) {
+        say(format_args!(
+            "warning: the status file was not written within {} s of the start: `status` \
+             may show the instance before",
+            READY_WAITS_FOR_STATUS.as_secs()
+        ));
+    }
     // A `ready` that cannot be written (the starter is gone) does not
     // stop the serve: the device is live and its clients are served.
     crate::to_stdout(&format!("ready {}\n", block_device(number)));

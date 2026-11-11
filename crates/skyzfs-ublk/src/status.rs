@@ -321,6 +321,9 @@ impl Pace {
 struct Posted {
     counters: Counters,
     stop: bool,
+    /// How often [`Board::publish`] has tried to write the file, done
+    /// or failed.
+    attempts: u64,
 }
 
 /// Where the queue thread puts its counters for the thread that writes
@@ -356,6 +359,30 @@ impl Board {
         }
     }
 
+    /// Wait until [`Board::publish`] has tried to write the file at
+    /// least once, done or failed, for at most `limit`; whether it
+    /// has. The daemon says `ready` after this: until the new
+    /// instance's first write the file is the one the instance before
+    /// left, and `status` would show that instance's pid and counters
+    /// as the serving daemon's. A write that failed counts: writing the
+    /// status holds nothing up.
+    pub fn first_write_tried(&self, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        let mut posted = self.lock();
+        while posted.attempts == 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            posted = self
+                .changed
+                .wait_timeout(posted, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        true
+    }
+
     /// Tell [`Board::publish`] to write what is posted and return.
     pub fn stop(&self) {
         self.lock().stop = true;
@@ -381,7 +408,11 @@ impl Board {
             if matches!(due, Due::Now) || (last && due != Due::Never) {
                 let counters = posted.counters;
                 drop(posted);
-                match write(&counters, failures) {
+                let written = write(&counters, failures);
+                posted = self.lock();
+                posted.attempts += 1;
+                self.changed.notify_all();
+                match written {
                     Ok(()) => pace.wrote(counters, now()),
                     Err(_) => {
                         failures += 1;
@@ -391,7 +422,6 @@ impl Board {
                         }
                     }
                 }
-                posted = self.lock();
                 continue;
             }
             if last {

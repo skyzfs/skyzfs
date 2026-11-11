@@ -495,3 +495,47 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
     assert_eq!(value(&lines, "state"), Some("detached"));
     assert_eq!(value(&lines, "failure"), None);
 }
+
+/// The order of a start: the publishing thread's first write is tried
+/// before whoever waits for it goes on (the daemon then says `ready`),
+/// also when that write fails; and nobody is told it was tried before
+/// it was.
+#[test]
+fn the_first_write_is_tried_before_the_waiter_goes_on_also_when_it_fails() {
+    for fails in [false, true] {
+        let board = Arc::new(Board::new());
+        assert!(
+            !board.first_write_tried(Duration::from_millis(20)),
+            "nothing publishes yet"
+        );
+        let tried = Arc::new(AtomicU64::new(0));
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let thread = {
+            let (board, tried, gate) = (board.clone(), tried.clone(), gate.clone());
+            std::thread::spawn(move || {
+                board.publish(Pace::new(50), |_, _| {
+                    if tried.load(Ordering::SeqCst) == 0 {
+                        // The first write is held until the test lets
+                        // it go.
+                        gate.wait();
+                    }
+                    tried.fetch_add(1, Ordering::SeqCst);
+                    if fails {
+                        Err(std::io::Error::other("no"))
+                    } else {
+                        Ok(())
+                    }
+                })
+            })
+        };
+        // The write is under way and not finished: not tried yet.
+        assert!(!board.first_write_tried(Duration::from_millis(50)));
+        assert_eq!(tried.load(Ordering::SeqCst), 0);
+        gate.wait();
+        assert!(board.first_write_tried(Duration::from_secs(20)));
+        assert!(tried.load(Ordering::SeqCst) >= 1, "fails: {fails}");
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        assert_eq!(failures > 0, fails);
+    }
+}
