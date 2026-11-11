@@ -33,6 +33,7 @@
 #      an orderly stop
 #   d  a failed volume: what ZFS does, and what the server refuses after
 #   e  one request held RIG_HOLD_S seconds (default 300)
+# RIG_SERVE_ARGS: options added to every serve.
 # Check c, the conformance suite through the block device, is a separate
 # tool and is not in this script yet.
 set -uo pipefail
@@ -56,6 +57,9 @@ IMPL=daemon; [ "$SKYZFSD" = "$REF" ] && IMPL=reference
 CHECKS=" ${RIG_CHECKS:-a b d e} "
 KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
+# Options for every serve, split at spaces: for the daemon on a runner,
+# "--unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem".
+read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
 RUN_DIR=$WORK/run            # the server's --run-dir, so that a test can empty it
 VOL_BYTES=$((8 << 30))
 SLOG_MB=512
@@ -99,7 +103,7 @@ vol_up() { # impl dir [serve arguments]: create a volume and serve it
 serve_start() {
     local impl=$1 dir=$2 i; shift 2
     : > "$dir.ready"
-    "$impl" serve --dir "$dir" --run-dir "$RUN_DIR" "$@" > "$dir.ready" 2>> "$dir.serve.log" &
+    "$impl" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" "$@" > "$dir.ready" 2>> "$dir.serve.log" &
     SERVE_PID=$!; BDEV=""; SERVE_RC=""
     for i in $(seq 1 480); do
         BDEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$dir.ready" | head -n 1)
@@ -447,7 +451,7 @@ check_b() {
     else
         step "b: a second serve while the first is alive"
         pid0=$(server_pid "$SKYZFSD" "$dir")
-        lim 60 "$SKYZFSD" serve --dir "$dir" --run-dir "$RUN_DIR" > "$OUT/b-second.out" 2> "$OUT/b-second.err"; rc=$?
+        lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" > "$OUT/b-second.out" 2> "$OUT/b-second.err"; rc=$?
         pid1=$(server_pid "$SKYZFSD" "$dir")
         if [ $rc = 124 ] || [ $rc = 137 ]; then
             pin second_serve_refused FAIL "a second serve did not exit within 60 s"
@@ -593,8 +597,8 @@ check_d() {
         if [ -b "$BDEV" ]; then rec d2_device "still there after the failure"; else rec d2_device "gone after the failure"; fi
         # d.6: the pool held the device at the failure, so the volume is
         # refused in this boot, whatever the operator says.
-        lim 60 "$SKYZFSD" serve --dir "$dir" --run-dir "$RUN_DIR" > /dev/null 2> "$OUT/d2-again.err"; rc=$?
-        lim 60 "$SKYZFSD" serve --dir "$dir" --run-dir "$RUN_DIR" --acknowledge-failure > /dev/null 2> "$OUT/d2-again-ack.err"; n=$?
+        lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" > /dev/null 2> "$OUT/d2-again.err"; rc=$?
+        lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" --acknowledge-failure > /dev/null 2> "$OUT/d2-again-ack.err"; n=$?
         if [ $rc = "$EXIT_REFUSED_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ]; then
             pin failed_held_volume_refused PASS "serve exited $rc, and $n with --acknowledge-failure"
         else
@@ -687,7 +691,7 @@ check_d_not_held() {
     # No --run-dir here: the default must be under /run.
     vol_create "$SKYZFSD" "$dir" || { pin failed_unheld_volume_serves_when_acknowledged ERROR "create failed"; pin failure_note_under_run ERROR "create failed"; return; }
     : > "$dir.ready"
-    "$SKYZFSD" serve --dir "$dir" --fail-log-after 10 > "$dir.ready" 2>> "$dir.serve.log" &
+    "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --fail-log-after 10 > "$dir.ready" 2>> "$dir.serve.log" &
     SERVE_PID=$!
     for n in $(seq 1 120); do
         BDEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$dir.ready" | head -n 1)
@@ -704,8 +708,8 @@ check_d_not_held() {
     found=$(find /run -xdev -type f -newer "$marker" -path '*skyzfs*' 2>/dev/null | head -n 3 | tr '\n' ' ')
     if [ -n "$found" ]; then pin failure_note_under_run PASS "after a failure without --run-dir: $found"
     else pin failure_note_under_run FAIL "no new file under /run with skyzfs in its path after a failure without --run-dir (serve exit $rc)"; fi
-    lim 60 "$SKYZFSD" serve --dir "$dir" > /dev/null 2> "$OUT/d6-noack.err"; n=$?
-    serve_start_default() { "$SKYZFSD" serve --dir "$dir" --acknowledge-failure > "$dir.ready" 2>> "$dir.serve.log" & SERVE_PID=$!; }
+    lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" > /dev/null 2> "$OUT/d6-noack.err"; n=$?
+    serve_start_default() { "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --acknowledge-failure > "$dir.ready" 2>> "$dir.serve.log" & SERVE_PID=$!; }
     : > "$dir.ready"; serve_start_default
     BDEV=""
     for found in $(seq 1 120); do

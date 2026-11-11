@@ -43,6 +43,11 @@ while [ $# -gt 0 ]; do
         --acknowledge-failure) ACK=1; shift ;;
         --fail-log-after) [ $# -ge 2 ] || usage; FAIL_AFTER=$2; shift 2 ;;
         --hold-one-request) [ $# -ge 2 ] || usage; HOLD=$2; shift 2 ;;
+        # Accepted as the daemon accepts them; the stand-in has one
+        # queue of depth 64 and no deployment rules to override.
+        --queues) { [ $# -ge 2 ] && [ "$2" = 1 ]; } || usage; shift 2 ;;
+        --depth) { [ $# -ge 2 ] && [ "$2" = 64 ]; } || usage; shift 2 ;;
+        --unsafe-allow-unlocked-memory|--unsafe-allow-any-filesystem) shift ;;
         *) usage ;;
     esac
 done
