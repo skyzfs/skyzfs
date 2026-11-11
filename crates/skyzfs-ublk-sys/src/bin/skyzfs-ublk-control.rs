@@ -11,8 +11,8 @@
 //! skyzfs-ublk-control begin-recovery N [--retry]
 //! skyzfs-ublk-control client-holds N
 //! skyzfs-ublk-control set-params N --size BYTES
-//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC]
-//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC]
+//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC] [--delete-after-ms T]
+//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC] [--delete-after-ms T]
 //! ```
 //!
 //! # Output
@@ -74,6 +74,18 @@
 //! covers the byte) for that long before it is answered; the others are
 //! answered meanwhile. A server that ends while it holds the request
 //! does not answer it.
+//!
+//! `--delete-after-ms T` deletes the server's own device, from a second
+//! thread of this process, T ms after the device went live, while the
+//! server goes on serving: what a daemon does whose volume failed. It
+//! prints two more lines of step `self-delete`: `sent after T ms` just
+//! before the command, and `returned after X ms` (or `nothing`, or
+//! `refused: ...`) when the command returns, with X counted from the
+//! command. The server ends when the driver ends its queue, or on a
+//! signal, as without the option. If the delete has not returned 10 s
+//! after the server ended, the last line is `not returned 10 s after
+//! the server ended` and the program exits (if it can: a thread inside
+//! the driver may hold the process).
 
 #![forbid(unsafe_code)]
 
@@ -105,6 +117,8 @@ struct Serve {
     begin: bool,
     wait: Duration,
     hold: Option<Hold>,
+    /// Delete the device this long after it went live.
+    delete_after: Option<Duration>,
 }
 
 /// One step.
@@ -155,6 +169,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
     let mut rest = rest.iter();
     let (mut size, mut depth, mut retry, mut file) = (None, DEPTH, false, None);
     let (mut begun, mut wait, mut held) = (false, Duration::ZERO, None);
+    let mut delete_after = None;
     while let Some(option) = rest.next() {
         let allowed: &[&str] = match step.as_str() {
             "add" => &["--size", "--depth"],
@@ -166,8 +181,14 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                 "--recovery-begun",
                 "--recovery-wait-ms",
                 "--hold-one-request",
+                "--delete-after-ms",
             ],
-            "take-over" => &["--file", "--recovery-wait-ms", "--hold-one-request"],
+            "take-over" => &[
+                "--file",
+                "--recovery-wait-ms",
+                "--hold-one-request",
+                "--delete-after-ms",
+            ],
             _ => &[],
         };
         if !allowed.contains(&option.as_str()) {
@@ -183,6 +204,12 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
             "--recovery-wait-ms" => {
                 wait = Duration::from_millis(number("--recovery-wait-ms", value()?)?)
             }
+            "--delete-after-ms" => {
+                delete_after = Some(Duration::from_millis(number(
+                    "--delete-after-ms",
+                    value()?,
+                )?))
+            }
             _ => held = Some(hold(value()?)?),
         }
     }
@@ -194,6 +221,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
             begin,
             wait,
             hold: held,
+            delete_after,
         }))
     };
     let parsed: Result<(&'static str, Step), String> = match step.as_str() {
@@ -452,6 +480,14 @@ mod run {
                 kernel.busy_answers()
             ),
         )?;
+        let deleting = serve.delete_after.map(|after| {
+            let (done, returned) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                std::thread::sleep(after);
+                let _ = done.send(delete_own(n, after));
+            });
+            returned
+        });
         let by = loop {
             if serving.is_finished() {
                 break "the queue ended";
@@ -466,6 +502,16 @@ mod run {
             .join()
             .map_err(|e| format!("the queue's thread: {e}"))?;
         let count = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        let ended = Instant::now();
+        let deleted = deleting.map(|returned| {
+            let left = DELETE_GRACE.saturating_sub(ended.elapsed());
+            returned.recv_timeout(left).unwrap_or_else(|_| {
+                Ok(format!(
+                    "not returned {} s after the server ended",
+                    DELETE_GRACE.as_secs()
+                ))
+            })
+        });
         say(
             "served",
             n,
@@ -481,7 +527,37 @@ mod run {
                 count(&counts.held),
                 stopper.first_write_copies()
             ),
-        )
+        )?;
+        match deleted {
+            // The thread has said its own lines; an error is its own.
+            Some(Ok(late)) if !late.is_empty() => say("self-delete", n, &late),
+            Some(Err(e)) => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// How long the program waits, after its server ended, for its own
+    /// delete to return.
+    const DELETE_GRACE: Duration = Duration::from_secs(10);
+
+    /// `--delete-after-ms`: delete device `n` with a control interface
+    /// of this thread's own, and say when the command was sent and when
+    /// it returned. `Ok` carries nothing more to say.
+    fn delete_own(n: u32, after: Duration) -> Result<String, String> {
+        let mut kernel = Kernel::new().map_err(|e| e.to_string())?;
+        say(
+            "self-delete",
+            n,
+            &format!("sent after {} ms", after.as_millis()),
+        )?;
+        let from = Instant::now();
+        let answer = match kernel.delete(n) {
+            Ok(()) => format!("returned after {} ms", from.elapsed().as_millis()),
+            Err(e) if is(&e, libc::ENODEV) => "nothing".into(),
+            Err(e) => format!("refused: {}", errno(&e)),
+        };
+        say("self-delete", n, &answer)?;
+        Ok(String::new())
     }
 
     fn info(n: u32, kernel: &mut Kernel) -> String {
@@ -662,6 +738,7 @@ mod tests {
             begin,
             wait: Duration::ZERO,
             hold: None,
+            delete_after: None,
         };
         assert_eq!(
             parse(&args("serve 1 --file f")),
@@ -703,6 +780,27 @@ mod tests {
                 })
             ))
         );
+    }
+
+    #[test]
+    fn a_server_can_be_told_to_delete_its_own_device() {
+        for (line, take_over, begin) in [
+            ("serve 1 --file f --delete-after-ms 250", false, false),
+            ("take-over 1 --file f --delete-after-ms 250", true, true),
+        ] {
+            let Ok((_, 1, Step::Serve(serve))) = parse(&args(line)) else {
+                panic!("{line}");
+            };
+            assert_eq!(serve.delete_after, Some(Duration::from_millis(250)));
+            assert_eq!((serve.take_over, serve.begin), (take_over, begin));
+        }
+        let Ok((_, _, Step::Serve(serve))) = parse(&args(
+            "serve 1 --file f --hold-one-request 60:write:0 --delete-after-ms 0",
+        )) else {
+            panic!("with a hold");
+        };
+        assert_eq!(serve.delete_after, Some(Duration::ZERO));
+        assert!(serve.hold.is_some());
     }
 
     #[test]
@@ -748,6 +846,9 @@ mod tests {
             "take-over 1 --file f --size 4096",
             "serve 1 --file f --hold-one-request 5",
             "delete 1 2",
+            "delete 1 --delete-after-ms 5",
+            "serve 1 --file f --delete-after-ms",
+            "serve 1 --file f --delete-after-ms soon",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad}");
         }

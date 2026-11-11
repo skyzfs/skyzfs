@@ -621,6 +621,38 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
     let lines = report(None, None, Noted::Whole(stored(true)), &[8; 16], 1250);
     assert_eq!(value(&lines, "state"), Some("detached"));
     assert_eq!(value(&lines, "failure"), None);
+    assert_eq!(value(&lines, "failure_device"), None);
+    assert_eq!(value(&lines, "failure_pool"), None);
+
+    // With a failure of this boot, and no daemon and no status file:
+    // what became of the device, in each state it can be found in, and
+    // what to do about a pool on it.
+    let waiting = located(DeviceState::Waiting, Whose::Ours);
+    let unsure = located(DeviceState::Waiting, Whose::Unsure);
+    let anothers = located(DeviceState::Live, Whose::Anothers);
+    for (found, says) in [
+        (None, "none under the volume's recorded number"),
+        (Some(&waiting), "waits for a server it will not get"),
+        (Some(&dead), "deleted, and something still holds it"),
+        (Some(&unsure), "this volume's values and no note"),
+        (Some(&anothers), "is not this volume's"),
+    ] {
+        for noted in [Noted::Whole(stored(false)), Noted::Unreadable] {
+            let lines = report(found, None, noted, &[7; 16], 1250);
+            let device = value(&lines, "failure_device").unwrap_or_default();
+            assert!(device.contains(says), "{found:?}: {device}");
+            assert_eq!(value(&lines, "failure_pool"), Some(POOL_WARNING));
+            assert_eq!(
+                lines.last().map(|(key, _)| *key),
+                Some("failure_pool"),
+                "the last line"
+            );
+        }
+    }
+    // The step it names is a read, and it does not advise an export,
+    // which is not known to work in that state.
+    assert!(POOL_WARNING.contains("zpool scrub") && POOL_WARNING.contains("reboot"));
+    assert!(!POOL_WARNING.contains("export"));
 }
 
 /// The order of a start: the publishing thread's first write is tried

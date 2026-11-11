@@ -36,6 +36,20 @@
 //! lock does not depend on what becomes of the store on the queue's
 //! thread.
 //!
+//! A failed volume holds no request. The driver's delete of a device
+//! that is served waits for every request its server holds, so before
+//! the delete the queue's thread answers everything it holds with an
+//! I/O error, and everything that still arrives, without waiting for
+//! the store ([`Pump::fail`]). The main thread waits up to two seconds
+//! for it to say so and then deletes whatever happened, and its line
+//! says which. The device is live until it is deleted: a client gets
+//! errors, not a wait. Not covered, and marked here because the design
+//! does not say: a store call that hangs and never fails sets no
+//! failure, and nothing here bounds it; and a queue's thread that is
+//! itself stuck (storing the acknowledged position on the failed disk)
+//! answers nothing, so the delete may then wait in the driver, and the
+//! daemon with it.
+//!
 //! A start that settles a failure of unknown holding deletes the
 //! failed volume's device and then looks for up to 5 s whether it goes
 //! (the driver's delete does not wait): a start on a volume whose
@@ -91,6 +105,12 @@ const READY_WAITS_FOR_STATUS: Duration = Duration::from_secs(5);
 /// How long the main thread sleeps between two looks at the queue's
 /// thread and the failure flag when no signal arrives.
 const LOOK: Duration = Duration::from_millis(50);
+
+/// How long the main thread waits, after the volume failed, for the
+/// queue's thread to have answered what it held, before it deletes the
+/// device all the same: 200 looks 10 ms apart, two seconds.
+const ANSWER_LOOKS: u32 = 200;
+const ANSWER_LOOK: Duration = Duration::from_millis(10);
 
 /// A line on standard error. A write that fails is ignored: nothing
 /// the daemon says may end it or change its exit status.
@@ -289,11 +309,55 @@ where
     (stopped, pump.into_target())
 }
 
+/// A failed volume holds no request. Called on the queue's thread
+/// after every turn: once the store has said that the volume failed,
+/// everything the queue's wrapper and the pump hold is answered with an
+/// I/O error ([`Delayed::fail`], [`Pump::fail`]), and the queue is
+/// woken so that its next wait, which sends those answers, returns at
+/// once. The call after that wait says so in `flags.answered`, for the
+/// main thread, which deletes the device: the driver's delete of a
+/// served device waits for every request its server holds.
+fn answer_if_failed<Q, T, A>(
+    pump: &mut Pump<Delayed<Q, A>, T, LateAck<A>>,
+    flags: &Flags,
+    wake: &dyn Fn(),
+) where
+    Q: skyzfs_ublk::pump::Queue,
+    T: skyzfs_ublk::pump::Positions,
+    A: skyzfs_ublk::pump::AckRecord + Clone,
+{
+    if !flags.failed.load(Ordering::SeqCst) {
+        return;
+    }
+    if pump.is_failed() {
+        let kept = flags.kept.load(Ordering::SeqCst);
+        flags
+            .answers
+            .store(kept + pump.failed_answers(), Ordering::SeqCst);
+        flags.answered.store(true, Ordering::SeqCst);
+        return;
+    }
+    let kept = pump.queue().fail() as u64;
+    flags.kept.store(kept, Ordering::SeqCst);
+    let held = pump.fail();
+    flags.answers.store(kept + held, Ordering::SeqCst);
+    wake();
+}
+
 /// What the main thread and the queue's thread share.
 #[derive(Default)]
 struct Flags {
     /// The store said that the volume failed.
     failed: AtomicBool,
+    /// The queue's thread has answered everything it held with an I/O
+    /// error, and a wait of the queue has followed, which sent those
+    /// answers to the driver.
+    answered: AtomicBool,
+    /// How many requests it answered so, so far.
+    answers: AtomicU64,
+    /// Of those, the ones the queue's wrapper had kept back (test
+    /// hooks: a delayed or a held commit).
+    kept: AtomicU64,
     /// `SIGUSR1` arrived: the test build fails the log.
     user: AtomicBool,
 }
@@ -471,7 +535,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             return Ok(Exit::RefusedHeld);
         }
         Err(Stop::Failed(why)) => {
-            say(why);
+            // `status` says the same from the notes, after this
+            // process has gone.
+            say(format_args!("{why}. Note: {}", status::POOL_WARNING));
             return Ok(Exit::RefusedFailed);
         }
         Err(Stop::Error(why)) => return Err(why),
@@ -564,6 +630,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         .serve(&wake, !serve.allow_unlocked_memory, {
             let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
+                let again = wake.clone();
                 let (queue, ack) =
                     Delayed::new(queue, SharedAck::new(ack), delay, hold, move || wake.wake());
                 // The store goes back to the main thread with the
@@ -571,6 +638,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 // thread lets go of it.
                 let mut shown = first_log;
                 pumped(Pump::new(queue, served, ack), |pump, ended| {
+                    answer_if_failed(pump, &flags, &|| again.wake());
                     post(&board, pump, &mut shown);
                     if !ended {
                         faults(pump, &flags, &mut fail_after);
@@ -722,19 +790,55 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     };
     if why == Why::Failed {
+        // The delete of a served device waits in the driver for every
+        // request its server holds. The queue's thread answers what it
+        // holds with an I/O error as soon as it sees the failure; this
+        // waits for that, for a stated time, and then deletes whatever
+        // happened: a queue's thread that is itself stuck (in the
+        // record of what was acknowledged, on the disk that failed)
+        // answers nothing however long this waits.
+        let answered = (0..ANSWER_LOOKS).any(|_| {
+            let done = flags.answered.load(Ordering::SeqCst) || serving.is_finished();
+            if !done {
+                std::thread::sleep(ANSWER_LOOK);
+            }
+            done
+        });
+        if !answered {
+            // Said before the delete and not with its outcome: the
+            // delete may now wait in the driver for as long as the
+            // queue's thread holds a request, and this line is then
+            // all an operator has.
+            say(format_args!(
+                "the volume failed, and the queue's thread did not answer what it held within \
+                 {} ms: device {number} is deleted all the same, and the delete waits in the \
+                 driver for as long as a request is held",
+                ANSWER_LOOKS * ANSWER_LOOK.as_millis() as u32
+            ));
+        }
         // The volume's lock is held: by `_lock`, whatever the queue's
         // thread has done with the store.
         let (failure, written) =
             lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
-            "the volume failed while it was served ({}); client holds the device: {:?}{}",
+            "the volume failed while it was served ({}); client holds the device: {:?}{}; {}. \
+             Note: {}",
             failure.reason,
             failure.held,
             if written {
                 ""
             } else {
                 "; the failure note could not be written"
-            }
+            },
+            if answered {
+                format!(
+                    "{} requests the daemon held were answered with an I/O error before the delete",
+                    flags.answers.load(Ordering::SeqCst)
+                )
+            } else {
+                "the delete has returned".to_string()
+            },
+            status::POOL_WARNING
         ));
         // The delete takes the queue down. A stop as well, for a
         // device whose delete did not.
@@ -764,8 +868,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if flags.failed.load(Ordering::SeqCst) {
         let (failure, _) = lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
-            "the volume failed while it was served ({})",
-            failure.reason
+            "the volume failed while it was served ({}). Note: {}",
+            failure.reason,
+            status::POOL_WARNING
         ));
         return Ok(Exit::Failed);
     }
@@ -1109,5 +1214,142 @@ mod tests {
             drop(store);
             assert!(Store::lock_volume(&dir()).is_ok(), "panics: {panics}");
         }
+    }
+    /// A queue that hands over three requests at its first wait and
+    /// notes what is committed.
+    #[derive(Default)]
+    struct Three {
+        waits: u32,
+        committed: Arc<std::sync::Mutex<Vec<(u16, i32)>>>,
+    }
+
+    impl skyzfs_ublk::pump::Queue for Three {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            use skyzfs_ublk::translate::{op, Desc};
+            self.waits += 1;
+            if self.waits == 1 {
+                for (tag, op) in [(0, op::WRITE), (1, op::FLUSH), (2, op::READ)] {
+                    fetched.push(skyzfs_ublk::pump::Fetched {
+                        tag,
+                        desc: Desc {
+                            op_flags: u32::from(op),
+                            nr_sectors: if op == op::FLUSH { 0 } else { 8 },
+                            start_sector: 0,
+                        },
+                    });
+                }
+            }
+            Ok(skyzfs_ublk::pump::Wake::Work)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
+            self.committed.lock().expect("lock").push((tag, result));
+        }
+        fn pause(&mut self) {}
+        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    /// A target that takes requests and never answers one: a store
+    /// whose disk has gone.
+    struct Silent(Vec<skyzfs_blk::Request>);
+
+    impl skyzfs_blk::BlockTarget for Silent {
+        fn geometry(&self) -> skyzfs_blk::Geometry {
+            skyzfs_blk::Geometry::new(8, 4, false).expect("a geometry")
+        }
+        fn submit(&mut self, request: skyzfs_blk::Request) -> Result<(), skyzfs_blk::SubmitError> {
+            self.0.push(request);
+            Ok(())
+        }
+        fn poll(&mut self, _out: &mut Vec<skyzfs_blk::Completion>) -> usize {
+            0
+        }
+        fn wait(&mut self, _out: &mut Vec<skyzfs_blk::Completion>, _: Duration) -> usize {
+            0
+        }
+    }
+
+    impl skyzfs_ublk::pump::Positions for Silent {
+        fn acknowledged(&self) -> Option<u64> {
+            None
+        }
+        fn gone(&self) -> bool {
+            false
+        }
+    }
+
+    #[derive(Clone)]
+    struct Unused;
+
+    impl skyzfs_ublk::pump::AckRecord for Unused {
+        fn advance(&mut self, _position: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A failed volume holds no request (M1.3d), on the queue's thread
+    /// as `serve` runs it: with three requests in a store that never
+    /// answers, nothing is committed while the volume has not failed;
+    /// the turn after the store said so, all three are committed with
+    /// the I/O error and the queue is woken; and the call after the
+    /// next wait, which is what sends them, tells the main thread that
+    /// they are answered, and how many.
+    #[test]
+    fn the_queues_thread_answers_what_a_silent_store_holds_once_the_volume_failed() {
+        let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queue = Three {
+            committed: committed.clone(),
+            ..Three::default()
+        };
+        let (queue, ack) = Delayed::new(queue, Unused, None, None, || {});
+        let mut pump = Pump::new(queue, Silent(Vec::new()), ack);
+        let flags = Flags::default();
+        let woken = std::cell::Cell::new(0);
+        let wake = || woken.set(woken.get() + 1);
+        for _ in 0..50 {
+            assert_eq!(pump.turn(), None);
+            answer_if_failed(&mut pump, &flags, &wake);
+        }
+        assert!(committed.lock().expect("lock").is_empty());
+        assert_eq!(pump.target().0.len(), 3, "all three are in the store");
+        assert!(!flags.answered.load(Ordering::SeqCst));
+
+        flags.failed.store(true, Ordering::SeqCst);
+        assert_eq!(pump.turn(), None);
+        answer_if_failed(&mut pump, &flags, &wake);
+        let mut answers = committed.lock().expect("lock").clone();
+        answers.sort_unstable();
+        assert_eq!(answers, [(0, -5), (1, -5), (2, -5)]);
+        assert_eq!(
+            woken.get(),
+            1,
+            "the queue is woken so that its wait sends them"
+        );
+        assert!(
+            !flags.answered.load(Ordering::SeqCst),
+            "not said before a wait has sent them"
+        );
+
+        assert_eq!(pump.turn(), None);
+        answer_if_failed(&mut pump, &flags, &wake);
+        assert!(flags.answered.load(Ordering::SeqCst));
+        assert_eq!(flags.answers.load(Ordering::SeqCst), 3);
+        assert_eq!(woken.get(), 1);
+        assert_eq!(committed.lock().expect("lock").len(), 3);
+        assert_eq!(
+            pump.target().0.len(),
+            3,
+            "the store was handed nothing more"
+        );
     }
 }

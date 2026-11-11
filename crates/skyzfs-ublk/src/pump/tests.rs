@@ -1025,3 +1025,174 @@ fn a_write_carries_the_queues_buffer_there_and_back() {
         (2, 1, 0)
     );
 }
+
+/// A pump with five requests held in every way a request can be held:
+/// tag 0 a write in the target, tag 1 a write with FUA whose flush is
+/// in the target, tag 2 a write the target completed and whose position
+/// could not be stored, tag 3 a read in the target, tag 4 a flush that
+/// waits for room. The target answers none of what it still has.
+fn held_in_every_way(mutants: u32) -> Result<Rig, String> {
+    let mut rig = Rig::new(mutants, 8, 3);
+    rig.fetch(&[
+        write(0, 0),
+        request(1, op::WRITE, flag::FUA, 1, 1),
+        write(2, 2),
+        request(3, op::READ, 0, 3, 1),
+        request(4, op::FLUSH, 0, 0, 0),
+    ]);
+    rig.complete(1, Some(10));
+    rig.turn();
+    rig.ack_fails.set(true);
+    rig.complete(2, Some(20));
+    rig.turn();
+    expect(rig.committed(), vec![], "committed before the failure")?;
+    let counters = rig.pump.counters();
+    expect(
+        (counters.in_flight, counters.unstored),
+        (5, 1),
+        "held before the failure",
+    )?;
+    expect(
+        rig.submitted(),
+        vec![
+            (0, "write"),
+            (1, "write"),
+            (2, "write"),
+            (1 | FLUSH_ID, "flush"),
+            (3, "read"),
+        ],
+        "in the target before the failure",
+    )?;
+    Ok(rig)
+}
+
+fn stored(rig: &Rig) -> usize {
+    rig.events()
+        .iter()
+        .filter(|e| matches!(e, Event::Stored(_)))
+        .count()
+}
+
+/// A failed volume holds no request (M1.3d): when the pump is told
+/// that the volume failed, every request it holds is committed with
+/// the plain I/O error, once, wherever it was: in the target and never
+/// answered, behind its flush, completed and waiting for a position
+/// that could not be stored, or not yet submitted. No position is
+/// stored for it, and the target is not waited for: it answers nothing
+/// in this test, ever. Mutants: the failure answers nothing; a
+/// completion that waited for its position is committed with its own
+/// result, which says "written" for a position nobody stored.
+#[test]
+fn a_failed_volume_answers_every_request_it_holds() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = held_in_every_way(mutants)?;
+        expect(rig.pump.fail(), 5, "answered at the failure")?;
+        let mut committed = rig.committed();
+        committed.sort_unstable();
+        expect(
+            committed,
+            (0..5).map(|tag| (tag, -EIO)).collect(),
+            "committed at the failure",
+        )?;
+        let counters = rig.pump.counters();
+        expect(
+            (counters.in_flight, counters.unstored),
+            (0, 0),
+            "held after the failure",
+        )?;
+        // The buffers the pump had go back to the queue with the
+        // commit; those in the target stay there.
+        let mut back: Vec<u16> = rig.pump.queue().returned.keys().copied().collect();
+        back.sort_unstable();
+        expect(back, vec![1, 2], "buffers given back")?;
+        // The record heals, and the target still answers nothing:
+        // nothing more happens, and the pump does not end.
+        rig.ack_fails.set(false);
+        for _ in 0..100 {
+            if let Some(stopped) = rig.turn() {
+                return Err(format!("the pump ended: {stopped:?}"));
+            }
+        }
+        expect(rig.committed().len(), 5, "commits in all")?;
+        expect(stored(&rig), 0, "positions stored")?;
+        expect(rig.pump.fail(), 0, "a second failure")?;
+        expect(rig.pump.failed_answers(), 5, "answered because it failed")?;
+        expect(rig.committed().len(), 5, "commits after a second failure")
+    }
+    caught(scenario, Mutants::FAILED_HOLDS);
+    caught(scenario, Mutants::FAILED_UNSTORED_AS_IS);
+}
+
+/// After the failure the target is handed nothing more and nothing is
+/// taken from it: a new request is answered with the plain I/O error
+/// at once, also on a tag that was held at the failure, and what the
+/// target completes late is not committed (its tag has been answered
+/// and may be another request's by now) and stores no position.
+/// Mutant: the pump answers what it held and then serves on.
+#[test]
+fn a_failed_volume_hands_the_target_nothing_and_takes_nothing_from_it() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = held_in_every_way(mutants)?;
+        rig.pump.fail();
+        rig.ack_fails.set(false);
+        let before = rig.submitted().len();
+        if let Some(stopped) = rig.fetch(&[write(0, 7), request(5, op::FLUSH, 0, 0, 0)]) {
+            return Err(format!("the pump ended: {stopped:?}"));
+        }
+        expect(
+            rig.committed()[5..].to_vec(),
+            vec![(0, -EIO), (5, -EIO)],
+            "new requests after the failure",
+        )?;
+        expect(rig.submitted().len(), before, "handed to the target")?;
+        // The write that held tag 0 at the failure completes now.
+        rig.complete(0, Some(30));
+        rig.complete(3, None);
+        for _ in 0..10 {
+            if let Some(stopped) = rig.turn() {
+                return Err(format!("the pump ended: {stopped:?}"));
+            }
+        }
+        expect(rig.committed().len(), 7, "commits after a late completion")?;
+        expect(stored(&rig), 0, "positions stored")?;
+        expect(rig.pump.failed_answers(), 7, "answered because it failed")?;
+        // A target whose worker has ended is no reason to end either:
+        // the failed pump does not look at it.
+        rig.pump.target().gone = true;
+        expect(rig.turn(), None, "with the target gone")
+    }
+    caught(scenario, Mutants::FAILED_SERVES);
+}
+
+/// A failed pump ends when the queue goes (the delete) or at a stop.
+/// At a stop it answers what arrived with it and hands its commits to
+/// the driver: no wait follows that would.
+#[test]
+fn a_failed_pump_ends_with_the_queue_or_at_a_stop() {
+    let mut rig = held_in_every_way(0).expect("the setup");
+    rig.pump.fail();
+    rig.pump
+        .queue()
+        .script
+        .push_back(Step::Stop(vec![write(6, 1)]));
+    assert_eq!(rig.pump.turn(), Some(Stopped::Failed));
+    let events = rig.events();
+    assert_eq!(
+        &events[events.len() - 2..],
+        [Event::Committed(6, -EIO), Event::Sent]
+    );
+
+    let mut rig = held_in_every_way(0).expect("the setup");
+    rig.pump.fail();
+    rig.pump.queue().script.push_back(Step::Down);
+    assert_eq!(rig.pump.turn(), Some(Stopped::QueueDown));
+
+    // With nothing held there is nothing to answer, and the pump goes
+    // on answering what arrives.
+    let mut rig = Rig::new(0, 4, 4);
+    assert_eq!(rig.pump.fail(), 0);
+    assert!(rig.pump.is_failed());
+    assert_eq!(rig.fetch(&[request(2, op::READ, 0, 0, 1)]), None);
+    assert_eq!(rig.committed(), [(2, -EIO)]);
+    assert_eq!(rig.pump.queue().taken, 0, "no buffer is taken");
+}

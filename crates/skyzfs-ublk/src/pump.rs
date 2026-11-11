@@ -61,6 +61,34 @@
 //!   can be held for as long as object storage is away, a stop must
 //!   leave held requests to the next instance after a stated time, as
 //!   it does for unstored completions now.
+//! - **A failed volume holds no request** ([`Pump::fail`]). When the
+//!   pump is told that the volume failed, it commits the plain I/O
+//!   error for every request it holds, wherever it is: fetched and not
+//!   submitted, in the target, behind its flush, or completed and
+//!   waiting for a position that could not be stored. From then on it
+//!   hands the target nothing, takes nothing from it, stores no
+//!   position, and answers every request that still arrives with the
+//!   same error, until the queue goes or a stop is asked
+//!   ([`Stopped::Failed`]). The reason: the daemon deletes a failed
+//!   volume's device, and the driver's delete of a device that is
+//!   served waits for every request its server holds. A store whose
+//!   disk has gone may take minutes over a request or never answer, and
+//!   the record of what was acknowledged is on the same disk.
+//!
+//!   An I/O error is always a permitted answer: it promises nothing. A
+//!   write answered so may be in the log and may be applied by the next
+//!   open; a client that was told "failed" cannot rest on either. The
+//!   one thing that must not happen is the reverse, a success for
+//!   something that is not kept, and no success is committed after the
+//!   failure, not even for a completion that had succeeded and only
+//!   waited for its position.
+//!
+//!   What the target completes later is never taken from it. Its
+//!   buffers (the data of the reads and writes it held) stay with the
+//!   target until the process ends: the queue made a new buffer for
+//!   each such tag when it was answered without one, and the old
+//!   addresses are not given back to the allocator while the queue
+//!   lives.
 //! - **A target that is gone** (its worker thread has ended) ends the
 //!   pump at once and nothing more is committed, not even what the
 //!   target had completed. That is safe: with recovery by reissue the
@@ -184,6 +212,11 @@ pub enum Stopped {
     /// The target can complete nothing more. Nothing was committed
     /// after that was seen, not even completions that waited.
     TargetGone,
+    /// A stop was asked of a pump whose volume had failed
+    /// ([`Pump::fail`]). Every request it held or was handed since was
+    /// answered with the plain I/O error, and the commits were handed
+    /// to the driver if the queue took them.
+    Failed,
     /// The target broke the contract in a way the pump cannot go on
     /// from: it refused an id that is not in flight, or completed one
     /// that is not. Completions that waited are not committed.
@@ -261,6 +294,16 @@ impl Mutants {
     /// A request the queue has no buffer for is handed to the target
     /// with a buffer of zeros.
     pub(crate) const UNBUFFERED_SUBMITTED: u32 = 1 << 16;
+    /// Told that the volume failed, the pump answers nothing and goes
+    /// on as before.
+    pub(crate) const FAILED_HOLDS: u32 = 1 << 17;
+    /// Told that the volume failed, the pump answers what it holds and
+    /// then serves on: it submits to the target and takes its
+    /// completions.
+    pub(crate) const FAILED_SERVES: u32 = 1 << 18;
+    /// At the failure, a completion that waited for its position is
+    /// committed with its own result.
+    pub(crate) const FAILED_UNSTORED_AS_IS: u32 = 1 << 19;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -302,6 +345,10 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     /// The position this pump stored last.
     stored: Option<u64>,
     stopping: bool,
+    /// The volume failed: see [`Pump::fail`].
+    failed: bool,
+    /// Requests answered with the plain I/O error because of that.
+    failed_answers: u64,
     stop_tries: u32,
     counters: Counters,
     mutants: Mutants,
@@ -325,6 +372,8 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             in_target: 0,
             stored: None,
             stopping: false,
+            failed: false,
+            failed_answers: 0,
             stop_tries: Self::STOP_TRIES,
             counters: Counters::default(),
             mutants: Mutants::default(),
@@ -377,6 +426,85 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         &mut self.ack
     }
 
+    /// The volume failed: answer every request the pump holds with the
+    /// plain I/O error, and from now on every request that arrives.
+    /// Returns how many were answered by this call: 0 if the pump had
+    /// been told before. See the [module documentation](self).
+    ///
+    /// The commits are made, not sent: a queue may keep a commit until
+    /// its next [`Queue::wait`], so the caller goes on calling
+    /// [`Pump::turn`], whose wait sends them. It is not sent here
+    /// because [`Queue::flush`] is for the end of a queue: the kernel's
+    /// drops what it fetches meanwhile.
+    pub fn fail(&mut self) -> u64 {
+        if self.failed || self.mutants.has(Mutants::FAILED_HOLDS) {
+            return 0;
+        }
+        self.failed = true;
+        let before = self.failed_answers;
+        let error = -crate::translate::EIO;
+        // What is finished and waits for its position first: the pump
+        // has these buffers and gives them back.
+        let as_is = self.mutants.has(Mutants::FAILED_UNSTORED_AS_IS);
+        for (tag, result, buf) in std::mem::take(&mut self.finished) {
+            let result = if as_is { result } else { error };
+            self.slots[usize::from(tag)] = Slot::Idle;
+            self.queue.commit(tag, result, buf);
+            self.failed_answers += 1;
+        }
+        for tag in 0..self.slots.len() {
+            let buf = match std::mem::replace(&mut self.slots[tag], Slot::Idle) {
+                Slot::Idle | Slot::Finished => continue,
+                // The buffer is in the target and stays there.
+                Slot::Running(_) => None,
+                Slot::WantsFlush(_, buf) | Slot::Flushing(_, buf) => buf,
+            };
+            self.queue.commit(tag as u16, error, buf);
+            self.failed_answers += 1;
+        }
+        for fetched in std::mem::take(&mut self.backlog) {
+            self.queue.commit(fetched.tag, error, None);
+            self.failed_answers += 1;
+        }
+        self.wants_flush.clear();
+        self.in_target = 0;
+        self.counters.in_flight = 0;
+        self.counters.unstored = 0;
+        self.failed_answers - before
+    }
+
+    /// Whether the pump was told that the volume failed.
+    pub fn is_failed(&self) -> bool {
+        self.failed
+    }
+
+    /// How many requests were answered with the plain I/O error because
+    /// the volume had failed: those held at the failure and those that
+    /// arrived after it.
+    pub fn failed_answers(&self) -> u64 {
+        self.failed_answers
+    }
+
+    /// A turn of a pump whose volume failed: what arrives is answered
+    /// with the plain I/O error, and the target is not touched.
+    fn failed_turn(&mut self) -> Option<Stopped> {
+        let mut fetched = Vec::new();
+        let woken = match self.queue.wait(&mut fetched) {
+            Err(QueueDown) => return Some(Stopped::QueueDown),
+            Ok(woken) => woken,
+        };
+        for Fetched { tag, .. } in fetched {
+            self.queue.commit(tag, -crate::translate::EIO, None);
+            self.failed_answers += 1;
+        }
+        if woken == Wake::Stop {
+            // No wait follows that would send the commits.
+            let _ = self.queue.flush();
+            return Some(Stopped::Failed);
+        }
+        None
+    }
+
     /// Serve until the pump ends.
     pub fn run(&mut self) -> Stopped {
         loop {
@@ -389,6 +517,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// One turn: wait for the queue, move what can move. `Some` when
     /// the pump has ended.
     pub fn turn(&mut self) -> Option<Stopped> {
+        if self.failed && !self.mutants.has(Mutants::FAILED_SERVES) {
+            return self.failed_turn();
+        }
         let mut fetched = Vec::new();
         match self.queue.wait(&mut fetched) {
             Err(QueueDown) => return Some(Stopped::QueueDown),

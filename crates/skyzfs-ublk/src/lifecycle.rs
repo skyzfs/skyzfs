@@ -81,7 +81,12 @@
 //!   this volume that still waits (the daemon died before it deleted
 //!   it) is deleted now.
 //! - **Failed, and no client held it:** without the acknowledgement
-//!   the start refuses and touches nothing. With it, a waiting device
+//!   the start refuses and touches nothing the decision rests on: the
+//!   note, the stored position and the marker stay. A waiting device
+//!   of this volume is deleted all the same and the refusal says so
+//!   (since M1.3d; one rule for every finder: whoever holds the lock
+//!   and finds the failed volume's device waiting deletes it). With
+//!   the acknowledgement, a waiting device
 //!   of this volume is deleted and never taken over, the store is
 //!   opened **without** a position to reach (the acknowledgement is
 //!   the operator saying that what was acknowledged to nobody may be
@@ -603,6 +608,14 @@ impl Mutants {
     /// deleted device, also another volume's device that took the
     /// number.
     pub(crate) const ANY_OCCUPANT_LINGERS: u32 = 1 << 25;
+    /// A failed volume's device that is left because it is still live,
+    /// because the driver or the note could not be asked, or because
+    /// the delete failed, is left without a word; and a delete is not
+    /// said either.
+    pub(crate) const LEFT_UNSAID: u32 = 1 << 26;
+    /// A start that refuses a failure nobody held, for want of the
+    /// flag, changes the failure note.
+    pub(crate) const REFUSAL_TOUCHES_NOTE: u32 = 1 << 27;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -844,8 +857,37 @@ fn noted_failure<C: Control, R: Records>(
         )));
     }
     if !acknowledges {
+        // Refused, and nothing the decision rests on is touched: the
+        // note, the acknowledged position and the marker stay, so the
+        // next start without the flag refuses again and one with it
+        // serves afresh. The volume's waiting device goes all the
+        // same, by the one rule for every finder: whoever holds the
+        // volume's lock and finds the failed volume's device waiting
+        // deletes it. The daemon that failed was on its way to delete
+        // it and was killed first; left there, it holds whatever is
+        // sent to it, without limit and without a word. (Until M1.3d
+        // this start touched nothing at all.)
+        //
+        // The delete does not wait for a holder (it is the driver's
+        // delete without waiting, of a device that is not live). It
+        // can wait behind another device's delete that the driver is
+        // still carrying out; nothing here bounds that, as nothing
+        // does in `fail_serving`.
+        let left = give_up_device(control, records, wanted, mutants);
+        if mutants.has(Mutants::REFUSAL_TOUCHES_NOTE) {
+            let _ = records.write_failure(&Failure {
+                held: Held::Unknown,
+                ..failure
+            });
+        }
+        let device = if left.is_empty() {
+            "; no device of this volume was there"
+        } else {
+            left.as_str()
+        };
         return Err(Stop::Failed(format!(
-            "{reason}; no client held its device. It is served again with --acknowledge-failure"
+            "{reason}; no client held its device, and the failure is not acknowledged: a start \
+             with --acknowledge-failure serves the volume afresh{device}"
         )));
     }
     // Whoever opened a device of this volume after the failure was
@@ -1076,46 +1118,102 @@ fn failed<C: Control, R: Records>(
 ///
 /// The device is deleted only if the record is of this boot, the note
 /// carries the record's nonce, and the kernel reports the recorded
-/// values. A noted device with other values is left, and the answer
-/// says so: a note should never outlive its device, and if one did (a
-/// device deleted by hand), what stands under the number now is not
-/// this volume's. A device with the recorded values and no note is left
-/// too, and the answer says so: it is this volume's if a daemon was
-/// killed between removing the note and the delete, and another's if
-/// the delete was done and the number given out again, and nothing
-/// tells the two apart. The answer is empty otherwise.
+/// values and a device that is not live. A noted device with other
+/// values is left: a note should never outlive its device, and if one
+/// did (a device deleted by hand), what stands under the number now is
+/// not this volume's. A device with the recorded values and no note is
+/// left too: it is this volume's if a daemon was killed between
+/// removing the note and the delete, and another's if the delete was
+/// done and the number given out again, and nothing tells the two
+/// apart. A device that is still live after the looks is left: a live
+/// device has a server, and this start is not it.
+///
+/// **The answer says what was done**, for every device a record of
+/// this boot names: that it was deleted, or that it was left and why,
+/// also when the driver, the record or the note could not be asked or
+/// the delete failed. It is empty only when there is nothing to say a
+/// word about: no record, a record of another boot (its device did not
+/// survive the boot), a number that carries another attachment's note,
+/// or a number under which nothing stands. So an answer without a
+/// device in it means that this start knows of none.
+///
+/// **What becomes of a device that was left.** Every start that finds
+/// the failure note comes through here again, whether it then refuses
+/// or serves, and `skyzfsd detach` deletes a device that carries this
+/// volume's note and is not live. So a device left because it was
+/// still live, could not be asked about or could not be deleted goes
+/// at the next start or detach that finds it otherwise. A device left
+/// because nothing shows it to be this volume's (no note, or a note
+/// that cannot be read) is not deleted by either: by hand, or by a
+/// reboot. Each answer says which of the two applies.
 fn give_up_device<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     wanted: &Wanted,
     mutants: Mutants,
 ) -> String {
-    let Ok(Some(attachment)) = records.attachment() else {
-        return String::new();
+    let said = |text: String| {
+        if mutants.has(Mutants::LEFT_UNSAID) {
+            String::new()
+        } else {
+            text
+        }
+    };
+    let attachment = match records.attachment() {
+        Ok(Some(attachment)) => attachment,
+        Ok(None) => return String::new(),
+        Err(_) => {
+            return said(
+                "; the attachment record could not be read, so no device was looked for: \
+                 if one of this volume is left, deleting it by hand, or a reboot, resolves it"
+                    .into(),
+            )
+        }
     };
     let number = attachment.number;
     let this_boot = attachment.boot == records.boot() || mutants.has(Mutants::FAILED_ANY_BOOT);
-    let note = records.note(number);
-    let noted = matches!(note, Ok(Some(nonce)) if nonce == attachment.nonce);
-    let no_note = matches!(note, Ok(None));
-    if !(this_boot && (noted || no_note)) {
+    if !this_boot {
         return String::new();
     }
+    let noted = match records.note(number) {
+        Ok(Some(nonce)) if nonce == attachment.nonce => true,
+        // Another attachment's note: not this volume's device.
+        Ok(Some(_)) => return String::new(),
+        Ok(None) => false,
+        Err(e) => {
+            return said(format!(
+                "; the note of device {number} could not be read ({e}), and the device was \
+                 left: deleting it by hand, or a reboot, resolves it"
+            ))
+        }
+    };
     let info = control
         .info(number)
         .and_then(|info| settled(control, records, number, info, wanted, Mutants::default()));
-    let Ok(Some(info)) = info else {
-        return String::new();
+    let info = match info {
+        Ok(Some(info)) => info,
+        Ok(None) => return String::new(),
+        Err(e) => {
+            return said(format!(
+                "; device {number} could not be asked about ({e}), and was left: the next \
+                 start of this volume or `skyzfsd detach` tries again"
+            ))
+        }
     };
     if info.state == DeviceState::Live {
-        return String::new();
+        return said(format!(
+            "; device {number} is still live after {} looks, and was left: it has a server. \
+             Once it has none, the next start of this volume or `skyzfsd detach` deletes it",
+            wanted.live_retries
+        ));
     }
     if !noted {
         if info.shape != attachment.shape {
             return String::new();
         }
         return format!(
-            "; device {number} has this volume's size, queues, depth and flags and no note,              and was left: deleting it by hand, or a reboot, resolves it"
+            "; device {number} has this volume's size, queues, depth and flags and no note, \
+             and was left: deleting it by hand, or a reboot, resolves it"
         );
     }
     if info.shape != attachment.shape {
@@ -1124,8 +1222,13 @@ fn give_up_device<C: Control, R: Records>(
              was left"
         );
     }
-    let _ = delete(control, records, number, mutants);
-    String::new()
+    match delete(control, records, number, mutants) {
+        Ok(()) => said(format!("; device {number} was deleted")),
+        Err(e) => said(format!(
+            "; device {number} could not be deleted ({e}): the next start of this volume or \
+             `skyzfsd detach` tries again"
+        )),
+    }
 }
 
 /// The log failed while the volume was served: the volume gives up its
