@@ -96,6 +96,19 @@ counterpart, or the trait changes.
     for the two operations to arrive; shown by a `blkdiscard` and a
     `blkdiscard -z` reaching the queue as their own operations.
 
+13a. The driver's limit on the number of devices (64 by default, the
+    `ublks_max` module parameter) against the add loop, which walks
+    numbers up to 65535: what an add answers beyond the limit, and that
+    leaked and deleted-but-held numbers count against it. The loop must
+    end with "no number is free" there, not with another error.
+13b. What the driver reports for a device after a recovery was begun and
+    the server died before it ended the recovery: one of the four states,
+    or a fifth the lifecycle does not know.
+13c. The request flags: `UBLK_IO_F_SHMEM_ZC` is bit 19 in the header
+    `libublk-rs-sys` 0.1.2 ships; Linux v7.0's header ends at bit 18.
+    Check `translate::flag` against the source the binding is built on,
+    bit by bit.
+
 ### Around a kill
 
 14. The time from `kill -9` to the device waiting for a server, as the

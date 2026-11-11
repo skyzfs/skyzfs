@@ -44,6 +44,10 @@ struct FakeQueue {
     /// The buffers committed back, by tag.
     returned: HashMap<u16, Buf>,
     taken: u32,
+    /// Pauses so far.
+    pauses: u32,
+    /// The record can be written again after this many pauses.
+    heals: Option<(u32, Rc<Cell<bool>>)>,
 }
 
 impl Queue for FakeQueue {
@@ -76,6 +80,15 @@ impl Queue for FakeQueue {
         self.events.borrow_mut().push(Event::Committed(tag, result));
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
+        }
+    }
+
+    fn pause(&mut self) {
+        self.pauses += 1;
+        if let Some((after, fails)) = &self.heals {
+            if self.pauses >= *after {
+                fails.set(false);
+            }
         }
     }
 }
@@ -131,7 +144,9 @@ impl BlockTarget for FakeTarget {
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
         let held = self.pending.len() + self.ready.len();
         self.most = self.most.max(held + 1);
-        if held >= self.geometry.queue_depth() as usize {
+        // As the served store does: once its worker has ended it
+        // refuses everything as busy.
+        if self.gone || held >= self.geometry.queue_depth() as usize {
             return Err(SubmitError {
                 kind: SubmitErrorKind::Busy,
                 request,
@@ -203,6 +218,8 @@ impl Rig {
             events: events.clone(),
             returned: HashMap::new(),
             taken: 0,
+            pauses: 0,
+            heals: None,
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -603,6 +620,88 @@ fn an_orderly_stop_completes_what_was_accepted() {
     caught(scenario, Mutants::STOP_AT_ONCE);
 }
 
+/// A stop while the position cannot be stored, and then can: the pump
+/// tries again by itself, paced by the queue's pause and with no
+/// further wait on the queue, stores the position, commits everything
+/// and only then is the stop orderly. Mutant: the stop is called
+/// orderly with completions waiting.
+#[test]
+fn a_stop_tries_again_to_store_the_position_and_is_orderly_only_when_all_is_committed() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
+        rig.ack_fails.set(true);
+        rig.pump.queue().heals = Some((3, rig.ack_fails.clone()));
+        rig.complete(0, Some(4096));
+        rig.complete(1, None);
+        rig.pump.queue().script.push_back(Step::Stop(vec![]));
+        // One turn: the script holds nothing more, so a pump that went
+        // back to the queue's wait would not get there.
+        expect(rig.pump.turn(), Some(Stopped::Orderly), "the stop")?;
+        expect(rig.pump.queue().pauses, 3, "a pause before each try")?;
+        rig.before(&Event::Stored(4096), &Event::Committed(0, BLOCK))?;
+        expect(rig.committed().len(), 2, "everything is committed")?;
+        expect(rig.pump.counters().unstored, 0, "none waiting")?;
+        expect(rig.pump.counters().in_flight, 0, "none in flight")
+    }
+    caught(scenario, Mutants::ORDERLY_UNSTORED);
+}
+
+/// A stop while the position can never be stored ends, after the
+/// stated number of tries, with a result of its own. Nothing is
+/// committed, so nothing is lost: the kernel has every request still
+/// and issues it again to the next instance.
+#[test]
+fn a_stop_that_can_never_store_the_position_ends_and_commits_nothing() {
+    let mut rig = Rig::new(0, 8, 8);
+    rig.pump.stop_tries = 7;
+    rig.fetch(&[write(0, 0), write(1, 1), request(2, op::READ, 0, 0, 1)]);
+    rig.ack_fails.set(true);
+    rig.complete(0, Some(4096));
+    rig.complete(1, Some(8192));
+    rig.complete(2, None);
+    rig.pump.queue().script.push_back(Step::Stop(vec![]));
+    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 3 }));
+    assert_eq!(rig.pump.queue().pauses, 7, "the stated number of tries");
+    assert!(rig.committed().is_empty(), "nothing is committed");
+    assert!(
+        !rig.events().iter().any(|e| matches!(e, Event::Stored(_))),
+        "nothing is stored"
+    );
+    assert_eq!(rig.pump.counters().unstored, 3);
+    assert_eq!(rig.pump.counters().in_flight, 3, "left for a reissue");
+
+    // The default: twenty tries.
+    let mut rig = Rig::new(0, 8, 8);
+    rig.fetch(&[write(0, 0)]);
+    rig.ack_fails.set(true);
+    rig.complete(0, Some(4096));
+    rig.pump.queue().script.push_back(Step::Stop(vec![]));
+    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 1 }));
+    assert_eq!(rig.pump.queue().pauses, 20);
+}
+
+/// The other endings leave completions that waited uncommitted.
+#[test]
+fn every_ending_but_the_orderly_one_commits_nothing_that_waited() {
+    for ending in [Stopped::QueueDown, Stopped::TargetGone] {
+        let mut rig = Rig::new(0, 8, 8);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.ack_fails.set(true);
+        rig.complete(0, Some(4096));
+        assert_eq!(rig.turn(), None);
+        assert_eq!(rig.pump.counters().unstored, 1);
+        // The record would take the position now: it is not asked.
+        rig.ack_fails.set(false);
+        match ending {
+            Stopped::QueueDown => rig.pump.queue().script.push_back(Step::Down),
+            _ => rig.pump.target().gone = true,
+        }
+        assert_eq!(rig.pump.turn(), Some(ending));
+        assert!(rig.committed().is_empty(), "{ending:?}");
+    }
+}
+
 /// What was acknowledged (§4.2): the position of the newest
 /// acknowledged record is stored before the completions it covers are
 /// committed, once for a batch; a batch that acknowledges no mutation
@@ -695,6 +794,60 @@ fn a_target_that_is_gone_ends_the_pump_and_commits_nothing() {
         )
     }
     caught(scenario, Mutants::GONE_UNNOTICED);
+}
+
+/// A target that is gone when a request is waiting is still a target
+/// that is gone, not one that broke the contract: the pump looks
+/// before it submits. Mutant: it looks only afterwards, and takes the
+/// refusal for a fault.
+#[test]
+fn a_target_that_is_gone_is_gone_also_when_a_request_waits() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.pump.target().gone = true;
+        expect(
+            rig.fetch(&[write(0, 0)]),
+            Some(Stopped::TargetGone),
+            "a turn that fetched a request",
+        )?;
+        expect(rig.submitted(), vec![], "nothing reached the target")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(scenario, Mutants::GONE_AFTER_SUBMIT);
+}
+
+/// Two guards against the other side. A queue that hands over a tag
+/// that is still in flight is not served further: nothing can be
+/// committed for a tag twice. And a completion nobody waits for means
+/// the target is not keeping the contract. Mutants: each guard gone.
+#[test]
+fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
+    fn reused(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.fetch(&[write(0, 0)]), None, "the first")?;
+        expect(
+            rig.fetch(&[write(0, 5)]),
+            Some(Stopped::QueueDown),
+            "the same tag again",
+        )?;
+        expect(rig.submitted().len(), 1, "the second reached nothing")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(reused, Mutants::TAG_REUSED);
+
+    fn stray(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.fetch(&[write(0, 0)]), None, "a request")?;
+        let nobodys = Completion {
+            id: RequestId(5),
+            result: Ok(()),
+            buf: None,
+        };
+        rig.pump.target().ready.push((nobodys, None));
+        expect(rig.turn(), Some(Stopped::TargetFault), "a stray completion")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(stray, Mutants::STRAY_IGNORED);
 }
 
 /// When the queue goes away the pump ends and says so.

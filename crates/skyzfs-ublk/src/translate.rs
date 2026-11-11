@@ -109,6 +109,14 @@ pub mod flag {
     /// The request has an integrity buffer.
     pub const INTEGRITY: u32 = 1 << 18;
     /// The data is in a registered shared-memory buffer.
+    ///
+    /// Where the number comes from: `UBLK_IO_F_SHMEM_ZC` is bit 19 in
+    /// the header that `libublk-rs-sys` 0.1.2 ships (`ublk_cmd.h`),
+    /// which is ahead of Linux v7.0: v7.0's header ends at bit 18
+    /// ([`INTEGRITY`]). A v7.0 kernel never sets the bit. Refusing it
+    /// costs nothing there and is right on a kernel that has it, since
+    /// the daemon registers no such buffer. To be checked against the
+    /// source the binding is built on, when the spike runs.
     pub const SHMEM_ZC: u32 = 1 << 19;
     /// The flags that say the data is elsewhere.
     pub const DATA_ELSEWHERE: u32 = NEED_REG_BUF | INTEGRITY | SHMEM_ZC;

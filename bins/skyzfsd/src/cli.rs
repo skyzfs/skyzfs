@@ -3,10 +3,12 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
-//!                [--queues N] [--depth N]
+//!                [--queues 1] [--depth N]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! ```
+//!
+//! `--queues` takes only 1: this milestone serves one queue.
 //!
 //! An option is `--name value` or `--name=value`, and is given at most
 //! once. Numbers are decimal. Anything else is a usage error, which is
@@ -46,13 +48,19 @@ pub const DEFAULT_DEPTH: u16 = 64;
 /// The most a ublk queue takes (`UBLK_MAX_QUEUE_DEPTH`).
 pub const MAX_DEPTH: u16 = 4096;
 
+/// The most queues `serve` takes: one. M1 serves one queue; the option
+/// is there so that it need not be added later, and any other number
+/// is a usage error until more are served.
+pub const MAX_QUEUES: u16 = 1;
+
 /// One mebibyte: a volume's size is a multiple of it.
 const MIB: u64 = 1 << 20;
 
 /// What is printed with a usage error.
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES
-  skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues N] [--depth N]
+  skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+                 (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]";
 
@@ -135,8 +143,9 @@ pub struct Serve {
     pub run_dir: PathBuf,
     /// Serve a volume whose failure the operator acknowledges.
     pub acknowledge_failure: bool,
-    /// Queues of a device this instance adds. A device that is taken
-    /// over keeps its own.
+    /// Queues of a device this instance adds: 1, the only number this
+    /// milestone serves ([`MAX_QUEUES`]). A device that is taken over
+    /// keeps its own.
     pub queues: u16,
     /// Depth of each queue of a device this instance adds.
     pub depth: u16,
@@ -403,7 +412,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 dir,
                 run_dir,
                 acknowledge_failure: given.flag("--acknowledge-failure"),
-                queues: small("--queues", 1, u16::MAX)?,
+                queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),

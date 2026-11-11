@@ -102,7 +102,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         Ok(Command::Serve(default.clone()))
     );
     let full = serve(
-        "serve --run-dir /tmp/run --acknowledge-failure --dir /v/a --queues 2 --depth 128 \
+        "serve --run-dir /tmp/run --acknowledge-failure --dir /v/a --queues 1 --depth 128 \
          --unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem",
     );
     assert_eq!(
@@ -110,7 +110,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         Serve {
             run_dir: "/tmp/run".into(),
             acknowledge_failure: true,
-            queues: 2,
+            queues: 1,
             depth: 128,
             allow_unlocked_memory: true,
             allow_any_filesystem: true,
@@ -122,6 +122,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         "--depth 0",
         "--depth 4097",
         "--queues 0",
+        "--queues 2",
         "--queues 65536",
         "--depth x",
     ] {

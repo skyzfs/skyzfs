@@ -44,6 +44,23 @@
 //!   waited for and committed, and the pump ends. Requests that were
 //!   fetched and not yet submitted are left uncommitted, for the kernel
 //!   to issue again to the next instance.
+//! - **A stop does not call itself orderly while completions wait.**
+//!   If the position cannot be stored when the target has drained, the
+//!   stopping pump tries again, up to a stated number of times
+//!   ([`Pump::stop_tries`]), with [`Queue::pause`] before each try. It
+//!   does not go back to the queue's wait for that, so the retry of a
+//!   stop does not ride the idle time-out: it is paced by the pause
+//!   alone. If the position is stored, the completions are committed
+//!   and the stop is [`Stopped::Orderly`]. If it never is, the pump
+//!   ends with [`Stopped::Unstored`] and commits nothing: the requests
+//!   stay with the kernel, which issues them again to the next
+//!   instance.
+//! - **For M3, not built:** a stopping pump whose target has not
+//!   drained goes back to the queue's wait until it has. That is right
+//!   while the store completes everything it accepted. Once a request
+//!   can be held for as long as object storage is away, a stop must
+//!   leave held requests to the next instance after a stated time, as
+//!   it does for unstored completions now.
 //! - **A target that is gone** (its worker thread has ended) ends the
 //!   pump at once and nothing more is committed, not even what the
 //!   target had completed. That is safe: with recovery by reissue the
@@ -104,6 +121,11 @@ pub trait Queue {
     /// negated error. `buf` is the buffer [`Queue::take_buf`] gave, back
     /// again; for a read that succeeded it holds the data to deliver.
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>);
+
+    /// Wait a short, stated time: between the tries of a stopping pump
+    /// to store the acknowledged position. Not the queue's wait: it
+    /// fetches nothing and returns after its time whatever happens.
+    fn pause(&mut self);
 }
 
 /// What the pump needs of a target beyond the contract.
@@ -133,14 +155,26 @@ pub enum Stopped {
     /// A stop was asked, and everything the target had accepted is
     /// completed and committed.
     Orderly,
-    /// The queue went away.
+    /// A stop was asked, the target has drained, and the acknowledged
+    /// position could not be stored in the stated number of tries.
+    /// `left` completions were not committed.
+    Unstored {
+        /// How many completions are left for the next instance.
+        left: u64,
+    },
+    /// The queue went away. Completions that waited are not committed:
+    /// there is no queue to commit them to.
     QueueDown,
     /// The target can complete nothing more. Nothing was committed
-    /// after that was seen.
+    /// after that was seen, not even completions that waited.
     TargetGone,
     /// The target broke the contract in a way the pump cannot go on
     /// from: it refused an id that is not in flight, or completed one
-    /// that is not.
+    /// that is not. Completions that waited are not committed.
+    ///
+    /// In every ending but [`Stopped::Orderly`], what was not committed
+    /// stays with the kernel, which issues it again to the next
+    /// instance; all five operations are idempotent.
     TargetFault,
 }
 
@@ -191,10 +225,18 @@ impl Mutants {
     pub(crate) const UNBOUNDED: u32 = 1 << 6;
     /// A stop ends the pump at once.
     pub(crate) const STOP_AT_ONCE: u32 = 1 << 7;
+    /// A stop is orderly although completions wait for the position.
+    pub(crate) const ORDERLY_UNSTORED: u32 = 1 << 8;
     /// Requests are submitted newest first.
     pub(crate) const NEWEST_FIRST: u32 = 1 << 9;
     /// A target that is gone is not noticed.
     pub(crate) const GONE_UNNOTICED: u32 = 1 << 10;
+    /// A target that is gone is looked for only after submitting.
+    pub(crate) const GONE_AFTER_SUBMIT: u32 = 1 << 11;
+    /// A tag that is still in flight is taken again.
+    pub(crate) const TAG_REUSED: u32 = 1 << 12;
+    /// A completion nobody waits for is ignored.
+    pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -236,6 +278,7 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     /// The position this pump stored last.
     stored: Option<u64>,
     stopping: bool,
+    stop_tries: u32,
     counters: Counters,
     mutants: Mutants,
 }
@@ -258,9 +301,22 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             in_target: 0,
             stored: None,
             stopping: false,
+            stop_tries: Self::STOP_TRIES,
             counters: Counters::default(),
             mutants: Mutants::default(),
         }
+    }
+
+    /// How often a stopping pump tries again to store the position,
+    /// unless told otherwise: with a pause of 100 ms, two seconds.
+    pub const STOP_TRIES: u32 = 20;
+
+    /// Set how often a stopping pump tries again to store the
+    /// acknowledged position before it gives up, with
+    /// [`Queue::pause`] before each try.
+    pub fn stop_tries(mut self, tries: u32) -> Self {
+        self.stop_tries = tries;
+        self
     }
 
     #[cfg(test)]
@@ -316,10 +372,16 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
         // Completions make room, and room lets more be submitted.
         loop {
+            // Before anything is submitted: a target whose worker has
+            // ended refuses requests, and that refusal is not a broken
+            // contract.
+            if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+                return Some(Stopped::TargetGone);
+            }
             if let Err(stopped) = self.submit_what_fits() {
                 return Some(stopped);
             }
-            if self.target.gone() && !self.mutants.has(Mutants::GONE_UNNOTICED) {
+            if self.is_gone() {
                 return Some(Stopped::TargetGone);
             }
             let mut done = Vec::new();
@@ -334,7 +396,43 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
         self.commit_finished();
         let drained = self.in_target == 0 && self.wants_flush.is_empty();
-        (self.stopping && drained).then_some(Stopped::Orderly)
+        if !(self.stopping && drained) {
+            return None;
+        }
+        if self.mutants.has(Mutants::ORDERLY_UNSTORED) {
+            return Some(Stopped::Orderly);
+        }
+        // The target has drained. Completions that wait for the
+        // position are tried again here, paced by the pause and not by
+        // the queue's wait.
+        for _ in 0..self.stop_tries {
+            if self.finished.is_empty() {
+                break;
+            }
+            self.queue.pause();
+            self.commit_finished();
+        }
+        if self.finished.is_empty() {
+            Some(Stopped::Orderly)
+        } else {
+            Some(Stopped::Unstored {
+                left: self.finished.len() as u64,
+            })
+        }
+    }
+
+    fn is_gone(&self) -> bool {
+        self.target.gone() && !self.mutants.has(Mutants::GONE_UNNOTICED)
+    }
+
+    /// The target refused a request it had room for: because its worker
+    /// ended in that moment, or against the contract.
+    fn refused(&self) -> Stopped {
+        if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+            Stopped::TargetGone
+        } else {
+            Stopped::TargetFault
+        }
     }
 
     /// How many requests the target takes at once.
@@ -360,7 +458,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             match self.target.submit(request) {
                 Ok(()) => {}
                 Err(e) if e.kind == skyzfs_blk::SubmitErrorKind::Busy => return Ok(()),
-                Err(_) => return Err(Stopped::TargetFault),
+                Err(_) => return Err(self.refused()),
             }
             self.wants_flush.pop_front();
             self.in_target += 1;
@@ -394,7 +492,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             // for it.
             return Err(Stopped::QueueDown);
         };
-        if !matches!(slot, Slot::Idle) {
+        if !matches!(slot, Slot::Idle) && !self.mutants.has(Mutants::TAG_REUSED) {
             // The queue reused a tag that is not committed.
             return Err(Stopped::QueueDown);
         }
@@ -455,9 +553,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         };
         if self.target.submit(request).is_err() {
             // There was room, and the tag is not in flight: the target
-            // is not keeping the contract. The buffer went with the
-            // request.
-            return Err(Stopped::TargetFault);
+            // is gone, or it is not keeping the contract. The buffer
+            // went with the request.
+            return Err(self.refused());
         }
         self.in_target += 1;
         self.slots[usize::from(tag)] = Slot::Running(plan);
@@ -491,6 +589,10 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             }
             Slot::Flushing(plan, kept) if is_flush => {
                 self.finish(tag, &plan, &result, kept);
+                Ok(())
+            }
+            other if self.mutants.has(Mutants::STRAY_IGNORED) => {
+                self.slots[usize::from(tag)] = other;
                 Ok(())
             }
             _ => Err(Stopped::TargetFault),
@@ -551,6 +653,16 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         self.ack.advance(position)?;
         self.stored = Some(position);
         Ok(())
+    }
+}
+
+impl Positions for skyzfs_local::store::Served {
+    fn acknowledged(&self) -> Option<u64> {
+        skyzfs_local::store::Served::acknowledged(self).map(|position| position.0)
+    }
+
+    fn gone(&self) -> bool {
+        skyzfs_local::store::Served::gone(self)
     }
 }
 

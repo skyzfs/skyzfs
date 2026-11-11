@@ -38,6 +38,20 @@ struct World {
     /// A live device whose server is seen to be gone once it has been
     /// asked for this many more times.
     settles: Option<(u32, usize)>,
+    /// Who holds the volume's lock.
+    lock_holder: Option<u64>,
+    locks: u64,
+    /// Another instance holds the lock for this many more tries.
+    locked_tries: u32,
+    /// What that instance has acknowledged by the time it lets go.
+    ack_when_free: Option<MustReach>,
+    /// For each event: whether the lock was held when it happened.
+    under_lock: Vec<bool>,
+    /// A second daemon starts when this many things have happened.
+    intrude_at: Option<usize>,
+    /// What became of it: the device it serves and whether it took it
+    /// over, or why it does not serve.
+    intruder: Option<Result<(u32, bool), Stop>>,
     /// The daemon is killed once this many things have happened: from
     /// then on nothing it does has an effect.
     dies_at: Option<usize>,
@@ -62,11 +76,20 @@ fn killed() -> io::Error {
 impl World {
     /// Note that `event` happens, unless the daemon is dead.
     fn happens(&mut self, event: Event) -> io::Result<()> {
-        if self.dies_at.is_some_and(|at| self.events.len() >= at) {
+        if self.dead() {
             return Err(killed());
         }
+        if self.under_lock.len() != self.events.len() {
+            // A test emptied the list of events.
+            self.under_lock = vec![true; self.events.len()];
+        }
+        self.under_lock.push(self.lock_holder.is_some());
         self.events.push(event);
         Ok(())
+    }
+
+    fn dead(&self) -> bool {
+        self.dies_at.is_some_and(|at| self.events.len() >= at)
     }
 
     fn new() -> Self {
@@ -77,6 +100,13 @@ impl World {
             late: Vec::new(),
             held: Vec::new(),
             settles: None,
+            lock_holder: None,
+            locks: 0,
+            locked_tries: 0,
+            ack_when_free: None,
+            under_lock: Vec::new(),
+            intrude_at: None,
+            intruder: None,
             dies_at: None,
             disowned: Vec::new(),
             attachment: None,
@@ -109,6 +139,54 @@ impl World {
 #[derive(Clone)]
 struct Fake(Rc<RefCell<World>>);
 
+impl Fake {
+    /// Another daemon starts here, if the test asked for one at this
+    /// point: a whole start, between two steps of the one under test.
+    fn intrude(&self) {
+        let due = {
+            let mut w = self.0.borrow_mut();
+            let due = w.intrude_at == Some(w.events.len());
+            if due {
+                w.intrude_at = None;
+            }
+            due
+        };
+        if !due {
+            return;
+        }
+        let (mut c, mut r, mut v) = (self.clone(), self.clone(), self.clone());
+        let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants(0));
+        let became = result.map(|mut ready| {
+            // It serves: it keeps the lock, and its device is live.
+            if let Some(lock) = ready.store.lock.as_mut() {
+                lock.kept = true;
+            }
+            if let Some(device) = self.0.borrow_mut().devices.get_mut(&ready.number) {
+                device.state = DeviceState::Live;
+            }
+            (ready.number, ready.took_over)
+        });
+        self.0.borrow_mut().intruder = Some(became);
+    }
+}
+
+/// The volume's lock of the fake.
+struct FakeLock {
+    world: Rc<RefCell<World>>,
+    id: u64,
+    /// Its holder goes on serving: the lock stays when this is dropped.
+    kept: bool,
+}
+
+impl Drop for FakeLock {
+    fn drop(&mut self) {
+        let mut w = self.world.borrow_mut();
+        if !self.kept && w.lock_holder == Some(self.id) {
+            w.lock_holder = None;
+        }
+    }
+}
+
 impl Control for Fake {
     fn can_reissue(&mut self) -> io::Result<bool> {
         let mut w = self.0.borrow_mut();
@@ -116,6 +194,7 @@ impl Control for Fake {
         Ok(w.can_reissue)
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Info(number))?;
         if let Some((settling, left)) = w.settles {
@@ -133,6 +212,7 @@ impl Control for Fake {
             .copied())
     }
     fn add(&mut self, number: u32, shape: &Shape) -> Result<(), AddError> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         let taken = w.devices.contains_key(&number);
         w.happens(Event::Add(number, !taken))
@@ -157,6 +237,7 @@ impl Control for Fake {
         }
     }
     fn delete(&mut self, number: u32) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Delete(number))?;
         if w.held.contains(&number) {
@@ -169,6 +250,7 @@ impl Control for Fake {
         Ok(())
     }
     fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::BeginRecovery(number))
     }
@@ -187,6 +269,7 @@ impl Records for Fake {
         Ok(self.0.borrow().attachment)
     }
     fn write_attachment(&mut self, attachment: &Attachment) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::WriteAttachment(attachment.number))?;
         w.attachment = Some(*attachment);
@@ -200,24 +283,28 @@ impl Records for Fake {
         Ok(w.notes.get(&number).copied())
     }
     fn write_note(&mut self, number: u32, nonce: &[u8; 16]) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::WriteNote(number))?;
         w.notes.insert(number, *nonce);
         Ok(())
     }
     fn remove_attachment(&mut self) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::RemoveAttachment)?;
         w.attachment = None;
         Ok(())
     }
     fn remove_note(&mut self, number: u32) -> io::Result<()> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::RemoveNote(number))?;
         w.notes.remove(&number);
         Ok(())
     }
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Acknowledged)?;
         w.acknowledged
@@ -228,13 +315,56 @@ impl Records for Fake {
     }
 }
 
-/// The open store of the fake: a token.
-#[derive(Debug, PartialEq, Eq)]
-struct Opened;
+/// The open store of the fake: it holds the lock.
+struct Opened {
+    lock: Option<FakeLock>,
+}
+
+impl std::fmt::Debug for Opened {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Opened")
+    }
+}
 
 impl Volume for Fake {
+    type Lock = FakeLock;
     type Open = Opened;
-    fn open(&mut self, must_reach: Option<MustReach>) -> Result<(Opened, u64), OpenError> {
+
+    fn lock(&mut self) -> Result<FakeLock, LockError> {
+        self.intrude();
+        let mut w = self.0.borrow_mut();
+        if w.dead() {
+            return Err(LockError::Other("killed".into()));
+        }
+        if w.locked_tries > 0 {
+            w.locked_tries -= 1;
+            if w.locked_tries == 0 {
+                // The other instance is gone, and this is what it had
+                // acknowledged by then.
+                if let Some(acknowledged) = w.ack_when_free.take() {
+                    w.acknowledged = Ok(Some(acknowledged));
+                }
+            }
+            return Err(LockError::Locked);
+        }
+        if w.lock_holder.is_some() {
+            return Err(LockError::Locked);
+        }
+        w.locks += 1;
+        w.lock_holder = Some(w.locks);
+        Ok(FakeLock {
+            world: self.0.clone(),
+            id: w.locks,
+            kept: false,
+        })
+    }
+
+    fn open(
+        &mut self,
+        lock: FakeLock,
+        must_reach: Option<MustReach>,
+    ) -> Result<(Opened, u64), (OpenError, FakeLock)> {
+        self.intrude();
         let mut w = self.0.borrow_mut();
         let result = match w.opens.pop_front() {
             Some(error) => Err(error),
@@ -244,12 +374,17 @@ impl Volume for Fake {
                 Some(m) if m.identity == w.identity && w.log_end <= m.position => {
                     Err(OpenError::Short)
                 }
-                _ => Ok((Opened, SIZE)),
+                _ => Ok(()),
             },
         };
-        match w.happens(Event::Open(must_reach, result.is_ok())) {
+        let result = match w.happens(Event::Open(must_reach, result.is_ok())) {
             Ok(()) => result,
             Err(_) => Err(OpenError::Other("killed".into())),
+        };
+        drop(w);
+        match result {
+            Ok(()) => Ok((Opened { lock: Some(lock) }, SIZE)),
+            Err(error) => Err((error, lock)),
         }
     }
 }
@@ -282,7 +417,11 @@ fn run(world: World, mutants: u32) -> Outcome {
         Fake(shared.clone()),
         Fake(shared.clone()),
     );
-    let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants(mutants));
+    // The process ends with the start: its lock goes with it.
+    let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants(mutants)).map(|mut ready| {
+        ready.store.lock = None;
+        ready
+    });
     drop((c, r, v));
     let world = match Rc::try_unwrap(shared) {
         Ok(cell) => cell.into_inner(),
@@ -322,6 +461,17 @@ fn rules(outcome: &Outcome) -> Result<(), String> {
             check(
                 *must_reach == wanted,
                 "the store was opened without the position it must reach",
+            )?;
+        }
+    }
+    // Everything that changes the attachment, the reading of what was
+    // acknowledged and the open happen under the volume's lock.
+    for (i, event) in events.iter().enumerate() {
+        let free = matches!(event, Event::Features | Event::Pause | Event::Info(_));
+        if !free {
+            check(
+                outcome.world.under_lock.get(i) == Some(&true),
+                &format!("{event:?} happened without the volume's lock"),
             )?;
         }
     }
@@ -899,7 +1049,7 @@ fn a_failed_volume_deletes_no_device_that_is_not_its_own() {
 #[test]
 fn a_locked_store_is_tried_again_a_stated_number_of_times_and_no_device_is_touched() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
-    world.opens.extend(vec![OpenError::Locked; 4]);
+    world.locked_tries = 4;
     let devices = world.devices.clone();
     let outcome = run(world, 0);
     assert_eq!(rules(&outcome), Ok(()));
@@ -920,7 +1070,7 @@ fn a_locked_store_is_tried_again_a_stated_number_of_times_and_no_device_is_touch
 
     // The lock of a killed daemon goes: the next try serves.
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
-    world.opens.extend(vec![OpenError::Locked; 3]);
+    world.locked_tries = 3;
     let outcome = run(world, 0);
     assert_eq!(rules(&outcome), Ok(()));
     assert!(outcome.result.expect("serves").took_over);
@@ -1117,7 +1267,13 @@ fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), Str
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
-        let _ = detach_with(&mut control, &mut records, Mutants(mutants));
+        let _ = detach_with(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            Mutants(mutants),
+        );
         drop((control, records));
         let world = match Rc::try_unwrap(shared) {
             Ok(cell) => cell.into_inner(),
@@ -1147,7 +1303,7 @@ fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
-        let _ = detach(&mut control, &mut records);
+        let _ = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
         drop((control, records));
         let mut world = match Rc::try_unwrap(shared) {
             Ok(cell) => cell.into_inner(),
@@ -1254,7 +1410,8 @@ fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is
                 world.held.push(4);
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached = detach(&mut control, &mut records).expect("detach");
+            let detached =
+                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
             let world = shared.borrow();
             if held {
                 assert_eq!(detached, Detached::DeletedHeld(4));
@@ -1294,7 +1451,7 @@ fn detach_touches_nothing_it_may_not() {
         let world = World::new().attached(4, state, EARLIER);
         let (mut control, mut records, shared) = fakes(world);
         assert_eq!(
-            detach(&mut control, &mut records).expect("detach"),
+            detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
             expected
         );
         assert_eq!(shared.borrow().events, [Event::Info(4)]);
@@ -1308,7 +1465,8 @@ fn detach_touches_nothing_it_may_not() {
                 world.notes.insert(4, note);
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached = detach(&mut control, &mut records).expect("detach");
+            let detached =
+                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
             assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
             assert_eq!(shared.borrow().events, [Event::Info(4)]);
             assert_eq!(shared.borrow().notes.get(&4).copied(), note);
@@ -1317,8 +1475,254 @@ fn detach_touches_nothing_it_may_not() {
     // No device.
     let (mut control, mut records, shared) = fakes(World::new());
     assert_eq!(
-        detach(&mut control, &mut records).expect("detach"),
+        detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
         Detached::Nothing
     );
     assert!(shared.borrow().events.is_empty());
+}
+
+/// What a second daemon that came to serve still has at the end: its
+/// device, live, and the record and the note that name it.
+fn served_intact(world: &World) -> Result<(), String> {
+    let Some(Ok((number, _))) = world.intruder else {
+        return Ok(());
+    };
+    check(
+        world.devices.get(&number).map(|d| d.state) == Some(DeviceState::Live),
+        &format!("the serving daemon's device {number} was taken from it"),
+    )?;
+    check(
+        world
+            .attachment
+            .is_some_and(|a| a.number == number && world.notes.get(&number) == Some(&a.nonce)),
+        &format!("the serving daemon's record or note for device {number} was taken from it"),
+    )
+}
+
+fn unwrap(shared: Rc<RefCell<World>>) -> World {
+    match Rc::try_unwrap(shared) {
+        Ok(cell) => cell.into_inner(),
+        Err(_) => panic!("the fakes are dropped"),
+    }
+}
+
+/// A daemon starts between any two steps of a detach. Whichever of the
+/// two has the lock, the other finds the volume locked: a daemon that
+/// came to serve keeps its device, its record and its note.
+fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
+    for state in [DeviceState::Waiting, DeviceState::Added] {
+        for at in 0..=6 {
+            let mut world = World::new().attached(4, state, EARLIER);
+            world.intrude_at = Some(at);
+            let (mut control, mut records, shared) = fakes(world);
+            let detached = detach_with(
+                &mut control,
+                &mut records,
+                &mut Fake(shared.clone()),
+                3,
+                Mutants(mutants),
+            );
+            drop((control, records));
+            let world = unwrap(shared);
+            served_intact(&world).map_err(|e| format!("{state:?}, after {at} steps: {e}"))?;
+            match (&world.intruder, &detached) {
+                // The daemon was first: the detach finds the volume
+                // locked.
+                (Some(Ok(_)), Ok(Detached::Locked)) => {}
+                (Some(Ok(_)), other) if mutants == 0 => {
+                    return Err(format!(
+                        "{state:?}, after {at} steps: the daemon serves and the detach \
+                         answered {other:?}"
+                    ))
+                }
+                // The detach was first: the daemon finds it locked.
+                (Some(Err(stop)), _) if mutants == 0 => {
+                    check(
+                        *stop == Stop::Held,
+                        &format!("the daemon stopped with {stop:?}"),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn a_detach_and_a_start_never_act_on_one_volume_at_once() {
+    holds(
+        a_daemon_starts_during_a_detach,
+        &[("detach without the lock", Mutants::DETACH_WITHOUT_LOCK)],
+    );
+}
+
+/// A second start between any two steps of a start that fails on the
+/// recovery's sync, the failure that does not repeat.
+fn a_daemon_starts_during_a_failing_start(mutants: u32) -> Result<(), String> {
+    for at in 0..=8 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.opens.push_back(OpenError::SyncFailed);
+        world.intrude_at = Some(at);
+        let outcome = run(world, mutants);
+        served_intact(&outcome.world).map_err(|e| format!("after {at} steps: {e}"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_start_that_fails_deletes_under_the_lock() {
+    holds(
+        a_daemon_starts_during_a_failing_start,
+        &[("unlocked before the delete", Mutants::UNLOCK_BEFORE_FAILED)],
+    );
+}
+
+/// A start that waits on a locked volume opens with the position
+/// stored when it got the lock, not the one it could have read before:
+/// the instance that held the lock went on acknowledging.
+fn the_position_is_read_under_the_lock(mutants: u32) -> Result<(), String> {
+    let at = |position| MustReach {
+        identity: [3; 16],
+        position,
+    };
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.acknowledged = Ok(Some(at(500)));
+    world.locked_tries = 2;
+    world.ack_when_free = Some(at(5000));
+    // The log came back ending at 1000: beyond 500, short of 5000.
+    let outcome = run(world, mutants);
+    rules(&outcome)?;
+    check(
+        outcome
+            .world
+            .events
+            .contains(&Event::Open(Some(at(5000)), false)),
+        "opened with the position stored when the lock was got",
+    )?;
+    check(
+        matches!(outcome.result, Err(Stop::Failed(_))),
+        "the shorter log is refused",
+    )
+}
+
+#[test]
+fn a_start_that_waited_for_the_lock_opens_with_the_position_stored_by_then() {
+    holds(
+        the_position_is_read_under_the_lock,
+        &[(
+            "the position read before the lock",
+            Mutants::POSITION_BEFORE_LOCK,
+        )],
+    );
+}
+
+#[test]
+fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.locked_tries = 10;
+    let (mut control, mut records, shared) = fakes(world);
+    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    assert_eq!(detached.expect("detach"), Detached::Locked);
+    assert_eq!(shared.borrow().events, vec![Event::Pause; 3]);
+
+    // The lock of a daemon that was just killed goes: the detach acts.
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    world.locked_tries = 3;
+    let (mut control, mut records, shared) = fakes(world);
+    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    assert_eq!(detached.expect("detach"), Detached::Deleted(4));
+    // Every step of it under the lock, which is free again afterwards.
+    let world = shared.borrow();
+    for (i, event) in world.events.iter().enumerate() {
+        if *event != Event::Pause {
+            assert_eq!(world.under_lock.get(i), Some(&true), "{event:?}");
+        }
+    }
+    assert_eq!(world.lock_holder, None);
+}
+
+/// A failed volume deletes by a record of this boot only: with a run
+/// directory that survives a reboot, the note of the last boot is
+/// there, and the device under the number is a stranger's.
+fn a_record_of_another_boot(mutants: u32) -> Result<(), String> {
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    if let Some(attachment) = world.attachment.as_mut() {
+        attachment.boot = [9; 16];
+    }
+    world.opens.push_back(OpenError::MarkedFailed);
+    untouched(world, mutants, |s| matches!(s, Stop::Failed(_)))
+}
+
+/// This volume's device, with its note, that is deleted and still held
+/// is not taken over.
+fn our_dead_device(mutants: u32) -> Result<(), String> {
+    let world = World::new().attached(4, DeviceState::Dead, EARLIER);
+    let outcome = run(world, mutants);
+    rules(&outcome)?;
+    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+    check(!ready.took_over && ready.number == 0, "a fresh device")?;
+    check(
+        !outcome
+            .world
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::BeginRecovery(_) | Event::Delete(_))),
+        "no recovery and no delete",
+    )?;
+    check(
+        outcome.world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
+        "the dead device is as it was",
+    )
+}
+
+#[test]
+fn rules_the_review_found_no_test_for() {
+    holds(
+        a_record_of_another_boot,
+        &[(
+            "failed deletes by any boot's record",
+            Mutants::FAILED_ANY_BOOT,
+        )],
+    );
+    holds(
+        our_dead_device,
+        &[("a dead device taken over", Mutants::TAKE_DEAD)],
+    );
+}
+
+#[test]
+fn a_failed_volume_leaves_a_noted_device_whose_values_are_not_the_recorded_ones() {
+    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+    if let Some(device) = world.devices.get_mut(&4) {
+        device.shape.depth = 16;
+    }
+    world.opens.push_back(OpenError::MarkedFailed);
+    assert_eq!(
+        untouched(
+            world,
+            0,
+            |s| matches!(s, Stop::Failed(why) if why.contains("was left"))
+        ),
+        Ok(())
+    );
+}
+
+#[test]
+fn a_device_that_is_not_of_the_stores_size_is_not_taken_over() {
+    // The record and the kernel agree, and the store that was opened
+    // is of another size: this is not the device of this store.
+    let other = Shape {
+        size: SIZE * 2,
+        ..EARLIER
+    };
+    let world = World::new().attached(4, DeviceState::Waiting, other);
+    assert_eq!(
+        untouched(
+            world,
+            0,
+            |s| matches!(s, Stop::Error(why) if why.contains("bytes"))
+        ),
+        Ok(())
+    );
 }

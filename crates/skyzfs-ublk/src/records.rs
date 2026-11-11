@@ -191,6 +191,13 @@ impl Mutants {
 
 /// Put `bytes` at `path`: whole under another name, then renamed.
 /// `durable` syncs the file before the rename and the directory after.
+///
+/// **No test notices if one of the syncs is taken out.** The tests run
+/// on a real file system and never cut its power, so they cannot tell
+/// a synced record from one in the cache. That the attachment record
+/// is durable before the add (the file's sync and the directory's
+/// here, and the directory's sync in `remove_attachment`) rests on
+/// reading these lines.
 fn put(path: &Path, bytes: &[u8], durable: bool, mutants: Mutants) -> io::Result<()> {
     if mutants.has(Mutants::IN_PLACE) {
         return fs::File::create(path)?.write_all(bytes);
