@@ -173,15 +173,23 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
+/// Put the pump's counters up for the status file. A result the test
+/// build keeps back is a request the kernel still waits for: it counts
+/// as in flight.
+fn post<Q: skyzfs_ublk::pump::Queue>(
+    board: &Board,
+    pump: &mut Pump<Delayed<Q>, skyzfs_local::store::Served, SharedAck>,
+) {
+    let mut counters = pump.counters();
+    counters.in_flight += pump.queue().waiting() as u64;
+    board.post(counters);
+}
+
 /// Run `serve`. Prints for itself: the ready line has to be out when
 /// the device serves, not when the daemon ends.
 pub fn serve(serve: &Serve) -> Exit {
     if !serve.dir.join(SUPER_NAME).is_file() {
         say(format_args!("{} holds no volume", serve.dir.display()));
-        return Exit::Error;
-    }
-    if serve.hooks.hold.is_some() {
-        say("--hold-one-request is not built yet");
         return Exit::Error;
     }
     match skyzfs_ublk_sys::lock_all_memory() {
@@ -307,20 +315,21 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let board = Arc::new(Board::new());
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
+    let hold = serve.hooks.hold;
     let serving = device
         .serve(&wake, !serve.allow_unlocked_memory, {
             let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
-                let queue = Delayed::new(queue, delay, move || wake.wake());
+                let queue = Delayed::new(queue, delay, hold, move || wake.wake());
                 let mut pump = Pump::new(queue, served, SharedAck::new(ack));
                 let stopped = loop {
                     if let Some(stopped) = pump.turn() {
                         break stopped;
                     }
-                    board.post(pump.counters());
+                    post(&board, &mut pump);
                     faults(&mut pump, &flags, &mut fail_after);
                 };
-                board.post(pump.counters());
+                post(&board, &mut pump);
                 // The pump is dropped here, and with it the store: the
                 // volume's lock is held until then.
                 stopped
