@@ -5,7 +5,8 @@
 # skyzfs-blk runs through the kernel's block layer.
 #
 #   blkcheck-helper.sh create N    a new empty volume, served; prints its device
-#   blkcheck-helper.sh kill N      SIGKILL to its server, then serve again; prints the device.
+#   blkcheck-helper.sh kill N      stop its server, print "stopped", SIGKILL it, then serve
+#                                  again; prints the device on the last line.
 #                                  After `fail` there is no server left: nothing is done
 #   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good. Returns
 #                                  when serve has exited with status 3; the device is
@@ -89,6 +90,28 @@ kill)
         exit 0
     fi
     pid=$(server_pid); [ -n "$pid" ] || die "no server pid"
+    # Stop the server before killing it, and say so: a stopped server
+    # completes nothing, so whatever call of the caller's has returned
+    # by the line "stopped" was completed before the kill, and whatever
+    # is still outstanding was in flight at a server that then died.
+    # The caller needs to tell the two apart (skyzfs-blkcheck, `kill`).
+    kill -STOP "$pid" 2>/dev/null || die "the server ($pid) was not there to stop"
+    stopped=""
+    for _ in $(seq 1 100); do
+        # Every thread of the server: T is stopped.
+        stopped=$(cat "/proc/$pid/task/"*/stat 2>/dev/null | sed 's/^.*) //' | cut -c1 | sort -u | tr -d '\n')
+        [ "$stopped" = T ] && break
+        sleep 0.02
+    done
+    # The server's own threads stop; a kernel worker thread of its
+    # io_uring may not show as stopped, and cannot complete a request
+    # to the client without them.
+    main=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -c1)
+    [ "$main" = T ] || die "the server ($pid) did not stop within 2 s of SIGSTOP (state '$main', threads '$stopped')"
+    [ "$stopped" = T ] || echo "kill $N: thread states at the stop: $stopped" >> "$WORK/helper.log"
+    sleep 0.1       # calls that were completed just before return to the caller
+    echo stopped
+    sleep 0.1       # the caller takes note
     kill -9 "$pid" 2>/dev/null || die "the server ($pid) was not there to kill"
     # With the stand-in the server is a child of the serve script,
     # which notices and exits; with the daemon they are one process.

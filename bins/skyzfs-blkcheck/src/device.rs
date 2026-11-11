@@ -242,8 +242,32 @@ impl DeviceTarget {
         out.len() - before
     }
 
+    /// The server has been stopped and is about to be killed. Every call
+    /// that has returned by now was completed before the kill, and the
+    /// kernel will have nothing of it to issue again. The suite does not
+    /// know these results yet and will resubmit the ids; to the suite's
+    /// model a request that was not acknowledged at a kill is applied
+    /// from the kill on. So these results are dropped and the
+    /// resubmissions will be issued, as a transport would issue them.
+    /// Returns how many there were.
+    fn returned_before_kill(&mut self) -> usize {
+        let mut got = Vec::new();
+        self.drain(&mut got);
+        for c in &got {
+            trace(
+                self.number,
+                "before_kill",
+                Some(c.id),
+                &format!("{:?}", c.result),
+            );
+        }
+        got.len()
+    }
+
     /// Wait for every outstanding call to return, and keep the results
-    /// for the ids the suite will resubmit.
+    /// for the ids the suite will resubmit. These calls were outstanding
+    /// at a server that died: the kernel issued them again by itself,
+    /// which is their application after the kill.
     fn settle(&mut self, timeout: Duration) -> Result<(), HarnessError> {
         let mut got = Vec::new();
         self.drain(&mut got);
@@ -368,11 +392,40 @@ struct DeviceHarness {
 impl DeviceHarness {
     /// Run the helper; the last line of its stdout.
     fn helper(&self, verb: &str, number: u64) -> Result<String, HarnessError> {
-        let out = Command::new(&self.command)
+        self.helper_watched(verb, number, &mut |_| {})
+    }
+
+    /// Run the helper and call `on_line` with each line of its stdout as
+    /// it is printed; the last line of its stdout.
+    fn helper_watched(
+        &self,
+        verb: &str,
+        number: u64,
+        on_line: &mut dyn FnMut(&str),
+    ) -> Result<String, HarnessError> {
+        use std::io::{BufRead, BufReader};
+        use std::process::Stdio;
+        let failed = |e: &dyn std::fmt::Display| {
+            HarnessError(format!("{} {verb} {number}: {e}", self.command))
+        };
+        let mut child = Command::new(&self.command)
             .arg(verb)
             .arg(number.to_string())
-            .output()
-            .map_err(|e| HarnessError(format!("{} {verb} {number}: {e}", self.command)))?;
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| failed(&e))?;
+        let mut printed = Vec::new();
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines() {
+                let line = line.map_err(|e| failed(&e))?;
+                on_line(&line);
+                printed.extend_from_slice(line.as_bytes());
+                printed.push(b'\n');
+            }
+        }
+        let mut out = child.wait_with_output().map_err(|e| failed(&e))?;
+        out.stdout = printed;
         if !out.status.success() {
             return Err(HarnessError(format!(
                 "{} {verb} {number}: {}: {}",
@@ -420,7 +473,14 @@ impl Harness for DeviceHarness {
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
         trace(target.number, "kill", None, "");
-        self.helper("kill", target.number)?;
+        let number = target.number;
+        // The helper says "stopped" when the server can complete
+        // nothing more and is about to be killed.
+        self.helper_watched("kill", number, &mut |line| {
+            if line == "stopped" {
+                target.returned_before_kill();
+            }
+        })?;
         trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
         trace(target.number, "settled", None, "");
@@ -712,6 +772,68 @@ mod tests {
         assert!(h.fail_log(&mut t).is_err());
         assert!(!t.failed.load(Ordering::SeqCst));
         std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
+    }
+
+    /// A call that had returned before the server was killed was not in
+    /// flight at the kill, and the kernel issues nothing of it again.
+    /// The suite does not know that: the id is unacknowledged, it
+    /// resubmits it, and its model requires the request to be applied
+    /// from the kill on. So that resubmission is issued, and the id
+    /// still completes exactly once.
+    #[test]
+    fn a_request_completed_before_the_kill_is_issued_again() {
+        let (mut t, path) = target("before");
+        let write = |byte: u8| Request {
+            id: RequestId(1),
+            op: Op::Write {
+                offset: 0,
+                data: filled(byte),
+            },
+        };
+        t.submit(write(0xaa)).unwrap();
+        // The call returns; the suite has not polled.
+        std::thread::sleep(Duration::from_millis(200));
+        // The helper says the server is stopped: what has returned by
+        // now was completed before the kill.
+        assert_eq!(t.returned_before_kill(), 1);
+        t.settle(Duration::from_secs(30)).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(t.poll(&mut out), 0, "the old result is not handed out");
+        // The suite's reissue, with other data so that it shows.
+        t.submit(write(0x55)).unwrap();
+        assert_eq!(t.wait(&mut out, Duration::from_secs(30)), 1);
+        assert_eq!(out[0].id, RequestId(1));
+        assert_eq!(out[0].result, Ok(()));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(t.poll(&mut out), 0, "no second completion");
+        let on_device = std::fs::read(&path).unwrap();
+        assert!(
+            on_device[..BLOCK_USIZE].iter().all(|b| *b == 0x55),
+            "the resubmission was not issued"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The helper's line "stopped" is acted on when it is printed, not
+    /// when the helper has finished: by then a new server is up.
+    #[test]
+    fn the_stop_is_noticed_while_the_helper_runs() {
+        let (h, script) = harness("stops", "echo stopped; sleep 1; echo /dev/null");
+        let started = std::time::Instant::now();
+        let mut at = None;
+        let last = h
+            .helper_watched("kill", 1, &mut |line| {
+                if line == "stopped" {
+                    at = Some(started.elapsed());
+                }
+            })
+            .unwrap();
+        assert_eq!(last, "/dev/null");
+        assert!(
+            at.unwrap() < Duration::from_millis(700),
+            "noticed only at the end"
+        );
         std::fs::remove_file(&script).unwrap();
     }
 
