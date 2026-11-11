@@ -230,6 +230,14 @@ Design points:
 The daemon keeps two things on local flash.
 
 - **Write log.** Append-only and preallocated. A flush is one write and one device flush that returns only when the data is persistent. On macOS that is `F_FULLFSYNC`, and on Windows `FlushFileBuffers`. Their cost sets commit latency and must be measured (§10). macOS's cheaper `F_BARRIERFSYNC` cannot implement the contract's flush: it orders writes but promises nothing about what is persistent when it returns[^barrier]. A mode built on it would keep the pool consistent after a power cut and could lose flushes that had completed. That is a different durability class, offered by name if at all, and never a faster implementation of the same contract.
+  The log's format rests on five rules. Each one came out of a test or a review that broke the simpler version.
+  - *Nothing below the log is atomic.* A record counts only if its header and its payload both verify. Recovery keeps the longest prefix of records that do, reads them from the device and not from the operating system's cache, and makes that prefix durable before the volume is served.
+  - *A block that holds flushed records is never written again.* The first record after a flush starts in a new write unit, and recovery marks the end of the prefix in a new unit. The unit is the size the layer below rewrites as a whole, stored in the log: 4 KiB on x86, 16 KiB on Apple silicon. Without this rule a torn rewrite of a shared block could take flushed records with it.
+  - *Record headers are keyed.* A record's payload is client data and can lie exactly where recovery looks for the next record. Headers therefore carry a 64-bit keyed tag chained to the record before, with a random key that is stored only in the log's own superblock. A client that only chooses what it writes cannot make a header. Whoever can read the log's files has the key, and could already write them, so the files are private to the daemon's user.
+  - *Corruption of what was durable is reported, never repaired and never read as a shorter log.* Every superblock write starts an epoch, so anything written after a lost superblock copy is recognisably newer and the open fails. A read error fails the open and changes nothing on the device. Such a volume falls back to its last uploaded cut, which D2 accepts through M4.
+  - *A failed write or flush fails the log for good*, which is the failed volume of §4.1. A marker records it across restarts.
+
+  The log is checked on ext4 and XFS. macOS and Windows have no read path that bypasses the cache yet. Until those ports supply one, a log that was marked failed and cannot be checked against the device is not reopened, and the volume falls back to its last uploaded cut.
 - **Block cache.** Everything written and everything fetched, with read-ahead around a miss. The study's cold-origin result is entirely a statement about this cache.
 
 Two policies cover the two kinds of machine.
