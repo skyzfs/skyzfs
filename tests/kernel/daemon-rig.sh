@@ -754,9 +754,12 @@ refused_snap() {
     cp "/proc/spl/kstat/zfs/$pool/txgs" "$OUT/$tag-$at-txgs.txt" 2>/dev/null
     lim 20 zpool events -v > "$OUT/$tag-$at-events.txt" 2>&1
     lim 20 zpool status -v "$pool" > "$OUT/$tag-$at-status.txt" 2>&1
-    for p in $(pgrep 'txg_sync|txg_quiesce|z_wr_iss|z_wr_int|z_null|spa_async|zed|z_flush'); do
-        echo "== $p $(cat "/proc/$p/comm" 2>/dev/null)"; cat "/proc/$p/stack" 2>/dev/null
-    done > "$OUT/$tag-$at-stacks.txt"
+    { echo "== the pools at this moment (zpool list -H -o name,health; the threads below do not carry a pool's name):"
+      lim 20 zpool list -H -o name,health 2>&1
+      for p in $(pgrep 'txg_sync|txg_quiesce|z_wr_iss|z_wr_int|z_null|spa_async|zed|z_flush'); do
+          echo "== $p $(cat "/proc/$p/comm" 2>/dev/null)"; cat "/proc/$p/stack" 2>/dev/null
+      done
+    } > "$OUT/$tag-$at-stacks.txt"
 }
 # txgs file -> the newest transaction group and its state (the letters
 # are ZFS's: O open, Q quiescing, W waiting for sync, S syncing, C
@@ -784,7 +787,7 @@ vdev_say() {
 # -> RS_CTL ("FAIL|PASS|ERROR detail" for the control), RS_OBS.
 refused_start_arm() {
     local tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
-    local n0 n1 live="" end io="" inflight sus="" ev seen did=""
+    local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay
     RS_CTL=""; RS_OBS=""
     if ! vol_up "$SKYZFSD" "$dir"; then RS_CTL="ERROR not created or served"; return; fi
     if [ "$logdev" = yes ]; then
@@ -815,6 +818,12 @@ refused_start_arm() {
     fi
     pid=$(server_pid "$SKYZFSD" "$dir")
     num=${BDEV#/dev/ublkb}
+    # What the log held just before the kill, by the daemon's status
+    # (keys of the daemon that checkpoints; absent before it): the
+    # control needs an acknowledged mutation in the log, and a
+    # checkpoint could have taken it out.
+    ll=$(vol_stat "$SKYZFSD" "$dir" log_live); steps=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps); step=$(vol_stat "$SKYZFSD" "$dir" checkpoint_step)
+    logsay="status before the kill: log_live '${ll:-no such key}', checkpoint_steps '${steps:-no such key}', checkpoint_step '${step:-no such key}'"
     lim 20 zpool events -c > /dev/null 2>&1
     mark=$(klog_mark)
     kill -9 "$pid" 2>/dev/null
@@ -841,8 +850,14 @@ refused_start_arm() {
         # unacknowledged let a short log through: that is the finding.
         touch "$WORK/$tag.stop"
         i=$(vol_stat "$SKYZFSD" "$dir" recovered_unacknowledged)
-        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ]; then
-            RS_CTL="PASS killed at rest ($quiet); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through"
+        # With 0 it is a finding only if the log held a mutation to
+        # drop: with none in it the hook compares the log's end, serves
+        # and says 0, rightly. A daemon without the key does not
+        # checkpoint and cannot have emptied its log.
+        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ] && { [ -z "$ll" ] || { [[ $ll =~ ^[0-9]+$ ]] && [ "$ll" -gt 8192 ] && [ "${step:-0}" = 0 ]; }; }; then
+            RS_CTL="PASS killed at rest ($quiet; $logsay); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through"
+        elif [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ]; then
+            RS_CTL="ERROR the control did not happen: killed at rest ($quiet), serve --recover-short 1 served with recovered_unacknowledged 0, but the log may have held no mutation to drop ($logsay; an empty log is 8192 bytes)"
         else
             RS_CTL="ERROR the control did not happen: killed at rest ($quiet), yet serve --recover-short 1 served and says recovered_unacknowledged '${i:-nothing}': the log's last mutation was not an acknowledged one"
         fi
@@ -887,14 +902,15 @@ refused_start_arm() {
     case $did in *scrub*) io+="a scrub at 240 s: $(cat "$WORK/$tag.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-scrub.log" 2>/dev/null | tr '\n' ' '); " ;; esac
     RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. The device's error counters in zpool status at 10 s: $(vdev_say "$OUT/$tag-10s-status.txt" "$num"); 60 s: $(vdev_say "$OUT/$tag-60s-status.txt" "$num"); 115 s: $(vdev_say "$OUT/$tag-115s-status.txt" "$num"); 175 s: $(vdev_say "$OUT/$tag-175s-status.txt" "$num"); 235 s: $(vdev_say "$OUT/$tag-235s-status.txt" "$num"); the end: $(vdev_say "$OUT/$tag-end-status.txt" "$num"). Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end (and just before each of the three probes) are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
     if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ]; then
-        RS_CTL="FAIL killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
+        RS_CTL="FAIL killed at rest ($quiet; $logsay); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
     else
         RS_CTL="PASS killed at rest ($quiet); serve --recover-short 1 exited ${SERVE_RC:-?}; ready line: $(grep -c '^ready' "$dir.ready"); the device live at a look: ${live:-no}; pool $st"
     fi
     # The transaction groups and the txg_sync stacks at the end, in the
     # job's log as well: an artifact can be lost.
     echo "-- $tag: the transaction groups and the txg_sync threads at the end:"; tail -n 4 "$OUT/$tag-end-txgs.txt" 2>/dev/null
-    awk '/^== [0-9]+ txg_sync/ { p = 1; print; next } /^== / { p = 0 } p' "$OUT/$tag-end-stacks.txt" 2>/dev/null | head -n 60
+    sed -n '1,/^== [0-9]/p' "$OUT/$tag-end-stacks.txt" 2>/dev/null | sed '$d'
+    awk '/^== [0-9]+ (txg_sync|spa_async)/ { n = 0; p = 1; print; next } /^== / { p = 0 } p && ++n <= 15' "$OUT/$tag-end-stacks.txt" 2>/dev/null | head -n 200
 }
 # With the daemon: the short-recovery control and what follows a refused
 # start, on a pool with a separate log device and on one without.
