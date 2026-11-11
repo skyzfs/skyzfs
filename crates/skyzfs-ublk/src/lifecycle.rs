@@ -1259,6 +1259,11 @@ pub enum Detached {
     /// keeps its number until that closes it.
     DeletedHeld(u32),
 
+    /// The device under the recorded number has no server, waits for
+    /// none, has no note and has the recorded values: it may be this
+    /// volume's that was deleted before and is still held, or another's
+    /// that was never started. Nothing was done, and the record stays.
+    DeadNoNote(u32),
     /// The device is live under a server. Nothing was done.
     Live(u32),
     /// The device under the recorded number is not known to be this
@@ -1287,9 +1292,12 @@ pub enum Detached {
 /// steps leaves a state the next start or the next detach treats
 /// safely.
 ///
-/// A device that is live is refused. One that was deleted before and is
-/// still held is reported. One that cannot be shown to be this
-/// volume's is left, and the answer says which number.
+/// A device that is live is refused. One that cannot be shown to be
+/// this volume's is left, and the answer says which number. Of those,
+/// one without a server and without a note that has the recorded
+/// values is reported apart ([`Detached::DeadNoNote`]): that is how
+/// this volume's device looks after it was deleted while something
+/// held it, since a note is removed before its delete.
 ///
 /// Not decided here, and on the list for the kernel spike: whether a
 /// detach can know beforehand that a client holds a waiting device.
@@ -1322,6 +1330,9 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
         return Ok(Detached::Nothing);
     };
     let number = located.number;
+    if located.whose == Whose::Unsure && located.state == DeviceState::Dead {
+        return Ok(Detached::DeadNoNote(number));
+    }
     if located.whose != Whose::Ours {
         return Ok(Detached::NotOurs(located));
     }

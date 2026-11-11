@@ -320,6 +320,21 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
 
+    // No server, no note, the recorded values: deleted before and
+    // still held, or another's. 0, said, nothing done, the record stays.
+    let mut setup = Setup::new().attached(DeviceState::Dead);
+    setup.records().remove_note(4).expect("the note");
+    let output = setup.detach();
+    assert_eq!(output.exit, Exit::Done);
+    assert!(output.out.is_empty());
+    assert!(
+        output.err.contains("has no server and no note"),
+        "{}",
+        output.err
+    );
+    assert!(setup.kernel.deleted.is_empty());
+    assert!(setup.records().attachment().expect("read").is_some());
+
     // Not known to be this volume's: 1, nothing done.
     for (nonce, said) in [
         (Some([0x5A; 16]), "is not this volume's"),
