@@ -27,6 +27,9 @@ struct Limited {
     overstepped: Rc<Cell<Option<Capability>>>,
     /// How many devices the suite has asked for.
     created: u32,
+    /// Do what is asked although the harness said it cannot, and say
+    /// nothing: a harness that would not stop a suite that oversteps.
+    complies: bool,
 }
 
 /// The target of [`Limited`]: it notes an invalid request.
@@ -69,6 +72,7 @@ impl Limited {
             lacks: lacks.to_vec(),
             overstepped: Rc::new(Cell::new(None)),
             created: 0,
+            complies: false,
         }
     }
 
@@ -79,7 +83,7 @@ impl Limited {
     /// The suite asked for `capability`: an error if the harness lacks
     /// it, and a note of it.
     fn asked(&self, capability: Capability) -> Result<(), HarnessError> {
-        if self.lacks(capability) {
+        if self.lacks(capability) && !self.complies {
             self.overstepped.set(Some(capability));
             return Err(HarnessError(format!("cannot: {capability:?}")));
         }
@@ -89,7 +93,7 @@ impl Limited {
     fn watch(&self, inner: MemTarget) -> Watched {
         Watched {
             inner,
-            no_invalid: self.lacks(Capability::InvalidRequests),
+            no_invalid: self.lacks(Capability::InvalidRequests) && !self.complies,
             overstepped: self.overstepped.clone(),
         }
     }
@@ -193,7 +197,14 @@ struct Without {
     capability: Capability,
     not_exercised: &'static [&'static str],
     weaker: &'static [&'static str],
-    /// The faults of `MemTarget` that no remaining case notices.
+    /// The faults of `MemTarget` that no remaining fixed case notices.
+    /// Asserted, in both directions: every other fault is noticed by a
+    /// fixed case, whatever the seed of the random programs.
+    no_fixed_case: &'static [Fault],
+    /// Of those, the faults that the random programs do not notice
+    /// either, at any of [`SEEDS`]. Asserted at those seeds. The rest of
+    /// `no_fixed_case` was noticed by random programs at some seed and
+    /// not at others: that is reported and promised by nobody.
     invisible: &'static [Fault],
 }
 
@@ -222,9 +233,17 @@ const TABLE: [Without; 6] = [
             PROP_CONCURRENT,
             PROP_FAILURES,
         ],
-        // The other durability faults are still seen, through a log
-        // failure and a reopen, which also shows what was durable.
-        invisible: &[Fault::CutDropsMiddle],
+        // Without a power cut no fixed case shows what was durable. A
+        // random program can, through a log failure and a reopen, and
+        // whether one does is the seed's luck.
+        no_fixed_case: &[
+            Fault::FlushDoesNothing,
+            Fault::FlushJoinsOldSync,
+            Fault::FlushForgetsEarlierInstance,
+            Fault::CutDropsMiddle,
+            Fault::RecoveryNotDurable,
+        ],
+        invisible: &[],
     },
     Without {
         capability: Capability::Base,
@@ -246,24 +265,26 @@ const TABLE: [Without; 6] = [
             PROP_CONCURRENT,
             PROP_FAILURES,
         ],
+        no_fixed_case: &[
+            Fault::WriteZeroesShowsBase,
+            Fault::ReopenLosesFlushed,
+            Fault::StrayWrite,
+        ],
         invisible: &[Fault::WriteZeroesShowsBase, Fault::StrayWrite],
     },
     Without {
         capability: Capability::ReadOnly,
         not_exercised: &[READ_ONLY],
         weaker: &[PARAMETERS],
+        no_fixed_case: &[Fault::ReadOnlyAcceptsWrites],
         invisible: &[Fault::ReadOnlyAcceptsWrites],
     },
     Without {
         capability: Capability::FailLog,
         not_exercised: &[FAILED_VOLUME, REOPENED, RESTART_FAILED],
         weaker: &[PROP_FAILURES],
-        invisible: &[
-            Fault::FailedServesReads,
-            Fault::FlushSucceedsOnFailedLog,
-            Fault::FailureForgottenOnKill,
-            Fault::ReopenLosesFlushed,
-        ],
+        no_fixed_case: FAIL_LOG_FAULTS,
+        invisible: FAIL_LOG_FAULTS,
     },
     Without {
         capability: Capability::InvalidRequests,
@@ -275,20 +296,31 @@ const TABLE: [Without; 6] = [
             PROP_CONCURRENT,
             PROP_FAILURES,
         ],
+        no_fixed_case: &[Fault::AcceptMisaligned, Fault::AcceptOutOfBounds],
         invisible: &[Fault::AcceptMisaligned, Fault::AcceptOutOfBounds],
     },
     Without {
         capability: Capability::ReopenFailed,
         not_exercised: &[REOPENED, RESTART_FAILED],
         weaker: &[PROP_FAILURES],
+        no_fixed_case: &[Fault::ReopenLosesFlushed],
         invisible: &[Fault::ReopenLosesFlushed],
     },
 ];
 
+const FAIL_LOG_FAULTS: &[Fault] = &[
+    Fault::FailedServesReads,
+    Fault::FlushSucceedsOnFailedLog,
+    Fault::FailureForgottenOnKill,
+    Fault::ReopenLosesFlushed,
+];
+
 /// With every capability missing, as for a rig that can only create an
-/// empty writable device and lose the daemon: the faults no remaining
-/// case notices. More than the sum of the rows above: without a power
-/// cut and without a reopen nothing shows what was durable.
+/// empty writable device and lose the daemon: the faults that no
+/// remaining fixed case notices, and that the random programs do not
+/// notice either at any of [`SEEDS`]. More than the sum of the rows
+/// above: without a power cut and without a reopen nothing shows what
+/// was durable, in a fixed case or in a random program.
 const INVISIBLE_WITH_NOTHING: &[Fault] = &[
     Fault::AcceptMisaligned,
     Fault::AcceptOutOfBounds,
@@ -467,12 +499,32 @@ fn the_random_programs_say_what_they_left_out() {
     ));
 }
 
-/// Whether any case notices `fault` on a harness that lacks `lacks`.
-fn noticed(lacks: &[Capability], fault: Fault) -> bool {
+/// The seeds the random programs are run at where this file says a
+/// fault is invisible: the suite's default and two others.
+const SEEDS: [u64; 3] = [0x5ca1_ab1e, 7, 0xC0FFEE];
+
+/// Whether a fixed case notices `fault` on a harness that lacks `lacks`.
+fn a_fixed_case_notices(lacks: &[Capability], fault: Fault) -> bool {
     let mut harness = Limited::new(lacks, Some(fault));
-    let config = suite();
     let noticed = cases::<Limited>()
         .iter()
+        .filter(|case| !case.random)
+        .any(|case| case.run_on(&mut harness, &suite()).is_err());
+    assert_eq!(
+        harness.overstepped.get(),
+        None,
+        "{fault:?} without {lacks:?}"
+    );
+    noticed
+}
+
+/// Whether the random programs notice `fault` at `seed`.
+fn random_programs_notice(lacks: &[Capability], fault: Fault, seed: u64) -> bool {
+    let mut harness = Limited::new(lacks, Some(fault));
+    let config = Config { seed, ..suite() };
+    let noticed = cases::<Limited>()
+        .iter()
+        .filter(|case| case.random)
         .any(|case| case.run_on(&mut harness, &config).is_err());
     assert_eq!(
         harness.overstepped.get(),
@@ -482,84 +534,131 @@ fn noticed(lacks: &[Capability], fault: Fault) -> bool {
     noticed
 }
 
-/// Every fault outside `invisible` is caught without `lacks`, and every
-/// fault in it is not: the list is exact.
-fn invisible_are_exactly(lacks: &[Capability], invisible: &[Fault]) {
+/// The three columns for a harness that lacks `lacks`.
+///
+/// 1. Every fault outside `no_fixed_case` is noticed by a fixed case,
+///    and every fault in it by none: asserted, and it does not depend
+///    on a seed.
+/// 2. Every fault in `invisible` is not noticed by the random programs
+///    at any of [`SEEDS`]: asserted at those seeds.
+/// 3. The faults in `no_fixed_case` and not in `invisible` were noticed
+///    by random programs at some seed. At which of [`SEEDS`] is
+///    printed, and nothing is asserted: it is the seed's luck.
+fn the_columns_are(lacks: &[Capability], no_fixed_case: &[Fault], invisible: &[Fault]) {
     for fault in FAULTS {
         assert_eq!(
-            !noticed(lacks, fault),
-            invisible.contains(&fault),
-            "{fault:?} without {lacks:?}"
+            !a_fixed_case_notices(lacks, fault),
+            no_fixed_case.contains(&fault),
+            "a fixed case and {fault:?} without {lacks:?}"
         );
+    }
+    for fault in invisible {
+        assert!(
+            no_fixed_case.contains(fault),
+            "{fault:?} is in one list only"
+        );
+        for seed in SEEDS {
+            assert!(
+                !random_programs_notice(lacks, *fault, seed),
+                "{fault:?} without {lacks:?} is noticed at seed {seed:#x}"
+            );
+        }
+    }
+    for fault in no_fixed_case.iter().filter(|f| !invisible.contains(f)) {
+        let at: Vec<String> = SEEDS
+            .iter()
+            .filter(|seed| random_programs_notice(lacks, *fault, **seed))
+            .map(|seed| format!("{seed:#x}"))
+            .collect();
+        println!("without {lacks:?}, {fault:?}: no fixed case; random programs at seeds {at:?}");
     }
 }
 
+fn row_holds(row: &Without) {
+    the_columns_are(&[row.capability], row.no_fixed_case, row.invisible);
+}
+
 /// Not a contract rule: what running without a capability costs. A
-/// fault of `MemTarget` that the remaining cases can see is still
-/// caught, and the faults that become invisible are exactly those the
-/// table lists. One test per capability, so that they run side by side.
+/// fault of `MemTarget` that a remaining fixed case can see is still
+/// caught by one; the faults that no fixed case sees are exactly those
+/// the table lists; and of those, the ones listed as invisible are not
+/// seen by the random programs either, at three seeds. Without a power
+/// cut the five faults of durability have no fixed case and are left
+/// to the luck of the random programs. One test per capability, so
+/// that they run side by side.
 #[test]
-fn without_a_power_cut_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[0].capability], TABLE[0].invisible);
+fn without_a_power_cut_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[0]);
 }
 
 /// As above, without a base that is not empty.
 #[test]
-fn without_a_base_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[1].capability], TABLE[1].invisible);
+fn without_a_base_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[1]);
 }
 
 /// As above, without a read-only device.
 #[test]
-fn without_a_read_only_device_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[2].capability], TABLE[2].invisible);
+fn without_a_read_only_device_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[2]);
 }
 
 /// As above, without a log that fails on demand.
 #[test]
-fn without_a_log_failure_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[3].capability], TABLE[3].invisible);
+fn without_a_log_failure_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[3]);
 }
 
 /// As above, without invalid requests.
 #[test]
-fn without_invalid_requests_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[4].capability], TABLE[4].invisible);
+fn without_invalid_requests_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[4]);
 }
 
 /// As above, without reopening a failed volume.
 #[test]
-fn without_a_reopen_the_other_faults_are_still_caught() {
-    invisible_are_exactly(&[TABLE[5].capability], TABLE[5].invisible);
+fn without_a_reopen_the_faults_a_fixed_case_sees_are_still_caught() {
+    row_holds(&TABLE[5]);
 }
 
 /// As above, with every capability missing: the nine faults that a rig
-/// which can only lose the daemon still catches, and the fifteen it
-/// cannot see.
+/// which can only lose the daemon still catches, each by a fixed case,
+/// and the fifteen that neither a fixed case nor a random program sees.
 #[test]
 fn with_no_capability_the_faults_a_daemon_loss_shows_are_still_caught() {
-    invisible_are_exactly(&Capability::ALL, INVISIBLE_WITH_NOTHING);
+    the_columns_are(
+        &Capability::ALL,
+        INVISIBLE_WITH_NOTHING,
+        INVISIBLE_WITH_NOTHING,
+    );
 }
 
-/// Not a contract rule: a defect of the suite itself. A suite whose
-/// cases run although the harness lacks a capability their rule needs
-/// (`Config::run_without_capability`) is noticed: exactly those cases
-/// fail, because they ask for what the harness cannot do, where the
-/// suite as it is reports them as not exercised.
+/// Not a contract rule: a defect of the suite itself. A case that runs
+/// although the harness lacks a capability its rule needs
+/// (`Case::defect_run_without_its_capabilities`) is stopped by the
+/// suite's own guards: exactly the cases the table lists as not
+/// exercised fail, on a harness that would silently do what it said it
+/// cannot. So the guards, and not the harness's refusal, are what
+/// stands behind "the suite never calls what the harness lacks".
 #[test]
-fn a_suite_that_runs_a_case_without_its_capability_is_caught() {
+fn a_case_that_runs_without_its_capability_is_stopped_by_the_suite() {
     for row in &TABLE {
         let lacks = [row.capability];
-        let config = Config {
-            run_without_capability: true,
-            ..suite()
-        };
-        let (report, _) = run(&lacks, &config);
-        assert_eq!(
-            report.failed(),
-            expected(&lacks, false),
-            "without {lacks:?}:\n{report}"
-        );
-        assert!(report.not_exercised().is_empty(), "{report}");
+        let mut harness = Limited::new(&lacks, None);
+        harness.complies = true;
+        let failed: Vec<&str> = cases::<Limited>()
+            .iter()
+            .filter(|case| {
+                case.defect_run_without_its_capabilities(&mut harness, &suite())
+                    .is_err()
+            })
+            .map(|case| case.name)
+            .collect();
+        assert_eq!(failed, expected(&lacks, false), "without {lacks:?}");
+        // And as it is, on the same harness, the suite fails nothing
+        // and leaves the same cases out.
+        let report = run_all(&mut harness, &suite());
+        assert!(report.passed(), "without {lacks:?}:\n{report}");
+        assert_eq!(report.not_exercised(), expected(&lacks, false));
     }
 }

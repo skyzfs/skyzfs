@@ -265,6 +265,11 @@ impl Cut for RecordCut {
 impl Harness for SimHarness {
     type Target = OnSim;
 
+    /// The simulated disk can do everything the suite asks.
+    fn capabilities(&self) -> skyzfs_blk::conformance::Capabilities {
+        skyzfs_blk::conformance::Capabilities::ALL
+    }
+
     fn create(&mut self, spec: &Spec) -> Result<OnSim, HarnessError> {
         let disk = SimDisk::new(spec.seed);
         disk.set_write_unit(u64::from(self.unit));

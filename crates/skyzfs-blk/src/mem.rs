@@ -824,6 +824,10 @@ impl MemHarness {
 impl crate::conformance::Harness for MemHarness {
     type Target = MemTarget;
 
+    fn capabilities(&self) -> crate::conformance::Capabilities {
+        crate::conformance::Capabilities::ALL
+    }
+
     fn create(
         &mut self,
         spec: &crate::conformance::Spec,

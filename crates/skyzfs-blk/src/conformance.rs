@@ -108,12 +108,30 @@
 //! | `prop_failures_match_model` | | P, F, O, B, I |
 //!
 //! What this costs is measured against the faulty targets of
-//! [`mem`](crate::mem) in `tests/capabilities.rs`: which faults no
-//! remaining case notices without each capability. Without any of
-//! them, 15 of the 24 faults are invisible, among them every fault of
-//! durability: without a power cut and without a reopen nothing shows
-//! what was durable. On an empty volume, damage that zeroes a block
-//! nothing has written is not seen either.
+//! [`mem`](crate::mem) in `tests/capabilities.rs`, in three columns for
+//! each missing capability: the faults a remaining **fixed case**
+//! notices, which is asserted and does not depend on a seed; the faults
+//! that only **random programs** noticed, at some seeds and not at
+//! others, which is reported and promised by nobody; and the faults
+//! that are **invisible**, to the fixed cases and to the random
+//! programs at three seeds.
+//!
+//! | Without | No fixed case notices | Of those, invisible at three seeds |
+//! |---|---|---|
+//! | a power cut | `FlushDoesNothing`, `FlushJoinsOldSync`, `FlushForgetsEarlierInstance`, `CutDropsMiddle`, `RecoveryNotDurable` | none: each was noticed by random programs at one to three of the seeds, through a log failure and a reopen |
+//! | a base | `WriteZeroesShowsBase`, `ReopenLosesFlushed`, `StrayWrite` | `WriteZeroesShowsBase`, `StrayWrite` |
+//! | a read-only device | `ReadOnlyAcceptsWrites` | the same |
+//! | a log failure | `FailedServesReads`, `FlushSucceedsOnFailedLog`, `FailureForgottenOnKill`, `ReopenLosesFlushed` | the same |
+//! | invalid requests | `AcceptMisaligned`, `AcceptOutOfBounds` | the same |
+//! | a reopen | `ReopenLosesFlushed` | the same |
+//! | all six | the faults above and `TearOnCut`: 15 of 24 | the same 15 |
+//!
+//! So a rig without a power cut must not count on the suite for the
+//! faults of durability: no fixed case shows what was durable, and a
+//! random program does only if it happens to fail the log and reopen.
+//! A rig with none of the capabilities sees none of them at all. On an
+//! empty volume, damage that zeroes a block nothing has written is not
+//! seen either (`StrayWrite`).
 //!
 //! The suite assumes a fault-free environment apart from the faults it
 //! injects: an I/O error on a valid request fails the case.
@@ -224,7 +242,7 @@ impl Capability {
 pub struct Capabilities(u8);
 
 impl Capabilities {
-    /// Everything: what a harness has unless it says otherwise.
+    /// Everything.
     pub const ALL: Capabilities = Capabilities(0x3f);
 
     /// The same set without `capability`.
@@ -317,12 +335,14 @@ pub trait Harness {
     /// The target type.
     type Target: BlockTarget;
 
-    /// What this harness can do. The default is everything. See the
-    /// trait's documentation for what leaving one out means, and do not
-    /// claim one that the rig only imitates.
-    fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL
-    }
+    /// What this harness can do. There is no default: a harness for a
+    /// real device that did not say would claim a power cut it can
+    /// only imitate, and every case about flushes would pass having
+    /// checked nothing. See the trait's documentation for what leaving
+    /// a capability out means, and do not claim one that the rig only
+    /// imitates. A harness that can do everything returns
+    /// [`Capabilities::ALL`].
+    fn capabilities(&self) -> Capabilities;
 
     /// A fresh device as `spec` describes. Each call must give a device
     /// independent of the earlier ones. It should be small: the suite
@@ -418,10 +438,6 @@ pub struct Config {
     pub rounds: u32,
     /// How long to wait for a completion before the case fails.
     pub timeout: Duration,
-    /// A defect of the suite, for the suite's own tests: cases run
-    /// although the harness lacks a capability their rule needs.
-    #[doc(hidden)]
-    pub run_without_capability: bool,
 }
 
 impl Default for Config {
@@ -433,7 +449,6 @@ impl Default for Config {
             window_blocks: 24,
             rounds: 16,
             timeout: Duration::from_secs(10),
-            run_without_capability: false,
         }
     }
 }
@@ -503,8 +518,29 @@ impl<H: Harness> Case<H> {
     /// Run the case and say whether it passed, failed, or could not
     /// exercise its rule on this target.
     pub fn run_on(&self, harness: &mut H, config: &Config) -> Result<Status, Failure> {
+        self.run_checked(harness, config, true)
+    }
+
+    /// A defect of the suite, for the suite's own tests and for nothing
+    /// else: the case runs although the harness lacks a capability its
+    /// rule needs.
+    #[doc(hidden)]
+    pub fn defect_run_without_its_capabilities(
+        &self,
+        harness: &mut H,
+        config: &Config,
+    ) -> Result<Status, Failure> {
+        self.run_checked(harness, config, false)
+    }
+
+    fn run_checked(
+        &self,
+        harness: &mut H,
+        config: &Config,
+        honour: bool,
+    ) -> Result<Status, Failure> {
         let has = harness.capabilities();
-        if !config.run_without_capability {
+        if honour {
             if let Some(lacking) = self.requires.iter().find(|c| !has.has(**c)) {
                 return Ok(Status::NotExercised(lacking.missing()));
             }
@@ -729,7 +765,7 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             needs: Needs::Nothing,
             requires: &[],
             weaker: &[
-                (Capability::InvalidRequests, "no request beyond the end is issued; only that the last block can be written and read"),
+                (Capability::InvalidRequests, "no request beyond the end is issued; only that the last block can be written and read, which through a kernel exercises the target only as far as the block layer forwards the request unchanged"),
             ],
             random: false,
             run: rejects_out_of_bounds::<H>,
@@ -742,7 +778,7 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             needs: Needs::Nothing,
             requires: &[],
             weaker: &[
-                (Capability::InvalidRequests, "no empty or oversize request is issued; only that 1 MiB is accepted and that a discard and a write-zeroes may span the device"),
+                (Capability::InvalidRequests, "no empty or oversize request is issued; only that 1 MiB is accepted and that a discard and a write-zeroes may span the device, which through a kernel exercises the target only if the device advertises a largest request of 1 MiB: the block layer splits to the advertised limits"),
             ],
             random: false,
             run: rejects_empty_and_oversize::<H>,
@@ -2595,4 +2631,91 @@ fn prop_invalid_requests<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
         d.expect_read(last, &tail, "R2: after rejected requests")?;
         d.verify()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The suite's own parts that cannot be seen from outside.
+
+    use proptest::strategy::ValueTree;
+
+    use super::*;
+
+    /// The kinds of step in `samples` programs' worth of steps.
+    fn kinds(failures: bool, has: Capabilities) -> Vec<&'static str> {
+        let strategy = step_strategy(24, failures, has);
+        let mut runner = TestRunner::deterministic();
+        let mut seen = Vec::new();
+        for _ in 0..4000 {
+            let step = strategy.new_tree(&mut runner).unwrap().current();
+            let kind = match step {
+                Step::Write(..) => "write",
+                Step::Read(..) => "read",
+                Step::WriteZeroes(..) => "write_zeroes",
+                Step::Discard(..) => "discard",
+                Step::Flush => "flush",
+                Step::Reap => "reap",
+                Step::Poll => "poll",
+                Step::Drain => "drain",
+                Step::Kill(_) => "kill",
+                Step::PowerCut(_) => "power_cut",
+                Step::FailLog => "fail_log",
+                Step::Reopen => "reopen",
+                Step::Maintain(_) => "maintain",
+                Step::Invalid(_) => "invalid",
+            };
+            if !seen.contains(&kind) {
+                seen.push(kind);
+            }
+        }
+        seen.sort_unstable();
+        seen
+    }
+
+    /// Not a contract rule: the random programs of a harness that can
+    /// do everything contain every kind of step, and those of a harness
+    /// that lacks a capability leave out exactly the steps that need
+    /// it. A strategy that dropped a kind of step for everyone would
+    /// otherwise pass every test.
+    #[test]
+    fn the_random_programs_have_every_kind_of_step_the_harness_can_do() {
+        let plain = [
+            "discard",
+            "drain",
+            "flush",
+            "invalid",
+            "maintain",
+            "poll",
+            "read",
+            "reap",
+            "write",
+            "write_zeroes",
+        ];
+        let with = |more: &[&'static str]| {
+            let mut all: Vec<&str> = plain.iter().chain(more).copied().collect();
+            all.sort_unstable();
+            all
+        };
+        let without = |all: Vec<&'static str>, gone: &[&str]| -> Vec<&'static str> {
+            all.into_iter().filter(|k| !gone.contains(k)).collect()
+        };
+        let failing = with(&["kill", "power_cut", "fail_log", "reopen"]);
+        assert_eq!(kinds(false, Capabilities::ALL), with(&[]));
+        assert_eq!(kinds(true, Capabilities::ALL), failing);
+        for (capability, gone) in [
+            (Capability::PowerCut, &["power_cut"][..]),
+            (Capability::FailLog, &["fail_log", "reopen"][..]),
+            (Capability::InvalidRequests, &["invalid"][..]),
+            (Capability::Base, &[][..]),
+            (Capability::ReadOnly, &[][..]),
+            (Capability::ReopenFailed, &[][..]),
+        ] {
+            let has = Capabilities::ALL.without(capability);
+            assert_eq!(
+                kinds(true, has),
+                without(failing.clone(), gone),
+                "without {capability:?}"
+            );
+        }
+    }
 }

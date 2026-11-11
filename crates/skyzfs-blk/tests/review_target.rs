@@ -327,6 +327,11 @@ struct H {
 }
 impl Harness for H {
     type Target = T;
+    // Added when the suite stopped assuming (M1.2c): this harness can
+    // do everything the suite asks.
+    fn capabilities(&self) -> skyzfs_blk::conformance::Capabilities {
+        skyzfs_blk::conformance::Capabilities::ALL
+    }
     fn create(&mut self, spec: &Spec) -> Result<T, HarnessError> {
         let g = Geometry::new(1, 16, spec.read_only).unwrap();
         let mut base = vec![0u8; g.size_bytes() as usize];
