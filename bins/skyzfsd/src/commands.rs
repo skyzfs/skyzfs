@@ -306,7 +306,12 @@ pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
 
 /// Run `work` in the directory `path`, made first (its last component
 /// only, mode 0700) if it is missing. If `work` fails and the directory
-/// was made here, it is removed again if it is empty.
+/// was made here, what a create leaves in it is removed, by its exact
+/// names ([`CREATE_LEFTOVERS`](skyzfs_local::store::CREATE_LEFTOVERS)),
+/// and then the directory: a create that fails leaves nothing of a
+/// directory it made. A directory that was there before is left with
+/// whatever the failed create left in it; the next create removes
+/// that.
 pub fn in_directory<T>(
     path: &Path,
     work: impl FnOnce(FsDir) -> Result<T, Output>,
@@ -328,10 +333,35 @@ pub fn in_directory<T>(
         Err(e) => Err(Output::error(format_args!("{shown}: {e}"))),
     };
     if result.is_err() && made {
-        // Fails, and leaves it, if anything was put in it.
-        let _ = std::fs::remove_dir(path);
+        unmake(path);
     }
     result
+}
+
+/// Remove a directory this create made, and what a create leaves in
+/// it. Under the volume's lock, and only if the directory holds no
+/// volume: if another instance has the lock or made a volume here in
+/// the meantime, everything is left. The directory itself goes only if
+/// it is empty then, so a file of anybody else keeps it.
+fn unmake(path: &Path) {
+    let Ok(dir) = FsDir::new(path) else {
+        return;
+    };
+    if let Ok(lock) = Store::lock_volume(&dir) {
+        if !path.join(SUPER_NAME).exists() {
+            let lock_name = skyzfs_local::fs::LOCK_NAME;
+            for name in skyzfs_local::store::CREATE_LEFTOVERS {
+                if name != lock_name {
+                    let _ = std::fs::remove_file(path.join(name));
+                }
+            }
+            // Last, and still held: whoever opens the lock file from
+            // here on finds the directory gone or makes its own.
+            let _ = std::fs::remove_file(path.join(lock_name));
+        }
+        drop(lock);
+    }
+    let _ = std::fs::remove_dir(path);
 }
 
 /// Make the store of `create` in `dir`; its identity.

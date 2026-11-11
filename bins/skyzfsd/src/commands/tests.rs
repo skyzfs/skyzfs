@@ -669,6 +669,53 @@ fn a_failed_create_leaves_no_directory_it_made() {
     assert!(fine.is_dir());
 }
 
+/// A real create that fails after it has made the directory, the lock
+/// file and the home image's first file (a size the file system cannot
+/// hold) leaves nothing: not the files, not the directory. In a
+/// directory that was there before, the directory stays, and the next
+/// create works in it.
+#[test]
+fn a_create_that_fails_half_way_removes_what_it_made() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let run_dir = keep.path().join("run");
+    // Beyond what ext4, XFS and btrfs hold in one file. A file system
+    // that takes it (a sparse file on tmpfs) cannot show the failure.
+    let too_large = 1u64 << 62;
+
+    let made = keep.path().join("made");
+    let output = create(
+        &creating(&made, &run_dir, too_large, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    if output.exit == Exit::Done {
+        eprintln!(
+            "{} holds a file of {too_large} bytes: not exercised",
+            keep.path().display()
+        );
+        return;
+    }
+    assert_eq!((output.exit, output.out.as_str()), (Exit::Error, ""));
+    assert!(output.err.contains("creating a volume"), "{}", output.err);
+    assert!(!made.exists(), "the directory it made is gone");
+
+    let there = keep.path().join("there");
+    std::fs::create_dir(&there).expect("dir");
+    let output = create(
+        &creating(&there, &run_dir, too_large, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert!(there.is_dir(), "a directory it did not make stays");
+    let output = create(
+        &creating(&there, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+}
+
 /// `create` in a directory that holds files of somebody else, also
 /// ones whose names begin like the store's own: refused with status 1,
 /// the file named, and the directory exactly as it was, with no lock
