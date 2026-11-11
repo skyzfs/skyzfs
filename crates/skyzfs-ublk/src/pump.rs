@@ -30,18 +30,28 @@
 //!   completions is committed, the position of the newest acknowledged
 //!   record is stored ([`Positions`]), once for the batch, and only if
 //!   it is beyond what this pump stored last. If it cannot be stored,
-//!   nothing of the batch is committed: the requests stay held and the
-//!   store is tried again at the next turn. The pump has no timer; a
-//!   queue that wakes for nothing else must wake on its own for this.
+//!   nothing of the batch is committed, reads in it included: the
+//!   requests stay held, [`Counters::unstored`] says how many, and the
+//!   store is tried again at the next turn. The pump has no timer of
+//!   its own. The retry rides on the queue waking: for a request, for
+//!   the target, or, with no traffic at all, for the idle time-out of
+//!   the queue's own wait. In `libublk` 0.4.8 that is 20 seconds
+//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), read from the source and
+//!   still to be seen in a run; so the longest wait for a retry with
+//!   no traffic is 20 seconds.
 //! - **An orderly stop** completes what it accepted: once the queue
 //!   says stop, nothing more is accepted, what is in the target is
 //!   waited for and committed, and the pump ends. Requests that were
 //!   fetched and not yet submitted are left uncommitted, for the kernel
 //!   to issue again to the next instance.
 //! - **A target that is gone** (its worker thread has ended) ends the
-//!   pump at once and nothing more is committed: the kernel issues the
-//!   requests again to the next instance. Failing them would put errors
-//!   on a pool for a defect of the daemon.
+//!   pump at once and nothing more is committed, not even what the
+//!   target had completed. That is safe: with recovery by reissue the
+//!   kernel issues every request that was not committed again to the
+//!   next instance, and all five operations are idempotent (§4.1), so
+//!   one the lost target had applied is simply applied again. Failing
+//!   the requests instead would put errors on a pool for a defect of
+//!   the daemon.
 
 use std::collections::VecDeque;
 use std::io;

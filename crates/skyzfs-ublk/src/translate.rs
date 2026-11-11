@@ -33,6 +33,20 @@
 //!   right than two.
 //! - **No short counts.** A read or a write that succeeded is answered
 //!   with its whole length in bytes, the other operations with 0.
+//!   This rests on what the driver does with a result
+//!   (`__ublk_complete_rq` in `drivers/block/ublk_drv.c`, read at
+//!   Linux v7.0, the kernel of the CI runners):
+//!   - a negative result is an error, turned into a block status;
+//!   - a result of 0 on a read is turned into an I/O error ("failed
+//!     read IO if nothing is read");
+//!   - for a flush, a discard and a write-zeroes, any result that is
+//!     not negative ends the request as done: the result is not
+//!     compared with anything, so 0 is as good as a length;
+//!   - for a read and a write the result is the number of bytes done
+//!     (`blk_update_request`). If it is less than the request, the
+//!     request is not failed: the rest is put back on the queue and
+//!     issued again. A write answered with 0 would be issued again
+//!     for ever.
 //!
 //! # Flags
 //!
