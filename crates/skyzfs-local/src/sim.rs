@@ -16,7 +16,7 @@
 //!   sector can survive while an earlier one is lost, and a write that
 //!   spans sectors can be torn at any sector boundary. Which, is the
 //!   [`Cut`]'s choice. A file's length ends up as it was at the last
-//!   sync or as it is now. Of the creations, removals and renames since
+//!   sync or as it is now. Of the creations and removals since
 //!   the last [`Dir::sync`], a prefix survives. What is left is durable,
 //!   and every handle opened before the cut is dead.
 //! - **A process kill** ([`SimDisk::kill`]). Every handle is dead and
@@ -24,15 +24,21 @@
 //!   still unsynced, so a later power cut can take it.
 //! - **Injected errors** ([`SimDisk::fail_write`], [`SimDisk::fail_sync`]).
 //!   A failed write may have written any subset of its sectors. A failed
-//!   sync makes nothing durable, and some of the unsynced sectors go back
-//!   to their durable content at once, as when a kernel drops the pages
-//!   it could not write: the data is gone without any power cut, and a
-//!   later sync that succeeds does not bring it back.
+//!   sync makes nothing durable, and each unsynced sector goes one of
+//!   three ways, as kernels do with pages they could not write. It stays
+//!   unsynced, and a later sync may still write it. Or it is dropped: the
+//!   file reads as it did before, without any power cut. Or it is marked
+//!   clean while only the cache holds it: [`File::read_at`] goes on
+//!   showing the data, also after a process kill, a later sync succeeds
+//!   without writing it, and only [`File::read_device_at`] shows that the
+//!   disk never got it. A power cut, or [`SimDisk::drop_caches`], ends
+//!   the illusion.
 //!
 //! What it does not model: a disk that reports a sync it did not do, a
 //! write that lands in the wrong place, corruption of durable data on its
-//! own (a test can corrupt a file itself, with [`SimDisk::corrupt`]), and
-//! running out of space.
+//! own (a test can corrupt a file itself, with [`SimDisk::corrupt`]),
+//! running out of space, and a file system without a from-the-device
+//! read (a test can switch it off, with [`SimDisk::set_device_reads`]).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -92,7 +98,7 @@ pub trait Cut {
     /// the cut, or `None` if it had been removed.
     fn sector(&mut self, name: Option<&str>, index: u64, versions: usize) -> Fate;
 
-    /// How many of the `pending` creations, removals and renames since the
+    /// How many of the `pending` creations and removals since the
     /// last directory sync survive: the first so many. Anything above
     /// `pending` means all.
     fn names(&mut self, pending: usize) -> usize;
@@ -216,11 +222,24 @@ struct Sector {
     durable: Option<Box<[u8]>>,
     /// The content after each write since.
     unsynced: Vec<Box<[u8]>>,
+    /// A page a failed sync marked clean without writing it: what the
+    /// cache shows in place of the durable content.
+    cached: Option<Box<[u8]>>,
 }
 
 impl Sector {
-    fn current(&self) -> Option<&[u8]> {
+    /// What the device holds, counting what it has been handed.
+    fn device(&self) -> Option<&[u8]> {
         self.unsynced.last().or(self.durable.as_ref()).map(|b| &**b)
+    }
+
+    /// What a read through the cache sees.
+    fn current(&self) -> Option<&[u8]> {
+        self.unsynced
+            .last()
+            .or(self.cached.as_ref())
+            .or(self.durable.as_ref())
+            .map(|b| &**b)
     }
 }
 
@@ -247,7 +266,6 @@ impl Inode {
 enum NameOp {
     Create(String, u64),
     Remove(String),
-    Rename(String, String),
 }
 
 impl NameOp {
@@ -258,11 +276,6 @@ impl NameOp {
             }
             NameOp::Remove(name) => {
                 names.remove(name);
-            }
-            NameOp::Rename(from, to) => {
-                if let Some(inode) = names.remove(from) {
-                    names.insert(to.clone(), inode);
-                }
             }
         }
     }
@@ -289,6 +302,7 @@ struct State {
     rng: Rng,
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
+    device_reads: bool,
     stats: Stats,
 }
 
@@ -349,6 +363,7 @@ impl SimDisk {
                 rng: Rng(seed),
                 write_fault: None,
                 sync_fault: None,
+                device_reads: true,
                 stats: Stats::default(),
             })),
         }
@@ -385,6 +400,8 @@ impl SimDisk {
                 continue;
             };
             for (index, sector) in &mut inode.sectors {
+                // The cache does not survive.
+                sector.cached = None;
                 if sector.unsynced.is_empty() {
                     continue;
                 }
@@ -442,6 +459,24 @@ impl SimDisk {
         self.lock().sync_fault = Some(Fault { after, sticky });
     }
 
+    /// The operating system drops its clean pages, as it may at any
+    /// time: what a failed sync left only in the cache is gone, and
+    /// [`File::read_at`] shows what the disk holds.
+    pub fn drop_caches(&self) {
+        let mut state = self.lock();
+        for inode in state.inodes.values_mut() {
+            for sector in inode.sectors.values_mut() {
+                sector.cached = None;
+            }
+        }
+    }
+
+    /// Whether [`File::read_device_at`] works (it does at first) or
+    /// fails as unsupported, as on a file system without such a read.
+    pub fn set_device_reads(&self, supported: bool) {
+        self.lock().device_reads = supported;
+    }
+
     /// Forget the faults that have not struck yet, and the sticky ones.
     pub fn clear_faults(&self) {
         let mut state = self.lock();
@@ -487,7 +522,7 @@ impl SimDisk {
             .durable
             .get_or_insert_with(|| vec![0u8; SECTOR_USIZE].into_boxed_slice());
         durable[at] ^= mask;
-        for version in &mut sector.unsynced {
+        for version in sector.unsynced.iter_mut().chain(&mut sector.cached) {
             version[at] ^= mask;
         }
         Ok(())
@@ -537,18 +572,6 @@ impl Dir for SimDisk {
         Ok(())
     }
 
-    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
-        let mut state = self.lock();
-        let Some(inode) = state.names.remove(from) else {
-            return Err(io::ErrorKind::NotFound.into());
-        };
-        state.names.insert(to.to_owned(), inode);
-        state
-            .pending_names
-            .push(NameOp::Rename(from.to_owned(), to.to_owned()));
-        Ok(())
-    }
-
     fn list(&self) -> io::Result<Vec<String>> {
         Ok(self.lock().names.keys().cloned().collect())
     }
@@ -592,10 +615,13 @@ fn gone() -> io::Error {
     io::Error::other("the file no longer exists")
 }
 
-impl File for SimFile {
-    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+impl SimFile {
+    fn read(&self, offset: u64, buf: &mut [u8], device: bool) -> io::Result<()> {
         let state = self.disk.lock();
         self.check(&state)?;
+        if device && !state.device_reads {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
         let inode = state.inodes.get(&self.inode).ok_or_else(gone)?;
         let end = offset
             .checked_add(buf.len() as u64)
@@ -607,13 +633,28 @@ impl File for SimFile {
             let from = (at % SECTOR) as usize;
             let n = (SECTOR_USIZE - from).min((end - at) as usize);
             let dst = &mut buf[(at - offset) as usize..][..n];
-            match inode.sectors.get(&index).and_then(Sector::current) {
+            let view = if device {
+                Sector::device
+            } else {
+                Sector::current
+            };
+            match inode.sectors.get(&index).and_then(view) {
                 Some(bytes) => dst.copy_from_slice(&bytes[from..from + n]),
                 None => dst.fill(0),
             }
             at += n as u64;
         }
         Ok(())
+    }
+}
+
+impl File for SimFile {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read(offset, buf, false)
+    }
+
+    fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read(offset, buf, true)
     }
 
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
@@ -644,6 +685,8 @@ impl File for SimFile {
                 None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
             };
             bytes[from..from + n].copy_from_slice(src);
+            // The page is dirty again, whatever a failed sync made of it.
+            sector.cached = None;
             sector.unsynced.push(bytes);
             inode.len = inode.len.max(index * SECTOR + (from + n) as u64);
         }
@@ -662,11 +705,20 @@ impl File for SimFile {
         let rng = &mut state.rng;
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if failing {
-            // The pages that could not be written are dropped: the file
-            // reads as it did before those writes.
             for sector in inode.sectors.values_mut() {
-                if !sector.unsynced.is_empty() && rng.coin() {
-                    sector.unsynced.clear();
+                if sector.unsynced.is_empty() {
+                    continue;
+                }
+                match rng.below(3) {
+                    // Still dirty: a later sync may write it.
+                    0 => {}
+                    // Dropped: the file reads as it did before.
+                    1 => sector.unsynced.clear(),
+                    // Marked clean, and only the cache holds it.
+                    _ => {
+                        sector.cached = sector.unsynced.pop();
+                        sector.unsynced.clear();
+                    }
                 }
             }
             return Err(injected("sync"));
@@ -874,8 +926,8 @@ mod tests {
     }
 
     /// Names: of the directory operations since the last directory sync
-    /// a prefix survives, in order: here the creation without the rename
-    /// that followed it.
+    /// a prefix survives, in order: here the first creation without the
+    /// removal and the creation that followed it.
     #[test]
     fn directory_operations_survive_as_a_prefix() {
         struct FirstOnly;
@@ -893,17 +945,17 @@ mod tests {
         }
         let disk = disk_with(1, 1);
         disk.create("a").unwrap();
-        disk.rename("a", "b").unwrap();
         disk.remove("f").unwrap();
-        assert_eq!(disk.list().unwrap(), vec!["b".to_owned()]);
+        disk.create("b").unwrap();
+        assert_eq!(disk.list().unwrap(), vec!["a".to_owned(), "b".to_owned()]);
         disk.power_cut(FirstOnly);
         assert_eq!(disk.list().unwrap(), vec!["a".to_owned(), "f".to_owned()]);
     }
 
-    /// Names: rename replaces its target, and a removed file's open
-    /// handle keeps working until the process dies.
+    /// Names: a removed file's open handle keeps working until the
+    /// process dies, and a name cannot be created twice.
     #[test]
-    fn rename_replaces_and_open_handles_outlive_removal() {
+    fn open_handles_outlive_removal() {
         let disk = disk_with(1, 1);
         let mut g = disk.create("g").unwrap();
         g.write_at(0, &[9; 4]).unwrap();
@@ -911,14 +963,12 @@ mod tests {
             disk.create("g").unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
         );
-        disk.rename("g", "f").unwrap();
-        assert_eq!(read(&disk, "f", 0, 4), vec![9; 4]);
-        disk.remove("f").unwrap();
+        disk.remove("g").unwrap();
         let mut buf = [0u8; 4];
         g.read_at(0, &mut buf).unwrap();
         assert_eq!(buf, [9; 4]);
         assert_eq!(
-            disk.remove("f").unwrap_err().kind(),
+            disk.remove("g").unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
     }
@@ -960,26 +1010,71 @@ mod tests {
         assert_eq!(SimDisk::new(0).stats().writes, 0);
     }
 
-    /// Injected sync error: nothing becomes durable, some unsynced data
-    /// is gone at once without a power cut, and a later sync that
-    /// succeeds does not bring it back.
+    /// Injected sync error: nothing becomes durable, and over a few
+    /// seeds an unsynced sector goes each of three ways. It stays
+    /// unsynced and a later sync writes it. Or it is dropped at once,
+    /// without a power cut. Or the cache goes on showing it, also after a
+    /// kill and after a later sync that succeeds, while the device read
+    /// shows the old content, and a power cut or a dropped cache shows
+    /// the same to everyone.
     #[test]
-    fn a_failed_sync_can_drop_unsynced_data_on_the_spot() {
-        let mut dropped = Vec::new();
-        for seed in 0..8 {
+    fn a_failed_sync_leaves_data_dirty_dropped_or_only_cached() {
+        let (mut dirty, mut dropped, mut only_cached) = (0, 0, 0);
+        for seed in 0..16 {
             let disk = disk_with(4, 1);
             disk.lock().rng = Rng(seed);
             let mut f = disk.open("f").unwrap();
             f.write_at(0, &vec![2; 4 * S]).unwrap();
             disk.fail_sync(0, false);
             assert!(f.sync().is_err());
-            let after_error = read(&disk, "f", 0, 4 * S);
-            dropped.extend((0..4).map(|i| after_error[i * S] == 1));
+            let cached = read(&disk, "f", 0, 4 * S);
+            let mut device = vec![0; 4 * S];
+            f.read_device_at(0, &mut device).unwrap();
+            let unsynced = disk.unsynced_sectors();
+            // A later sync succeeds, and proves nothing about the rest.
             f.sync().unwrap();
-            disk.power_cut(LoseAll);
-            assert_eq!(read(&disk, "f", 0, 4 * S), after_error);
+            disk.kill();
+            assert_eq!(read(&disk, "f", 0, 4 * S), cached);
+            let after_cut = disk.clone();
+            let evicted = disk;
+            evicted.drop_caches();
+            assert_eq!(read(&evicted, "f", 0, 4 * S), device);
+            after_cut.power_cut(LoseAll);
+            assert_eq!(read(&after_cut, "f", 0, 4 * S), device);
+            for i in 0..4 {
+                match (cached[i * S], device[i * S]) {
+                    (2, 2) => dirty += 1,
+                    (1, 1) => dropped += 1,
+                    (2, 1) => only_cached += 1,
+                    other => panic!("impossible sector state {other:?}"),
+                }
+            }
+            assert_eq!(
+                unsynced,
+                device.chunks(S).filter(|c| c[0] == 2).count() as u64
+            );
         }
-        assert!(dropped.contains(&true) && dropped.contains(&false));
+        assert!(dirty > 0 && dropped > 0 && only_cached > 0);
+    }
+
+    /// Device reads: they include data that is written and not synced,
+    /// and a disk can be told to have none, which is an error and not a
+    /// cached read.
+    #[test]
+    fn device_reads_see_unsynced_data_or_are_unsupported() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        f.write_at(0, &[2; 8]).unwrap();
+        let mut buf = [0u8; 16];
+        f.read_device_at(0, &mut buf).unwrap();
+        assert_eq!(buf[..8], [2; 8]);
+        assert_eq!(buf[8..], [1; 8]);
+        disk.set_device_reads(false);
+        assert_eq!(
+            f.read_device_at(0, &mut buf).unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        f.read_at(0, &mut buf).unwrap();
     }
 
     /// Injected errors: a sticky fault keeps striking, also on the

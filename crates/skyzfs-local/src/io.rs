@@ -15,7 +15,10 @@
 //!   does not make its name durable.
 //! - After a sync has failed, nothing written since the last successful
 //!   sync can be relied on, power cut or not, and a later sync that
-//!   succeeds proves nothing about it.
+//!   succeeds proves nothing about it. The operating system may go on
+//!   showing the data to [`File::read_at`] from its cache although it
+//!   never reached the disk, also to a new process. Only
+//!   [`File::read_device_at`] says what the disk holds.
 
 use std::io;
 
@@ -38,9 +41,6 @@ pub trait Dir {
     /// Remove a file. Handles that are open on it keep working.
     fn remove(&self, name: &str) -> io::Result<()>;
 
-    /// Rename a file, replacing `to` if it exists.
-    fn rename(&self, from: &str, to: &str) -> io::Result<()>;
-
     /// The names in the directory, sorted.
     fn list(&self) -> io::Result<Vec<String>>;
 
@@ -53,6 +53,17 @@ pub trait File {
     /// Fill `buf` from `offset`. Reading beyond the end of the file is an
     /// error ([`io::ErrorKind::UnexpectedEof`]).
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
+
+    /// Fill `buf` from `offset` with what the device holds, bypassing
+    /// the operating system's cache. Data written and not yet synced is
+    /// included (the device has been handed it, durable or not); data the
+    /// cache still shows after a failed sync is not, unless it did reach
+    /// the device.
+    ///
+    /// Fails with [`io::ErrorKind::Unsupported`] where the file system
+    /// offers no such read. A caller that needs it must then say that it
+    /// could not check, and must not use [`File::read_at`] in its place.
+    fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
 
     /// Write `data` at `offset`, extending the file if it ends beyond the
     /// current length. After an error, any part of `data` may have been

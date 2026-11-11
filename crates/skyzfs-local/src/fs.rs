@@ -6,7 +6,13 @@
 //! [`Dir::sync`] syncs the directory itself, which is what makes a new
 //! name survive on Linux and macOS; Windows has no such call and journals
 //! the name on its own.
+//!
+//! [`File::read_device_at`] is a read through a second descriptor opened
+//! with `O_DIRECT`, on Linux only. Where the file system refuses that
+//! flag (tmpfs does), and on the other systems for now, it fails as
+//! unsupported; it never falls back to a cached read.
 
+use std::cell::OnceCell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -47,7 +53,7 @@ impl Dir for FsDir {
             .write(true)
             .create_new(true)
             .open(self.path.join(name))?;
-        Ok(FsFile { file })
+        Ok(FsFile::new(file, self.path.join(name)))
     }
 
     fn open(&self, name: &str) -> io::Result<FsFile> {
@@ -55,15 +61,11 @@ impl Dir for FsDir {
             .read(true)
             .write(true)
             .open(self.path.join(name))?;
-        Ok(FsFile { file })
+        Ok(FsFile::new(file, self.path.join(name)))
     }
 
     fn remove(&self, name: &str) -> io::Result<()> {
         fs::remove_file(self.path.join(name))
-    }
-
-    fn rename(&self, from: &str, to: &str) -> io::Result<()> {
-        fs::rename(self.path.join(from), self.path.join(to))
     }
 
     fn list(&self) -> io::Result<Vec<String>> {
@@ -92,6 +94,76 @@ impl Dir for FsDir {
 #[derive(Debug)]
 pub struct FsFile {
     file: fs::File,
+    path: PathBuf,
+    /// A second descriptor that bypasses the cache, opened at the first
+    /// device read. `None` inside: the file system has none to give.
+    direct: OnceCell<Option<fs::File>>,
+}
+
+/// The alignment `O_DIRECT` wants of offsets, lengths and memory. 4 KiB
+/// satisfies every device the store will meet.
+const DIRECT_ALIGN: usize = 4096;
+
+impl FsFile {
+    fn new(file: fs::File, path: PathBuf) -> Self {
+        Self {
+            file,
+            path,
+            direct: OnceCell::new(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open_direct(&self) -> io::Result<Option<fs::File>> {
+        use std::os::unix::fs::OpenOptionsExt;
+        match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(&self.path)
+        {
+            Ok(file) => Ok(Some(file)),
+            // How a file system says that it has no direct I/O.
+            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn open_direct(&self) -> io::Result<Option<fs::File>> {
+        Ok(None)
+    }
+
+    fn direct(&self) -> io::Result<&fs::File> {
+        if self.direct.get().is_none() {
+            let opened = self.open_direct()?;
+            // Only this thread can have filled it meanwhile: not at all.
+            let _ = self.direct.set(opened);
+        }
+        match self.direct.get() {
+            Some(Some(file)) => Ok(file),
+            _ => Err(io::ErrorKind::Unsupported.into()),
+        }
+    }
+}
+
+/// Read as much of `buf` as the file has from `offset`.
+#[cfg(unix)]
+fn read_some_at(file: &fs::File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    let mut done = 0;
+    while done < buf.len() {
+        match std::os::unix::fs::FileExt::read_at(file, &mut buf[done..], offset + done as u64) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(done)
+}
+
+#[cfg(not(unix))]
+fn read_some_at(_: &fs::File, _: &mut [u8], _: u64) -> io::Result<usize> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 #[cfg(unix)]
@@ -139,6 +211,36 @@ impl File for FsFile {
         read_exact_at(&self.file, buf, offset)
     }
 
+    fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let direct = self.direct()?;
+        // Direct reads take whole aligned blocks into aligned memory, so
+        // they go through a buffer of our own. A `Vec` promises no
+        // alignment: allocate one block more and start at the first
+        // aligned byte.
+        const CHUNK: usize = 1 << 20;
+        let mut backing = vec![0u8; CHUNK + DIRECT_ALIGN];
+        let skew = backing.as_ptr().align_offset(DIRECT_ALIGN);
+        let bounce = &mut backing[skew..skew + CHUNK];
+        let align = DIRECT_ALIGN as u64;
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut at = offset;
+        while at < end {
+            let from = at / align * align;
+            let want = ((end - from).div_ceil(align) * align).min(CHUNK as u64) as usize;
+            let got = read_some_at(direct, &mut bounce[..want], from)?;
+            let skip = (at - from) as usize;
+            let n = ((end - at) as usize).min(want - skip);
+            if got < skip + n {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
+            buf[(at - offset) as usize..][..n].copy_from_slice(&bounce[skip..skip + n]);
+            at += n as u64;
+        }
+        Ok(())
+    }
+
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         write_all_at(&self.file, data, offset)
     }
@@ -177,6 +279,48 @@ impl File for FsFile {
 mod tests {
     use super::*;
 
+    /// Real files, device reads: where the file system has them they
+    /// return what was written, synced or not, at any offset and length,
+    /// across the buffer's chunk size, and fail beyond the end of the
+    /// file. Where it has none the answer is "unsupported", which this
+    /// test reports and accepts.
+    #[test]
+    fn real_device_reads_match_what_was_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let mut f = dir.create("a").unwrap();
+        let len = (1 << 20) + 3 * 4096 + 100;
+        let data: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+        f.write_at(0, &data).unwrap();
+        let mut probe = [0u8; 1];
+        match f.read_device_at(0, &mut probe) {
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                eprintln!("no direct reads on {}: not exercised", tmp.path().display());
+                return;
+            }
+            other => other.unwrap(),
+        }
+        for (offset, n) in [
+            (0, len),
+            (1, 4095),
+            (4095, 2),
+            (5000, 1 << 20),
+            (len - 7, 7),
+        ] {
+            let mut buf = vec![0xEE; n];
+            f.read_device_at(offset as u64, &mut buf).unwrap();
+            assert_eq!(buf, data[offset..offset + n], "at {offset} for {n}");
+        }
+        f.sync().unwrap();
+        let mut buf = vec![0u8; 16];
+        assert_eq!(
+            f.read_device_at(len as u64 - 8, &mut buf)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
     /// Real files: create, write, read back, rename, list, reopen and
     /// remove behave as the traits say, and the syncs succeed.
     #[test]
@@ -203,13 +347,12 @@ mod tests {
             f.read_at(8190, &mut buf).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
-        dir.rename("a", "b").unwrap();
-        assert_eq!(dir.list().unwrap(), vec!["b".to_owned()]);
-        let g = dir.open("b").unwrap();
+        assert_eq!(dir.list().unwrap(), vec!["a".to_owned()]);
+        let g = dir.open("a").unwrap();
         g.read_at(3999, &mut buf).unwrap();
         assert_eq!(&buf, b"\0hello\0");
-        dir.remove("b").unwrap();
-        assert_eq!(dir.open("b").unwrap_err().kind(), io::ErrorKind::NotFound);
+        dir.remove("a").unwrap();
+        assert_eq!(dir.open("a").unwrap_err().kind(), io::ErrorKind::NotFound);
         assert!(FsDir::new(tmp.path().join("missing")).is_err());
     }
 }
