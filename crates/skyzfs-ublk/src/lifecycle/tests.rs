@@ -101,6 +101,10 @@ struct World {
     marked: bool,
     /// What the kernel says about a client holding a device.
     client_holds: Option<bool>,
+    /// The driver cannot be asked about a device.
+    info_refused: bool,
+    /// The driver refuses a delete.
+    delete_refused: bool,
 }
 
 fn killed() -> io::Error {
@@ -162,6 +166,8 @@ impl World {
             fresh_notes: Vec::new(),
             marked: false,
             client_holds: None,
+            info_refused: false,
+            delete_refused: false,
         }
     }
 
@@ -242,6 +248,9 @@ impl Control for Fake {
         self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Info(number))?;
+        if w.info_refused {
+            return Err(io::Error::other("the driver does not answer"));
+        }
         if let Some((settling, left)) = w.settles {
             if settling == number && left == 0 {
                 if let Some(device) = w.devices.get_mut(&number) {
@@ -302,6 +311,9 @@ impl Control for Fake {
         self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Delete(number))?;
+        if w.delete_refused {
+            return Err(io::Error::other("the driver refuses"));
+        }
         if w.held.contains(&number) {
             if let Some(device) = w.devices.get_mut(&number) {
                 device.state = DeviceState::Dead;
@@ -3102,4 +3114,63 @@ fn an_unknown_failure_that_cannot_be_settled_stays_unknown() {
         .expect("refused")
         .contains("not served again in this boot"));
     assert_eq!(settled_as(&outcome), Ok(Held::Unknown));
+}
+
+/// A start that refuses a failed volume says what became of the
+/// volume's device, in every case: deleted, or left and why. An answer
+/// that names no device means that no record of this boot names one.
+/// Before M1.3d a device that was still live after the looks, a driver
+/// that could not be asked, a note that could not be read and a delete
+/// that failed were all left unsaid, so that "refused" read the same
+/// whether the device was gone or not. Mutant: those cases say nothing.
+#[test]
+fn a_refused_start_says_what_became_of_the_device() {
+    fn refused(
+        change: fn(&mut World),
+        says: &[&str],
+        there: bool,
+        mutants: u32,
+    ) -> Result<(), String> {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.opens.push_back(OpenError::MarkedFailed);
+        change(&mut world);
+        let outcome = run(world, mutants);
+        let why = match &outcome.result {
+            Err(Stop::Failed(why)) => why.clone(),
+            other => return Err(format!("stopped with {other:?}")),
+        };
+        for part in says {
+            check(why.contains(part), &format!("`{part}` is not in: {why}"))?;
+        }
+        check(
+            outcome.world.devices.contains_key(&4) == there,
+            &format!("device 4 there: {}", !there),
+        )
+    }
+    fn scenario(mutants: u32) -> Result<(), String> {
+        refused(|_| {}, &["device 4 was deleted"], false, mutants)?;
+        refused(
+            |w| {
+                if let Some(device) = w.devices.get_mut(&4) {
+                    device.state = DeviceState::Live;
+                }
+            },
+            &["device 4 is still live", "was left"],
+            true,
+            mutants,
+        )?;
+        refused(
+            |w| w.delete_refused = true,
+            &["device 4 could not be deleted", "the driver refuses"],
+            true,
+            mutants,
+        )?;
+        refused(
+            |w| w.info_refused = true,
+            &["device 4 could not be asked about", "was left"],
+            true,
+            mutants,
+        )
+    }
+    holds(scenario, &[("left and not said", Mutants::LEFT_UNSAID)]);
 }

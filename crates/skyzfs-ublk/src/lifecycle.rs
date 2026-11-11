@@ -603,6 +603,11 @@ impl Mutants {
     /// deleted device, also another volume's device that took the
     /// number.
     pub(crate) const ANY_OCCUPANT_LINGERS: u32 = 1 << 25;
+    /// A failed volume's device that is left because it is still live,
+    /// because the driver or the note could not be asked, or because
+    /// the delete failed, is left without a word; and a delete is not
+    /// said either.
+    pub(crate) const LEFT_UNSAID: u32 = 1 << 26;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -1076,46 +1081,89 @@ fn failed<C: Control, R: Records>(
 ///
 /// The device is deleted only if the record is of this boot, the note
 /// carries the record's nonce, and the kernel reports the recorded
-/// values. A noted device with other values is left, and the answer
-/// says so: a note should never outlive its device, and if one did (a
-/// device deleted by hand), what stands under the number now is not
-/// this volume's. A device with the recorded values and no note is left
-/// too, and the answer says so: it is this volume's if a daemon was
-/// killed between removing the note and the delete, and another's if
-/// the delete was done and the number given out again, and nothing
-/// tells the two apart. The answer is empty otherwise.
+/// values and a device that is not live. A noted device with other
+/// values is left: a note should never outlive its device, and if one
+/// did (a device deleted by hand), what stands under the number now is
+/// not this volume's. A device with the recorded values and no note is
+/// left too: it is this volume's if a daemon was killed between
+/// removing the note and the delete, and another's if the delete was
+/// done and the number given out again, and nothing tells the two
+/// apart. A device that is still live after the looks is left: a live
+/// device has a server, and this start is not it.
+///
+/// **The answer says what was done**, for every device a record of
+/// this boot names: that it was deleted, or that it was left and why,
+/// also when the driver, the record or the note could not be asked or
+/// the delete failed. It is empty only when there is nothing to say a
+/// word about: no record, a record of another boot (its device did not
+/// survive the boot), a number that carries another attachment's note,
+/// or a number under which nothing stands. So an answer without a
+/// device in it means that this start knows of none.
 fn give_up_device<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     wanted: &Wanted,
     mutants: Mutants,
 ) -> String {
-    let Ok(Some(attachment)) = records.attachment() else {
-        return String::new();
+    let said = |text: String| {
+        if mutants.has(Mutants::LEFT_UNSAID) {
+            String::new()
+        } else {
+            text
+        }
+    };
+    let attachment = match records.attachment() {
+        Ok(Some(attachment)) => attachment,
+        Ok(None) => return String::new(),
+        Err(_) => {
+            return said(
+                "; the attachment record could not be read, so no device was looked for: \
+                 if one of this volume is left, deleting it by hand, or a reboot, resolves it"
+                    .into(),
+            )
+        }
     };
     let number = attachment.number;
     let this_boot = attachment.boot == records.boot() || mutants.has(Mutants::FAILED_ANY_BOOT);
-    let note = records.note(number);
-    let noted = matches!(note, Ok(Some(nonce)) if nonce == attachment.nonce);
-    let no_note = matches!(note, Ok(None));
-    if !(this_boot && (noted || no_note)) {
+    if !this_boot {
         return String::new();
     }
+    let noted = match records.note(number) {
+        Ok(Some(nonce)) if nonce == attachment.nonce => true,
+        // Another attachment's note: not this volume's device.
+        Ok(Some(_)) => return String::new(),
+        Ok(None) => false,
+        Err(e) => {
+            return said(format!(
+                "; the note of device {number} could not be read ({e}), and the device was left"
+            ))
+        }
+    };
     let info = control
         .info(number)
         .and_then(|info| settled(control, records, number, info, wanted, Mutants::default()));
-    let Ok(Some(info)) = info else {
-        return String::new();
+    let info = match info {
+        Ok(Some(info)) => info,
+        Ok(None) => return String::new(),
+        Err(e) => {
+            return said(format!(
+                "; device {number} could not be asked about ({e}), and was left"
+            ))
+        }
     };
     if info.state == DeviceState::Live {
-        return String::new();
+        return said(format!(
+            "; device {number} is still live after {} looks, and was left: it has a server",
+            wanted.live_retries
+        ));
     }
     if !noted {
         if info.shape != attachment.shape {
             return String::new();
         }
         return format!(
-            "; device {number} has this volume's size, queues, depth and flags and no note,              and was left: deleting it by hand, or a reboot, resolves it"
+            "; device {number} has this volume's size, queues, depth and flags and no note, \
+             and was left: deleting it by hand, or a reboot, resolves it"
         );
     }
     if info.shape != attachment.shape {
@@ -1124,8 +1172,10 @@ fn give_up_device<C: Control, R: Records>(
              was left"
         );
     }
-    let _ = delete(control, records, number, mutants);
-    String::new()
+    match delete(control, records, number, mutants) {
+        Ok(()) => said(format!("; device {number} was deleted")),
+        Err(e) => said(format!("; device {number} could not be deleted ({e})")),
+    }
 }
 
 /// The log failed while the volume was served: the volume gives up its
