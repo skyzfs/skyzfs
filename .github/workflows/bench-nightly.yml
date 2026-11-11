@@ -147,7 +147,7 @@ jobs:
           ref: ${{ needs.resolve.outputs[matrix.side] }}
       - uses: dtolnay/rust-toolchain@stable
       - name: dm build headers (skynbd-agent "dm" feature)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: bench-nightly-${{ matrix.side }}

@@ -29,6 +29,11 @@
 #   gone     the device is deleted for good, with a delete that waits:
 #            zpool clear with no device, what is stuck with it, and
 #            whether export -f or destroy -f gets rid of the pool.
+#   untouched  the device is deleted and nobody ever runs zpool clear on
+#            the pool: whether export -f or destroy -f gets rid of it.
+#            In `gone` both are tried with a zpool clear already stuck
+#            on the same pool. Run it alone for a machine on which no
+#            zpool clear was started at all.
 #   zed      the first again with the event daemon running: what zed
 #            does when the device goes and when one comes back.
 #   older    the device comes back, by a route that resumed the pool,
@@ -336,6 +341,20 @@ if want gone && scenario_start gone 2; then
     rec gone_device_after_unmount "$(device_state 2)"
 fi
 touch "$WORK/gone.stop"
+
+step "untouched: export and destroy on a suspended pool that no zpool clear has touched"
+if want untouched && scenario_start untouched 7; then
+    scenario_delete untouched 7 || rec untouched_note "the pool did not suspend"
+    rec untouched_clears_so_far "zpool clear processes on this machine before the attempts: $(pgrep -fc 'zpool clear' || true); pools: $(lim 30 zpool list -H -o name,health 2>&1 | tr '\t\n' ' ;' | cut -c1-200)"
+    t0=$(date +%s)
+    lim 60 zpool export -f skzf-untouched > "$OUT/untouched-export.log" 2>&1; rc=$?
+    rec untouched_export "zpool export -f: rc $rc after $(( $(date +%s) - t0 )) s (124: not returned after 60 s) ($(tail -n 1 "$OUT/untouched-export.log")); pool $(pool_state skzf-untouched)"
+    t0=$(date +%s)
+    lim 60 zpool destroy -f skzf-untouched > "$OUT/untouched-destroy.log" 2>&1; rc=$?
+    rec untouched_destroy "zpool destroy -f: rc $rc after $(( $(date +%s) - t0 )) s (124: not returned after 60 s) ($(tail -n 1 "$OUT/untouched-destroy.log")); pool $(pool_state skzf-untouched); pools listed: $(lim 30 zpool list -H -o name,health 2>&1 | tr '\t\n' ' ;' | cut -c1-200)"
+    rec untouched_device_at_end "$(device_state 7)"
+fi
+touch "$WORK/untouched.stop"
 
 step "zed: the same with the event daemon running"
 zed_log() { journalctl -u zfs-zed --since "$1" --no-pager -o cat 2>/dev/null | sed 's/[0-9]\{4,\}/N/g' | sort | uniq -c | sort -rn | head -n 8 | tr -s ' ' | tr '\n' ';'; }

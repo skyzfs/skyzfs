@@ -24,10 +24,128 @@ use skyzfs_blk::{
 /// into `UNSUPPORTED`.
 const UNSUPPORTED: &str = "not at a block device: ";
 
+/// A trace of every request, for the diagnosis of a failed case: the
+/// file named by `BLKCHECK_TRACE`, one line per event, tab-separated:
+/// milliseconds since the first event, volume, event, id, operation,
+/// first block, blocks, and a digest of each block's content.
+fn trace(volume: u64, event: &str, id: Option<RequestId>, what: &str) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static TRACE: OnceLock<Option<(Mutex<File>, Instant)>> = OnceLock::new();
+    let Some((file, start)) = TRACE.get_or_init(|| {
+        let path = std::env::var_os("BLKCHECK_TRACE")?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()?;
+        Some((Mutex::new(file), Instant::now()))
+    }) else {
+        return;
+    };
+    let id = id.map_or_else(|| "-".to_string(), |id| id.0.to_string());
+    let line = format!(
+        "{}\t{volume}\t{event}\t{id}\t{what}\n",
+        start.elapsed().as_millis()
+    );
+    if let Ok(mut file) = file.lock() {
+        // A trace that cannot be written is not worth failing a run for.
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+fn tracing() -> bool {
+    std::env::var_os("BLKCHECK_TRACE").is_some()
+}
+
+/// One digest per 4096-byte block, so that a block's content can be
+/// followed from the write that made it to the read that shows it.
+fn digests(bytes: &[u8]) -> String {
+    bytes
+        .chunks(4096)
+        .map(|block| {
+            if block.iter().all(|b| *b == 0) {
+                return "zero".to_string();
+            }
+            // FNV-1a, 64 bits: enough to tell contents apart.
+            let hash = block.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            format!("{hash:016x}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// "write<TAB>first block<TAB>blocks<TAB>digests" for the trace.
+fn describe(op: &Op) -> String {
+    let (name, data): (&str, Option<&[u8]>) = match op {
+        Op::Read { .. } => ("read", None),
+        Op::Write { data, .. } => ("write", Some(data)),
+        Op::Flush => ("flush", None),
+        Op::Discard { .. } => ("discard", None),
+        Op::WriteZeroes { .. } => ("write_zeroes", None),
+    };
+    let (first, blocks) = op.range().map_or((0, 0), |(o, l)| (o / 4096, l / 4096));
+    format!(
+        "{name}\t{first}\t{blocks}\t{}",
+        data.map(digests).unwrap_or_default()
+    )
+}
+
+/// A server process as the helper named it: its pid, and when that
+/// process started, so that the pid is not signalled once it has become
+/// another process's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Server {
+    pid: i32,
+    started: u64,
+}
+
+/// Field 22 of `/proc/PID/stat`: the start time of the process, in
+/// clock ticks since boot. The fields are counted after the command
+/// name, which is in brackets and may hold spaces.
+fn start_time(stat: &str) -> Option<u64> {
+    let after_name = &stat[stat.rfind(')')? + 1..];
+    after_name.split_whitespace().nth(19)?.parse().ok()
+}
+
+impl Server {
+    /// The process `pid` as it is now, if there is one.
+    fn now(pid: i32) -> Option<Self> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        Some(Self {
+            pid,
+            started: start_time(&stat)?,
+        })
+    }
+
+    /// SIGKILL, if the pid is still the process it was when the helper
+    /// named it. Whether the signal was sent. Between this look and the
+    /// signal the process can still end and its pid be given away; the
+    /// tool runs as root on a machine that is the rig's own, and the
+    /// window is left at that.
+    fn kill(self) -> bool {
+        if Self::now(self.pid) != Some(self) {
+            return false;
+        }
+        rustix::process::Pid::from_raw(self.pid).is_some_and(|pid| {
+            rustix::process::kill_process(pid, rustix::process::Signal::KILL).is_ok()
+        })
+    }
+}
+
 /// A block device opened with `O_DIRECT`. Each request in flight is one
 /// thread in one system call.
 struct DeviceTarget {
     number: u64,
+    /// The server's process, if the helper can say: the tool then
+    /// sends the SIGKILL itself, at once, so that it can land while
+    /// requests are in flight. Through the helper the signal comes
+    /// tens of milliseconds later, when a fast server has long
+    /// answered everything.
+    server: Option<Server>,
     file: Arc<File>,
     /// The path, if it is a block device and not a plain file.
     device: Option<Arc<str>>,
@@ -41,6 +159,14 @@ struct DeviceTarget {
     geometry: Geometry,
     done_tx: Sender<Completion>,
     done_rx: Receiver<Completion>,
+    /// When each call returned, by the clock of the thread that made it.
+    returned: Arc<std::sync::Mutex<BTreeMap<RequestId, std::time::Instant>>>,
+    /// Flushes among the ids in flight: the kernel's count of requests
+    /// in flight at a device is of reads and writes.
+    flushes: BTreeSet<RequestId>,
+    /// When the calls outstanding at the last kill were sorted into
+    /// "completed before" and "in flight at the death".
+    sorted_at: Option<std::time::Instant>,
     /// Ids handed to a thread whose completion has not been returned.
     in_flight: BTreeSet<RequestId>,
     /// Results of requests that were in flight at a kill. The kernel
@@ -138,15 +264,28 @@ impl DeviceTarget {
             .metadata()
             .map(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type()))
             .map_err(|e| err("type of", &e))?;
+        if tracing() {
+            // For the replayer: the model is built for this geometry.
+            trace(
+                number,
+                "open",
+                None,
+                &format!("{}\t{depth}", size / SIZE_UNIT),
+            );
+        }
         let (done_tx, done_rx) = channel();
         Ok(Self {
             number,
+            server: None,
             file: Arc::new(file),
             device: is_device.then(|| Arc::from(path)),
             failed: Arc::new(AtomicBool::new(false)),
             geometry,
             done_tx,
             done_rx,
+            returned: Arc::default(),
+            flushes: BTreeSet::new(),
+            sorted_at: None,
             in_flight: BTreeSet::new(),
             carried: BTreeMap::new(),
             ready: Vec::new(),
@@ -154,7 +293,11 @@ impl DeviceTarget {
     }
 
     fn take(&mut self, completion: Completion, out: &mut Vec<Completion>) {
+        // The moment the suite learns of the result: with the submits,
+        // these lines are the history the suite's model is given.
+        trace(self.number, "delivered", Some(completion.id), "");
         self.in_flight.remove(&completion.id);
+        self.flushes.remove(&completion.id);
         out.push(completion);
     }
 
@@ -169,9 +312,49 @@ impl DeviceTarget {
         out.len() - before
     }
 
+    /// The server has been stopped and is about to be killed. Every call
+    /// that has returned by now was completed before the kill, and the
+    /// kernel will have nothing of it to issue again. The suite does not
+    /// know these results yet and will resubmit the ids; to the suite's
+    /// model a request that was not acknowledged at a kill is applied
+    /// from the kill on. So these results are dropped and the
+    /// resubmissions will be issued, as a transport would issue them.
+    /// Returns how many there were.
+    fn returned_before_kill(&mut self) -> usize {
+        let mut got = Vec::new();
+        self.drain(&mut got);
+        for c in &got {
+            trace(
+                self.number,
+                "before_kill",
+                Some(c.id),
+                &format!("{:?}", c.result),
+            );
+        }
+        self.sorted_at = Some(std::time::Instant::now());
+        got.len()
+    }
+
+    /// Reads, writes, discards and writes of zeros still outstanding.
+    fn outstanding_data_calls(&self) -> usize {
+        self.in_flight.len() - self.flushes.len()
+    }
+
     /// Wait for every outstanding call to return, and keep the results
-    /// for the ids the suite will resubmit.
+    /// for the ids the suite will resubmit. These calls were outstanding
+    /// at a server that died: the kernel issued them again by itself,
+    /// which is their application after the kill.
     fn settle(&mut self, timeout: Duration) -> Result<(), HarnessError> {
+        if let Some(what) = self.settle_checked(timeout)? {
+            rig_error(&what);
+        }
+        Ok(())
+    }
+
+    /// `settle`, returning instead of exiting: `Some(why)` when a call
+    /// carried across the kill had returned before the sorting.
+    fn settle_checked(&mut self, timeout: Duration) -> Result<Option<String>, HarnessError> {
+        let mut wrong = None;
         let mut got = Vec::new();
         self.drain(&mut got);
         while !self.in_flight.is_empty() {
@@ -185,10 +368,21 @@ impl DeviceTarget {
                 }
             }
         }
+        let returned = self.returned.lock().map(|r| r.clone()).unwrap_or_default();
         for c in got {
+            trace(
+                self.number,
+                "carried",
+                Some(c.id),
+                &format!("{:?}", c.result),
+            );
+            if let Some(what) = sorted_wrongly(returned.get(&c.id).copied(), self.sorted_at) {
+                wrong.get_or_insert(format!("volume {}, request {}: {what}", self.number, c.id));
+            }
             self.carried.insert(c.id, c);
         }
-        Ok(())
+        self.sorted_at = None;
+        Ok(wrong)
     }
 }
 
@@ -211,7 +405,11 @@ impl BlockTarget for DeviceTarget {
             });
         }
         self.in_flight.insert(request.id);
+        if request.op == Op::Flush {
+            self.flushes.insert(request.id);
+        }
         if let Some(c) = self.carried.remove(&request.id) {
+            trace(self.number, "held_back", Some(c.id), "");
             self.ready.push(c);
             return Ok(());
         }
@@ -219,11 +417,36 @@ impl BlockTarget for DeviceTarget {
         let device = self.device.clone();
         let failed = Arc::clone(&self.failed);
         let tx = self.done_tx.clone();
+        let returned = Arc::clone(&self.returned);
+        let number = self.number;
+        if tracing() {
+            trace(number, "submit", Some(request.id), &describe(&request.op));
+        }
         std::thread::spawn(move || {
             let Request { id, op } = request;
-            let (mut result, buf) = perform(&file, device.as_deref(), op);
-            if matches!(result, Err(BlkError::Io(_))) && failed.load(Ordering::SeqCst) {
-                result = Err(BlkError::Failed);
+            let is_read = matches!(op, Op::Read { .. });
+            let (result, buf) = perform(&file, device.as_deref(), op);
+            if let Ok(mut returned) = returned.lock() {
+                returned.insert(id, std::time::Instant::now());
+            }
+            // Looked at when the call has returned, not when it began:
+            // a request in flight while the log fails is answered by
+            // the failure.
+            let raw = format!("{result:?}");
+            let result = after_failure(result, failed.load(Ordering::SeqCst));
+            if tracing() {
+                let seen = match &buf {
+                    Some(buf) if is_read => digests(buf),
+                    _ => String::new(),
+                };
+                // What the suite is given, which the replayer reads,
+                // and then what the system call returned.
+                trace(
+                    number,
+                    "done",
+                    Some(id),
+                    &format!("{result:?}\t{seen}\t{raw}"),
+                );
             }
             // The receiver is gone only when the target was dropped.
             let _ = tx.send(Completion { id, result, buf });
@@ -250,6 +473,46 @@ impl BlockTarget for DeviceTarget {
     }
 }
 
+/// The depth the tool gives the suite when none is asked for, and the
+/// one a trace without an "open" line is replayed at.
+pub const DEPTH: u32 = 16;
+
+/// The sorting of the calls outstanding at a kill cannot be trusted:
+/// say so and stop, with a status the rig reports as its own error. The
+/// suite must not judge a server on a history the tool got wrong.
+fn rig_error(what: &str) -> ! {
+    eprintln!("RIG ERROR: {what}");
+    std::process::exit(3)
+}
+
+/// A call carried across a kill as "in flight at the server's death"
+/// must have returned after the sorting, which is done while no server
+/// runs. One that returned before it was completed by the old server
+/// and should have been issued again: `Some(why)`.
+fn sorted_wrongly(
+    returned: Option<std::time::Instant>,
+    sorted_at: Option<std::time::Instant>,
+) -> Option<String> {
+    let (returned, sorted_at) = (returned?, sorted_at?);
+    (returned < sorted_at).then(|| {
+        format!(
+            "the call returned {:?} before the calls outstanding at the kill were sorted, and was taken as in flight at the server's death",
+            sorted_at - returned
+        )
+    })
+}
+
+/// What a result means once the log has been made to fail. The server
+/// then deletes its device and exits, so whatever I/O error the kernel
+/// answers with for a deleted device is the volume having failed. A
+/// request that succeeds stays a success, for the suite to judge.
+fn after_failure(result: Result<(), BlkError>, failed: bool) -> Result<(), BlkError> {
+    match result {
+        Err(BlkError::Io(_)) if failed => Err(BlkError::Failed),
+        other => other,
+    }
+}
+
 /// Makes, kills and fails volumes through the helper command.
 struct DeviceHarness {
     command: String,
@@ -262,13 +525,55 @@ struct DeviceHarness {
 }
 
 impl DeviceHarness {
+    /// The server's pid from the helper's `pid`, if it has one to give.
+    fn server_of(&self, number: u64) -> Option<Server> {
+        let pid: i32 = self.helper("pid", number).ok()?.parse().ok()?;
+        Server::now(pid)
+    }
+
     /// Run the helper; the last line of its stdout.
     fn helper(&self, verb: &str, number: u64) -> Result<String, HarnessError> {
-        let out = Command::new(&self.command)
+        self.helper_watched(verb, number, &mut |_| None)
+    }
+
+    /// Run the helper and call `on_line` with each line of its stdout as
+    /// it is printed; what `on_line` returns is written to the helper's
+    /// stdin as a line. The last line of its stdout.
+    fn helper_watched(
+        &self,
+        verb: &str,
+        number: u64,
+        on_line: &mut dyn FnMut(&str) -> Option<&'static str>,
+    ) -> Result<String, HarnessError> {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+        let failed = |e: &dyn std::fmt::Display| {
+            HarnessError(format!("{} {verb} {number}: {e}", self.command))
+        };
+        let mut child = Command::new(&self.command)
             .arg(verb)
             .arg(number.to_string())
-            .output()
-            .map_err(|e| HarnessError(format!("{} {verb} {number}: {e}", self.command)))?;
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| failed(&e))?;
+        let mut printed = Vec::new();
+        let mut stdin = child.stdin.take();
+        if let Some(stdout) = child.stdout.take() {
+            for line in BufReader::new(stdout).lines() {
+                let line = line.map_err(|e| failed(&e))?;
+                if let (Some(reply), Some(stdin)) = (on_line(&line), stdin.as_mut()) {
+                    // A helper that does not read has gone on by itself.
+                    let _ = writeln!(stdin, "{reply}");
+                    let _ = stdin.flush();
+                }
+                printed.extend_from_slice(line.as_bytes());
+                printed.push(b'\n');
+            }
+        }
+        let mut out = child.wait_with_output().map_err(|e| failed(&e))?;
+        out.stdout = printed;
         if !out.status.success() {
             return Err(HarnessError(format!(
                 "{} {verb} {number}: {}: {}",
@@ -311,12 +616,53 @@ impl Harness for DeviceHarness {
         let number = self.next;
         let path = self.helper("create", number)?;
         self.last = Some(number);
-        DeviceTarget::open(number, &path, self.depth)
+        let mut target = DeviceTarget::open(number, &path, self.depth)?;
+        target.server = self.server_of(number);
+        Ok(target)
     }
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
-        self.helper("kill", target.number)?;
+        let number = target.number;
+        // The signal first, from here: nothing is faster.
+        let sent = target.server.take().map(Server::kill);
+        trace(
+            number,
+            "kill",
+            None,
+            &format!("signal sent by the tool: {sent:?}"),
+        );
+        // The helper says "dead R W" when the old server is gone and
+        // the new one is not started: no request completes in between.
+        // It serves again only when it has read "sorted" from here.
+        // R and W are the kernel's counts of reads and writes in flight
+        // at the device at that moment. They are written down and not
+        // used: the kernel counts 0 there whatever waits to be issued
+        // again (seen at 18 of 18 kills with calls outstanding, on
+        // each of two kernels), so they cannot check the sorting.
+        self.helper_watched("kill", number, &mut |line| {
+            let mut words = line.split_whitespace();
+            if words.next() != Some("dead") {
+                return None;
+            }
+            target.returned_before_kill();
+            let counts: Vec<u64> = words.filter_map(|w| w.parse().ok()).collect();
+            let outstanding = target.outstanding_data_calls();
+            trace(
+                number,
+                "sorted",
+                None,
+                &format!("outstanding {outstanding}\tkernel in flight {counts:?}"),
+            );
+            Some("sorted")
+        })?;
+        trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
+        trace(target.number, "settled", None, "");
+        // A volume whose log has failed has no server to ask for, and
+        // a pid remembered from before may be anybody's by now.
+        if !target.failed.load(Ordering::SeqCst) {
+            target.server = self.server_of(number);
+        }
         Ok(target)
     }
 
@@ -333,8 +679,20 @@ impl Harness for DeviceHarness {
     }
 
     fn fail_log(&mut self, target: &mut DeviceTarget) -> Result<(), HarnessError> {
-        self.helper("fail", target.number)?;
+        // Before the helper runs, not after it returns: the helper
+        // waits for the server to exit, and a request in flight in that
+        // time comes back with the kernel's I/O error while the helper
+        // is still running. If the helper could not make the log fail,
+        // the volume has not failed.
+        trace(target.number, "fail", None, "");
+        // The server exits when its log fails: its pid is nobody's, or
+        // somebody else's, from here on.
+        target.server = None;
         target.failed.store(true, Ordering::SeqCst);
+        if let Err(e) = self.helper("fail", target.number) {
+            target.failed.store(false, Ordering::SeqCst);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -342,8 +700,11 @@ impl Harness for DeviceHarness {
         let number = target.number;
         // The client lets go of the failed device first.
         drop(target);
+        trace(number, "reopen", None, "");
         let path = self.helper("reopen", number)?;
-        DeviceTarget::open(number, &path, self.depth)
+        let mut target = DeviceTarget::open(number, &path, self.depth)?;
+        target.server = self.server_of(number);
+        Ok(target)
     }
 }
 
@@ -362,7 +723,7 @@ fn flat(s: &str) -> String {
 
 pub fn main() -> ExitCode {
     let mut command = None;
-    let mut depth = 16u32;
+    let mut depth = DEPTH;
     let mut config = Config {
         cases: 16,
         rounds: 4,
@@ -525,6 +886,230 @@ mod tests {
             "the resubmission was issued"
         );
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A call that is carried across a kill as "in flight at the death"
+    /// and had returned before the sorting is a rig error from `settle`.
+    /// The sorting is the real one, and the call is one that returned
+    /// after it; its time of return is then put before the sorting, as
+    /// for a thread that returned under the old server and was not seen
+    /// by the sorting. Without the look in `settle`, or with a sorting
+    /// that does not keep its time, this fails.
+    #[test]
+    fn settle_reports_a_call_that_returned_before_the_sorting() {
+        let (mut t, path) = target("settle");
+        let before = std::time::Instant::now();
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(t.returned_before_kill(), 0, "nothing was outstanding");
+        let id = RequestId(9);
+        let op = Op::Write {
+            offset: 0,
+            data: filled(0x11),
+        };
+        t.submit(Request { id, op }).unwrap();
+        for _ in 0..3000 {
+            if t.returned.lock().unwrap().contains_key(&id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // Returned after the sorting: carried, and nothing to report.
+        // Its stamp moved before the sorting: reported.
+        t.returned.lock().unwrap().insert(id, before);
+        let said = t.settle_checked(Duration::from_secs(30)).unwrap();
+        assert!(
+            said.as_deref().is_some_and(|s| s.contains("request #9")),
+            "{said:?}"
+        );
+        // And the same call with its own stamp is not reported.
+        assert_eq!(t.returned_before_kill(), 0);
+        let id = RequestId(10);
+        let op = Op::Write {
+            offset: 0,
+            data: filled(0x22),
+        };
+        t.submit(Request { id, op }).unwrap();
+        assert_eq!(t.settle_checked(Duration::from_secs(30)).unwrap(), None);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// An I/O error counts as "the volume has failed" only after the
+    /// log was made to fail; nothing else is touched.
+    #[test]
+    fn an_io_error_after_the_failure_is_the_volume_having_failed() {
+        let io = Err(BlkError::Io(std::io::ErrorKind::Other));
+        assert_eq!(after_failure(io, true), Err(BlkError::Failed));
+        assert_eq!(after_failure(io, false), io, "before the failure");
+        assert_eq!(after_failure(Ok(()), true), Ok(()), "a success stays one");
+        assert_eq!(
+            after_failure(Err(BlkError::ZeroLength), true),
+            Err(BlkError::ZeroLength),
+            "another error stays what it is"
+        );
+        assert_eq!(
+            after_failure(Err(BlkError::Failed), false),
+            Err(BlkError::Failed)
+        );
+    }
+
+    fn harness(name: &str, script: &str) -> (DeviceHarness, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("blkcheck-{}-{name}.sh", std::process::id()));
+        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let harness = DeviceHarness {
+            command: path.to_str().unwrap().to_string(),
+            depth: 16,
+            timeout: Duration::from_secs(30),
+            capabilities: Capabilities::ALL,
+            next: 0,
+            last: None,
+        };
+        (harness, path)
+    }
+
+    /// The volume counts as failed from the moment the helper is asked
+    /// to make the log fail: a request in flight returns with the
+    /// kernel's I/O error while the helper is still waiting for the
+    /// server to exit, and must be reported as failed, not as an error.
+    #[test]
+    fn the_volume_counts_as_failed_while_the_helper_runs() {
+        let (mut t, path) = target("flag");
+        let (mut h, script) = harness("slow", "sleep 1");
+        let flag = Arc::clone(&t.failed);
+        let watcher = std::thread::spawn(move || {
+            // Well inside the helper's second.
+            std::thread::sleep(Duration::from_millis(400));
+            flag.load(Ordering::SeqCst)
+        });
+        h.fail_log(&mut t).unwrap();
+        assert!(
+            watcher.join().unwrap(),
+            "the flag was set only after the helper returned"
+        );
+        assert!(t.failed.load(Ordering::SeqCst));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
+    }
+
+    /// A helper that could not make the log fail leaves the volume as
+    /// it was: later I/O errors are errors.
+    #[test]
+    fn a_failure_the_helper_could_not_cause_is_not_a_failure() {
+        let (mut t, path) = target("nofail");
+        let (mut h, script) = harness("refuses", "exit 1");
+        assert!(h.fail_log(&mut t).is_err());
+        assert!(!t.failed.load(Ordering::SeqCst));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
+    }
+
+    /// A call that had returned before the server was killed was not in
+    /// flight at the kill, and the kernel issues nothing of it again.
+    /// The suite does not know that: the id is unacknowledged, it
+    /// resubmits it, and its model requires the request to be applied
+    /// from the kill on. So that resubmission is issued, and the id
+    /// still completes exactly once.
+    #[test]
+    fn a_request_completed_before_the_kill_is_issued_again() {
+        let (mut t, path) = target("before");
+        let write = |byte: u8| Request {
+            id: RequestId(1),
+            op: Op::Write {
+                offset: 0,
+                data: filled(byte),
+            },
+        };
+        t.submit(write(0xaa)).unwrap();
+        // The call returns; the suite has not polled.
+        std::thread::sleep(Duration::from_millis(200));
+        // The helper says the old server is dead: what has returned by
+        // now was completed before the kill.
+        assert_eq!(t.returned_before_kill(), 1);
+        t.settle(Duration::from_secs(30)).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(t.poll(&mut out), 0, "the old result is not handed out");
+        // The suite's reissue, with other data so that it shows.
+        t.submit(write(0x55)).unwrap();
+        assert_eq!(t.wait(&mut out, Duration::from_secs(30)), 1);
+        assert_eq!(out[0].id, RequestId(1));
+        assert_eq!(out[0].result, Ok(()));
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(t.poll(&mut out), 0, "no second completion");
+        let on_device = std::fs::read(&path).unwrap();
+        assert!(
+            on_device[..BLOCK_USIZE].iter().all(|b| *b == 0x55),
+            "the resubmission was not issued"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The start time is field 22 whatever the command is called, and a
+    /// pid is signalled only while it is the process the helper named.
+    #[test]
+    fn a_pid_is_signalled_only_while_it_is_the_same_process() {
+        let stat = "1234 (a b) c) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10 18446744073709551615";
+        assert_eq!(start_time(stat), Some(987_654));
+        assert_eq!(start_time("garbage"), None);
+        let me = i32::try_from(std::process::id()).unwrap();
+        let this = Server::now(me).unwrap();
+        // The same pid with another start time is another process: no signal.
+        let other = Server {
+            started: this.started + 1,
+            ..this
+        };
+        assert!(!other.kill());
+        // A pid that is nobody's.
+        assert!(Server::now(i32::MAX - 7).is_none());
+        // A child of this test is killed when it is the process named.
+        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
+        let named = Server::now(i32::try_from(child.id()).unwrap()).unwrap();
+        assert!(named.kill());
+        assert!(!child.wait().unwrap().success());
+        assert!(!named.kill(), "a process that is gone is not signalled");
+    }
+
+    /// The check on the sorting of calls at a kill.
+    #[test]
+    fn a_wrong_sorting_is_noticed() {
+        let now = std::time::Instant::now();
+        let later = now + Duration::from_millis(5);
+        assert!(
+            sorted_wrongly(Some(now), Some(later)).is_some(),
+            "returned before the sorting"
+        );
+        assert!(
+            sorted_wrongly(Some(later), Some(now)).is_none(),
+            "returned after it"
+        );
+        assert!(
+            sorted_wrongly(Some(now), None).is_none(),
+            "no sorting: a helper without the line"
+        );
+        assert!(sorted_wrongly(None, Some(now)).is_none());
+    }
+
+    /// The helper's line is acted on when it is printed, not when the
+    /// helper has finished: by then a new server is up.
+    #[test]
+    fn the_stop_is_noticed_while_the_helper_runs() {
+        let (h, script) = harness("stops", "echo dead 0 0; sleep 1; echo /dev/null");
+        let started = std::time::Instant::now();
+        let mut at = None;
+        let last = h
+            .helper_watched("kill", 1, &mut |line| {
+                if line == "dead 0 0" {
+                    at = Some(started.elapsed());
+                }
+                None
+            })
+            .unwrap();
+        assert_eq!(last, "/dev/null");
+        assert!(
+            at.unwrap() < Duration::from_millis(700),
+            "noticed only at the end"
+        );
+        std::fs::remove_file(&script).unwrap();
     }
 
     /// A request submitted after the kill under a new id is issued as

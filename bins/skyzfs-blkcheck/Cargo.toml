@@ -14,5 +14,6 @@ skyzfs-blk = { workspace = true, features = ["conformance"] }
 # For the value of O_DIRECT only: no call into libc, no unsafe.
 libc = "0.2"
 # fallocate on a block device is how Linux offers discard and
-# write-zeroes without an ioctl, and so without unsafe.
-rustix = { version = "1", features = ["fs"] }
+# write-zeroes without an ioctl, and so without unsafe. The signal to a
+# server is sent from here too, without a process started for it.
+rustix = { version = "1", features = ["fs", "process"] }
