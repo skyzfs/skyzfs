@@ -46,6 +46,10 @@ jobs:
         image: [ubuntu-26.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - name: The binding's kernel tests
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
@@ -135,6 +139,10 @@ jobs:
         variant: [buffers-freed, no-flush]
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - name: Put the defect back
         run: |
           python3 - "${{ matrix.variant }}" <<'PY'
