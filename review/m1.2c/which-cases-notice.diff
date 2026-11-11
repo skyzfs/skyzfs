@@ -1,0 +1,43 @@
+diff --git a/crates/skyzfs-blk/tests/capabilities.rs b/crates/skyzfs-blk/tests/capabilities.rs
+index 0066c09..2b78b4e 100644
+--- a/crates/skyzfs-blk/tests/capabilities.rs
++++ b/crates/skyzfs-blk/tests/capabilities.rs
+@@ -563,3 +563,38 @@ fn a_suite_that_runs_a_case_without_its_capability_is_caught() {
+         assert!(report.not_exercised().is_empty(), "{report}");
+     }
+ }
++
++/// Review probe: for each capability left out and each fault, the cases
++/// that notice it, at three seeds. Prints; asserts nothing.
++#[test]
++#[ignore = "review probe"]
++fn review_which_cases_notice_each_fault() {
++    let mut sets: Vec<Vec<Capability>> = Capability::ALL.iter().map(|c| vec![*c]).collect();
++    sets.push(Capability::ALL.to_vec());
++    for lacks in sets {
++        for fault in FAULTS {
++            let mut by_seed = Vec::new();
++            for seed in [Config::default().seed, 7, 0xC0FFEE] {
++                let mut harness = Limited::new(&lacks, Some(fault));
++                let config = Config { seed, ..suite() };
++                let names: Vec<&str> = cases::<Limited>()
++                    .iter()
++                    .filter(|case| case.run_on(&mut harness, &config).is_err())
++                    .map(|case| case.name)
++                    .collect();
++                by_seed.push(names);
++            }
++            let fixed = |n: &Vec<&str>| n.iter().any(|x| !x.starts_with("prop_"));
++            let kind = if by_seed.iter().all(|n| n.is_empty()) {
++                "invisible"
++            } else if by_seed.iter().all(fixed) {
++                "fixed case"
++            } else if by_seed.iter().all(|n| !n.is_empty()) {
++                "random programs only, all three seeds"
++            } else {
++                "SEED-DEPENDENT"
++            };
++            println!("{lacks:?} {fault:?}: {kind} {:?}", by_seed.iter().map(|n| n.len()).collect::<Vec<_>>());
++        }
++    }
++}
