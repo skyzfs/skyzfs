@@ -118,6 +118,8 @@ impl Mutants {
     /// A reclaim keeps the cursor it had for the log's start and calls
     /// it current.
     pub(crate) const STALE_CURSOR: u64 = 1 << 32;
+    /// A position inside a segment's header passes for a boundary.
+    pub(crate) const HEADER_IS_BOUNDARY: u64 = 1 << 33;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u64 = 1 << 23;
 
@@ -1556,6 +1558,17 @@ impl<D: Dir> Log<D> {
         }
         let identity = self.current.identity;
         let size = identity.segment_size;
+        // A segment begins with its header, one unit long, and no
+        // record starts or ends in it. The walk below begins behind the
+        // header and would never meet such a position, so it is refused
+        // here.
+        if !self.mutants.has(Mutants::HEADER_IS_BOUNDARY) {
+            for bound in [from, to] {
+                if bound.0 - identity.base_of(bound) < identity.unit() {
+                    return Err(LogError::BadPosition(bound));
+                }
+            }
+        }
         let rules = Rules {
             identity,
             key: self.key,

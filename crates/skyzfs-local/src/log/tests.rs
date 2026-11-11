@@ -2585,3 +2585,61 @@ fn replays_from_the_start_do_not_walk_the_segment_again() {
     let walked = log.walked() - before;
     assert!(walked < 5 * 700, "{walked} records validated");
 }
+
+/// A segment's header holds no boundary: a position in the first unit
+/// of a segment, its first byte included, is refused by a reclaim and
+/// by a replay like any position where no record starts or ends, and so
+/// is one in the span of the pad that closes the segment before. The
+/// first record of the segment is a boundary. Mutant: positions in a
+/// header are not looked at, and a reclaim takes one.
+#[test]
+fn a_position_in_a_segment_header_is_no_boundary() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut log) = env.fresh()?;
+        let mut tag = 0u8;
+        let mut last_in_first = Lsn(0);
+        while log.segment_files() < 2 {
+            tag += 1;
+            let record = put(&mut log, env, tag)?;
+            if record.start.0 < SEG {
+                last_in_first = record.end;
+            }
+        }
+        tag += 1;
+        put(&mut log, env, tag)?;
+        s(log.sync())?;
+        let floor = log.floor();
+        let first = Lsn(SEG + BLOCK);
+        let mut bad = vec![Lsn(SEG), Lsn(SEG + 1), Lsn(SEG + 64), Lsn(SEG + BLOCK - 64)];
+        // Behind the closing pad's start, in the segment before.
+        if last_in_first.0 + 128 < SEG {
+            bad.push(Lsn(SEG - 64));
+            bad.push(Lsn(last_in_first.0 + 64));
+        }
+        for at in bad {
+            match log.reclaim(at) {
+                Err(LogError::BadPosition(refused)) if refused == at => {}
+                other => return Err(format!("a reclaim to {at} gave {other:?}")),
+            }
+            if log.floor() != floor || log.is_failed() {
+                return Err(format!("the refused reclaim to {at} changed the log"));
+            }
+            for (from, to) in [(at, log.tail()), (floor, at)] {
+                match log.replay(from, to, &mut |_| {}) {
+                    Err(LogError::BadPosition(refused)) if refused == at => {}
+                    other => return Err(format!("a replay {from}..{to} gave {other:?}")),
+                }
+            }
+        }
+        if s(log.reclaim(first))? != first {
+            return Err("the first record of a segment was not taken".into());
+        }
+        let want: Vec<u8> = (1..=tag).rev().take(2).rev().collect();
+        let got = tags(&log)?;
+        if !got.ends_with(&want) || got.len() > want.len() + 1 {
+            return Err(format!("after the reclaim the log holds {got:?}"));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::HEADER_IS_BOUNDARY, everywhere);
+}

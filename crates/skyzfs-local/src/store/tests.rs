@@ -933,6 +933,41 @@ fn a_hold_is_taken_only_at_a_record_boundary() {
         assert_eq!(store.set_hold(Some(inside)), Ok(()), "{env:?}");
         assert!(store.checkpoint().is_err() && store.is_failed(), "{env:?}");
     }
+    // A position in a segment's header, after the log has rolled into
+    // its second segment, is no boundary either: the hold is refused
+    // and a checkpoint leaves the volume healthy. With a log that does
+    // not look at such positions the hold is taken and the checkpoint
+    // fails the volume.
+    for header in [0, 1, 64, 4095] {
+        for defect in [false, true] {
+            for env in environments(0) {
+                let env = Env {
+                    log_mutants: if defect {
+                        crate::log::Mutants::HEADER_IS_BOUNDARY
+                    } else {
+                        0
+                    },
+                    ..env
+                };
+                let (_disk, mut store) = env.fresh().unwrap();
+                write(&mut store, 0, 256, 1).unwrap();
+                write(&mut store, 256, 256, 2).unwrap();
+                flush(&mut store).unwrap();
+                assert!(store.position().0 > SEGMENT, "{env:?}");
+                let at = Lsn(SEGMENT + header);
+                let taken = store.set_hold(Some(at));
+                let failed = store.checkpoint().is_err() || store.is_failed();
+                if defect {
+                    assert!(taken.is_ok() && failed, "{env:?} at {at}");
+                } else {
+                    assert_eq!(taken, Err(NotABoundary(at)), "{env:?}");
+                    assert!(!failed, "{env:?} at {at}");
+                    expect(&mut store, 0, 256, 1, "after the checkpoint").unwrap();
+                    expect(&mut store, 256, 256, 2, "after the checkpoint").unwrap();
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------
