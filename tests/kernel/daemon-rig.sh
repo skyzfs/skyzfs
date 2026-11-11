@@ -453,9 +453,11 @@ check_b() {
         else
             rc=$SERVE_RC; st=$(ublk_state "$BDEV")
             ( lim 120 "$DD" if=/dev/zero of="$WORK/mnt/$pool/across-stop" bs=1M count=4 conv=fsync status=none; echo $? > "$WORK/b-across.rc" ) &
+            across=$!
             sleep 3
             serve_start "$SKYZFSD" "$dir"; i=$?
-            wait
+            # Not a bare wait: the new serve is a background job too.
+            wait "$across"
             if [ "$rc" = 0 ] && [ -b "$BDEV" ] && [ "$st" = QUIESCED ] && [ $i = 0 ] && [ "$(cat "$WORK/b-across.rc")" = 0 ] \
                 && [ "$(pool_state "$pool")" = ONLINE ]; then
                 pin orderly_stop_keeps_device PASS "serve exited 0 on SIGTERM, the device stayed ($st), and a write begun while no server ran completed after serve returned; $(pool_errors "$pool")"
@@ -712,13 +714,14 @@ check_d_not_held() {
 # =================================================================== e
 # name seconds wanted: one read held `seconds`; judged against `wanted`.
 hold_test() {
-    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad
+    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader
     HT_ERR=""; HT_WHY=""
     mark=$(dmesg_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
     # The held request is the first read of the block at HOLD_AT, a
     # place nothing probes when a device appears.
     ( lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=16 skip=$((HOLD_AT / 4096)) iflag=direct status=none 2> "$OUT/$name-dd.err"; echo $? > "$WORK/$name.rc" ) &
+    reader=$!
     for i in $(seq 1 120); do
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
     done
@@ -728,7 +731,7 @@ hold_test() {
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "$held" = 2 ] && break; sleep 0.5
     done
     t1=$(now_ms)
-    wait
+    wait "$reader"
     rc=$(cat "$WORK/$name.rc" 2>/dev/null)
     udevadm settle --timeout=30 2>/dev/null
     dmesg_since "$mark" > "$OUT/$name-dmesg.log"
