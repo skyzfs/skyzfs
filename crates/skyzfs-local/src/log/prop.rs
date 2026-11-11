@@ -136,7 +136,7 @@ struct Rec {
 
 fn read_all(log: &Log<SimDisk>) -> Result<Vec<Rec>, LogError> {
     let mut out = Vec::new();
-    log.replay(log.floor(), log.tail(), &mut |r| {
+    log.replay_unsynced(log.floor(), log.tail(), &mut |r| {
         out.push(Rec {
             start: r.start,
             end: r.end,
@@ -341,7 +341,7 @@ impl Run {
         };
         let mut held = Vec::new();
         let log = self.log.as_ref().ok_or("no log")?;
-        log.replay(from, to, &mut |r| held.push((r.start, r.end)))
+        log.replay_unsynced(from, to, &mut |r| held.push((r.start, r.end)))
             .map_err(|e| format!("replay of records {i}..{j}, from {from} to {to}: {e}"))?;
         let want: Vec<(Lsn, Lsn)> = records[i..j].iter().map(|r| (r.start, r.end)).collect();
         if held != want {

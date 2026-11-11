@@ -109,6 +109,10 @@ impl Mutants {
     /// A replay does not stop at a record that starts where the range
     /// ends.
     pub(crate) const REPLAY_PAST_START: u32 = 1 << 28;
+    /// A reclaim takes any position for the start of the log.
+    pub(crate) const RECLAIM_UNCHECKED: u32 = 1 << 29;
+    /// A replay goes beyond the durable position.
+    pub(crate) const REPLAY_UNSYNCED: u32 = 1 << 30;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
@@ -181,6 +185,11 @@ pub enum LogError {
     /// acknowledge it.
     #[error("the log is marked as failed")]
     MarkedFailed,
+    /// `append`: the record needs another segment file, and the log has
+    /// as many as it may have, none of them free. Nothing was written
+    /// and the log has not failed: a reclaim makes room.
+    #[error("the log is full")]
+    Full,
     /// The log has failed: an earlier write or sync returned an error.
     /// Nothing succeeds any more.
     #[error("the log has failed")]
@@ -569,6 +578,8 @@ pub struct Log<D: Dir> {
     /// A segment file was created and the directory not synced since.
     dir_dirty: bool,
     scratch: Vec<u8>,
+    /// The most segment files the log may have.
+    limit: Option<usize>,
     mutants: Mutants,
 }
 
@@ -892,6 +903,7 @@ impl<D: Dir> Log<D> {
             dirty: BTreeSet::new(),
             dir_dirty: false,
             scratch: Vec::new(),
+            limit: None,
             mutants,
         };
 
@@ -1232,6 +1244,13 @@ impl<D: Dir> Log<D> {
         let align = u64::from(identity.align);
         let record = identity.record_size(data_len);
         if self.closed || !identity.fits(self.next_start().0 % size, data_len) {
+            // The record goes into the next segment. If that needs one
+            // file more than the log may have, say so before anything
+            // is written, the closing pad included.
+            let in_use = self.live.len();
+            if in_use == self.slots.len() && self.limit.is_some_and(|limit| in_use >= limit) {
+                return Err(LogError::Full);
+            }
             self.roll()?;
         }
         let start = self.next_start();
@@ -1337,18 +1356,47 @@ impl<D: Dir> Log<D> {
     /// show records the disk does not hold, and what the log holds is
     /// known again only after a recovery.
     ///
-    /// `to` may lie beyond [`Log::durable`], up to the tail. Records
-    /// beyond the durable position are in the log now and survive the
-    /// loss of the process, but a power cut may still take them back.
-    /// **Nothing beyond the durable position may be applied to anything
-    /// that outlives the log's own records** (a home image, an upload):
-    /// the volume would then hold what the log, after a power cut, never
-    /// had, and would not be a prefix. A caller that makes records
-    /// permanent replays up to [`Log::durable`].
+    /// `to` may not lie beyond [`Log::durable`]. Records beyond the
+    /// durable position are in the log and survive the loss of the
+    /// process, but a power cut may still take them back, and nothing
+    /// that a power cut can take back may be applied to anything that
+    /// outlives the log's own records (a home image, an upload): the
+    /// volume would then hold what the log never had, and would not be
+    /// a prefix. So a replay does not hand them out. After an open the
+    /// whole log is durable. The payload of a single record that is not
+    /// durable yet, to serve a client its own write, is read with
+    /// [`Log::read_payload`].
     pub fn replay(
         &self,
         from: Lsn,
         to: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(), LogError> {
+        let limit = if self.mutants.has(Mutants::REPLAY_UNSYNCED) {
+            self.tail
+        } else {
+            self.durable
+        };
+        self.replay_within(from, to, limit, visit)
+    }
+
+    /// [`Log::replay`] with the tail as the limit: for the tests, which
+    /// look at records before they are synced.
+    #[cfg(test)]
+    pub(crate) fn replay_unsynced(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(), LogError> {
+        self.replay_within(from, to, self.tail, visit)
+    }
+
+    fn replay_within(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
         if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
@@ -1357,7 +1405,7 @@ impl<D: Dir> Log<D> {
         if from < self.current.floor || from > to {
             return Err(LogError::BadPosition(from));
         }
-        if to > self.tail {
+        if to > limit {
             return Err(LogError::BadPosition(to));
         }
         let identity = self.current.identity;
@@ -1452,9 +1500,64 @@ impl<D: Dir> Log<D> {
         Ok(())
     }
 
+    /// Read `buf.len()` bytes of the payload of the write record that
+    /// starts at `record`, from `skip` bytes into it.
+    ///
+    /// `record` must be the start of a write record that is in the log
+    /// now: one [`Log::append`] returned to this instance, or one a
+    /// replay showed it. Every such record was validated by this
+    /// process: it wrote the record itself, or recovery checked it
+    /// against the device. The record need not be durable; this is how
+    /// a client is served a write it was acknowledged before any sync.
+    /// A position that is not the start of a write record of at least
+    /// that length is refused; the header at the position is checked
+    /// for being a record's at that position, not for its tag, which
+    /// would need the record before it.
+    pub fn read_payload(&self, record: Lsn, skip: u64, buf: &mut [u8]) -> Result<(), LogError> {
+        if self.failed {
+            return Err(LogError::Failed);
+        }
+        let identity = self.current.identity;
+        let size = identity.segment_size;
+        let align = u64::from(identity.align);
+        let base = identity.base_of(record);
+        let at = record.0 % size;
+        if record < self.current.floor || record >= self.tail || at + align > size {
+            return Err(LogError::BadPosition(record));
+        }
+        let Some(&index) = self.live.get(&base) else {
+            return Err(Corruption::MissingSegment { base }.into());
+        };
+        let file = &self.slots[index].file;
+        let mut raw = [0u8; RECORD_HEADER];
+        file.read_at(at, &mut raw)
+            .map_err(|e| read_error("reading the log", &e))?;
+        let Some((kind, data_len)) = RecordHeader::peek(&raw, record) else {
+            return Err(LogError::BadPosition(record));
+        };
+        let wanted = skip.checked_add(buf.len() as u64);
+        if kind != Kind::Write
+            || wanted.is_none_or(|end| end > u64::from(data_len))
+            || !identity.fits(at, data_len)
+        {
+            return Err(LogError::BadPosition(record));
+        }
+        file.read_at(at + align + skip, buf)
+            .map_err(|e| read_error("reading the log", &e))
+    }
+
+    /// The most segment files the log may have, or `None` for no limit
+    /// (which it is after every open). When a record needs one more,
+    /// [`Log::append`] returns [`LogError::Full`]. Files the log already
+    /// has stay, whatever the limit.
+    pub fn set_segment_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
+    }
+
     /// Give up the log before `before`, as far as the hold and the
     /// durable position allow, and return where the log starts now.
-    /// `before` must be a record boundary. Segments that lie wholly
+    /// The new start must be a record boundary, where a record starts or
+    /// ends; any other position is refused and nothing changes. Segments that lie wholly
     /// before the new start become free for reuse, and only after the
     /// new start is durable.
     pub fn reclaim(&mut self, before: Lsn) -> Result<Lsn, LogError> {
@@ -1469,6 +1572,14 @@ impl<D: Dir> Log<D> {
         }
         if target <= self.current.floor {
             return Ok(self.current.floor);
+        }
+        // The start of the log is durable state: a start that is not a
+        // record boundary would outlive this process and make the log
+        // unreadable from its start. An empty replay at the position
+        // walks its segment and refuses a position inside a record or
+        // in a gap.
+        if !self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
+            self.replay_within(target, target, self.tail, &mut |_| {})?;
         }
         // A new epoch, as with every superblock that is written: what
         // is written from now on, a record or the header of a segment
