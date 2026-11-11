@@ -32,6 +32,11 @@ on:
       syncs:
         description: "pool syncs in the workload (transaction groups recorded)"
         default: "40"
+      discard:
+        description: "what a discarded range holds afterwards on the image: zero (the reference server's file) or skip (left as it was, as the store will)"
+        type: choice
+        options: [zero, skip]
+        default: zero
   pull_request:
     paths:
       - tests/kernel/**
@@ -93,11 +98,14 @@ jobs:
           DEEP_BUDGET_S: ${{ inputs.deep_budget_s || '240' }}
           SYNCS: ${{ inputs.syncs || '40' }}
           LAYOUT: ${{ matrix.layout }}
+          DISCARD: ${{ inputs.discard || 'zero' }}
         run: |
           for v in "$BUDGET_S" "$DEEP_BUDGET_S" "$SYNCS"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
+          [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
           {
+            echo "export RIG_DISCARD=$DISCARD"
             echo "export RIG_BUDGET_S=$BUDGET_S RIG_DEEP_BUDGET_S=$DEEP_BUDGET_S RIG_SYNCS=$SYNCS RIG_REQUIRE_WITNESS=1"
             # autotrim as the product will have it, so that discards are in the log
             echo "export RIG_LAYOUT=$LAYOUT RIG_AUTOTRIM=on"
