@@ -1,15 +1,22 @@
 name: skyzfs-replay-rig
 
 # Power-cut replay (design §9, M1 exit criterion): a pool must import at
-# every record prefix of the write log, not only at flush boundaries.
+# every record prefix of the write log, and every block the newest
+# uberblock reaches must be on the device in every copy.
 # The rig records a workload's writes with dm-log-writes over a ublk
-# device, rebuilds the device at sampled prefixes, and at each one
-# imports the pool read-only and verifies the files that were due; at
-# flush boundaries it also scrubs a throwaway copy. Two deliberately
-# wrong replays are run through the same checks; the job fails unless
-# each does what `EXPECTED` in `tests/kernel/replay_check.py` says, and
-# the summary states what the rig cannot detect yet. All the logic is
+# device and rebuilds the device at sampled prefixes. At each one it
+# imports the pool read-only and verifies the files that were due. At
+# flush boundaries it also scrubs a throwaway copy. Around each
+# transaction group's uberblock writes it has zdb list every block the
+# newest uberblock reaches and checksums every copy on the image.
+# Three deliberately wrong replays go through the same checks; the job
+# fails unless each does what `EXPECTED` in
+# `tests/kernel/replay_check.py` says. All the logic is
 # `tests/kernel/replay-rig.sh` and `tests/kernel/replay_check.py`.
+#
+# Two pool layouts, one job each: the product's, with a local log
+# device that is not under test, and one with no log device, where the
+# intent log lands on the device under test too.
 #
 # Built against the reference ublk server, so that it is ready and
 # trusted when skyzfsd exists.
@@ -25,10 +32,21 @@ on:
       syncs:
         description: "pool syncs in the workload (transaction groups recorded)"
         default: "40"
+      discard:
+        description: "what a discarded range holds afterwards on the image: zero (the reference server's file) or skip (left as it was, as the store will)"
+        type: choice
+        options: [zero, skip]
+        default: zero
   pull_request:
     paths:
       - tests/kernel/**
       - .github/workflows/skyzfs-replay-rig.yml
+
+# A newer push to a pull request supersedes the run of the older one; a
+# dispatched run is left alone.
+concurrency:
+  group: replay-rig-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 # The job runs branch code and third-party code as root: its token can
 # read the repository and nothing else.
@@ -44,9 +62,16 @@ jobs:
       - run: python3 tests/kernel/test_replay.py -v
 
   replay:
-    name: replay on ubuntu-26.04
+    name: replay, ${{ matrix.layout == 'slog' && 'product layout (local log device)' || 'whole-pool layout (no log device)' }}
     runs-on: ubuntu-26.04
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # slog: the product's layout; the log device is local and not
+        # under test. whole: no separate log device, so the intent log
+        # and its flushes land on the device under test as well.
+        layout: [slog, whole]
     env:
       UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
     steps:
@@ -54,7 +79,7 @@ jobs:
       - name: Install ZFS, build the ublk server and replay-log
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup
+          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy
           # Only some kernel flavours split modules into this package;
           # where it does not exist, the modules are already there.
           sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
@@ -72,12 +97,18 @@ jobs:
           BUDGET_S: ${{ inputs.budget_s || '840' }}
           DEEP_BUDGET_S: ${{ inputs.deep_budget_s || '240' }}
           SYNCS: ${{ inputs.syncs || '40' }}
+          LAYOUT: ${{ matrix.layout }}
+          DISCARD: ${{ inputs.discard || 'zero' }}
         run: |
           for v in "$BUDGET_S" "$DEEP_BUDGET_S" "$SYNCS"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
+          [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
           {
+            echo "export RIG_DISCARD=$DISCARD"
             echo "export RIG_BUDGET_S=$BUDGET_S RIG_DEEP_BUDGET_S=$DEEP_BUDGET_S RIG_SYNCS=$SYNCS RIG_REQUIRE_WITNESS=1"
+            # autotrim as the product will have it, so that discards are in the log
+            echo "export RIG_LAYOUT=$LAYOUT RIG_AUTOTRIM=on"
             printf 'export RIG_REPLAY_LOG=%q\n' "$RUNNER_TEMP/bin/replay-log"
           } > "$RUNNER_TEMP/rig.env"
           sudo bash -c '. "$1" && exec tests/kernel/replay-rig.sh "$2" /mnt/skz-replay' \
@@ -90,6 +121,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: replay-rig
+          name: replay-rig-${{ matrix.layout }}
           path: replay-out/
           retention-days: 90

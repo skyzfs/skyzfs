@@ -20,21 +20,36 @@
 #     dm-log-writes log. RIG_PROVIDER names another provider command,
 #     and RIG_LOG the log it reads (see logwrites.py for the contract).
 #
-# Workload: a writer creates files that are never changed afterwards,
+# Workload: a writer creates files that are never changed afterwards
+# (each has its own name and is written once, so what a file held when
+# its fsync returned is what it holds for good),
 # each with an fsync, and records each file's checksum when it is
 # complete. Meanwhile the pool is synced RIG_SYNCS times, and after each
 # sync a mark goes into the log with the number of files that were
 # complete before that sync began. Those files must be in the pool at
-# every prefix from the mark on.
+# every prefix from the mark on. A mark also follows each file's fsync:
+# where the intent log is on the device under test (RIG_LAYOUT=whole),
+# the file must survive from there on, once the intent log is replayed.
+#
+# RIG_LAYOUT=slog (default) is the product's layout: the log device is
+# local and is not recorded. RIG_LAYOUT=whole has no separate log
+# device: the intent log and its flushes land on the device under test,
+# and the image is the whole pool, which zdb needs.
+# RIG_AUTOTRIM=on sets the pool's autotrim property, as the product
+# will, so that discards reach the device under test and the log.
+# RIG_RECORD_ONLY=1 stops after recording and leaves base.img, log.img
+# and the manifest in WORK.
 #
 # Knobs (environment): RIG_SYNCS=40, RIG_FILE_KB=256, RIG_FILE_SLEEP=0.05
 # (seconds between files), RIG_SYNC_SLEEP=0.6 (seconds between syncs),
-# RIG_BUDGET_S=840 and RIG_DEEP_BUDGET_S=240 (the check's main pass),
+# RIG_BUDGET_S=840, RIG_DEEP_BUDGET_S=240 and RIG_COPIES_BUDGET_S=300
+# (the check's main pass), RIG_DISCARD=zero|skip (what a discarded range
+# holds afterwards on the image),
 # RIG_REPLAY_LOG (path of xfstests replay-log, a witness for the
 # provider; skipped when unset, which RIG_REQUIRE_WITNESS=1 makes a
 # failure).
 #
-# Needs root, ZFS, dm-log-writes, dm-snapshot, and `ublk` unless
+# Needs root, ZFS with zdb, dm-log-writes, dm-snapshot, and `ublk` unless
 # RIG_DEVICE is set. For a throwaway machine: it creates a pool named
 # skzreplay.
 set -euo pipefail
@@ -61,6 +76,8 @@ FILE_KB=${RIG_FILE_KB:-256}
 FILE_SLEEP=${RIG_FILE_SLEEP:-0.05}
 SYNC_SLEEP=${RIG_SYNC_SLEEP:-0.6}
 DEVICE=${RIG_DEVICE:-}
+LAYOUT=${RIG_LAYOUT:-slog}
+case $LAYOUT in slog|whole) ;; *) echo "RIG_LAYOUT must be slog or whole" >&2; exit 64 ;; esac
 MANIFEST=$WORK/manifest
 STOP=$WORK/stop
 SCRATCH=/dev/shm/skz-replay.$$
@@ -110,18 +127,25 @@ else
 fi
 
 # The log device is allocated storage: a file written through once.
-: > "$WORK/slog.img"
-"$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$SLOG_MB" oflag=direct conv=fsync status=none
-SLOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/slog.img" 2>/dev/null || losetup --find --show "$WORK/slog.img")
+LOGVDEV=(); LOGDIR=()
+if [ "$LAYOUT" = slog ]; then
+    : > "$WORK/slog.img"
+    "$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$SLOG_MB" oflag=direct conv=fsync status=none
+    SLOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/slog.img" 2>/dev/null || losetup --find --show "$WORK/slog.img")
+    LOGVDEV=(log "$SLOG_LOOP"); LOGDIR=(-d "$SLOG_LOOP")
+fi
 
 # ------------------------------------------------- the pool, then the base
 # Created on the bare device, before any recording: the pool's labels
 # are then where they are in production, and the record starts from an
 # exported pool, which is the base image every prefix is built on.
 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MOUNTPOINT" -O atime=off \
-    "$POOL" "$DEVICE" log "$SLOG_LOOP"
+    "$POOL" "$DEVICE" "${LOGVDEV[@]}"
 [ ! -b "${DEVICE}p1" ] || { echo "zpool create partitioned $DEVICE: the labels are not at byte 0" >&2; exit 1; }
 zpool export "$POOL"
+# The log device as it is now, for tools that cannot open the pool
+# without one (zdb): it matches the base image and nothing later.
+[ -z "$SLOG_LOOP" ] || cp --sparse=always "$WORK/slog.img" "$WORK/slog-base.img"
 log "copying the device as the base image"
 "$DD" if="$DEVICE" of="$WORK/base.img" bs=1M iflag=direct conv=sparse status=none
 truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
@@ -131,7 +155,8 @@ truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
 truncate -s "${LOG_MB}M" "$WORK/log.img"
 LOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/log.img" 2>/dev/null || losetup --find --show "$WORK/log.img")
 dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
-zpool import -d "/dev/mapper/$LW" -d "$SLOG_LOOP" -o cachefile=none "$POOL"
+zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
+[ -z "${RIG_AUTOTRIM:-}" ] || zpool set autotrim="$RIG_AUTOTRIM" "$POOL"
 zpool status -P "$POOL" >&2
 
 mkdir -p "$SCRATCH"
@@ -140,9 +165,17 @@ mkdir -p "$SCRATCH"
 writer() {
     local n=0 sum
     while [ ! -e "$STOP" ]; do
-        head -c $((FILE_KB * 1024)) /dev/urandom > "$SCRATCH/f"
+        # The first 4 KiB name the file (256 lines of 16 bytes), so that
+        # its first block can be found in the write log; the rest is
+        # random.
+        {
+            printf "SKZ-FILE-$(printf %06d "$n")\\n%.0s" {1..256}
+            head -c $((FILE_KB * 1024 - 4096)) /dev/urandom
+        } > "$SCRATCH/f"
         sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
         "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
+        # The fsync has returned: from here on in the log, the file is safe.
+        dmsetup message "$LW" 0 mark "fsync-$n"
         # Listed only once complete and fsynced: a line here is a promise.
         echo "$sum f.$n" >> "$MANIFEST"
         n=$((n + 1))
@@ -168,14 +201,21 @@ log "recorded: $c files, log-writes status: $(dmsetup status "$LW")"
 for _ in $(seq 1 20); do dmsetup remove "$LW" 2>/dev/null && break; sleep 0.25; done
 ! dmsetup info "$LW" >/dev/null 2>&1 || { echo "could not remove $LW" >&2; exit 1; }
 losetup -d "$LOG_LOOP"; LOG_LOOP=""
-losetup -d "$SLOG_LOOP"; SLOG_LOOP=""
+[ -z "$SLOG_LOOP" ] || losetup -d "$SLOG_LOOP"; SLOG_LOOP=""
 if [ -n "$UBLK_UP" ]; then timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || true; UBLK_UP=""; fi
 log "log: $(du -m "$WORK/log.img" | cut -f1) MiB on disk"
+
+if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exit 0; fi
 
 # ----------------------------------------------------------------- check
 args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MANIFEST"
       --pool "$POOL" --mountpoint "$MOUNTPOINT" --work "$WORK/check" --out "$OUT"
-      --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}")
+      --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}"
+      --copies-budget-s "${RIG_COPIES_BUDGET_S:-300}" --discard "${RIG_DISCARD:-zero}")
+[ "$LAYOUT" != slog ] || args+=(--log-device-image "$WORK/slog-base.img")
+# Only where the intent log is on the device under test can the image
+# show whether an fsynced file survived.
+[ "$LAYOUT" != whole ] || args+=(--fsync-check)
 [ -z "${RIG_PROVIDER:-}" ] || args+=(--provider "$RIG_PROVIDER")
 [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
 [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)

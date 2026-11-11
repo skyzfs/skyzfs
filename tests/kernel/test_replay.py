@@ -101,12 +101,28 @@ class Log(unittest.TestCase):
         self.assertEqual(self.image(), self.model(sched))
         self.assertNotEqual(self.image(), self.model(range(len(self.entries))))
 
-    def test_discard_is_skipped_and_counted(self):
-        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(7)), ('discard', 1 << 20, SS), ('flush',)])
+    def test_discard_is_zeros_or_nothing(self):
+        ents = [('write', 1 << 20, blk(7, 4)), ('discard', (1 << 20) + SS, 2 * SS), ('flush',),
+                ('write', (1 << 20) + SS, blk(9)), ('discard', 5 << 20, 1 << 20)]
+        logwrites.write_log(self.log, SS, ents)
         idx = logwrites.index(self.log, DEV)
-        self.assertEqual(idx['records'][1]['flags'], ['discard'])
-        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3), (1, SS, 1))
-        self.assertEqual(self.image()[1 << 20:(1 << 20) + SS], blk(7))
+        self.assertEqual((idx['records'][1]['flags'], idx['records'][1]['offset'], idx['records'][1]['bytes']),
+                         (['discard'], (1 << 20) + SS, 2 * SS))
+        at = slice(1 << 20, (1 << 20) + 4 * SS)
+        # as nothing: what was there stays
+        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3, discard='skip'), (1, 4 * SS, 1))
+        self.assertEqual(self.image()[at], blk(7, 4))
+        # as zeros, the default: exactly the range, and a later write lands on top
+        with open(self.img, 'r+b') as f:
+            f.truncate(0)
+            f.truncate(DEV)
+        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3), (1, 4 * SS, 1))
+        self.assertEqual(self.image()[at], blk(7) + blk(0, 2) + blk(7))
+        logwrites.advance(self.log, idx, self.img, 3, 5)
+        self.assertEqual(self.image()[at], blk(7) + blk(9) + blk(0) + blk(7))
+        self.assertEqual(os.path.getsize(self.img), DEV)
+        with self.assertRaises(ValueError):
+            logwrites.advance(self.log, idx, self.img, 0, 1, discard='other')
 
     def test_damaged_logs_are_refused(self):
         with open(self.log, 'r+b') as f:
@@ -130,6 +146,33 @@ class Log(unittest.TestCase):
         self.assertEqual(replay_check.files_at(marks, first - 1), 0)
         self.assertEqual(replay_check.files_at(marks, first), 3)
         self.assertEqual(replay_check.files_at(marks, len(self.entries)), 18)
+
+    def test_fsync_marks(self):
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(1)), ('flush',), ('mark', 'fsync-0'), ('mark', 'sync-1-0'),
+                                           ('write', 2 << 20, blk(2)), ('flush',), ('mark', 'fsync-1'), ('mark', 'fsync-2'),
+                                           ('mark', 'sync-2-3'), ('mark', 'fsync-x'), ('mark', 'other')])
+        recs = logwrites.index(self.log, DEV)['records']
+        fm = replay_check.fsync_marks(recs)
+        self.assertEqual(fm, [(3, 1), (7, 2), (8, 3)])
+        self.assertEqual([replay_check.fsynced_at(fm, n) for n in (0, 2, 3, 6, 7, 8, 11)], [0, 0, 1, 1, 2, 3, 3])
+        # the sync marks are read as before, whatever stands between them
+        self.assertEqual(replay_check.parse_marks(recs), [(4, 1, 0), (9, 2, 3)])
+
+    def test_a_wrong_replay_is_asked_for_a_file_from_its_own_mark(self):
+        ents = [('write', 1 << 20, blk(1)), ('write', 2 << 20, blk(2)), ('flush',), ('mark', 'fsync-0'),
+                ('write', 3 << 20, blk(3)), ('flush',), ('mark', 'sync-1-1'), ('mark', 'fsync-1')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        files, due = replay_check.promised(recs, True)
+        self.assertEqual([due(n) for n in range(9)], [0, 0, 0, 0, 1, 1, 1, 1, 2])
+        self.assertEqual([files(n) for n in range(9)], [0, 0, 0, 0, 0, 0, 0, 1, 1])
+        # with record 1 dropped, every mark sits one place earlier, and the promises move with it
+        sched = [0, 2, 3, 4, 5, 6, 7]
+        files, due = replay_check.promised([recs[i] for i in sched], True)
+        self.assertEqual([due(n) for n in range(8)], [0, 0, 0, 1, 1, 1, 1, 2])
+        self.assertEqual([files(n) for n in range(8)], [0, 0, 0, 0, 0, 0, 1, 1])
+        # without the fsync check nothing is asked of the writable import
+        self.assertEqual(replay_check.promised(recs, False)[1](8), 0)
 
     def test_plan_takes_every_flush_boundary_first(self):
         recs = self.idx['records']
@@ -184,6 +227,13 @@ class Log(unittest.TestCase):
         f = replay_check.victim_facts(self.log, recs, 6, self.img)
         self.assertEqual((f['zeros'], f['same_as_before'], f['copies']), (True, True, []))
         self.assertIn('record 2 at byte', replay_check.facts_text(replay_check.victim_facts(self.log, recs, 1)))
+        self.assertFalse(f['intent_log'])
+        zil = bytearray(blk(3))
+        zil[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, bytes(zil)), ('flush',)])
+        f = replay_check.victim_facts(self.log, logwrites.index(self.log, DEV)['records'], 0)
+        self.assertTrue(f['intent_log'])
+        self.assertIn('intent-log block', replay_check.facts_text(f))
 
     def test_plan_is_repeatable(self):
         recs = self.idx['records']
@@ -236,26 +286,303 @@ class Log(unittest.TestCase):
         idx = logwrites.index(self.log, DEV)
         self.assertEqual(replay_check.controls(idx['records'], replay_check.parse_marks(idx['records'])), [])
 
-    def test_controls_are_judged_against_the_table_in_both_directions(self):
+    def test_controls_are_judged_against_the_table(self):
         drop = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 2}}
-        reorder = {'name': 'reorder', 'caught': False, 'failed_by': {}}
-        rows, gaps, ok = replay_check.judge_controls([drop, reorder])
-        self.assertTrue(ok)
-        self.assertEqual([g['name'] for g in gaps], ['reorder'])
-        # a control that is no longer caught
-        self.assertFalse(replay_check.judge_controls([dict(drop, caught=False, failed_by={}), reorder])[2])
-        # drop caught by the light check, with or without the deep check: the rig did better, not worse
-        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}):
-            rows, _, ok = replay_check.judge_controls([dict(drop, failed_by=by), reorder])
-            self.assertTrue(ok, by)
-            self.assertIn(sorted(by)[-1], rows[0]['observed'])
-        # the gap closing is also a difference: the table has to be changed on purpose
-        rows, gaps, ok = replay_check.judge_controls([drop, dict(reorder, caught=True, failed_by={'deep': 1})])
-        self.assertFalse(ok)
+        reorder = {'name': 'reorder', 'caught': True, 'failed_by': {'copies': 1}}
+        data = {'name': 'data', 'caught': True, 'failed_by': {'verify': 30, 'copies': 2}}
+        rows, gaps, ok = replay_check.judge_controls([drop, reorder, data], absent=('intent',))
+        self.assertTrue(ok, rows)
         self.assertEqual(gaps, [])
+        self.assertEqual(rows[2]['observed'], 'caught by the every-copy check')
+
+        def judged(**changed):
+            ctl = {c['name']: dict(c) for c in (drop, reorder, data)}
+            for name, c in changed.items():
+                ctl[name].update(c)
+            return replay_check.judge_controls(list(ctl.values()), absent=('intent',))[2]
+        # a control that is no longer caught
+        for name in ('drop', 'reorder', 'data'):
+            self.assertFalse(judged(**{name: {'caught': False, 'failed_by': {}}}), name)
+        # drop may be caught by any check
+        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}, {'copies': 4}):
+            self.assertTrue(judged(drop={'failed_by': by}), by)
+        # reorder must be caught by the every-copy check, whatever else catches it
+        self.assertTrue(judged(reorder={'failed_by': {'copies': 1, 'deep': 1}}))
+        self.assertFalse(judged(reorder={'failed_by': {'deep': 1}}))
+        # data must be caught by the files' checksums: that is what it is for
+        self.assertFalse(judged(data={'failed_by': {'copies': 2}}))
         # a control that did not run, and one the table does not know
-        self.assertFalse(replay_check.judge_controls([drop])[2])
-        self.assertFalse(replay_check.judge_controls([drop, reorder, dict(drop, name='new')])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder, data, dict(drop, name='new')])[2])
+        # a known gap is strict in both directions, and is stated while it holds
+        table = {'reorder': {'block': {'by': None, 'gap': 'not seen yet'}}}
+        rows, gaps, ok = replay_check.judge_controls([{'name': 'reorder', 'caught': False, 'failed_by': {}}], table)
+        self.assertEqual((ok, gaps), (True, [{'name': 'reorder', 'gap': 'not seen yet'}]))
+        rows, gaps, ok = replay_check.judge_controls([reorder], table)
+        self.assertEqual((ok, gaps), (False, []))
+
+    def test_the_table_is_keyed_by_what_the_rule_picked(self):
+        reorder = {'name': 'reorder', 'caught': True, 'failed_by': {'copies': 1}}
+        data = {'name': 'data', 'caught': True, 'failed_by': {'verify': 3}}
+
+        def judged(**drop):
+            c = dict({'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}, **drop)
+            rows, _, ok = replay_check.judge_controls([c, reorder, data], absent=('intent',))
+            return ok, rows[1]
+        # when drop happens to pick an intent-log block it is not judged, either way, and the reason is given
+        for c in ({'failed_by': {'fsync': 2}}, {'caught': False, 'failed_by': {}}):
+            ok, row = judged(**dict(c, **{'class': 'intent-log block'}))
+            self.assertTrue(ok)
+            self.assertIn('the `intent` control', row['note'])
+        self.assertFalse(judged(**{'class': 'intent-log block', 'rig_errors': [{'n': 1, 'failed': 'export'}]})[0])
+        # the intent control is the one that is judged: by the fsync check, and it must run where it can be built
+        intent = {'name': 'intent', 'class': 'intent-log block', 'caught': True, 'failed_by': {'fsync': 1}}
+        base = [{'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}, reorder, data]
+        self.assertTrue(replay_check.judge_controls(base + [intent])[2])
+        self.assertFalse(replay_check.judge_controls(base + [dict(intent, failed_by={'deep': 1})])[2])
+        self.assertFalse(replay_check.judge_controls(base + [dict(intent, caught=False, failed_by={})])[2])
+        self.assertFalse(replay_check.judge_controls(base)[2])                          # not run where it should
+        self.assertTrue(replay_check.judge_controls(base, absent=('intent',))[2])       # the layout has no such block
+        # a superseded write harms nothing: expected not to be caught, strictly, and the reason is given
+        ok, row = judged(**{'class': 'superseded', 'caught': False, 'failed_by': {}})
+        self.assertTrue(ok)
+        self.assertIn('written again', row['note'])
+        self.assertFalse(judged(**{'class': 'superseded', 'failed_by': {'deep': 1}})[0])
+        # a class the table does not name for that control fails the job
+        ok, row = judged(**{'class': 'something new'})
+        self.assertFalse(ok)
+        self.assertIn('does not name', row['expected'])
+        c = dict(data, **{'class': 'intent-log block'})
+        self.assertFalse(replay_check.judge_controls([dict(reorder), c, {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}],
+                                                     absent=('intent',))[2])
+
+    def test_the_intent_control_takes_a_block_the_fsync_depends_on(self):
+        def zil(k):
+            b = bytearray(blk(0x50 + k))
+            b[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+            return bytes(b)
+        ents = []
+        for k in range(1, 7):
+            # one intent-log write whose fsync mark comes only after the group's uberblocks, then one that fits
+            ents += [('write', (5 << 20) + k * 16 * SS, zil(k)), ('flush',)]
+            ents += [e for e in txg(k) if e[0] != 'mark']
+            ents += [('mark', f'fsync-{2 * k - 2}'), ('write', (6 << 20) + k * 16 * SS, zil(k)), ('flush',),
+                     ('mark', f'fsync-{2 * k - 1}'), ('mark', f'sync-{k}-{2 * k - 2}')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        marks = replay_check.parse_marks(recs)
+        m = len(marks) // 2
+        lo, hi = marks[m - 1][0], marks[m][0] - 1
+        found = replay_check.intent_log_writes(self.log, recs, lo, hi)
+        self.assertEqual(len(found), 2)
+        ctl = {c['name']: c for c in replay_check.controls(recs, marks, None,
+                                                            lambda a, b: replay_check.intent_log_writes(self.log, recs, a, b))}
+        c = ctl['intent']
+        self.assertEqual(c['victim'], found[1])           # not the first: uberblocks stand between it and its mark
+        mark = next(i for i in range(c['victim'] + 1, len(recs)) if recs[i].get('mark', '').startswith('fsync-'))
+        self.assertFalse(any(recs[i].get('ub') for i in range(c['victim'], mark)))
+        self.assertEqual(sorted(c['schedule']), [i for i in range(len(recs)) if i != c['victim']])
+        # the prefix that ends with that mark, in the wrong replay's own numbering, is among the points
+        self.assertIn(c['schedule'].index(mark) + 1, c['points'])
+        self.assertEqual(replay_check.victim_class(recs, c['victim'], replay_check.victim_facts(self.log, recs, c['victim'])),
+                         'intent-log block')
+        # no intent-log writes, no such control
+        self.assertNotIn('intent', {x['name'] for x in replay_check.controls(recs, marks, None, lambda a, b: [])})
+
+    def test_victim_class(self):
+        ents = [('write', 1 << 20, blk(1)),              # 0  rewritten whole before the next uberblock
+                ('write', 2 << 20, blk(2, 2)),           # 1  rewritten only in part
+                ('write', 3 << 20, blk(3)),              # 2  rewritten, but after the uberblock
+                ('write', 4 << 20, blk(4)),              # 3  never written again
+                ('write', 1 << 20, blk(5, 2)),           # 4
+                ('write', 2 << 20, blk(6)),              # 5
+                ('flush',), ('write', 128 << 10, UB), ('flush',),
+                ('write', 3 << 20, blk(7))]
+        zil = bytearray(blk(8))
+        zil[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+        ents.append(('write', 5 << 20, bytes(zil)))      # 10
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        got = [replay_check.victim_class(recs, i, replay_check.victim_facts(self.log, recs, i)) for i in (0, 1, 2, 3, 10)]
+        self.assertEqual(got, ['superseded', 'block', 'block', 'block', 'intent-log block'])
+        self.assertEqual(replay_check.victim_class(recs, 0, None), 'block')
+
+    def test_group_points(self):
+        recs = self.idx['records']
+        groups = replay_check.group_points(recs)
+        ubs = [i for i, r in enumerate(recs) if r.get('ub')]
+        self.assertEqual(len(groups), 6)
+        # first: right after a group's first uberblock write; last: just before the next group's
+        self.assertEqual([f for f, _ in groups], [u + 1 for u in ubs[0::4]])
+        self.assertEqual([la for _, la in groups], ubs[4::4] + [len(recs)])
+        for f, la in groups:
+            self.assertTrue(recs[f - 1].get('ub'))
+            self.assertLess(f, la)
+        # a flush or a mark between two uberblock writes does not start a new group
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(1)), ('flush',), ('write', 128 << 10, UB), ('flush',),
+                                           ('write', (128 << 10) + SS, UB), ('mark', 'sync-1-0'), ('write', 1 << 20, blk(2))])
+        recs = logwrites.index(self.log, DEV)['records']
+        self.assertEqual(replay_check.group_points(recs), [(3, 7)])
+        self.assertEqual(replay_check.group_points(recs[:2]), [])
+
+    def test_coverage_needs_every_group(self):
+        recs = self.idx['records']
+        groups = replay_check.group_points(recs)
+        flush = [{'n': n, 't_deep': 0.1} for n in replay_check.flush_points(recs)]
+        firsts = [{'n': f, 't_copies': 1.0} for f, _ in groups]
+        lasts = [{'n': la, 't_copies': 1.0} for _, la in groups]
+        cov = replay_check.coverage(recs, flush + firsts + lasts, groups=groups)
+        self.assertEqual((cov['errors'], cov['warnings'], cov['groups'], cov['group_firsts'], cov['group_lasts']), ([], [], 6, 6, 6))
+        # last points may go without, with a warning
+        cov = replay_check.coverage(recs, flush + firsts + lasts[:2], groups=groups)
+        self.assertEqual((cov['errors'], len(cov['warnings']), cov['group_lasts']), ([], 1, 2))
+        # a first point may not; nor may it be checked without the every-copy check
+        self.assertEqual(len(replay_check.coverage(recs, flush + firsts[1:] + lasts, groups=groups)['errors']), 1)
+        cov = replay_check.coverage(recs, flush + [{'n': firsts[0]['n']}] + firsts[1:] + lasts, groups=groups)
+        self.assertEqual(len(cov['errors']), 1)
+        # a log in which no uberblock write is recognised cannot pass
+        self.assertEqual(len(replay_check.coverage(recs, flush, groups=[])['errors']), 1)
+        # every fsync mark must have had the fsync check
+        marks = [{'n': 5, 'fsynced': 1, 't_deep': 0.1}, {'n': 9, 't_deep': 0.1}]
+        cov = replay_check.coverage(recs, flush + marks, fsync_points={5})
+        self.assertEqual((cov['errors'], cov['fsync_checked']), ([], 1))
+        cov = replay_check.coverage(recs, flush + marks, fsync_points={5, 9, 11})
+        self.assertEqual((len(cov['errors']), cov['fsync_checked'], cov['fsync_marks']), (1, 1, 3))
+
+    def test_the_data_control_takes_a_files_block(self):
+        # six groups; in group k, file k-1 is written: once to the intent log, then to its place
+        ents = []
+        for k in range(1, 7):
+            name = replay_check.file_pattern(k - 1)
+            ents += [('write', (5 << 20) + k * 16 * SS, name + blk(k)), ('flush',),
+                     ('write', (1 << 20) + k * 16 * SS, blk(0x30 + k) + name + blk(k, 2))]
+            ents += [e for e in txg(k) if e[0] != 'mark'] + [('mark', f'sync-{k}-{k}')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        marks = replay_check.parse_marks(recs)
+        self.assertEqual(len(replay_check.file_pattern(3)), 4096)
+        self.assertEqual(replay_check.writes_carrying(self.log, recs, replay_check.file_pattern(0)), [0, 2])
+
+        def find(n):
+            return replay_check.writes_carrying(self.log, recs, replay_check.file_pattern(n))
+        ctl = {c['name']: c for c in replay_check.controls(recs, marks, find)}
+        self.assertEqual(set(ctl), {'drop', 'reorder', 'data'})
+        m = len(marks) // 2
+        wanted = marks[m][2] - 1
+        d = ctl['data']
+        # the victim is the last write before the middle mark that carries that file's first block
+        self.assertEqual(d['victim'], find(wanted)[-1])
+        self.assertLess(d['victim'], marks[m][0])
+        self.assertEqual(sorted(d['schedule']), [i for i in range(len(recs)) if i != d['victim']])
+        # and it is checked from the mark on, where the file is due
+        self.assertTrue(any(n >= marks[m][0] for n in d['points']))
+        self.assertTrue(all(d['victim'] <= n <= len(d['schedule']) for n in d['points']))
+        # without a way to find a file's block there is no such control
+        self.assertEqual({c['name'] for c in replay_check.controls(recs, marks)}, {'drop', 'reorder'})
+
+    def fsync_log(self):
+        """Six groups; in group k, file k-1 is written: first as an intent-log block, with its fsync mark, then in place."""
+        import struct
+        zil = b'\0' * 144 + struct.pack('<Q', replay_check.ZEC_MAGIC)
+        ents = []
+        for k in range(1, 7):
+            name = replay_check.file_pattern(k - 1)
+            ents += [('write', (5 << 20) + k * 16 * SS, (zil + name)[:SS].ljust(SS, b'\2') + name), ('flush',),
+                     ('mark', f'fsync-{k - 1}'),
+                     ('write', (1 << 20) + k * 16 * SS, blk(0x30 + k) + name + blk(k, 2))]
+            ents += [e for e in txg(k) if e[0] != 'mark'] + [('mark', f'sync-{k}-{k}')]
+        logwrites.write_log(self.log, SS, ents)
+
+    def test_a_named_provider_gets_the_same_controls(self):
+        # The index as the rig gets it from a provider command, against the one the default path makes.
+        import json
+        import subprocess
+        self.fsync_log()
+        out = os.path.join(self.dir.name, 'index.json')
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logwrites.py'),
+                        'index', '--log', self.log, '--dev-bytes', str(DEV), '--out', out], check=True)
+        with open(out) as f:
+            recs = json.load(f)['records']
+        self.assertEqual(recs, logwrites.index(self.log, DEV)['records'])
+        marks = replay_check.parse_marks(recs)
+        for fsync_check, names in ((True, {'drop', 'reorder', 'data', 'intent'}), (False, {'drop', 'reorder', 'data'})):
+            find, intent, absent = replay_check.control_sources(self.log, recs, fsync_check)
+            ctl = replay_check.controls(recs, marks, find, intent)
+            self.assertEqual({c['name'] for c in ctl}, names)
+            self.assertEqual(set(absent), {'drop', 'reorder', 'data', 'intent'} - names)
+            # every control of the table is either built or named as absent, with a reason
+            self.assertEqual(names | set(absent), set(replay_check.EXPECTED))
+            self.assertTrue(all(absent.values()))
+
+    def test_a_provider_without_data_positions_says_which_controls_are_missing(self):
+        self.fsync_log()
+        recs = logwrites.index(self.log, DEV)['records']
+        for r in recs:
+            r.pop('pos', None)
+        marks = replay_check.parse_marks(recs)
+        find, intent, absent = replay_check.control_sources(self.log, recs, True)
+        ctl = replay_check.controls(recs, marks, find, intent)
+        self.assertEqual({c['name'] for c in ctl}, {'drop', 'reorder'})
+        self.assertEqual(set(absent), {'data', 'intent'})
+        self.assertIn('pos', absent['data'])
+        # judged: the two that ran are of unknown kind and not judged; the two missing are named, not failed
+        seen = [{'name': n, 'class': 'unknown', 'caught': False, 'failed_by': [], 'rig_errors': []} for n in ('drop', 'reorder')]
+        rows, _, ok = replay_check.judge_controls(seen, absent=absent)
+        self.assertTrue(ok)
+        by = {r['name']: r for r in rows}
+        self.assertEqual(by['data']['observed'], 'not built')
+        self.assertIn('pos', by['intent']['not_built'])
+        self.assertEqual(by['drop']['expected'], 'either: not judged')
+        # a control that is neither built nor named as absent still fails the job
+        rows, _, ok = replay_check.judge_controls(seen, absent={'intent': 'x'})
+        self.assertFalse(ok)
+        self.assertEqual({r['name']: r['observed'] for r in rows}['data'], 'not run')
+        # and an unknown kind with a rig error is still an error
+        seen[0]['rig_errors'] = [{'n': 3, 'failed': 'import'}]
+        self.assertFalse(replay_check.judge_controls(seen, absent=absent)[2])
+
+    def test_planning_is_the_same_for_a_provider_without_data_positions(self):
+        # Everything that plans the pass reads the records, not the data: leaving `pos` out changes none of it.
+        self.fsync_log()
+        recs = logwrites.index(self.log, DEV)['records']
+        bare = [{k: v for k, v in r.items() if k != 'pos'} for r in recs]
+        self.assertTrue(any('pos' in r for r in recs))
+        self.assertEqual([replay_check.is_write(r) for r in bare], ['pos' in r for r in recs])
+        groups = replay_check.group_points(recs)
+        self.assertEqual(len(groups), 6)
+        self.assertEqual(replay_check.group_points(bare), groups)
+        for f in (replay_check.parse_marks, replay_check.fsync_marks, replay_check.flush_points, replay_check.ub_clusters):
+            self.assertEqual(f(bare), f(recs), f.__name__)
+        self.assertEqual(replay_check.plan(bare, 40, 5, window=2), replay_check.plan(recs, 40, 5, window=2))
+        n = len(recs)
+        self.assertEqual(replay_check.data_writes(bare, 0, n), replay_check.data_writes(recs, 0, n))
+        every = list(range(n + 1))
+        firsts = [g[0] for g in groups]
+        fpoints = [m[0] for m in replay_check.fsync_marks(recs)]
+        pts = [{'n': p, 't_deep': 0.1, 't_copies': 1.0, 'fsynced': 1} for p in every]
+        want = replay_check.coverage(recs, pts, groups=groups, fsync_points=fpoints)
+        got = replay_check.coverage(bare, pts, groups=replay_check.group_points(bare), fsync_points=fpoints)
+        self.assertEqual(got, want)
+        self.assertEqual((got['errors'], got['groups'], got['group_firsts']), ([], 6, len(firsts)))
+        # the controls that need no data pick the same victims
+        marks = replay_check.parse_marks(recs)
+        with_data = {c['name']: c for c in replay_check.controls(recs, marks, *replay_check.control_sources(self.log, recs, True)[:2])}
+        without = {c['name']: c for c in replay_check.controls(bare, marks, *replay_check.control_sources(self.log, bare, True)[:2])}
+        self.assertEqual(set(without), {'drop', 'reorder'})
+        for name in without:
+            self.assertEqual(without[name]['victim'], with_data[name]['victim'], name)
+            self.assertEqual(without[name]['schedule'], with_data[name]['schedule'], name)
+
+    def test_each_kind_of_trouble_fails_the_job_by_itself(self):
+        good = dict(failures=[], controls_ok=True, witness_ok=True, coverage_errors=[], zdb_cc_rc=0)
+        self.assertEqual(replay_check.job_verdict(**good), (True, []))
+        for change in (dict(failures=[{'n': 3}]), dict(controls_ok=False), dict(witness_ok=False),
+                       dict(coverage_errors=['2 flush boundaries were not checked']), dict(zdb_cc_rc=1), dict(zdb_cc_rc=124)):
+            ok, against = replay_check.job_verdict(**{**good, **change})
+            self.assertFalse(ok, change)
+            self.assertEqual(len(against), 1, change)
+        ok, against = replay_check.job_verdict([{'n': 1}], False, False, ['x'], 2)
+        self.assertEqual((ok, len(against)), (False, 5))
 
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
@@ -352,7 +679,9 @@ class Log(unittest.TestCase):
         def fake(cmd, timeout=300):
             state['calls'].append(cmd[:2])
             if cmd[:2] == ['zpool', 'list']:
-                return (0 if state['imported'] else 1), 'p\n', 0.0
+                if 'list' in state['fail']:
+                    return state['list_rc'], state.get('list_out', ''), 0.0
+                return (0, 'p\n', 0.0) if state['imported'] else (1, "cannot open 'p': no such pool\n", 0.0)
             if cmd[:2] == ['zpool', 'import']:
                 if state['imported']:
                     return 1, "cannot import 'p': a pool with that name already exists", 0.0
@@ -400,12 +729,170 @@ class Log(unittest.TestCase):
             self.assertEqual(rig.light(0)[0], 'losetup -d')
             for st in ('export', 'dm-snapshot remove', 'losetup -d'):
                 self.assertFalse({st, 'deep: ' + st} & replay_check.JUDGING)
+            # only "no such pool" means there is none: any other answer from zpool list is a rig error
+            for rc, out in ((1, 'cannot open: I/O error'), (2, 'usage'), (124, 'TIMEOUT'), (127, 'zpool: not found'),
+                            (1, '')):
+                state.update(imported=False, fail={'list'}, list_rc=rc, list_out=out)
+                n = len(state['calls'])
+                for failed in (rig.light(0)[0], rig.deep()[0]):
+                    self.assertTrue(failed.startswith('rig: '), (rc, out, failed))
+                self.assertNotIn(['zpool', 'import'], state['calls'][n:])
+            # the fsync promise: after the scrub, a file whose fsync returned must be in the mounted pool
+            state.update(imported=False, fail=set())
+            rig.manifest = [['0' * 64, 'f.0']]
+            r = rig.point(0, 0, True, False, 1)
+            self.assertEqual((r['ok'], r['failed']), (False, 'fsync: files'))
+            self.assertIn(r['failed'], replay_check.JUDGING)
+            self.assertIn('f.0', r['detail'])
+            self.assertFalse(state['imported'])
+            # at an fsync mark the same promise is judged without the scrub
+            n = len(state['calls'])
+            r = rig.point(0, 0, 'fsync', False, 1)
+            self.assertEqual((r['failed'], 't_fsync' in r, 't_deep' in r), ('fsync: files', True, False))
+            self.assertNotIn(['zpool', 'scrub'], state['calls'][n:])
+            self.assertIn(['zpool', 'import'], state['calls'][n:])
+            n = len(state['calls'])
+            rig.point(0, 0, True, False, 1)
+            self.assertIn(['zpool', 'scrub'], state['calls'][n:])
+            rig.manifest = []
             # and with nothing failing, both checks pass
             state.update(imported=False, fail=set())
             self.assertTrue(rig.point(0, 0, True)['ok'])
             self.assertFalse(state['imported'])
         finally:
             replay_check.run, replay_check.time.sleep = real, real_sleep
+
+    # ------------------------------------------------ the every-copy check
+    A, B = 0x100000, 0x300000        # DVA offsets; on the device they sit 4 MiB further on
+    BLOCKS = (                       # (object, kind, checksum name, copies' offsets, bytes of the block on disk, content)
+        ('objset 0 object 0 level -1', 'L0 DMU objset', 'fletcher4', (A, B, B + 0x1000), 0x1000, 0xAA),
+        ('objset 54 object 28 level 0', 'L0 ZFS plain file', 'fletcher4', (A + 0x2000,), 0x2000, 0xCC),
+        ('objset 0 object 5 level 0', 'L0 SPA space map', 'fletcher4', (A + 0x4000, B + 0x4000), 0x600, 0xBB),
+        ('objset 54 object 1 level 0', 'L0 ZIL intent log', 'zilog2', (A + 0x8000,), 0x1000, 0xDD),
+    )
+
+    @staticmethod
+    def content(byte, size):
+        return bytes((byte + i * 7) & 0xff for i in range(size))
+
+    def zdb_text(self, extra='', bp_count=5, ganged=0, blocks=None):
+        out = ['Traversing all blocks to verify nothing leaked ...', '']
+        for obj, kind, ckname, offs, psize, byte in (blocks or self.BLOCKS):
+            ck = ':'.join(f'{x:016x}' for x in replay_check.fletcher4(self.content(byte, psize)))
+            dvas = ' '.join(f'DVA[{k}]=<0:{o:x}:{(psize + 0xfff) & ~0xfff:x}>' for k, o in enumerate(offs))
+            out.append(f'{obj} offset 0x0 {dvas} [{kind}] {ckname} uncompressed unencrypted LE contiguous unique '
+                       f"{('single', 'double', 'triple')[len(offs) - 1]} size={psize:x}L/{psize:x}P birth=9L/9P fill=1 cksum={ck}")
+        out += ['objset 0 object 34 level 0 offset 0x0 EMBEDDED [L0 DSL props] et=0 lz4 size=200L/4dP birth=4L',
+                'objset 0 object 0 level 0 offset 0x20000 HOLE [L0 DMU dnode] size=4000L birth=56L']
+        return ('\n'.join(out) + '\n' + extra
+                + f'\n\tNo leaks (block sum matches space maps exactly)\n\n\tbp count:   {bp_count}\n\tganged count:    {ganged}\n')
+
+    def good_image(self):
+        with open(self.img, 'r+b') as f:
+            for _, _, _, offs, psize, byte in self.BLOCKS:
+                for o in offs:
+                    f.seek(replay_check.DVA_OFFSET + o)
+                    f.write(self.content(byte, psize))
+
+    def test_fletcher4(self):
+        def plain(data):
+            a = b = c = d = 0
+            for i in range(0, len(data), 4):
+                a = (a + int.from_bytes(data[i:i + 4], 'little')) & replay_check.M64
+                b = (b + a) & replay_check.M64
+                c = (c + b) & replay_check.M64
+                d = (d + c) & replay_check.M64
+            return a, b, c, d
+        self.assertEqual(replay_check.fletcher4(b'\x01\0\0\0\x02\0\0\0'), (3, 4, 5, 6))
+        for size in (4, 512, 4096, 131072):
+            data = bytes((i * 131 + size) & 0xff for i in range(size))
+            self.assertEqual(replay_check.fletcher4(data), plain(data), size)
+        ones = b'\xff' * 131072               # sums that wrap around 64 bits
+        self.assertEqual(replay_check.fletcher4(ones), plain(ones))
+        # with and without numpy, the same sums
+        saved, replay_check.np = replay_check.np, None
+        try:
+            self.assertEqual(replay_check.fletcher4(ones), plain(ones))
+        finally:
+            replay_check.np = saved
+
+    def test_every_copy_passes_a_good_image(self):
+        self.good_image()
+        b = replay_check.zdb_blocks(self.zdb_text())
+        self.assertEqual((len(b['bps']), b['embedded'], b['holes'], b['bp_count'], b['ganged_count'], b['unread']),
+                         (4, 1, 1, 5, 0, []))
+        self.assertEqual([(len(x['dvas']), x['type'], x['level'], x['checksum']) for x in b['bps']],
+                         [(3, 'DMU objset', 0, 'fletcher4'), (1, 'ZFS plain file', 0, 'fletcher4'),
+                          (2, 'SPA space map', 0, 'fletcher4'), (1, 'ZIL intent log', 0, 'zilog2')])
+        failed, detail, counts = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
+        self.assertIsNone(failed, detail)
+        self.assertEqual((counts['blocks'], counts['copies'], counts['with_copies'], counts['intent_log']), (3, 6, 2, 1))
+
+    def test_every_copy_sees_each_bad_copy_by_itself(self):
+        off = replay_check.DVA_OFFSET
+        # each copy of a block with three, the single copy of a file's block, the last byte of a short block
+        for at in (self.A, self.B, self.B + 0x1000, self.A + 0x2000 + 0x1fff, self.B + 0x4000 + 0x5ff):
+            self.good_image()
+            with open(self.img, 'r+b') as f:
+                f.seek(off + at)
+                f.write(b'\x01')
+            failed, detail, _ = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
+            self.assertEqual(failed, 'copies: differ', hex(at))
+            self.assertIn(failed, replay_check.JUDGING)
+            self.assertIn('1 of 6 copies', detail)
+        # a copy that is stale in the same way in all three places is still caught: each is checked against the checksum
+        self.good_image()
+        with open(self.img, 'r+b') as f:
+            for at in (self.A, self.B, self.B + 0x1000):
+                f.seek(off + at)
+                f.write(b'\x01')
+        self.assertIn('3 of 6 copies', replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[1])
+        # bytes after the end of a short block are not the block; an intent-log block is not judged
+        self.good_image()
+        with open(self.img, 'r+b') as f:
+            for at in (self.B + 0x4000 + 0x600, self.A + 0x8000):
+                f.seek(off + at)
+                f.write(b'\x01')
+        self.assertIsNone(replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[0])
+        # an intent-log block on the log device (vdev 1) is not judged either, and is not a rig error
+        on_log = ('objset 54 object 0 level -2 offset 0x1 DVA[0]=<1:0:1000> [L0 ZIL intent log] zilog2 uncompressed unencrypted '
+                  'LE contiguous unique single size=1000L/1000P birth=28L/28P fill=0 cksum=1:2:3:4\n')
+        failed, detail, counts = replay_check.every_copy_verdict(0, self.zdb_text(on_log, 6), self.img)
+        self.assertIsNone(failed, detail)
+        self.assertEqual(counts['intent_log'], 2)
+
+    def test_every_copy_takes_zdbs_exit_code_as_a_verdict(self):
+        self.good_image()
+        text = self.zdb_text('zdb_blkptr_cb: Got error 52 reading <54, 28, 0, 0>  -- skipping\n')
+        failed, detail, _ = replay_check.every_copy_verdict(3, text, self.img)
+        self.assertEqual(failed, 'copies: zdb')
+        self.assertIn('error 52', detail)
+
+    def test_every_copy_never_passes_what_it_could_not_check(self):
+        self.good_image()
+        line = 'objset 9 object 9 level 0 offset 0x0 {} [L0 ZFS plain file] {} uncompressed unencrypted {} {} unique single size=1000L/1000P birth=9L/9P fill=1 cksum=1:2:3:4\n'
+        cases = {
+            'timed out': (124, self.zdb_text()),
+            'not started': (127, ''),
+            'died': (-6, "libzpool: PANIC: Pool 'p' has encountered an uncorrectable I/O failure"),
+            'list too short': (0, self.zdb_text(bp_count=6)),
+            'list too long': (0, self.zdb_text(bp_count=4)),
+            'no counts': (0, self.zdb_text().split('\tbp count')[0]),
+            'a line it cannot read': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 something new\n')),
+            'no checksum on the line': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'LE', 'contiguous').split(' cksum')[0] + '\n', 6)),
+            'copies out of order': (0, self.zdb_text(line.format('DVA[1]=<0:500000:1000>', 'fletcher4', 'LE', 'contiguous'), 6)),
+            'ganged': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'LE', 'gang'), 6, ganged=1)),
+            'ganged by count only': (0, self.zdb_text(ganged=2)),
+            'another device': (0, self.zdb_text(line.format('DVA[0]=<1:500000:1000>', 'fletcher4', 'LE', 'contiguous'), 6)),
+            'another checksum': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'sha256', 'LE', 'contiguous'), 6)),
+            'another byte order': (0, self.zdb_text(line.format('DVA[0]=<0:500000:1000>', 'fletcher4', 'BE', 'contiguous'), 6)),
+            'empty output': (0, ''),
+        }
+        for name, (rc, text) in cases.items():
+            failed, _, _ = replay_check.every_copy_verdict(rc, text, self.img)
+            self.assertIsNotNone(failed, name)
+            self.assertTrue(failed.startswith('rig: '), (name, failed))
+            self.assertNotIn(failed, replay_check.JUDGING, name)
 
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
