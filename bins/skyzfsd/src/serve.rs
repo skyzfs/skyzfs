@@ -62,6 +62,7 @@ use skyzfs_ublk_sys::{Wake, FLAGS};
 use crate::cli::{Exit, Serve};
 use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
 use crate::delay::Delayed;
+use crate::timing::{TimedControl, TimedVolume};
 
 /// How often a start asks again about a device of its own that is
 /// still shown as live: 50 times, 100 ms apart, 5 s.
@@ -245,8 +246,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             wake.wake();
         }
     }));
-    let mut volume = StoreVolume::new(&serve.dir, options);
-    let mut kernel = Kernel::new().map_err(|e| e.to_string())?;
+    let began = std::time::Instant::now();
+    let mut volume = TimedVolume::new(StoreVolume::new(&serve.dir, options));
+    let mut kernel = TimedControl::new(Kernel::new().map_err(|e| e.to_string())?);
     let wanted = Wanted {
         queues: serve.queues,
         depth: serve.depth,
@@ -286,16 +288,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // the kernel issues those requests again, and they are applied a
     // second time (design §4.1). A lower bound.
     let recovered = ready.store.recovered_unacknowledged();
-    if ready.took_over || recovered > 0 {
-        say(format_args!(
-            "{} device {number}; recovered_unacknowledged {recovered}",
-            if ready.took_over {
-                "took over"
-            } else {
-                "added"
-            }
-        ));
-    }
+    let (log_bytes, log_records) = ready.store.replayed();
+    let took_over = ready.took_over;
+    let to_device = began.elapsed();
     let ack = AckFile::open(&records.acknowledged_path(), identity, boot)
         .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
     let served = ready
@@ -306,10 +301,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         })))
         .map_err(|e| format!("the store's worker: {e}"))?;
 
+    let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
         number,
         size: shape.size,
-        take_over: ready.took_over,
+        take_over: took_over,
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
     let board = Arc::new(Board::new());
@@ -363,19 +359,54 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             }
         })
         .map_err(|e| format!("the status thread: {e}"))?;
+    let counter = stopper.clone();
     let finish = |board: &Board| {
         board.stop();
         let _ = publisher.join();
+        // For whoever reads the daemon's log: `status` shows the same
+        // while the daemon lives.
+        say(format_args!(
+            "served device {number}: first_write_copies {}, recovered_unacknowledged {recovered}",
+            counter.first_write_copies()
+        ));
     };
 
+    let start_began = std::time::Instant::now();
     if let Err(e) = device.start() {
         stopper.stop();
         let _ = serving.join();
         finish(&board);
         return Err(format!("starting device {number}: {e}"));
     }
+    let started = std::time::Instant::now();
     println!("ready {}", block_device(number));
     let _ = io::stdout().flush();
+    // Where the start's time went. `devices` is everything between the
+    // store's open and the device being this instance's: the records,
+    // the notes, the waiting while the device was still shown as live
+    // (`live`, a part of it) and the begin of a recovery (`begin`, a
+    // part of it, with the driver's busy answers). `queue` is the
+    // device's open and the queue's fetches; `start` is the start, or
+    // the end of the recovery.
+    let ms = |d: Duration| d.as_millis();
+    let devices = to_device.saturating_sub(volume.lock + volume.position + volume.recovery);
+    say(format_args!(
+        "serving device {number} ({}) after {} ms: lock {} ms, position {} ms, recovery {} ms \
+         of a log of {log_bytes} bytes and {log_records} operations, devices {} ms (live {} ms, \
+         begin {} ms with {} busy answers), queue {} ms, start {} ms; \
+         recovered_unacknowledged {recovered}",
+        if took_over { "taken over" } else { "added" },
+        ms(started - began),
+        ms(volume.lock),
+        ms(volume.position),
+        ms(volume.recovery),
+        ms(devices),
+        ms(kernel.live),
+        ms(kernel.begin),
+        kernel.inner.busy_answers(),
+        ms(queue_began.elapsed().saturating_sub(start_began.elapsed())),
+        ms(start_began.elapsed().saturating_sub(started.elapsed())),
+    ));
     board.post(Default::default());
 
     #[derive(PartialEq)]

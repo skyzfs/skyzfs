@@ -1084,6 +1084,8 @@ pub struct Store<D: Dir> {
     acknowledged: Option<Lsn>,
     /// See [`Store::recovered_unacknowledged`].
     unacknowledged: u64,
+    /// See [`Store::replayed`].
+    replayed: (u64, u64),
     queue: VecDeque<Request>,
     /// The ids in flight: submitted and not yet returned.
     ids: BTreeSet<RequestId>,
@@ -1266,11 +1268,14 @@ impl<D: Dir> Store<D> {
                 .is_none_or(|recorded_for| recorded_for == core_identity)
         });
         let mut unacknowledged = 0u64;
+        let mut replayed = 0u64;
+        let replayed_bytes = log.tail().0.saturating_sub(log.floor().0);
         if !options.mutants.has(Mutants::NO_INDEX_REBUILD) {
             log.replay(log.floor(), log.tail(), &mut |record| {
                 let start = record.offset / BLOCK_SIZE;
                 let blocks = record.length / BLOCK_SIZE;
                 let at = record.start;
+                replayed += 1;
                 if acknowledged.is_some_and(|position| at > position) {
                     unacknowledged += 1;
                 }
@@ -1303,6 +1308,7 @@ impl<D: Dir> Store<D> {
                 mutants: options.mutants,
             },
             unacknowledged,
+            replayed: (replayed_bytes, replayed),
             acknowledged: None,
             queue: VecDeque::new(),
             ids: BTreeSet::new(),
@@ -1392,6 +1398,14 @@ impl<D: Dir> Store<D> {
     /// flush leaves no record and is never counted.
     pub fn recovered_unacknowledged(&self) -> u64 {
         self.unacknowledged
+    }
+
+    /// What this open read back to build its index: the bytes of the
+    /// log from its start to its end, and the operations in it. Both
+    /// grow until a checkpoint gives up a part of the log, and the time
+    /// of an open grows with them.
+    pub fn replayed(&self) -> (u64, u64) {
+        self.replayed
     }
 
     /// Execute up to `limit` queued requests, in order, and collect
@@ -1547,6 +1561,7 @@ where
             mut core,
             acknowledged,
             unacknowledged: _,
+            replayed: _,
             mut queue,
             ids,
         } = self;

@@ -2332,6 +2332,9 @@ fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
         if store.recovered_unacknowledged() != 0 {
             return Err("a new store counts operations".into());
         }
+        if store.replayed() != (0, 0) {
+            return Err(format!("a new store replayed {:?}", store.replayed()));
+        }
         write(&mut store, 0, 1, 1)?;
         let first = store.acknowledged();
         write(&mut store, 1, 1, 2)?;
@@ -2356,6 +2359,12 @@ fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
             };
             let (store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
             let got = store.recovered_unacknowledged();
+            let (bytes, records) = store.replayed();
+            if records != 3 || bytes == 0 {
+                return Err(format!(
+                    "replayed {records} records in {bytes} bytes, not 3"
+                ));
+            }
             drop(store);
             disk.kill();
             if got != want {
