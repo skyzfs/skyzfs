@@ -337,9 +337,9 @@ PY
 # the server killed `kills` times with writes in flight and served
 # again. Sets KT_* for the caller to judge.
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher
     mnt=$WORK/mnt/$pool
-    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""
+    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     vol_up "$impl" "$dir" || { KT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
     pool_create "$pool" "$BDEV" "$slog" > "$OUT/$name-create.log" 2>&1 || { KT_ERR="zpool create failed"; return 1; }
@@ -364,13 +364,27 @@ kill_test() {
             sleep 0.01
         done
         kill -9 "$pid" 2>/dev/null || { KT_ERR="kill $n: kill -9 $pid failed"; break; }
+        # How long the kernel still reports the device LIVE with the dead
+        # server: watched beside the serve that follows, which must cope
+        # with it. It ends when the device waits for a server, or has
+        # another one already.
+        ( t0=$(now_ms); polls=0; saw=LIVE
+          while [ $(( $(now_ms) - t0 )) -lt 10000 ]; do
+              saw=$(lim 20 ublk list -n "${BDEV#/dev/ublkb}" 2>/dev/null | tr '\n' ' ' | sed -n 's/.*daemon pid \(-\{0,1\}[0-9]*\) state \([A-Z_]*\).*/\2 \1/p')
+              polls=$((polls + 1))
+              case $saw in "LIVE $pid") ;; *) break ;; esac
+          done
+          echo "$(( $(now_ms) - t0 )) ms, $polls polls, then ${saw:-nothing}" > "$WORK/$name.quiesce" ) &
+        watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
         serve_start "$impl" "$dir"; rc=$?
         ms=$(( $(now_ms) - t0 ))
-        KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; "
+        wait "$watcher"
+        KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms, no longer LIVE with the dead server after $(cat "$WORK/$name.quiesce" 2>/dev/null); "
+        KT_QUIESCE+="$(cut -d' ' -f1 "$WORK/$name.quiesce" 2>/dev/null) "
         [ "${SERVE_RC:-}" != "$EXIT_REFUSED_FAILED" ] || KT_REFUSED=$((KT_REFUSED + 1))
         [ $rc = 0 ] || { KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"; break; }
         KT_DONE=$n
@@ -386,6 +400,7 @@ kill_test() {
     fi
     kill -9 "$KT_SYNCER" 2>/dev/null; pkill -9 -f "zpool sync $pool" 2>/dev/null
     rec "${name}_rounds" "${KT_ROUNDS:-none}"
+    rec "${name}_dead_server_still_live_ms" "$(echo "$KT_QUIESCE" | tr ' ' '\n' | grep . | sort -n | awk '{ v[NR] = $1 } END { if (NR) printf "min %d, median %d, max %d over %d kills; a poll is one ublk list, so the figure is an upper bound to within one poll; all: ", v[1], v[int((NR + 1) / 2)], v[NR], NR }')$KT_QUIESCE"
     # The pool as the kills left it, before anything clears it.
     KT_STATE=$(pool_state "$pool")
     KT_VDEV=$(pool_errors "$pool")
