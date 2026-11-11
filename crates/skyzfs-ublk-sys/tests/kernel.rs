@@ -3,7 +3,7 @@
 //! driver. Ignored by default: they need root and the ublk driver.
 //!
 //! ```text
-//! sudo -E cargo test -p skyzfs-ublk-sys --test kernel -- --ignored --test-threads 1
+//! sudo -E cargo test -p skyzfs-ublk-sys --test kernel -- --ignored --test-threads 1 --nocapture
 //! ```
 //!
 //! Each test prints one line `control_<property>\tPASS` or
@@ -186,6 +186,7 @@ fn zeros(mut queue: impl Queue) -> u64 {
             answered += 1;
         }
         if woken == Woken::Stop {
+            let _ = queue.flush();
             return answered;
         }
     }
@@ -266,7 +267,16 @@ fn a_device_added_by_the_binding_is_started_and_outlives_its_server() {
 /// A server that keeps the device's content in memory, shared between
 /// the lives of a device: what one life was written, the next reads.
 /// Returns the longest write it was handed, in bytes.
-fn memory(mut queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
+fn memory(queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
+    memory_counting(queue, content, &std::sync::atomic::AtomicU64::new(0))
+}
+
+/// [`memory`], counting in `handed` the write requests it was handed.
+fn memory_counting(
+    mut queue: impl Queue,
+    content: Arc<Mutex<Vec<u8>>>,
+    handed: &std::sync::atomic::AtomicU64,
+) -> u64 {
     let mut fetched: Vec<Fetched> = Vec::new();
     let mut longest = 0;
     loop {
@@ -288,6 +298,7 @@ fn memory(mut queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
                     let buf = queue.take_buf(f.tag, bytes / BLOCK_SIZE as usize);
                     content[at..at + bytes].copy_from_slice(&buf);
                     longest = longest.max(bytes as u64);
+                    handed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     Some(buf)
                 }
                 _ => None,
@@ -295,6 +306,9 @@ fn memory(mut queue: impl Queue, content: Arc<Mutex<Vec<u8>>>) -> u64 {
             queue.commit(f.tag, bytes as i32, buf);
         }
         if woken == Woken::Stop {
+            // As the pump does at the end of a stop: the commits above
+            // have no wait behind them that would send them.
+            let _ = queue.flush();
             return longest;
         }
     }
@@ -586,6 +600,16 @@ fn canaries(count: usize, linger: Duration) -> u64 {
 /// written by the kernel, every write the writers were acknowledged
 /// reads back, and the next life takes over.
 ///
+/// And an orderly stop answers what it committed: every write is one
+/// request (1 MiB, the largest), the server commits every request it
+/// is handed, and the writers count the writes that returned. If a
+/// commit made before a stop did not reach the driver, the kernel
+/// issues that request again and the next life is handed it a second
+/// time: so the requests handed over all lives equal the writes the
+/// writers finished exactly when no committed request was issued
+/// again. (A request that arrives during a stop and is never handed to
+/// the server is issued to the next life and counted there once.)
+///
 /// What it cannot see is whether a request did arrive during a given
 /// stop: it reports how many writes the writers finished, and that
 /// they were writing across every stop.
@@ -602,6 +626,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         let mut kernel = kernel()?;
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
         let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
+        let handed = Arc::new(AtomicU64::new(0));
         let serve = |take_over: bool| -> Result<_, String> {
             let device = Device::open(&Open {
                 number: n,
@@ -610,11 +635,11 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             })
             .map_err(|e| format!("open: {e}"))?;
             let wake = Wake::new().map_err(|e| e.to_string())?;
-            let content = content.clone();
+            let (content, handed) = (content.clone(), handed.clone());
             let serving = device
                 .serve(&wake, false, move |queue| {
-                    // The queue is dropped when `memory` returns.
-                    memory(queue, content);
+                    // The queue is dropped when this returns.
+                    memory_counting(queue, content, &handed);
                     canaries(4 * usize::from(DEPTH), Duration::from_millis(150))
                 })
                 .map_err(|e| format!("serve: {e}"))?;
@@ -711,11 +736,21 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         let (serving, _device) = life;
         serving.stopper().stop();
         changed += serving.join().map_err(|e| e.to_string())?;
+        // The reads of the check above are not writes: not counted.
+        let handed = handed.load(Ordering::SeqCst);
         println!(
             "control_stop_under_writers_detail\t{ROUNDS} stops under {WRITERS} writers of 1 MiB, \
-             {total} writes finished, {idle_rounds} rounds in which none finished before the stop, \
+             {total} writes finished, {handed} write requests handed to the servers, \
+             {idle_rounds} rounds in which none finished before the stop, \
              {changed} bytes changed in memory taken after a stop"
         );
+        if handed != total {
+            return Err(format!(
+                "{handed} write requests were handed to the servers for {total} writes that \
+                 returned: {} were issued again after a stop that had committed them",
+                handed.abs_diff(total)
+            ));
+        }
         if changed != 0 {
             return Err(format!(
                 "{changed} bytes of memory taken after a stop were written by the kernel"

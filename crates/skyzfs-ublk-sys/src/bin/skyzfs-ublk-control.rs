@@ -342,6 +342,8 @@ mod run {
                 }
             }
             if woken == Woken::Stop {
+                // The answers above have no wait behind them.
+                let _ = queue.flush();
                 return;
             }
             if let Some((f, _)) = held.take_if(|(_, due)| Instant::now() >= *due) {
