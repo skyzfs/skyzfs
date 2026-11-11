@@ -1,0 +1,44 @@
+    Finished `test` profile [optimized + debuginfo] target(s) in 0.11s
+     Running unittests src/lib.rs (target/debug/deps/skyzfs_ublk-8177af065d6b3669)
+
+running 5 tests
+test lifecycle::tests::probe_a_detach_overtaken_by_a_start_deletes_no_served_device ... FAILED
+test lifecycle::tests::probe_a_detach_overtaken_by_a_start_leaves_the_new_record ... FAILED
+test lifecycle::tests::probe_the_position_is_the_one_stored_when_the_lock_was_got ... FAILED
+test pump::tests::probe_a_gone_target_with_a_request_waiting_is_reported_as_gone ... FAILED
+test lifecycle::tests::probe_chains_of_kills_starts_and_detaches ... ok
+
+failures:
+
+---- lifecycle::tests::probe_a_detach_overtaken_by_a_start_deletes_no_served_device stdout ----
+
+thread 'lifecycle::tests::probe_a_detach_overtaken_by_a_start_deletes_no_served_device' (4129) panicked at crates/skyzfs-ublk/src/lifecycle/tests.rs:1485:5:
+the daemon serves device 4; detach answered Ok(Deleted(4)); devices {}, record None
+
+---- lifecycle::tests::probe_a_detach_overtaken_by_a_start_leaves_the_new_record stdout ----
+
+thread 'lifecycle::tests::probe_a_detach_overtaken_by_a_start_leaves_the_new_record' (4130) panicked at crates/skyzfs-ublk/src/lifecycle/tests.rs:1523:5:
+detach answered Ok(Deleted(4)) and left the record None; the first start served device 0, and the next start serves device 1 (took over: false), devices {0: DeviceInfo { state: Waiting, shape: Shape { size: 1073741824, queues: 1, depth: 64, flags: 72 } }, 1: DeviceInfo { state: Added, shape: Shape { size: 1073741824, queues: 1, depth: 64, flags: 72 } }}
+
+---- lifecycle::tests::probe_the_position_is_the_one_stored_when_the_lock_was_got stdout ----
+
+thread 'lifecycle::tests::probe_the_position_is_the_one_stored_when_the_lock_was_got' (4132) panicked at crates/skyzfs-ublk/src/lifecycle/tests.rs:1402:5:
+log ends at 1000, 5000 was acknowledged, and the start gave Ok(Ready { store: Opened, number: 0, shape: Shape { size: 1073741824, queues: 1, depth: 64, flags: 72 }, took_over: false, left: None }) after [Open(Some(MustReach { identity: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], position: 10 }), false), Open(Some(MustReach { identity: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], position: 10 }), true)]
+
+---- pump::tests::probe_a_gone_target_with_a_request_waiting_is_reported_as_gone stdout ----
+
+thread 'pump::tests::probe_a_gone_target_with_a_request_waiting_is_reported_as_gone' (4133) panicked at crates/skyzfs-ublk/src/pump/tests.rs:770:5:
+assertion `left == right` failed
+  left: Some(TargetFault)
+ right: Some(TargetGone)
+
+
+failures:
+    lifecycle::tests::probe_a_detach_overtaken_by_a_start_deletes_no_served_device
+    lifecycle::tests::probe_a_detach_overtaken_by_a_start_leaves_the_new_record
+    lifecycle::tests::probe_the_position_is_the_one_stored_when_the_lock_was_got
+    pump::tests::probe_a_gone_target_with_a_request_waiting_is_reported_as_gone
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 67 filtered out; finished in 0.05s
+
+error: test failed, to rerun pass `-p skyzfs-ublk --lib`

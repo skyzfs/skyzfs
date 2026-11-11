@@ -1,0 +1,58 @@
+caught (1)  lifecycle: a failed volume deletes a device whose note has another nonce: lifecycle::tests::a_failed_volume_deletes_no_device_that_is_not_its_own
+NOT NOTICED  lifecycle: a failed volume deletes by a record of another boot
+caught (1)  lifecycle: a failed volume deletes its live device: lifecycle::tests::a_failed_volume_deletes_no_device_that_is_not_its_own
+caught (1)  lifecycle: a failed volume does not wait for its live device to settle: lifecycle::tests::this_volumes_device_found_live_is_waited_for_and_then_taken_over
+caught (1)  lifecycle: start follows a record of another boot: lifecycle::tests::a_record_of_another_boot_or_of_a_device_that_is_gone_means_a_fresh_device
+caught (1)  lifecycle: locate follows a record of another boot: lifecycle::tests::locate_says_whose_the_recorded_device_is_and_changes_nothing
+caught (1)  lifecycle: a deleted-and-held device without our note is judged like any other: lifecycle::tests::a_deleted_device_that_is_still_held_keeps_its_number_and_is_never_taken_over
+caught (2)  lifecycle: a never-started device with our values and no note is deleted: lifecycle::tests::a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_device, lifecycle::tests::a_device_that_is_not_surely_this_volumes_is_neither_taken_over_nor_replaced
+NOT NOTICED  lifecycle: our deleted-and-held device is taken over
+caught (2)  lifecycle: our never-started device is left, not deleted: lifecycle::tests::a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_device, lifecycle::tests::this_volumes_device_that_was_never_started_is_deleted_and_replaced
+caught (3)  lifecycle: a number seen taken is recorded all the same: lifecycle::tests::a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_device, lifecycle::tests::a_deleted_device_that_is_still_held_keeps_its_number_and_is_never_taken_over, lifecycle::tests::a_taken_number_is_passed_over_and_the_record_rewritten_before_the_next_add
+caught (1)  lifecycle: a locked store is not tried again: lifecycle::tests::a_locked_store_is_tried_again_a_stated_number_of_times_and_no_device_is_touched
+caught (1)  lifecycle: an unreadable acknowledged record counts as none: lifecycle::tests::a_volume_that_failed_while_held_loses_its_waiting_device_and_is_refused
+caught (1)  lifecycle: an unreadable note counts as no note: lifecycle::tests::a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device
+caught (1)  lifecycle: one look more than stated at a live device: lifecycle::tests::a_device_that_stays_live_is_refused_after_the_stated_number_of_looks
+caught (1)  detach: a live device is deleted: lifecycle::tests::detach_touches_nothing_it_may_not
+caught (1)  detach: a deleted-and-held device is deleted again: lifecycle::tests::detach_touches_nothing_it_may_not
+caught (1)  detach: a device that cannot be told is deleted: lifecycle::tests::detach_touches_nothing_it_may_not
+caught (3)  detach: the attachment record is removed first: lifecycle::tests::a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe, lifecycle::tests::a_note_does_not_outlive_its_device, lifecycle::tests::detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held
+caught (1)  detach: the attachment record is kept: lifecycle::tests::detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held
+caught (1)  locate: no note and other values cannot be told: lifecycle::tests::locate_says_whose_the_recorded_device_is_and_changes_nothing
+caught (2)  locate: another's note is ours: lifecycle::tests::detach_touches_nothing_it_may_not, lifecycle::tests::locate_says_whose_the_recorded_device_is_and_changes_nothing
+caught (1)  records: an acknowledged record of another boot counts: records::tests::what_was_acknowledged_counts_only_in_the_boot_it_was_recorded_in
+NOT NOTICED  records: the attachment record is not synced before the rename
+NOT NOTICED  records: the directory is not synced after the rename
+caught (1)  records: removing a note that is not there is an error: records::tests::what_is_written_is_read_and_what_is_absent_is_none
+NOT NOTICED  records: removing the attachment does not sync the directory
+caught (1)  ack: position_for ignores the boot: ack::tests::a_record_of_another_store_or_boot_counts_as_none
+caught (2)  ack: open keeps a record of another store: ack::tests::a_record_of_another_store_or_boot_counts_as_none, ack::tests::the_record_is_whole_whenever_it_has_its_name
+caught (1)  ack: open keeps a record of another boot: ack::tests::a_record_of_another_store_or_boot_counts_as_none
+caught (1)  ack: a record with bytes behind the position decodes: ack::tests::a_file_that_is_not_a_record_is_an_error_and_not_none
+caught (1)  pump: a FUA flush is submitted although the operation failed: pump::tests::a_write_with_fua_is_acknowledged_when_its_flush_is
+caught (1)  pump: a stop still takes what is fetched: pump::tests::an_orderly_stop_completes_what_was_accepted
+NOT NOTICED  pump: an orderly stop does not wait for a flush that waits for room
+caught (1)  pump: the position is stored again although it did not move: pump::tests::the_acknowledged_position_is_stored_before_the_completions_are_committed
+NOT NOTICED  pump: a completion nobody waits for is ignored
+NOT NOTICED  pump: a tag that is in flight is taken again
+caught (1)  pump: a FUA request whose flush failed is answered as done: pump::tests::a_write_with_fua_is_acknowledged_when_its_flush_is
+caught (1)  pump: unstored is not counted: pump::tests::a_position_that_cannot_be_stored_holds_the_completions
+caught (1)  translate: FUA on a read asks for a flush: translate::tests::a_request_with_fua_is_followed_by_a_flush
+caught (1)  translate: a read or write above 1 MiB passes: translate::tests::the_limits_on_length_are_those_of_the_contract
+caught (1)  translate: an empty request passes: translate::tests::the_limits_on_length_are_those_of_the_contract
+caught (1)  translate: shared-memory zero copy is not refused: translate::tests::a_request_whose_data_is_elsewhere_is_refused
+caught (1)  translate: integrity is not refused: translate::tests::a_request_whose_data_is_elsewhere_is_refused
+caught (3)  translate: the last block of the device is refused: pump::tests::a_write_carries_the_queues_buffer_there_and_back, translate::tests::a_request_beyond_the_end_is_refused_and_the_last_block_is_served, translate::tests::the_limits_on_length_are_those_of_the_contract
+caught (1)  translate: a failed read is answered with its length: translate::tests::every_failure_is_a_plain_io_error_and_never_not_supported
+caught (1)  status: a stop does not write the last counters: status::tests::a_write_that_blocks_or_fails_holds_no_post_and_the_last_counters_are_written_at_the_stop
+caught (1)  status: failed writes are not counted: status::tests::a_write_that_blocks_or_fails_holds_no_post_and_the_last_counters_are_written_at_the_stop
+caught (1)  status: counters of another boot are reported: status::tests::the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_another_boot
+caught (2)  status: counters are always the serving daemon's: status::tests::the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are, status::tests::the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_another_boot
+caught (1)  status: post wakes nobody: status::tests::after_a_burst_the_file_shows_the_last_change_with_no_further_request
+caught (2)  store: a log that ends exactly at the position passes: store::tests::an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position, store::tests::an_open_refuses_a_log_that_lost_an_acknowledged_record_and_writes_nothing
+caught (1)  store: a position for another store is applied: store::tests::an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position
+caught (2)  store: a position for another store, or none named, is ignored: store::tests::an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position, store::tests::an_open_refuses_a_log_that_lost_an_acknowledged_record_and_writes_nothing
+caught (2)  store: the worker's end wakes nobody: store::tests::a_worker_that_has_ended_tells_its_owner, store::tests::the_served_store_acknowledges_what_its_owner_has_taken
+caught (1)  store: the worker's end is not flagged: store::tests::a_worker_that_has_ended_tells_its_owner
+caught (1)  store: a completion wakes nobody: store::tests::the_served_store_acknowledges_what_its_owner_has_taken
+caught (1)  store: Served reports what the worker appended, not what was handed out: store::tests::the_served_store_acknowledges_what_its_owner_has_taken

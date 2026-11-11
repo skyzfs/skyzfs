@@ -1,0 +1,432 @@
+diff --git a/crates/skyzfs-ublk/src/lifecycle/tests.rs b/crates/skyzfs-ublk/src/lifecycle/tests.rs
+index 6e8cf28..b85a722 100644
+--- a/crates/skyzfs-ublk/src/lifecycle/tests.rs
++++ b/crates/skyzfs-ublk/src/lifecycle/tests.rs
+@@ -1322,3 +1322,379 @@ fn detach_touches_nothing_it_may_not() {
+     );
+     assert!(shared.borrow().events.is_empty());
+ }
++
++// ---------------------------------------------------------------
++// Review probes (not part of the pull request).
++// ---------------------------------------------------------------
++
++/// Records whose pause is the moment the instance that still holds the
++/// lock acknowledges more, and then dies with a log that lost it.
++struct Advancing(Fake);
++
++impl Records for Advancing {
++    fn boot(&self) -> [u8; 16] {
++        self.0.boot()
++    }
++    fn nonce(&mut self) -> io::Result<[u8; 16]> {
++        self.0.nonce()
++    }
++    fn attachment(&mut self) -> io::Result<Option<Attachment>> {
++        self.0.attachment()
++    }
++    fn write_attachment(&mut self, a: &Attachment) -> io::Result<()> {
++        self.0.write_attachment(a)
++    }
++    fn note(&mut self, n: u32) -> io::Result<Option<[u8; 16]>> {
++        self.0.note(n)
++    }
++    fn write_note(&mut self, n: u32, nonce: &[u8; 16]) -> io::Result<()> {
++        self.0.write_note(n, nonce)
++    }
++    fn remove_attachment(&mut self) -> io::Result<()> {
++        self.0.remove_attachment()
++    }
++    fn remove_note(&mut self, n: u32) -> io::Result<()> {
++        self.0.remove_note(n)
++    }
++    fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
++        self.0.acknowledged()
++    }
++    fn pause(&mut self) {
++        {
++            let mut w = (self.0).0.borrow_mut();
++            let identity = w.identity;
++            // The serving instance acknowledged up to 5000 ...
++            w.acknowledged = Ok(Some(MustReach {
++                identity,
++                position: 5000,
++            }));
++            // ... and the log that comes back ends at 1000.
++        }
++        self.0.pause();
++    }
++}
++
++/// PROBE 1. The acknowledged position is read once, before the lock is
++/// tried. An instance that waits for the lock while the old one still
++/// serves opens with the position as it was when it first looked.
++#[test]
++#[ignore = "review probe: fails at 5716df5"]
++fn probe_the_position_is_the_one_stored_when_the_lock_was_got() {
++    let mut world = World::new();
++    world.acknowledged = Ok(Some(MustReach {
++        identity: world.identity,
++        position: 10,
++    }));
++    world.opens.push_back(OpenError::Locked);
++    let shared = Rc::new(RefCell::new(world));
++    let (mut c, mut r, mut v) = (
++        Fake(shared.clone()),
++        Advancing(Fake(shared.clone())),
++        Fake(shared.clone()),
++    );
++    let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants::default());
++    let w = shared.borrow();
++    let opens: Vec<_> = w
++        .events
++        .iter()
++        .filter(|e| matches!(e, Event::Open(..)))
++        .collect();
++    assert!(
++        matches!(result, Err(Stop::Failed(_))),
++        "log ends at {}, 5000 was acknowledged, and the start gave {result:?} after {opens:?}",
++        w.log_end
++    );
++}
++
++/// A control for a `detach` that is overtaken by a start: the start
++/// runs in full at the n-th call the detach makes.
++struct Overtaken {
++    inner: Fake,
++    calls: usize,
++    at: usize,
++    started: Option<Result<Ready<Opened>, Stop>>,
++}
++
++impl Overtaken {
++    fn call(&mut self) {
++        if self.calls == self.at {
++            let shared = (self.inner).0.clone();
++            let (mut c, mut r, mut v) = (
++                Fake(shared.clone()),
++                Fake(shared.clone()),
++                Fake(shared.clone()),
++            );
++            let result = start_with(&mut c, &mut r, &mut v, &WANTED, Mutants::default());
++            if let Ok(ready) = &result {
++                // The daemon goes on to serve: the device is live.
++                let mut w = shared.borrow_mut();
++                if let Some(d) = w.devices.get_mut(&ready.number) {
++                    d.state = DeviceState::Live;
++                }
++            }
++            self.started = Some(result);
++        }
++        self.calls += 1;
++    }
++}
++
++impl Control for Overtaken {
++    fn can_reissue(&mut self) -> io::Result<bool> {
++        self.inner.can_reissue()
++    }
++    fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
++        let info = self.inner.info(number);
++        self.call();
++        info
++    }
++    fn add(&mut self, number: u32, shape: &Shape) -> Result<(), AddError> {
++        self.inner.add(number, shape)
++    }
++    fn disown(&mut self, number: u32) {
++        self.inner.disown(number)
++    }
++    fn delete(&mut self, number: u32) -> io::Result<()> {
++        self.inner.delete(number)
++    }
++    fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
++        self.inner.begin_recovery(number)
++    }
++}
++
++/// PROBE 2a. `detach` looks, a daemon takes the waiting device over and
++/// serves it, and `detach` deletes it: a device with a live server.
++#[test]
++#[ignore = "review probe: fails at 5716df5"]
++fn probe_a_detach_overtaken_by_a_start_deletes_no_served_device() {
++    let world = World::new().attached(4, DeviceState::Waiting, EARLIER);
++    let shared = Rc::new(RefCell::new(world));
++    let mut control = Overtaken {
++        inner: Fake(shared.clone()),
++        calls: 0,
++        at: 0, // right after detach's look at the device
++        started: None,
++    };
++    let mut records = Fake(shared.clone());
++    let detached = detach(&mut control, &mut records);
++    let started = control.started.take().expect("the start ran");
++    let w = shared.borrow();
++    assert!(
++        started.as_ref().is_ok_and(|r| r.took_over && r.number == 4),
++        "{started:?}"
++    );
++    assert!(
++        w.devices.contains_key(&4) && w.attachment.is_some(),
++        "the daemon serves device 4; detach answered {detached:?}; devices {:?}, record {:?}",
++        w.devices,
++        w.attachment
++    );
++}
++
++/// PROBE 2b. `detach` deletes a device that was never started, a daemon
++/// starts and attaches afresh, and `detach` removes the record the
++/// daemon has just written. The daemon is killed, and the next start
++/// gives the volume a second device.
++#[test]
++#[ignore = "review probe: fails at 5716df5"]
++fn probe_a_detach_overtaken_by_a_start_leaves_the_new_record() {
++    let world = World::new().attached(4, DeviceState::Added, EARLIER);
++    let shared = Rc::new(RefCell::new(world));
++    let mut control = Overtaken {
++        inner: Fake(shared.clone()),
++        calls: 0,
++        at: 1, // detach's look after its delete
++        started: None,
++    };
++    let mut records = Fake(shared.clone());
++    let detached = detach(&mut control, &mut records);
++    let first = control.started.take().expect("the start ran").expect("serves");
++    drop((control, records));
++    let mut world = match Rc::try_unwrap(shared) {
++        Ok(cell) => cell.into_inner(),
++        Err(_) => panic!("the fakes are dropped"),
++    };
++    let record = world.attachment;
++    // The daemon is killed while a client holds its device.
++    world.devices.get_mut(&first.number).expect("its device").state = DeviceState::Waiting;
++    world.held.push(first.number);
++    world.events.clear();
++    let second = run(world, 0);
++    let ready = second.result.expect("serves");
++    assert!(
++        ready.took_over && ready.number == first.number,
++        "detach answered {detached:?} and left the record {record:?}; the first start served \
++         device {}, and the next start serves device {} (took over: {}), devices {:?}",
++        first.number,
++        ready.number,
++        ready.took_over,
++        second.world.devices
++    );
++}
++
++/// PROBE 4. Chains of starts, detaches, kills at any step, clients that
++/// hold devices, strangers' devices (twins and others, with and without
++/// another volume's note) and a lost run directory. Checked after every
++/// step: nothing but this volume's own device is deleted or recovered,
++/// a deleted-and-held device is never touched again, and a start that
++/// serves leaves no other device of this volume that a client could
++/// hold.
++#[test]
++fn probe_chains_of_kills_starts_and_detaches() {
++    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
++    let mut next = move |n: u64| {
++        seed ^= seed << 13;
++        seed ^= seed >> 7;
++        seed ^= seed << 17;
++        seed % n
++    };
++    let twin = Shape {
++        size: SIZE,
++        queues: WANTED.queues,
++        depth: WANTED.depth,
++        flags: WANTED.flags,
++    };
++    let mut served = 0;
++    let mut stopped = 0;
++    for trial in 0..20_000 {
++        let mut world = World::new();
++        let mut ours: Vec<u32> = Vec::new();
++        let mut log: Vec<String> = Vec::new();
++        for _ in 0..8 {
++            let before = world.devices.clone();
++            world.events.clear();
++            world.dies_at = None;
++            let action = next(10);
++            let mut result = None;
++            match action {
++                0..=3 => {
++                    // A start, killed or not.
++                    if action >= 2 {
++                        world.dies_at = Some(next(14) as usize);
++                    }
++                    log.push(format!("start dies_at={:?}", world.dies_at));
++                    let outcome = run(world, 0);
++                    world = outcome.world;
++                    result = Some(outcome.result);
++                }
++                4 | 5 => {
++                    if action == 5 {
++                        world.dies_at = Some(next(7) as usize);
++                    }
++                    log.push(format!("detach dies_at={:?}", world.dies_at));
++                    let (mut c, mut r, shared) = fakes(world);
++                    let _ = detach(&mut c, &mut r);
++                    drop((c, r));
++                    world = match Rc::try_unwrap(shared) {
++                        Ok(cell) => cell.into_inner(),
++                        Err(_) => panic!("the fakes are dropped"),
++                    };
++                }
++                6 | 7 => {
++                    // A stranger's device on the lowest free number.
++                    let number = (0..).find(|n| !world.devices.contains_key(n)).unwrap();
++                    let state = STATES[next(3) as usize];
++                    let shape = if next(2) == 0 { twin } else { EARLIER };
++                    world.devices.insert(number, DeviceInfo { state, shape });
++                    ours.retain(|n| *n != number);
++                    if next(2) == 0 {
++                        world.notes.insert(number, [0xEE; 16]);
++                    } else {
++                        world.notes.remove(&number);
++                    }
++                    log.push(format!("stranger {number} {state:?} twin={}", shape == twin));
++                }
++                8 => {
++                    // Clients let go of deleted devices.
++                    let dead: Vec<u32> = world
++                        .devices
++                        .iter()
++                        .filter(|(_, d)| d.state == DeviceState::Dead)
++                        .map(|(n, _)| *n)
++                        .collect();
++                    for n in dead {
++                        world.devices.remove(&n);
++                        world.held.retain(|h| *h != n);
++                        ours.retain(|o| *o != n);
++                    }
++                    log.push("clients let go".into());
++                }
++                _ => {
++                    if next(4) == 0 {
++                        world.notes.clear();
++                        log.push("run directory lost".into());
++                    }
++                }
++            }
++            let context = || format!("trial {trial}: {log:?}\nevents {:?}", world.events);
++            for event in &world.events {
++                match event {
++                    Event::Add(n, true) => ours.push(*n),
++                    Event::Delete(n) => {
++                        assert!(ours.contains(n), "deleted another's device {n}\n{}", context());
++                        assert!(
++                            before.get(n).map(|d| d.state) != Some(DeviceState::Dead)
++                                && before.get(n).map(|d| d.state) != Some(DeviceState::Live),
++                            "deleted a live or dead device {n}\n{}",
++                            context()
++                        );
++                    }
++                    Event::BeginRecovery(n) => {
++                        assert!(
++                            ours.contains(n)
++                                && before.get(n).map(|d| d.state) == Some(DeviceState::Waiting),
++                            "recovered device {n}, not this volume's waiting device\n{}",
++                            context()
++                        );
++                    }
++                    _ => {}
++                }
++            }
++            ours.retain(|n| world.devices.contains_key(n));
++            match result {
++                Some(Ok(ready)) => {
++                    served += 1;
++                    let others: Vec<u32> = ours
++                        .iter()
++                        .copied()
++                        .filter(|n| {
++                            *n != ready.number
++                                && matches!(
++                                    world.devices[n].state,
++                                    DeviceState::Live | DeviceState::Waiting
++                                )
++                        })
++                        .collect();
++                    assert!(
++                        others.is_empty(),
++                        "serves {} and this volume's {others:?} can be held\n{}",
++                        ready.number,
++                        context()
++                    );
++                    // It serves, a client may open it, and it is killed
++                    // or not before the next step.
++                    let device = world.devices.get_mut(&ready.number).expect("served");
++                    device.state = if next(3) == 0 {
++                        DeviceState::Live
++                    } else {
++                        DeviceState::Waiting
++                    };
++                    if next(2) == 0 && !world.held.contains(&ready.number) {
++                        world.held.push(ready.number);
++                    }
++                }
++                Some(Err(_)) => stopped += 1,
++                None => {}
++            }
++            // A live device of ours whose daemon is not this step's is
++            // seen as waiting by the next step (the daemon was killed).
++            for n in &ours {
++                if let Some(d) = world.devices.get_mut(n) {
++                    if d.state == DeviceState::Live && next(2) == 0 {
++                        d.state = DeviceState::Waiting;
++                    }
++                }
++            }
++        }
++    }
++    assert!(served > 1000 && stopped > 100, "{served} served, {stopped} stopped");
++}
+diff --git a/crates/skyzfs-ublk/src/pump/tests.rs b/crates/skyzfs-ublk/src/pump/tests.rs
+index 361feeb..f771e2c 100644
+--- a/crates/skyzfs-ublk/src/pump/tests.rs
++++ b/crates/skyzfs-ublk/src/pump/tests.rs
+@@ -87,6 +87,8 @@ struct FakeTarget {
+     ready: Vec<(Completion, Option<u64>)>,
+     acknowledged: Option<u64>,
+     gone: bool,
++    /// Review probe: as `Served` does, a gone target answers "busy".
++    busy_when_gone: bool,
+     /// The most requests it ever held.
+     most: usize,
+ }
+@@ -131,7 +133,7 @@ impl BlockTarget for FakeTarget {
+     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
+         let held = self.pending.len() + self.ready.len();
+         self.most = self.most.max(held + 1);
+-        if held >= self.geometry.queue_depth() as usize {
++        if (self.gone && self.busy_when_gone) || held >= self.geometry.queue_depth() as usize {
+             return Err(SubmitError {
+                 kind: SubmitErrorKind::Busy,
+                 request,
+@@ -211,6 +213,7 @@ impl Rig {
+             ready: Vec::new(),
+             acknowledged: None,
+             gone: false,
++            busy_when_gone: false,
+             most: 0,
+         };
+         let ack = FakeAck {
+@@ -752,3 +755,17 @@ fn a_write_carries_the_queues_buffer_there_and_back() {
+         (2, 1, 0)
+     );
+ }
++
++/// PROBE 3 (review; not part of the pull request). `Served::submit`
++/// answers "busy" once its worker is gone. A request that is fetched in
++/// the turn that would notice is submitted before the pump looks, and
++/// the pump reports a broken contract and not a gone target.
++#[test]
++#[ignore = "review probe: fails at 5716df5"]
++fn probe_a_gone_target_with_a_request_waiting_is_reported_as_gone() {
++    let mut rig = Rig::new(0, 8, 8);
++    rig.fetch(&[write(0, 0)]);
++    rig.pump.target().gone = true;
++    rig.pump.target().busy_when_gone = true;
++    assert_eq!(rig.fetch(&[write(1, 1)]), Some(Stopped::TargetGone));
++}
