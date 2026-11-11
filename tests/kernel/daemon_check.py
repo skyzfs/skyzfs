@@ -16,6 +16,7 @@ Changing what the rig catches means changing EXPECTED on purpose.
 """
 import argparse
 import os
+import re
 import sys
 
 # Where a result comes from when the rig runs on the stand-in
@@ -46,9 +47,9 @@ EXPECTED = {
 
     'pin_c_kill_with_requests_in_flight': ('c', 'PASS', SERVER,
                                            'the kills of the conformance suite find requests in flight at the server: '
-                                           'over a run at least one call is outstanding when a server dies and is '
-                                           'left to the kernel to issue again. Without that the kill cases test a '
-                                           'restart only, and the run is a rig error'),
+                                           'at a third or more of the kills of a live server a call is outstanding '
+                                           'when it dies and is left to the kernel to issue again. Below that the '
+                                           'kill cases test little more than a restart, and the run is a rig error'),
     'pin_c_kill_with_applied_unacknowledged': ('c', 'PASS', SERVER,
                                                'with a server that acknowledges a write some milliseconds after '
                                                'applying it, the suite\'s kills leave writes applied and not '
@@ -187,6 +188,11 @@ def parse_checks(text):
     return {n for n in names if n in CHECKS}, errors
 
 
+# An observation that says it was not made, wherever and however it
+# says so ("Not run", "was not run"); "not running" is something else.
+NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
+
+
 def judge(results, checks, impl='reference'):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
@@ -216,13 +222,17 @@ def judge(results, checks, impl='reference'):
             continue
         if name not in results:
             errors.append(f'{name}: no observation')
-        elif results[name].startswith('not run'):
+        elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
     # A pin or a control the table does not know is not judged by
     # anything: the rig and the table have come apart.
     for name in results:
         if name.startswith(('pin_', 'ctl_')) and name not in EXPECTED:
             errors.append(f'{name}: not in the table EXPECTED')
+        # A line of a check that was not asked for should not exist, and
+        # nothing above has looked at what it says.
+        elif name.startswith(('pin_', 'ctl_')) and EXPECTED[name][0] not in checks:
+            errors.append(f"{name}: a result of check {EXPECTED[name][0]}, which was not asked for: {results[name]}")
     if 'c' in checks:
         judge_cases(results, rows, differs, errors, impl)
     if not rows and not errors:

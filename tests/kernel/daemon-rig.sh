@@ -1043,12 +1043,16 @@ check_c() {
         END { printf "%d %d %d %d %d %d", live, before, at_death, with, zero, kills - live }' "$OUT/c-trace.tsv" 2>/dev/null)"
     rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again. The kernel's inflight file read 0 at ${n_zero:-0} of the ${n_with:-0} deaths with calls in flight: it does not count a request that waits to be issued again, and is no check on the sorting"
     # A kill of an idle server exercises its restart and nothing of the
-    # reissue of requests. Over the whole run some call must have been
-    # in flight at a death, or the kill cases say less than they claim.
-    if [ "${n_live:-0}" -gt 0 ] && [ "${n_at_death:-0}" -gt 0 ]; then
-        pin c_kill_with_requests_in_flight PASS "${n_at_death} calls were in flight at a server's death over ${n_live} kills"
+    # reissue of requests. At least a third of the kills of a live
+    # server must have found a call in flight at its death, or the kill
+    # cases say less than they claim. In twelve image-runs it was 17 of
+    # 29 once and 18 of 29 eleven times; a third is 10 of 29.
+    if [ "${n_live:-0}" = 0 ]; then
+        pin c_kill_with_requests_in_flight ERROR "the trace has no 'sorted' line: no kill of a live server was seen, so nothing can be said of calls in flight"
+    elif [ $(( ${n_with:-0} * 3 )) -ge "$n_live" ]; then
+        pin c_kill_with_requests_in_flight PASS "$n_with of $n_live kills of a live server found calls in flight at its death, ${n_at_death} calls in all (at least a third of the kills are needed)"
     else
-        pin c_kill_with_requests_in_flight ERROR "no call was in flight at a server's death over ${n_live:-0} kills: the kill cases exercised a restart, not the reissue"
+        pin c_kill_with_requests_in_flight ERROR "only ${n_with:-0} of $n_live kills of a live server found a call in flight at its death (${n_at_death:-0} calls in all); at least a third are needed, or the kill cases exercise a restart and not the reissue"
     fi
     gzip -f "$OUT/c-trace.tsv" 2>/dev/null
     for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/c-$(basename "$f")"; done
@@ -1166,7 +1170,11 @@ step "done"
 # such serve (ublksrvd_look), here and in check c's helper.
 n_serves=$(grep -c '^serve ' "$UBLKSRVD_SEEN" 2>/dev/null)
 n_entries=$(grep -c '^entry ' "$UBLKSRVD_SEEN" 2>/dev/null)
-if [ "$IMPL" = reference ]; then
+# The pin is check b's in the table, where the take-overs are; a result
+# of a check that was not asked for is a rig error.
+if [[ $CHECKS != *" b "* ]]; then
+    :
+elif [ "$IMPL" = reference ]; then
     pin no_ublksrvd_entry_from_daemon WAITING "the stand-in is the reference server, whose directory this is"
 elif [ "${n_serves:-0}" = 0 ]; then
     pin no_ublksrvd_entry_from_daemon ERROR "no serve of the daemon was looked at"
