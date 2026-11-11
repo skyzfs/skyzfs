@@ -1,6 +1,6 @@
 ## Work package
 
-M1.3b: the daemon serves. The ublk binding (`crates/skyzfs-ublk-sys`), `skyzfsd create` and `skyzfsd serve`, built on the lifecycle, pump and records of M1.3a (docs/skyzfs-design.md §4.2). Commits: `1ddbb83..9f32dbb` (50 commits on `zfs-topology`: 32 up to 499bdb4, which is what was first reviewed, and 18 that answer the review; "Changed in review" below lists them). The working history, with the merges and the temporary workflow's runs, is on the branch `skyzfs-coding-m1.3b`; the run links below are runs of that branch.
+M1.3b: the daemon serves. The ublk binding (`crates/skyzfs-ublk-sys`), `skyzfsd create` and `skyzfsd serve`, built on the lifecycle, pump and records of M1.3a (docs/skyzfs-design.md §4.2). Commits: `1ddbb83..8b809a6` (52 commits on `zfs-topology`: 32 up to 499bdb4, which is what was first reviewed, and 20 that answer the review; "Changed in review" below lists them). The working history, with the merges and the temporary workflow's runs, is on the branch `skyzfs-coding-m1.3b`; the run links below are runs of that branch.
 
 ## What was done
 
@@ -17,7 +17,7 @@ M1.3b: the daemon serves. The ublk binding (`crates/skyzfs-ublk-sys`), `skyzfsd 
   - At the end of a stop the queue hands the driver its last commits (one submit, no wait). Without it they stayed on the ring and the kernel issued those requests again.
   - `client_holds`: an exclusive open that is refused with EBUSY means held; every other answer, a successful open included, is unknown (`None`), never "not held".
 - **`create --dir DIR --size BYTES [--run-dir DIR]`**: a new, empty volume. The id is 16 bytes from `/dev/urandom`; record alignment 4096 and 64 MiB log segments are constants recorded with the volume, not options. It replaces no volume, and it refuses a directory that holds anything but what an interrupted create leaves (`lock`, `home.new`, `home.img`, `log.000000`, `log.super.new`): exit 1, the file named, the directory untouched. Only files under exactly those names are ever removed. A create that fails removes what it made in a directory it made. One line is printed: size, id, and the store's identity. If a failure note of this boot lies under the directory it warns on stderr: the note stays and counts for the new volume. On a directory another instance has locked: exit 5.
-- **`serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]`**, in this order: the two deployment rules of design §4.1 (the process's memory locked; neither directory on ZFS, asked of the kernel with `statfs`), each with an `--unsafe-allow-*` override for tests; signals blocked before any thread exists and taken with `sigtimedwait`; the lifecycle's start (lock, failure note, acknowledged position, store, device); the queue's thread, then the start or the end of the recovery; then, once this instance's status file was written or the write was tried (at most 5 s), `ready /dev/ublkbN` on stdout. It ends on SIGTERM/SIGINT (0; 1 if the acknowledged position could not be stored), on a failed volume (3, after the failure is noted and the device deleted), or when the queue goes away (1). Refusals: 4 (failed in this boot), 5 (held by another instance or a live server). After an orderly stop the device stays and waits for the next server. The volume's lock is held until the cleanup after a failure is done: the queue's thread gives the store back to the main thread. No write to stdout or stderr can end the daemon or change its exit status.
+- **`serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]`**, in this order: the two deployment rules of design §4.1 (the process's memory locked; neither directory on ZFS, asked of the kernel with `statfs`), each with an `--unsafe-allow-*` override for tests; signals blocked before any thread exists and taken with `sigtimedwait`; the lifecycle's start (lock, failure note, acknowledged position, store, device); the queue's thread, then the start or the end of the recovery; then, once this instance's status file was written or the write was tried (at most 5 s), `ready /dev/ublkbN` on stdout. It ends on SIGTERM/SIGINT (0; 1 if the acknowledged position could not be stored), on a failed volume (3, after the failure is noted and the device deleted), or when the queue goes away (1). Refusals: 4 (failed in this boot), 5 (held by another instance or a live server). After an orderly stop the device stays and waits for the next server. The volume's lock is held until the cleanup after a failure is done: the main thread has a hold of its own on the lock the store took, for the whole of `serve`, whatever becomes of the store on the queue's thread. No write to stdout or stderr can end the daemon or change its exit status.
   - When the device serves, one line on stderr says where the start's time went (lock, position, recovery with the log's bytes and operations, device steps with the driver's busy answers, queue, start). When it ends, `first_write_copies` and `recovered_unacknowledged` are printed.
 - **`status`** and **`detach`** ask the real driver, and open it only when the volume has a record of this boot to ask about: after a reboot, before the driver is loaded, both answer (detached, exit 0).
   - `status` shows counters only from a status file of this store (the file of a volume that was in the same directory before is not shown).
@@ -53,7 +53,7 @@ Where the design says no more, the conservative reading was taken and is marked 
 
 - `create` makes the directory's last component if missing (mode 0700) and removes it again on failure: the rig creates volumes in directories it has not made.
 
-### Changed in review (499bdb4..9f32dbb)
+### Changed in review (499bdb4..8b809a6)
 
 Each is a commit of its own, with tests; the threads on this pull request have the detail.
 
@@ -67,10 +67,10 @@ Each is a commit of its own, with tests; the threads on this pull request have t
 | no write to stdout or stderr can end the daemon | e9032f8 |
 | a failing `create` removes what it made | 8a71aef |
 | `status` and `detach` open the driver only when needed | 5b64c86 |
-| the kernel tests: data by place and round, concurrent first writes, I/O in every taken-over life, nothing deleted that a test did not add | 22828f4 |
+| the kernel tests: data by place and round, concurrent first writes (and that they were concurrent), I/O in every taken-over life, nothing deleted that a test did not add | 22828f4, 8b809a6 |
 | the ZFS rule asks `statfs`; a relative run directory that does not exist | 41c69ae |
 | `ready` after the first status write; no zero counters posted after the start | 702ab7b, 9c6f312 |
-| the volume's lock held until the failure's cleanup is done | 25861f5 |
+| the volume's lock held until the failure's cleanup is done: found in review that another `serve --acknowledge-failure` could add a device under the same number in the window, which this process then deleted | 25861f5, defddfc |
 | `detach` exit status 6 | 4749be8 |
 | `status` and the status file of another volume | 9dc952f |
 | the test program behind a feature; documentation | 9f32dbb, 20f8a8c |
@@ -85,9 +85,9 @@ Each is a commit of its own, with tests; the threads on this pull request have t
 
 ## How it was verified
 
-**Locally** at 9f32dbb (stable 1.99.1; no ublk in the container): `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean, also `-p skyzfsd --features test-hooks` and `-p skyzfs-ublk-sys --features control-test-program`; `cargo test --workspace`: 1059 passed, 0 failed, 16 ignored; `cargo test -p skyzfs-ublk-sys --features control-test-program`: 5 passed, 10 ignored (the kernel tests); `cargo test -p skyzfsd --features test-hooks`: 41 passed; docs of the skyzfs crates with `RUSTDOCFLAGS="-D warnings"` clean.
+**Locally** at 8b809a6 (stable 1.99.1; no ublk in the container): `cargo fmt --check` clean; `cargo clippy --workspace --all-targets -- -D warnings` clean, also `-p skyzfsd --features test-hooks` and `-p skyzfs-ublk-sys --features control-test-program`; `cargo test --workspace`: 1061 passed, 0 failed, 16 ignored; `cargo test -p skyzfs-ublk-sys --features control-test-program`: 5 passed, 10 ignored (the kernel tests); `cargo test -p skyzfsd --features test-hooks`: 41 passed; docs of the skyzfs crates with `RUSTDOCFLAGS="-D warnings"` clean.
 
-**Nothing changed in review has run on a kernel yet.** Since 14:26 UTC on 2026-11-11 the runners could not resolve the Ubuntu mirrors (an outage at Canonical), and every job that installs packages failed in its first step. Owed, in one run when they resolve: the ten kernel tests (three new: a stop under writers, how long a delete takes to free a number, a device with larger requests; three changed), the rig on the daemon, and one run of the stop test against the queue of 499bdb4, to show that the test catches the fault it is for. What follows is the evidence for the code up to 499bdb4.
+**Nothing changed in review has run on a kernel yet.** Since 14:26 UTC on 2026-11-11 the runners could not resolve the Ubuntu mirrors (an outage at Canonical), and every job that installs packages failed in its first step. Owed, in one run when they resolve: the ten kernel tests (three new: a stop under writers, how long a delete takes to free a number, a device with larger requests; three changed), the rig on the daemon, and the stop test against two builds with a defect put back (the buffers freed at a stop; the last commits of a stop not handed over), which must fail it, to show that the test catches what it is for. What follows is the evidence for the code up to 499bdb4.
 
 **On a kernel** (GitHub runners, Ubuntu 24.04 and 26.04, kernel 7.0.0-azure), through a temporary workflow that is not part of this pull request (it ran the binding's kernel tests as root, then the daemon rig with `RIG_SKYZFSD` set to a `test-hooks` build of `skyzfsd` and **no** `--unsafe-allow-*` override):
 
@@ -109,7 +109,7 @@ Each is a commit of its own, with tests; the threads on this pull request have t
 - **Open with it: `pin_failed_unheld_volume_serves_when_acknowledged`** has no valid result on the daemon yet, for the same reason and because the hook that fails the log counted reads then.
 - The binding's kernel tests are ignored tests (root and the driver); no workflow in this branch runs them. They ran through the temporary workflow on `skyzfs-coding-m1.3b`.
 - The test program and its four parse tests are not built by `cargo test --workspace` any more (the feature): a CI step with `--features control-test-program` would cover them. The workflows are the testing session's.
-- The stop test cannot see whether a request arrived during a given stop; it reports the writers' counts. Whether it fails on the old queue is not known until the run named above.
+- The stop test cannot see whether a request arrived during a given stop; it reports the writers' counts. Whether it fails with either defect put back is not known until the run named above.
 - The ZFS refusal has been tested with an injected answer only; no test here has a real ZFS mount.
 - The concurrent first writes assert that the queue's count of first-write copies equals the tags the test's server saw begin with a write, not that it equals the depth: something else reading the device first (udev) takes a tag's first request.
 - `begin-recovery` on a device that was never started is answered "busy" by the driver, the same as for a server still being torn down (seen in run 43028536432). The daemon never does that; noted for the design's state table.
