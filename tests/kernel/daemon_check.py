@@ -134,8 +134,10 @@ EXPECTED = {
                                          '(§4.2): a false alarm would suspend a healthy pool'),
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
-                                    'refused with status 4 and serves nothing: no ready line, the device live at '
-                                    'no look in the 300 s after. What the pool does then is ZFS\'s reaction to what it had in flight '
+                                    'refused with status 4, with the daemon\'s own reason for it ("the log is '
+                                    'shorter than what was acknowledged"), and serves nothing: no ready line, '
+                                    'the device live at no look until the pool suspended or 300 s had passed. '
+                                    'What the pool does then is ZFS\'s reaction to what it had in flight '
                                     'and is reported in obs_b_refused_start_under_writes, not judged (with only '
                                     'writes waiting it did not suspend in 118 s, run 43086281904). The server is killed at rest '
                                     '(writer stopped, pool synced, writes and requests in flight still for a '
@@ -302,8 +304,8 @@ WAITS_FOR_THE_DAEMON = {
     'pin_log_stays_below_high_mark': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
     'pin_kills_inside_steps_lose_nothing': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
     'pin_c_suite_with_low_marks': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_failed_volume_while_a_request_is_held': 'the author\'s answer on what the failure path does while the '
-                                                 'pump holds a request',
+    'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
+                                                 'path does while the pump holds a request',
 }
 
 

@@ -142,5 +142,31 @@ class Main(unittest.TestCase):
         self.assertEqual(self.run_on(r), 2)
 
 
+class KernelTestsThatDidNotEnd(unittest.TestCase):
+    def test_a_hung_kernel_test_is_a_verdict_and_not_a_rig_error(self):
+        r = as_expected()
+        crate = [n for n in cc.EXPECTED if n.startswith('control_')]
+        self.assertTrue(crate)
+        # the binary was killed at the limit before two tests printed their lines
+        r['pin_kernel_tests_end'] = 'FAIL: the test binary had not ended after 600 s'
+        for name in crate[-2:]:
+            del r[name]
+        _, differs, errors = cc.judge(r)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(differs), 3)      # the pin and the two lines
+        # with the binary ended well, a missing line is the rig's error as before
+        r = as_expected()
+        del r[crate[-1]]
+        _, differs, errors = cc.judge(r)
+        self.assertEqual((differs, len(errors)), ([], 1))
+        # and a missing line of the rig's own stays the rig's error either way
+        r = as_expected()
+        r['pin_kernel_tests_end'] = 'FAIL: ended with 101'
+        own = next(n for n in cc.EXPECTED if n.startswith('pin_') and n != 'pin_kernel_tests_end')
+        del r[own]
+        _, differs, errors = cc.judge(r)
+        self.assertEqual((len(differs), len(errors)), (1, 1))
+
+
 if __name__ == '__main__':
     unittest.main()

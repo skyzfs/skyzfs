@@ -22,14 +22,31 @@ on:
       - tests/kernel/control-rig.sh
       - tests/kernel/control-holder.py
       - tests/kernel/control_check.py
+      - tests/kernel/build-ublksrv.sh
+      - tests/kernel/ublksrvd-look.sh
+      - tests/lib/**
+  # Everything the job builds or sources: the binding and the crates
+  # its test program and kernel tests are built with (cargo tree of
+  # skyzfs-ublk-sys with control-test-program), what decides those
+  # builds beside the sources, the rig's own files, the scripts it
+  # sources or calls, and the unit job's tests.
   pull_request:
     paths:
       - crates/skyzfs-ublk-sys/**
       - crates/skyzfs-ublk/**
+      - crates/skyzfs-blk/**
+      - crates/skyzfs-local/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
       - tests/kernel/control-rig.sh
       - tests/kernel/control-holder.py
       - tests/kernel/control_check.py
       - tests/kernel/test_control_check.py
+      - tests/kernel/build-ublksrv.sh
+      - tests/kernel/ublksrvd-look.sh
+      - tests/kernel/test_net_try.sh
+      - tests/lib/**
       - .github/workflows/skyzfs-control-rig.yml
 
 # A newer push supersedes the run of the older one, on a pull request

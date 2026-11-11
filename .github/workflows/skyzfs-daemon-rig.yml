@@ -12,7 +12,7 @@ name: skyzfs-daemon-rig
 # Which server is behind the device (the job `plan` decides, and its
 # summary says):
 #   - a pull request: the daemon. A pull request that changes the rig
-#     (`tests/kernel/` or this file) also runs the stand-in on the
+#     (`tests/kernel/`, `tests/lib/` or this file) also runs the stand-in on the
 #     reference ublk server (`tests/kernel/skyzfsd-ref.sh`): the
 #     stand-in is what shows that the rig still catches what it caught,
 #     the controls among it, and the daemon run tries the rig's lines
@@ -53,6 +53,13 @@ on:
       - crates/skyzfs-ublk-sys/**
       - crates/skyzfs-local/**
       - bins/skyzfsd/**
+      # What decides the daemon's binary beside its sources, and what
+      # the rig sources from outside tests/kernel/ (lim.sh, net-try.sh,
+      # gnu-dd.sh, apt-fallback.sh).
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - tests/lib/**
       - .github/workflows/skyzfs-daemon-rig.yml
 
 # A newer push to a pull request supersedes the run of the older one; a
@@ -106,7 +113,7 @@ jobs:
               # The files the pull request changes against its base. If
               # they cannot be told, both servers run.
               if changed=$(git diff --name-only "$BASE...HEAD"); then
-                if printf '%s\n' "$changed" | grep -q -E '^(tests/kernel/|\.github/workflows/skyzfs-daemon-rig\.yml$)'; then
+                if printf '%s\n' "$changed" | grep -q -E '^(tests/kernel/|tests/lib/|\.github/workflows/skyzfs-daemon-rig\.yml$)'; then
                   servers='["daemon","stand-in"]'; why="a pull request that changes the rig: the daemon and the stand-in"
                 else
                   servers='["daemon"]'; why="a pull request that does not change the rig: the daemon"

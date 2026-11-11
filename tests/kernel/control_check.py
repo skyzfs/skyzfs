@@ -224,8 +224,18 @@ OBSERVED = {
 def judge(results):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, who, row, claim)."""
     rows, differs, errors = [], [], []
+    # The crate's kernel tests ended badly (a test hung to the limit,
+    # or panicked before its line): a verdict line of theirs that is
+    # missing is then the binding's failure and not the rig's. A hang
+    # must not read "the rig itself failed; not a verdict".
+    tests_failed = results.get('pin_kernel_tests_end', '').startswith('FAIL')
     for name, (want, who, row, claim) in EXPECTED.items():
         value = results.get(name)
+        if value is None and tests_failed and name.startswith('control_'):
+            differs.append(f'{name}: expected {want}, got no line: the kernel tests did not end as they must '
+                           f'(see pin_kernel_tests_end)')
+            rows.append((name, want, 'missing', 'the kernel tests did not end as they must', who, row, claim))
+            continue
         if value is None:
             errors.append(f'{name}: no result')
             rows.append((name, want, 'missing', '', who, row, claim))
