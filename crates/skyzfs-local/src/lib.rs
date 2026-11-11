@@ -128,6 +128,8 @@
 //! write a payload that a recovery takes for a record: a discard or a
 //! write anywhere on the volume, and the end of the real log. The tag
 //! is therefore keyed, with a key the client does not have. The key is
+//! 128 bits from the operating system's cryptographic generator, and
+//! a log is not created without them. It is
 //! in the superblock and nowhere else: it is not part of
 //! [`format::Identity`], it is in no error, report or debug print (those
 //! name positions and kinds), and it must never be uploaded or logged.
@@ -269,6 +271,20 @@
 //! needs, and recovery erases only headers of files that are not
 //! segments of the log it found.
 //!
+//! **Three rules that only a crafted payload can test.** With honest
+//! histories on the simulated disk nothing distinguishes a log without
+//! them: that a walk looks at the unit boundary before it looks
+//! directly behind a record; that recovery seals also where the prefix
+//! does not end on a boundary; and that of two files claiming the same
+//! part of the log the older claim is erased. They decide what happens
+//! where old or foreign bytes could pass for a record at one of the two
+//! places a walk looks, which without the key a client could arrange
+//! and with it cannot. They are kept as a second line behind the tag.
+//!
+//! **A read error is not an end.** If a read fails during recovery,
+//! `open` returns the error and has written nothing. Only a place that
+//! was read and holds no valid record ends the log.
+//!
 //! # Order of acknowledgements
 //!
 //! **A record may be acknowledged only when its own write and the
@@ -279,6 +295,24 @@
 //! writer, and `append` writes in order, one record at a time, so this
 //! holds by construction. Whoever puts the log behind several threads
 //! or an asynchronous interface must keep it.
+//!
+//! **What must change before an append can run during a sync.** Today
+//! nothing runs between a sync's issue and its completion, and three
+//! places in [`Log::sync`](log::Log::sync) rely on it:
+//!
+//! - the set of files to sync is cleared after the device syncs. A file
+//!   dirtied in between would be forgotten, the next sync would skip it
+//!   and report success, and a power cut would take records a sync
+//!   claimed. The set must be taken when the sync is issued;
+//! - the same for the flag that says the directory needs a sync, when a
+//!   segment file is created in between;
+//! - an append clears the reservation of a new unit that the sync took
+//!   at issue. That is right for the append's own unit, but a second
+//!   sync issued while the first is in flight must take the reservation
+//!   again, and each sync needs its own target position.
+//!
+//! A test for this needs a simulated disk whose sync can be held open
+//! between issue and completion.
 //!
 //! # Failure
 //!
@@ -338,6 +372,21 @@
 //!   by recoveries and reclaims. A flipped bit above it ends the log
 //!   there, as a torn record would, and only recovery's report says
 //!   why.
+//! - **A file system that accepts direct I/O and reads from its
+//!   cache.** Recovery takes a successful open with `O_DIRECT` as a
+//!   read from the device. Some file systems accept the flag and serve
+//!   the read from memory (tmpfs on newer kernels, ZFS before 2.3 are
+//!   believed to), and then
+//!   [`Recovery::checked_device`](log::Recovery::checked_device) is
+//!   true although nothing was checked: after a failed sync, recovery
+//!   may there accept records that only the cache holds. The log is
+//!   supported on **ext4 and XFS**. Checking the file system's type
+//!   belongs to the store that owns the log.
+//! - **Platforms other than Linux.** There is no read from the device
+//!   on macOS and Windows yet, so `checked_device` is always false
+//!   there. Off Unix, syncing a directory is not implemented and
+//!   returns an error rather than success, so a log cannot be created
+//!   or synced there: the Windows port has to supply it.
 //! - **Running out of space.** Creating a segment file fails the log
 //!   like any other write error.
 //!
@@ -348,7 +397,7 @@
 //!   lets go of it. A sync has to write the dirty pages before it can
 //!   flush the device. After a failed sync the cache cannot be trusted,
 //!   which is why recovery needs reads from the device, and where a
-//!   file system has none (tmpfs)
+//!   file system has none
 //!   [`Recovery::checked_device`](log::Recovery::checked_device) is
 //!   false and the prefix may hold records that were never durable.
 //!   The rule about write units is as good as the kernel's tracking of

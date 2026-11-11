@@ -79,18 +79,13 @@ impl Key {
     /// Only the tests' deliberately broken log uses it.
     pub(crate) const PUBLIC: Key = Key([0; 16]);
 
-    /// A new key from the operating system's randomness.
-    pub(crate) fn random() -> Key {
-        use std::hash::{BuildHasher, Hasher};
-        // The standard library seeds each `RandomState` from the
-        // operating system; two of them give 128 bits.
+    /// A new key from the operating system's cryptographic generator,
+    /// or `None` if it gives nothing. There is no weaker source to fall
+    /// back on: without a key no log is made.
+    pub(crate) fn random() -> Option<Key> {
         let mut key = [0u8; 16];
-        for half in key.chunks_mut(8) {
-            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-            hasher.write(b"skyzfs-local log key");
-            half.copy_from_slice(&hasher.finish().to_le_bytes());
-        }
-        Key(key)
+        getrandom::fill(&mut key).ok()?;
+        Some(Key(key))
     }
 }
 

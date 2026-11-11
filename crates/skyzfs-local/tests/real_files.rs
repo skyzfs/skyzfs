@@ -44,7 +44,7 @@ fn records(log: &Log<FsDir>) -> Vec<(u64, Vec<u8>)> {
 /// Real files, round trip: records appended across several segments
 /// come back after a reopen, at both alignments; reclaim frees segment
 /// files for reuse; recovery says whether it could read from the device
-/// (it can on ext4 and xfs, and not on tmpfs).
+/// (it can on ext4 and xfs; a tmpfs refuses the flag or reads from memory).
 #[test]
 fn records_survive_a_reopen_on_real_files() {
     for align in [64, 4096] {

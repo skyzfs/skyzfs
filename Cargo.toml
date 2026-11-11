@@ -47,6 +47,7 @@ blake3 = "1"
 # The write log's commit-path checksum (skyzfs-local). Already in the lock
 # through other crates; blake3 stays for content addressing.
 crc32c = "0.6"
+getrandom = "0.4"
 ulid = { version = "1", features = ["serde"] }
 thiserror = "2"
 bytes = "1"

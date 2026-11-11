@@ -97,6 +97,13 @@ impl Mutants {
     /// Headers are tagged with a key that everybody knows: a payload can
     /// be made to look like a record.
     pub(crate) const PUBLIC_KEY: u32 = 1 << 22;
+    /// A read error during recovery is taken for the end of the log.
+    pub(crate) const READ_ERROR_ENDS_LOG: u32 = 1 << 24;
+    /// The failure marker's name is not synced.
+    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 25;
+    /// A segment header of a later epoch than the superblock's is taken
+    /// as it is.
+    pub(crate) const NO_HEADER_FUTURE_CHECK: u32 = 1 << 26;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
@@ -161,6 +168,10 @@ pub enum LogError {
     /// `create`: the identity cannot describe a log.
     #[error("the log's parameters are not valid")]
     InvalidConfig,
+    /// `create`: the operating system gave no random bytes for the
+    /// log's key. Nothing was created.
+    #[error("the operating system gave no random bytes for the log's key")]
+    NoRandomness,
     /// `open`: the log failed in an earlier life and the caller did not
     /// acknowledge it.
     #[error("the log is marked as failed")]
@@ -508,7 +519,7 @@ fn write_marker<D: Dir>(dir: &D, mutants: Mutants) -> bool {
     let Some(mut file) = file else {
         return false;
     };
-    file.sync().is_ok() && dir.sync().is_ok()
+    file.sync().is_ok() && (mutants.has(Mutants::MARKER_UNSYNCED) || dir.sync().is_ok())
 }
 
 fn read_error(during: &'static str, e: &io::Error) -> LogError {
@@ -560,7 +571,8 @@ impl<D: Dir> Log<D> {
     /// Make a new, empty log in `dir`, with a new random key, and open
     /// it.
     pub fn create(dir: D, identity: Identity) -> Result<Self, LogError> {
-        Self::create_keyed(dir, identity, Key::random(), Options::default())
+        let key = Key::random().ok_or(LogError::NoRandomness)?;
+        Self::create_keyed(dir, identity, key, Options::default())
     }
 
     /// Make a new log with a given key, and open it with `options`. The
@@ -599,6 +611,11 @@ impl<D: Dir> Log<D> {
             .write_at(0, &header.encode(&key))
             .map_err(io("creating a segment"))?;
         segment.sync().map_err(io("creating a segment"))?;
+        // The segment's name is durable before the superblock has one.
+        // A file system may keep a later name and lose an earlier one,
+        // and a superblock without its first segment is not "no log"
+        // but a damaged one.
+        dir.sync().map_err(io("creating a segment"))?;
         let mut superblock = dir
             .create(SUPER_NEW_NAME)
             .map_err(io("creating the superblock"))?;
@@ -727,7 +744,10 @@ impl<D: Dir> Log<D> {
                 if let Ok(header) = SegmentHeader::decode(&raw, &key) {
                     let valid =
                         header.volume == identity.volume && header.base.is_multiple_of(size);
-                    if valid && header.epoch > current.epoch {
+                    if valid
+                        && header.epoch > current.epoch
+                        && !mutants.has(Mutants::NO_HEADER_FUTURE_CHECK)
+                    {
                         return Err(Corruption::SuperblockBehind {
                             position: Lsn(header.base),
                             found: header.epoch,
@@ -777,9 +797,16 @@ impl<D: Dir> Log<D> {
         }
         let stopped = loop {
             let file = &slots[index].file;
-            let step = rules
-                .record(file, &mut reader, &mut window, &cursor)
-                .map_err(|e| read_error("reading the log", &e))?;
+            // A read error is an error, never the end of the log: what
+            // follows from an end (a new epoch, a seal, erased segments)
+            // would destroy records that are only unreadable right now.
+            let step = match rules.record(file, &mut reader, &mut window, &cursor) {
+                Ok(step) => step,
+                Err(_) if mutants.has(Mutants::READ_ERROR_ENDS_LOG) => {
+                    Err(Stop::Header(Bad::Blank))
+                }
+                Err(e) => return Err(read_error("reading the log", &e)),
+            };
             let found = match step {
                 Ok(found) => found,
                 Err(stop) => break stop,

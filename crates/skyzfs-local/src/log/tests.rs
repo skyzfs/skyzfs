@@ -406,7 +406,7 @@ fn an_interrupted_creation_leaves_no_log_or_a_whole_one() {
     for seed in 0..32 {
         let disk = SimDisk::new(seed);
         // Fail the directory sync that ends creation, or one before it.
-        disk.fail_sync(seed % 3, false);
+        disk.fail_sync(seed % 4, false);
         let created = Log::create(disk.clone(), env.identity());
         assert!(created.is_err(), "seed {seed}");
         disk.power_cut(SeededCut::with_garbage(seed));
@@ -1150,8 +1150,8 @@ impl Cut for LoseNames {
     fn sector(&mut self, _: Option<&str>, _: u64, _: usize) -> Fate {
         Fate::Latest
     }
-    fn names(&mut self, _: usize) -> usize {
-        0
+    fn name(&mut self, _: usize, _: usize) -> bool {
+        false
     }
     fn length(&mut self, _: Option<&str>) -> bool {
         true
@@ -1303,8 +1303,11 @@ fn recovery_validates_what_the_device_holds() {
             let (disk, mut log) = env.fresh()?;
             put(&mut log, &env, 1)?;
             s(log.sync())?;
-            for tag in 2..=5 {
-                put(&mut log, &env, tag)?;
+            // Records of one sector each (at alignment 64, several in
+            // one): the failed sync leaves some of them whole in the
+            // cache and absent from the disk.
+            for tag in 2..=9 {
+                put_small(&mut log, tag)?;
             }
             // The sync fails, and so does recording the failure.
             disk.fail_sync(0, true);
@@ -1328,9 +1331,6 @@ fn recovery_validates_what_the_device_holds() {
             }
             let (log, first) = env.reopen(&disk)?;
             let held = tags(&log)?;
-            if !first.checked_device {
-                return Err("recovery did not read from the device".into());
-            }
             drop(log);
             disk.power_cut(LoseAll);
             let (log, second) = env.reopen(&disk)?;
@@ -1342,6 +1342,9 @@ fn recovery_validates_what_the_device_holds() {
                     tags(&log)?,
                     second.end
                 ));
+            }
+            if !first.checked_device {
+                return Err("recovery did not say that it read from the device".into());
             }
         }
         Ok(())
@@ -1844,6 +1847,164 @@ fn a_replay_never_returns_bad_data() {
         Ok(())
     }
     holds(scenario);
+}
+
+/// A read error is never the end of the log. Recovery treats the place
+/// where no valid record follows as the end, for good: it starts a new
+/// epoch, seals, and erases the segments behind. A read that fails says
+/// nothing about what is there, so an open that meets one returns the
+/// error and has written nothing: the disk is byte for byte as it was.
+/// The error is placed at every read an open makes, in turn, through
+/// the cache and from the device; after each, an undisturbed open finds
+/// every record. Mutant: a walk that takes a read error for the end.
+#[test]
+fn a_read_error_never_shortens_the_log() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut tag = 1;
+        let mut want: Vec<u8> = Vec::new();
+        for _ in 0..2 {
+            let filled = fill_to_roll(&mut log, env, &mut tag)?;
+            want.extend(filled.iter().map(|(t, _)| *t));
+        }
+        s(log.sync())?;
+        drop(log);
+        for device in [true, false] {
+            disk.set_device_reads(device);
+            let mut struck = 0;
+            for after in 0.. {
+                disk.kill();
+                let image = disk.image();
+                let writes = disk.stats().writes;
+                disk.fail_read(after, false);
+                match Log::open(disk.clone(), env.options()) {
+                    Err(LogError::Io {
+                        marker_written: false,
+                        ..
+                    }) => {
+                        struck += 1;
+                        if disk.stats().writes != writes || disk.image() != image {
+                            return Err(format!(
+                                "read {after}: the open failed and had changed the disk"
+                            ));
+                        }
+                    }
+                    Err(other) => return Err(format!("read {after}: {other}")),
+                    Ok((log, _)) => {
+                        // The error was armed: did it strike in the open?
+                        let mut probe = [0u8; 1];
+                        let unused = disk
+                            .open(SUPER_NAME)
+                            .is_ok_and(|file| file.read_at(0, &mut probe).is_err());
+                        expect(&log, &want, &format!("with read {after} failing"))?;
+                        if unused {
+                            // Every read of an open has had its turn.
+                            break;
+                        }
+                    }
+                }
+                disk.clear_faults();
+            }
+            if struck < 3 {
+                return Err(format!("only {struck} reads of an open could fail"));
+            }
+        }
+        disk.set_device_reads(true);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &want, "in the end")
+    }
+    caught(scenario, Mutants::READ_ERROR_ENDS_LOG, everywhere);
+}
+
+/// The failure marker is durable when the failing call says it was
+/// written: a power cut straight after the failure does not take the
+/// marker's name away, and the next open refuses the log. Mutant: a
+/// marker whose name is not synced.
+#[test]
+fn the_failure_marker_survives_a_power_cut() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        put(&mut log, env, 1)?;
+        s(log.sync())?;
+        disk.fail_write(0, false);
+        match log.append(Kind::Discard, 0, 4096, &[]) {
+            Err(LogError::Io {
+                marker_written: true,
+                ..
+            }) => {}
+            other => return Err(format!("the failing append returned {other:?}")),
+        }
+        drop(log);
+        disk.power_cut(LoseAll);
+        match Log::open(disk.clone(), env.options()) {
+            Err(LogError::MarkedFailed) => {}
+            Err(other) => return Err(other.to_string()),
+            Ok(_) => return Err("the log opened as if it had never failed".into()),
+        }
+        let (log, recovery) = env.reopen_ack(&disk)?;
+        if !recovery.marker_found {
+            return Err("recovery did not report the marker".into());
+        }
+        expect(&log, &[1], "after the acknowledged failure")
+    }
+    caught(scenario, Mutants::MARKER_UNSYNCED, everywhere);
+}
+
+/// A segment header of a later epoch than the superblock's means the
+/// newest superblock copy is lost, like a record of a later epoch, and
+/// is reported at the segment, before any record is looked at. (In
+/// every history this log can produce, a record of the later epoch
+/// lies before such a segment and would be reported in its place: the
+/// check on headers is a second line.) Mutant: a log without it, which
+/// reports the record.
+#[test]
+fn a_segment_newer_than_the_superblock_is_noticed() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        put(&mut log, env, 1)?;
+        drop(log);
+        // A recovery, and in its epoch a new segment.
+        let (mut log, _) = env.reopen(&disk)?;
+        let mut tag = 2;
+        let filled = fill_to_roll(&mut log, env, &mut tag)?;
+        s(log.sync())?;
+        let second = filled[filled.len() - 1].1.start.0 / SEG * SEG;
+        drop(log);
+        disk.kill();
+        disk.corrupt(
+            SUPER_NAME,
+            current_copy(&disk) * SUPER_COPY_STRIDE + 70,
+            0x01,
+        )
+        .map_err(|e| e.to_string())?;
+        match Log::open(disk.clone(), env.options()) {
+            Err(LogError::Corrupt(Corruption::SuperblockBehind { position, .. }))
+                if position == Lsn(second) =>
+            {
+                Ok(())
+            }
+            Err(other) => Err(other.to_string()),
+            Ok(_) => Err("the log opened with a stale superblock".into()),
+        }
+    }
+    caught(scenario, Mutants::NO_HEADER_FUTURE_CHECK, everywhere);
+}
+
+/// The key comes from the operating system's generator: two logs made
+/// one after the other have different keys.
+#[test]
+fn every_new_log_has_its_own_key() {
+    let identity = Env {
+        mutants: Mutants::default(),
+        align: 64,
+        garbage: false,
+        seed: 0,
+    }
+    .identity();
+    let a = Log::create(SimDisk::new(0), identity).unwrap();
+    let b = Log::create(SimDisk::new(0), identity).unwrap();
+    assert!(a.key != b.key);
+    assert!(a.key != Key::PUBLIC);
 }
 
 /// Which superblock copy is the current one: the valid one with the

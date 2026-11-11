@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 thiserror = { workspace = true }
 crc32c = { workspace = true }
+getrandom = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

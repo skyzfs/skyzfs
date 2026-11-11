@@ -1,7 +1,7 @@
 //! The write log against a model, over random programs.
 //!
 //! A program appends, syncs, reclaims, kills the process, cuts the
-//! power and injects write and sync errors, in any order. The model is
+//! power and injects write, sync and read errors, in any order. The model is
 //! the list of records the log has acknowledged and how many of them a
 //! successful sync has covered. After every recovery the log must hold:
 //!
@@ -14,6 +14,8 @@
 //!   records again;
 //! - **once a write or a sync has failed**, no records at all until
 //!   the log has been recovered: a replay is refused;
+//! - **after a recovery that met a read error**, what a kill leaves:
+//!   that recovery wrote nothing;
 //! - **later**, never anything that an earlier recovery dropped: the
 //!   model forgets what a recovery drops, and every later comparison is
 //!   exact.
@@ -85,6 +87,9 @@ enum Op {
     FailSync(u64),
     /// The operating system drops its clean pages.
     DropCaches,
+    /// The process is lost, and the read after so many fails while the
+    /// log is opened again; then it is opened undisturbed.
+    ReadError(u64),
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -108,6 +113,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (0..4u64).prop_map(Op::FailWrite),
         1 => (0..4u64).prop_map(Op::FailSync),
         1 => Just(Op::DropCaches),
+        2 => (0..8u64).prop_map(Op::ReadError),
     ]
 }
 
@@ -425,6 +431,31 @@ impl Run {
             Op::FailWrite(after) => self.disk.fail_write(after, false),
             Op::FailSync(after) => self.disk.fail_sync(after, false),
             Op::DropCaches => self.disk.drop_caches(),
+            Op::ReadError(after) => {
+                self.log = None;
+                self.disk.kill();
+                // Only the read fails: faults that have not struck yet
+                // are forgotten.
+                self.disk.clear_faults();
+                let writes = self.disk.stats().writes;
+                self.disk.fail_read(after, false);
+                let options = Options {
+                    acknowledge_failure: true,
+                    mutants: self.mutants,
+                };
+                match Log::open(self.disk.clone(), options) {
+                    Ok(_) => {}
+                    Err(LogError::Io { .. }) => {
+                        if self.disk.stats().writes != writes {
+                            return Err("an open that failed on a read had written".into());
+                        }
+                    }
+                    Err(other) => return Err(format!("open with a read error: {other}")),
+                }
+                self.disk.clear_faults();
+                // Like a kill: nothing may be missing.
+                self.recover(true)?;
+            }
         }
         self.compare()
     }
@@ -561,6 +592,10 @@ fn random_programs_notice_broken_logs() {
         ),
         ("a header tag anyone can make", Mutants::PUBLIC_KEY),
         ("a failed log that replays", Mutants::REPLAY_WHEN_FAILED),
+        (
+            "a read error taken for the end",
+            Mutants::READ_ERROR_ENDS_LOG,
+        ),
     ];
     let missed: Vec<&str> = broken
         .iter()

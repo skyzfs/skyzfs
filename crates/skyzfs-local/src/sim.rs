@@ -17,12 +17,17 @@
 //!   spans sectors can be torn at any sector boundary. Which, is the
 //!   [`Cut`]'s choice. A file's length ends up as it was at the last
 //!   sync or as it is now. Of the creations, removals and renames since
-//!   the last [`Dir::sync`], a prefix survives. What is left is durable,
-//!   and every handle opened before the cut is dead.
+//!   the last [`Dir::sync`], any subset survives, applied in order: a
+//!   later file's name can stay while an earlier one's is lost, as on a
+//!   file system that logs each file's name with that file's own sync.
+//!   What is left is durable, and every handle opened before the cut is
+//!   dead.
 //! - **A process kill** ([`SimDisk::kill`]). Every handle is dead and
 //!   nothing is lost: what was written is still there to read. It is
 //!   still unsynced, so a later power cut can take it.
-//! - **Injected errors** ([`SimDisk::fail_write`], [`SimDisk::fail_sync`]).
+//! - **Injected errors** ([`SimDisk::fail_write`], [`SimDisk::fail_sync`],
+//!   [`SimDisk::fail_read`]). A failed read, through the cache or from
+//!   the device, returns nothing and changes nothing.
 //!   A failed write may have written any subset of its sectors. A failed
 //!   sync makes nothing durable, and each unsynced sector goes one of
 //!   three ways, as kernels do with pages they could not write. It stays
@@ -46,6 +51,16 @@
 //! own (a test can corrupt a file itself, with [`SimDisk::corrupt`]),
 //! running out of space, and a file system without a from-the-device
 //! read (a test can switch it off, with [`SimDisk::set_device_reads`]).
+//!
+//! Where it is kinder than a real disk:
+//!
+//! - **A kill never tears a write.** A kernel can return a short
+//!   buffered write when a fatal signal arrives. The bytes that leaves
+//!   are those of a failed write, which is modelled.
+//! - **A file's length after a power cut is the old or the new one**,
+//!   never one between.
+//! - **A sync error reaches the caller that issued the sync.** A kernel
+//!   can report it to another descriptor of the file, or only once.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -105,10 +120,10 @@ pub trait Cut {
     /// the cut, or `None` if it had been removed.
     fn sector(&mut self, name: Option<&str>, index: u64, versions: usize) -> Fate;
 
-    /// How many of the `pending` creations, removals and renames since the
-    /// last directory sync survive: the first so many. Anything above
-    /// `pending` means all.
-    fn names(&mut self, pending: usize) -> usize;
+    /// Whether the `index`-th of the `pending` creations, removals and
+    /// renames since the last directory sync survives. Asked once for
+    /// each, in order; the survivors are applied in order.
+    fn name(&mut self, index: usize, pending: usize) -> bool;
 
     /// Whether a file whose length changed since its last sync keeps the
     /// new length.
@@ -123,8 +138,8 @@ impl Cut for LoseAll {
     fn sector(&mut self, _: Option<&str>, _: u64, _: usize) -> Fate {
         Fate::Durable
     }
-    fn names(&mut self, _: usize) -> usize {
-        0
+    fn name(&mut self, _: usize, _: usize) -> bool {
+        false
     }
     fn length(&mut self, _: Option<&str>) -> bool {
         false
@@ -139,8 +154,8 @@ impl Cut for KeepAll {
     fn sector(&mut self, _: Option<&str>, _: u64, _: usize) -> Fate {
         Fate::Latest
     }
-    fn names(&mut self, pending: usize) -> usize {
-        pending
+    fn name(&mut self, _: usize, _: usize) -> bool {
+        true
     }
     fn length(&mut self, _: Option<&str>) -> bool {
         true
@@ -154,6 +169,9 @@ impl Cut for KeepAll {
 pub struct SeededCut {
     rng: Rng,
     garbage: bool,
+    /// How the name operations go, drawn at the first of them: the
+    /// first so many survive, or each on its own.
+    names: Option<Option<usize>>,
 }
 
 impl SeededCut {
@@ -162,6 +180,7 @@ impl SeededCut {
         Self {
             rng: Rng(seed ^ 0xC2A5_11ED_0D15_C0DE),
             garbage: false,
+            names: None,
         }
     }
 
@@ -188,8 +207,18 @@ impl Cut for SeededCut {
             Fate::Version(pick)
         }
     }
-    fn names(&mut self, pending: usize) -> usize {
-        self.rng.below(pending as u64 + 1) as usize
+    fn name(&mut self, index: usize, pending: usize) -> bool {
+        // Half of the cuts keep a prefix, which is what most file
+        // systems do; the others decide each operation on its own.
+        let rng = &mut self.rng;
+        let plan = *self.names.get_or_insert_with(|| {
+            let prefix = rng.below(pending as u64 + 1) as usize;
+            rng.coin().then_some(prefix)
+        });
+        match plan {
+            Some(prefix) => index < prefix,
+            None => self.rng.coin(),
+        }
     }
     fn length(&mut self, _: Option<&str>) -> bool {
         self.rng.coin()
@@ -204,8 +233,8 @@ impl<F: FnMut(Option<&str>, u64) -> Fate> Cut for BySector<F> {
     fn sector(&mut self, name: Option<&str>, index: u64, _: usize) -> Fate {
         (self.0)(name, index)
     }
-    fn names(&mut self, pending: usize) -> usize {
-        pending
+    fn name(&mut self, _: usize, _: usize) -> bool {
+        true
     }
     fn length(&mut self, _: Option<&str>) -> bool {
         true
@@ -315,6 +344,7 @@ struct State {
     rng: Rng,
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
+    read_fault: Option<Fault>,
     device_reads: bool,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
@@ -378,6 +408,7 @@ impl SimDisk {
                 rng: Rng(seed),
                 write_fault: None,
                 sync_fault: None,
+                read_fault: None,
                 device_reads: true,
                 write_unit: SECTOR,
                 stats: Stats::default(),
@@ -408,6 +439,7 @@ impl SimDisk {
         state.generation += 1;
         state.write_fault = None;
         state.sync_fault = None;
+        state.read_fault = None;
         let inodes: Vec<u64> = state.inodes.keys().copied().collect();
         for id in inodes {
             let name = state.name_of(id).map(str::to_owned);
@@ -453,9 +485,10 @@ impl SimDisk {
             inode.durable_len = inode.len;
         }
         let pending = std::mem::take(&mut state.pending_names);
-        let kept = cut.names(pending.len()).min(pending.len());
-        for op in &pending[..kept] {
-            op.apply(&mut state.durable_names);
+        for (index, op) in pending.iter().enumerate() {
+            if cut.name(index, pending.len()) {
+                op.apply(&mut state.durable_names);
+            }
         }
         state.names = state.durable_names.clone();
         state.drop_unreachable();
@@ -473,6 +506,36 @@ impl SimDisk {
     /// makes nothing durable and may drop unsynced data on the spot.
     pub fn fail_sync(&self, after: u64, sticky: bool) {
         self.lock().sync_fault = Some(Fault { after, sticky });
+    }
+
+    /// The read after the next `after` reads fails, and, if `sticky`,
+    /// every read after it: reads through the cache and reads from the
+    /// device count alike. A failed read changes nothing.
+    pub fn fail_read(&self, after: u64, sticky: bool) {
+        self.lock().read_fault = Some(Fault { after, sticky });
+    }
+
+    /// The bytes the device holds of every file, by name, and each
+    /// file's length: what a test compares to show that something left
+    /// the disk as it was.
+    pub fn image(&self) -> Vec<(String, Vec<u8>)> {
+        let state = self.lock();
+        let mut out = Vec::new();
+        for (name, id) in &state.names {
+            let Some(inode) = state.inodes.get(id) else {
+                continue;
+            };
+            let mut bytes = vec![0u8; inode.len as usize];
+            for (index, sector) in &inode.sectors {
+                let at = (*index * SECTOR) as usize;
+                if let (Some(src), true) = (sector.device(), at < bytes.len()) {
+                    let n = SECTOR_USIZE.min(bytes.len() - at);
+                    bytes[at..at + n].copy_from_slice(&src[..n]);
+                }
+            }
+            out.push((name.clone(), bytes));
+        }
+        out
     }
 
     /// The operating system drops its clean pages, as it may at any
@@ -506,6 +569,7 @@ impl SimDisk {
         let mut state = self.lock();
         state.write_fault = None;
         state.sync_fault = None;
+        state.read_fault = None;
     }
 
     /// Operation counts so far.
@@ -653,10 +717,13 @@ fn gone() -> io::Error {
 
 impl SimFile {
     fn read(&self, offset: u64, buf: &mut [u8], device: bool) -> io::Result<()> {
-        let state = self.disk.lock();
+        let mut state = self.disk.lock();
         self.check(&state)?;
         if device && !state.device_reads {
             return Err(io::ErrorKind::Unsupported.into());
+        }
+        if State::strikes(&mut state.read_fault) {
+            return Err(injected("read"));
         }
         let inode = state.inodes.get(&self.inode).ok_or_else(gone)?;
         let end = offset
@@ -984,18 +1051,19 @@ mod tests {
     }
 
     /// Names: of the directory operations since the last directory sync
-    /// a prefix survives, in order: here the creation without the rename
-    /// and the removal that followed it.
+    /// any subset survives, applied in order. Here the creation without
+    /// the rename and the removal that followed it; and a later
+    /// creation without an earlier one.
     #[test]
-    fn directory_operations_survive_as_a_prefix() {
-        struct FirstOnly;
-        impl Cut for FirstOnly {
+    fn directory_operations_survive_as_any_subset() {
+        struct Keep(Vec<bool>);
+        impl Cut for Keep {
             fn sector(&mut self, _: Option<&str>, _: u64, _: usize) -> Fate {
                 Fate::Latest
             }
-            fn names(&mut self, pending: usize) -> usize {
-                assert_eq!(pending, 3);
-                1
+            fn name(&mut self, index: usize, pending: usize) -> bool {
+                assert_eq!(pending, self.0.len());
+                self.0[index]
             }
             fn length(&mut self, _: Option<&str>) -> bool {
                 true
@@ -1006,8 +1074,37 @@ mod tests {
         disk.rename("a", "b").unwrap();
         disk.remove("f").unwrap();
         assert_eq!(disk.list().unwrap(), vec!["b".to_owned()]);
-        disk.power_cut(FirstOnly);
+        disk.power_cut(Keep(vec![true, false, false]));
         assert_eq!(disk.list().unwrap(), vec!["a".to_owned(), "f".to_owned()]);
+
+        disk.create("x").unwrap();
+        disk.create("y").unwrap();
+        disk.power_cut(Keep(vec![false, true]));
+        assert_eq!(
+            disk.list().unwrap(),
+            vec!["a".to_owned(), "f".to_owned(), "y".to_owned()]
+        );
+    }
+
+    /// Injected errors: a failed read, through the cache or from the
+    /// device, returns an error and changes nothing; the read after it
+    /// works.
+    #[test]
+    fn a_failed_read_changes_nothing() {
+        let disk = disk_with(2, 5);
+        let f = disk.open("f").unwrap();
+        let before = disk.image();
+        let writes = disk.stats().writes;
+        let mut buf = [0u8; 16];
+        disk.fail_read(1, false);
+        f.read_at(0, &mut buf).unwrap();
+        assert!(f.read_device_at(0, &mut buf).is_err());
+        f.read_device_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [5u8; 16]);
+        disk.fail_read(0, false);
+        assert!(f.read_at(0, &mut buf).is_err());
+        assert_eq!(disk.image(), before);
+        assert_eq!(disk.stats().writes, writes);
     }
 
     /// Names: a rename replaces its target, and is durable only after a

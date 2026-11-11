@@ -9,8 +9,10 @@
 //!
 //! [`File::read_device_at`] is a read through a second descriptor opened
 //! with `O_DIRECT`, on Linux only. Where the file system refuses that
-//! flag (tmpfs does), and on the other systems for now, it fails as
-//! unsupported; it never falls back to a cached read.
+//! flag (tmpfs did before Linux 6.6), and on the other systems for now,
+//! it fails as unsupported; it never falls back to a cached read. A
+//! file system that accepts the flag and reads from its cache all the
+//! same cannot be told apart here (see the crate's limits).
 
 use std::cell::OnceCell;
 use std::fs;
@@ -123,9 +125,11 @@ impl Dir for FsDir {
         fs::File::open(&self.path)?.sync_all()
     }
 
+    /// Not implemented off Unix, and so an error: a silent success
+    /// would let the log count a new file's name as durable.
     #[cfg(not(unix))]
     fn sync(&self) -> io::Result<()> {
-        Ok(())
+        Err(io::ErrorKind::Unsupported.into())
     }
 }
 
