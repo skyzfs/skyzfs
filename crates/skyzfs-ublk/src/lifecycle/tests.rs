@@ -31,6 +31,11 @@ struct World {
     devices: BTreeMap<u32, DeviceInfo>,
     /// Devices that appear between the daemon's look and its add.
     late: Vec<u32>,
+    /// Devices that someone has open: deleted, they keep their number.
+    held: Vec<u32>,
+    /// A live device whose server is seen to be gone once it has been
+    /// asked for this many more times.
+    settles: Option<(u32, usize)>,
     /// The daemon is killed once this many things have happened: from
     /// then on nothing it does has an effect.
     dies_at: Option<usize>,
@@ -68,6 +73,8 @@ impl World {
             can_reissue: true,
             devices: BTreeMap::new(),
             late: Vec::new(),
+            held: Vec::new(),
+            settles: None,
             dies_at: None,
             disowned: Vec::new(),
             attachment: None,
@@ -109,6 +116,15 @@ impl Control for Fake {
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         let mut w = self.0.borrow_mut();
         w.happens(Event::Info(number))?;
+        if let Some((settling, left)) = w.settles {
+            if settling == number && left == 0 {
+                if let Some(device) = w.devices.get_mut(&number) {
+                    device.state = DeviceState::Waiting;
+                }
+            } else if settling == number {
+                w.settles = Some((settling, left - 1));
+            }
+        }
         Ok(w.devices
             .get(&number)
             .filter(|_| !w.late.contains(&number))
@@ -141,7 +157,13 @@ impl Control for Fake {
     fn delete(&mut self, number: u32) -> io::Result<()> {
         let mut w = self.0.borrow_mut();
         w.happens(Event::Delete(number))?;
-        w.devices.remove(&number);
+        if w.held.contains(&number) {
+            if let Some(device) = w.devices.get_mut(&number) {
+                device.state = DeviceState::Dead;
+            }
+        } else {
+            w.devices.remove(&number);
+        }
         Ok(())
     }
     fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
@@ -223,6 +245,7 @@ const WANTED: Wanted = Wanted {
     depth: 64,
     flags: FLAGS,
     lock_retries: 3,
+    live_retries: 5,
 };
 
 /// What an earlier instance was started with: not what `WANTED` asks.
@@ -536,26 +559,133 @@ fn a_device_that_is_not_surely_this_volumes_is_neither_taken_over_nor_replaced()
 }
 
 #[test]
-fn a_device_that_was_added_and_never_started_is_deleted_and_replaced() {
-    for with_note in [true, false] {
-        let mut world = World::new().attached(4, DeviceState::Added, EARLIER);
-        if !with_note {
-            world.notes.clear();
+fn this_volumes_device_that_was_never_started_is_deleted_and_replaced() {
+    let world = World::new().attached(4, DeviceState::Added, EARLIER);
+    let outcome = run(world, 0);
+    assert_eq!(rules(&outcome), Ok(()));
+    let ready = outcome.result.expect("serves");
+    assert!(!ready.took_over);
+    assert_eq!(ready.left, None);
+    assert_eq!(
+        outcome.world.events[3..5],
+        [Event::Info(4), Event::Delete(4)]
+    );
+    assert_eq!(outcome.world.devices.len(), 1);
+}
+
+#[test]
+fn a_device_that_was_never_started_and_has_not_this_volumes_note_is_left() {
+    // With no note it is this volume's from a kill between the add and
+    // the note, or another program's between its add and its start.
+    for note in [None, Some([0x5A; 16])] {
+        let mut world = World::new().attached(0, DeviceState::Added, EARLIER);
+        world.notes.clear();
+        if let Some(note) = note {
+            world.notes.insert(0, note);
         }
         let outcome = run(world, 0);
         assert_eq!(rules(&outcome), Ok(()));
         let ready = outcome.result.expect("serves");
-        assert!(!ready.took_over);
+        assert_eq!((ready.number, ready.took_over), (1, false));
+        assert!(matches!(ready.left, Some((0, _))), "{:?}", ready.left);
+        assert!(!outcome
+            .world
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Delete(_))));
         assert_eq!(
-            outcome.world.events[3..5],
-            [Event::Info(4), Event::Delete(4)]
+            outcome.world.devices.get(&0).map(|d| d.state),
+            Some(DeviceState::Added)
         );
-        assert_eq!(outcome.world.devices.len(), 1);
+        assert_eq!(outcome.world.notes.get(&0).copied(), note);
     }
-    // With another's note it cannot be told whose it is.
-    let mut world = World::new().attached(4, DeviceState::Added, EARLIER);
-    world.notes.insert(4, [0x5A; 16]);
-    assert_eq!(untouched(world, 0, |s| matches!(s, Stop::Error(_))), Ok(()));
+}
+
+fn settles(mutants: u32) -> Result<(), String> {
+    // The kill pin's shape: the server was killed, its lock is free,
+    // and the kernel still shows the device live for three more looks.
+    let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
+    world.settles = Some((4, 3));
+    let outcome = run(world, mutants);
+    rules(&outcome)?;
+    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+    check(ready.took_over && ready.number == 4, "taken over")?;
+    let pauses = outcome
+        .world
+        .events
+        .iter()
+        .filter(|e| **e == Event::Pause)
+        .count();
+    check(
+        pauses == 3,
+        "asked again three times, with a pause before each",
+    )
+}
+
+#[test]
+fn this_volumes_device_found_live_is_waited_for_and_then_taken_over() {
+    holds(
+        settles,
+        &[(
+            "a live device is refused at once",
+            Mutants::LIVE_REFUSED_AT_ONCE,
+        )],
+    );
+    // A failed volume waits as well, and then deletes.
+    let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
+    world.settles = Some((4, 3));
+    world.opens.push_back(OpenError::MarkedFailed);
+    let outcome = run(world, 0);
+    assert!(matches!(outcome.result, Err(Stop::Failed(_))));
+    assert!(outcome.world.devices.is_empty());
+}
+
+#[test]
+fn a_device_that_stays_live_is_refused_after_the_stated_number_of_looks() {
+    let world = World::new().attached(4, DeviceState::Live, EARLIER);
+    let outcome = run(world, 0);
+    assert_eq!(rules(&outcome), Ok(()));
+    assert_eq!(outcome.result, Err(Stop::Held));
+    let looks = outcome
+        .world
+        .events
+        .iter()
+        .filter(|e| **e == Event::Info(4))
+        .count();
+    assert_eq!(looks, 1 + WANTED.live_retries as usize);
+}
+
+#[test]
+fn a_deleted_device_that_is_still_held_keeps_its_number_and_is_never_taken_over() {
+    // The volume failed while a client held device 0: the delete
+    // returns at once and the device stays, dead.
+    let mut world = World::new().attached(0, DeviceState::Waiting, EARLIER);
+    world.held.push(0);
+    world.opens.push_back(OpenError::MarkedFailed);
+    let outcome = run(world, 0);
+    assert!(matches!(outcome.result, Err(Stop::Failed(_))));
+    assert_eq!(
+        outcome.world.devices.get(&0).map(|d| d.state),
+        Some(DeviceState::Dead)
+    );
+
+    // The failure is acknowledged and the volume served again: the dead
+    // device is not taken over, not deleted again, and its number is
+    // passed by.
+    let mut next = outcome.world;
+    next.events.clear();
+    let outcome = run(next, 0);
+    assert_eq!(rules(&outcome), Ok(()));
+    let ready = outcome.result.expect("serves");
+    assert_eq!((ready.number, ready.took_over), (1, false));
+    assert!(!outcome.world.events.iter().any(|e| matches!(
+        e,
+        Event::BeginRecovery(_) | Event::Delete(_) | Event::Add(0, _)
+    )));
+    assert_eq!(
+        outcome.world.devices.get(&0).map(|d| d.state),
+        Some(DeviceState::Dead)
+    );
 }
 
 #[test]
@@ -750,11 +880,14 @@ fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
 }
 
 /// Kill the daemon after each number of steps of a start, then start
-/// again: the second start serves, by the rules, and the volume has
-/// one device and no more.
-fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Result<(), String> {
-    let others = world().devices.len() - usize::from(took_over);
+/// again: the second start serves, by the rules. Beside the device it
+/// serves and the devices of others, at most one device is there: one
+/// that was added and never started and has no note, from a kill
+/// between the add and the note. Returns how many kills left one.
+fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Result<usize, String> {
+    let others: Vec<u32> = world().devices.keys().copied().collect();
     let steps = run(world(), 0).world.events.len();
+    let mut leaked = 0;
     for at in 0..=steps {
         let mut first = world();
         first.dies_at = Some(at);
@@ -771,12 +904,29 @@ fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Resul
             ready.took_over == took_over,
             &format!("killed after {at} steps: took over or not"),
         )?;
-        check(
-            outcome.world.devices.len() == others + 1,
-            &format!("killed after {at} steps: a device was left behind"),
-        )?;
+        let extra: Vec<u32> = outcome
+            .world
+            .devices
+            .keys()
+            .copied()
+            .filter(|n| *n != ready.number && !(took_over || others.contains(n)))
+            .collect();
+        for number in &extra {
+            let never_started =
+                outcome.world.devices.get(number).map(|d| d.state) == Some(DeviceState::Added);
+            check(
+                never_started && !outcome.world.notes.contains_key(number),
+                &format!("killed after {at} steps: device {number} was left behind"),
+            )?;
+            check(
+                ready.left.is_some_and(|(left, _)| left == *number),
+                &format!("killed after {at} steps: device {number} was left and not said"),
+            )?;
+        }
+        check(extra.len() <= 1, "more than one device was left")?;
+        leaked += extra.len();
     }
-    Ok(())
+    Ok(leaked)
 }
 
 #[test]
@@ -795,22 +945,21 @@ fn a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_dev
         }
         world
     };
-    assert_eq!(killed_anywhere(World::new, false, 0), Ok(()));
-    // A device that is added before it is recorded is left behind by a
-    // kill between the two.
-    assert!(killed_anywhere(World::new, false, Mutants::ADD_BEFORE_RECORD).is_err());
+    // The kills between the add and the note leave a device: before
+    // the disowning, and after it.
+    assert_eq!(killed_anywhere(World::new, false, 0), Ok(2));
     assert_eq!(
         killed_anywhere(
             || World::new().attached(4, DeviceState::Waiting, EARLIER),
             true,
             0
         ),
-        Ok(())
+        Ok(0)
     );
     // Another's device appears at the number just recorded, and the
     // daemon is killed before it records the next: the record names a
     // live device that is not this volume's.
-    assert_eq!(killed_anywhere(with_others, false, 0), Ok(()));
+    assert_eq!(killed_anywhere(with_others, false, 0), Ok(2));
 }
 
 #[test]

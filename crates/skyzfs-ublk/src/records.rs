@@ -43,6 +43,10 @@
 //! | 12 | 4 | zero |
 //! | 16 | 16 | the nonce |
 //!
+//! The syncs are of the record's file and of its directory only. The
+//! daemon never syncs a file system or the whole machine: such a sync
+//! does not return while any ZFS pool on the machine is suspended.
+//!
 //! # A file that is not a whole record
 //!
 //! is an error, never "no record": neither file is ever written in

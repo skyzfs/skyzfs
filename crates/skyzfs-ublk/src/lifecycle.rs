@@ -35,44 +35,70 @@
 //!    note for the device in the run directory carries the record's
 //!    nonce, and the kernel reports the recorded size, queues, depth
 //!    and flags. The new instance then follows the device's values,
-//!    whatever its own options say.
-//!    - The device is live under another server: refuse, add nothing.
-//!      (A live device whose note is missing or another's is not this
-//!      volume's device at all: see below.)
-//!    - The device was added and never started, and its note is this
-//!      volume's or missing: delete it, attach afresh.
+//!    whatever its own options say. Otherwise, for a record of this
+//!    boot whose device the kernel has:
+//!
+//!    | The device | Its note is this volume's | Its note is missing or another's |
+//!    |---|---|---|
+//!    | waits for a server | taken over; if its values are not the recorded ones, the daemon stops and leaves it | the daemon stops and leaves it: it may have this volume's client on it |
+//!    | is live | waited for, for a stated time (below); if it stays live: refused, nothing added | left; attach afresh |
+//!    | was added and never started | deleted; attach afresh | left; attach afresh under another number |
+//!    | is deleted and still held | attach afresh | attach afresh |
+//!
 //!    - The device is gone, or the record is of another boot or absent:
 //!      attach afresh.
 //!    - The note is there and cannot be read: the volume counts as
 //!      failed while a client held it; the device is left.
-//!    - Anything else under that number (a device that waits and whose
-//!      note is another's, or whose values differ from the record): it
-//!      cannot be told whose it is. The daemon stops and leaves it.
 //! 5. Attaching afresh: a number and a fresh nonce are **recorded
 //!    durably in the volume's directory before the device is added**
 //!    under that number. Numbers the kernel shows as taken are passed
 //!    over first; if the add still finds the number taken, the next
-//!    free one is recorded and tried. Once the add has succeeded the device
-//!    is **disowned at once**, so that nothing but an explicit call
-//!    deletes it, and only then is the note for the device written in
-//!    the run directory, before the device is started.
+//!    free one is recorded and tried. Once the add has succeeded the
+//!    device is **disowned at once**, so that nothing but an explicit
+//!    call deletes it, and only then is the note for the device written
+//!    in the run directory, before the device is started.
 //!
-//! A record can name a device that is not the volume's: another
-//! server's device appears under the number just recorded, the add
-//! fails, and the daemon is killed before it records the next number.
+//! # A live device is waited for
+//!
+//! A server that was killed lets go of the store's lock when its
+//! descriptors are closed, and the kernel may see the device's server
+//! as gone only a moment later. So an instance that holds the lock and
+//! finds the volume's own device live asks again, up to
+//! [`Wanted::live_retries`] times with [`Records::pause`] between,
+//! before it concludes anything. (That the device can still be live
+//! then is read from how io_uring tears down, not yet measured.)
+//!
+//! # A delete does not wait
+//!
+//! [`Control::delete`] is the kernel's asynchronous delete, and nothing
+//! here waits for the number to become free. The waiting delete returns
+//! only when the last opener has closed the device, and a suspended
+//! pool never closes it: a daemon that waited would hang on its way
+//! out, holding the store's lock. A device that was deleted and is
+//! still held keeps its number ([`DeviceState::Dead`]): it is never
+//! taken over, and an add passes its number by.
+//!
+//! # Whose device it is
+//!
 //! The note tells: it is written only after this daemon's add
-//! succeeded, and before the device is started. So a **live** device
-//! whose note is missing or another's was never this volume's, and the
-//! daemon attaches afresh and leaves it.
+//! succeeded, and before the device is started. A record alone does
+//! not: another server's device can appear under the number just
+//! recorded, and the daemon can be killed before it records the next.
 //!
-//! Readings where the design is silent, marked here and reported: a
-//! device that was added and never started is deleted when its note is
-//! missing as well as when it is this volume's (a crash between the add
-//! and the note leaves exactly that, and nothing else would clean it
-//! up; a device that was never started has no client); and a waiting
-//! device with this volume's nonce whose values differ from the record
-//! stops the daemon instead of being replaced by a second device for
-//! the same volume.
+//! - A **live** device without the record's note was never this
+//!   volume's. It is left.
+//! - A device that was **added and never started**, without the
+//!   record's note, is this volume's from a kill between the add and
+//!   the note, or another program's that is between its own add and
+//!   start. It cannot be told, so it is left, and the daemon attaches
+//!   under another number and says which number it left and why
+//!   ([`Ready::left`]). A device that was never started has never had a
+//!   client, so this cannot give the volume two devices. The cost is
+//!   one leaked number for a kill in a window of milliseconds, until an
+//!   operator deletes it or the machine reboots.
+//! - A device that **waits for a server** without the record's note may
+//!   still have this volume's client on it (if the run directory was
+//!   emptied). The daemon stops and leaves it.
 
 use std::io;
 
@@ -98,6 +124,10 @@ pub enum DeviceState {
     Live,
     /// Its server is gone and it waits for another.
     Waiting,
+    /// Deleted, and still held by whoever has it open: it has no disk
+    /// and no server, and keeps its number until the last opener closes
+    /// it.
+    Dead,
 }
 
 /// A device as the kernel reports it.
@@ -130,7 +160,9 @@ pub trait Control {
     /// Give up ownership of a device this instance added, so that it is
     /// deleted only by [`Control::delete`].
     fn disown(&mut self, number: u32);
-    /// Delete a device.
+    /// Delete a device, without waiting: the kernel's asynchronous
+    /// delete. A device that is still held keeps its number, as
+    /// [`DeviceState::Dead`].
     fn delete(&mut self, number: u32) -> io::Result<()>;
     /// Begin the recovery of a device that waits for a server.
     fn begin_recovery(&mut self, number: u32) -> io::Result<()>;
@@ -217,6 +249,10 @@ pub struct Ready<S> {
     /// Whether the device was taken over from an earlier instance. If
     /// not, it was added and is to be given its parameters and started.
     pub took_over: bool,
+    /// A device under the number the volume's record named that was
+    /// left alone because it could not be shown to be this volume's,
+    /// and why: for the daemon's log.
+    pub left: Option<(u32, &'static str)>,
 }
 
 /// The daemon does not serve.
@@ -247,6 +283,9 @@ pub struct Wanted {
     pub flags: u64,
     /// How often a locked store is tried again.
     pub lock_retries: u32,
+    /// How often the volume's own device is asked for again while it is
+    /// live.
+    pub live_retries: u32,
 }
 
 /// Defects, for the tests that show each rule is tested.
@@ -277,6 +316,8 @@ impl Mutants {
     pub(crate) const SYNC_ERROR_MAY_PASS: u32 = 1 << 9;
     /// A kernel that cannot reissue is served all the same.
     pub(crate) const NO_FEATURE_CHECK: u32 = 1 << 10;
+    /// The volume's own device, found live, is refused at once.
+    pub(crate) const LIVE_REFUSED_AT_ONCE: u32 = 1 << 11;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -292,9 +333,14 @@ fn error<E: std::fmt::Display>(during: &'static str) -> impl Fn(E) -> Stop {
 enum Found {
     /// Take this device over.
     TakeOver(u32, Shape),
-    /// Attach afresh. A device that was added and never started is
-    /// deleted first.
-    Afresh(Option<u32>),
+    /// Attach afresh.
+    Afresh {
+        /// This volume's device that was added and never started: it is
+        /// deleted first.
+        stale: Option<u32>,
+        /// A device that is left alone, and why.
+        left: Option<(u32, &'static str)>,
+    },
 }
 
 /// Run the start: see the [module documentation](self).
@@ -323,24 +369,24 @@ pub(crate) fn start_with<C: Control, R: Records, V: Volume>(
     if mutants.has(Mutants::DEVICE_BEFORE_STORE) {
         // The defect: the device first.
         let found = find(control, records, wanted, mutants)?;
-        let (number, shape, took_over) = attach(control, records, found, 0, wanted, mutants)?;
+        let attached = attach(control, records, found, 0, wanted, mutants)?;
         let (store, _) = open(control, records, volume, wanted, mutants)?;
-        return Ok(Ready {
-            store,
-            number,
-            shape,
-            took_over,
-        });
+        return Ok(ready(store, attached));
     }
     let (store, size) = open(control, records, volume, wanted, mutants)?;
     let found = find(control, records, wanted, mutants)?;
-    let (number, shape, took_over) = attach(control, records, found, size, wanted, mutants)?;
-    Ok(Ready {
+    let attached = attach(control, records, found, size, wanted, mutants)?;
+    Ok(ready(store, attached))
+}
+
+fn ready<S>(store: S, attached: Attached) -> Ready<S> {
+    Ready {
         store,
-        number,
-        shape,
-        took_over,
-    })
+        number: attached.number,
+        shape: attached.shape,
+        took_over: attached.took_over,
+        left: attached.left,
+    }
 }
 
 /// Step 2 and 3: the record of what was acknowledged, then the store.
@@ -357,6 +403,7 @@ fn open<C: Control, R: Records, V: Volume>(
             return Err(failed(
                 control,
                 records,
+                wanted,
                 "the record of what was acknowledged cannot be read",
             ))
         }
@@ -380,25 +427,59 @@ fn open<C: Control, R: Records, V: Volume>(
             Err(OpenError::Short) => "the log is shorter than what was acknowledged",
             Err(OpenError::MarkedFailed) => "the volume is marked as failed",
         };
-        return Err(failed(control, records, why));
+        return Err(failed(control, records, wanted, why));
     }
 }
 
+/// The device `number`, once it is no longer live, or still live after
+/// the stated time. A server that was killed has let go of the store's
+/// lock before the kernel has seen all of it go, so the next instance
+/// can hold the lock and still find the device live for a moment.
+fn settled<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    mut info: Option<DeviceInfo>,
+    wanted: &Wanted,
+    mutants: Mutants,
+) -> io::Result<Option<DeviceInfo>> {
+    if mutants.has(Mutants::LIVE_REFUSED_AT_ONCE) {
+        return Ok(info);
+    }
+    for _ in 0..wanted.live_retries {
+        if !info.is_some_and(|i| i.state == DeviceState::Live) {
+            break;
+        }
+        records.pause();
+        info = control.info(number)?;
+    }
+    Ok(info)
+}
+
 /// The volume has failed: a device of it that waits for a server is
-/// deleted, never taken over.
-fn failed<C: Control, R: Records>(control: &mut C, records: &mut R, why: &'static str) -> Stop {
+/// deleted, never taken over. The delete does not wait: a device that
+/// a client still holds keeps its number, deleted.
+fn failed<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    wanted: &Wanted,
+    why: &'static str,
+) -> Stop {
     if let Ok(Some(attachment)) = records.attachment() {
         let ours = attachment.boot == records.boot()
             && matches!(records.note(attachment.number), Ok(Some(nonce)) if nonce == attachment.nonce);
-        let waiting = matches!(
-            control.info(attachment.number),
-            Ok(Some(DeviceInfo {
+        if ours {
+            let number = attachment.number;
+            let info = control.info(number).and_then(|info| {
+                settled(control, records, number, info, wanted, Mutants::default())
+            });
+            if let Ok(Some(DeviceInfo {
                 state: DeviceState::Waiting | DeviceState::Added,
                 ..
-            }))
-        );
-        if ours && waiting {
-            let _ = control.delete(attachment.number);
+            })) = info
+            {
+                let _ = control.delete(attachment.number);
+            }
         }
     }
     Stop::Failed(why)
@@ -408,21 +489,25 @@ fn failed<C: Control, R: Records>(control: &mut C, records: &mut R, why: &'stati
 fn find<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
-    _wanted: &Wanted,
+    wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<Found, Stop> {
+    let afresh = Found::Afresh {
+        stale: None,
+        left: None,
+    };
     let attachment = records
         .attachment()
         .map_err(error("reading the attachment record"))?;
     let Some(attachment) = attachment.filter(|a| a.boot == records.boot()) else {
-        return Ok(Found::Afresh(None));
+        return Ok(afresh);
     };
     let number = attachment.number;
     let info = control
         .info(number)
         .map_err(error("asking for the device"))?;
     let Some(info) = info else {
-        return Ok(Found::Afresh(None));
+        return Ok(afresh);
     };
     // A note that is there and cannot be read cannot say whose the
     // device is: the volume counts as failed while held, and the device
@@ -432,24 +517,69 @@ fn find<C: Control, R: Records>(
             "the note for the volume's device cannot be read",
         ));
     };
-    let noted = note == Some(attachment.nonce);
+    if note != Some(attachment.nonce) {
+        let left = |why| {
+            Ok(Found::Afresh {
+                stale: None,
+                left: Some((number, why)),
+            })
+        };
+        return match info.state {
+            DeviceState::Waiting if mutants.has(Mutants::ANY_NONCE) => {
+                Ok(Found::TakeOver(number, info.shape))
+            }
+            // It may have this volume's client on it.
+            DeviceState::Waiting => Err(Stop::Error(format!(
+                "device {number} is recorded for this volume and waits for a server, and its \
+                 note is not this volume's: it is left as it is"
+            ))),
+            // The note is written before a device is started: this one
+            // was never this volume's.
+            DeviceState::Live => left("it is live and its note is not this volume's"),
+            // This volume's, from a kill between the add and the note,
+            // or another's that is being set up: it cannot be told, and
+            // a device that was never started has no client.
+            DeviceState::Added => {
+                left("it was added and never started, and its note is not this volume's")
+            }
+            DeviceState::Dead => Ok(afresh),
+        };
+    }
+    let info = if mutants.has(Mutants::TAKE_LIVE) {
+        Some(info)
+    } else {
+        settled(control, records, number, Some(info), wanted, mutants)
+            .map_err(error("asking for the device"))?
+    };
+    let Some(info) = info else {
+        return Ok(afresh);
+    };
     let recorded = info.shape == attachment.shape || mutants.has(Mutants::ANY_SHAPE);
     match info.state {
-        // A live device without this record's note was never this
-        // volume's: the note is written before a device is started.
-        DeviceState::Live if !noted => Ok(Found::Afresh(None)),
         DeviceState::Live if !mutants.has(Mutants::TAKE_LIVE) => Err(Stop::Held),
-        DeviceState::Live | DeviceState::Waiting
-            if (noted || mutants.has(Mutants::ANY_NONCE)) && recorded =>
-        {
+        DeviceState::Live | DeviceState::Waiting if recorded => {
             Ok(Found::TakeOver(number, info.shape))
         }
-        DeviceState::Added if noted || note.is_none() => Ok(Found::Afresh(Some(number))),
-        _ => Err(Stop::Error(format!(
-            "device {number} is recorded for this volume, and its note or its values are not: \
-             it is left as it is"
+        DeviceState::Live | DeviceState::Waiting => Err(Stop::Error(format!(
+            "device {number} is this volume's, and its values are not the recorded ones: it is \
+             left as it is"
         ))),
+        DeviceState::Added => Ok(Found::Afresh {
+            stale: Some(number),
+            left: None,
+        }),
+        // Deleted, and still held by whoever had it open: gone, as far
+        // as a server is concerned.
+        DeviceState::Dead => Ok(afresh),
     }
+}
+
+/// What step 5 gives.
+struct Attached {
+    number: u32,
+    shape: Shape,
+    took_over: bool,
+    left: Option<(u32, &'static str)>,
 }
 
 /// Step 4's end and step 5: take over, or add.
@@ -460,8 +590,8 @@ fn attach<C: Control, R: Records>(
     size: u64,
     wanted: &Wanted,
     mutants: Mutants,
-) -> Result<(u32, Shape, bool), Stop> {
-    let stale = match found {
+) -> Result<Attached, Stop> {
+    let (stale, left) = match found {
         Found::TakeOver(number, shape) => {
             control
                 .begin_recovery(number)
@@ -475,9 +605,14 @@ fn attach<C: Control, R: Records>(
             } else {
                 shape
             };
-            return Ok((number, shape, true));
+            return Ok(Attached {
+                number,
+                shape,
+                took_over: true,
+                left: None,
+            });
         }
-        Found::Afresh(stale) => stale,
+        Found::Afresh { stale, left } => (stale, left),
     };
     if let Some(number) = stale {
         control
@@ -502,7 +637,8 @@ fn attach<C: Control, R: Records>(
         // A number that is seen to be taken is not recorded: a record
         // names another's device only if that device appeared between
         // this look and the add, and the daemon was killed before it
-        // recorded the next number.
+        // recorded the next number. A deleted device that is still held
+        // keeps its number, and is passed over here like any other.
         let seen = control.info(number).map_err(error("asking for a device"))?;
         if seen.is_some() {
             continue;
@@ -532,7 +668,12 @@ fn attach<C: Control, R: Records>(
         records
             .write_note(number, &nonce)
             .map_err(error("writing the device's note"))?;
-        return Ok((number, shape, false));
+        return Ok(Attached {
+            number,
+            shape,
+            took_over: false,
+            left,
+        });
     }
     Err(Stop::Error("every device number is taken".into()))
 }
