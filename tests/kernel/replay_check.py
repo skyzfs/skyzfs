@@ -65,6 +65,7 @@ except ImportError:          # the checksum then runs in plain Python, slowly
     np = None
 
 WINDOW = 50
+ZEC_MAGIC = 0x210da7ab10c7a11   # starts the embedded checksum of an intent-log block's header, 144 bytes in
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -237,11 +238,26 @@ def data_writes(records, lo, hi):
     return [i for i in range(lo, hi) if 'pos' in records[i] and not records[i].get('label')]
 
 
-def controls(records, marks, find=None):
+def intent_log_writes(log_path, records, lo, hi):
+    """Numbers of the write records in [lo, hi) whose data starts as an intent-log block does."""
+    magic = struct.pack('<Q', ZEC_MAGIC)
+    hits = []
+    with open(log_path, 'rb') as f:
+        for r in records[lo:hi]:
+            if 'pos' in r and r['bytes'] >= 152:
+                f.seek(r['pos'] + 144)
+                if f.read(8) == magic:
+                    hits.append(r['i'])
+    return hits
+
+
+def controls(records, marks, find=None, intent=None):
     """The wrong replays -> list of dicts with a schedule and the prefixes to check.
 
     `find(file number)` gives the write records that carry the first
     block of that file; without it the `data` control is not built.
+    `intent(lo, hi)` gives the intent-log writes among records lo..hi-1;
+    without it, or without one that fits, the `intent` control is not.
 
     Fixed rule, on the transaction group of the middle mark:
       A      the last flush before that group's first uberblock write
@@ -256,6 +272,11 @@ def controls(records, marks, find=None):
              out for good. A file's block has one copy, and the file is
              due from the mark on: this is the control that says what
              the light check catches by itself. Checked as `drop` is.
+      intent the first intent-log write of the group that is followed by
+             a file's fsync mark before any uberblock write is left out
+             for good. At that mark only the intent log holds the file,
+             so this is the control that says whether the fsync check
+             works. Checked as `drop` is.
     """
     if len(marks) < 4:
         return []
@@ -304,6 +325,21 @@ def controls(records, marks, find=None):
         out.append({'name': 'data', 'victim': victim, 'schedule': sched, 'points': sorted(p for p in pts if p >= victim),
                     'what': f'record {victim} (a write of {records[victim]["bytes"]} bytes at byte {records[victim]["offset"]}, '
                             f'the last one before the middle mark that carries the first block of file f.{wanted}) is never applied'})
+
+    for w in (intent(lo, hi) if intent else []):
+        mark = next((i for i in range(w + 1, end) if records[i].get('mark', '').startswith('fsync-')), None)
+        if mark is None or any(records[i].get('ub') for i in range(w + 1, mark)):
+            continue
+        sched = [i for i in natural if i != w]
+        pts = set(range(w, min(mark + 3, end)))          # up to and past the fsync mark that depends on it
+        pts.update(n for n in range(w, end) if 'flush' in records[sched[n - 1]]['flags'])
+        pts.update(spread(range(w, end), 40))
+        pts.add(end - 1)
+        out.append({'name': 'intent', 'victim': w, 'schedule': sched, 'points': sorted(p for p in pts if p >= w),
+                    'what': f'record {w} (a write of {records[w]["bytes"]} bytes at byte {records[w]["offset"]}, the first '
+                            f'intent-log write of the group that is followed by a file\'s fsync mark, record {mark}, before any '
+                            f'uberblock write) is never applied'})
+        break
     return out
 
 
@@ -318,6 +354,7 @@ def controls(records, marks, find=None):
 #                 checksums in the light check), 'fsync' (the fsynced
 #                 files after the intent log is replayed), 'deep' (the
 #                 scrub)
+#       'either'  not judged, with the reason under 'why'
 #       None      not caught. Strict in both directions: once a check
 #                 catches it, the job fails until this table is changed
 #                 on purpose. With 'gap' it is a hole in the rig, stated
@@ -328,21 +365,28 @@ def controls(records, marks, find=None):
 # its victim is one copy of several of pool metadata, which the import
 # and the scrub do not miss. `drop` of an intent-log block was not
 # caught until the fsync check existed.
+INTENT_BY_CHANCE = ('whether losing it matters depends on whether a transaction group took the file before its fsync '
+                    'returned, which the log alone does not say; the `intent` control picks an intent-log block that the '
+                    'promise does depend on, and that one is judged')
 EXPECTED = {
     'drop': {
         'block': {'by': 'any'},
         # Only where the intent log is on the device under test.
-        'intent-log block': {'by': 'fsync'},
+        'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
         'superseded': {'by': None,
                        'harmless': 'the same place is written again, whole, before the next uberblock: no uberblock ever '
                                    'reaches the dropped version, and from the rewrite on the image is the true one'},
     },
     'reorder': {
         'block': {'by': 'copies'},
-        'intent-log block': {'by': 'fsync'},
+        'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
     },
     'data': {
         'block': {'by': 'verify'},
+    },
+    # Built only where the intent log is on the device under test.
+    'intent': {
+        'intent-log block': {'by': 'fsync'},
     },
 }
 CHECK_NAMES = {'deep': 'the scrub', 'copies': 'the every-copy check', 'verify': "the files' checksums",
@@ -593,12 +637,16 @@ def manifest_trouble(marks, n_files):
     return None
 
 
-def judge_controls(ctl, expected=None):
-    """Compare the controls' results with the table -> (rows, gaps, all as expected)."""
+def judge_controls(ctl, expected=None, absent=()):
+    """Compare the controls' results with the table -> (rows, gaps, all as expected).
+
+    `absent` names controls that cannot be built in this layout; any
+    other control of the table that did not run fails the job.
+    """
     expected = EXPECTED if expected is None else expected
     seen = {c['name']: c for c in ctl}
     rows, gaps, ok = [], [], True
-    for name in sorted(set(expected) | set(seen)):
+    for name in sorted((set(expected) - set(absent)) | set(seen)):
         c = seen.get(name)
         cls = c.get('class', 'block') if c else None
         want = expected.get(name, {}).get(cls) if c else None
@@ -620,11 +668,13 @@ def judge_controls(ctl, expected=None):
             exp, match = 'not caught', got == 'not caught'
         elif want['by'] == 'any':
             exp, match = 'caught', clean
+        elif want['by'] == 'either':
+            exp, match = 'either: not judged', not c.get('rig_errors')
         else:
             exp, match = 'caught, and by ' + CHECK_NAMES[want['by']], clean and want['by'] in c['failed_by']
         ok = ok and match
         rows.append({'name': name, 'class': cls, 'expected': exp, 'observed': got, 'match': match,
-                     'note': (want or {}).get('harmless', '') if match else ''})
+                     'note': (want or {}).get('harmless', '') or (want or {}).get('why', '') if match else ''})
         if want and want.get('gap') and match:
             gaps.append({'name': name, 'gap': want['gap']})
     return rows, gaps, ok
@@ -656,9 +706,6 @@ def blocks_at(bps, lo, hi):
                 out.append({'copy': k, 'of': len(bp['dvas']), 'type': bp['type'], 'level': bp['level'],
                             'objset': int(obj.group(1)) if obj else None, 'object': int(obj.group(2)) if obj else None})
     return out
-
-
-ZEC_MAGIC = 0x210da7ab10c7a11
 
 
 def victim_facts(log_path, records, victim, base_path=None):
@@ -1136,13 +1183,18 @@ def main():
     points, failures = list(cal), [r for r in cal if not r['ok']]
     start = time.monotonic()
     skipped = 0
+    extra = 0.0                         # seconds spent in scrubs, fsync checks and every-copy checks
+    required = deep | copies_at         # these carry a check that a coverage floor asks for
     for j, n in enumerate(sorted(kind)):
-        over = time.monotonic() - start - args.deep_budget_s
-        # Out of time: random prefixes go first, flush boundaries never.
-        if kind[n] == 'random' and over > args.budget_s or kind[n] == 'ub_window' and over > args.budget_s * 1.25:
+        over = time.monotonic() - start - extra
+        # Out of time for light checks: random prefixes go first; a
+        # flush boundary and a prefix that carries a required check never.
+        if n not in required and (kind[n] == 'random' and over > args.budget_s
+                                  or kind[n] == 'ub_window' and over > args.budget_s * 1.25):
             skipped += 1
             continue
         r = rig.point(n, files_at(marks, n), n in deep, n in copies_at, due(n))
+        extra += r.get('t_deep', 0) + r.get('t_copies', 0)
         r['kind'] = kind[n]
         points.append(r)
         if not r['ok']:
@@ -1210,7 +1262,10 @@ def main():
     def find(n):
         return [] if args.provider else writes_carrying(args.log, records, file_pattern(n))
 
-    for c in controls(records, marks, find):
+    def intent(lo, hi):
+        return intent_log_writes(args.log, records, lo, hi) if fmarks and not args.provider else []
+
+    for c in controls(records, marks, find, intent):
         rig.reset(c['schedule'])
         # The transaction-group points of the wrong replay itself, inside the range the control checks.
         lo, hi = c['points'][0], c['points'][-1]
@@ -1243,7 +1298,7 @@ def main():
               + (f"; THE RIG FAILED at {len(rig_errors)} prefixes, first: {rig_errors[0]['failed']}" if rig_errors else ''),
               flush=True)
     res['controls'] = ctl
-    res['control_rows'], res['gaps'], controls_ok = judge_controls(ctl)
+    res['control_rows'], res['gaps'], controls_ok = judge_controls(ctl, absent=() if fmarks else ('intent',))
     for g in res['gaps']:
         print(f"::warning title=replay rig, known gap::control {g['name']} is not caught: {g['gap']}", flush=True)
     for r in res['control_rows']:

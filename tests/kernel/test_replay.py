@@ -274,7 +274,7 @@ class Log(unittest.TestCase):
         drop = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 2}}
         reorder = {'name': 'reorder', 'caught': True, 'failed_by': {'copies': 1}}
         data = {'name': 'data', 'caught': True, 'failed_by': {'verify': 30, 'copies': 2}}
-        rows, gaps, ok = replay_check.judge_controls([drop, reorder, data])
+        rows, gaps, ok = replay_check.judge_controls([drop, reorder, data], absent=('intent',))
         self.assertTrue(ok, rows)
         self.assertEqual(gaps, [])
         self.assertEqual(rows[2]['observed'], 'caught by the every-copy check')
@@ -283,7 +283,7 @@ class Log(unittest.TestCase):
             ctl = {c['name']: dict(c) for c in (drop, reorder, data)}
             for name, c in changed.items():
                 ctl[name].update(c)
-            return replay_check.judge_controls(list(ctl.values()))[2]
+            return replay_check.judge_controls(list(ctl.values()), absent=('intent',))[2]
         # a control that is no longer caught
         for name in ('drop', 'reorder', 'data'):
             self.assertFalse(judged(**{name: {'caught': False, 'failed_by': {}}}), name)
@@ -311,12 +311,22 @@ class Log(unittest.TestCase):
 
         def judged(**drop):
             c = dict({'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}, **drop)
-            rows, _, ok = replay_check.judge_controls([c, reorder, data])
+            rows, _, ok = replay_check.judge_controls([c, reorder, data], absent=('intent',))
             return ok, rows[1]
-        # an intent-log block must be caught by the fsync check, not by luck elsewhere
-        self.assertTrue(judged(**{'class': 'intent-log block', 'failed_by': {'fsync': 2}})[0])
-        self.assertFalse(judged(**{'class': 'intent-log block', 'failed_by': {'deep': 1}})[0])
-        self.assertFalse(judged(**{'class': 'intent-log block', 'caught': False, 'failed_by': {}})[0])
+        # when drop happens to pick an intent-log block it is not judged, either way, and the reason is given
+        for c in ({'failed_by': {'fsync': 2}}, {'caught': False, 'failed_by': {}}):
+            ok, row = judged(**dict(c, **{'class': 'intent-log block'}))
+            self.assertTrue(ok)
+            self.assertIn('the `intent` control', row['note'])
+        self.assertFalse(judged(**{'class': 'intent-log block', 'rig_errors': [{'n': 1, 'failed': 'export'}]})[0])
+        # the intent control is the one that is judged: by the fsync check, and it must run where it can be built
+        intent = {'name': 'intent', 'class': 'intent-log block', 'caught': True, 'failed_by': {'fsync': 1}}
+        base = [{'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}, reorder, data]
+        self.assertTrue(replay_check.judge_controls(base + [intent])[2])
+        self.assertFalse(replay_check.judge_controls(base + [dict(intent, failed_by={'deep': 1})])[2])
+        self.assertFalse(replay_check.judge_controls(base + [dict(intent, caught=False, failed_by={})])[2])
+        self.assertFalse(replay_check.judge_controls(base)[2])                          # not run where it should
+        self.assertTrue(replay_check.judge_controls(base, absent=('intent',))[2])       # the layout has no such block
         # a superseded write harms nothing: expected not to be caught, strictly, and the reason is given
         ok, row = judged(**{'class': 'superseded', 'caught': False, 'failed_by': {}})
         self.assertTrue(ok)
@@ -327,7 +337,41 @@ class Log(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn('does not name', row['expected'])
         c = dict(data, **{'class': 'intent-log block'})
-        self.assertFalse(replay_check.judge_controls([dict(reorder), c, {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}])[2])
+        self.assertFalse(replay_check.judge_controls([dict(reorder), c, {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}],
+                                                     absent=('intent',))[2])
+
+    def test_the_intent_control_takes_a_block_the_fsync_depends_on(self):
+        def zil(k):
+            b = bytearray(blk(0x50 + k))
+            b[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+            return bytes(b)
+        ents = []
+        for k in range(1, 7):
+            # one intent-log write whose fsync mark comes only after the group's uberblocks, then one that fits
+            ents += [('write', (5 << 20) + k * 16 * SS, zil(k)), ('flush',)]
+            ents += [e for e in txg(k) if e[0] != 'mark']
+            ents += [('mark', f'fsync-{2 * k - 2}'), ('write', (6 << 20) + k * 16 * SS, zil(k)), ('flush',),
+                     ('mark', f'fsync-{2 * k - 1}'), ('mark', f'sync-{k}-{2 * k - 2}')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        marks = replay_check.parse_marks(recs)
+        m = len(marks) // 2
+        lo, hi = marks[m - 1][0], marks[m][0] - 1
+        found = replay_check.intent_log_writes(self.log, recs, lo, hi)
+        self.assertEqual(len(found), 2)
+        ctl = {c['name']: c for c in replay_check.controls(recs, marks, None,
+                                                            lambda a, b: replay_check.intent_log_writes(self.log, recs, a, b))}
+        c = ctl['intent']
+        self.assertEqual(c['victim'], found[1])           # not the first: uberblocks stand between it and its mark
+        mark = next(i for i in range(c['victim'] + 1, len(recs)) if recs[i].get('mark', '').startswith('fsync-'))
+        self.assertFalse(any(recs[i].get('ub') for i in range(c['victim'], mark)))
+        self.assertEqual(sorted(c['schedule']), [i for i in range(len(recs)) if i != c['victim']])
+        # the prefix that ends with that mark, in the wrong replay's own numbering, is among the points
+        self.assertIn(c['schedule'].index(mark) + 1, c['points'])
+        self.assertEqual(replay_check.victim_class(recs, c['victim'], replay_check.victim_facts(self.log, recs, c['victim'])),
+                         'intent-log block')
+        # no intent-log writes, no such control
+        self.assertNotIn('intent', {x['name'] for x in replay_check.controls(recs, marks, None, lambda a, b: [])})
 
     def test_victim_class(self):
         ents = [('write', 1 << 20, blk(1)),              # 0  rewritten whole before the next uberblock
