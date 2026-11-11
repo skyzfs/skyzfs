@@ -222,17 +222,19 @@ impl File for FsFile {
         // alignment: allocate one block more and start at the first
         // aligned byte.
         const CHUNK: usize = 1 << 20;
-        let mut backing = vec![0u8; CHUNK + DIRECT_ALIGN];
-        let skew = backing.as_ptr().align_offset(DIRECT_ALIGN);
-        let bounce = &mut backing[skew..skew + CHUNK];
         let align = DIRECT_ALIGN as u64;
         let end = offset
             .checked_add(buf.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let whole = (end.div_ceil(align) * align - offset / align * align) as usize;
+        let chunk = whole.min(CHUNK);
+        let mut backing = vec![0u8; chunk + DIRECT_ALIGN];
+        let skew = backing.as_ptr().align_offset(DIRECT_ALIGN);
+        let bounce = &mut backing[skew..skew + chunk];
         let mut at = offset;
         while at < end {
             let from = at / align * align;
-            let want = ((end - from).div_ceil(align) * align).min(CHUNK as u64) as usize;
+            let want = ((end - from).div_ceil(align) * align).min(chunk as u64) as usize;
             let got = read_some_at(direct, &mut bounce[..want], from)?;
             let skip = (at - from) as usize;
             let n = ((end - at) as usize).min(want - skip);
