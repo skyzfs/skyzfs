@@ -781,13 +781,6 @@ check_b() {
         fi
     fi
 
-    step "b, control: a recovered log that is too short"
-    if [ "$IMPL" = reference ]; then
-        ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
-    else
-        check_b_short
-    fi
-
     step "b, control: recovery without reissue"
     SKZ_REF_REISSUE=0 kill_test "$REF" b0 5
     kill_verdict; v=$KT_VERDICT
@@ -1274,6 +1267,20 @@ case $CHECKS in *" c "*) check_c ;; esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.
 case $CHECKS in *" d "*) check_d ;; esac
+# Check b's control of a recovered log that is too short, after
+# everything else: on the daemon it suspends a pool on purpose with a
+# writer on it, and nothing can take that pool or its blocked tasks
+# away again. Run in its place among check b's steps it left them
+# beside checks c and e, whose kernel log then held reports of tasks
+# blocked for longer than the checks themselves.
+case $CHECKS in *" b "*)
+    step "b, control: a recovered log that is too short"
+    if [ "$IMPL" = reference ]; then
+        ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
+    else
+        check_b_short
+    fi ;;
+esac
 
 step "done"
 # What the reference server's tool leaves under its own run directory:
