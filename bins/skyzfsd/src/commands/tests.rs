@@ -127,6 +127,18 @@ impl Setup {
         self
     }
 
+    /// A status file's content for this volume: [`sample`] with the
+    /// store's identity.
+    fn sample(&self) -> Status {
+        let dir = FsDir::new(&self.volume.dir).expect("the directory");
+        Status {
+            identity: Store::identity_of(&dir)
+                .expect("read")
+                .expect("a superblock"),
+            ..sample()
+        }
+    }
+
     fn status_path(&self) -> PathBuf {
         self.records().volume_run_dir().join(status::STATUS)
     }
@@ -212,7 +224,7 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
     // Served: the rig's keys, each a line of its own, with the value
     // behind one blank.
     let mut setup = Setup::new().attached(DeviceState::Live);
-    status::write(&setup.status_path(), &sample()).expect("the status file");
+    status::write(&setup.status_path(), &setup.sample()).expect("the status file");
     let output = setup.status();
     assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
     for (key, wanted) in [
@@ -238,7 +250,7 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
     // The server is gone: no pid to kill, and the counters are said to
     // be left behind.
     let mut setup = Setup::new().attached(DeviceState::Waiting);
-    status::write(&setup.status_path(), &sample()).expect("the status file");
+    status::write(&setup.status_path(), &setup.sample()).expect("the status file");
     let output = setup.status();
     assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
     assert_eq!(value(&output.out, "pid"), None);
@@ -864,4 +876,34 @@ fn status_and_detach_do_not_open_the_driver_when_nothing_is_attached_in_this_boo
     let output = status(&setup.volume, &mut there, &now);
     assert_eq!(output.exit, Exit::Done, "{}", output.err);
     assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
+}
+
+/// A status file left in the run directory by a volume that was in the
+/// same directory before (made again since) is not this volume's: its
+/// counters are not shown, and nothing is wrong. The file of this
+/// volume is shown.
+#[test]
+fn status_does_not_show_the_status_file_of_another_volume_in_the_same_directory() {
+    let mut setup = Setup::new().attached(DeviceState::Waiting);
+    let own = setup.sample();
+    assert_ne!(own.identity, sample().identity);
+    // The store's identity is what an open store says it is.
+    let (store, _) = Store::open(
+        FsDir::new(&setup.volume.dir).expect("dir"),
+        OpenOptions::default(),
+    )
+    .expect("open");
+    assert_eq!(store.identity(), own.identity);
+    drop(store);
+
+    status::write(&setup.status_path(), &sample()).expect("the status file");
+    let output = setup.status();
+    assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
+    assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
+    assert_eq!(value(&output.out, "reads"), None, "{}", output.out);
+    assert_eq!(value(&output.out, "writes"), None);
+
+    status::write(&setup.status_path(), &own).expect("the status file");
+    let output = setup.status();
+    assert_eq!(value(&output.out, "reads"), Some("5"));
 }

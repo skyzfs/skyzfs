@@ -1435,6 +1435,19 @@ impl<D: Dir> Store<D> {
         self.core.identity()
     }
 
+    /// The identity ([`Store::identity`]) of the store in `dir`, read
+    /// from the log's superblock without opening the store: no lock is
+    /// taken, nothing is recovered and nothing is written. For whoever
+    /// must tell which store a directory holds while a daemon may be
+    /// serving it. `None` if the directory holds no store or neither
+    /// superblock copy can be read as one.
+    ///
+    /// A store's key never changes, so either valid copy gives the
+    /// same answer, also while the serving instance rewrites one.
+    pub fn identity_of(dir: &D) -> io::Result<Option<[u8; 16]>> {
+        Ok(crate::log::key_of(dir)?.map(|key| crate::format::store_identity(&key)))
+    }
+
     /// How many operations this open found in the log beyond the
     /// position it was told was acknowledged
     /// ([`OpenOptions::must_reach`]): writes, write-zeroes and discards

@@ -40,6 +40,30 @@ pub fn stranger(names: &[String]) -> Option<&str> {
         .find(|name| name.starts_with("log.") && !CREATE_LEFTOVERS.contains(name))
 }
 
+/// The key in the superblock of the log in `dir`, read without opening
+/// the log: nothing is locked, recovered or written. `None` if there
+/// is no superblock file or neither copy in it is valid. The key is
+/// the same in both copies for the whole life of a log.
+pub(crate) fn key_of<D: Dir>(dir: &D) -> io::Result<Option<Key>> {
+    let superblock = match dir.open(SUPER_NAME) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    for copy in 0..2u64 {
+        let mut raw = [0u8; SECTOR_LEN];
+        match superblock.read_at(copy * SUPER_COPY_STRIDE, &mut raw) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => continue,
+            Err(e) => return Err(e),
+        }
+        if let Ok(block) = Superblock::decode(&raw) {
+            return Ok(Some(block.key));
+        }
+    }
+    Ok(None)
+}
+
 /// The name of the `index`-th segment file. The name says nothing about
 /// which part of the log the file holds; its header does.
 pub fn slot_name(index: usize) -> String {

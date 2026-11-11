@@ -217,6 +217,25 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
             None
         }
     };
+    // The run directory is named after the volume's directory, so a
+    // volume that was in this directory before and was made again
+    // leaves its status file where this one's would be. Counters are
+    // shown only from a file that names this store. The store is not
+    // opened for that: its identity is read from the superblock.
+    let file = match file {
+        None => None,
+        Some(file) => match FsDir::new(&volume.dir).and_then(|dir| Store::identity_of(&dir)) {
+            Ok(Some(identity)) if identity == file.identity => Some(file),
+            Ok(_) => None,
+            Err(e) => {
+                err = format!(
+                    "skyzfsd: the volume's identity cannot be read ({e}): the status file \
+                     is not shown\n"
+                );
+                None
+            }
+        },
+    };
     let noted = match records::read_failure(&records.failure_path()) {
         Ok(None) => Noted::Nothing,
         Ok(Some(stored)) => Noted::Whole(stored),
