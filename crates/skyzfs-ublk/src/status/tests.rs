@@ -539,3 +539,33 @@ fn the_first_write_is_tried_before_the_waiter_goes_on_also_when_it_fails() {
         assert_eq!(failures > 0, fails);
     }
 }
+
+/// Waiting for the first write posts nothing: counters the queue's
+/// thread has put up before the start is over are the ones that are
+/// written, then and at the end, and are not replaced by zeros.
+#[test]
+fn waiting_for_the_first_write_leaves_the_posted_counters_as_they_are() {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, seen) = (board.clone(), seen.clone());
+        std::thread::spawn(move || {
+            board.publish(Pace::new(10), |counters, _| {
+                seen.lock().expect("lock").push(*counters);
+                Ok(())
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    // No request follows: the queue's thread posts nothing more.
+    std::thread::sleep(Duration::from_millis(100));
+    board.stop();
+    thread.join().expect("the publishing thread");
+    let seen = seen.lock().expect("lock");
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|written| *written == counters(7, 2)),
+        "{seen:?}"
+    );
+}

@@ -446,6 +446,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
+    // The order of a start: the status thread starts and writes the
+    // file at once with what the board holds (zeros, or what the
+    // queue's thread has posted by then); the device starts; the
+    // queue's thread posts its counters after every turn, and each
+    // post replaces the board's with newer ones of its own; `ready`
+    // follows the first write. Only the queue's thread posts.
+    //
     // `ready` only after this instance's first status write was tried,
     // done or failed: until then the status file is the one the
     // instance before left, and `status` would name that instance's
@@ -489,7 +496,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         ms(queue_began.elapsed().saturating_sub(start_began.elapsed())),
         ms(start_began.elapsed().saturating_sub(started.elapsed())),
     ));
-    board.post(Default::default());
+    // Nothing is posted from here: the queue's thread is running and
+    // the board holds its counters. (The publishing thread writes the
+    // file once when it starts, whatever is posted then, and after
+    // that whenever the queue's thread posts a change.)
 
     #[derive(PartialEq)]
     enum Why {
