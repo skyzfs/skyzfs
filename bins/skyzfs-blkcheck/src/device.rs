@@ -429,18 +429,6 @@ fn sorted_wrongly(
     })
 }
 
-/// The kernel's count of reads and writes in flight at the device while
-/// no server runs, against the calls the tool still has outstanding.
-/// More calls outstanding than requests in flight means one of them has
-/// in fact been completed: `Some(why)`.
-fn more_outstanding_than_in_flight(outstanding: usize, in_flight: u64) -> Option<String> {
-    (outstanding as u64 > in_flight).then(|| {
-        format!(
-            "{outstanding} calls are outstanding with no server running, and the kernel counts {in_flight} requests in flight at the device"
-        )
-    })
-}
-
 /// What a result means once the log has been made to fail. The server
 /// then deletes its device and exits, so whatever I/O error the kernel
 /// answers with for a deleted device is the volume having failed. A
@@ -569,7 +557,10 @@ impl Harness for DeviceHarness {
         // The helper says "dead R W" when the old server is gone and
         // the new one is not started: no request completes in between.
         // R and W are the kernel's counts of reads and writes in flight
-        // at the device at that moment.
+        // at the device at that moment. They are written down and not
+        // used: the kernel counts 0 there whatever waits to be issued
+        // again (seen at 18 of 18 kills with calls outstanding, on
+        // each of two kernels), so they cannot check the sorting.
         self.helper_watched("kill", number, &mut |line| {
             let mut words = line.split_whitespace();
             if words.next() != Some("dead") {
@@ -584,19 +575,15 @@ impl Harness for DeviceHarness {
                 None,
                 &format!("outstanding {outstanding}\tkernel in flight {counts:?}"),
             );
-            // Recorded, not yet acted on: whether the kernel counts a
-            // request that waits to be issued again is to be seen in
-            // the runs first (the trace line above has both numbers).
-            if let [reads, writes] = counts[..] {
-                if let Some(what) = more_outstanding_than_in_flight(outstanding, reads + writes) {
-                    trace(number, "count_differs", None, &what);
-                }
-            }
         })?;
         trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
         trace(target.number, "settled", None, "");
-        target.server = self.server_of(number);
+        // A volume whose log has failed has no server to ask for, and
+        // a pid remembered from before may be anybody's by now.
+        if !target.failed.load(Ordering::SeqCst) {
+            target.server = self.server_of(number);
+        }
         Ok(target)
     }
 
@@ -933,7 +920,7 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
-    /// The two checks on the sorting of calls at a kill.
+    /// The check on the sorting of calls at a kill.
     #[test]
     fn a_wrong_sorting_is_noticed() {
         let now = std::time::Instant::now();
@@ -951,11 +938,6 @@ mod tests {
             "no sorting: a helper without the line"
         );
         assert!(sorted_wrongly(None, Some(now)).is_none());
-        assert!(more_outstanding_than_in_flight(3, 2).is_some());
-        assert!(more_outstanding_than_in_flight(2, 2).is_none());
-        assert!(more_outstanding_than_in_flight(0, 0).is_none());
-        // A request the kernel split is counted more than once there.
-        assert!(more_outstanding_than_in_flight(1, 4).is_none());
     }
 
     /// The helper's line is acted on when it is printed, not when the

@@ -71,13 +71,12 @@
 //!   the old server is gone and before the new one is started: no
 //!   request completes in between, so what has returned by that line
 //!   was completed before the kill. R and W are the kernel's counts of
-//!   reads and writes in flight at the device then. The tool checks
-//!   its sorting twice and exits with status 3, an error of the rig
-//!   and not a verdict, if either check fails: a call taken as in
-//!   flight must not have returned before the sorting, and the calls
-//!   still outstanding must not outnumber the requests the kernel
-//!   counts. Without that line every outstanding call is taken as in
-//!   flight at the death.
+//!   reads and writes in flight at the device then, written to the
+//!   trace and not used: the kernel counts none at a dead server. The
+//!   tool checks its sorting and exits with status 3, an error of the
+//!   rig and not a verdict, if a call taken as in flight had returned
+//!   before the sorting. Without that line every outstanding call is
+//!   taken as in flight at the death.
 //!
 //! `skyzfs-blkcheck --replay TRACE VOLUME [SIZE_MIB]` gives a trace
 //! written with `BLKCHECK_TRACE=FILE` back to the suite's model, event

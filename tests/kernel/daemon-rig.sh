@@ -958,7 +958,7 @@ hold_test() {
 # The suite's verdict on each case, next to what the suite declares for
 # a harness that can do what this one can. The judge compares the two.
 check_c() {
-    local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n n_live n_before n_at_death n_differs n_dead
+    local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n n_live n_before n_at_death n_with n_zero n_dead
     # What the harness can do beyond a plain device. A failed volume is
     # opened again only by the stand-in: the daemon refuses, until the
     # next boot, a volume that failed while a client held its device,
@@ -980,11 +980,11 @@ check_c() {
     # the old server had completed (their resubmission is issued) and
     # those in flight when it died (the kernel issues them again). If
     # the second number is near nothing, the kill cases test little.
-    read -r n_live n_before n_at_death n_differs n_dead <<< "$(awk -F'\t' '
+    read -r n_live n_before n_at_death n_with n_zero n_dead <<< "$(awk -F'\t' '
         $3 == "sorted" { live++; split($5, w, " "); at_death += w[2] } $3 == "before_kill" { before++ }
-        $3 == "count_differs" { differs++ } $3 == "kill" { kills++ }
-        END { printf "%d %d %d %d %d", live, before, at_death, differs, kills - live }' "$OUT/c-trace.tsv" 2>/dev/null)"
-    rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again; kills where the tool had more calls outstanding than the kernel counted in flight: ${n_differs:-0}"
+        $3 == "sorted" && w[2] > 0 { with++; if ($6 ~ /\[0, 0\]/) zero++ } $3 == "kill" { kills++ }
+        END { printf "%d %d %d %d %d %d", live, before, at_death, with, zero, kills - live }' "$OUT/c-trace.tsv" 2>/dev/null)"
+    rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again. The kernel's inflight file read 0 at ${n_zero:-0} of the ${n_with:-0} deaths with calls in flight: it does not count a request that waits to be issued again, and is no check on the sorting"
     # A kill of an idle server exercises its restart and nothing of the
     # reissue of requests. Over the whole run some call must have been
     # in flight at a death, or the kill cases say less than they claim.
