@@ -224,3 +224,21 @@ fn catches_a_read_only_target_that_writes() {
         &["read_only_target_refuses_mutations"],
     );
 }
+
+/// R4: a target whose writes also damage a block far outside their range
+/// is caught, because the suite reads the whole device back and not only
+/// the blocks it wrote. (Found in review; B3.)
+#[test]
+fn catches_a_write_that_strays_outside_its_range() {
+    caught(
+        Fault::StrayWrite,
+        &["read_your_writes", CONCURRENT, FAILURES],
+    );
+}
+
+/// The trait's promise that buffers make a round trip: a target that
+/// keeps the buffer of a write is caught.
+#[test]
+fn catches_a_write_buffer_that_does_not_come_back() {
+    caught(Fault::DropWriteBuffer, &["read_your_writes", CONCURRENT]);
+}

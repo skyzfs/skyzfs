@@ -9,8 +9,10 @@
 //!
 //! It is built to use every freedom the contract gives a target:
 //!
-//! - requests complete in an order drawn from a seed ([`Schedule`]), and
-//!   a read may capture its data when it is submitted and complete later,
+//! - requests complete in an order drawn from a seed ([`Schedule`]),
+//! - a mutation is appended to the log, and a read takes its data, either
+//!   on receipt or at the acknowledgement ([`Timing`]), so the order of
+//!   the log is not the order of the acknowledgements,
 //! - a flush makes durable exactly the records that existed when it was
 //!   submitted, and nothing later,
 //! - [`MemTarget::kill`] is a daemon loss: requests in flight are
@@ -39,6 +41,18 @@ pub enum Schedule {
     Fifo,
     /// In an order drawn from the target's seed. `poll` completes a random
     /// number of requests, possibly none; `wait` at least one.
+    Seeded,
+}
+
+/// When a [`MemTarget`] does something that the contract lets it do at any
+/// moment between receiving a request and acknowledging it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timing {
+    /// When the request is acknowledged.
+    AtAck,
+    /// When the request is received.
+    AtSubmit,
+    /// One or the other, request by request, from the target's seed.
     Seeded,
 }
 
@@ -110,6 +124,12 @@ pub enum Fault {
     FailureForgottenOnKill,
     /// R12: a read-only target accepts writes.
     ReadOnlyAcceptsWrites,
+    /// R4: a write of up to eight blocks also zeroes the block 128 blocks
+    /// further on: an offset bug that damages a place the write never
+    /// named.
+    StrayWrite,
+    /// The buffer of a write does not come back in its completion.
+    DropWriteBuffer,
 }
 
 /// How to build a [`MemTarget`].
@@ -125,6 +145,15 @@ pub struct MemConfig {
     pub read_only: bool,
     /// Completion order.
     pub schedule: Schedule,
+    /// When a write, write-zeroes or discard is appended to the log and
+    /// becomes visible. A real write log appends on receipt and
+    /// acknowledges later, so its order differs from the order of its
+    /// acknowledgements.
+    pub apply: Timing,
+    /// When a read takes its data. A read taken on receipt and completed
+    /// later returns the state from before operations acknowledged in
+    /// between.
+    pub read: Timing,
     /// Discard behaviour.
     pub discard: DiscardPolicy,
     /// Seed for the schedule and the discard policy.
@@ -141,6 +170,8 @@ impl Default for MemConfig {
             base: Base::Empty,
             read_only: false,
             schedule: Schedule::Seeded,
+            apply: Timing::Seeded,
+            read: Timing::Seeded,
             discard: DiscardPolicy::Seeded,
             seed: 0,
             fault: None,
@@ -196,8 +227,9 @@ struct Queued {
     cover: usize,
     /// `Fault::SplitWrites`: this many leading blocks are already logged.
     split: usize,
-    /// A read whose buffer was filled when it was submitted.
-    served: bool,
+    /// The request was carried out when it was submitted: a mutation is
+    /// in the log, a read has its data.
+    early: bool,
 }
 
 /// An in-memory block target. See the [module documentation](self).
@@ -424,22 +456,9 @@ impl MemTarget {
             request,
             cover,
             split,
-            served,
+            early,
         } = queued;
         let id = request.id;
-        if served {
-            // The read captured its data when it was submitted.
-            let buf = match request.op {
-                Op::Read { buf, .. } => Some(buf),
-                _ => None,
-            };
-            let result = if self.failed && !self.fault(Fault::FailedServesReads) {
-                Err(BlkError::Failed)
-            } else {
-                Ok(())
-            };
-            return Completion { id, result, buf };
-        }
         let verdict = match self.admit(&request.op) {
             Err(e) => Err(e),
             Ok(false) => Ok(false),
@@ -448,38 +467,68 @@ impl MemTarget {
                 None => Ok(true),
             },
         };
-        let (result, buf) = match (verdict, request.op) {
-            (Err(e), Op::Read { buf, .. }) => (Err(e), Some(buf)),
-            (Err(e), Op::Write { data, .. }) => (Err(e), Some(data)),
-            (Err(e), _) => (Err(e), None),
-            (Ok(false), Op::Read { buf, .. }) => (Ok(()), Some(buf)),
-            (Ok(false), Op::Write { data, .. }) => (Ok(()), Some(data)),
-            (Ok(false), _) => (Ok(()), None),
-            (Ok(true), Op::Read { offset, mut buf }) => {
-                let at = offset as usize;
-                let end = at + buf.len();
-                if self.fault(Fault::StaleReads) {
-                    let mut stale = self.base.clone();
-                    for record in &self.log[..self.durable] {
-                        Self::replay(&mut stale, &self.base, record);
-                    }
-                    buf.copy_from_slice(&stale[at..end]);
-                } else {
-                    buf.copy_from_slice(&self.image[at..end]);
+        if verdict == Ok(true) && !early {
+            self.mutate(&request.op, split);
+        }
+        let result = verdict.map(|_| ());
+        let buf = match request.op {
+            Op::Read { offset, mut buf } => {
+                if verdict == Ok(true) && !early {
+                    self.fill(offset, &mut buf);
                 }
-                (Ok(()), Some(buf))
+                Some(buf)
             }
-            (Ok(true), Op::Write { offset, data }) => {
+            Op::Write { .. } if self.fault(Fault::DropWriteBuffer) => None,
+            Op::Write { data, .. } => Some(data),
+            Op::Flush => {
+                if verdict == Ok(true) {
+                    for (first, count) in std::mem::take(&mut self.late_discards) {
+                        let effects = (first..first + count).map(|b| (b, Effect::Zeros)).collect();
+                        self.append(Record { effects });
+                    }
+                    self.flush(cover);
+                }
+                None
+            }
+            Op::Discard { .. } | Op::WriteZeroes { .. } => None,
+        };
+        Completion { id, result, buf }
+    }
+
+    /// Take a read's data.
+    fn fill(&self, offset: u64, buf: &mut [u8]) {
+        let at = offset as usize;
+        let end = at + buf.len();
+        if self.fault(Fault::StaleReads) {
+            let mut stale = self.base.clone();
+            for record in &self.log[..self.durable] {
+                Self::replay(&mut stale, &self.base, record);
+            }
+            buf.copy_from_slice(&stale[at..end]);
+        } else {
+            buf.copy_from_slice(&self.image[at..end]);
+        }
+    }
+
+    /// Append a write, write-zeroes or discard to the log as one whole
+    /// record and apply it. Nothing for a read or a flush.
+    fn mutate(&mut self, op: &Op, split: usize) {
+        match op {
+            Op::Read { .. } | Op::Flush => {}
+            Op::Write { offset, data } => {
                 let take = if self.fault(Fault::ShortWrite) {
                     1
                 } else {
                     usize::MAX
                 };
-                let record = self.write_record(offset, &data, split, take);
+                let mut record = self.write_record(*offset, data, split, take);
+                if self.fault(Fault::StrayWrite) && data.blocks() <= 8 {
+                    let stray = (offset / BLOCK_SIZE + 128) % self.geometry.blocks();
+                    record.effects.push((stray, Effect::Zeros));
+                }
                 self.append(record);
-                (Ok(()), Some(data))
             }
-            (Ok(true), Op::WriteZeroes { offset, len }) => {
+            Op::WriteZeroes { offset, len } => {
                 let first = offset / BLOCK_SIZE;
                 let effects = (first..first + len / BLOCK_SIZE)
                     .filter(|_| !self.fault(Fault::WriteZeroesDoesNothing))
@@ -492,9 +541,8 @@ impl MemTarget {
                     })
                     .collect();
                 self.append(Record { effects });
-                (Ok(()), None)
             }
-            (Ok(true), Op::Discard { offset, len }) => {
+            Op::Discard { offset, len } => {
                 let first = offset / BLOCK_SIZE;
                 let count = len / BLOCK_SIZE;
                 if self.fault(Fault::DiscardAppliedLate) {
@@ -504,18 +552,8 @@ impl MemTarget {
                     let record = self.discard_record(first, count);
                     self.append(record);
                 }
-                (Ok(()), None)
             }
-            (Ok(true), Op::Flush) => {
-                for (first, count) in std::mem::take(&mut self.late_discards) {
-                    let effects = (first..first + count).map(|b| (b, Effect::Zeros)).collect();
-                    self.append(Record { effects });
-                }
-                self.flush(cover);
-                (Ok(()), None)
-            }
-        };
-        Completion { id, result, buf }
+        }
     }
 
     fn discard_record(&mut self, first: u64, count: u64) -> Record {
@@ -598,44 +636,48 @@ impl BlockTarget for MemTarget {
         if let Some(kind) = kind {
             return Err(SubmitError { kind, request });
         }
-        let mut split = 0;
-        if self.fault(Fault::SplitWrites) {
-            if let Op::Write { offset, data } = &request.op {
-                let blocks = data.len() / BLOCK_USIZE;
-                let admitted = self.geometry.validate(&request.op).is_ok()
-                    && self.refuse(request.id.0, &request.op).is_none();
-                if admitted && blocks > 1 {
-                    split = blocks / 2;
-                    let record = self.write_record(*offset, data, 0, split);
-                    self.append(record);
-                }
-            }
-        }
-        // With the seeded schedule a read may capture its data now and be
-        // completed later: it then shows the state from before operations
-        // that are acknowledged while it is in flight.
+        let admitted = self.geometry.validate(&request.op).is_ok()
+            && self.refuse(request.id.0, &request.op).is_none();
         let mut request = request;
-        let mut served = false;
-        let early = self.config.schedule == Schedule::Seeded
-            && !self.failed
-            && !self.fault(Fault::StaleReads)
-            && !self.poisoned.contains(&request.id.0)
-            && self.geometry.validate(&request.op).is_ok();
-        if early {
-            if let Op::Read { offset, buf } = &mut request.op {
-                if self.rng.coin() {
-                    let at = *offset as usize;
-                    let end = at + buf.len();
-                    buf.copy_from_slice(&self.image[at..end]);
-                    served = true;
+        let mut split = 0;
+        let mut early = false;
+        if admitted {
+            let timing = match &request.op {
+                Op::Flush => Timing::AtAck,
+                Op::Read { .. } => self.config.read,
+                _ => self.config.apply,
+            };
+            early = match timing {
+                Timing::AtAck => false,
+                Timing::AtSubmit => true,
+                Timing::Seeded => self.rng.coin(),
+            };
+            match &mut request.op {
+                Op::Write { offset, data } if self.fault(Fault::SplitWrites) => {
+                    // Half now, half at the acknowledgement.
+                    early = false;
+                    if data.blocks() > 1 {
+                        split = data.blocks() / 2;
+                        let record = self.write_record(*offset, data, 0, split);
+                        self.append(record);
+                    }
                 }
+                Op::Read { offset, buf } if early => {
+                    let offset = *offset;
+                    self.fill(offset, buf);
+                }
+                op if early => {
+                    let op = op.clone();
+                    self.mutate(&op, 0);
+                }
+                _ => {}
             }
         }
         self.pending.push(Queued {
             request,
             cover: self.log.len(),
             split,
-            served,
+            early,
         });
         Ok(())
     }
@@ -649,21 +691,24 @@ impl BlockTarget for MemTarget {
     }
 }
 
-/// The conformance harness for [`MemTarget`]: every device it creates gets
-/// the next seed, so a run of many cases sees many schedules.
+/// The conformance harness for [`MemTarget`]. Each device's seed comes
+/// from the configuration and from the suite's [`Spec`], so a run of many
+/// cases sees many schedules and a failing one can be replayed.
+///
+/// [`Spec`]: crate::conformance::Spec
 #[cfg(feature = "conformance")]
 #[derive(Debug, Clone)]
 pub struct MemHarness {
     config: MemConfig,
-    created: u64,
 }
 
 #[cfg(feature = "conformance")]
 impl MemHarness {
-    /// A harness that builds targets from `config`. The base and the
-    /// read-only flag of each target come from the suite.
+    /// A harness that builds targets from `config`. The base, the
+    /// read-only flag and part of the seed of each target come from the
+    /// suite.
     pub fn new(config: MemConfig) -> Self {
-        Self { config, created: 0 }
+        Self { config }
     }
 }
 
@@ -675,9 +720,11 @@ impl crate::conformance::Harness for MemHarness {
         &mut self,
         spec: &crate::conformance::Spec,
     ) -> Result<MemTarget, crate::conformance::HarnessError> {
-        self.created += 1;
         let config = MemConfig {
-            seed: self.config.seed.wrapping_add(self.created),
+            seed: self
+                .config
+                .seed
+                .wrapping_add(spec.seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
             base: spec.base,
             read_only: spec.read_only,
             ..self.config
@@ -717,7 +764,7 @@ mod tests {
     //! in `tests/conformance_mem.rs`.
 
     use super::*;
-    use crate::RequestId;
+    use crate::{Buf, RequestId};
 
     const TICK: Duration = Duration::from_millis(1);
 
@@ -725,6 +772,8 @@ mod tests {
         MemTarget::new(MemConfig {
             queue_depth: 8,
             schedule,
+            apply: Timing::AtAck,
+            read: Timing::AtAck,
             ..MemConfig::default()
         })
         .unwrap()
@@ -746,7 +795,7 @@ mod tests {
     fn write(t: &mut MemTarget, id: u64, block: u64, fill: u8) {
         let op = Op::Write {
             offset: block * BLOCK_SIZE,
-            data: vec![fill; BLOCK_USIZE],
+            data: Buf::filled(1, fill),
         };
         assert_eq!(run(t, id, op).result, Ok(()));
     }
@@ -755,7 +804,7 @@ mod tests {
     fn peek(t: &mut MemTarget) -> Vec<u8> {
         let op = Op::Read {
             offset: 0,
-            buf: vec![0; 8 * BLOCK_USIZE],
+            buf: Buf::zeroed(8),
         };
         let buf = run(t, 999, op).buf.unwrap();
         buf.chunks(BLOCK_USIZE).map(|b| b[0]).collect()
@@ -816,7 +865,7 @@ mod tests {
             id: RequestId(1),
             op: Op::Write {
                 offset: 0,
-                data: vec![0x22; BLOCK_USIZE],
+                data: Buf::filled(1, 0x22),
             },
         })
         .unwrap();
@@ -824,6 +873,47 @@ mod tests {
             .map(|seed| peek(&mut t.clone().kill(seed))[0])
             .collect();
         assert_eq!(outcomes, [0, 0x22].into());
+    }
+
+    /// R8: with `Timing::AtSubmit` the log is appended on receipt, so its
+    /// order is the order of submission whatever the order of the
+    /// acknowledgements; and a read taken on receipt returns the state
+    /// from before a write that is acknowledged while it is in flight.
+    #[test]
+    fn timings_at_submit_decouple_the_log_from_the_acknowledgements() {
+        let mut t = MemTarget::new(MemConfig {
+            apply: Timing::AtSubmit,
+            read: Timing::AtSubmit,
+            schedule: Schedule::Fifo,
+            ..MemConfig::default()
+        })
+        .unwrap();
+        let read = Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(1),
+            },
+        };
+        let write = |id, fill| Request {
+            id: RequestId(id),
+            op: Op::Write {
+                offset: 0,
+                data: Buf::filled(1, fill),
+            },
+        };
+        t.submit(read).unwrap();
+        t.submit(write(2, 0x44)).unwrap();
+        t.submit(write(3, 0x55)).unwrap();
+        // Both writes are in the log before either is acknowledged.
+        assert_eq!(t.cut_points(), 2);
+        let mut out = Vec::new();
+        t.poll(&mut out);
+        assert_eq!(out.len(), 3);
+        // The read was taken before the writes.
+        assert_eq!(out[0].buf.as_ref().unwrap()[0], 0);
+        assert_eq!(peek(&mut t)[0], 0x55);
+        assert_eq!(peek(&mut t.clone().power_cut(1))[0], 0x44);
     }
 
     /// R11: after the log-failure hook every request fails, and still
@@ -835,7 +925,7 @@ mod tests {
         t.fail_log();
         let read = Op::Read {
             offset: 0,
-            buf: vec![0; BLOCK_USIZE],
+            buf: Buf::zeroed(1),
         };
         assert_eq!(run(&mut t, 2, Op::Flush).result, Err(BlkError::Failed));
         assert_eq!(run(&mut t, 3, read.clone()).result, Err(BlkError::Failed));
@@ -859,12 +949,12 @@ mod tests {
         base.fill_block(3, &mut expected);
         let read = Op::Read {
             offset: 3 * BLOCK_SIZE,
-            buf: vec![0; BLOCK_USIZE],
+            buf: Buf::zeroed(1),
         };
-        assert_eq!(run(&mut t, 1, read).buf.unwrap(), expected);
+        assert_eq!(&run(&mut t, 1, read).buf.unwrap()[..], &expected[..]);
         let write = Op::Write {
             offset: 0,
-            data: vec![1; BLOCK_USIZE],
+            data: Buf::filled(1, 1),
         };
         assert_eq!(run(&mut t, 2, write).result, Err(BlkError::ReadOnly));
         assert_eq!(run(&mut t, 3, Op::Flush).result, Ok(()));

@@ -5,30 +5,52 @@
 //! Rule numbers refer to the crate documentation of `skyzfs-blk`, which
 //! restates design §4.1.
 
-use skyzfs_blk::conformance::{cases, run_all, run_case, Config};
-use skyzfs_blk::mem::{DiscardPolicy, MemConfig, MemHarness, Schedule};
+use skyzfs_blk::conformance::{cases, run_all, run_case, Config, Status};
+use skyzfs_blk::mem::{DiscardPolicy, MemConfig, MemHarness, Schedule, Timing};
 
-/// The `MemTarget` configurations every case must pass against.
+/// The `MemTarget` configurations every case must pass against. Between
+/// them they use the freedoms the contract gives a target: completions
+/// in or out of order, the log appended on receipt or at the
+/// acknowledgement, reads taken on receipt or at completion, and each
+/// discard behaviour.
 fn configurations() -> Vec<MemConfig> {
     let base = MemConfig {
         queue_depth: 16,
         ..MemConfig::default()
     };
     vec![
+        // Everything from the seed.
         base,
+        // The plainest target: in order, everything at the acknowledgement.
         MemConfig {
             schedule: Schedule::Fifo,
+            apply: Timing::AtAck,
+            read: Timing::AtAck,
             discard: DiscardPolicy::Zero,
             ..base
         },
+        // A write log: appended on receipt, acknowledged later in any
+        // order, so the log's order is not the acknowledgements' order.
         MemConfig {
+            apply: Timing::AtSubmit,
+            read: Timing::AtAck,
             discard: DiscardPolicy::Keep,
             seed: 77,
             ..base
         },
+        // Reads taken on receipt and completed late.
         MemConfig {
+            apply: Timing::AtAck,
+            read: Timing::AtSubmit,
             discard: DiscardPolicy::Base,
             seed: 78,
+            ..base
+        },
+        // Both on receipt.
+        MemConfig {
+            apply: Timing::AtSubmit,
+            read: Timing::AtSubmit,
+            seed: 79,
             ..base
         },
         // A target that takes one request at a time.
@@ -36,9 +58,9 @@ fn configurations() -> Vec<MemConfig> {
             queue_depth: 1,
             ..base
         },
-        // A larger device with a deep queue.
+        // A larger device with a deep queue: read back by sampling.
         MemConfig {
-            size_mib: 4,
+            size_mib: 8,
             queue_depth: 64,
             seed: 9,
             ..base
@@ -57,7 +79,12 @@ fn passes(name: &str) {
     for config in configurations() {
         let mut harness = MemHarness::new(config);
         match run_case(&mut harness, &suite_config(), name) {
-            Some(Ok(())) => {}
+            Some(Ok(Status::Passed)) => {}
+            // Only the one-at-a-time target may leave a rule unexercised.
+            Some(Ok(Status::NotExercised(_))) if config.queue_depth == 1 => {}
+            Some(Ok(Status::NotExercised(why))) => {
+                panic!("{name} was not exercised against {config:?}: {why}")
+            }
             Some(Err(failure)) => panic!("{name} failed against {config:?}:\n{failure}"),
             None => panic!("the suite has no case named {name}"),
         }
@@ -80,6 +107,7 @@ const TESTED: &[&str] = &[
     "flush_covers_an_earlier_instance",
     "power_cut_at_every_point_leaves_a_prefix",
     "recovered_state_is_durable",
+    "first_request_after_power_cut_may_be_a_write",
     "queue_depth_requests_complete_in_any_order",
     "overlapping_operations_in_flight_apply_whole",
     "kill_keeps_acknowledged_operations",
@@ -116,6 +144,33 @@ fn run_all_passes_and_reports_every_case() {
     assert!(report.passed(), "{report}");
     assert_eq!(report.outcomes.len(), TESTED.len());
     assert!(report.failed().is_empty());
+    assert!(report.not_exercised().is_empty());
+}
+
+/// Not a contract rule: a case whose rule the target cannot exercise is
+/// reported as such and not as passed, so that a green run is not read as
+/// coverage. A target that takes one request at a time cannot exercise
+/// the two cases about requests in flight together.
+#[test]
+fn unexercised_cases_are_reported_as_such() {
+    let config = MemConfig {
+        queue_depth: 1,
+        ..MemConfig::default()
+    };
+    let suite = Config {
+        cases: 8,
+        ..Config::default()
+    };
+    let report = run_all(&mut MemHarness::new(config), &suite);
+    assert!(report.passed(), "{report}");
+    assert_eq!(
+        report.not_exercised(),
+        [
+            "overlapping_operations_in_flight_apply_whole",
+            "reissue_after_kill_is_idempotent"
+        ]
+    );
+    assert!(report.to_string().contains("SKIP"));
 }
 
 /// R1: the parameters are as the contract fixes them: a size in whole
@@ -218,6 +273,13 @@ fn power_cut_at_every_point_leaves_a_prefix() {
 #[test]
 fn recovered_state_is_durable() {
     passes("recovered_state_is_durable");
+}
+
+/// R10: the first request after a power cut may be a write, issued before
+/// any read; it lands after everything recovery exposed.
+#[test]
+fn first_request_after_power_cut_may_be_a_write() {
+    passes("first_request_after_power_cut_may_be_a_write");
 }
 
 /// R8: the target takes `queue_depth` requests in flight, completes each

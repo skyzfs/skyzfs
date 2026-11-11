@@ -85,10 +85,13 @@
 //!   The id comes back in the [`Completion`], so many requests can be in
 //!   flight and complete in any order. It is also what makes a reissue
 //!   after daemon loss recognisable to the caller.
-//! - **Buffers are owned and make a round trip.** A read carries the buffer
-//!   to fill, a write carries its data, and the completion hands the buffer
-//!   back. A transport can recycle a fixed pool of buffers and never
-//!   allocate on the I/O path, which the design asks of the daemon (§10).
+//! - **Buffers are owned, aligned, and make a round trip.** A read
+//!   carries the buffer to fill, a write carries its data, and the
+//!   completion hands the buffer back, whatever the result. A transport
+//!   can recycle a fixed set of buffers and never allocate on the I/O
+//!   path, which the design asks of the daemon (§10). A [`Buf`] is whole
+//!   blocks in 4096-aligned memory, so a store can hand it to a log
+//!   opened with direct I/O without a second copy.
 //! - **Every accepted request completes, including a rejected one.** An
 //!   invalid request is reported in its completion, not by `submit`, so a
 //!   transport has one place where results turn into its own status codes.
@@ -96,7 +99,8 @@
 //!   [`Geometry::queue_depth`] requests in flight, or an id used twice.
 //! - **`&mut self`, one owner per queue.** An io_uring loop or a ring loop
 //!   is a single thread that owns its queue. A target with several queues
-//!   hands out one handle per queue.
+//!   would hand out one handle per queue. That is not in the trait or the
+//!   suite yet: M1 has one queue, and ordering across queues is untested.
 //! - **Transport-neutral.** Nothing in the trait is specific to a kernel
 //!   transport. A transport loop forwards requests to a `BlockTarget`
 //!   store and its completions back, and the agent's tools (label reads,
@@ -117,8 +121,10 @@
 //!   until a later `poll` without `unsafe` or a scoped API that forces
 //!   completion in order.
 //! - *A buffer type parameter* (for arena or zero-copy buffers). Design
-//!   §4.2 starts with one copy per request, which `Vec<u8>` serves. Left
-//!   for the day a zero-copy mode is adopted (gate G1).
+//!   §4.2 starts with one copy per request, which one concrete aligned
+//!   type serves. Left for the day a zero-copy mode is adopted (gate G1).
+//! - *`Vec<u8>` buffers.* No alignment, so a direct-I/O log would have to
+//!   copy every write a second time.
 //! - *Ids assigned by the target.* The caller would need a map from its tag
 //!   to the target's ticket, and could not reissue under the same id.
 //! - *A completion file descriptor or waker.* A real transport will want
@@ -143,23 +149,29 @@
 //! - **The base race** (a delayed fetch of a base block racing a write to
 //!   it) needs a base whose fetches a test can delay. The model and
 //!   `MemTarget` have a non-empty base; the race case is deferred to M3.
-//! - **Order of rejection reasons** when a request breaks two rules is
-//!   unspecified; the suite accepts either.
+//! - **Which error wins** when a request is wrong in two ways (two
+//!   reasons to reject it; invalid and on a failed volume; a mutation on
+//!   a volume that is read-only and failed) is unspecified; the model
+//!   accepts either.
 //! - **Limits of the test model**, not of the contract: the suite's
 //!   random programs keep at most four writes, write-zeroes and discards
 //!   in flight together, and after a power cut the suite reads back every
 //!   block an unflushed operation touched before it issues anything else.
-//!   See [`model`] for why.
+//!   See [`model`] for why, and `conformance` for the suite's other
+//!   limits.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
 use std::time::Duration;
 
+mod buf;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 pub mod mem;
 pub mod model;
+
+pub use buf::Buf;
 
 /// The block size of the contract: 4 KiB (rule R1). Pools are created with
 /// `ashift=12`.
@@ -331,14 +343,14 @@ pub enum Op {
         /// Byte offset on the device.
         offset: u64,
         /// The buffer to fill. Returned in the completion.
-        buf: Vec<u8>,
+        buf: Buf,
     },
     /// Write `data` at `offset`.
     Write {
         /// Byte offset on the device.
         offset: u64,
         /// The data. Returned in the completion for reuse.
-        data: Vec<u8>,
+        data: Buf,
     },
     /// Make every operation acknowledged so far durable (rule R7).
     Flush,
@@ -404,9 +416,10 @@ pub struct Completion {
     pub id: RequestId,
     /// `Ok` once the operation has taken effect as the contract describes.
     pub result: Result<(), BlkError>,
-    /// The buffer of a read (filled, if `result` is `Ok`) or of a write.
-    /// `None` for the other operations.
-    pub buf: Option<Vec<u8>>,
+    /// The buffer of a read (filled, if `result` is `Ok`) or of a write,
+    /// whatever the result: buffers make a round trip. `None` for the
+    /// other operations.
+    pub buf: Option<Buf>,
 }
 
 /// Why a request failed.

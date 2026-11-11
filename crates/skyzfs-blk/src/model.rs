@@ -31,9 +31,10 @@
 //!   none is left, the target broke the contract.
 //! - A **flush** makes durable what was acknowledged before it was
 //!   submitted, and whatever precedes that in the world's order (rule R7).
-//!   A flushed operation stays in the tail, marked, until no read that
-//!   was in flight with it is outstanding: such a read may still return
-//!   the state before it.
+//!   A flushed operation stays in the tail, marked, until nothing that
+//!   was in flight with it is outstanding: a read may still return the
+//!   state before it, and an overlapping operation may still turn out to
+//!   precede it.
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
 //!   be in the log, so each may end up in the order twice (rule R9).
@@ -254,18 +255,39 @@ struct World {
 }
 
 impl World {
-    /// Every world that results from placing `inst`, applied by `now`.
+    /// Every world that results from placing `inst`.
+    ///
+    /// What matters is which members of the tail precede it. Those that
+    /// were certainly applied before it could have been must; of the
+    /// others, only the ones that overlap it make a difference, and each
+    /// of those may go either side. A choice is consistent if taking the
+    /// chosen ones, and everything that must precede them, does not drag
+    /// in an overlapping one that was not chosen.
     fn place(&self, cx: &Context, inst: Placed, out: &mut BTreeSet<World>) {
-        // It cannot precede an operation that was certainly applied before
-        // it could have been.
-        let lo = self
-            .tail
-            .iter()
-            .rposition(|p| p.ub < inst.lb)
-            .map_or(0, |i| i + 1);
-        for at in lo..=self.tail.len() {
-            let mut tail = self.tail.clone();
-            tail.insert(at, inst);
+        let n = self.tail.len();
+        let must = self.closure(cx, &|p| p.ub < inst.lb);
+        let free: Vec<usize> = (0..n)
+            .filter(|i| !must[*i] && cx.ops[self.tail[*i].op].overlaps(&cx.ops[inst.op]))
+            .collect();
+        for choice in 0..1u64 << free.len().min(63) {
+            let chosen = |i: usize| {
+                free.iter()
+                    .position(|f| *f == i)
+                    .is_some_and(|k| choice >> k & 1 == 1)
+            };
+            let mut before = vec![false; n];
+            for i in (0..n).rev() {
+                before[i] = must[i]
+                    || chosen(i)
+                    || (i + 1..n).any(|j| before[j] && cx.ordered(&self.tail[i], &self.tail[j]));
+            }
+            if free.iter().any(|i| before[*i] != chosen(*i)) {
+                continue;
+            }
+            let mut tail = Vec::with_capacity(n + 1);
+            tail.extend((0..n).filter(|i| before[*i]).map(|i| self.tail[i]));
+            tail.push(inst);
+            tail.extend((0..n).filter(|i| !before[*i]).map(|i| self.tail[i]));
             out.insert(World {
                 durable: self.durable.clone(),
                 tail: cx.canonical(&tail),
@@ -342,9 +364,10 @@ impl World {
         self.tail = cx.canonical(&self.tail);
     }
 
-    /// Fold flushed operations into the durable content, except those a
-    /// read in flight may still need the state before: a read submitted
-    /// at or after `horizon` is the oldest outstanding one.
+    /// Fold flushed operations into the durable content, except those that
+    /// something in flight may still need the state before: a read that
+    /// may return it, or an operation that may yet be placed before them.
+    /// `horizon` is when the oldest such request was submitted.
     fn compact(&mut self, cx: &Context, horizon: u64) {
         let n = self.tail.len();
         let mut fold = vec![false; n];
@@ -453,12 +476,17 @@ type Readback = BTreeMap<u64, Vec<Option<Cid>>>;
 
 #[derive(Debug, Clone)]
 enum Pending {
-    /// Invalid: must be rejected (rule R2).
-    Invalid,
-    /// A mutation on a read-only target: must fail (rule R12).
-    ReadOnly,
-    /// Submitted to a failed volume: must fail (rule R11).
-    MustFail,
+    /// The request must fail. Where it is wrong in more than one way the
+    /// contract does not say which error wins, so each that applies is
+    /// accepted.
+    MustFail {
+        /// Invalid: a rejection is right (rule R2).
+        invalid: bool,
+        /// A mutation on a read-only target: `ReadOnly` is right (R12).
+        read_only: bool,
+        /// The log has failed: `Failed` is right (rule R11).
+        failed: bool,
+    },
     Read {
         first: u64,
         count: u64,
@@ -685,15 +713,16 @@ impl Model {
             return Err(Violation::ReadbackRequired { id });
         }
         self.now += 1;
-        let valid = self.geometry.validate(&request.op).is_ok();
-        let pending = if !valid {
-            Pending::Invalid
-        } else if self.health == Health::Failed
-            || (self.health == Health::Failing && request.op == Op::Flush)
-        {
-            Pending::MustFail
-        } else if self.geometry.read_only() && !is_read && request.op != Op::Flush {
-            Pending::ReadOnly
+        let invalid = self.geometry.validate(&request.op).is_err();
+        let read_only = self.geometry.read_only() && !is_read && request.op != Op::Flush;
+        let must_fail = self.health == Health::Failed
+            || (self.health == Health::Failing && request.op == Op::Flush);
+        let pending = if invalid || read_only || must_fail {
+            Pending::MustFail {
+                invalid,
+                read_only,
+                failed: self.health != Health::Healthy,
+            }
         } else {
             match &request.op {
                 Op::Flush => Pending::Flush { at: self.now },
@@ -756,24 +785,30 @@ impl Model {
             .remove(&id)
             .ok_or(Violation::UnknownCompletion { id })?;
         self.now += 1;
-        let must_fail = |expected: BlkError| match got {
-            Err(e) if e == expected => Ok(()),
-            got => Err(Violation::NotFailed { id, expected, got }),
-        };
-        match pending {
-            Pending::Invalid => {
-                return match got {
-                    Err(e) if e.is_rejection() => Ok(()),
-                    got => Err(Violation::NotRejected { id, got }),
+        if let Pending::MustFail {
+            invalid,
+            read_only,
+            failed,
+        } = pending
+        {
+            return match got {
+                Err(e) if invalid && e.is_rejection() => Ok(()),
+                Err(BlkError::ReadOnly) if read_only => Ok(()),
+                Err(BlkError::Failed) if failed => {
+                    self.health = Health::Failed;
+                    Ok(())
                 }
-            }
-            Pending::ReadOnly => return must_fail(BlkError::ReadOnly),
-            Pending::MustFail => {
-                must_fail(BlkError::Failed)?;
-                self.health = Health::Failed;
-                return Ok(());
-            }
-            _ => {}
+                got if invalid => Err(Violation::NotRejected { id, got }),
+                got => Err(Violation::NotFailed {
+                    id,
+                    expected: if read_only {
+                        BlkError::ReadOnly
+                    } else {
+                        BlkError::Failed
+                    },
+                    got,
+                }),
+            };
         }
         if let Err(error) = got {
             if error == BlkError::Failed && self.health != Health::Healthy {
@@ -790,7 +825,7 @@ impl Model {
             return Err(Violation::UnexpectedError { id, error });
         }
         match pending {
-            Pending::Invalid | Pending::ReadOnly | Pending::MustFail => {}
+            Pending::MustFail { .. } => {}
             Pending::Mutation { op } => self.acknowledge(op),
             Pending::Flush { at } => self.flushed(at),
             Pending::Read {
@@ -805,7 +840,7 @@ impl Model {
                         return Err(Violation::BadBuffer {
                             id,
                             expected,
-                            got: other.as_ref().map(Vec::len),
+                            got: other.as_ref().map(|b| b.len()),
                         })
                     }
                 };
@@ -874,6 +909,10 @@ impl Model {
             .unwrap_or(u64::MAX);
         let mut next = BTreeSet::new();
         for world in &self.worlds {
+            // An operation still waiting may yet be placed before anything
+            // that was applied after it was submitted.
+            let waiting = world.waiting.iter().map(|w| w.lb).min();
+            let horizon = waiting.map_or(horizon, |lb| lb.min(horizon));
             let mut world = world.clone();
             world.compact(&self.cx, horizon);
             next.insert(world);
@@ -1090,6 +1129,7 @@ mod tests {
     //! it must accept and histories it must reject.
 
     use super::*;
+    use crate::Buf;
 
     const B: usize = BLOCK_USIZE;
 
@@ -1140,7 +1180,7 @@ mod tests {
         fn write(&mut self, block: u64, count: usize, fill: u8) -> RequestId {
             self.submit(Op::Write {
                 offset: block * BLOCK_SIZE,
-                data: vec![fill; count * B],
+                data: Buf::filled(count, fill),
             })
         }
 
@@ -1166,7 +1206,7 @@ mod tests {
         fn read(&mut self, block: u64, count: usize) -> RequestId {
             self.submit(Op::Read {
                 offset: block * BLOCK_SIZE,
-                buf: vec![0; count * B],
+                buf: Buf::zeroed(count),
             })
         }
 
@@ -1174,7 +1214,7 @@ mod tests {
             self.model.complete(&Completion {
                 id,
                 result: Ok(()),
-                buf: Some(bytes),
+                buf: Buf::from_blocks(&bytes),
             })
         }
 
@@ -1652,6 +1692,91 @@ mod tests {
             assert!(!c.would_see(0, &[1, 1]));
             c.sees(0, &[2, 1]).unwrap();
         }
+    }
+
+    /// R7, R8: X and Y overlap and are in flight together; the daemon's
+    /// order is X, Y. Y is acknowledged, a flush completes, and only then
+    /// is X acknowledged. Reads return Y. The flush must not fix Y's place
+    /// before X has one. (Found in review; B1.)
+    #[test]
+    fn write_held_across_a_flush_may_precede_what_was_flushed() {
+        for winner in [1u8, 2] {
+            let mut c = Client::new();
+            let x = c.write(0, 1, 1);
+            let y = c.write(0, 1, 2);
+            c.ack(y);
+            c.flush();
+            c.ack(x);
+            c.sees(0, &[winner]).unwrap();
+            assert!(!c.would_see(0, &[3 - winner]));
+        }
+        // And across a power cut: Y is flushed, so it is there; X, in
+        // flight, may be under it or over it, or absent.
+        let mut c = Client::new();
+        let _x = c.write(0, 2, 1);
+        let y = c.write(0, 1, 2);
+        c.ack(y);
+        c.flush();
+        c.model.power_cut();
+        assert!(c.would_see(0, &[2, 0]));
+        assert!(c.would_see(0, &[2, 1]));
+        assert!(c.would_see(0, &[1, 1]));
+        assert!(!c.would_see(0, &[0, 0]));
+        assert!(!c.would_see(0, &[1, 0]));
+    }
+
+    /// R2, R11, R12: where a request is wrong in two ways, either error
+    /// is accepted, and nothing else is.
+    #[test]
+    fn either_error_is_accepted_when_two_apply() {
+        let invalid = Op::Discard {
+            offset: 1,
+            len: BLOCK_SIZE,
+        };
+        let rejection = BlkError::Misaligned {
+            offset: 1,
+            len: BLOCK_SIZE,
+        };
+        // Invalid, on a failed volume.
+        let mut c = Client::new();
+        c.model.log_failed();
+        let f = c.submit(Op::Flush);
+        c.done(f, Err(BlkError::Failed)).unwrap();
+        for answer in [rejection, BlkError::Failed] {
+            let id = c.submit(invalid.clone());
+            c.done(id, Err(answer)).unwrap();
+        }
+        let id = c.submit(invalid.clone());
+        assert!(c.clone().done(id, Ok(())).is_err());
+        assert!(c.done(id, Err(BlkError::ReadOnly)).is_err());
+        // Invalid, on a read-only target.
+        let mut c = Client::on(Base::Empty, true);
+        for answer in [rejection, BlkError::ReadOnly] {
+            let id = c.submit(invalid.clone());
+            c.done(id, Err(answer)).unwrap();
+        }
+        let id = c.submit(invalid);
+        assert!(c.done(id, Err(BlkError::Failed)).is_err());
+    }
+
+    /// R8: placing an operation must consider every order, not only the
+    /// positions in one listing of the operations so far. A discard of
+    /// block 3 (D) is in flight; a write to block 5 (Q) is submitted and
+    /// acknowledged; a write to blocks 0 to 3 (W) is submitted; D is
+    /// acknowledged, then W. D and Q do not overlap and have no order, W
+    /// must follow Q, and W may still precede D: block 3 may then read as
+    /// zeros. (Found when `MemTarget` learnt to append on receipt.)
+    #[test]
+    fn an_operation_may_precede_one_listed_before_its_predecessor() {
+        let mut c = Client::new();
+        let d = c.discard(3, 1);
+        c.wrote(5, 1, 7);
+        let w = c.write(0, 4, 1);
+        c.ack(d);
+        c.ack(w);
+        assert!(c.would_see(0, &[1, 1, 1, 1, 0, 7]));
+        assert!(c.would_see(0, &[1, 1, 1, 0, 0, 7]));
+        assert!(!c.would_see(0, &[1, 1, 0, 1, 0, 7]));
     }
 
     /// R11: once the log has failed, a flush must fail, and after the
