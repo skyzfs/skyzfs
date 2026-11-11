@@ -199,13 +199,18 @@ fn store_kill_test_child() {
     let dir = FsDir::new(path).unwrap();
     let (store, _) = Store::open(dir, OpenOptions::default()).unwrap();
     let mut store = store.serve().unwrap();
-    let stdout = std::io::stdout();
+    // The reports go to standard error, which the test harness does not
+    // write to: its own lines on standard output would be counted as
+    // moments, and its unfinished line would swallow the first report.
+    let stderr = std::io::stderr();
     let say = |line: String| {
         // One whole line, written at once.
-        let mut out = stdout.lock();
+        let mut out = stderr.lock();
         out.write_all(line.as_bytes()).unwrap();
         out.flush().unwrap();
     };
+    // The store is open: from here on the lock is held.
+    say("open\n".to_string());
     // Until the parent kills this process.
     for n in from..u64::MAX {
         let (block, _, data) = kill_write(n);
@@ -331,7 +336,10 @@ fn a_second_instance_is_refused_on_real_files() {
 /// write over a pipe; the parent kills it with SIGKILL at a moment the
 /// clock chooses, opens the store, and finds in every block the last
 /// write that was acknowledged for it, or the one write that was in
-/// flight when the child died. Several rounds on the same store, with
+/// flight when the child died. The child reports on standard error:
+/// `open` once the store is open, then each acknowledgement and each
+/// flush. A moment is a number of reports after `open`, from none to
+/// 1999, drawn from a seed that is printed. Several rounds on the same store, with
 /// checkpoints in between.
 #[test]
 fn acknowledged_writes_survive_kill_9() {
@@ -347,8 +355,8 @@ fn acknowledged_writes_survive_kill_9() {
     // The moments of the kills come from the clock, or from the seed a
     // failed run printed.
     let seed = match std::env::var(KILL_SEED) {
-        Ok(seed) => seed.parse().unwrap(),
-        Err(_) => std::time::SystemTime::now()
+        Ok(seed) if !seed.is_empty() => seed.parse().unwrap(),
+        _ => std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64,
@@ -365,15 +373,18 @@ fn acknowledged_writes_survive_kill_9() {
             ])
             .env(CHILD_DIR, tmp.path())
             .env(CHILD_FROM, next.to_string())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .unwrap();
         moment = moment
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        let kill_after = 1 + (moment >> 33) % 2000;
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        // The moment of the kill: after this many of the child's
+        // reports behind "open". None is a moment too: the child dies
+        // before its first acknowledgement.
+        let kill_after = (moment >> 33) % 2000;
+        let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
         let mut acked = None;
         let mut note = |line: &str| {
             if let Some(Ok(n)) = line.strip_prefix("ack ").map(str::parse::<u64>) {
@@ -381,24 +392,38 @@ fn acknowledged_writes_survive_kill_9() {
             }
         };
         let deadline = Instant::now() + TIMEOUT;
-        let mut seen = 0;
-        while seen < kill_after && Instant::now() < deadline {
-            let Some(Ok(line)) = lines.next() else {
-                break;
-            };
-            note(&line);
-            seen += 1;
+        // The child says when it has opened the store.
+        loop {
+            match lines.next() {
+                Some(Ok(line)) if line == "open" => break,
+                Some(Ok(_)) => {}
+                _ => panic!("round {round}: the child ended before it had opened the store"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "round {round}: the child did not open the store"
+            );
         }
         // While the child lives the store is its own: one instance per
         // volume, across processes.
-        if seen > 0 {
+        assert!(
+            matches!(
+                Store::open(dir.clone(), options.clone()),
+                Err(StoreError::Locked)
+            ),
+            "round {round}: the store opened under a live instance"
+        );
+        for seen in 0..kill_after {
             assert!(
-                matches!(
-                    Store::open(dir.clone(), options.clone()),
-                    Err(StoreError::Locked)
-                ),
-                "round {round}: the store opened under a live instance"
+                Instant::now() < deadline,
+                "round {round}: the child reported {seen} times in {TIMEOUT:?}, not {kill_after}"
             );
+            match lines.next() {
+                Some(Ok(line)) => note(&line),
+                _ => panic!(
+                    "round {round}: the child's reports ended after {seen}, before the kill at {kill_after}"
+                ),
+            }
         }
         child.kill().unwrap();
         // Acknowledgements that were in the pipe when it died count too.
@@ -406,10 +431,11 @@ fn acknowledged_writes_survive_kill_9() {
             note(&line);
         }
         child.wait().unwrap();
-        let acked =
-            acked.unwrap_or_else(|| panic!("round {round}: the child acknowledged nothing"));
+        // Killed before its first acknowledgement, the child has added
+        // nothing that must be held, and its first write may be there.
+        let acked = acked.unwrap_or(next - 1);
         assert!(
-            acked >= next,
+            acked + 1 >= next,
             "round {round}: acknowledged {acked}, started at {next}"
         );
         for n in next..=acked {
