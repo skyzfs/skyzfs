@@ -451,11 +451,14 @@ impl<'q> KernelQueue<'q> {
         Ok(this)
     }
 
-    /// For tests: the memory whose addresses the driver may hold right
-    /// now, as start and length: the library's buffers and each tag's
-    /// own buffer that is in its place. None of it is ever freed.
+    /// Not API: for the kernel tests only. The memory whose addresses
+    /// the driver may hold right now, as start and length: the
+    /// library's first buffers, which the fetch commands of the start
+    /// name, and each tag's own buffer that is in its place, which the
+    /// tag's commits name from its first commit on. None of it is ever
+    /// freed.
     #[doc(hidden)]
-    pub fn told_ranges(&self) -> Vec<(usize, usize)> {
+    pub fn ranges_told_for_tests(&self) -> Vec<(usize, usize)> {
         self.bufs.ranges()
     }
 
@@ -639,7 +642,11 @@ mod tests {
 
     /// The buffers whose addresses the driver is told are never given
     /// back to the allocator: not when the queue's buffers are dropped,
-    /// and not when a tag's buffer is replaced. The test binary's
+    /// which is how the queue drops them (they are its field) and how
+    /// a queue that could not be made whole drops them, and not when a
+    /// tag's buffer is replaced. All three kinds are watched: the
+    /// library's first buffers, each tag's own, and one that was
+    /// replaced. The test binary's
     /// allocator counts every deallocation that gives back a byte of a
     /// watched range; a block freed on purpose shows that it counts.
     ///
@@ -667,11 +674,29 @@ mod tests {
         assert!(watch::watch(new.as_ptr() as usize, new.len()));
         Buffers::put(&mut bufs.own[0], new);
         drop(bufs);
+        // A queue that could not be made whole: `KernelQueue::new`
+        // makes the library's buffers, then the tags' own one by one,
+        // and returns early when one cannot be locked or the library's
+        // queue cannot be made; what exists by then is dropped there.
+        let mut partial = Buffers {
+            first: (0..DEPTH).map(|_| IoBuf::new(MAX_IO as usize)).collect(),
+            own: Vec::new(),
+        };
+        partial.own.push(Some(Buf::with_capacity(MAX_BLOCKS)));
+        for (start, len) in partial.ranges() {
+            assert!(watch::watch(start, len), "no room to watch");
+        }
+        drop(partial);
         assert_eq!(
             watch::freed(),
             0,
             "memory whose address the driver was told went back to the allocator"
         );
+        // And it is all still this process's memory.
+        for &(start, len) in &ranges {
+            assert!(watch::mapped(start, len), "a buffer is no longer mapped");
+        }
+        assert!(!watch::mapped(0, 4096));
         // The count counts: a watched block that is freed is seen.
         let freed = Buf::with_capacity(MAX_BLOCKS);
         assert!(watch::watch(freed.as_ptr() as usize, freed.len()));

@@ -32,10 +32,14 @@ use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
+/// The test allocator, from the crate's sources: in test builds only.
+#[path = "../src/watch.rs"]
+mod watch;
+
 /// The allocator of this binary counts the deallocations of memory it
-/// is told to watch: see `skyzfs_ublk_sys::watch`.
+/// is told to watch.
 #[global_allocator]
-static WATCHING: skyzfs_ublk_sys::watch::Watching = skyzfs_ublk_sys::watch::Watching;
+static WATCHING: watch::Watching = watch::Watching;
 
 const SIZE: u64 = 64 << 20;
 const DEPTH: u16 = 8;
@@ -918,10 +922,9 @@ fn in_flight_writes(n: u32) -> u64 {
 /// device, and counts the bytes that changed under it and the blocks
 /// that lie where a told buffer was.
 fn after_the_stop(queue: skyzfs_ublk_sys::queue::KernelQueue<'_>, n: u32) -> Stop {
-    use skyzfs_ublk_sys::watch;
     const FILL: u8 = 0x5a;
     const LINGER: Duration = Duration::from_millis(150);
-    let told = queue.told_ranges();
+    let told = queue.ranges_told_for_tests();
     let watched = told
         .iter()
         .filter(|&&(start, len)| watch::watch(start, len))

@@ -73,11 +73,12 @@ pub mod raw;
 pub mod signals;
 #[cfg(target_os = "linux")]
 mod wake;
-#[cfg(target_os = "linux")]
-#[doc(hidden)]
-pub mod watch;
+// In test builds only: no library and no daemon holds this module.
+// The kernel tests include the same file for their own binary.
+#[cfg(all(test, target_os = "linux"))]
+mod watch;
 
-/// The unit tests run on the watching allocator: see [`watch`].
+/// The unit tests run on the watching allocator: see `watch.rs`.
 #[cfg(all(test, target_os = "linux"))]
 #[global_allocator]
 static WATCHING: watch::Watching = watch::Watching;
