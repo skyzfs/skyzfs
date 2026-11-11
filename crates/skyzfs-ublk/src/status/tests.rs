@@ -649,7 +649,10 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
             );
         }
     }
-    assert!(POOL_WARNING.contains("export the pool") && POOL_WARNING.contains("reboot"));
+    // The step it names is a read, and it does not advise an export,
+    // which is not known to work in that state.
+    assert!(POOL_WARNING.contains("zpool scrub") && POOL_WARNING.contains("reboot"));
+    assert!(!POOL_WARNING.contains("export"));
 }
 
 /// The order of a start: the publishing thread's first write is tried
