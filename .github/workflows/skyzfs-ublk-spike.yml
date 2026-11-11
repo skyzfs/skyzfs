@@ -114,6 +114,8 @@ jobs:
           cat > "$RUNNER_TEMP/ckpt.sh" <<'SCRIPT'
           set -u
           d=$1; base=/mnt/skz-ckpt; pool=skzckpt
+          # shellcheck source=tests/lib/lim.sh
+          . "$2/tests/lib/lim.sh"
           rm -rf "$base"; mkdir -p "$base/run"
           say() { echo "ckpt_$*"; }
           fail() { say "verdict FAIL: $*"; exit 1; }
@@ -140,35 +142,44 @@ jobs:
           say "create $("$d" create --dir "$base/vol" --size $((4 << 30)) --run-dir "$base/run" 2>&1 | tr '\n' ';')"
           serve
           status at_start
-          timeout 180 zpool create -f -o ashift=12 -o cachefile=none -O compression=off -O mountpoint="$base/mnt" "$pool" "$dev" || fail "zpool create"
+          lim 180 zpool create -f -o ashift=12 -o cachefile=none -O compression=off -O mountpoint="$base/mnt" "$pool" "$dev" || fail "zpool create"
           # 640 MiB that do not compress: five times the high mark of
           # two 64 MiB segments.
           for i in 1 2 3 4 5; do
-            dd if=/dev/urandom of="$base/mnt/f$i" bs=1M count=128 conv=fsync status=none || fail "dd $i"
+            # The status three times while the file is written, so
+            # that a step under way is seen if it can be.
+            dd if=/dev/urandom of="$base/mnt/f$i" bs=1M count=128 conv=fsync status=none &
+            writer=$!
+            for look in 1 2 3; do sleep 0.3; status "during_${i}_look_$look"; done
+            wait "$writer" || fail "dd $i"
             status "after_${i}x128MiB"
           done
-          timeout 120 zpool sync "$pool" || fail "zpool sync"
+          lim 120 zpool sync "$pool" || fail "zpool sync"
           sleep 3
           status after_load
           steps=$(field checkpoint_steps); live=$(field log_live)
           say "steps_after_load ${steps:-none} log_live ${live:-none}"
           sums=$(cd "$base/mnt" && sha256sum f1 f2 f3 f4 f5 | sha256sum | cut -d' ' -f1)
-          timeout 600 zpool scrub -w "$pool" || fail "scrub"
+          lim 600 zpool scrub -w "$pool" || fail "scrub"
           say "zpool_after_scrub $(zpool status "$pool" | grep -E 'state:|scan:|errors:|ublkb' | tr -s ' ' | tr '\n' ';')"
+          case $(zpool status "$pool" | grep -E 'state:|errors:' | tr -s ' ' | tr '\n' ';') in *"state: ONLINE"*"errors: No known data errors"*) ;; *) fail "the pool is not healthy after the first scrub" ;; esac
           status after_scrub
-          timeout 120 zpool export "$pool" || fail "export"
+          lim 120 zpool export "$pool" || fail "export"
           status before_stop
           stop
           serve
+          say "second_start_ready_line $(tr '\n' ';' < "$base/ready")"
           status second_start
-          timeout 180 zpool import -d "$dev" -o cachefile=none "$pool" || fail "import after the restart"
+          sleep 1
+          grep 'serving device' "$base/serve.log" | tail -n 1 | sed 's/^/ckpt_second_start_log /'
+          lim 180 zpool import -d "$dev" -o cachefile=none "$pool" || fail "import after the restart"
           again=$(cd "$base/mnt" && sha256sum f1 f2 f3 f4 f5 | sha256sum | cut -d' ' -f1)
-          timeout 600 zpool scrub -w "$pool" || fail "second scrub"
+          lim 600 zpool scrub -w "$pool" || fail "second scrub"
           health=$(zpool status "$pool" | grep -E 'state:|scan:|errors:|ublkb' | tr -s ' ' | tr '\n' ';')
           say "zpool_after_restart $health"
           say "content before $sums after the restart $again"
           status at_end
-          timeout 120 zpool export "$pool" || fail "second export"
+          lim 120 zpool export "$pool" || fail "second export"
           stop
           say "detach $("$d" detach --dir "$base/vol" --run-dir "$base/run" 2>&1 | tr '\n' ';')"
           [ "${steps:-0}" -gt 0 ] || fail "checkpoint_steps was ${steps:-none} after the load"
@@ -178,7 +189,7 @@ jobs:
           SCRIPT
           rc=0
           set +o pipefail
-          sudo bash "$RUNNER_TEMP/ckpt.sh" "$PWD/target/release/skyzfsd" 2>&1 | tee ckpt.log
+          sudo bash "$RUNNER_TEMP/ckpt.sh" "$PWD/target/release/skyzfsd" "$PWD" 2>&1 | tee ckpt.log
           rc=${PIPESTATUS[0]}
           set -o pipefail
           {
