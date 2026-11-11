@@ -268,9 +268,14 @@ def plan(records, budget_points, deep_points, seed=1, window=WINDOW):
     return kind, deep, avail
 
 
+def is_write(r):
+    """Whether a record is a write. Its data need not be readable: `pos` is optional in a provider's index."""
+    return 'pos' in r or (r['bytes'] > 0 and 'discard' not in r['flags'] and 'mark' not in r['flags'])
+
+
 def data_writes(records, lo, hi):
     """Record numbers in [lo, hi) that are writes outside the labels."""
-    return [i for i in range(lo, hi) if 'pos' in records[i] and not records[i].get('label')]
+    return [i for i in range(lo, hi) if is_write(records[i]) and not records[i].get('label')]
 
 
 def intent_log_writes(log_path, records, lo, hi):
@@ -403,9 +408,13 @@ def controls(records, marks, find=None, intent=None):
 INTENT_BY_CHANCE = ('whether losing it matters depends on whether a transaction group took the file before its fsync '
                     'returned, which the log alone does not say; the `intent` control picks an intent-log block that the '
                     'promise does depend on, and that one is judged')
+NO_DATA = ("the provider's index gives no position for a write's data (`pos`), so the rig cannot read what a "
+           'write carries')
 EXPECTED = {
     'drop': {
         'block': {'by': 'any'},
+        # A provider whose index does not say where a write's data is.
+        'unknown': {'by': 'either', 'why': NO_DATA + ' and cannot tell what kind of block the rule picked'},
         # Only where the intent log is on the device under test.
         'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
         'superseded': {'by': None,
@@ -414,6 +423,7 @@ EXPECTED = {
     },
     'reorder': {
         'block': {'by': 'copies'},
+        'unknown': {'by': 'either', 'why': NO_DATA + ' and cannot tell what kind of block the rule picked'},
         'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
     },
     'data': {
@@ -672,11 +682,36 @@ def manifest_trouble(marks, n_files):
     return None
 
 
+def control_sources(log, records, fsync_check):
+    """How the controls find their victims -> (find, intent, absent).
+
+    They are found in the log itself, through the positions the index
+    gives, whoever builds the images. `absent` maps each control that
+    cannot be built here to the reason, which the summary prints: no
+    control is left out silently.
+    """
+    has_data = any('pos' in r for r in records)
+    absent = {}
+    if not fsync_check:
+        absent['intent'] = 'the intent log is not on the device under test in this layout'
+    if not has_data:
+        absent['data'] = NO_DATA
+        absent.setdefault('intent', NO_DATA)
+
+    def find(n):
+        return writes_carrying(log, records, file_pattern(n)) if has_data else []
+
+    def intent(lo, hi):
+        return intent_log_writes(log, records, lo, hi) if 'intent' not in absent else []
+    return find, intent, absent
+
+
 def judge_controls(ctl, expected=None, absent=()):
     """Compare the controls' results with the table -> (rows, gaps, all as expected).
 
-    `absent` names controls that cannot be built in this layout; any
-    other control of the table that did not run fails the job.
+    `absent` names controls that cannot be built here, with the reason
+    when it is a dict; each gets a row that says so. Any other control
+    of the table that did not run fails the job.
     """
     expected = EXPECTED if expected is None else expected
     seen = {c['name']: c for c in ctl}
@@ -712,6 +747,10 @@ def judge_controls(ctl, expected=None, absent=()):
                      'note': (want or {}).get('harmless', '') or (want or {}).get('why', '') if match else ''})
         if want and want.get('gap') and match:
             gaps.append({'name': name, 'gap': want['gap']})
+    for name in sorted(set(absent) - set(seen)):
+        why = absent[name] if isinstance(absent, dict) else 'it cannot be built in this layout'
+        rows.append({'name': name, 'class': None, 'expected': 'not built', 'observed': 'not built', 'match': True,
+                     'note': '', 'not_built': why})
     return rows, gaps, ok
 
 
@@ -1157,7 +1196,7 @@ def main():
     total = len(records)
     marks = parse_marks(records)
     res = {'records': total, 'marks': len(marks), 'files': len(rig.manifest), 'sectorsize': idx['sectorsize'],
-           'write_bytes': sum(r['bytes'] for r in records if 'pos' in r),
+           'write_bytes': sum(r['bytes'] for r in records if is_write(r)),
            'discards': sum(1 for r in records if 'discard' in r['flags']),
            'discard_bytes': sum(r['bytes'] for r in records if 'discard' in r['flags']), 'discard_mode': args.discard}
     groups = group_points(records)
@@ -1276,7 +1315,7 @@ def main():
     if args.replay_log:
         if rig.at == total:
             witness.append(dict(replay_log_image(total), what="the main pass's final image"))
-        between = [n for n in range(1, total) if 'pos' in records[n - 1] and 'pos' in records[n]]
+        between = [n for n in range(1, total) if is_write(records[n - 1]) and is_write(records[n])]
         for n, what in ((min(between, key=lambda n: abs(n - total // 2)) if between else total // 2, 'between two writes'),
                         (total, 'the end')):
             rig.reset()
@@ -1305,12 +1344,9 @@ def main():
 
     # Negative controls: wrong replays, judged against EXPECTED.
     ctl = []
-    def find(n):
-        return [] if args.provider else writes_carrying(args.log, records, file_pattern(n))
-
-    def intent(lo, hi):
-        return intent_log_writes(args.log, records, lo, hi) if fmarks and not args.provider else []
-
+    find, intent, absent = control_sources(args.log, records, bool(fmarks))
+    for name, why in absent.items():
+        print(f'control {name}: not built: {why}', flush=True)
     for c in controls(records, marks, find, intent):
         rig.reset(c['schedule'])
         # The transaction-group points of the wrong replay itself, inside the range the control checks.
@@ -1327,13 +1363,13 @@ def main():
                              n in ctl_copies, ctl_due(n)) for n in pts]
         # What was withheld, kept whole: an uncaught control can then be explained after the run.
         v = records[c['victim']]
-        if 'pos' in v and not args.provider:
+        if 'pos' in v:
             with open(args.log, 'rb') as f, open(os.path.join(args.out, f"victim-{c['name']}.bin"), 'wb') as o:
                 f.seek(v['pos'])
                 o.write(f.read(v['bytes']))
         checked = len(results)
         by, rig_errors, first = tally_control(results)
-        facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
+        facts = victim_facts(args.log, records, c['victim'], args.base) if 'pos' in v else None
         # Which blocks the victim is, by the pool's own account: the
         # true image at the end of the control's range, listed by zdb.
         if facts is not None:
@@ -1343,7 +1379,7 @@ def main():
             v = records[c['victim']]
             facts['blocks'] = blocks_at(zdb_blocks(out)['bps'], v['offset'], v['offset'] + v['bytes']) if rc == 0 else None
         ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
-                    'class': victim_class(records, c['victim'], facts),
+                    'class': victim_class(records, c['victim'], facts) if facts is not None else 'unknown',
                     'deep_points': len(deep_at), 'copies_points': len(ctl_copies), 'caught': first is not None,
                     'first': first, 'failed_by': by,
                     'rig_errors': rig_errors})
@@ -1352,7 +1388,7 @@ def main():
               + (f"; THE RIG FAILED at {len(rig_errors)} prefixes, first: {rig_errors[0]['failed']}" if rig_errors else ''),
               flush=True)
     res['controls'] = ctl
-    res['control_rows'], res['gaps'], controls_ok = judge_controls(ctl, absent=() if fmarks else ('intent',))
+    res['control_rows'], res['gaps'], controls_ok = judge_controls(ctl, absent=absent)
     for g in res['gaps']:
         print(f"::warning title=replay rig, known gap::control {g['name']} is not caught: {g['gap']}", flush=True)
     for r in res['control_rows']:
@@ -1472,6 +1508,9 @@ def summary(res):
         for r in res.get('control_rows', []):
             out.append(f"| {r['name']} | {r.get('class') or '–'} | {r['expected']} | {r['observed']} | "
                        f"{'as expected' if r['match'] else '**DIFFERS**'} |")
+        for r in res.get('control_rows', []):
+            if r.get('not_built'):
+                out.append(f"\n`{r['name']}` was not built: {r['not_built']}.")
         for r in res.get('control_rows', []):
             if r.get('note'):
                 out.append(f"\n`{r['name']}` picked a write that is {r['class']}: not caught, and not a fault, because {r['note']}.")

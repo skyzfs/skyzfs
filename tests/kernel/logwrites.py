@@ -27,6 +27,14 @@ commands, and this is the reference implementation of both:
 A provider for another source of write order (skyzfsd's own write log)
 implements the same two commands with the same INDEX.json.
 
+The rig reads LOG itself for one thing: to find the writes its negative
+controls withhold, and to say what they were. For that a write's record
+gives `pos`, the byte position in LOG at which the write's data stands,
+whole and uncompressed, `bytes` long. A provider whose log cannot be
+read that way leaves `pos` out of every record. The rig then builds the
+controls that need no data, reports the others as not built with that
+reason, and does not judge what kind of block a control picked.
+
 Several devices in one order. This log records one device. A daemon
 that serves several devices from one log (a pool's data device and its
 log device) has their writes in one order, so one prefix gives an image

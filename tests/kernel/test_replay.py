@@ -480,6 +480,67 @@ class Log(unittest.TestCase):
         # without a way to find a file's block there is no such control
         self.assertEqual({c['name'] for c in replay_check.controls(recs, marks)}, {'drop', 'reorder'})
 
+    def fsync_log(self):
+        """Six groups; in group k, file k-1 is written: first as an intent-log block, with its fsync mark, then in place."""
+        import struct
+        zil = b'\0' * 144 + struct.pack('<Q', replay_check.ZEC_MAGIC)
+        ents = []
+        for k in range(1, 7):
+            name = replay_check.file_pattern(k - 1)
+            ents += [('write', (5 << 20) + k * 16 * SS, (zil + name)[:SS].ljust(SS, b'\2') + name), ('flush',),
+                     ('mark', f'fsync-{k - 1}'),
+                     ('write', (1 << 20) + k * 16 * SS, blk(0x30 + k) + name + blk(k, 2))]
+            ents += [e for e in txg(k) if e[0] != 'mark'] + [('mark', f'sync-{k}-{k}')]
+        logwrites.write_log(self.log, SS, ents)
+
+    def test_a_named_provider_gets_the_same_controls(self):
+        # The index as the rig gets it from a provider command, against the one the default path makes.
+        import json
+        import subprocess
+        self.fsync_log()
+        out = os.path.join(self.dir.name, 'index.json')
+        subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logwrites.py'),
+                        'index', '--log', self.log, '--dev-bytes', str(DEV), '--out', out], check=True)
+        with open(out) as f:
+            recs = json.load(f)['records']
+        self.assertEqual(recs, logwrites.index(self.log, DEV)['records'])
+        marks = replay_check.parse_marks(recs)
+        for fsync_check, names in ((True, {'drop', 'reorder', 'data', 'intent'}), (False, {'drop', 'reorder', 'data'})):
+            find, intent, absent = replay_check.control_sources(self.log, recs, fsync_check)
+            ctl = replay_check.controls(recs, marks, find, intent)
+            self.assertEqual({c['name'] for c in ctl}, names)
+            self.assertEqual(set(absent), {'drop', 'reorder', 'data', 'intent'} - names)
+            # every control of the table is either built or named as absent, with a reason
+            self.assertEqual(names | set(absent), set(replay_check.EXPECTED))
+            self.assertTrue(all(absent.values()))
+
+    def test_a_provider_without_data_positions_says_which_controls_are_missing(self):
+        self.fsync_log()
+        recs = logwrites.index(self.log, DEV)['records']
+        for r in recs:
+            r.pop('pos', None)
+        marks = replay_check.parse_marks(recs)
+        find, intent, absent = replay_check.control_sources(self.log, recs, True)
+        ctl = replay_check.controls(recs, marks, find, intent)
+        self.assertEqual({c['name'] for c in ctl}, {'drop', 'reorder'})
+        self.assertEqual(set(absent), {'data', 'intent'})
+        self.assertIn('pos', absent['data'])
+        # judged: the two that ran are of unknown kind and not judged; the two missing are named, not failed
+        seen = [{'name': n, 'class': 'unknown', 'caught': False, 'failed_by': [], 'rig_errors': []} for n in ('drop', 'reorder')]
+        rows, _, ok = replay_check.judge_controls(seen, absent=absent)
+        self.assertTrue(ok)
+        by = {r['name']: r for r in rows}
+        self.assertEqual(by['data']['observed'], 'not built')
+        self.assertIn('pos', by['intent']['not_built'])
+        self.assertEqual(by['drop']['expected'], 'either: not judged')
+        # a control that is neither built nor named as absent still fails the job
+        rows, _, ok = replay_check.judge_controls(seen, absent={'intent': 'x'})
+        self.assertFalse(ok)
+        self.assertEqual({r['name']: r['observed'] for r in rows}['data'], 'not run')
+        # and an unknown kind with a rig error is still an error
+        seen[0]['rig_errors'] = [{'n': 3, 'failed': 'import'}]
+        self.assertFalse(replay_check.judge_controls(seen, absent=absent)[2])
+
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
         self.assertEqual(rc, 124)
