@@ -1,0 +1,22 @@
+a checkpoint never invalidates preimages: NOT NOTICED
+b restore: no home sync before invalidate: noticed by 1: the_store_passes_the_conformance_suite
+c neighbours: only before the run: noticed by 2: a_checkpoint_puts_only_its_own_blocks_at_risk, the_store_passes_the_conformance_suite
+c2 neighbours: only after the run: noticed by 2: a_checkpoint_puts_only_its_own_blocks_at_risk, the_store_passes_the_conformance_suite
+d restore does not invalidate: NOT NOTICED
+e decode ignores block crc: noticed by 1: the_preimage_file_golden_bytes
+f flush with nothing to sync does not probe: NOT NOTICED
+g read failure does not fail the volume: NOT NOTICED
+h fail does not mark the log: NOT NOTICED
+i make_room without flush: noticed by 1: a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one
+j checkpoint: write_zeroes not applied to home: noticed by 2: a_discard_leaves_the_blocks_and_write_zeroes_zeroes_them, the_store_passes_the_conformance_suite
+k rebuild: write_zeroes not indexed: noticed by 2: an_open_rebuilds_the_index_from_the_log, the_store_passes_the_conformance_suite
+l invalidate before home sync: noticed by 2: a_checkpoint_puts_only_its_own_blocks_at_risk, the_store_passes_the_conformance_suite
+m create: home not synced: noticed by 2: an_interrupted_creation_leaves_no_store_or_a_whole_one, the_store_passes_the_conformance_suite
+n decode ignores volume id: noticed by 1: the_preimage_file_golden_bytes
+o checkpoint failure of home write ignored: NOT NOTICED
+p preimage file created without dir sync: noticed by 1: the_store_passes_the_conformance_suite
+q served: hold change does not retry: NOT NOTICED
+r discard indexed as zeroes: noticed by 1: a_discard_leaves_the_blocks_and_write_zeroes_zeroes_them
+s failed store still checkpoints: noticed by 1: a_failed_volume_serves_nothing
+t home sync failure ignored: noticed by 2: a_checkpoint_puts_only_its_own_blocks_at_risk, the_log_is_given_up_only_after_the_home_image_is_durable
+u preimage: neighbours read after... covered check dropped: NOT NOTICED

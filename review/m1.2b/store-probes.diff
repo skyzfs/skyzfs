@@ -1,0 +1,109 @@
+diff --git a/crates/skyzfs-local/src/store/tests.rs b/crates/skyzfs-local/src/store/tests.rs
+index cd7d875..72a25ea 100644
+--- a/crates/skyzfs-local/src/store/tests.rs
++++ b/crates/skyzfs-local/src/store/tests.rs
+@@ -1045,3 +1045,104 @@ fn what_the_suite_notices_of_each_defect() {
+         }
+     }
+ }
++
++/// Review probe (PR #7): the preimages of one checkpoint must not be
++/// written back after a later checkpoint has rewritten those blocks.
++/// The first checkpoint writes one block and saves its three neighbours
++/// in the unit; the second writes the whole unit and has no neighbours
++/// to save. An open after that must leave the unit as the second wrote
++/// it. Holds for the store as it is; fails if the first checkpoint
++/// leaves its preimage file valid.
++#[test]
++fn review_old_preimages_are_not_written_back_over_a_later_checkpoint() {
++    fn scenario(env: &Env) -> Outcome {
++        let (disk, mut store) = env.fresh()?;
++        write(&mut store, 4, 1, 1)?;
++        flush(&mut store)?;
++        checkpoint(&mut store)?;
++        write(&mut store, 4, 4, 2)?;
++        flush(&mut store)?;
++        checkpoint(&mut store)?;
++        drop(store);
++        let mut store = env.reopen(&disk)?;
++        expect(&mut store, 4, 4, 2, "the unit the second checkpoint wrote")
++    }
++    holds(scenario);
++}
++
++/// Review probe (PR #7): a write into the home image that fails must
++/// fail the checkpoint, and nothing of the log may be given up. Whole
++/// write units are written, so that the first write of the checkpoint
++/// is the one into the home image. Fails if the checkpoint ignores the
++/// result of that write.
++#[test]
++fn review_a_failed_write_into_the_home_image_fails_the_checkpoint() {
++    fn scenario(env: &Env) -> Outcome {
++        let (disk, mut store) = env.fresh()?;
++        write(&mut store, 4, 4, 1)?;
++        flush(&mut store)?;
++        disk.fail_write(0, false);
++        if store.checkpoint().is_ok() {
++            return Err("the checkpoint did not notice the failed write".into());
++        }
++        drop(store);
++        disk.clear_faults();
++        let mut store = env.reopen_ack(&disk)?;
++        expect(&mut store, 4, 4, 1, "what the flush covered")
++    }
++    holds(scenario);
++}
++
++/// Review probe (PR #7): a failure of the home image, not of the log,
++/// leaves the log's marker: the next instance does not serve the volume
++/// unless the failure is acknowledged. Fails if the store does not mark
++/// the log.
++#[test]
++fn review_a_home_image_failure_leaves_the_marker() {
++    fn scenario(env: &Env) -> Outcome {
++        let (disk, mut store) = env.fresh()?;
++        write(&mut store, 4, 4, 1)?;
++        flush(&mut store)?;
++        disk.fail_sync_of(HOME_NAME);
++        if store.checkpoint().is_ok() {
++            return Err("the checkpoint did not notice the failed sync".into());
++        }
++        drop(store);
++        disk.clear_faults();
++        disk.kill();
++        match Store::open(disk.clone(), env.options()) {
++            Err(StoreError::Log(LogError::MarkedFailed)) => Ok(()),
++            Err(other) => Err(other.to_string()),
++            Ok(_) => Err("a store whose home image failed opened unacknowledged".into()),
++        }
++    }
++    holds(scenario);
++}
++
++/// Review probe (PR #7): a read that fails fails the volume: the next
++/// request, with the disk well again, is refused too (R11). Fails if a
++/// failed read only fails itself.
++#[test]
++fn review_a_failed_read_fails_the_volume() {
++    fn scenario(env: &Env) -> Outcome {
++        let (disk, mut store) = env.fresh()?;
++        write(&mut store, 4, 1, 1)?;
++        disk.fail_read(0, false);
++        let first = Op::Read {
++            offset: 4 * BLOCK,
++            buf: Buf::zeroed(1),
++        };
++        if run(&mut store, first)?.result != Err(BlkError::Failed) {
++            return Err("the failing read did not report a failed volume".into());
++        }
++        let second = Op::Read {
++            offset: 0,
++            buf: Buf::zeroed(1),
++        };
++        if run(&mut store, second)?.result != Err(BlkError::Failed) {
++            return Err("a read was served after a read had failed".into());
++        }
++        Ok(())
++    }
++    holds(scenario);
++}
