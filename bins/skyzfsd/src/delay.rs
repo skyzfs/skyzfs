@@ -129,6 +129,8 @@ pub struct Delayed<Q: Queue, A: AckRecord> {
     timer: Option<mpsc::Sender<Instant>>,
     wake: Arc<dyn Fn() + Send + Sync>,
     stopping: bool,
+    /// The volume failed: see [`Delayed::fail`].
+    failed: bool,
 }
 
 impl<Q: Queue, A: AckRecord + Clone> Delayed<Q, A> {
@@ -178,6 +180,7 @@ impl<Q: Queue, A: AckRecord + Clone> Delayed<Q, A> {
             timer,
             wake,
             stopping: false,
+            failed: false,
         };
         (queue, pumps)
     }
@@ -204,6 +207,23 @@ impl<Q: Queue, A: AckRecord + Clone> Delayed<Q, A> {
             }
         }
         self.waiting = kept;
+    }
+
+    /// The volume failed. Every commit that waits here is given on now
+    /// with the plain I/O error in place of its result, and its
+    /// position is not stored: the result may say "written", and
+    /// nothing says so after the failure. From now on a commit passes
+    /// straight through, the held request's too. Returns how many were
+    /// given on. Call it before [`Pump::fail`](skyzfs_ublk::pump::Pump::fail):
+    /// a failed volume holds no request, and what waits here is held.
+    pub fn fail(&mut self) -> usize {
+        self.failed = true;
+        let waiting = std::mem::take(&mut self.waiting);
+        let given = waiting.len();
+        for (_, _, tag, _, buf) in waiting {
+            self.inner.commit(tag, -skyzfs_ublk::translate::EIO, buf);
+        }
+        given
     }
 
     /// How many commits are waiting.
@@ -243,7 +263,7 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
-        if self.stopping {
+        if self.stopping || self.failed {
             return self.inner.commit(tag, result, buf);
         }
         // The position the pump asked to store with this commit, if it
@@ -342,6 +362,7 @@ mod tests {
     #[derive(Default)]
     struct Noting {
         committed: Vec<u16>,
+        results: Vec<i32>,
         flushes: u32,
         pauses: u32,
         /// The record takes positions again after this many pauses.
@@ -361,8 +382,9 @@ mod tests {
         fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
             Some(Buf::zeroed(blocks))
         }
-        fn commit(&mut self, tag: u16, _result: i32, _buf: Option<Buf>) {
+        fn commit(&mut self, tag: u16, result: i32, _buf: Option<Buf>) {
             self.committed.push(tag);
+            self.results.push(result);
         }
         fn flush(&mut self) -> Result<(), QueueDown> {
             self.flushes += 1;
@@ -647,6 +669,46 @@ mod tests {
         queue.wait(&mut fetched).expect("wait");
         queue.commit(3, 0, None);
         assert_eq!(queue.inner.committed, [0, 2, 1, 3]);
+    }
+
+    /// A failed volume holds no request: what waits here, delayed or
+    /// held, is given on at the failure with the plain I/O error and
+    /// without its position, and later commits pass straight through.
+    #[test]
+    fn a_failure_gives_on_what_waits_with_an_error_and_stores_nothing() {
+        let inner = Noting {
+            fetches: VecDeque::from([
+                request(0, op::WRITE, 8, 8),
+                request(1, op::FLUSH, 0, 0),
+                request(2, op::FLUSH, 0, 0),
+            ]),
+            ..Noting::default()
+        };
+        let hold = Hold {
+            seconds: 3600,
+            what: Held::Flush,
+        };
+        let stored = Stored::default();
+        let delay = Some(Duration::from_secs(3600));
+        let (mut queue, mut ack) = Delayed::new(inner, stored.clone(), delay, Some(hold), || {});
+        let mut fetched = Vec::new();
+        queue.wait(&mut fetched).expect("wait");
+        ack.advance(77).expect("kept back");
+        queue.commit(0, 4096, Some(Buf::zeroed(1)));
+        queue.commit(1, 0, None);
+        assert_eq!(queue.waiting(), 2);
+        assert!(queue.inner.committed.is_empty());
+
+        assert_eq!(queue.fail(), 2);
+        assert_eq!(queue.waiting(), 0);
+        assert_eq!(queue.inner.committed, [0, 1]);
+        assert_eq!(queue.inner.results, [-5, -5]);
+        assert!(stored.positions().is_empty(), "{:?}", stored.positions());
+        // What the pump commits from now on is not kept.
+        queue.commit(2, -5, None);
+        assert_eq!(queue.inner.committed, [0, 1, 2]);
+        queue.wait(&mut fetched).expect("wait");
+        assert!(stored.positions().is_empty());
     }
 
     /// A stop answers the held request at once.
