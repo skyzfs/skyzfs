@@ -1686,6 +1686,11 @@ fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcom
     d.submit_with_room(read_op(0, 8))?;
     d.fail_log()?;
     d.drain()?;
+    // A flush with nothing to make durable need not notice. A write
+    // makes the target meet its log: it fails, or it is acknowledged
+    // and then the flush has something to make durable and must fail.
+    let meet = d.write_op(5, 1);
+    d.run(meet)?;
     let every_request = |d: &mut Driver<'_, H>| -> Outcome {
         d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
         let write = d.write_op(4, 1);
@@ -1748,6 +1753,10 @@ fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Co
         }
         d.fail_log()?;
         d.drain()?;
+        // A write makes the target meet its failed log; the flush
+        // behind it must fail whichever way the write went.
+        let meet = d.write_op(12, 1);
+        d.run(meet)?;
         d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
         if seed % 4 >= 2 {
             // The daemon restarts in between, and still serves nothing.

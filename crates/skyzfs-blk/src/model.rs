@@ -487,6 +487,11 @@ type Readback = BTreeMap<u64, Vec<Option<Cid>>>;
 
 #[derive(Debug, Clone)]
 enum Pending {
+    /// A flush submitted after the log had failed, with nothing to make
+    /// durable: every operation acknowledged before it was covered by a
+    /// completed flush. It promises nothing new and may complete either
+    /// way (rule R11).
+    IdleFlush,
     /// The request must fail. Where it is wrong in more than one way the
     /// contract does not say which error wins, so each that applies is
     /// accepted.
@@ -632,6 +637,11 @@ pub struct Model {
     pending: BTreeMap<RequestId, Pending>,
     /// When each mutation was acknowledged.
     acked: BTreeMap<usize, u64>,
+    /// When the last operation was acknowledged that the volume, as it
+    /// has been recovered, does not hold durably for certain.
+    last_ack: Option<u64>,
+    /// The latest moment a completed flush was submitted at.
+    flush_cover: u64,
     /// A clock that ticks at every event.
     now: u64,
     health: Health,
@@ -665,6 +675,8 @@ impl Model {
             }],
             pending: BTreeMap::new(),
             acked: BTreeMap::new(),
+            last_ack: None,
+            flush_cover: 0,
             now: 0,
             health: Health::Healthy,
             recovering: None,
@@ -701,9 +713,12 @@ impl Model {
         }
     }
 
-    /// The write log has failed for good (rule R11). Every flush submitted
-    /// from now on must fail, and every request submitted after the first
-    /// failure has been delivered. A request in flight now may complete
+    /// The write log has failed for good (rule R11): a write or a sync
+    /// of it has failed. Every flush submitted from now on that has
+    /// something to make durable must fail, and every request submitted
+    /// after the first failure has been delivered. A flush that finds
+    /// every acknowledged operation covered by a completed flush has
+    /// nothing to make durable and may complete either way until then. A request in flight now may complete
     /// either way; if a flush among them succeeds, the model holds the
     /// target to it: what it covered counts as durable.
     pub fn log_failed(&mut self) {
@@ -731,9 +746,14 @@ impl Model {
         self.now += 1;
         let invalid = self.geometry.validate(&request.op).is_err();
         let read_only = self.geometry.read_only() && !is_read && request.op != Op::Flush;
-        let must_fail = self.health == Health::Failed
-            || (self.health == Health::Failing && request.op == Op::Flush);
-        let pending = if invalid || read_only || must_fail {
+        // A flush on a failed log must fail if it has something to make
+        // durable. One that has not need not find out.
+        let idle = self.last_ack.is_none_or(|at| at < self.flush_cover);
+        let failing_flush = self.health == Health::Failing && request.op == Op::Flush;
+        let must_fail = self.health == Health::Failed || (failing_flush && !idle);
+        let pending = if failing_flush && idle && !invalid {
+            Pending::IdleFlush
+        } else if invalid || read_only || must_fail {
             Pending::MustFail {
                 invalid,
                 read_only,
@@ -827,6 +847,9 @@ impl Model {
                 }),
             };
         }
+        if matches!(pending, Pending::IdleFlush) && got.is_ok() {
+            return Ok(());
+        }
         if let Err(error) = got {
             if error == BlkError::Failed && self.health != Health::Healthy {
                 // A failure of a failed volume. If the request was a
@@ -839,7 +862,7 @@ impl Model {
             return Err(Violation::UnexpectedError { id, error });
         }
         match pending {
-            Pending::MustFail { .. } => {}
+            Pending::MustFail { .. } | Pending::IdleFlush => {}
             Pending::Mutation { op } => self.acknowledge(op),
             Pending::Flush { at } => self.flushed(at),
             Pending::Read {
@@ -873,6 +896,7 @@ impl Model {
 
     fn acknowledge(&mut self, op: usize) {
         self.acked.insert(op, self.now);
+        self.last_ack = Some(self.now);
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             match world.waiting.iter().find(|w| w.op == op) {
@@ -898,6 +922,7 @@ impl Model {
     }
 
     fn flushed(&mut self, at: u64) {
+        self.flush_cover = self.flush_cover.max(at);
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             let acked = &self.acked;
@@ -1880,6 +1905,42 @@ mod tests {
         assert_eq!(c.model.readback(), vec![0]);
         assert!(c.would_see(0, &[2]));
         c.sees(0, &[1]).unwrap();
+    }
+
+    /// R11: on a failed log a flush with nothing to make durable may
+    /// complete either way, and promises nothing: here every
+    /// acknowledged write is covered by a completed flush, or there is
+    /// none. With an acknowledged write that no flush covers, it must
+    /// fail. Once a failure has been delivered, every flush fails.
+    #[test]
+    fn a_flush_with_nothing_to_make_durable_need_not_notice_the_failure() {
+        for covered in [false, true] {
+            let mut c = Client::new();
+            if covered {
+                c.wrote(0, 1, 1);
+                let f = c.submit(Op::Flush);
+                c.ack(f);
+            }
+            c.model.log_failed();
+            let f = c.submit(Op::Flush);
+            c.clone().done(f, Err(BlkError::Failed)).unwrap();
+            c.done(f, Ok(())).unwrap();
+            // Still nothing to make durable: either way again.
+            let f = c.submit(Op::Flush);
+            c.done(f, Ok(())).unwrap();
+            // A write that is acknowledged now is something to make
+            // durable, and the flush behind it must fail.
+            c.wrote(1, 1, 2);
+            let f = c.submit(Op::Flush);
+            assert!(matches!(
+                c.clone().done(f, Ok(())),
+                Err(Violation::NotFailed { .. })
+            ));
+            c.done(f, Err(BlkError::Failed)).unwrap();
+            let f = c.submit(Op::Flush);
+            assert!(c.clone().done(f, Ok(())).is_err());
+            c.done(f, Err(BlkError::Failed)).unwrap();
+        }
     }
 
     /// R11: once the log has failed, a flush must fail, and after the

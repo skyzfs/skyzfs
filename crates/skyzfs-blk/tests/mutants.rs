@@ -227,6 +227,17 @@ fn catches_a_reopened_volume_that_lost_what_was_flushed() {
     );
 }
 
+/// R11: a flush that succeeds on a failed log although an acknowledged
+/// write is waiting to be made durable is caught: the rule lets only a
+/// flush with nothing to make durable pass.
+#[test]
+fn catches_a_flush_that_succeeds_on_a_failed_log() {
+    caught(
+        Fault::FlushSucceedsOnFailedLog,
+        &["failed_volume_fails_every_request", FAILURES],
+    );
+}
+
 /// R12: a read-only target that accepts writes is caught.
 #[test]
 fn catches_a_read_only_target_that_writes() {

@@ -58,10 +58,14 @@
 //!   Every operation in it is whole. What recovery exposes is durable
 //!   before the first request is served: a second power cut does not take
 //!   it back.
-//! - **R11 Failed volume.** Once the write log has failed for good, no
-//!   flush received from then on succeeds, and from the first failure
-//!   reported every later request fails, reads included, also after a
-//!   daemon restart. A request already in flight when the log fails may
+//! - **R11 Failed volume.** The write log has failed for good once a
+//!   write or a sync of it has failed; a disk that would refuse the
+//!   next sync and has not been asked has not failed yet. From the
+//!   failure no flush succeeds, and from the first failure reported
+//!   every later request fails, reads included, also after a daemon
+//!   restart. A flush that finds every acknowledged operation already
+//!   covered by a completed flush has nothing to make durable, promises
+//!   nothing new, and may succeed without asking the disk. A request already in flight when the log fails may
 //!   complete either way; a flush among them succeeds only if its work
 //!   was done before the failure. A completed flush stays a promise,
 //!   whichever side of the failure it completed on: when the volume is

@@ -146,6 +146,9 @@ pub enum Fault {
     RecoveryNotDurable,
     /// R11: reads still succeed on a failed volume.
     FailedServesReads,
+    /// R11: a flush succeeds on a failed log although it has something
+    /// to make durable.
+    FlushSucceedsOnFailedLog,
     /// R11: a daemon restart forgets that the volume has failed.
     FailureForgottenOnKill,
     /// R11: a failed volume that is opened again has lost the last
@@ -521,7 +524,8 @@ impl MemTarget {
     /// the volume reported its failure.
     fn refuse(&self, id: u64, op: &Op, done: bool, doomed: bool) -> Option<BlkError> {
         let is_read = matches!(op, Op::Read { .. });
-        if self.failed && !(is_read && self.fault(Fault::FailedServesReads)) {
+        let blind_flush = *op == Op::Flush && self.fault(Fault::FlushSucceedsOnFailedLog);
+        if self.failed && !(is_read && self.fault(Fault::FailedServesReads)) && !blind_flush {
             let fails = match self.config.failure {
                 LogFailure::AtOnce => true,
                 // Only what still needs the log runs into the failure.
