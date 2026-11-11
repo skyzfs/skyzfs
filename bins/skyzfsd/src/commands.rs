@@ -1,8 +1,9 @@
-//! `status` and `detach`, over whatever stands for the kernel's
-//! control interface ([`Control`]). Each returns what it would print
-//! and its exit status, and does no printing itself.
+//! `create`, `status` and `detach`. Each returns what it would print
+//! and its exit status, and does no printing itself. `status` and
+//! `detach` work over whatever stands for the kernel's control
+//! interface ([`Control`]); `create` needs no kernel.
 //!
-//! Neither opens the store. `detach` takes the volume's lock, as the
+//! `status` and `detach` do not open the store. `detach` takes the volume's lock, as the
 //! lifecycle demands; `status` takes nothing and changes nothing.
 //!
 //! Both first ask whether the directory holds a volume at all (the
@@ -10,26 +11,46 @@
 //! and no lock file is made in a directory that is no volume. That
 //! check is this module's own reading: the design does not say what a
 //! command does with a directory that is no volume.
+//!
+//! # What `create` fixes
+//!
+//! A new volume has 4096-byte record alignment, log segments of
+//! [`SEGMENT_SIZE`], and the write unit of the system it is made on
+//! ([`Identity::system_write_unit`]). None of them is an option: they
+//! are recorded with the volume, and a later version that wants others
+//! makes new volumes with others. The directory must exist and hold no
+//! volume: `create` makes no directory and replaces nothing.
 
 use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use skyzfs_local::log::SUPER_NAME;
-use skyzfs_local::store::OpenOptions;
+use skyzfs_blk::Base;
+use skyzfs_local::format::Identity;
+use skyzfs_local::fs::FsDir;
+use skyzfs_local::log::{LogError, SUPER_NAME};
+use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
 use skyzfs_ublk::lifecycle::{self, Control, Detached, Held, Whose};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Noted};
 use skyzfs_ublk::volume::StoreVolume;
 
-use crate::cli::{Exit, Volume};
+use crate::cli::{Create, Exit, Volume};
 
 /// How often a locked volume is tried again: 20 times.
 pub const LOCK_RETRIES: u32 = 20;
 
 /// How long between two tries: 100 ms. With [`LOCK_RETRIES`], 2 s.
 pub const LOCK_PAUSE: Duration = Duration::from_millis(100);
+
+/// The size of a new volume's log segments: 64 MiB. A constant, and
+/// recorded with the volume.
+pub const SEGMENT_SIZE: u64 = 64 << 20;
+
+/// The record alignment of a new volume's log: 4096, so that the log
+/// can be written with direct I/O.
+pub const ALIGN: u32 = 4096;
 
 /// What a command prints, and how it exits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +245,70 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
             "",
             "a daemon holds this volume: stop it first. Nothing was done",
         ),
+    }
+}
+
+fn hex(bytes: &[u8; 16]) -> String {
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
+}
+
+/// `create`: make a new volume with the id `id` in a directory that
+/// exists and holds none. `boot` is this boot, if it could be read:
+/// with it, a failure note of this boot under the run directory is
+/// warned of on standard error (the volume is made all the same, and
+/// the note stays).
+///
+/// On success one line: `created DIR: N bytes, volume ID, identity
+/// IDENTITY`, the two in hex. The identity is the store's
+/// ([`Store::identity`]): what tells this volume from another made
+/// later in the same directory.
+pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
+    let shown = create.dir.display();
+    let dir = match FsDir::new(&create.dir) {
+        Ok(dir) => dir,
+        Err(e) => return Output::error(format_args!("{shown}: {e}: create makes no directory")),
+    };
+    let config = StoreConfig {
+        volume: id,
+        size_mib: create.size >> 20,
+        base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
+        align: ALIGN,
+        segment_size: SEGMENT_SIZE,
+        write_unit: Identity::system_write_unit(),
+    };
+    let store = match Store::create(dir, &config, OpenOptions::default()) {
+        Ok(store) => store,
+        Err(StoreError::Log(LogError::Exists)) => {
+            return Output::error(format_args!(
+                "{shown} holds a volume already. Nothing was done"
+            ))
+        }
+        Err(StoreError::Locked) => {
+            return Output::said(
+                Exit::RefusedHeld,
+                "",
+                &format!("{shown} is in use by another instance. Nothing was done"),
+            )
+        }
+        Err(e) => return Output::error(format_args!("creating a volume in {shown}: {e}")),
+    };
+    let identity = store.identity();
+    drop(store);
+    let warning = boot
+        .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
+        .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
+    Output {
+        exit: Exit::Done,
+        out: format!(
+            "created {shown}: {} bytes, volume {}, identity {}\n",
+            create.size,
+            hex(&id),
+            hex(&identity)
+        ),
+        err: warning,
     }
 }
 
