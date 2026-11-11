@@ -408,6 +408,9 @@ def controls(records, marks, find=None, intent=None):
 INTENT_BY_CHANCE = ('whether losing it matters depends on whether a transaction group took the file before its fsync '
                     'returned, which the log alone does not say; the `intent` control picks an intent-log block that the '
                     'promise does depend on, and that one is judged')
+NEVER_REACHED = ('no uberblock ever reaches it: zdb lists no block in its place, neither at the first point of its own '
+                 'transaction group nor at the end of the checked range. A block allocated in one sync pass and freed in '
+                 'a later pass of the same group is such a write')
 NO_DATA = ("the provider's index gives no position for a write's data (`pos`), so the rig cannot read what a "
            'write carries')
 EXPECTED = {
@@ -418,11 +421,14 @@ EXPECTED = {
         # Only where the intent log is on the device under test.
         'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
         'superseded': {'by': None,
-                       'harmless': 'the same place is written again, whole, before the next uberblock: no uberblock ever '
-                                   'reaches the dropped version, and from the rewrite on the image is the true one'},
+                       'harmless': 'the same place is written again, whole, before the next uberblock and before any mark: '
+                                   'no uberblock ever reaches the dropped version, and from the rewrite on the image is the '
+                                   'true one'},
+        'never reached': {'by': None, 'harmless': NEVER_REACHED},
     },
     'reorder': {
         'block': {'by': 'copies'},
+        'never reached': {'by': None, 'harmless': NEVER_REACHED},
         'unknown': {'by': 'either', 'why': NO_DATA + ' and cannot tell what kind of block the rule picked'},
         'intent-log block': {'by': 'either', 'why': INTENT_BY_CHANCE},
     },
@@ -603,7 +609,13 @@ def tally_control(results):
     for r in results:
         if r['ok']:
             continue
-        if r['failed'] in JUDGING:
+        if r['failed'] == 'rig: zdb died with signal 6':
+            # zdb aborts on an assertion when the pool it reads is damaged. In a
+            # control the image is damaged on purpose, so this is a catch.
+            by['copies'] = by.get('copies', 0) + 1
+            if first is None:
+                first = {'n': r['n'], 'failed': 'copies: zdb aborted', 'detail': r['detail']}
+        elif r['failed'] in JUDGING:
             key = r['failed'].split(': ')[0] if ': ' in r['failed'] else r['failed']
             by[key] = by.get(key, 0) + 1
             if first is None:
@@ -777,20 +789,48 @@ def job_verdict(failures, controls_ok, witness_ok, coverage_errors, zdb_cc_rc):
     return not against, against
 
 
+def only_intent_log(facts, nbytes, block=4096):
+    """Whether a write that starts as an intent-log block is nothing but intent-log blocks.
+
+    ZFS aggregates adjacent writes into one, so the head of a write
+    does not speak for the rest of it. It does when the write is one
+    block long, or when zdb, wherever it was asked, lists blocks in the
+    write's range and every one of them is an intent-log block.
+    """
+    if not facts.get('intent_log'):
+        return False
+    if nbytes <= block:
+        return True
+    listed = (facts.get('blocks') or []) + (facts.get('blocks_in_group') or [])
+    return bool(listed) and all(b['type'] == 'ZIL intent log' for b in listed)
+
+
 def victim_class(records, victim, facts):
     """What kind of write a control's fixed rule picked: the table is keyed by this."""
     if not facts:
         return 'block'
-    if facts.get('intent_log'):
+    if only_intent_log(facts, records[victim]['bytes']):
         return 'intent-log block'
     later = facts.get('later')
     if later is not None:
         v, w = records[victim], records[later]
         whole = w['offset'] <= v['offset'] and v['offset'] + v['bytes'] <= w['offset'] + w['bytes']
         next_ub = next((i for i in range(victim + 1, len(records)) if records[i].get('ub')), len(records))
-        if whole and later < next_ub:
+        # A mark between the two would be a promise made while the place held the dropped version.
+        marked = any('mark' in records[i]['flags'] for i in range(victim + 1, later))
+        if whole and later < next_ub and not marked:
             return 'superseded'
+    # Asked at the first point of the victim's own transaction group, and
+    # again at the end of the range, zdb lists no block there: no
+    # uberblock ever reached this write.
+    if facts.get('blocks_in_group') == [] and facts.get('blocks') == [] and not facts.get('intent_log'):
+        return 'never reached'
     return 'block'
+
+
+def own_group_point(records, victim):
+    """The first point of the transaction group a write belongs to: right after the next uberblock write. None at the end."""
+    return next((f for f, _ in group_points(records) if f > victim + 1), None)
 
 
 def blocks_at(bps, lo, hi):
@@ -872,6 +912,11 @@ def facts_text(facts):
             for x in b[:6])
     elif b is not None:
         text += '. zdb lists no live block there on the true image at the end of the checked range'
+    g = facts.get('blocks_in_group')
+    if g:
+        text += f"; at the first point of its own transaction group zdb lists {len(g)} block(s) there, so its group reached it"
+    elif g is not None:
+        text += '; nor at the first point of its own transaction group: no uberblock reached it'
     return text
 
 
@@ -1401,6 +1446,17 @@ def main():
             rc, out, _ = run(['zdb', '-e', '-p', rig.imgdir, '-bbbbb', args.pool], 300)
             v = records[c['victim']]
             facts['blocks'] = blocks_at(zdb_blocks(out)['bps'], v['offset'], v['offset'] + v['bytes']) if rc == 0 else None
+            # And at the first point of the victim's own transaction
+            # group: was the write ever reached by an uberblock? A block
+            # freed since is not listed at the end either.
+            g = own_group_point(records, c['victim'])
+            facts['blocks_in_group'] = None
+            if g is not None:
+                rig.reset()
+                rig.advance(g)
+                rc, out, _ = run(['zdb', '-e', '-p', rig.imgdir, '-bbbbb', args.pool], 300)
+                if rc == 0:
+                    facts['blocks_in_group'] = blocks_at(zdb_blocks(out)['bps'], v['offset'], v['offset'] + v['bytes'])
         ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
                     'class': victim_class(records, c['victim'], facts) if facts is not None else 'unknown',
                     'deep_points': len(deep_at), 'copies_points': len(ctl_copies), 'caught': first is not None,

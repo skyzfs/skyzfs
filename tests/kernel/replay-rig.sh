@@ -73,6 +73,10 @@ SLOG_MB=256
 LOG_MB=8192
 SYNCS=${RIG_SYNCS:-40}
 FILE_KB=${RIG_FILE_KB:-256}
+# A file starts with a 4 KiB block that names it; the rest is random.
+if ! [[ $FILE_KB =~ ^[0-9]+$ ]] || [ "$FILE_KB" -lt 4 ]; then
+    echo "RIG_FILE_KB must be a number, at least 4: $FILE_KB" >&2; exit 64
+fi
 FILE_SLEEP=${RIG_FILE_SLEEP:-0.05}
 SYNC_SLEEP=${RIG_SYNC_SLEEP:-0.6}
 DEVICE=${RIG_DEVICE:-}
