@@ -1,0 +1,65 @@
+name: skyzfs-ublk-spike
+
+# The libublk spike of work package M1.3b (docs/skyzfs-ublk-spike.md):
+# builds `skyzfs-ublk-spike` and runs `tests/kernel/ublk-spike.sh`
+# against the runner's kernel. It prints observations and judges
+# nothing: the job fails only if the program does not build or a served
+# device never comes up. It is temporary: it goes when the spike's
+# answers are recorded and the binding is tested by the daemon rig.
+on:
+  workflow_dispatch:
+  # A workflow that has never run cannot be dispatched from a branch: a
+  # push that changes the spike runs it.
+  push:
+    branches: ['skyzfs-coding*']
+    paths:
+      - .github/workflows/skyzfs-ublk-spike.yml
+      - tests/kernel/ublk-spike.sh
+      - crates/skyzfs-ublk/src/bin/skyzfs-ublk-spike.rs
+
+concurrency:
+  group: ublk-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+# The job runs branch code and third-party code as root: its token can
+# read the repository and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  spike:
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-26.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v6
+      - name: What the build needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libclang-dev fio libdevmapper-dev libudev-dev
+          rustup update stable
+          rustc --version
+      - name: Build
+        run: cargo build --release --locked -p skyzfs-ublk --features spike --bin skyzfs-ublk-spike
+      - name: Run
+        run: sudo tests/kernel/ublk-spike.sh "$PWD/target/release/skyzfs-ublk-spike" "$PWD/spike-out"
+      - name: Answers
+        if: always()
+        run: |
+          sudo chmod -R a+rX spike-out 2>/dev/null || true
+          {
+            echo "### libublk spike on ${{ matrix.image }}"
+            echo '```'
+            cat spike-out/answers.txt 2>/dev/null || grep '^spike_' spike-out/spike.log 2>/dev/null || echo "no answers"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ublk-spike-${{ matrix.image }}
+          path: spike-out/
+          retention-days: 30
