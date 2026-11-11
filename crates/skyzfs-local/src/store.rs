@@ -1158,16 +1158,31 @@ pub enum StepPoint {
 pub enum StepPause {
     /// For this long.
     For(std::time::Duration),
-    /// Until a file of this path exists.
+    /// Until a file of this path exists. When a step arrives at the
+    /// point it first makes an empty file of this path with `.reached`
+    /// appended ([`StepPause::reached`]), so that whoever kills the
+    /// process there can wait for the step to be at the point, and not
+    /// only under way.
     Until(std::path::PathBuf),
 }
 
 #[cfg(any(test, feature = "test-hooks"))]
 impl StepPause {
+    /// The file a step makes when it arrives at the point of a pause
+    /// [`StepPause::Until`] this path.
+    pub fn reached(path: &std::path::Path) -> std::path::PathBuf {
+        let mut name = path.as_os_str().to_owned();
+        name.push(".reached");
+        name.into()
+    }
+
     fn wait(&self) {
         match self {
             Self::For(time) => thread::sleep(*time),
             Self::Until(path) => {
+                // For the rig only: if the file cannot be made, the
+                // rig waits and says so; the step is not failed for it.
+                let _ = std::fs::write(Self::reached(path), b"");
                 while !path.exists() {
                     thread::sleep(std::time::Duration::from_millis(5));
                 }

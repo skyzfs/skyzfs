@@ -3006,6 +3006,20 @@ fn the_steps_shown_never_go_back() {
     assert_eq!((state.steps, state.stepping), (STEPS, false));
 }
 
+/// Wait until a step is at the point of its pause: the hook has made
+/// the file that says so. "Under way" alone is earlier than that.
+fn at_the_point(gate: &std::path::Path, what: &str) {
+    let reached = StepPause::reached(gate);
+    let began = std::time::Instant::now();
+    while !reached.exists() {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{what}: the step did not reach its point"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// The served store applies the rule on its worker: after every
 /// request, and with no request at all until the log is below the low
 /// mark. Requests are answered between the steps, the owner is woken
@@ -3115,6 +3129,7 @@ fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
         NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     ));
     let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
     let (disk, mut store) = env.fresh().unwrap();
     store.set_marks(Some(MARKS));
     store.set_step_pause_at(StepPause::Until(gate.clone()), point);
@@ -3160,6 +3175,8 @@ fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
         }
         n += 1;
     }
+    // The step is under way; the loss comes when it is at the point.
+    at_the_point(&gate, &what);
     let state = served.log_state();
     assert!(state.stepping, "{what}");
     assert_eq!(state.steps, 0, "{what}: the step has not ended");
@@ -3173,6 +3190,7 @@ fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
     std::fs::write(&gate, b"").unwrap();
     drop(served);
     let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
     let mut store = env
         .reopen_ack(&disk)
         .unwrap_or_else(|why| panic!("{what}: {why}"));
@@ -3374,6 +3392,7 @@ fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_it
                     NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 ));
                 let _ = std::fs::remove_file(&gate);
+                let _ = std::fs::remove_file(StepPause::reached(&gate));
                 store.set_marks(Some(Marks {
                     high: before.live(),
                     low: 1,
@@ -3381,18 +3400,16 @@ fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_it
                 }));
                 store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Synced);
                 let served = store.serve().map_err(|e| e.to_string())?;
-                let began = std::time::Instant::now();
-                while !served.log_state().stepping {
-                    if began.elapsed() > Duration::from_secs(20) {
-                        return Err(format!("no step: {:?}", served.log_state()));
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
+                at_the_point(&gate, "the newer record, the kill");
+                if served.log_state().steps != 0 {
+                    return Err("the step ended before the kill".into());
                 }
                 // Held behind the sync of the home image: lost there.
                 disk.kill();
                 std::fs::write(&gate, b"").map_err(|e| e.to_string())?;
                 drop(served);
                 let _ = std::fs::remove_file(&gate);
+                let _ = std::fs::remove_file(StepPause::reached(&gate));
             }
             let mut store = env.reopen_ack(&disk)?;
             let found = store.log_state();
