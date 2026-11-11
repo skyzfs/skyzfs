@@ -98,6 +98,30 @@ wait_state() {
         sleep 0.1
     done
 }
+# free_for_add N SECONDS: "free" as a caller means it, an add under the
+# number that succeeds. A lookup that finds nothing comes before that:
+# in the crate's own test an add right after such a lookup was answered
+# taken, 1 and 2 times of 39 on one image (runs 43079066283 and
+# 43080463343), and succeeded at most 31 ms after the delete.
+# -> 0 when an add succeeded within SECONDS; FREE_SAID says how. The
+# device it added is deleted again.
+free_for_add() {
+    local t0 taken=0 ms; t0=$(now_ms)
+    while :; do
+        say add "$1" --depth 8; ms=$(( $(now_ms) - t0 ))
+        if [ "$ANSWER" = added ] || [[ $ANSWER == added\ * ]]; then
+            FREE_SAID="an add under $1 succeeded after $ms ms, answered taken $taken times before"
+            say delete "$1"; wait_state "$1" nothing 10 || FREE_SAID+="; THE RIG'S OWN DELETE OF IT LEFT: $ANSWER"
+            return 0
+        fi
+        [ "$ANSWER" = taken ] && taken=$((taken + 1))
+        if [ "$ms" -ge $(($2 * 1000)) ]; then
+            FREE_SAID="no add under $1 succeeded in $ms ms ($taken answered taken; the last answer: ${ANSWER:-none})"
+            return 1
+        fi
+        sleep 0.01
+    done
+}
 # serve_bg TAG STEP N ARGS: a server of the test program in the
 # background -> SRV_PID, SRV_OUT, SRV_LINE (its first answer); 0 when
 # that says the device is live.
@@ -257,19 +281,36 @@ T0=$(( $(date +%s) - 1 ))       # for the look at /run/ublksrvd at the end
 # They need no stranger. Each prints its own line; a test that printed
 # none is missing from the results and the judge says so.
 step "the binding's own kernel tests"
-lim 900 "$KTEST" --ignored --test-threads 1 --nocapture > "$OUT/kernel-tests.log" 2>&1
-rec kernel_tests_exit "$?"
+# Ten minutes, and the output shown as it comes: one of these tests
+# hung once with a defect put back, and a kill did not end the process
+# (run 43076882940). A run that hangs has then said what it saw, and
+# `lim` gives up on a process that cannot be killed. The exit status is
+# judged: a test can fail without a FAIL line of its own (a panic
+# outside its verdict), and did under a green job twice.
+: > "$OUT/kernel-tests.log"
+tail -n +1 -f "$OUT/kernel-tests.log" 2>/dev/null & TAIL_PID=$!
+# shellcheck disable=SC2016  # the inner shell expands them
+lim 600 bash -c 'exec "$0" --ignored --test-threads 1 --nocapture > "$1" 2>&1' "$KTEST" "$OUT/kernel-tests.log"
+KT_RC=$?
+sleep 0.5; kill "$TAIL_PID" 2>/dev/null; wait "$TAIL_PID" 2>/dev/null
+rec kernel_tests_exit "$KT_RC"
+KT_END=$(grep -a '^test result:' "$OUT/kernel-tests.log" | tail -n 1)
+case $KT_RC in
+    0) pin kernel_tests_end PASS "the test binary ended with 0: ${KT_END:-no result line}" ;;
+    124) pin kernel_tests_end FAIL "the test binary had not ended after 600 s and was given up on; its last line: $(tail -n 1 "$OUT/kernel-tests.log" | cut -c1-300)" ;;
+    *) pin kernel_tests_end FAIL "the test binary ended with $KT_RC: ${KT_END:-no result line}; failed: $(grep -a -E '^test .* FAILED|panicked at' "$OUT/kernel-tests.log" | head -n 5 | tr '\n' ';' | cut -c1-600)" ;;
+esac
 # With --nocapture a test's first line follows the harness's own
 # "test NAME ... " on the same line, so a line is taken from where its
 # key starts and not only from the start of a line (run 43070686788
 # lost five verdicts that way).
 grep -a -o $'control_[a-z0-9_]*\t.*' "$OUT/kernel-tests.log" >> "$R"
+echo "== the lines taken from it:"
 grep -a -o $'control_[a-z0-9_]*\t.*' "$OUT/kernel-tests.log" | sed 's/^/== /'
-tail -n 5 "$OUT/kernel-tests.log"
 
 # ====================================================== its own device
 own_device() {
-    local a before after t0 ms srv srv_out v rd rd_rc want got held_line later_line k
+    local a before after t0 ms srv srv_out v rd rd_rc want got held_line later_line k r
     truncate -s "$SIZE" "$WORK/own.img"
     # Known content where reads will be held: the file is the server's store.
     "$DD" if=/dev/urandom of="$WORK/own.img" bs=4k count=1 seek=$((HOLD_A / 4096)) conv=notrunc status=none
@@ -467,7 +508,9 @@ own_device() {
     echo "   the server of the deleted device: ${SRV_SERVED:-nothing}"
     holder_end
     if wait_state "$OWN" nothing 10; then
-        pin number_free_when_holder_lets_go PASS "$WAITED_MS ms after the holder closed the device, a lookup of $OWN says nothing is there"
+        ms=$WAITED_MS
+        if free_for_add "$OWN" 5; then r=PASS; else r=FAIL; fi
+        pin number_free_when_holder_lets_go "$r" "$ms ms after the holder closed the device, a lookup of $OWN says nothing is there; then $FREE_SAID"
     else
         pin number_free_when_holder_lets_go FAIL "$WAITED_MS ms after the holder closed the device, info of $OWN: $ANSWER"
     fi
@@ -566,9 +609,14 @@ if serve_bg own2-1 serve "$OWN2" --file "$WORK/own2.img"; then
     # of a live device.
     wait_state "$OWN2" waiting 10; before=$STATE
     t0=$(now_ms); say delete "$OWN2"; v=$ANSWER; ms=$(( $(now_ms) - t0 ))
-    if wait_state "$OWN2" nothing 10; then got="nothing there after $WAITED_MS ms"; else got="still: $ANSWER"; fi
+    free=no
+    if wait_state "$OWN2" nothing 10; then
+        got="nothing there to a lookup after $WAITED_MS ms"; gone=$STATE
+        if free_for_add "$OWN2" 5; then free=yes; fi
+        got+="; then $FREE_SAID"
+    else got="still: $ANSWER"; gone=$STATE; fi
     obs delete_ms "$DELETE_HELD; unheld and waiting: ${v:-no answer} ($ms ms by the rig's clock)"
-    { if [ "$before" = waiting ] && [[ "$v" == returned\ after\ * ]] && [ "$STATE" = nothing ] && [ ! -e "/dev/ublkb$OWN2" ]; then r=PASS; else r=FAIL; fi; pin delete_unheld_waiting_frees_number "$r" "the device read $before; the binding's delete answered: ${v:-nothing}; then: $got; /dev/ublkb$OWN2 $([ -e "/dev/ublkb$OWN2" ] && echo 'IS STILL THERE' || echo 'is gone')"; }
+    { if [ "$before" = waiting ] && [[ "$v" == returned\ after\ * ]] && [ "$gone" = nothing ] && [ "$free" = yes ] && [ ! -e "/dev/ublkb$OWN2" ]; then r=PASS; else r=FAIL; fi; pin delete_unheld_waiting_frees_number "$r" "the device read $before; the binding's delete answered: ${v:-nothing}; then: $got; /dev/ublkb$OWN2 $([ -e "/dev/ublkb$OWN2" ] && echo 'IS STILL THERE' || echo 'is gone')"; }
 else
     obs delete_ms "$DELETE_HELD; unheld: not run, the device was not served"
     pin delete_unheld_waiting_frees_number ERROR "the device $OWN2 was not served: ${SRV_LINE:-no answer}"

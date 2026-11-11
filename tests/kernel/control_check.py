@@ -138,15 +138,21 @@ EXPECTED = {
         'the holder\'s read works before the delete and fails after it. The server holds no request at the '
         'delete: this does NOT cover a request the server holds at the delete, which does not fail while it '
         'is held (obs_delete_while_the_server_holds_a_request)'),
+    'pin_kernel_tests_end': (
+        'PASS', RIG, 'Library',
+        'the binary of the crate\'s kernel tests ended with 0 within ten minutes: no test failed or hung, '
+        'also not in a way that left its own line as it was'),
     'pin_number_free_when_holder_lets_go': (
         'PASS', RIG, 'row: in any state, held open, a delete',
-        'when the holder closes the device, a lookup of the number says nothing is there'),
+        'when the holder closes the device, a lookup of the number says nothing is there, and an add under '
+        'it succeeds within 5 s (a lookup that finds nothing comes before the number is free for an add)'),
     'pin_dead_after_delete_is_not_taken_over': (
         'PASS', RIG, 'row: dead after a delete',
         'a recovery begun on a deleted and held device is not begun, and the device is as before'),
     'pin_delete_unheld_waiting_frees_number': (
         'PASS', RIG, 'row: in any state, with nothing holding the block device open, a delete',
-        'a waiting device nobody holds is gone after the binding\'s delete, its number free'),
+        'a waiting device nobody holds is gone after the binding\'s delete, and its number is free: an add '
+        'under it succeeds within 5 s, not only a lookup that finds nothing'),
     'pin_client_holds_exclusive_holder': (
         'PASS', RIG, 'Library', 'a process holding the device open exclusively is detected: held'),
     'pin_client_holds_plain_reader_unknown': (
