@@ -1,50 +1,53 @@
 name: skyzfs-mirror-canary
 
-# A canary for M1.T6c: can a runner install our packages from a mirror
-# outside ubuntu.com while the names under ubuntu.com do not resolve?
-# It shows the image's mirror list and sources, puts one independent
-# mirror in the list, runs apt-get update and installs what the
+# The only way to try tests/lib/apt-fallback.sh for real, and to see
+# what a runner image's mirror list and sources look like. By dispatch
+# only. It shows the list and the sources, says which names resolve,
+# runs the script, then runs apt-get update and installs what the
 # project's workflows install, and reports where each package came
 # from and how long each step took. It judges nothing of the product.
 #
-# No key is added and no check is switched off: apt verifies what the
-# mirror serves against the archive keys already on the image.
+# With the input `force`, the script is told that the image's mirrors
+# do not resolve, so the fallback can be tried on a healthy day.
+#
+# Two groups fail for their own reasons on today's images and are not
+# the mirror's doing: linux-modules-extra (no such package for the
+# azure kernel) and, on 24.04, zfs-dkms (does not build on a 7.0
+# kernel; the prebuilt module is there). Read the table.
 
 on:
   workflow_dispatch:
     inputs:
+      force:
+        description: tell the script that the image's mirrors do not resolve
+        type: boolean
+        default: false
       mirror:
-        description: the fallback mirror, a URL ending in /ubuntu/
-        default: https://mirrors.edge.kernel.org/ubuntu/
-  push:
-    branches: ['skyzfs-testing-m1.t6c']
-    paths:
-      - .github/workflows/skyzfs-mirror-canary.yml
+        description: another fallback to try, a URL ending in /ubuntu/ (empty for the script's own)
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   canary:
-    name: ${{ matrix.image }}, ${{ matrix.mode }}
+    name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         image: [ubuntu-24.04, ubuntu-26.04]
-        # append: the fallback goes last in the image's list, and apt's
-        #   mirror method is left to fall through to it.
-        # replace: the list holds the fallback alone.
-        mode: [append, replace]
     env:
-      MIRROR: ${{ inputs.mirror || 'https://mirrors.edge.kernel.org/ubuntu/' }}
-      MODE: ${{ matrix.mode }}
+      MIRROR: ${{ inputs.mirror }}
+      FORCE: ${{ inputs.force }}
     steps:
+      - uses: actions/checkout@v6
       - name: The image's mirrors and sources
         run: |
           set +e
-          [[ $MIRROR =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9./-]*$ ]] || { echo "::error::not a mirror URL: $MIRROR"; exit 64; }
+          [[ -z $MIRROR || $MIRROR =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9./-]*$ ]] || { echo "::error::not a mirror URL: $MIRROR"; exit 64; }
+          [ -z "$MIRROR" ] || echo "APT_FALLBACK_MIRROR=$MIRROR" >> "$GITHUB_ENV"
           echo "== /etc/apt/apt-mirrors.txt"; cat -A /etc/apt/apt-mirrors.txt || true
           echo "== sources"
           for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
@@ -61,20 +64,30 @@ jobs:
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           hosts=$(grep -o '://[^/]*' /etc/apt/apt-mirrors.txt | sed 's|://||' | sort -u)
-          for h in $hosts archive.ubuntu.com security.ubuntu.com "$(echo "$MIRROR" | sed 's|https://||; s|/.*||')" github.com; do
-            if a=$(getent hosts "$h" | head -n 1); then r="yes (${a%% *})"; else r="NO"; fi
+          for h in $hosts mirrors.edge.kernel.org github.com; do
+            a=$(timeout 25 getent hosts "$h" | head -n 1)
+            if [ -n "$a" ]; then r="yes (${a%% *})"; else r="NO"; fi
             echo "$h: $r"
             echo "| $h | $r |" >> "$GITHUB_STEP_SUMMARY"
           done
-      - name: Put the fallback in the list
+      - name: The script
         run: |
-          sudo cp /etc/apt/apt-mirrors.txt "$RUNNER_TEMP/apt-mirrors.orig"
-          if [ "$MODE" = replace ]; then
-            printf '%s\tpriority:1\n' "$MIRROR" | sudo tee /etc/apt/apt-mirrors.txt
-          else
-            printf '%s\tpriority:9\n' "$MIRROR" | sudo tee -a /etc/apt/apt-mirrors.txt
+          if [ "$FORCE" = true ]; then
+            # A lookup that fails for the names under ubuntu.com.
+            printf '#!/bin/sh\ncase $1 in *ubuntu.com) exit 1 ;; esac\ngetent hosts "$1" > /dev/null\n' > "$RUNNER_TEMP/lookup"
+            chmod +x "$RUNNER_TEMP/lookup"
+            export APT_FALLBACK_LOOKUP=$RUNNER_TEMP/lookup
+            echo "Forced: the script is told that the names under ubuntu.com do not resolve." >> "$GITHUB_STEP_SUMMARY"
           fi
+          t0=$(date +%s)
+          bash tests/lib/apt-fallback.sh
+          echo "The script took $(( $(date +%s) - t0 )) s." | tee -a "$GITHUB_STEP_SUMMARY"
           echo "== the list now"; cat -A /etc/apt/apt-mirrors.txt
+          if cmp -s /etc/apt/apt-mirrors.txt /etc/apt/apt-mirrors.txt.image 2>/dev/null || [ ! -e /etc/apt/apt-mirrors.txt.image ]; then
+            echo "The list is the image's own." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The list holds: $(tr '\t\n' '  ' < /etc/apt/apt-mirrors.txt)" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
       - name: apt-get update
         id: update
         run: |
@@ -86,7 +99,7 @@ jobs:
           warn=$(grep -c -E '^(W|E|Err):?' "$RUNNER_TEMP/update.log" || true)
           {
             echo
-            echo "### apt-get update ($MODE): exit $rc in $t s, $warn warning or error lines"
+            echo "### apt-get update : exit $rc in $t s, $warn warning or error lines"
             echo
             echo '```'
             grep -E '^(W|E|Err)' "$RUNNER_TEMP/update.log" | head -n 30 || true
@@ -103,7 +116,7 @@ jobs:
           fails=0
           {
             echo
-            echo "### Installs ($MODE)"
+            echo "### Installs "
             echo
             echo "| group | exit | seconds | packages fetched, by host | first error |"
             echo "|---|---|---|---|---|"
@@ -138,6 +151,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: mirror-canary-${{ matrix.image }}-${{ matrix.mode }}
+          name: mirror-canary-${{ matrix.image }}
           path: ${{ runner.temp }}/*.log
           retention-days: 14

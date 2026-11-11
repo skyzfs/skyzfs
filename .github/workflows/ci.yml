@@ -48,6 +48,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - run: bash tests/lib/test_apt_fallback.sh
       # First: needs no toolchain or cache, and the shell harness is
       # ~4.6k lines nothing else lints. Preinstalled on ubuntu runners.
       # No blanket excludes — deliberate idioms carry a targeted
@@ -118,6 +123,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - uses: dtolnay/rust-toolchain@stable
       - name: dm build headers (skynbd-agent "dm" feature)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev

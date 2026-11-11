@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Before a workflow's first apt step: if the names of the runner
+# image's package mirrors do not resolve, use one mirror outside
+# ubuntu.com instead.
+#
+#   bash tests/lib/apt-fallback.sh
+#
+# The GitHub runner images take every Ubuntu suite from the mirrors
+# listed in /etc/apt/apt-mirrors.txt, all under ubuntu.com. On
+# 2026-11-11 those names did not resolve for hours while every other
+# name did, and each job that installs a package failed. When any
+# mirror of the list does not resolve, this script replaces the list by
+# the fallback alone and says so in the job's summary; when they all
+# resolve it changes nothing. Every name of the list is looked up and
+# not only the first: they are in one zone and failed together, but
+# during the outage single names answered now and then, and a list
+# with one dead name in it is slow. On a healthy day three lookups
+# cost milliseconds. The runner is thrown away after the job, so
+# nothing is put back. It replaces and does not append: with
+# the dead mirrors still in the list, `apt-get update` alone ran for
+# more than six minutes (run 43060459690), against 5 s with the
+# fallback alone.
+#
+# Nothing here loosens apt's checks: no key is added and no option is
+# set. What the fallback serves is verified against the archive keys
+# already on the image, as the image's own mirrors are; a mirror
+# cannot change a package, and one whose metadata does not verify
+# fails the apt step.
+#
+# Always exits 0 except on a usage error: when it cannot help (no
+# list, the fallback's name does not resolve either), it says so and
+# leaves apt to fail as it would have.
+#
+# Settings, for the test (tests/lib/test_apt_fallback.sh):
+#   APT_MIRROR_LIST      the list file
+#   APT_SOURCES          the files and directories that hold apt's sources
+#   APT_FALLBACK_MIRROR  the fallback
+#   APT_FALLBACK_LOOKUP  a command that is given a host name and
+#                        succeeds when it resolves
+set -uo pipefail
+
+# The one place that names the fallback.
+APT_FALLBACK_MIRROR=${APT_FALLBACK_MIRROR:-https://mirrors.edge.kernel.org/ubuntu/}
+APT_MIRROR_LIST=${APT_MIRROR_LIST:-/etc/apt/apt-mirrors.txt}
+APT_SOURCES=${APT_SOURCES:-/etc/apt/sources.list /etc/apt/sources.list.d}
+# A name that resolves answers in milliseconds; a dead one takes
+# getent 20 s on a runner, so the lookup is cut at 5 s.
+LOOKUP_S=5
+
+# mirror_hosts FILE: the host of every mirror in a mirror list, one per
+# line, in the file's order. A line is a URL, then optional words such
+# as "priority:1"; empty lines and comments are skipped.
+mirror_hosts() {
+    awk '!/^[[:space:]]*(#|$)/ { print $1 }' "$1" | sed -n 's|^[A-Za-z][A-Za-z0-9+.-]*://\([^/:]*\).*|\1|p'
+}
+
+resolves() {
+    if [ -n "${APT_FALLBACK_LOOKUP:-}" ]; then "$APT_FALLBACK_LOOKUP" "$1"; return; fi
+    timeout "$LOOKUP_S" getent hosts "$1" > /dev/null 2>&1
+}
+
+say() { # to the log and to the job's summary
+    echo "$*"
+    [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n\n' "$*" >> "$GITHUB_STEP_SUMMARY"
+}
+
+main() {
+    local hosts h dead="" fb_host tmp
+    if [ ! -f "$APT_MIRROR_LIST" ]; then
+        echo "apt-fallback: no $APT_MIRROR_LIST on this machine; nothing changed"
+        return 0
+    fi
+    # shellcheck disable=SC2086  # a list of paths
+    if ! grep -rqsF "mirror+file:$APT_MIRROR_LIST" $APT_SOURCES; then
+        echo "apt-fallback: no apt source uses $APT_MIRROR_LIST; nothing changed"
+        return 0
+    fi
+    hosts=$(mirror_hosts "$APT_MIRROR_LIST")
+    if [ -z "$hosts" ]; then
+        echo "apt-fallback: no mirror in $APT_MIRROR_LIST; nothing changed"
+        return 0
+    fi
+    fb_host=$(printf '%s\n' "$APT_FALLBACK_MIRROR" | sed -n 's|^https://\([^/:]*\)/.*|\1|p')
+    if [ -z "$fb_host" ]; then
+        echo "apt-fallback: the fallback is not an https URL with a path: $APT_FALLBACK_MIRROR" >&2
+        return 64
+    fi
+    if [ "$hosts" = "$fb_host" ]; then
+        echo "apt-fallback: the list already holds the fallback alone; nothing changed"
+        return 0
+    fi
+    for h in $hosts; do
+        resolves "$h" || dead+="${dead:+, }$h"
+    done
+    if [ -z "$dead" ]; then
+        echo "apt-fallback: the image's mirrors resolve ($(echo "$hosts" | tr '\n' ' ')); nothing changed"
+        return 0
+    fi
+    if ! resolves "$fb_host"; then
+        say "**Package mirrors:** $dead did not resolve, and neither did the fallback's name $fb_host. Nothing changed; a step that installs packages will fail, and that is a network outage, not the change under test."
+        return 0
+    fi
+    tmp=$(mktemp)
+    printf '%s\tpriority:1\n' "$APT_FALLBACK_MIRROR" > "$tmp"
+    if [ -w "$APT_MIRROR_LIST" ]; then
+        cp "$APT_MIRROR_LIST" "$APT_MIRROR_LIST.image" && cat "$tmp" > "$APT_MIRROR_LIST"
+    else
+        sudo cp "$APT_MIRROR_LIST" "$APT_MIRROR_LIST.image" && sudo cp "$tmp" "$APT_MIRROR_LIST" && sudo chmod 644 "$APT_MIRROR_LIST"
+    fi || { rm -f "$tmp"; say "**Package mirrors:** $dead did not resolve, and the list $APT_MIRROR_LIST could not be written. Nothing changed."; return 0; }
+    rm -f "$tmp"
+    say "**Package mirrors: the fallback is in use.** The image's mirror $dead did not resolve, so this job installs its packages from $APT_FALLBACK_MIRROR. apt verifies them against the image's archive keys as before."
+    [ -z "${GITHUB_ACTIONS:-}" ] || echo "::notice title=Package mirrors::$dead did not resolve; packages come from $APT_FALLBACK_MIRROR"
+    return 0
+}
+
+# Sourced by the test for mirror_hosts; run by the workflows.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi
