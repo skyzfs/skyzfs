@@ -6,7 +6,9 @@
 #
 #   blkcheck-helper.sh create N    a new empty volume, served; prints its device
 #   blkcheck-helper.sh kill N      SIGKILL to its server, then serve again; prints the device
-#   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good
+#   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good. Returns
+#                                  when serve has exited with status 3; the device is
+#                                  then a deleted one that the caller still holds
 #   blkcheck-helper.sh reopen N    the failed volume served again, as after a
 #                                  reboot and with --acknowledge-failure; prints the device
 #   blkcheck-helper.sh destroy N   stop serving and remove the volume
@@ -39,15 +41,24 @@ server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>
 # [serve options]: serve in the background, wait for "ready", print the device.
 serve() {
     local dev pid
-    : > "$DIR.ready"
+    : > "$DIR.ready"; : > "$DIR.serve.pid"
     # Detached from this script's stdout, which the caller reads to its end.
-    setsid "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
-    pid=$!
-    echo "$pid" > "$DIR.serve.pid"
+    # A later call of this script must learn the exit status of serve,
+    # which is not its child: a small shell stays with it and writes
+    # its pid and then its status down.
+    : > "$DIR.serve.rc"
+    # shellcheck disable=SC2016
+    setsid bash -c '
+        "$@" &
+        echo $! > "$0.serve.pid"
+        wait $!
+        echo $? > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
+    for _ in $(seq 1 100); do [ -s "$DIR.serve.pid" ] && break; sleep 0.02; done
+    pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
         dev=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$DIR.ready" | head -n 1)
         if [ -n "$dev" ] && [ -b "$dev" ]; then echo "$dev"; return 0; fi
-        kill -0 "$pid" 2>/dev/null || { wait "$pid"; die "serve exited $? before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
+        kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
     die "serve was not ready after 60 s"
@@ -78,14 +89,16 @@ kill)
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
     kill -USR1 "$pid" 2>/dev/null || die "serve ($pid) was not there"
-    # The suite's next request must meet a failed volume: wait until the
-    # server says so, or is gone.
-    for _ in $(seq 1 100); do
-        [ "$(status_of state)" = failed ] && break
-        kill -0 "$pid" 2>/dev/null || break
-        sleep 0.05
-    done
-    [ "$(status_of state)" = failed ] || ! kill -0 "$pid" 2>/dev/null || die "the server did not say failed within 5 s of SIGUSR1"
+    # A failed log is not a state the server stays in: it writes its
+    # note, deletes the device without waiting for whoever holds it,
+    # and exits with status 3. The moment the failure holds is that
+    # exit. From there the suite's requests are answered by the kernel
+    # for a deleted device.
+    for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
+    kill -0 "$pid" 2>/dev/null && die "serve was still running 10 s after SIGUSR1"
+    sleep 0.1
+    rc=$(cat "$DIR.serve.rc" 2>/dev/null)
+    [ "$rc" = 3 ] || die "serve exited ${rc:-with no status} after SIGUSR1, wanted 3"
     DEV=""
     ;;
 reopen)
@@ -101,7 +114,7 @@ reopen)
 destroy)
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
-    find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" -delete 2>/dev/null
+    find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null
     DEV=""
     ;;
 *) echo "usage: blkcheck-helper.sh create|kill|fail|reopen|destroy N" >&2; exit 2 ;;

@@ -15,11 +15,11 @@ CASES = {'one': 'PASS: declared PASS: ', 'two': 'WEAKER: declared WEAKER: withou
          'three': 'NOT_EXERCISED: declared NOT_EXERCISED: the harness cannot cut the power'}
 
 
-def as_expected():
+def as_expected(impl='reference'):
     r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
     r.update(impl='reference: x', setup='ok')
-    r.update(c_run='ok: 3 cases', c_declared=dc.C_DECLARED)
+    r.update(c_run='ok: 3 cases', c_declared=dc.C_DECLARED[impl])
     r.update({f'case_{k}': v for k, v in CASES.items()})
     return r
 
@@ -70,6 +70,15 @@ class Cases(unittest.TestCase):
         r = {k: v for k, v in as_expected().items() if not k.startswith(('c_', 'case_'))}
         _, _, errors = dc.judge(r, self.C)
         self.assertTrue(errors)
+
+    def test_the_daemon_is_held_to_its_own_counts(self):
+        r = with_cases()
+        r['impl'] = 'daemon: x'
+        _, differs, _ = dc.judge(r, self.C, impl='daemon')
+        self.assertEqual(len(differs), 1)
+        r['c_declared'] = dc.C_DECLARED['daemon']
+        _, differs, _ = dc.judge(r, self.C, impl='daemon')
+        self.assertEqual(differs, [])
 
     def test_check_c_is_asked_for_only_when_it_ran(self):
         r = {k: v for k, v in as_expected().items() if not k.startswith(('c_', 'case_', 'pin_c_'))}
@@ -129,7 +138,7 @@ class Judge(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_with_the_daemon_the_reference_only_pin_is_not_asked_for(self):
-        r = as_expected()
+        r = as_expected('daemon')
         r['pin_clear_resumes_on_returned_device'] = 'ERROR: not run: needs the flat image of the reference server'
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
         _, differs, errors = dc.judge(r, ALL, impl='daemon')
@@ -148,7 +157,7 @@ class Judge(unittest.TestCase):
         _, differs, errors = dc.judge(r, ALL)
         self.assertEqual((differs, len(errors)), ([], 1))
         # with the daemon, waiting is over: the control must have run and failed
-        r = as_expected()
+        r = as_expected('daemon')
         r['pin_clear_resumes_on_returned_device'] = 'ERROR: needs the reference server'
         _, differs, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual((differs, len(errors)), ([], 1))

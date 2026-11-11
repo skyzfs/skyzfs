@@ -839,12 +839,18 @@ hold_test() {
 # a harness that can do what this one can. The judge compares the two.
 check_c() {
     local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n
+    # What the harness can do beyond a plain device. A failed volume is
+    # opened again only by the stand-in: the daemon refuses, until the
+    # next boot, a volume that failed while a client held its device,
+    # and the suite's client holds it.
+    local -a can=(--can fail-log)
+    [ "$IMPL" = reference ] && can+=(--can reopen-failed)
     step "c: the conformance suite through the block device"
     if [ ! -x "$tool" ]; then rec c_run "ERROR: no skyzfs-blkcheck at '$tool' (RIG_BLKCHECK)"; return; fi
     mkdir -p "$work"
     t0=$(date +%s)
     BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} \
-        lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" --can fail-log --can reopen-failed \
+        lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
@@ -864,7 +870,7 @@ check_c() {
     if [ $rc != 0 ]; then
         rec c_run "ERROR: skyzfs-blkcheck exit $rc after $n cases: $(tail -n 1 "$OUT/c-blkcheck.err")"
     else
-        rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}"
+        rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}; the harness: ${can[*]}. After the log is made to fail the server deletes its device and exits, so what a failed volume answers is the kernel's answer for a deleted device that the suite still holds open"
     fi
     # The cases about a request of exactly 1 MiB and a discard across the
     # device test what the block layer forwards: they exercise the

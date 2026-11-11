@@ -201,15 +201,10 @@ serve)
     echo "$pid" > "$PIDREC"
     STOP=""
     trap 'STOP=1' TERM INT
-    # As the daemon's test build: SIGUSR1 makes the log fail for good.
-    # The note is written at once, so that a server killed straight
-    # after is still a failed volume to the next serve.
-    fail_now() {
-        : > "$DIR/fail-now"
-        mkdir -p "$RUN_DIR"
-        { echo "boot $(cat /proc/sys/kernel/random/boot_id)"; echo "held $(held_open "/dev/ublkb$n")"; } > "$NOTE"
-    }
-    trap fail_now USR1
+    # As the daemon's test build: SIGUSR1 makes the log fail at once,
+    # and what follows is the path of any failure, below.
+    FAILNOW=""
+    trap 'FAILNOW=1' USR1
     echo "ready /dev/ublkb$n"
     while :; do
         if [ -n "$STOP" ]; then
@@ -219,7 +214,8 @@ serve)
             exit 0
         fi
         kill -0 "$pid" 2>/dev/null || { echo "the server died" >&2; exit 1; }
-        if [ "$(stat_field 7)" != 0 ]; then
+        if [ "$(stat_field 7)" != 0 ] || [ -n "$FAILNOW" ]; then
+            : > "$DIR/fail-now"     # the server answers with errors from here on
             mkdir -p "$RUN_DIR"
             { echo "boot $(cat /proc/sys/kernel/random/boot_id)"; echo "held $(held_open "/dev/ublkb$n")"; } > "$NOTE"
             if [ "${SKZ_REF_FAIL_STYLE:-delete}" = delete ]; then

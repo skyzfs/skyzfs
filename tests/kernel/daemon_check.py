@@ -95,9 +95,12 @@ OBSERVED = {
 # a harness with its capabilities; a case must end as declared. How many
 # cases the suite declares each way, for a harness with no power cut, no
 # base, no read-only volume and no invalid requests, that can make the
-# log fail and reopen a failed volume. A change in the suite or in what
-# the harness can do changes these on purpose.
-C_DECLARED = 'PASS 1, WEAKER 15, NOT_EXERCISED 10'
+# log fail. The stand-in can also reopen a failed volume; the daemon
+# refuses one that failed while a client held its device, as the suite's
+# client does, so with it those cases are not exercised. A change in the
+# suite or in what the harness can do changes these on purpose.
+C_DECLARED = {'reference': 'PASS 1, WEAKER 15, NOT_EXERCISED 10',
+              'daemon': 'PASS 1, WEAKER 13, NOT_EXERCISED 12'}
 C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 
 # With the daemon behind the device these cannot be taken: they bring a
@@ -157,8 +160,8 @@ def judge_cases(results, rows, differs, errors, impl='reference'):
     declared = results.get('c_declared')
     if declared is None:
         errors.append('c_declared: missing')
-    elif declared != C_DECLARED:
-        differs.append(f'the suite declares {declared}; the table C_DECLARED has {C_DECLARED}')
+    elif declared != C_DECLARED[impl]:
+        differs.append(f'the suite declares {declared}; the table C_DECLARED has {C_DECLARED[impl]}')
     cases = {k[len('case_'):]: v for k, v in results.items() if k.startswith('case_')}
     for name, value in cases.items():
         got, _, rest = value.partition(': declared ')
