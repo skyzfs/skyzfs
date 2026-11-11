@@ -541,6 +541,49 @@ class Log(unittest.TestCase):
         seen[0]['rig_errors'] = [{'n': 3, 'failed': 'import'}]
         self.assertFalse(replay_check.judge_controls(seen, absent=absent)[2])
 
+    def test_planning_is_the_same_for_a_provider_without_data_positions(self):
+        # Everything that plans the pass reads the records, not the data: leaving `pos` out changes none of it.
+        self.fsync_log()
+        recs = logwrites.index(self.log, DEV)['records']
+        bare = [{k: v for k, v in r.items() if k != 'pos'} for r in recs]
+        self.assertTrue(any('pos' in r for r in recs))
+        self.assertEqual([replay_check.is_write(r) for r in bare], ['pos' in r for r in recs])
+        groups = replay_check.group_points(recs)
+        self.assertEqual(len(groups), 6)
+        self.assertEqual(replay_check.group_points(bare), groups)
+        for f in (replay_check.parse_marks, replay_check.fsync_marks, replay_check.flush_points, replay_check.ub_clusters):
+            self.assertEqual(f(bare), f(recs), f.__name__)
+        self.assertEqual(replay_check.plan(bare, 40, 5, window=2), replay_check.plan(recs, 40, 5, window=2))
+        n = len(recs)
+        self.assertEqual(replay_check.data_writes(bare, 0, n), replay_check.data_writes(recs, 0, n))
+        every = list(range(n + 1))
+        firsts = [g[0] for g in groups]
+        fpoints = [m[0] for m in replay_check.fsync_marks(recs)]
+        pts = [{'n': p, 't_deep': 0.1, 't_copies': 1.0, 'fsynced': 1} for p in every]
+        want = replay_check.coverage(recs, pts, groups=groups, fsync_points=fpoints)
+        got = replay_check.coverage(bare, pts, groups=replay_check.group_points(bare), fsync_points=fpoints)
+        self.assertEqual(got, want)
+        self.assertEqual((got['errors'], got['groups'], got['group_firsts']), ([], 6, len(firsts)))
+        # the controls that need no data pick the same victims
+        marks = replay_check.parse_marks(recs)
+        with_data = {c['name']: c for c in replay_check.controls(recs, marks, *replay_check.control_sources(self.log, recs, True)[:2])}
+        without = {c['name']: c for c in replay_check.controls(bare, marks, *replay_check.control_sources(self.log, bare, True)[:2])}
+        self.assertEqual(set(without), {'drop', 'reorder'})
+        for name in without:
+            self.assertEqual(without[name]['victim'], with_data[name]['victim'], name)
+            self.assertEqual(without[name]['schedule'], with_data[name]['schedule'], name)
+
+    def test_each_kind_of_trouble_fails_the_job_by_itself(self):
+        good = dict(failures=[], controls_ok=True, witness_ok=True, coverage_errors=[], zdb_cc_rc=0)
+        self.assertEqual(replay_check.job_verdict(**good), (True, []))
+        for change in (dict(failures=[{'n': 3}]), dict(controls_ok=False), dict(witness_ok=False),
+                       dict(coverage_errors=['2 flush boundaries were not checked']), dict(zdb_cc_rc=1), dict(zdb_cc_rc=124)):
+            ok, against = replay_check.job_verdict(**{**good, **change})
+            self.assertFalse(ok, change)
+            self.assertEqual(len(against), 1, change)
+        ok, against = replay_check.job_verdict([{'n': 1}], False, False, ['x'], 2)
+        self.assertEqual((ok, len(against)), (False, 5))
+
     def test_run_survives_a_command_that_prints_and_then_hangs(self):
         rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
         self.assertEqual(rc, 124)

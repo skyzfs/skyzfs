@@ -183,7 +183,7 @@ def group_points(records):
     """
     firsts, after_ub = [], False
     for i, r in enumerate(records):
-        if 'pos' not in r:
+        if not is_write(r):
             continue                    # a flush, a mark or a discard does not end a run of uberblock writes
         if r.get('ub') and not after_ub:
             firsts.append(i)
@@ -696,7 +696,8 @@ def control_sources(log, records, fsync_check):
         absent['intent'] = 'the intent log is not on the device under test in this layout'
     if not has_data:
         absent['data'] = NO_DATA
-        absent.setdefault('intent', NO_DATA)
+        absent.setdefault('intent', NO_DATA + '; the fsync check itself needs no data and still runs at every fsync '
+                          'mark, but nothing in such a run shows that it can fail')
 
     def find(n):
         return writes_carrying(log, records, file_pattern(n)) if has_data else []
@@ -752,6 +753,28 @@ def judge_controls(ctl, expected=None, absent=()):
         rows.append({'name': name, 'class': None, 'expected': 'not built', 'observed': 'not built', 'match': True,
                      'note': '', 'not_built': why})
     return rows, gaps, ok
+
+
+def job_verdict(failures, controls_ok, witness_ok, coverage_errors, zdb_cc_rc):
+    """Whether the job passes -> (ok, what stands against it).
+
+    Every one of these fails the job by itself: a prefix that failed a
+    check, a control that differs from the table, a witness that
+    disagrees or is absent where required, a pass that left out what it
+    had to cover, and zdb finding fault with the final image.
+    """
+    against = []
+    if failures:
+        against.append(f'{len(failures)} prefix(es) failed a check')
+    if not controls_ok:
+        against.append('a control is not as the table has it')
+    if not witness_ok:
+        against.append('the witness did not confirm the provider')
+    if coverage_errors:
+        against.append(f'coverage: {"; ".join(coverage_errors)}')
+    if zdb_cc_rc != 0:
+        against.append(f'zdb -bcc on the final image: exit code {zdb_cc_rc}')
+    return not against, against
 
 
 def victim_class(records, victim, facts):
@@ -1405,7 +1428,9 @@ def main():
     with open(os.path.join(args.out, 'replay-summary.md'), 'w') as f:
         f.write(summary(res))
     print(summary(res))
-    ok = not failures and controls_ok and witness_ok and not cov['errors'] and res['zdb_cc']['rc'] == 0
+    ok, against = job_verdict(failures, controls_ok, witness_ok, cov['errors'], res['zdb_cc']['rc'])
+    for a in against:
+        print(f'the job fails: {a}', flush=True)
     sys.exit(0 if ok else 1)
 
 
