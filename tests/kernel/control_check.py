@@ -122,6 +122,18 @@ EXPECTED = {
         'PASS', RIG, 'Library',
         'after an add, a serve, a take-over, a stop and a delete by the binding, /run/ublksrvd has no entry '
         'under the device\'s number newer than the first of them'),
+    'pin_added_device_is_dead_when_its_adder_ends': (
+        'PASS', RIG, 'row: dead, never started, the process that added it ends',
+        'the test program adds a device and ends without starting it; the binding then reports the '
+        'device as dead, under the same number'),
+    'pin_set_params_refused_once_started': (
+        'PASS', RIG, 'sentence: a device\'s parameters cannot be changed once it has been started',
+        'on a waiting device that was started, the set-parameters command with another size is not '
+        'answered "set", and the size the binding reports is the old one'),
+    'pin_info_server_pid_is_the_servers': (
+        'PASS', RIG, 'The states of a device: live',
+        'the server_pid the binding reports of a live device (the driver\'s value, unchanged) is the '
+        'pid of the process serving it, for the binding\'s own server and for the reference server'),
     'ctl_add_on_free_number_is_taken': (
         'FAIL', RIG, 'control', 'control: the check that an add answers "taken", made on a free number'),
     'ctl_stranger_deleted_between_looks': (
@@ -147,6 +159,9 @@ for _state in STATES:
 OBSERVED = {
     'obs_killed_server_live_ms': 'how long a killed server\'s device still reads live, by the binding\'s lookup',
     'obs_flags_beyond_the_mask': 'the flag bits the driver reports beyond those asked for',
+    'obs_serve_of_a_device_whose_adder_ended': 'whether another process can still start a device that was '
+                                               'added and never started, its adder gone (the design does '
+                                               'not say; the daemon deletes such a device)',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
 }
 
