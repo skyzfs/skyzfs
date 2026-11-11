@@ -19,6 +19,14 @@ exec > >(tee "$OUT/spike.log") 2>&1
 lim() { timeout --kill-after=5 "$@"; }
 step() { echo; echo "== $*"; }
 img() { echo "/dev/shm/skz-spike-$1.img"; }
+# nodes N what: which of the device's nodes exist, to tell states apart
+nodes() {
+    local c=no b=no y=no
+    [ -e "/dev/ublkc$1" ] && c=yes
+    [ -e "/dev/ublkb$1" ] && b=yes
+    [ -e "/sys/class/ublk-char/ublkc$1" ] && y=yes
+    echo "spike_nodes_$2=ublkc$1 $c, ublkb$1 $b, sysfs ublk-char $y"
+}
 stats() { echo "spike_stats_$1=$(tr -d '\n' < "$(img "$2").stats" 2>/dev/null)"; }
 # start N args...: a server in the background; waits for its ready line
 SERVER_PID=""
@@ -60,6 +68,7 @@ step "6, 9: a device that is added and never started; the control object dropped
 lim 20 "$S" info 1
 lim 30 "$S" add 1 --no-start; echo "spike_add_no_start_rc=$?"
 lim 20 "$S" info 1
+nodes 1 added_never_started
 
 step "9: kill -9 between the add and the start"
 "$S" add 2 --no-start --linger 60 > "$OUT/add-2.log" 2>&1 &
@@ -74,8 +83,16 @@ step "9: a control object that is NOT disowned deletes its device when dropped"
 lim 60 "$S" add 5 --no-start --plain-delete-on-drop; echo "spike_add_owned_rc=$?"
 lim 20 "$S" info 5
 
-step "8: an add under a number that is taken"
-lim 30 "$S" add 1 --no-start; echo "spike_add_taken_rc=$?"
+step "8: an add under a number that is taken: the driver's own answer, then the library's"
+lim 20 "$S" rawinfo 7
+lim 20 "$S" rawinfo 1
+lim 20 "$S" rawadd 1
+lim 20 "$S" rawinfo 1
+lim 20 "$S" rawadd 6
+lim 20 "$S" rawinfo 6
+echo "spike_library_add_on_taken=follows; device 6 was added by this script and is nobody's to delete"
+lim 30 "$S" add 6 --no-start; echo "spike_add_taken_rc=$?"
+lim 20 "$S" rawinfo 6
 
 step "10: the asynchronous delete of devices nobody holds"
 lim 30 "$S" delete 1
@@ -88,6 +105,7 @@ step "1, 3, 7: a served device; requests of 4 KiB and 1 MiB"
 start add 3 --size-mib 256 || exit 3
 D=/dev/ublkb3
 lim 20 "$S" info 3
+nodes 3 live
 echo "spike_sysfs_3=$(cd /sys/block/ublkb3/queue && for f in logical_block_size physical_block_size max_sectors_kb discard_max_bytes write_zeroes_max_bytes write_cache nr_requests; do printf '%s %s ' "$f" "$(cat $f)"; done)"
 find /run/ublksrvd -maxdepth 1 -type f 2>/dev/null | sed 's/^/run-ublksrvd: /'
 head -c $((8 << 20)) /dev/urandom > "$OUT/pattern"
@@ -130,10 +148,13 @@ kill "$XHOLDER"; wait "$XHOLDER" 2>/dev/null
 step "11, 14: kill -9 under a verified write load, then a take-over"
 dmesg -C 2>/dev/null
 for round in 1 2 3; do
+    # The load runs for 12 s; the server is killed 3 s into it, and the
+    # writes that were in flight wait for the next server.
     lim 300 fio --name=kill --filename=$D --direct=1 --ioengine=libaio --iodepth=32 --rw=randwrite --bs=4k-128k \
-        --size=128M --time_based=0 --loops=3 --verify=crc32c --do_verify=1 --verify_fatal=1 --output="$OUT/fio-kill-$round.log" &
+        --size=128M --time_based --runtime=12 --verify=crc32c --do_verify=1 --verify_fatal=1 --output="$OUT/fio-kill-$round.log" &
     FIO=$!
-    sleep 2
+    sleep 3
+    echo "spike_inflight_before_kill_$round=$(tr -s ' ' < /sys/block/ublkb3/inflight 2>/dev/null)"
     "$S" watch 3 4000 > "$OUT/watch-$round.log" 2>&1 &
     W=$!
     sleep 0.2
@@ -141,14 +162,15 @@ for round in 1 2 3; do
     kill -9 "$SERVER_PID"; wait "$SERVER_PID" 2>/dev/null
     wait "$W"; sed "s/^spike_watch=/spike_watch_$round=/" "$OUT/watch-$round.log"
     lim 20 "$S" info 3
+    nodes 3 "waiting_$round"
     echo "spike_excl_case=waiting device, round $round"; lim 20 "$S" excl $D
     start takeover 3 || { echo "spike_takeover_$round=FAILED"; break; }
     wait "$FIO"; echo "spike_fio_kill_rc_$round=$?"
-    grep -E 'err=' "$OUT/fio-kill-$round.log" | sed 's/^/fio: /'
+    grep -E 'err=|WRITE:|READ:' "$OUT/fio-kill-$round.log" | sed 's/^/fio: /'
+    stats "after_kill_$round" 3
 done
 echo "spike_dmesg_io_errors=$(dmesg 2>/dev/null | grep -ciE 'I/O error|ublk.*(abort|fail)')"
 dmesg 2>/dev/null | grep -iE 'I/O error|ublk' | tail -n 20 | sed 's/^/dmesg: /'
-stats after_kills 3
 
 step "12: the parameters read back after a take-over"
 lim 20 "$S" info 3
@@ -173,7 +195,11 @@ stats at_stop 3
 step "6, 8, 10: the asynchronous delete of a device that is held; an add under its number"
 lim 30 "$S" delete 3
 lim 20 "$S" info 3
-lim 30 "$S" add 3 --no-start; echo "spike_add_on_held_deleted_rc=$?"
+nodes 3 deleted_and_held
+lim 20 "$S" rawinfo 3
+lim 20 "$S" rawadd 3; echo "spike_rawadd_on_held_deleted_rc=$?"
+lim 10 "$S" add 3 --no-start; echo "spike_add_on_held_deleted_rc=$? (124: it did not return in 10 s)"
+lim 20 "$S" rawinfo 3
 echo "spike_excl_case=deleted and held"; lim 20 "$S" excl $D
 kill "$HOLDER"; wait "$HOLDER" 2>/dev/null
 sleep 1

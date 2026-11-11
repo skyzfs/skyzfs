@@ -9,6 +9,8 @@
 //! spike add N [--size-mib M] [--no-start] [--linger S] [--no-wz] [--plain-delete-on-drop]
 //! spike takeover N [--die-after-begin]
 //! spike delete N                  the asynchronous delete
+//! spike rawadd N                  ADD_DEV sent by this program, not the library
+//! spike rawinfo N                 GET_DEV_INFO sent by this program
 //! spike watch N MS                the device's state every 2 ms, for MS ms
 //! spike excl PATH                 an exclusive open that does no I/O
 //! ```
@@ -30,7 +32,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use io_uring::{opcode, types};
+use io_uring::{opcode, squeue, types, IoUring};
 use libublk::ctrl::{UblkCtrl, UblkCtrlBuilder};
 use libublk::io::{BufDescList, UblkDev, UblkQueue};
 use libublk::{sys, BufDesc, UblkError, UblkFlags, UblkIORes};
@@ -548,6 +550,84 @@ fn serve(number: i32, takeover: bool, options: &Options) -> Result<(), String> {
     Ok(())
 }
 
+/// One control command sent by this program on a ring of its own, with
+/// the driver's own result: the library retries a failed command with
+/// the legacy opcode and returns that second result, so on a kernel
+/// without the legacy opcodes every failure reads as "not supported".
+fn raw_ctrl(op: u32, info: &mut sys::ublksrv_ctrl_dev_info) -> Result<i32, String> {
+    let control = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/ublk-control")
+        .map_err(|e| format!("/dev/ublk-control: {e}"))?;
+    let mut ring = IoUring::<squeue::Entry128>::builder()
+        .build(4)
+        .map_err(|e| format!("a ring: {e}"))?;
+    let command = sys::ublksrv_ctrl_cmd {
+        dev_id: info.dev_id,
+        queue_id: u16::MAX,
+        len: std::mem::size_of::<sys::ublksrv_ctrl_dev_info>() as u16,
+        addr: std::ptr::from_mut(info) as u64,
+        ..Default::default()
+    };
+    let mut bytes = [0u8; 80];
+    // SAFETY: the command is a plain C struct of 32 bytes, copied into
+    // a buffer of 80.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            std::ptr::from_ref(&command).cast::<u8>(),
+            bytes.as_mut_ptr(),
+            std::mem::size_of::<sys::ublksrv_ctrl_cmd>(),
+        );
+    }
+    let sqe = opcode::UringCmd80::new(types::Fd(control.as_raw_fd()), op)
+        .cmd(bytes)
+        .build()
+        .user_data(1);
+    // SAFETY: the entry points at `info`, which outlives the wait
+    // below, and at a descriptor that is open until this returns.
+    unsafe { ring.submission().push(&sqe) }.map_err(|e| format!("push: {e}"))?;
+    ring.submit_and_wait(1)
+        .map_err(|e| format!("submit: {e}"))?;
+    let result = ring.completion().next().map(|cqe| cqe.result());
+    result.ok_or_else(|| "no completion".to_string())
+}
+
+fn raw(number: i32, add: bool) -> Result<(), String> {
+    let flags = u64::from(sys::UBLK_F_USER_RECOVERY | sys::UBLK_F_USER_RECOVERY_REISSUE);
+    let mut info = sys::ublksrv_ctrl_dev_info {
+        dev_id: number as u32,
+        ..Default::default()
+    };
+    if add {
+        info.nr_hw_queues = 1;
+        info.queue_depth = DEPTH;
+        info.max_io_buf_bytes = MAX_IO;
+        info.ublksrv_pid = std::process::id() as i32;
+        info.flags = flags;
+    }
+    let op = if add {
+        sys::UBLK_U_CMD_ADD_DEV
+    } else {
+        sys::UBLK_U_CMD_GET_DEV_INFO
+    };
+    let began = Instant::now();
+    let result = raw_ctrl(op, &mut info)?;
+    say(
+        if add { "rawadd" } else { "rawinfo" },
+        format!(
+            "{number}: result {result} after {} ms; id {} state {} ({}) pid {} flags {:#x}",
+            began.elapsed().as_millis(),
+            info.dev_id,
+            state_name(info.state),
+            info.state,
+            info.ublksrv_pid,
+            info.flags
+        ),
+    );
+    Ok(())
+}
+
 fn delete(number: i32) -> Result<(), String> {
     let ctrl = UblkCtrl::new_simple(number).map_err(|e| format!("lookup: {}", errno_of(&e)))?;
     let began = Instant::now();
@@ -631,6 +711,8 @@ fn main() {
         (Some("add"), Some(n)) => serve(n, false, &options),
         (Some("takeover"), Some(n)) => serve(n, true, &options),
         (Some("delete"), Some(n)) => delete(n),
+        (Some("rawadd"), Some(n)) => raw(n, true),
+        (Some("rawinfo"), Some(n)) => raw(n, false),
         (Some("watch"), Some(n)) => {
             let ms = args.get(2).and_then(|v| v.parse().ok()).unwrap_or(2000);
             watch(n, ms);
