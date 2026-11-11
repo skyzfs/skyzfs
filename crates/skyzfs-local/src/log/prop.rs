@@ -176,6 +176,8 @@ struct Run {
     /// The records reclaims gave up, oldest first: what an older
     /// superblock copy may still describe.
     given_up: Vec<Rec>,
+    /// Counts the comparisons, to vary the sub-range each one replays.
+    ticks: usize,
     mutants: Mutants,
 }
 
@@ -303,6 +305,49 @@ impl Run {
                 "the log holds {} records, the model {}",
                 held.len(),
                 self.model.records.len()
+            ));
+        }
+        self.sub_range()
+    }
+
+    /// A replay of some of the records: from the start of one, or the
+    /// end of the one before it, to the start of another, or the end of
+    /// the one before that. The two differ where a record follows a
+    /// sync or a recovery.
+    fn sub_range(&mut self) -> Result<(), String> {
+        self.ticks += 1;
+        let tick = self.ticks;
+        let records = &self.model.records;
+        let n = records.len();
+        if n == 0 {
+            return Ok(());
+        }
+        let i = tick.wrapping_mul(7) % (n + 1);
+        let j = i + tick.wrapping_mul(13) % (n + 1 - i);
+        // The boundary in front of record `k`: its start, or the end of
+        // the record before it.
+        let bound = |k: usize, start: bool| {
+            if k < n && (start || k == 0) {
+                records[k].start
+            } else {
+                records[k - 1].end
+            }
+        };
+        let from = bound(i, tick & 1 == 0);
+        let to = if i == j {
+            from
+        } else {
+            bound(j, tick & 2 == 0)
+        };
+        let mut held = Vec::new();
+        let log = self.log.as_ref().ok_or("no log")?;
+        log.replay(from, to, &mut |r| held.push((r.start, r.end)))
+            .map_err(|e| format!("replay of records {i}..{j}, from {from} to {to}: {e}"))?;
+        let want: Vec<(Lsn, Lsn)> = records[i..j].iter().map(|r| (r.start, r.end)).collect();
+        if held != want {
+            return Err(format!(
+                "replay of records {i}..{j}, from {from} to {to}, gave {} records",
+                held.len()
             ));
         }
         Ok(())
@@ -570,6 +615,7 @@ fn run(shape: Shape, mutants: Mutants, seed: u64, program: &[Op]) -> Result<(), 
         log: None,
         model: Model::default(),
         given_up: Vec::new(),
+        ticks: 0,
         mutants,
     };
     run.recover(true)?;
@@ -676,6 +722,10 @@ fn random_programs_notice_broken_logs() {
         (
             "a read error taken for the end",
             Mutants::READ_ERROR_ENDS_LOG,
+        ),
+        (
+            "a replay past the start it should end at",
+            Mutants::REPLAY_PAST_START,
         ),
     ];
     let missed: Vec<&str> = broken

@@ -106,6 +106,9 @@ impl Mutants {
     pub(crate) const NO_HEADER_FUTURE_CHECK: u32 = 1 << 26;
     /// A reclaim writes its superblock in the epoch it found.
     pub(crate) const RECLAIM_KEEPS_EPOCH: u32 = 1 << 27;
+    /// A replay does not stop at a record that starts where the range
+    /// ends.
+    pub(crate) const REPLAY_PAST_START: u32 = 1 << 28;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
@@ -1318,11 +1321,17 @@ impl<D: Dir> Log<D> {
         Ok(target)
     }
 
-    /// Call `visit` with every record from `from` up to `to`, in order.
-    /// Both must be record boundaries inside the log: positions that
-    /// [`Log::append`], [`Log::tail`], [`Log::floor`] or a recovery
-    /// returned. Every record is checked again as it is read, and a
-    /// damaged one is an error, never data.
+    /// Call `visit` with every record that starts at or after `from` and
+    /// before `to`, in order. Both must be record boundaries inside the
+    /// log, where a record starts or ends: positions that
+    /// [`Log::append`] (start or end), [`Log::tail`], [`Log::floor`],
+    /// [`Log::durable`] or a recovery returned. A record that follows a
+    /// sync or a recovery starts at the next unit boundary, so its start
+    /// is not the end of the record before it; both are boundaries, and
+    /// a range from the one to the other is empty. A position inside a
+    /// record, or in the gap between two, is refused, for `from` as for
+    /// `to`. Every record is checked again as it is read, and a damaged
+    /// one is an error, never data.
     ///
     /// A failed log replays nothing: after a failed sync the cache can
     /// show records the disk does not hold, and what the log holds is
@@ -1382,22 +1391,37 @@ impl<D: Dir> Log<D> {
                 stopped,
             })?;
             let header = found.header;
+            let start = found.start;
+            // Where the record after this one is looked for. A pad
+            // reaches to the first record of the next segment.
+            let end = if header.kind == Kind::Pad {
+                Lsn(base + size + identity.unit())
+            } else {
+                found.end
+            };
+            // A boundary is where a record starts or ends. Neither the
+            // gap in front of this record (it was appended after a sync
+            // or a recovery, at the next unit boundary) nor its inside
+            // is one.
+            let before = cursor.position;
+            for bound in [from, to] {
+                if (before < bound && bound < start) || (start < bound && bound < end) {
+                    return Err(LogError::BadPosition(bound));
+                }
+            }
+            if start >= to && !self.mutants.has(Mutants::REPLAY_PAST_START) {
+                // The range ends where this record starts.
+                break;
+            }
             if header.kind == Kind::Pad {
                 base += size;
                 window.reset();
                 cursor = Cursor {
-                    position: Lsn(base + identity.unit()),
+                    position: end,
                     chain: rules.seed(base),
                     min_epoch: header.epoch,
                 };
                 continue;
-            }
-            let (start, end) = (found.start, found.end);
-            if start < from && end > from {
-                return Err(LogError::BadPosition(from));
-            }
-            if end > to {
-                return Err(LogError::BadPosition(to));
             }
             if start >= from && !found.damaged && header.kind != Kind::Mark {
                 let at = start.0 % size + u64::from(identity.align);

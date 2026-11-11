@@ -393,6 +393,91 @@ fn create_and_open_check_what_is_there() {
     );
 }
 
+/// Replay between boundaries. A record's start and its end are both
+/// boundaries, and after a sync or a recovery the start of a record is
+/// not the end of the one before it: the record begins at the next unit
+/// boundary. A replay up to a record's start gives everything before
+/// that record, a replay from it gives the record and what follows, and
+/// the range between the end of one record and the start of the next is
+/// empty: behind a sync, across a segment switch, and across the seal a
+/// recovery writes. A position in a gap is refused, as one inside a
+/// record is. Mutant: a replay that does not stop at a record starting
+/// where the range ends.
+#[test]
+fn replay_takes_record_starts_and_ends_also_behind_a_gap() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let floor = log.floor();
+        let check = |log: &SimLog, from: Lsn, to: Lsn, want: &[u8], what: &str| match tags_between(
+            log, from, to,
+        ) {
+            Ok(got) if got == want => Ok(()),
+            other => Err(format!("{what}: from {from} to {to} gave {other:?}")),
+        };
+        // Behind a sync.
+        let a = put_small(&mut log, 1)?;
+        s(log.sync())?;
+        let b = put_small(&mut log, 2)?;
+        if env.align == 64 && a.end == b.start {
+            return Err("no gap behind the sync".into());
+        }
+        check(&log, floor, b.start, &[1], "up to a start behind a sync")?;
+        check(&log, b.start, b.end, &[2], "from a start behind a sync")?;
+        check(&log, a.end, b.start, &[], "across the gap")?;
+        check(&log, b.start, b.start, &[], "empty at a start")?;
+        if a.end != b.start {
+            let gap = Lsn(a.end.0 + u64::from(env.align));
+            for (from, to) in [(floor, gap), (gap, b.end), (gap, gap)] {
+                match log.replay(from, to, &mut |_| {}) {
+                    Err(LogError::BadPosition(at)) if at == gap => {}
+                    other => return Err(format!("a position in a gap gave {other:?}")),
+                }
+            }
+        }
+        // Across a segment switch.
+        let mut tag = 3;
+        let filled = fill_to_roll(&mut log, env, &mut tag)?;
+        let (last_tag, last) = filled[filled.len() - 1];
+        let (_, before) = filled[filled.len() - 2];
+        let mut all = vec![1, 2];
+        all.extend(filled.iter().map(|(t, _)| *t));
+        let upto = &all[..all.len() - 1];
+        check(
+            &log,
+            floor,
+            last.start,
+            upto,
+            "up to a start in a new segment",
+        )?;
+        check(&log, last.start, last.end, &[last_tag], "from that start")?;
+        check(&log, before.end, last.start, &[], "across the switch")?;
+        check(
+            &log,
+            b.start,
+            before.end,
+            &all[1..all.len() - 1],
+            "to an end",
+        )?;
+        // Across a recovery's seal.
+        drop(log);
+        let (mut log, recovery) = env.reopen(&disk)?;
+        let d = put_small(&mut log, 200)?;
+        if d.start <= recovery.end {
+            return Err("no seal between the prefix and the next record".into());
+        }
+        check(&log, floor, d.start, &all, "up to a start behind a seal")?;
+        check(&log, d.start, d.end, &[200], "from a start behind a seal")?;
+        check(&log, recovery.end, d.start, &[], "across the seal")?;
+        check(&log, last.start, d.end, &[last_tag, 200], "over the seal")
+    }
+    // At alignment 4096 every record starts where the one before it
+    // ends, and the defect has nothing to act on.
+    fn with_gaps(env: &Env) -> bool {
+        env.align == 64
+    }
+    caught(scenario, Mutants::REPLAY_PAST_START, with_gaps);
+}
+
 /// Create, interrupted: a power cut during creation leaves either no
 /// log, and then creating again works, or a whole empty one.
 #[test]
