@@ -10,6 +10,10 @@
 //!   record (the home image, the preimages, superblocks, segment
 //!   headers), names and lengths go as a seed decides.
 //! - `fail_log` makes every write and every sync fail from then on.
+//! - `reopen_failed` takes the fault away, kills the process and opens
+//!   the store with the failure acknowledged.
+//! - `maintenance` checkpoints: as the log stands, after a sync, or
+//!   under a hold that it sets and a later call releases.
 
 use std::time::Duration;
 
@@ -39,9 +43,14 @@ impl SimHarness {
     pub(crate) const SEGMENT: u64 = (1 << 20) + (128 << 10);
 
     fn options(&self, read_only: bool) -> OpenOptions {
+        self.options_with(read_only, false)
+    }
+
+    fn options_with(&self, read_only: bool, acknowledge_failure: bool) -> OpenOptions {
         OpenOptions {
             queue_depth: self.queue_depth,
             read_only,
+            acknowledge_failure,
             log_segments: self.segments,
             mutants: Mutants(self.mutants),
             ..OpenOptions::default()
@@ -353,6 +362,61 @@ impl Harness for SimHarness {
     fn fail_log(&mut self, target: &mut OnSim) -> Result<(), HarnessError> {
         target.disk.fail_write(0, true);
         target.disk.fail_sync(0, true);
+        Ok(())
+    }
+
+    fn reopen_failed(&mut self, target: OnSim) -> Result<Result<OnSim, OnSim>, HarnessError> {
+        let OnSim {
+            inner,
+            disk,
+            read_only,
+            geometry,
+        } = target;
+        drop(inner);
+        disk.clear_faults();
+        disk.kill();
+        let (store, _) = Store::open(disk.clone(), self.options_with(read_only, true))
+            .map_err(|e| HarnessError(format!("open after a failure: {e}")))?;
+        Ok(Ok(OnSim {
+            inner: Inner::Live(Box::new(store)),
+            disk,
+            geometry,
+            read_only,
+        }))
+    }
+
+    fn maintenance(&mut self, target: &mut OnSim, seed: u64) -> Result<(), HarnessError> {
+        let bounded = self.segments.is_some();
+        let Some(store) = target.store() else {
+            return Ok(());
+        };
+        // A checkpoint that fails has failed the volume, which the
+        // suite then sees for itself.
+        match seed % 4 {
+            0 => {
+                let _ = store.checkpoint();
+            }
+            1 => {
+                let _ = store.core.flush();
+                let _ = store.checkpoint();
+            }
+            // A hold where the log now ends. With a bounded log it is
+            // released at once: a write that waits for a hold would
+            // wait for a later call of this hook, which the suite does
+            // not promise.
+            2 => {
+                let _ = store.core.flush();
+                store.set_hold(Some(store.position()));
+                if bounded {
+                    let _ = store.checkpoint();
+                    store.set_hold(None);
+                }
+            }
+            _ => {
+                let _ = store.checkpoint();
+                store.set_hold(None);
+            }
+        }
         Ok(())
     }
 }
