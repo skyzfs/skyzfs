@@ -14,25 +14,16 @@ pub const VERSION: u32 = 1;
 /// unit a disk keeps or loses.
 pub const SECTOR_LEN: usize = 512;
 
+/// The smallest write unit a log can have: see [`Identity::write_unit`].
+pub const MIN_WRITE_UNIT: u32 = 4096;
+
+/// The largest write unit a log can have.
+pub const MAX_WRITE_UNIT: u32 = 65536;
+
 /// Where the second superblock copy starts in its file. The first starts
-/// at 0. They are far enough apart never to share a sector, whatever the
-/// sector size.
-pub const SUPER_COPY_STRIDE: u64 = 4096;
-
-/// The bytes at the start of every segment that hold its header. Records
-/// start here.
-pub const SEGMENT_HEADER: u64 = 4096;
-
-/// The unit the log never rewrites once it holds a durable record: a
-/// record appended after a sync or a recovery starts at the next
-/// multiple of this. It is the page a kernel writes back as a whole and
-/// the physical sector of current disks.
-pub const BLOCK: u64 = 4096;
-
-/// `x` rounded up to a multiple of [`BLOCK`].
-pub fn block_up(x: u64) -> u64 {
-    x.div_ceil(BLOCK) * BLOCK
-}
+/// at 0. They are a largest write unit apart, so that writing one never
+/// rewrites the other.
+pub const SUPER_COPY_STRIDE: u64 = MAX_WRITE_UNIT as u64;
 
 /// The bytes of a record header.
 pub const RECORD_HEADER: usize = 64;
@@ -46,8 +37,8 @@ const RECORD_MAGIC: &[u8; 4] = b"SKZR";
 
 /// A position in the log: a byte offset in an unbounded space, always on
 /// a record boundary. Segment `k` of a log with segments of `S` bytes
-/// holds positions `k * S .. (k + 1) * S`, and its first record is at
-/// `k * S + SEGMENT_HEADER`.
+/// holds positions `k * S .. (k + 1) * S`, and its first record is one
+/// write unit in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Lsn(pub u64);
 
@@ -104,15 +95,42 @@ pub struct Identity {
     pub align: u32,
     /// The bytes of one segment.
     pub segment_size: u64,
+    /// The write unit: what the layers below rewrite as a whole when a
+    /// part of it is written. For buffered I/O that is the kernel's
+    /// page, and it is never less than a disk's physical sector. A
+    /// power of two from 4096 to 65536. The log never writes again into
+    /// a unit that holds a durable record: the first record after a
+    /// sync or a recovery starts at the next multiple of this. A
+    /// segment's first unit is its header and its records start at the
+    /// second.
+    pub write_unit: u32,
 }
 
 impl Identity {
+    /// The write unit to give a new log on this system's files: the
+    /// kernel's page size, and at least 4096.
+    pub fn system_write_unit() -> u32 {
+        crate::fs::page_size().clamp(MIN_WRITE_UNIT, MAX_WRITE_UNIT)
+    }
+
     /// Whether the values can describe a log.
     pub fn valid(&self) -> bool {
         (self.align == 64 || self.align == 4096)
-            && self.segment_size.is_multiple_of(SEGMENT_HEADER)
-            && self.segment_size >= 4 * BLOCK
+            && self.write_unit.is_power_of_two()
+            && (MIN_WRITE_UNIT..=MAX_WRITE_UNIT).contains(&self.write_unit)
+            && self.segment_size.is_multiple_of(self.unit())
+            && self.segment_size >= 4 * self.unit()
             && self.block_size > 0
+    }
+
+    /// The write unit, as a number of bytes.
+    pub fn unit(&self) -> u64 {
+        u64::from(self.write_unit)
+    }
+
+    /// `x` rounded up to a multiple of the write unit.
+    pub fn unit_up(&self, x: u64) -> u64 {
+        x.div_ceil(self.unit()) * self.unit()
     }
 
     /// The bytes a record with `data_len` bytes of payload takes.
@@ -122,18 +140,18 @@ impl Identity {
     }
 
     /// Whether a record with `data_len` bytes of payload may start at
-    /// byte `at` of a segment: behind it, at the next block boundary,
+    /// byte `at` of a segment: behind it, at the next unit boundary,
     /// there must still be room for the marker that closes the segment.
     pub fn fits(&self, at: u64, data_len: u32) -> bool {
-        block_up(at + self.record_size(data_len)) + u64::from(self.align) <= self.segment_size
+        self.unit_up(at + self.record_size(data_len)) + u64::from(self.align) <= self.segment_size
     }
 
     /// The largest payload a record of this log can carry: the segment's
-    /// first block is its header and its last is kept for the marker that
+    /// first unit is its header and its last is kept for the marker that
     /// closes it.
     pub fn max_data(&self) -> u32 {
         let align = u64::from(self.align);
-        let room = (self.segment_size - 2 * BLOCK).saturating_sub(align);
+        let room = (self.segment_size - 2 * self.unit()).saturating_sub(align);
         (room / align * align).min(u64::from(MAX_DATA)) as u32
     }
 
@@ -177,6 +195,7 @@ impl Superblock {
         out[64..72].copy_from_slice(&self.epoch.to_le_bytes());
         out[72..80].copy_from_slice(&self.floor.0.to_le_bytes());
         out[80..88].copy_from_slice(&self.durable_floor.0.to_le_bytes());
+        out[88..92].copy_from_slice(&self.identity.write_unit.to_le_bytes());
         let crc = crc32c::crc32c(&out[..SECTOR_LEN - 4]);
         out[SECTOR_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
         out
@@ -205,13 +224,14 @@ impl Superblock {
                 block_size: u32_at(bytes, 40),
                 align: u32_at(bytes, 44),
                 segment_size: u64_at(bytes, 48),
+                write_unit: u32_at(bytes, 88),
             },
             counter: u64_at(bytes, 56),
             epoch: u64_at(bytes, 64),
             floor: Lsn(u64_at(bytes, 72)),
             durable_floor: Lsn(u64_at(bytes, 80)),
         };
-        let reserved = zero(&bytes[12..16]) && zero(&bytes[88..SECTOR_LEN - 4]);
+        let reserved = zero(&bytes[12..16]) && zero(&bytes[92..SECTOR_LEN - 4]);
         if !reserved || !block.identity.valid() || block.floor > block.durable_floor {
             return Err(Bad::Field);
         }
@@ -415,6 +435,7 @@ mod tests {
             block_size: 4096,
             align: 64,
             segment_size: 1 << 16,
+            write_unit: 4096,
         }
     }
 
@@ -447,8 +468,9 @@ mod tests {
         assert_eq!(bytes[64..72], 5u64.to_le_bytes());
         assert_eq!(bytes[72..80], 4096u64.to_le_bytes());
         assert_eq!(bytes[80..88], 8192u64.to_le_bytes());
-        assert!(bytes[88..508].iter().all(|b| *b == 0));
-        assert_eq!(bytes[508..], 0x34A4_0BEBu32.to_le_bytes());
+        assert_eq!(bytes[88..92], 4096u32.to_le_bytes());
+        assert!(bytes[92..508].iter().all(|b| *b == 0));
+        assert_eq!(bytes[508..], 0xC691_D3C9u32.to_le_bytes());
         assert_eq!(Superblock::decode(&bytes), Ok(block));
     }
 
@@ -598,8 +620,35 @@ mod tests {
         assert!(!direct.fits(8192, direct.max_data()));
         assert!(small.fits((1 << 16) - 8192, 4032));
         assert!(!small.fits((1 << 16) - 8192, 4033));
-        assert_eq!(block_up(4096), 4096);
-        assert_eq!(block_up(4097), 8192);
+        assert_eq!(small.unit_up(4096), 4096);
+        assert_eq!(small.unit_up(4097), 8192);
+        // A larger write unit: the header and the closing marker take a
+        // unit each.
+        let paged = Identity {
+            write_unit: 16384,
+            segment_size: 1 << 17,
+            ..small
+        };
+        assert!(paged.valid());
+        assert_eq!(paged.unit_up(4097), 16384);
+        assert_eq!(paged.max_data(), (1 << 17) - 2 * 16384 - 64);
+        assert!(paged.fits(16384, paged.max_data()));
+        assert!(!paged.fits(16384 + 64, paged.max_data()));
+        for write_unit in [0, 512, 2048, 4097, 12288, 131072] {
+            assert!(
+                !Identity {
+                    write_unit,
+                    ..paged
+                }
+                .valid(),
+                "{write_unit}"
+            );
+        }
+        assert!(!Identity {
+            segment_size: (1 << 17) + 4096,
+            ..paged
+        }
+        .valid());
         let big = Identity {
             segment_size: 64 << 20,
             ..small

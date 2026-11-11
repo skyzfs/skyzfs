@@ -50,10 +50,11 @@
 //! reserved bytes, written as zero and required to be zero. Checksums
 //! are CRC32C.
 //!
-//! **Superblock.** Two copies of 512 bytes, at offsets 0 and 4096 of
-//! `log.super`, so that they never share a sector. An update is written
-//! to the copy that does not hold the current superblock, and synced.
-//! The valid copy with the higher counter counts.
+//! **Superblock.** Two copies of 512 bytes, at offsets 0 and 65536 of
+//! `log.super`: the largest write unit apart, so that writing one never
+//! rewrites the other. An update is written to the copy that does not
+//! hold the current superblock, and synced. The valid copy with the
+//! higher counter counts.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
@@ -69,13 +70,15 @@
 //! | 64 | 8 | epoch: incremented by every recovery |
 //! | 72 | 8 | start of the log |
 //! | 80 | 8 | durable floor: a position that was durable when the copy was written |
-//! | 88 | 420 | reserved |
+//! | 88 | 4 | write unit: a power of two from 4096 to 65536 |
+//! | 92 | 416 | reserved |
 //! | 508 | 4 | CRC32C of bytes 0..508 |
 //!
-//! **Segment file.** The first 4096 bytes are for its header, of which
-//! 512 are used. The header says which part of the log the file holds
-//! now; the file's name says nothing, and a file is given another part
-//! by overwriting the header in place. Records follow from byte 4096.
+//! **Segment file.** The first write unit is for its header, of which
+//! 512 bytes are used. The header says which part of the log the file
+//! holds now; the file's name says nothing, and a file is given another
+//! part by overwriting the header in place. Records follow from the
+//! second write unit.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
@@ -113,30 +116,39 @@
 //! volume id followed by the segment's base, so that a replay can start
 //! at any segment.
 //!
-//! A **pad** closes a segment: the log continues at byte 4096 of the
-//! segment with the next base. A segment keeps its last block free for
-//! it. A **mark** is nothing; recovery writes one (below). Neither is
-//! ever returned by a replay.
+//! A **pad** closes a segment: the log continues at the second write
+//! unit of the segment with the next base. A segment keeps its last
+//! write unit free for it. A **mark** is nothing; recovery writes one
+//! (below). Neither is ever returned by a replay.
 //!
 //! **Where the next record is.** Directly behind the record before it,
-//! or at the next 4096-byte boundary. The log uses the boundary for the
-//! first record after a sync and after a recovery, and a reader looks
-//! at the boundary first.
+//! or at the next multiple of the write unit. The log uses the boundary
+//! for the first record after a sync and after a recovery, and a reader
+//! looks at the boundary first.
 //!
-//! # Why a block with durable records is never written again
+//! # Why a unit with durable records is never written again
 //!
 //! Nothing on the disk is assumed to be written atomically. A sector
 //! that is being written when the power fails may hold the old bytes,
-//! the new bytes, or neither. Kernels write back whole pages and disks
-//! whole physical sectors, so a small write rewrites everything around
-//! it in its 4096-byte block. A record appended into the block that
-//! holds the end of a durable record would therefore put that record at
-//! risk again. So the record after a sync or a recovery starts a new
-//! block. The cost is at most one block of log space for each sync at
-//! alignment 64, and nothing at 4096.
+//! the new bytes, or neither. And a small write rewrites everything
+//! around it: a kernel writes back whole pages, a disk whole physical
+//! sectors. The **write unit** is the largest thing that is rewritten
+//! as a whole. It is stored in the superblock, because it belongs to
+//! the machine and not to the format: 4096 on most, 16384 where pages
+//! are 16 KiB (Apple silicon, some arm64 kernels). A new log should
+//! take [`format::Identity::system_write_unit`].
+//!
+//! A record appended into the unit that holds the end of a durable
+//! record would put that record at risk again. So the first record
+//! after a sync or a recovery starts a new unit. This holds from the
+//! moment a sync is issued, not from its completion: a record appended
+//! while the sync is in flight would dirty the unit again after the
+//! sync has made it durable. The cost is at most one unit of log space
+//! for each sync at alignment 64, and nothing where alignment and unit
+//! are both 4096.
 //!
 //! The superblock follows the same rule by having two copies, and a
-//! segment header shares its block with nothing.
+//! segment header shares its unit with nothing.
 //!
 //! # Why recovery yields a prefix
 //!
@@ -149,12 +161,15 @@
 //!    operating system's cache. It stops at the first place where no
 //!    valid next record is.
 //! 3. It increments the epoch in the superblock and syncs that.
-//! 4. It seals the end of what it found: at the next block boundary it
-//!    writes a mark (or, in a segment's last block, a pad) of the new
-//!    epoch, and syncs it. Where nothing was ever written behind the
-//!    prefix, it writes nothing.
+//! 4. It seals the end of what it found: at the next unit boundary it
+//!    writes a mark (or, where the segment has no room to go on, a pad)
+//!    of the new epoch, and syncs it. Where nothing was ever written
+//!    behind the prefix, it writes nothing.
 //! 5. It erases the header of every segment file that claims a part of
 //!    the log beyond the prefix, or a part that a newer file holds.
+//! 6. If the log was marked as failed and the caller acknowledged it,
+//!    it removes the marker and syncs the directory, last: a crash
+//!    before that leaves the marker.
 //!
 //! A record is valid if its header's checksum matches under the chain
 //! value of the record before it; it names the position it is at; its
@@ -179,7 +194,7 @@
 //! after every segment file with unsynced bytes, and the directory if
 //! a segment file was created, has been synced, so every sector of
 //! every record it covers was durable; no later write touches those
-//! blocks; so each such record is still valid, and the walk passes it.
+//! units; so each such record is still valid, and the walk passes it.
 //!
 //! **The prefix is durable when recovery returns** because step 1
 //! synced everything and step 2 validated what the device holds. This
@@ -205,9 +220,9 @@
 //! - The record that was at `P` itself, if its header survived and
 //!   only its payload was lost, could be made whole again by a later
 //!   write of the same payload. The seal prevents it. If `P` is on a
-//!   block boundary the mark overwrites that header. If not, the mark
+//!   unit boundary the mark overwrites that header. If not, the mark
 //!   is at the boundary behind `P`, and a reader looks there first; the
-//!   old header is in a block that is never written again and is never
+//!   old header is in a unit that is never written again and is never
 //!   looked at.
 //! - A stale segment file has its header erased; and if it had not, it
 //!   is older than the pad that will close the segment before it.
@@ -235,7 +250,15 @@
 //! failing call creates `log.failed` and syncs the directory, and
 //! reports whether that worked. [`Log::open`](log::Log::open) refuses a
 //! log with that file unless the caller acknowledges the failure; then
-//! it recovers as usual and removes the file.
+//! it recovers as usual and removes the file. Whether the same client
+//! is still attached, and so whether the log may be served again, is
+//! for the caller to know.
+//!
+//! Every failed write or sync on the log's own files fails the log,
+//! also inside a reclaim. A reclaim that fails while writing the new
+//! start may have moved the start all the same: it only ever gives up
+//! what was durable and below the hold, and since the log has failed,
+//! no segment below the new start is reused.
 //!
 //! The gap: if the disk refuses the marker too, a new instance cannot
 //! know that the log failed. The log it finds still holds what every
@@ -260,15 +283,19 @@
 //!   guarantee against bit rot or against anyone who chooses the data:
 //!   a client that could predict the log's headers could write a
 //!   payload that looks like them.
-//! - **Corruption of durable records.** A flipped bit in the middle of
-//!   the log ends the log there. If that is below the durable floor in
-//!   the superblock, open fails; the floor is only advanced by
-//!   recoveries and reclaims, so above it the log is silently shorter
-//!   and only the report says why. Nothing is repaired.
-//! - **A lost newest superblock copy.** If records exist in an epoch
-//!   above the superblock that was found, the newest copy is gone and
-//!   open fails. Writing both copies at every update would survive it,
-//!   at the cost of a second sync.
+//! - **Corruption of what was durable is detected and reported, never
+//!   repaired.** The log has no redundancy against media corruption,
+//!   the superblock included; a volume that loses durable records falls
+//!   back to its last uploaded cut. Where there is proof that something
+//!   durable is gone, open fails and says why, and never returns an
+//!   empty or a shorter log: a prefix that ends below the durable floor
+//!   in the superblock ([`log::Corruption::BelowDurableFloor`]), and
+//!   records or segments of a later epoch than the superblock that was
+//!   found, which means the newest superblock copy is lost
+//!   ([`log::Corruption::SuperblockBehind`]). The floor is only advanced
+//!   by recoveries and reclaims. A flipped bit above it ends the log
+//!   there, as a torn record would, and only recovery's report says
+//!   why.
 //! - **Running out of space.** Creating a segment file fails the log
 //!   like any other write error.
 //!
@@ -282,10 +309,16 @@
 //!   file system has none (tmpfs)
 //!   [`Recovery::checked_device`](log::Recovery::checked_device) is
 //!   false and the prefix may hold records that were never durable.
+//!   The rule about write units is as good as the kernel's tracking of
+//!   what is dirty: a kernel that writes back a whole multi-page folio
+//!   when one page of it is dirty rewrites the neighbours too, with the
+//!   same content.
 //! - **What direct I/O would change.** No second copy of the data in
 //!   memory; a sync that only has to flush the device; no cache that
 //!   can disagree with the disk, so the from-the-device read path and
-//!   its "not possible here" case go away. It would cost the alignment:
+//!   its "not possible here" case go away; and the write unit becomes
+//!   the device's block, whatever the kernel's pages and folios are. It
+//!   would cost the alignment:
 //!   every record then begins with a 4096-byte header block, which
 //!   doubles the log space and the bytes written for 4096-byte writes.
 //!   The format already has that alignment as a parameter, so it is a

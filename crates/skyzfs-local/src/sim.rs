@@ -34,6 +34,13 @@
 //!   disk never got it. A power cut, or [`SimDisk::drop_caches`], ends
 //!   the illusion.
 //!
+//! - **The write unit** ([`SimDisk::set_write_unit`]). A kernel writes
+//!   back whole pages and a disk whole physical sectors: a write of a
+//!   few bytes rewrites everything around them in the same unit. With a
+//!   write unit set, every sector of every unit a write touches counts
+//!   as written again, with the same content, and so is the power
+//!   cut's to lose or to turn into garbage.
+//!
 //! What it does not model: a disk that reports a sync it did not do, a
 //! write that lands in the wrong place, corruption of durable data on its
 //! own (a test can corrupt a file itself, with [`SimDisk::corrupt`]),
@@ -309,6 +316,8 @@ struct State {
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
     device_reads: bool,
+    /// What a write rewrites as a whole, in bytes.
+    write_unit: u64,
     stats: Stats,
 }
 
@@ -370,6 +379,7 @@ impl SimDisk {
                 write_fault: None,
                 sync_fault: None,
                 device_reads: true,
+                write_unit: SECTOR,
                 stats: Stats::default(),
             })),
         }
@@ -475,6 +485,14 @@ impl SimDisk {
                 sector.cached = None;
             }
         }
+    }
+
+    /// What a write rewrites as a whole: `bytes`, a multiple of
+    /// [`SECTOR`] (which is what it is at first). Every sector of a unit
+    /// that a later write touches gets a new unsynced version, also the
+    /// sectors whose content the write does not change.
+    pub fn set_write_unit(&self, bytes: u64) {
+        self.lock().write_unit = (bytes / SECTOR).max(1) * SECTOR;
     }
 
     /// Whether [`File::read_device_at`] works (it does at first) or
@@ -685,7 +703,29 @@ impl File for SimFile {
             .checked_add(data.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         let rng = &mut state.rng;
+        let unit = state.write_unit;
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        // The units the write touches are rewritten as a whole: their
+        // other sectors are written again as they are.
+        if unit > SECTOR && !data.is_empty() {
+            let first = offset / unit * unit;
+            let last = (end.div_ceil(unit) * unit).min(inode.len.max(end));
+            for index in first / SECTOR..last.div_ceil(SECTOR) {
+                // The sectors the write itself touches go from what they
+                // were straight to what it makes them, below.
+                let touched = (index + 1) * SECTOR > offset && index * SECTOR < end;
+                if touched || index * SECTOR >= inode.len {
+                    continue;
+                }
+                let sector = inode.sectors.entry(index).or_default();
+                let same: Box<[u8]> = match sector.current() {
+                    Some(current) => current.into(),
+                    None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
+                };
+                sector.cached = None;
+                sector.unsynced.push(same);
+            }
+        }
         let mut at = offset;
         while at < end {
             let index = at / SECTOR;
@@ -1095,6 +1135,35 @@ mod tests {
             );
         }
         assert!(dirty > 0 && dropped > 0 && only_cached > 0);
+    }
+
+    /// Write unit: with one set, a small write puts the durable sectors
+    /// around it in the same unit at risk, and no others.
+    #[test]
+    fn a_write_rewrites_its_whole_unit() {
+        let disk = disk_with(16, 1);
+        disk.set_write_unit(4096);
+        let mut f = disk.open("f").unwrap();
+        // One byte in the second unit (sectors 8 to 15).
+        f.write_at(4096 + 700, &[2]).unwrap();
+        assert_eq!(disk.unsynced_sectors(), 8);
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let got = read(&disk, "f", 0, 16 * S);
+        assert_eq!(got[..8 * S], vec![1; 8 * S][..]);
+        for sector in 8..16 {
+            assert_ne!(
+                got[sector * S..(sector + 1) * S],
+                vec![1; S][..],
+                "{sector}"
+            );
+        }
+        // Lost without garbage, the untouched sectors are as they were.
+        let disk = disk_with(16, 1);
+        disk.set_write_unit(4096);
+        let mut f = disk.open("f").unwrap();
+        f.write_at(4096 + 700, &[2]).unwrap();
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", 0, 16 * S), vec![1; 16 * S]);
     }
 
     /// Device reads: they include data that is written and not synced,

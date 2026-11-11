@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use crate::format::{
-    block_up, chain_seed, Bad, Identity, Kind, Lsn, RecordHeader, SegmentHeader, Superblock, BLOCK,
-    RECORD_HEADER, SECTOR_LEN, SEGMENT_HEADER, SUPER_COPY_STRIDE,
+    chain_seed, Bad, Identity, Kind, Lsn, RecordHeader, SegmentHeader, Superblock, RECORD_HEADER,
+    SECTOR_LEN, SUPER_COPY_STRIDE,
 };
 use crate::io::{Dir, File};
 
@@ -363,7 +363,7 @@ impl Window {
 #[derive(Debug, Clone, Copy)]
 struct Cursor {
     /// Where the record before ends. The next record is here, or at the
-    /// next block boundary.
+    /// next unit boundary.
     position: Lsn,
     /// What its header must be chained to.
     chain: u32,
@@ -393,7 +393,7 @@ impl Rules {
     /// Its payload is left in `window`.
     ///
     /// The record is at the cursor, or, if it was appended after a sync
-    /// or a recovery, at the next block boundary. The boundary is tried
+    /// or a recovery, at the next unit boundary. The boundary is tried
     /// first: what a recovery wrote there counts, whatever is still at
     /// the cursor.
     fn record<F: File>(
@@ -404,7 +404,7 @@ impl Rules {
         cursor: &Cursor,
     ) -> io::Result<Result<Found, Break>> {
         let here = cursor.position;
-        let boundary = Lsn(block_up(here.0));
+        let boundary = Lsn(self.identity.unit_up(here.0));
         let mut blank = true;
         if boundary != here {
             match self.record_at(file, reader, window, cursor, boundary)? {
@@ -547,8 +547,9 @@ pub struct Log<D: Dir> {
     tail: Lsn,
     chain: u32,
     durable: Lsn,
-    /// The block the tail is in holds durable records: the next record
-    /// starts at the next block boundary.
+    /// The write unit the tail is in holds records that are durable, or
+    /// that a sync has been issued for: the next record starts at the
+    /// next unit boundary.
     fresh_block: bool,
     /// The current segment has its closing marker and the next one has
     /// not been started.
@@ -604,8 +605,8 @@ impl<D: Dir> Log<D> {
             identity,
             counter: 1,
             epoch: 1,
-            floor: Lsn(SEGMENT_HEADER),
-            durable_floor: Lsn(SEGMENT_HEADER),
+            floor: Lsn(identity.unit()),
+            durable_floor: Lsn(identity.unit()),
         };
         superblock
             .write_at(0, &first.encode())
@@ -756,7 +757,7 @@ impl<D: Dir> Log<D> {
         let mut live = BTreeMap::from([(base, index)]);
         let mut window = Window::default();
         let mut cursor = Cursor {
-            position: Lsn(base + SEGMENT_HEADER),
+            position: Lsn(base + identity.unit()),
             chain: rules.seed(base),
             min_epoch: segment_epoch,
         };
@@ -798,7 +799,7 @@ impl<D: Dir> Log<D> {
             live.insert(base, index);
             window.reset();
             cursor = Cursor {
-                position: Lsn(base + SEGMENT_HEADER),
+                position: Lsn(base + identity.unit()),
                 chain: rules.seed(base),
                 min_epoch: cursor.min_epoch.max(segment_epoch),
             };
@@ -840,7 +841,7 @@ impl<D: Dir> Log<D> {
             tail: end,
             chain: cursor.chain,
             durable: end,
-            // What recovery returns is durable, so the block it ends in
+            // What recovery returns is durable, so the unit it ends in
             // is not written again.
             fresh_block: !mutants.has(Mutants::REWRITE_DURABLE_BLOCK),
             closed: stopped == Stop::NoNextSegment,
@@ -1023,7 +1024,7 @@ impl<D: Dir> Log<D> {
     /// Where the next record starts.
     fn next_start(&self) -> Lsn {
         if self.fresh_block {
-            Lsn(block_up(self.tail.0))
+            Lsn(self.current.identity.unit_up(self.tail.0))
         } else {
             self.tail
         }
@@ -1071,7 +1072,8 @@ impl<D: Dir> Log<D> {
         let identity = self.current.identity;
         let align = u64::from(identity.align);
         let start = self.next_start();
-        let room = start.0 % identity.segment_size + BLOCK + align <= identity.segment_size;
+        let room =
+            start.0 % identity.segment_size + identity.unit() + align <= identity.segment_size;
         let kind = if room { Kind::Mark } else { Kind::Pad };
         let (index, start, crc) = self.write_marker_record(kind, "sealing the tail")?;
         if let Err(e) = self.slots[index].file.sync() {
@@ -1139,7 +1141,7 @@ impl<D: Dir> Log<D> {
         self.live.insert(next, next_index);
         self.closed = false;
         self.fresh_block = false;
-        self.tail = Lsn(next + SEGMENT_HEADER);
+        self.tail = Lsn(next + identity.unit());
         self.chain = chain_seed(&identity.volume, next);
         Ok(())
     }
@@ -1154,8 +1156,8 @@ impl<D: Dir> Log<D> {
     /// and are refused.
     ///
     /// Records are not always contiguous: the first record after a sync
-    /// or a recovery starts at the next block boundary, so that a block
-    /// that holds durable records is never written again.
+    /// or a recovery starts at the next multiple of the write unit, so
+    /// that a unit that holds durable records is never written again.
     pub fn append(
         &mut self,
         kind: Kind,
@@ -1235,6 +1237,14 @@ impl<D: Dir> Log<D> {
             self.durable = target;
             return Ok(target);
         }
+        // From the moment a sync is issued, what it covers may be durable
+        // at any time, so the unit it ends in is not written again: the
+        // next record starts a new unit. This is set before the first
+        // device sync and not after the last, so that it also holds for
+        // an append made while a sync is still in flight.
+        if !self.dirty.is_empty() && !self.mutants.has(Mutants::REWRITE_DURABLE_BLOCK) {
+            self.fresh_block = true;
+        }
         // Every segment that holds bytes no sync has covered, not only
         // the one being written; and the directory, if one of them is a
         // new file. Only then does the durable position move.
@@ -1253,11 +1263,6 @@ impl<D: Dir> Log<D> {
                 }
                 return Err(self.fail("syncing", &e));
             }
-        }
-        // What is durable now is not written again: the next record
-        // starts a new block.
-        if !self.dirty.is_empty() && !self.mutants.has(Mutants::REWRITE_DURABLE_BLOCK) {
-            self.fresh_block = true;
         }
         self.dirty.clear();
         if self.dir_dirty && !self.mutants.has(Mutants::SYNC_NO_DIR) {
@@ -1301,7 +1306,7 @@ impl<D: Dir> Log<D> {
         let mut window = Window::default();
         let mut base = identity.base_of(from);
         let mut cursor = Cursor {
-            position: Lsn(base + SEGMENT_HEADER),
+            position: Lsn(base + identity.unit()),
             chain: rules.seed(base),
             min_epoch: 0,
         };
@@ -1321,7 +1326,7 @@ impl<D: Dir> Log<D> {
                 base += size;
                 window.reset();
                 cursor = Cursor {
-                    position: Lsn(base + SEGMENT_HEADER),
+                    position: Lsn(base + identity.unit()),
                     chain: rules.seed(base),
                     min_epoch: header.epoch,
                 };

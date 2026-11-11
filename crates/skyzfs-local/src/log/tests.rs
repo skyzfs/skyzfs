@@ -14,11 +14,13 @@
 //! both and shows that each alone is enough.
 
 use super::*;
-use crate::format::BLOCK;
 use crate::io::SECTOR;
 use crate::sim::{BySector, Cut, Fate, LoseAll, SeededCut, SimDisk};
 
 const SEG: u64 = 64 << 10;
+
+/// The write unit of the logs these scenarios use.
+const BLOCK: u64 = 4096;
 
 #[derive(Debug, Clone, Copy)]
 struct Env {
@@ -45,6 +47,7 @@ impl Env {
             block_size: 4096,
             align: self.align,
             segment_size: SEG,
+            write_unit: BLOCK as u32,
         }
     }
 
@@ -634,7 +637,7 @@ fn stale_second_segment(env: &Env) -> Result<(SimDisk, SimLog, Vec<u8>, Appended
         return Err("nothing was appended".into());
     };
     want.extend(more.iter().map(|(t, _)| *t));
-    if w.start != Lsn(SEG + SEGMENT_HEADER) {
+    if w.start != Lsn(SEG + BLOCK) {
         return Err("the log did not roll where the test expects".into());
     }
     Ok((disk, log, want, w))
@@ -873,6 +876,38 @@ fn a_block_with_durable_records_is_not_written_again() {
         Mutants::REWRITE_DURABLE_BLOCK,
         small_records_and_garbage,
     );
+}
+
+/// The same rule, from the moment a sync is issued, not from its
+/// completion: a record appended while a sync is in flight would dirty
+/// the unit again after the sync has made it durable. The log is serial
+/// today, so the test looks at the only sync that does not complete,
+/// one that fails: already then the next record would start a new unit.
+#[test]
+fn a_sync_reserves_its_last_unit_when_it_is_issued() {
+    for env in environments(0) {
+        let (disk, mut log) = env.fresh().unwrap();
+        put_small(&mut log, 1).unwrap();
+        let tail = log.tail();
+        assert_eq!(log.next_start(), tail, "{env:?}");
+        disk.fail_sync(0, false);
+        assert!(log.sync().is_err());
+        assert_eq!(log.tail(), tail);
+        assert_eq!(log.next_start().0 % BLOCK, 0, "{env:?}");
+        assert!(log.next_start() >= tail);
+        if env.align == 64 {
+            assert!(log.next_start() > tail);
+        }
+        // A sync with nothing to cover reserves nothing.
+        let (_disk, mut log) = env.fresh().unwrap();
+        put_small(&mut log, 1).unwrap();
+        log.sync().unwrap();
+        let after = put_small(&mut log, 2).unwrap();
+        log.sync().unwrap();
+        log.sync().unwrap();
+        let next = put_small(&mut log, 3).unwrap();
+        assert_eq!(next.start.0, after.end.0.div_ceil(BLOCK) * BLOCK, "{env:?}");
+    }
 }
 
 /// Group commit: one sync covers every append before it, with one
@@ -1435,6 +1470,11 @@ fn a_torn_superblock_update_leaves_the_previous_one() {
             disk.fail_sync(0, false);
             if log.reclaim(f1.start).is_ok() {
                 return Err("a reclaim whose sync failed succeeded".into());
+            }
+            // The log has failed like after any failed write or sync,
+            // and gave no segment file free.
+            if !log.is_failed() || put(&mut log, &env, 200).is_ok() || log.sync().is_ok() {
+                return Err("the log went on after a failed reclaim".into());
             }
             drop(log);
             let lost = env.lost();

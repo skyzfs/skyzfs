@@ -20,6 +20,7 @@ fn identity(align: u32, segment_size: u64) -> Identity {
         block_size: 4096,
         align,
         segment_size,
+        write_unit: Identity::system_write_unit(),
     }
 }
 

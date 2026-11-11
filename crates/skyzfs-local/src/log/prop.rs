@@ -22,7 +22,43 @@ use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, Tes
 use super::*;
 use crate::sim::{LoseAll, SeededCut, SimDisk};
 
-const SEG: u64 = 32 << 10;
+/// A log's geometry, and what the disk under it rewrites as a whole.
+#[derive(Debug, Clone, Copy)]
+struct Shape {
+    align: u32,
+    write_unit: u32,
+    segment_size: u64,
+    /// What the disk rewrites as a whole around every write.
+    disk_unit: u64,
+}
+
+/// Small records on a machine with 4 KiB pages.
+const SMALL: Shape = Shape {
+    align: 64,
+    write_unit: 4096,
+    segment_size: 32 << 10,
+    disk_unit: 4096,
+};
+
+const BLOCKS: Shape = Shape {
+    align: 4096,
+    ..SMALL
+};
+
+/// A machine with 16 KiB pages: every write rewrites 16 KiB around it,
+/// and the log's write unit matches.
+const PAGED: Shape = Shape {
+    align: 64,
+    write_unit: 16384,
+    segment_size: 128 << 10,
+    disk_unit: 16384,
+};
+
+/// The same machine under a log that believes in 4 KiB.
+const PAGED_TOO_SMALL: Shape = Shape {
+    write_unit: 4096,
+    ..PAGED
+};
 
 #[derive(Debug, Clone)]
 enum Op {
@@ -188,11 +224,15 @@ impl Run {
                 .zip(&all)
                 .position(|(a, b)| a != b)
                 .unwrap_or(all.len());
+            let show = |r: &Rec| (r.start, r.end, r.kind, r.offset, r.length, r.data.len());
             return Err(format!(
                 "the log is not a prefix of what was appended: it holds {} records, {} were \
-                 appended, and they differ at record {at}",
+                 appended, and they differ at record {at}: the log has {:?}, appended was {:?} \
+                 (recovery: {recovery:?})",
                 held.len(),
-                all.len()
+                all.len(),
+                held.get(at).map(show),
+                all.get(at).map(show),
             ));
         }
         if held.len() < model.synced {
@@ -360,14 +400,16 @@ impl Run {
 }
 
 /// Run one program against a log with `mutants`.
-fn run(align: u32, mutants: Mutants, seed: u64, program: &[Op]) -> Result<(), String> {
+fn run(shape: Shape, mutants: Mutants, seed: u64, program: &[Op]) -> Result<(), String> {
     let disk = SimDisk::new(seed);
+    disk.set_write_unit(shape.disk_unit);
     let identity = Identity {
         volume: *b"property-testing",
         device_size: 1 << 30,
         block_size: 4096,
-        align,
-        segment_size: SEG,
+        align: shape.align,
+        segment_size: shape.segment_size,
+        write_unit: shape.write_unit,
     };
     drop(Log::create(disk.clone(), identity).map_err(|e| e.to_string())?);
     let mut run = Run {
@@ -397,7 +439,7 @@ proptest! {
     /// records aligned to 64 bytes.
     #[test]
     fn the_log_matches_the_model((seed, program) in program()) {
-        if let Err(why) = run(64, Mutants::default(), seed, &program) {
+        if let Err(why) = run(SMALL, Mutants::default(), seed, &program) {
             return Err(TestCaseError::fail(why));
         }
     }
@@ -405,14 +447,24 @@ proptest! {
     /// The same, with records aligned to 4096 bytes.
     #[test]
     fn the_log_matches_the_model_at_4096((seed, program) in program()) {
-        if let Err(why) = run(4096, Mutants::default(), seed, &program) {
+        if let Err(why) = run(BLOCKS, Mutants::default(), seed, &program) {
+            return Err(TestCaseError::fail(why));
+        }
+    }
+
+    /// The same, on a disk that rewrites 16 KiB around every write (a
+    /// kernel with 16 KiB pages), with a log whose write unit is 16 KiB.
+    #[test]
+    fn the_log_matches_the_model_with_16k_pages((seed, program) in program()) {
+        if let Err(why) = run(PAGED, Mutants::default(), seed, &program) {
             return Err(TestCaseError::fail(why));
         }
     }
 }
 
-/// Whether random programs notice a log with `mutants`, within `cases`.
-fn noticed(mutants: u32, cases: u32) -> bool {
+/// Whether random programs notice a log with `mutants`, in one of
+/// `shapes`, within `cases`.
+fn noticed(mutants: u32, shapes: &[Shape], cases: u32) -> bool {
     let mut runner = TestRunner::new_with_rng(
         ProptestConfig {
             cases,
@@ -424,8 +476,8 @@ fn noticed(mutants: u32, cases: u32) -> bool {
     );
     runner
         .run(&program(), |(seed, program)| {
-            for align in [64, 4096] {
-                if let Err(why) = run(align, Mutants(mutants), seed, &program) {
+            for shape in shapes {
+                if let Err(why) = run(*shape, Mutants(mutants), seed, &program) {
                     return Err(TestCaseError::fail(why));
                 }
             }
@@ -458,11 +510,25 @@ fn random_programs_notice_broken_logs() {
             Mutants::REUSE_BEFORE_FLOOR_SYNC,
         ),
         ("a reclaim that ignores the hold", Mutants::IGNORE_HOLD),
+        (
+            "a durable block written again",
+            Mutants::REWRITE_DURABLE_BLOCK,
+        ),
     ];
     let missed: Vec<&str> = broken
         .iter()
-        .filter(|(_, mutants)| !noticed(*mutants, 1500))
+        .filter(|(_, mutants)| !noticed(*mutants, &[SMALL, BLOCKS], 1500))
         .map(|(name, _)| *name)
         .collect();
     assert!(missed.is_empty(), "not noticed: {missed:?}");
+}
+
+/// The write unit is not a formality. On a disk that rewrites 16 KiB
+/// around every write, a log that keeps durable records apart from new
+/// ones by 4 KiB only loses durable records at a power cut, and the
+/// random programs notice; with the right unit they pass (the property
+/// above).
+#[test]
+fn a_write_unit_below_the_disks_is_noticed() {
+    assert!(noticed(0, &[PAGED_TOO_SMALL], 1500));
 }
