@@ -301,7 +301,7 @@ fn what_belongs_to_a_volume_in_a_shared_run_directory_is_under_the_volumes_own_n
 
 fn failure(held: bool, reason: Reason) -> Failure {
     Failure {
-        held,
+        held: held.into(),
         reason,
         identity: [3; 16],
     }
@@ -341,6 +341,18 @@ fn the_failure_note_has_the_documented_layout() {
     }
     codes.dedup();
     assert_eq!(codes, [1, 2, 3, 4, 5, 6]);
+
+    // Not known whether a client held the device: its own value.
+    let unknown = StoredFailure {
+        failure: Failure {
+            held: Held::Unknown,
+            ..stored.failure
+        },
+        ..stored
+    };
+    let bytes = encode_failure(&unknown);
+    assert_eq!(bytes[40], 2);
+    assert_eq!(decode_failure(&bytes), Some(unknown));
 }
 
 #[test]
@@ -382,7 +394,7 @@ fn the_failure_note_counts_in_its_boot_and_a_torn_one_is_an_error() {
         assert!(here.failure().is_err(), "{len} bytes were read as a note");
         assert!(later.failure().is_err(), "whatever the boot");
     }
-    for (at, value) in [(40, 2), (41, 0), (41, 7), (42, 1), (63, 1)] {
+    for (at, value) in [(40, 3), (41, 0), (41, 7), (42, 1), (63, 1)] {
         let mut changed = whole.clone();
         changed[at] = value;
         fs::write(here.failure_path(), changed).expect("write");

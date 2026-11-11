@@ -64,7 +64,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::lifecycle::{DeviceState, Located, Whose};
+use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::Counters;
 use crate::records::StoredFailure;
 
@@ -432,8 +432,11 @@ pub fn report(
         _ => None,
     };
     let state = match (located, ours) {
-        _ if failure.is_some_and(|f| f.is_none_or(|f| f.failure.held)) => {
+        _ if failure.is_some_and(|f| f.is_none_or(|f| f.failure.held == Held::Yes)) => {
             "failed, held by a client: not served again in this boot".to_string()
+        }
+        _ if failure.is_some_and(|f| f.is_some_and(|f| f.failure.held == Held::Unknown)) => {
+            "failed, not known whether a client holds it: the next serve finds out".to_string()
         }
         _ if failure.is_some() => "failed: needs --acknowledge-failure".to_string(),
         (None, _) => "detached".to_string(),
@@ -496,7 +499,11 @@ pub fn report(
         Some(None) => lines.push(("failure", "the failure note cannot be read".to_string())),
         Some(Some(stored)) => {
             let boot: String = stored.boot.iter().map(|b| format!("{b:02x}")).collect();
-            let held = if stored.failure.held { "yes" } else { "no" };
+            let held = match stored.failure.held {
+                Held::Yes => "yes",
+                Held::No => "no",
+                Held::Unknown => "unknown",
+            };
             lines.push(("failure", stored.failure.reason.to_string()));
             lines.push(("failure_held", held.to_string()));
             lines.push(("failure_boot", boot));

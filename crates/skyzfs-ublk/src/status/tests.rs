@@ -1,5 +1,5 @@
 use super::*;
-use crate::lifecycle::{Failure, Reason, Shape};
+use crate::lifecycle::{Failure, Held, Reason, Shape};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
@@ -415,10 +415,10 @@ fn the_report_shows_no_device_that_is_not_this_volumes_and_no_counters_of_anothe
 
 #[test]
 fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
-    let stored = |held| StoredFailure {
+    let stored = |held: bool| StoredFailure {
         boot: [7; 16],
         failure: Failure {
-            held,
+            held: held.into(),
             reason: Reason::LogFailed,
             identity: [3; 16],
         },
@@ -453,7 +453,7 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
             assert_eq!(value(&lines, "failure_held"), None);
             continue;
         }
-        let held = matches!(noted, Noted::Whole(s) if s.failure.held);
+        let held = matches!(noted, Noted::Whole(s) if s.failure.held == Held::Yes);
         assert_eq!(
             value(&lines, "failure"),
             Some("the log failed while the volume was served")
