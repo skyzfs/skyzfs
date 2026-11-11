@@ -63,6 +63,10 @@ jobs:
         image: [ubuntu-26.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - name: Build the binding's kernel tests and its test program
         run: |
           # The workspace's system packages, and libclang for the
