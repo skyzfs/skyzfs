@@ -99,13 +99,16 @@ step() { printf '\n######## %s\n' "$*"; }
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
-# The kernel log from a point on. The point is a line of our own
-# written to the log, not a line count: once the ring buffer has
-# wrapped the count stops growing and a cut by count would be empty.
-# dmesg_since returns 3, with nothing printed, when the marker is no
-# longer in the log.
-dmesg_mark() { local m; m="skz-rig-mark-$$-$(date +%s%N)"; echo "$m" > /dev/kmsg; echo "$m"; }
-dmesg_since() { dmesg | awk -v m="$1" 'found { print } index($0, m) { found = 1 } END { exit found ? 0 : 3 }'; }
+# The kernel log of an interval: klog_mark, klog_since, klog_bad,
+# klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
+# shellcheck source=tests/kernel/klog.sh
+. "$HERE/klog.sh"
+# Device paths: dev_strays, and why every dd to a device has conv=nocreat.
+# shellcheck source=tests/kernel/devnode.sh
+. "$HERE/devnode.sh"
+# The looks at a device over a wait: look_word, looks_judge.
+# shellcheck source=tests/kernel/looks.sh
+. "$HERE/looks.sh"
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -122,6 +125,7 @@ vol_up() { # impl dir [serve arguments]: create a volume and serve it
 # first, with SERVE_RC; 2 if neither happened in time.
 serve_start() {
     local impl=$1 dir=$2 i t0; shift 2
+    strays_note "before the serve of $dir"
     : > "$dir.ready"
     t0=$(( $(date +%s) - 1 ))
     "$impl" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" "$@" > "$dir.ready" 2>> "$dir.serve.log" &
@@ -136,13 +140,46 @@ serve_start() {
             wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""
             return 1
         fi
+        # The server said ready and the path is something else than a
+        # block device: no waiting will change that.
+        if [ -n "$BDEV" ] && [ -e "$BDEV" ] && [ ! -b "$BDEV" ]; then
+            SERVE_RC="none: the server reported $BDEV, which is not a block device: $(ls -ld "$BDEV" 2>&1)"
+            strays_note "at the serve of $dir"
+            serve_stuck "$dir" "$BDEV is not a block device"
+            return 2
+        fi
         sleep 0.25
     done
     SERVE_RC="none: neither ready nor gone after 120 s"
-    # Neither ready nor gone: write down what it is doing.
-    { echo "== serve $dir: not ready after 120 s"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
-      tail -n 20 "$dir.serve.log"; lim 20 ublk list; } >> "$OUT/serve-stuck.log" 2>&1
+    serve_stuck "$dir" "not ready after 120 s"
     return 2
+}
+# dir why: the rig gives up on a serve; write down what the server, the
+# driver, /dev and udev have to say, each under a limit of its own.
+serve_stuck() {
+    local dir=$1 rc
+    { echo "== serve $dir: $2"
+      echo "-- BDEV as the rig read it: '${BDEV:-}'"
+      echo "-- $dir.ready:"; ls -l "$dir.ready"; cat "$dir.ready"
+      echo "-- processes:"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
+      echo "-- the serve log's end:"; tail -n 20 "$dir.serve.log"
+      echo "-- ublk list:"; lim 20 ublk list
+      echo "-- ls -l /dev/ublkb* /dev/ublkc*:"; ls -l /dev/ublkb* /dev/ublkc*
+      echo "-- /sys/block/ublkb*/dev:"; grep -H . /sys/block/ublkb*/dev
+      echo "-- lsblk:"; lim 20 lsblk
+      echo "-- /sys/class/ublk-char:"; ls /sys/class/ublk-char
+      echo "-- udevadm settle --timeout=5:"; lim 20 udevadm settle --timeout=5; rc=$?; echo "exit $rc"
+      echo "-- ls -l /dev/ublkb* after the settle:"; ls -l /dev/ublkb*
+    } >> "$OUT/serve-stuck.log" 2>&1
+}
+# where: write down every entry of /dev under a ublk block device's name
+# that is not a block device. Any is the rig's error (devnode.sh); the
+# run's line `dev_strays` is judged at the end.
+STRAYS=$OUT/dev-strays.log
+strays_note() {
+    local found
+    found=$(dev_strays /dev)
+    [ -z "$found" ] || printf '%s: %s\n' "$1" "$found" >> "$STRAYS"
 }
 serve_wait() { # seconds: wait for the `serve` started last to exit; its status in SERVE_RC
     local i
@@ -170,13 +207,6 @@ pin_unstored() {
         *) pin "unstored_zero_$1" FAIL "status says unstored $v" ;;
     esac
 }
-# What the kernel log says went wrong with a device, in a file cut from
-# it: I/O errors, requests timed out, aborts. Not the bare word
-# "timeout": a hung-task report is full of it (hung_task_timeout_secs,
-# schedule_timeout in its stack) and says only that a task waited.
-klog_bad() { grep -vE '^\[[^]]*\] +(\? )?[A-Za-z0-9_.]+\+0x|hung_task_timeout_secs' "$1" 2>/dev/null | grep -ciE 'I/O error|timed out|abort'; }
-# The tasks the kernel reported as blocked, "name:pid" each, counted.
-klog_hung() { sed -n 's/.*INFO: task \([^ ]*\) blocked for more than \([0-9]*\) seconds.*/\1/p' "$1" 2>/dev/null | sort | uniq -c | tr -s ' \n' ' '; }
 # impl dir key least [ms]: a counter of `status`, read again until it
 # is at least `least` or the limit has passed (2 s). The daemon writes
 # its status file on an interval, so a counter read at once after the
@@ -283,6 +313,9 @@ cleanup() {
     command -v ublk >/dev/null && lim 60 ublk del -a --async 2>/dev/null
     for p in "${SLOGS[@]}"; do losetup -d "$p" 2>/dev/null; done
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
+    # The limit on reports of blocked tasks is the machine's: put back
+    # what the rig found, however the run ends.
+    [ -z "${HUNG_WARNINGS_WAS:-}" ] || echo "$HUNG_WARNINGS_WAS" > /proc/sys/kernel/hung_task_warnings 2>/dev/null
     chmod -R a+rX "$OUT"
 }
 trap cleanup EXIT
@@ -295,7 +328,8 @@ rec kernel "$(uname -r)"
 # default) and then says nothing more: with the limit spent, a log
 # without such reports means nothing. The rig lifts the limit and
 # writes down what it found.
-rec hung_task_warnings_start "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
+HUNG_WARNINGS_WAS=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
+rec hung_task_warnings_start "${HUNG_WARNINGS_WAS:-unreadable} (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
 SETUP_OK=1
@@ -331,26 +365,34 @@ rec setup ok
 # name impl seconds [serve arguments] -> OV_ROUNDS OV_TORN OV_SAID, 1 if it did not run.
 overlap_test() {
     local name=$1 impl=$2 secs=$3 dir=$WORK/vol-$1 rc; shift 3
-    OV_ROUNDS=0; OV_TORN=0; OV_SAID=""
+    OV_ROUNDS=0; OV_TORN=0; OV_TOGETHER=0; OV_SAID=""
     if ! vol_up "$impl" "$dir" "$@"; then OV_SAID="not created or served (serve rc ${SERVE_RC:-none})"; return 1; fi
     lim $((secs + 60)) python3 -I "$HERE/overlap-tear.py" "$BDEV" "$secs" > "$OUT/$name-overlap.out" 2> "$OUT/$name-overlap.err"; rc=$?
     OV_SAID=$(tail -n 1 "$OUT/$name-overlap.out")
-    read -r _ OV_ROUNDS _ OV_TORN _ <<< "$OV_SAID"
+    read -r _ OV_ROUNDS _ OV_TORN _ OV_TOGETHER _ <<< "$OV_SAID"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$impl" "$dir"
-    [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]]
+    [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]] && [[ ${OV_TOGETHER:-} =~ ^[0-9]+$ ]]
 }
+# rounds together: whether the load was what it claims. The tool counts
+# the rounds in which both calls began before either ended; a round
+# without that had no two writes in flight and shows nothing on any
+# server. Fewer than half of the rounds, or fewer than 200, is the
+# rig's error. (Measured: see the pull request of this rule.)
+overlap_enough() { [ "$1" -ge 200 ] && [ $(($2 * 2)) -ge "$1" ] && [ "$2" -ge 200 ]; }
 check_a_overlap() {
-    local rounds torn said ms=${RIG_COMMIT_DELAY_MS:-20}
+    local rounds torn together said ms=${RIG_COMMIT_DELAY_MS:-20}
     step "a: overlapping writes in flight apply whole"
     if overlap_test ao "$SKYZFSD" 30; then
-        rounds=$OV_ROUNDS; torn=$OV_TORN; said="plain: $OV_SAID"
-        if overlap_test aod "$SKYZFSD" 30 --commit-delay-ms "$ms"; then
-            rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN)); said+="; acknowledged $ms ms after the apply: $OV_SAID"
-            if [ "$rounds" -lt 200 ]; then
-                pin overlapping_writes_apply_whole ERROR "only $rounds rounds in 60 s: $said"
+        rounds=$OV_ROUNDS; torn=$OV_TORN; together=$OV_TOGETHER; said="plain: $OV_SAID"
+        if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+            pin overlapping_writes_apply_whole ERROR "the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $said"
+        elif overlap_test aod "$SKYZFSD" 30 --commit-delay-ms "$ms"; then
+            rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN)); together=$((together + OV_TOGETHER)); said+="; acknowledged $ms ms after the apply: $OV_SAID"
+            if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+                pin overlapping_writes_apply_whole ERROR "with the delay the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $said"
             else
-                pin_is overlapping_writes_apply_whole "$torn of $rounds rounds torn, two writers of 16 blocks at one range at one moment, 30 s each; $said" [ "$torn" = 0 ]
+                pin_is overlapping_writes_apply_whole "$torn of $rounds rounds torn, the two writes in flight together in $together of them; two writers of 16 blocks at one range, 30 s each; $said" [ "$torn" = 0 ]
             fi
         else
             pin overlapping_writes_apply_whole ERROR "with the delay: ${OV_SAID:-no output} $(tail -n 1 "$OUT/aod-overlap.err" 2>/dev/null)"
@@ -363,7 +405,9 @@ check_a_overlap() {
     # every run that the pin above can fail.
     step "a, control: a server that tears overlapping writes"
     if SKZ_REF_TEAR=1 overlap_test ao1 "$REF" 20; then
-        if [ "$OV_TORN" -gt 0 ]; then
+        if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+            ctl torn_overlapping_writes ERROR "the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $OV_SAID"
+        elif [ "$OV_TORN" -gt 0 ]; then
             ctl torn_overlapping_writes FAIL "$OV_TORN of $OV_ROUNDS rounds torn; $OV_SAID"
         else
             ctl torn_overlapping_writes PASS "no round of $OV_ROUNDS torn; $OV_SAID"
@@ -491,8 +535,8 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw
-    KT_WAITED=""; KT_WAIT_LOOKS=0; KT_WAIT_OTHER=0; KT_WAIT_BAD=0
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
+    KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
@@ -548,16 +592,21 @@ kill_test() {
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
         # KT_WAIT_S: after the first kill no server comes for that long.
         if [ "${KT_WAIT_S:-0}" -gt 0 ] && [ "$n" = 1 ]; then
-            mark=$(dmesg_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
+            mark=$(klog_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
             hw=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
             while [ $(( $(now_ms) - t0 )) -lt $((KT_WAIT_S * 1000)) ]; do
-                states+="$(ublk_state "$BDEV") "
+                # Every look is an attempt: one that names no state is
+                # written down as "none", not left out.
+                states+="$(look_word "$(ublk_state "$BDEV")") "
                 sleep 10
             done
-            dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
-            KT_WAIT_LOOKS=$(echo "$states" | wc -w); KT_WAIT_OTHER=$(echo "$states" | tr ' ' '\n' | grep . | grep -vcx QUIESCED)
-            KT_WAIT_BAD=$(klog_bad "$OUT/$name-wait-dmesg.log")
-            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(klog_bad "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")(the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
+            # No marker in the kernel log is no log of the wait: "lost",
+            # which the pin reports as the rig's error and not as 0 lines.
+            KT_WAIT_BAD=$(klog_bad_since "$mark" "$OUT/$name-wait-dmesg.log")
+            looks_judge "$states" QUIESCED "$KT_WAIT_S"
+            if [ "$KT_WAIT_BAD" = lost ]; then klog="lost: the rig's marker was not found in it at the end of the wait"
+            else klog="$(wc -l < "$OUT/$name-wait-dmesg.log") lines, $KT_WAIT_BAD with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")"; fi
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $LK_SAID; the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $klog (the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
@@ -694,12 +743,21 @@ check_b_delay() {
     KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
     SKZ_REF_COMMIT_DELAY_BEFORE=1 kill_test "$REF" bd0 5
     KT_SERVE_EXTRA=()
-    if [ -n "$KT_ERR" ]; then
-        ctl delay_before_apply ERROR "$KT_ERR"
+    # The control's FAIL is "the kills found nothing". It means that
+    # only if the kills happened, all of them, with writes in flight,
+    # as the pin's verdict requires, and left the pool whole: this
+    # server is slow and not wrong. Anything else is the rig's error.
+    kill_verdict
+    if [ "$KT_VERDICT" = ERROR ]; then
+        ctl delay_before_apply ERROR "$KT_WHY"
+    elif [ "$KT_DONE" != 5 ]; then
+        ctl delay_before_apply ERROR "only $KT_DONE of 5 kills were done"
+    elif [ "$KT_VERDICT" != PASS ]; then
+        ctl delay_before_apply ERROR "the pool did not come through the kills of a server that only delays: $KT_WHY"
     elif [ "$KT_RECOVERED_UNSAID" != 0 ]; then
         ctl delay_before_apply ERROR "$KT_RECOVERED_UNSAID of $KT_DONE take-overs did not say what they found"
     elif [ "$KT_RECOVERED" = 0 ]; then
-        ctl delay_before_apply FAIL "the servers found 0 requests applied and not acknowledged over $KT_DONE take-overs, with writes in flight just before $KT_INFLIGHT of the kills"
+        ctl delay_before_apply FAIL "the servers found 0 requests applied and not acknowledged over $KT_DONE take-overs, with writes in flight just before $KT_INFLIGHT of the $KT_DONE kills"
     else
         ctl delay_before_apply PASS "the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs although the delay came before the apply"
     fi
@@ -812,7 +870,12 @@ check_b() {
     step "b, observation: a killed server's device waits ${RIG_WAIT_S:-300} s for the next"
     KT_WAIT_S=${RIG_WAIT_S:-300} kill_test "$SKYZFSD" bw 1
     kill_verdict
-    if [ -z "$KT_WAITED" ]; then
+    if [ "${RIG_WAIT_S:-300}" -lt 100 ]; then
+        # A shorter wait was asked for than the pin is about. Not a
+        # verdict.
+        obs b_device_waits_for_a_server "${KT_WAITED:-not run: ${KT_ERR:-the kill test did not reach the wait}}"
+        pin device_waits_for_a_server ERROR "RIG_WAIT_S is ${RIG_WAIT_S} s; the pin needs at least 100 s"
+    elif [ -z "$KT_WAITED" ]; then
         obs b_device_waits_for_a_server "not run: ${KT_ERR:-the kill test did not reach the wait}"
         pin device_waits_for_a_server ERROR "${KT_ERR:-the kill test did not reach the wait}"
     else
@@ -822,9 +885,14 @@ check_b() {
         # reports of blocked tasks are the observation's.
         if [ "$KT_VERDICT" = ERROR ]; then
             pin device_waits_for_a_server ERROR "$KT_WHY"
+        elif [ "$KT_WAIT_BAD" = lost ]; then
+            pin device_waits_for_a_server ERROR "the rig's marker was not found in the kernel log at the end of the wait (the log wrapped, or dmesg failed), so there is no kernel log of the ${RIG_WAIT_S:-300} s to judge"
+        elif [ "$LK_VERDICT" = ERROR ]; then
+            # The rig did not see the device the whole time.
+            pin device_waits_for_a_server ERROR "$LK_WHY; $LK_SAID"
         else
-            if [ "$KT_VERDICT" = PASS ] && [ "$KT_WAIT_LOOKS" -ge 10 ] && [ "$KT_WAIT_OTHER" = 0 ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
-            pin device_waits_for_a_server "$v" "$KT_WAIT_LOOKS looks in ${RIG_WAIT_S:-300} s with no server, $KT_WAIT_OTHER of them not QUIESCED; kernel log lines with an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+            if [ "$KT_VERDICT" = PASS ] && [ "$LK_VERDICT" = PASS ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
+            pin device_waits_for_a_server "$v" "with no server, $LK_SAID ($LK_OTHER not QUIESCED; at least $LK_FLOOR looks are needed, each naming a state); kernel log lines with a failed request, an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
         fi
     fi
     kill_cleanup bw
@@ -872,9 +940,11 @@ fail_wait() {
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
     lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1
-    dmesg_since "$mark" > "$OUT/$name-dmesg.log" || echo "the rig's marker is no longer in the kernel log" >> "$OUT/$name-dmesg.log"
+    klog_since "$mark" > "$OUT/$name-dmesg.log"; i=$?
     rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
-    rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
+    if [ "$i" != 0 ]; then rec "${name}_kernel_log" "lost: the rig's marker was not found in the kernel log, so nothing is counted"
+    else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
+    fi
     rec "${name}_events" "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
     FS_WHY="pool $st after at most ${secs} s; reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr; writes failed for the writer: $werr"
     [ "$st" = SUSPENDED ] && [ "$rerr" = 0 ] && [ "$werr" = 0 ]
@@ -903,7 +973,7 @@ check_d() {
     local mark rc n v dir st0 st1 before after
     # d.1, first form: every request answered with a plain I/O error.
     step "d: every request fails with an I/O error (the device stays)"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if SKZ_REF_FAIL_STYLE=eio fail_setup d1 "$REF" --fail-log-after 8000; then
         if fail_wait d1 300 "$mark"; then pin suspends_on_io_errors PASS "$FS_WHY"; else pin suspends_on_io_errors FAIL "$FS_WHY"; fi
         rec d1_server "$(vol_status "$REF" "$WORK/vol-d1" | tr '\n' ';')"
@@ -949,7 +1019,7 @@ check_d() {
 
     # The control: the same wait on a volume that does not fail.
     step "d, control: a volume that does not fail"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if fail_setup d0 "$REF"; then
         if fail_wait d0 30 "$mark"; then ctl volume_that_does_not_fail PASS "$FS_WHY"; else ctl volume_that_does_not_fail FAIL "$FS_WHY"; fi
     else
@@ -964,7 +1034,7 @@ check_d() {
     # d.1, second form, with the server under test: the log fails, the
     # daemon deletes its device and exits.
     step "d: the volume fails and its device is deleted"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     dir=$WORK/vol-d2
     if fail_setup d2 "$SKYZFSD" --fail-log-after 8000; then
         if fail_wait d2 300 "$mark"; then pin suspends_on_deleted_device PASS "$FS_WHY"; else pin suspends_on_deleted_device FAIL "$FS_WHY"; fi
@@ -1001,7 +1071,7 @@ check_d_shorter() {
     # the observation is of the kernel and ZFS, and needs the flat
     # image only the reference server has.
     step "d: the device comes back with older content"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if ! SKZ_REF_FAIL_STYLE=eio fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
     # The older content: a copy of the image now. Everything the writer
     # is told from here on is missing from it.
@@ -1027,7 +1097,7 @@ check_d_shorter() {
 check_d_scrub() {
     local mark st rc before
     step "d: a scrub in progress at the failure"
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     if ! fail_setup d5 "$SKYZFSD"; then obs scrub_in_progress_at_failure "not run: $FS_ERR"; fail_stop d5; return; fi
     # More to scrub, then the failure a little after the scrub begins.
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzd-d5/big" bs=1M count=1024 conv=fsync status=none
@@ -1048,12 +1118,13 @@ check_d_scrub() {
 # d.6, second half: nothing held the device at the failure, so an
 # operator may acknowledge it. Also where the note is kept by default.
 check_d_not_held() {
-    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note
+    local dir=$WORK/vol-d6 rc n marker=$WORK/d6.marker found note w0 w1 wrote spid
     local VOL_RUN_ARGS=()       # this volume is served with the default run directory
     step "d: a volume that failed with no client attached"
     : > "$marker"
     # No --run-dir here: the default must be under /run.
     vol_create "$SKYZFSD" "$dir" || { pin failed_unheld_volume_serves_when_acknowledged ERROR "create failed"; pin failure_note_under_run ERROR "create failed"; return; }
+    strays_note "before the first serve of $dir"
     : > "$dir.ready"
     "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --fail-log-after 10 > "$dir.ready" 2>> "$dir.serve.log" &
     SERVE_PID=$!
@@ -1063,9 +1134,15 @@ check_d_not_held() {
     done
     [ -n "$BDEV" ] || { pin failed_unheld_volume_serves_when_acknowledged ERROR "serve did not become ready"; pin failure_note_under_run ERROR "serve did not become ready"; return; }
     # Writes straight to the device until it fails; dd then exits, so
-    # nothing holds the device when the server takes note.
+    # nothing holds the device when the server takes note. The device
+    # may be failed or gone before the first write (whatever the server
+    # counts towards its failure, the kernel's own reads at the start
+    # may be enough) and is deleted at some moment between two writes:
+    # a write goes only to a block device, and dd must not create the
+    # path (devnode.sh).
     for n in $(seq 1 40); do
-        lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 seek="$n" oflag=direct status=none 2>/dev/null || break
+        [ -b "$BDEV" ] || break
+        lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 seek="$n" oflag=direct conv=nocreat status=none 2>/dev/null || break
     done
     serve_wait 30
     rc=$SERVE_RC
@@ -1079,19 +1156,51 @@ check_d_not_held() {
     else pin failure_note_under_run FAIL "no $note after a failure without --run-dir (serve exit $rc); new files under /run with skyzfs in the path: ${found:-none}"; fi
     lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" > /dev/null 2> "$OUT/d6-noack.err"; n=$?
     serve_start_default() { "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --acknowledge-failure > "$dir.ready" 2>> "$dir.serve.log" & SERVE_PID=$!; }
+    strays_note "before the acknowledged serve of $dir"
     : > "$dir.ready"; serve_start_default
     BDEV=""
     for found in $(seq 1 120); do
         BDEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$dir.ready" | head -n 1)
-        [ -n "$BDEV" ] && break
+        [ -n "$BDEV" ] && [ -b "$BDEV" ] && break
         kill -0 "$SERVE_PID" 2>/dev/null || break
         sleep 0.25
     done
-    if [ "$rc" = "$EXIT_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ] && [ -n "$BDEV" ] \
-        && lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 oflag=direct status=none 2>/dev/null; then
-        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it"
+    # "Served and written" is the server's word, not dd's: its own count
+    # of writes must go up by the write. dd exiting 0 shows only that
+    # something at that path took 4096 bytes.
+    # The count before the write must be the new server's: the status
+    # may still be the failed instance's last for a moment (the daemon
+    # writes it on an interval), and that instance had counted the
+    # writes that made it fail. The failed instance is gone, so the
+    # status is the new server's once the pid in it is alive.
+    wrote="not tried"; w0=""; w1=""; spid=""
+    if [ -n "$BDEV" ] && [ -b "$BDEV" ]; then
+        for found in $(seq 1 50); do
+            spid=$(vol_stat "$SKYZFSD" "$dir" pid)
+            { [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; } && break
+            spid=""; sleep 0.1
+        done
+    fi
+    if [ -n "$spid" ]; then
+        w0=$(vol_stat "$SKYZFSD" "$dir" writes)
+        if lim 30 "$DD" if=/dev/zero of="$BDEV" bs=4k count=1 oflag=direct conv=nocreat status=none 2>/dev/null; then
+            w1=$(vol_stat_least "$SKYZFSD" "$dir" writes $(( ${w0:-0} + 1 )))
+            wrote="dd exit 0"
+        else
+            wrote="dd failed"
+        fi
+    fi
+    if [ -n "$BDEV" ] && [ ! -b "$BDEV" ]; then
+        strays_note "at the acknowledged serve of $dir"
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve reported $BDEV, which is not a block device: $(ls -ld "$BDEV" 2>&1)"
+    elif [ -n "$BDEV" ] && [ -z "$spid" ]; then
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "the acknowledged serve made $BDEV ready, and for 5 s its status named no live server (pid '$(vol_stat "$SKYZFSD" "$dir" pid)'): the count of writes before the write would be the failed instance's"
+    elif [ "$wrote" = "dd exit 0" ] && ! { [[ $w0 =~ ^[0-9]+$ ]] && [[ $w1 =~ ^[0-9]+$ ]]; }; then
+        pin failed_unheld_volume_serves_when_acknowledged ERROR "status gave no count of writes (before '$w0', after '$w1')"
+    elif [ "$rc" = "$EXIT_FAILED" ] && [ $n = "$EXIT_REFUSED_FAILED" ] && [ "$wrote" = "dd exit 0" ] && [ "$w1" -gt "$w0" ]; then
+        pin failed_unheld_volume_serves_when_acknowledged PASS "failed (exit $rc); refused without the acknowledgement (exit $n); served and written with it: the count of writes of the server now serving (pid $spid) went from $w0 to $w1"
     else
-        pin failed_unheld_volume_serves_when_acknowledged FAIL "first serve exit $rc (wanted $EXIT_FAILED); without the acknowledgement exit $n (wanted $EXIT_REFUSED_FAILED); with it: $([ -n "$BDEV" ] && echo "ready $BDEV" || echo 'not ready')"
+        pin failed_unheld_volume_serves_when_acknowledged FAIL "first serve exit $rc (wanted $EXIT_FAILED); without the acknowledgement exit $n (wanted $EXIT_REFUSED_FAILED); with it: $([ -n "$BDEV" ] && echo "ready $BDEV" || echo 'not ready'), the write: $wrote, the server's count of writes ${w0:-none} -> ${w1:-none}"
     fi
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
@@ -1102,7 +1211,7 @@ check_d_not_held() {
 hold_test() {
     local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader took rpid
     HT_ERR=""; HT_WHY=""
-    mark=$(dmesg_mark)
+    mark=$(klog_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
     # `held` in status is the number of requests in flight at the server
     # right now: 1 while the read is held, 0 once it has completed.
@@ -1127,7 +1236,7 @@ hold_test() {
     wait "$reader"
     read -r rc took < "$WORK/$name.rc" 2>/dev/null || { rc=""; took=0; }
     udevadm settle --timeout=30 2>/dev/null
-    if ! dmesg_since "$mark" > "$OUT/$name-dmesg.log"; then
+    if ! klog_since "$mark" > "$OUT/$name-dmesg.log"; then
         HT_ERR="the rig's marker is no longer in the kernel log, so the log of this time cannot be cut out"
         kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; vol_detach "$SKYZFSD" "$dir"
         return 2
@@ -1308,6 +1417,12 @@ case $CHECKS in *" b "*)
 esac
 
 step "done"
+# Nothing but block devices under the names of ublk devices in /dev,
+# at any serve and now: a regular file there is a leftover of a tool
+# that created the path, and what was "written to the device" after it
+# went to that file.
+strays_note "at the end of the run"
+if [ -s "$STRAYS" ]; then rec dev_strays "ERROR: $(tr '\n' ';' < "$STRAYS" | cut -c1-1500)"; else rec dev_strays none; fi
 # What the reference server's tool leaves under its own run directory:
 # the daemon's library writes files of the same kind there, and the two
 # servers follow each other on one machine under reused numbers.
@@ -1330,7 +1445,8 @@ elif [ "${n_entries:-0}" = 0 ]; then
 else
     pin no_ublksrvd_entry_from_daemon FAIL "$n_entries entries newer than the daemon's serve, over $n_serves serves: $(grep '^entry ' "$UBLKSRVD_SEEN" | head -n 5 | cut -d' ' -f2- | tr '\n' ' ')"
 fi
-rec hung_task_warnings_end "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable)"
+# The limit itself is put back by cleanup, at the exit.
+rec hung_task_warnings_end "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable); set back to ${HUNG_WARNINGS_WAS:-nothing, it was unreadable} at the exit"
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')($(find /run/ublksrvd -mindepth 1 2>/dev/null | wc -l) entries at the end of the run)"
 for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"

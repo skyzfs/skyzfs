@@ -116,8 +116,9 @@ when it merges.
   that touches `tests/kernel/`, `bins/skyzfsd/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-blk/` or `bins/skyzfs-blkcheck/`, and by dispatch (input
   `checks`, for example `c` alone). It drives a server through the
-  kernel and ZFS on Ubuntu 24.04 and 26.04, about sixteen minutes per
-  image: parameters, `kill -9` under load, the conformance suite through
+  kernel and ZFS on Ubuntu 24.04 and 26.04, about thirty-three minutes
+  per image: parameters, overlapping writes, `kill -9` under load, a
+  device that waits 300 s for a server, the conformance suite through
   the block device, a failed volume, a held request. Until `skyzfsd`
   serves, the server is a stand-in (`tests/kernel/skyzfsd-ref.sh`); the
   variables `RIG_SKYZFSD` and `RIG_SERVE_ARGS` point the rig at the

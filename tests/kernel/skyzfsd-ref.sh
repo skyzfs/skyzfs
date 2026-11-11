@@ -45,6 +45,9 @@
 #     each win some of the blocks), SKZ_REF_TEAR=1 (a write that
 #     follows another of the same range within 2 ms is applied in its
 #     first half only: overlapping writes torn every time).
+#     The server's own names for these (SKZ_TEAR and the like) are
+#     unset by `serve` and set from the names above only, and `serve`
+#     writes the switches in force to stderr ("switches: ...").
 set -uo pipefail
 
 usage() { echo "usage: skyzfsd-ref.sh create|serve|detach|status --dir DIR ..." >&2; exit 2; }
@@ -190,6 +193,13 @@ serve)
     [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || : > "$STATS"
     # A volume that is served starts whole: the signal to fail is gone.
     unlink "$DIR/fail-now" 2>/dev/null
+    # The patched server reads its switches from the environment. Only
+    # what this script sets reaches it: a raw SKZ_* name left in the
+    # caller's environment would make a wrong server of the stand-in
+    # with nothing in the run saying so. The switches in force go to
+    # the serve log.
+    unset SKZ_FAIL_AFTER SKZ_HOLD SKZ_DROP_EVERY SKZ_COMMIT_DELAY_MS \
+        SKZ_COMMIT_DELAY_BEFORE SKZ_UNORDERED SKZ_TEAR
     export SKZ_STATS=$STATS
     export SKZ_FAIL_FILE=$DIR/fail-now      # SIGUSR1, below
     [ -z "$FAIL_AFTER" ] || export SKZ_FAIL_AFTER=$FAIL_AFTER
@@ -199,6 +209,7 @@ serve)
     [ -z "${SKZ_REF_COMMIT_DELAY_BEFORE:-}" ] || export SKZ_COMMIT_DELAY_BEFORE=$SKZ_REF_COMMIT_DELAY_BEFORE
     [ -z "${SKZ_REF_UNORDERED:-}" ] || export SKZ_UNORDERED=$SKZ_REF_UNORDERED
     [ -z "${SKZ_REF_TEAR:-}" ] || export SKZ_TEAR=$SKZ_REF_TEAR
+    echo "switches: reissue=${SKZ_REF_REISSUE:-1} fail_style=${SKZ_REF_FAIL_STYLE:-delete} fail_after=${SKZ_FAIL_AFTER:-} hold=${SKZ_HOLD:-} drop_every=${SKZ_DROP_EVERY:-} commit_delay_ms=${SKZ_COMMIT_DELAY_MS:-} commit_delay_before=${SKZ_COMMIT_DELAY_BEFORE:-} unordered=${SKZ_UNORDERED:-} tear=${SKZ_TEAR:-}" >&2
     echo 0 > "$TAKEOVER"
     if [ -n "$n" ] && [ "$(dev_state "$n")" = QUIESCED ]; then
         # The dead server's count, before the new one sets it to zero.

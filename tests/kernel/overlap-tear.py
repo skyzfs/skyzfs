@@ -6,11 +6,17 @@
 Each round, WRITERS threads write BLOCKS blocks of 4096 bytes at the
 same offset at the same moment, with direct I/O, each its own content;
 when all have returned, the range is read. Whatever the order of the
-writes, every block of the range must then come from one and the same
-writer. A round in which the blocks come from more than one is torn.
+writes, the range must then be exactly one writer's buffer. A round in
+which it is not is torn.
 
-Prints one line: rounds R torn T first "..." (the writers of the first
-torn round's blocks, run-length), and exits 0. Exit 2: could not run.
+Each writer notes when its call began and ended. A round counts as
+"together" when every call began before any ended: only such a round
+had the writes in flight together, and only those say anything. Two
+writes that never overlap in time give "0 torn" on any server.
+
+Prints one line: rounds R torn T together G first "..." (whose sector
+each 512-byte sector of the first torn round was, run-length; "??" is
+neither writer's), and exits 0. Exit 2: could not run.
 """
 import mmap
 import os
@@ -19,6 +25,7 @@ import threading
 import time
 
 BLOCK = 4096
+SECTOR = 512
 
 
 def main():
@@ -29,60 +36,73 @@ def main():
     fd = os.open(dev, os.O_RDWR | os.O_DIRECT)
     bufs = [mmap.mmap(-1, size) for _ in range(writers)]
     back = mmap.mmap(-1, size)
-    rounds = torn = 0
+    rounds = torn = together = 0
     first = ''
     errors = []
     end = time.monotonic() + seconds
     while time.monotonic() < end:
-        # Every block of a writer's buffer says which writer and round.
+        # Every 64 bytes of a writer's buffer say which writer and round.
         for w, buf in enumerate(bufs):
             buf.seek(0)
             buf.write((b'%02d%010d' % (w, rounds)).ljust(64, b'.') * (size // 64))
         offset = (rounds % 64) * size
         gate = threading.Barrier(writers)
+        spans = [None] * writers
 
-        def write(buf):
+        def write(w):
             try:
                 gate.wait()
-                if os.pwritev(fd, [buf], offset) != size:
+                began = time.monotonic_ns()
+                n = os.pwritev(fd, [bufs[w]], offset)
+                spans[w] = (began, time.monotonic_ns())
+                if n != size:
                     errors.append('short write')
             except OSError as e:
                 errors.append(str(e))
 
-        threads = [threading.Thread(target=write, args=(b,)) for b in bufs]
+        threads = [threading.Thread(target=write, args=(w,)) for w in range(writers)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
-        if errors:
-            print(f'rounds {rounds} torn {torn} error "{errors[0]}"')
+        if errors or None in spans:
+            print(f'rounds {rounds} torn {torn} together {together} error "{errors[0] if errors else "a writer did not return"}"')
             return 2
         if os.preadv(fd, [back], offset) != size:
-            print(f'rounds {rounds} torn {torn} error "short read"')
-            return 2
-        owners = [bytes(back[i * BLOCK:i * BLOCK + 2]) for i in range(blocks)]
-        want = b'%010d' % rounds
-        if any(bytes(back[i * BLOCK + 2:i * BLOCK + 12]) != want for i in range(blocks)):
-            print(f'rounds {rounds} torn {torn} error "a block of round {rounds} is from another round"')
+            print(f'rounds {rounds} torn {torn} together {together} error "short read"')
             return 2
         rounds += 1
-        if len(set(owners)) > 1:
+        if max(b for b, _ in spans) < min(e for _, e in spans):
+            together += 1
+        got = bytes(back)
+        wrote = [bytes(buf) for buf in bufs]
+        if got not in wrote:
             torn += 1
             if not first:
-                runs = []
-                for o in owners:
-                    if runs and runs[-1][0] == o:
-                        runs[-1][1] += 1
-                    else:
-                        runs.append([o, 1])
-                first = ' '.join(f'{o.decode()}x{n}' for o, n in runs)
-    print(f'rounds {rounds} torn {torn} first "{first}"')
+                first = describe(got, wrote)
+    print(f'rounds {rounds} torn {torn} together {together} first "{first}"')
     return 0
+
+
+def describe(got, wrote):
+    """Whose each sector of the range is, run-length: "00x64 01x64"."""
+    runs = []
+    for i in range(0, len(got), SECTOR):
+        owner = '??'
+        for w, buf in enumerate(wrote):
+            if got[i:i + SECTOR] == buf[i:i + SECTOR]:
+                owner = '%02d' % w
+                break
+        if runs and runs[-1][0] == owner:
+            runs[-1][1] += 1
+        else:
+            runs.append([owner, 1])
+    return ' '.join(f'{o}x{n}' for o, n in runs)
 
 
 if __name__ == '__main__':
     try:
         sys.exit(main())
     except (OSError, ValueError, IndexError) as e:
-        print(f'rounds 0 torn 0 error "{e}"')
+        print(f'rounds 0 torn 0 together 0 error "{e}"')
         sys.exit(2)
