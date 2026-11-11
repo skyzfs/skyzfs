@@ -454,3 +454,104 @@ pub fn main() -> ExitCode {
     }
     ExitCode::SUCCESS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skyzfs_blk::{Buf, BLOCK_SIZE, BLOCK_USIZE};
+
+    fn filled(byte: u8) -> Buf {
+        let mut buf = Buf::zeroed(1);
+        buf.fill(byte);
+        buf
+    }
+
+    /// A plain file stands in for the device: what is tested is this
+    /// adapter's bookkeeping, which is the same on either.
+    fn target(name: &str) -> (DeviceTarget, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("blkcheck-{}-{name}", std::process::id()));
+        let file = File::create(&path).unwrap();
+        file.set_len(4 * SIZE_UNIT).unwrap();
+        (
+            DeviceTarget::open(1, path.to_str().unwrap(), 16).unwrap(),
+            path,
+        )
+    }
+
+    /// After a kill the kernel issues the requests in flight again by
+    /// itself, and the suite resubmits the same ids. Each id must then
+    /// complete exactly once, with the result of the call that was
+    /// outstanding, and the resubmission must not be issued: a second
+    /// write under the same id would otherwise land after later work.
+    #[test]
+    fn a_request_in_flight_at_a_kill_completes_exactly_once() {
+        let (mut t, path) = target("once");
+        let ids: Vec<RequestId> = (1..=8).map(RequestId).collect();
+        for id in &ids {
+            let op = Op::Write {
+                offset: (id.0 - 1) * BLOCK_SIZE,
+                data: filled(0xaa),
+            };
+            t.submit(Request { id: *id, op }).unwrap();
+        }
+        // The kill: the outstanding calls return under the new server.
+        t.settle(Duration::from_secs(30)).unwrap();
+        let mut out = Vec::new();
+        assert_eq!(
+            t.poll(&mut out),
+            0,
+            "nothing is delivered before the resubmission"
+        );
+        // The suite's reissue, under the same ids. The data differs, so
+        // that a resubmission that was issued shows on the device.
+        for id in &ids {
+            let op = Op::Write {
+                offset: (id.0 - 1) * BLOCK_SIZE,
+                data: filled(0x55),
+            };
+            t.submit(Request { id: *id, op }).unwrap();
+        }
+        assert_eq!(t.poll(&mut out), 8);
+        let mut seen: Vec<u64> = out.iter().map(|c| c.id.0).collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (1..=8).collect::<Vec<u64>>(), "each id exactly once");
+        assert!(out.iter().all(|c| c.result == Ok(())));
+        // Nothing more arrives, however long one waits.
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(t.poll(&mut out), 0, "no second completion");
+        let on_device = std::fs::read(&path).unwrap();
+        assert!(
+            on_device[..8 * BLOCK_USIZE].iter().all(|b| *b == 0xaa),
+            "the resubmission was issued"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A request submitted after the kill under a new id is issued as
+    /// usual: only the ids that were in flight are held back.
+    #[test]
+    fn a_new_request_after_a_kill_is_issued() {
+        let (mut t, path) = target("new");
+        let write = |id: u64, byte: u8| Request {
+            id: RequestId(id),
+            op: Op::Write {
+                offset: 0,
+                data: filled(byte),
+            },
+        };
+        t.submit(write(1, 0xaa)).unwrap();
+        t.settle(Duration::from_secs(30)).unwrap();
+        t.submit(write(1, 0xaa)).unwrap();
+        t.submit(write(2, 0x55)).unwrap();
+        let mut out = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while out.len() < 2 && std::time::Instant::now() < deadline {
+            t.poll(&mut out);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(out.len(), 2);
+        let on_device = std::fs::read(&path).unwrap();
+        assert!(on_device[..BLOCK_USIZE].iter().all(|b| *b == 0x55));
+        std::fs::remove_file(&path).unwrap();
+    }
+}
