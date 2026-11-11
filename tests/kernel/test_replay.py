@@ -158,6 +158,22 @@ class Log(unittest.TestCase):
         # the sync marks are read as before, whatever stands between them
         self.assertEqual(replay_check.parse_marks(recs), [(4, 1, 0), (9, 2, 3)])
 
+    def test_a_wrong_replay_is_asked_for_a_file_from_its_own_mark(self):
+        ents = [('write', 1 << 20, blk(1)), ('write', 2 << 20, blk(2)), ('flush',), ('mark', 'fsync-0'),
+                ('write', 3 << 20, blk(3)), ('flush',), ('mark', 'sync-1-1'), ('mark', 'fsync-1')]
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        files, due = replay_check.promised(recs, True)
+        self.assertEqual([due(n) for n in range(9)], [0, 0, 0, 0, 1, 1, 1, 1, 2])
+        self.assertEqual([files(n) for n in range(9)], [0, 0, 0, 0, 0, 0, 0, 1, 1])
+        # with record 1 dropped, every mark sits one place earlier, and the promises move with it
+        sched = [0, 2, 3, 4, 5, 6, 7]
+        files, due = replay_check.promised([recs[i] for i in sched], True)
+        self.assertEqual([due(n) for n in range(8)], [0, 0, 0, 1, 1, 1, 1, 2])
+        self.assertEqual([files(n) for n in range(8)], [0, 0, 0, 0, 0, 0, 1, 1])
+        # without the fsync check nothing is asked of the writable import
+        self.assertEqual(replay_check.promised(recs, False)[1](8), 0)
+
     def test_plan_takes_every_flush_boundary_first(self):
         recs = self.idx['records']
         flush = set(replay_check.flush_points(recs))

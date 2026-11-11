@@ -127,6 +127,20 @@ def fsynced_at(fmarks, n):
     return c
 
 
+def promised(recs, fsync):
+    """What must be there at a prefix of `recs`, which are in the order they are applied.
+
+    -> (files the light check asks for at prefix n, files a writable
+    import must show at prefix n). A wrong replay has its own order, in
+    which a mark may sit one place earlier or later than in the true
+    one; its promises are read from its own order, so that a file is
+    asked for exactly from the prefix that ends with its mark.
+    """
+    marks = parse_marks(recs)
+    fm = fsync_marks(recs) if fsync else []
+    return (lambda n: files_at(marks, n)), (lambda n: max(files_at(marks, n), fsynced_at(fm, n)) if fm else 0)
+
+
 def files_at(marks, n):
     """Files that must verify at prefix n: those of the last mark at or before it."""
     c = 0
@@ -1308,8 +1322,9 @@ def main():
                      if fmarks and records[c['schedule'][n - 1]].get('mark', '').startswith('fsync-')}
         pts = sorted(set(c['points']) | ctl_copies | ctl_fsync)
         deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']}
-        results = [rig.point(n, files_at(marks, n), True if n in deep_at else 'fsync' if n in ctl_fsync else False,
-                             n in ctl_copies, due(n)) for n in pts]
+        ctl_files, ctl_due = promised([records[i] for i in c['schedule']], bool(fmarks))
+        results = [rig.point(n, ctl_files(n), True if n in deep_at else 'fsync' if n in ctl_fsync else False,
+                             n in ctl_copies, ctl_due(n)) for n in pts]
         # What was withheld, kept whole: an uncaught control can then be explained after the run.
         v = records[c['victim']]
         if 'pos' in v and not args.provider:
