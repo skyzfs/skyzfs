@@ -49,7 +49,7 @@ KTEST=${RIG_KERNEL_TESTS:-}
 # The numbers: the binding's own devices, the strangers, and (from 200
 # on) the crate's kernel tests. Far from 0, where anything else on the
 # machine would start.
-OWN=40; OWN2=41; OWN3=42; OWN4=43
+OWN=40; OWN2=41; OWN3=42; OWN4=43      # and 46 to 49: the idle and the fresh device of each delete under a held request
 S_LIVE=60; S_WAITING=61; S_NEVER=62; S_DELETED=63; S_CTL=64; S_FREE=65
 SIZE=$((64 << 20))
 HOLD_A=$((32 << 20))         # the byte whose read is held across a kill
@@ -214,7 +214,7 @@ cleanup() {
     local n
     [ -z "${H_PID:-}" ] || kill -9 "$H_PID" 2>/dev/null
     pkill -9 -f "$CTL serve" 2>/dev/null; pkill -9 -f "$CTL take-over" 2>/dev/null
-    for n in $OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
+    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
     command -v ublk > /dev/null && lim 60 ublk del -a --async 2>/dev/null
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -489,7 +489,15 @@ own_device
 # line says how long the delete took, what the device was a second
 # after the delete was sent and at the end, and what the reader got.
 delete_under_a_held_request() {
-    local name=$1 n=$2 hold=$3 kill_after=${4:-} t0 t1 during other after line ms v killed=""
+    local name=$1 n=$2 hold=$3 kill_after=${4:-} t0 t1 during after line ms v killed="" idle=$(($2 + 4)) fresh=$(($2 + 6)) k
+    # While the delete waits: a lookup of this device, a lookup of a
+    # free number, an add under a fresh number, and a delete of a
+    # second device that nobody serves or holds. By a reading of the
+    # driver's source the delete waits holding the device's own lock
+    # and the lock that every add and delete takes, so the last two
+    # would wait behind it, on any number: one stuck volume would hold
+    # up every other volume's start and detach on the node.
+    say add "$idle" --depth 8
     truncate -s "$SIZE" "$WORK/$name.img"
     say add "$n" --depth 8
     if ! serve_bg "$name" serve "$n" --file "$WORK/$name.img" --hold-one-request "$hold:read:$HOLD_B"; then
@@ -508,13 +516,15 @@ delete_under_a_held_request() {
     # server, while the delete waits.
     { lim 90 "$CTL" delete "$n" > "$WORK/$name.del" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 )) > "$WORK/$name.del-ms"; } &
     sleep 1
-    # Two looks while the delete waits, each in the background with its
-    # own clock: a lookup of this device and one of a free number. In
-    # run 43073076409 the lookup of this device, made in line, did not
-    # come back until the delete had, so the server was never killed.
-    rm -f "$WORK/$name.look" "$WORK/$name.look-ms" "$WORK/$name.other" "$WORK/$name.other-ms"
-    { lim 90 "$CTL" info "$n" > "$WORK/$name.look" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 - 1000 )) > "$WORK/$name.look-ms"; } &
-    { lim 90 "$CTL" info "$S_FREE" > "$WORK/$name.other" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 - 1000 )) > "$WORK/$name.other-ms"; } &
+    # Each in the background with its own clock. (In run 43073076409
+    # the lookup of this device, made in line, did not come back until
+    # the delete had, so the server was never killed.)
+    for k in "look info $n" "free info $S_FREE" "add add $fresh --depth 8" "idle delete $idle"; do
+        # shellcheck disable=SC2086  # the words of a command
+        set -- $k; k=$1; shift
+        rm -f "$WORK/$name.$k" "$WORK/$name.$k-ms"
+        { lim 90 "$CTL" "$@" > "$WORK/$name.$k" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 - 1000 )) > "$WORK/$name.$k-ms"; } &
+    done
     if [ -n "$kill_after" ]; then
         sleep $((kill_after - 1))
         if [ -e "$WORK/$name.del-ms" ]; then killed="; the delete had answered before the server was to be killed"
@@ -525,11 +535,17 @@ delete_under_a_held_request() {
     ms=$(cat "$WORK/$name.del-ms" 2>/dev/null); v=$(head -n 1 "$WORK/$name.del" 2>/dev/null | cut -f3-)
     cat "$WORK/$name.del" >> "$OUT/steps.log" 2>/dev/null
     line=$(holder_answer 2 60)
-    for _ in $(seq 1 100); do [ -e "$WORK/$name.look-ms" ] && [ -e "$WORK/$name.other-ms" ] && break; sleep 0.1; done
-    during="a lookup of the device sent 1 s after the delete answered '$(kv "$(head -n 1 "$WORK/$name.look" | cut -f3-)" state)' after $(cat "$WORK/$name.look-ms" 2>/dev/null || echo '?') ms"
-    other="a lookup of the free number $S_FREE sent then answered '$(head -n 1 "$WORK/$name.other" | cut -f3- | cut -c1-40)' after $(cat "$WORK/$name.other-ms" 2>/dev/null || echo '?') ms"
+    for _ in $(seq 1 100); do
+        [ -e "$WORK/$name.look-ms" ] && [ -e "$WORK/$name.free-ms" ] && [ -e "$WORK/$name.add-ms" ] && [ -e "$WORK/$name.idle-ms" ] && break
+        sleep 0.1
+    done
+    during=""
+    for k in "look:a lookup of the device" "free:a lookup of the free number $S_FREE" "add:an add under the fresh number $fresh" "idle:a delete of the idle device $idle"; do
+        during+="${k#*:}: '$(head -n 1 "$WORK/$name.${k%%:*}" 2>/dev/null | cut -f3- | sed 's/ size=.*//' | cut -c1-40)' after $(cat "$WORK/$name.${k%%:*}-ms" 2>/dev/null || echo 'more than 90000') ms; "
+    done
     info "$n"; after=$STATE
-    obs "$name" "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing}, after ${ms:-more than 90000} ms$killed; $during; $other; the device read '$after' at the end; the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
+    obs "$name" "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing}, after ${ms:-more than 90000} ms$killed; sent 1 s after the delete: $during the device read '$after' at the end; the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
+    lim 20 "$CTL" delete "$fresh" > /dev/null 2>&1; lim 20 "$CTL" delete "$idle" > /dev/null 2>&1
     srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
     holder_end
     wait_state "$n" nothing 10 || { echo "   $n is still there: $ANSWER"; lim 20 "$CTL" delete "$n" > /dev/null 2>&1; }

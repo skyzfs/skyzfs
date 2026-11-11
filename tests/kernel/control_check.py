@@ -34,11 +34,17 @@ JUDGED = ('pin_', 'ctl_', 'control_')
 def read_results(path):
     """-> (key -> value; rig errors). A judged line written twice with
     two results is a rig error: the last would decide which counts."""
-    out, twice = {}, []
+    out, twice, seen = {}, [], {}
     with open(path, encoding='utf-8', errors='replace') as f:
         for line in f:
             key, _, value = line.rstrip('\n').partition('\t')
             if not key:
+                continue
+            if is_detail(key, value):
+                # A detail line may come many times (one per stop of
+                # the stop test): the count and the last one are kept.
+                seen[key] = seen.get(key, 0) + 1
+                out[key] = value if seen[key] == 1 else f'({seen[key]} lines; the last:) {value}'
                 continue
             if key.startswith(JUDGED) and key in out and out[key].partition(':')[0] != value.partition(':')[0]:
                 twice.append(f"{key}: written twice, as {out[key].partition(':')[0]} and as {value.partition(':')[0]}")
@@ -199,8 +205,10 @@ OBSERVED = {
     'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
     'obs_delete_while_the_server_holds_a_request': 'a delete of a live device whose server holds a read for 20 s: how '
-                                                   'long the delete took, the device\'s state meanwhile and after, '
-                                                   'and what the reader got and when',
+                                                   'long the delete took, what the reader got and when, and how long '
+                                                   'four commands sent while it waited took: a lookup of the device, '
+                                                   'a lookup of a free number, an add under a fresh number, a delete '
+                                                   'of an idle device',
     'obs_delete_while_the_server_holds_a_request_then_dies': 'the same with a hold of 60 s, and the server killed 5 s '
                                                              'after the delete was sent: whether the delete then '
                                                              'returns, and what the reader gets',
@@ -228,7 +236,8 @@ def judge(results):
         elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
     for name in results:
-        if is_detail(name, results[name]):
+        if is_detail(name, results[name]) or (results[name].startswith('(') and name.startswith('control_')
+                                              and name not in EXPECTED and name not in OBSERVED):
             continue
         if name.startswith(JUDGED) and name not in EXPECTED and name not in OBSERVED:
             errors.append(f'{name}: not in the table EXPECTED: {results[name]}')
@@ -240,13 +249,15 @@ def judge(results):
 def is_detail(name, value):
     """A detail line of the crate's tests that the table does not name.
 
-    The crate's tests print `control_<something>_detail` lines beside
-    their verdicts, and grow new ones. Such a line is shown and not
-    judged. One that carries a verdict word is not a detail: a verdict
-    must be in the table.
+    The crate's tests print lines beside their verdicts
+    (`control_..._detail`, `control_stop_under_writers_stop`, one per
+    stop) and grow new ones. A `control_` line that the table names
+    neither as a verdict nor as an observation, and that carries no
+    verdict word, is shown and not judged. One that carries a verdict
+    word is not a detail: a verdict must be in the table.
     """
-    return (name.startswith('control_') and name.endswith('_detail') and name not in OBSERVED
-            and value.partition(':')[0] not in ('PASS', 'FAIL'))
+    return (name.startswith('control_') and name not in EXPECTED and name not in OBSERVED
+            and value.partition(':')[0].split(' ')[0] not in ('PASS', 'FAIL', 'ERROR'))
 
 
 def summary(results, rows, differs, errors):
@@ -265,7 +276,7 @@ def summary(results, rows, differs, errors):
     for name, what in OBSERVED.items():
         out.append(f'| `{name}` | {what} | {results.get(name, "missing").replace("|", "/")} |')
     for name, value in results.items():
-        if is_detail(name, value):
+        if is_detail(name, value) or value.startswith('(') and name.startswith('control_') and name not in EXPECTED and name not in OBSERVED:
             out.append(f'| `{name}` | a detail line of the crate\'s tests, not named in the table | {value.replace("|", "/")} |')
     return '\n'.join(out) + '\n'
 

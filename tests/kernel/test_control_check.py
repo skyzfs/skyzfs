@@ -57,6 +57,19 @@ class Judge(unittest.TestCase):
         self.assertEqual((differs, errors), ([], []))
         self.assertIn('control_stop_addresses_detail', cc.summary(r, rows, differs, errors))
 
+    def test_a_detail_line_written_many_times_is_counted_and_not_an_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'results.tsv')
+            with open(path, 'w', encoding='utf-8') as f:
+                for k, v in as_expected().items():
+                    f.write(f'{k}\t{v}\n')
+                for i in range(3):
+                    f.write(f'control_stop_under_writers_stop\tstop {i}: 4 addresses told, 0 watched frees\n')
+            r, twice = cc.read_results(path)
+            self.assertEqual(twice, [])
+            self.assertTrue(r['control_stop_under_writers_stop'].startswith('(3 lines; the last:) stop 2'))
+            self.assertEqual(cc.judge(r)[1:], ([], []))
+
     def test_a_detail_name_does_not_hide_a_verdict(self):
         for value in ('PASS: all well', 'FAIL: no'):
             r = as_expected()
