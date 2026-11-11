@@ -45,9 +45,6 @@ EXPECTED = {
                                            'two writes at one range in flight together apply whole: after both, '
                                            'every block of the range is from one of them, in every round of a '
                                            'minute of rounds, with and without the commit delay (§4.1)'),
-    'ctl_unordered_overlapping_writes': ('a', 'FAIL', KERNEL,
-                                         'control: the reference server as upstream has it, issuing overlapping '
-                                         'writes to its file together, tears some rounds of the same load'),
 
     'pin_c_max_request': ('c', 'PASS', SERVER,
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
@@ -142,6 +139,8 @@ OBSERVED = {
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
+    'obs_a_unordered_overlapping_writes': ('a', 'how often the reference server without the ordering tears the same load, '
+                                                'on this runner: the pin on overlapping writes means as much as this shows'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),

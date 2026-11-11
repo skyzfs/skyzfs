@@ -358,22 +358,22 @@ check_a_overlap() {
     else
         pin overlapping_writes_apply_whole ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao-overlap.err" 2>/dev/null)"
     fi
-    # The control: the reference server as upstream has it, every
-    # request issued to the file as it arrives. FAIL means torn rounds
-    # were seen, which is what shows the pin above can fail.
-    step "a, control: a server that does not order overlapping writes"
+    # The same load on the reference server as upstream has it, every
+    # request issued to the file as it arrives. An observation and not
+    # a control: how often that server tears depends on the runner
+    # (about 3 rounds in 100 on both images of run 43012950834; 2 of
+    # 82,335 and 0 of 92,329 in run 43016426113). The pin above says
+    # something in a run where this line shows torn rounds, and little
+    # where it shows none.
+    step "a, observation: a server that does not order overlapping writes"
     if SKZ_REF_UNORDERED=1 overlap_test ao0 "$REF" 60; then
         said="plain, 60 s: $OV_SAID"; rounds=$OV_ROUNDS; torn=$OV_TORN
         if SKZ_REF_UNORDERED=1 overlap_test ao0d "$REF" 30 --commit-delay-ms "$ms"; then
             said+="; acknowledged $ms ms after the apply, 30 s: $OV_SAID"; rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN))
         fi
-        if [ "$torn" -gt 0 ]; then
-            ctl unordered_overlapping_writes FAIL "$torn of $rounds rounds torn; $said"
-        else
-            ctl unordered_overlapping_writes PASS "no round of $rounds torn; $said"
-        fi
+        obs a_unordered_overlapping_writes "$torn of $rounds rounds torn by the reference server with its ordering off; $said"
     else
-        ctl unordered_overlapping_writes ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao0-overlap.err" 2>/dev/null)"
+        obs a_unordered_overlapping_writes "not run: ${OV_SAID:-no output} $(tail -n 1 "$OUT/ao0-overlap.err" 2>/dev/null)"
     fi
 }
 check_a() {
