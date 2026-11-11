@@ -288,7 +288,7 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
     assert!(output.out.starts_with("nothing to detach") && output.err.is_empty());
 
     // A waiting device and one that was never started: deleted, 0.
-    for state in [DeviceState::Waiting, DeviceState::Added] {
+    for state in [DeviceState::Waiting, DeviceState::Dead] {
         let mut setup = Setup::new().attached(state);
         let output = setup.detach();
         assert_eq!(output.exit, Exit::Done);
@@ -311,12 +311,14 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
 
-    // Deleted before and still held: 0, said, and nothing is done.
+    // Deleted before and still held looks like never started: it is
+    // deleted again, which does no harm, and said to be held.
     let mut setup = Setup::new().attached(DeviceState::Dead);
+    setup.kernel.held.push(4);
     let output = setup.detach();
     assert_eq!(output.exit, Exit::Done);
-    assert!(output.err.contains("was deleted before and is still held"));
-    assert!(setup.kernel.deleted.is_empty());
+    assert!(output.err.contains("still holds it open"), "{}", output.err);
+    assert_eq!(setup.kernel.deleted, [4]);
 
     // Not known to be this volume's: 1, nothing done.
     for (nonce, said) in [

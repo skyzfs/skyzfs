@@ -448,8 +448,7 @@ pub fn report(
         (_, Some(l)) => match l.state {
             DeviceState::Live => "serving",
             DeviceState::Waiting => "waiting for a server",
-            DeviceState::Added => "added, never started",
-            DeviceState::Dead => "deleted, still held by a client",
+            DeviceState::Dead => "dead: never started, or deleted and still held",
         }
         .to_string(),
     };

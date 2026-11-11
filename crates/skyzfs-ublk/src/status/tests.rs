@@ -358,8 +358,10 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
     // No live server: the counters were left by a daemon that is gone.
     for (state, said) in [
         (DeviceState::Waiting, "waiting for a server"),
-        (DeviceState::Added, "added, never started"),
-        (DeviceState::Dead, "deleted, still held by a client"),
+        (
+            DeviceState::Dead,
+            "dead: never started, or deleted and still held",
+        ),
     ] {
         let lines = report(
             Some(&located(state, Whose::Ours)),

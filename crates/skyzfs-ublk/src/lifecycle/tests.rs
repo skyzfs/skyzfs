@@ -252,7 +252,7 @@ impl Control for Fake {
         w.devices.insert(
             number,
             DeviceInfo {
-                state: DeviceState::Added,
+                state: DeviceState::Dead,
                 shape: *shape,
             },
         );
@@ -839,7 +839,7 @@ fn left_alone(world: World, number: u32, mutants: u32) -> Result<(), String> {
     )
 }
 
-const STATES: [DeviceState; 3] = [DeviceState::Added, DeviceState::Live, DeviceState::Waiting];
+const STATES: [DeviceState; 3] = [DeviceState::Dead, DeviceState::Live, DeviceState::Waiting];
 
 fn another_nonce(mutants: u32) -> Result<(), String> {
     for state in STATES {
@@ -875,7 +875,7 @@ fn no_note_same_values(mutants: u32) -> Result<(), String> {
             |s| matches!(s, Stop::Error(e) if e.contains("no note")),
         )?;
     }
-    let mut world = World::new().attached(0, DeviceState::Added, EARLIER);
+    let mut world = World::new().attached(0, DeviceState::Dead, EARLIER);
     world.notes.clear();
     left_alone(world, 0, mutants)
 }
@@ -907,7 +907,7 @@ fn a_device_that_is_not_surely_this_volumes_is_neither_taken_over_nor_replaced()
 
 #[test]
 fn this_volumes_device_that_was_never_started_is_deleted_and_replaced() {
-    let world = World::new().attached(4, DeviceState::Added, EARLIER);
+    let world = World::new().attached(4, DeviceState::Dead, EARLIER);
     let outcome = run(world, 0);
     assert_eq!(rules(&outcome), Ok(()));
     let ready = outcome.result.expect("serves");
@@ -1192,7 +1192,7 @@ fn an_error_that_may_pass_stops_the_daemon_and_leaves_the_device() {
 
 #[test]
 fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
-    for state in [DeviceState::Waiting, DeviceState::Added, DeviceState::Live] {
+    for state in [DeviceState::Waiting, DeviceState::Dead, DeviceState::Live] {
         let mut world = World::new().attached(4, state, EARLIER);
         world.torn_note = Some(4);
         assert_eq!(
@@ -1251,7 +1251,7 @@ fn killed_anywhere(
             .collect();
         for number in &extra {
             let never_started =
-                outcome.world.devices.get(number).map(|d| d.state) == Some(DeviceState::Added);
+                outcome.world.devices.get(number).map(|d| d.state) == Some(DeviceState::Dead);
             check(
                 never_started && !outcome.world.notes.contains_key(number),
                 &format!("killed after {at} steps: device {number} was left behind"),
@@ -1447,7 +1447,7 @@ fn fakes(world: World) -> (Fake, Fake, Rc<RefCell<World>>) {
 #[test]
 fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
     let all = [
-        DeviceState::Added,
+        DeviceState::Dead,
         DeviceState::Live,
         DeviceState::Waiting,
         DeviceState::Dead,
@@ -1510,7 +1510,7 @@ fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
 
 #[test]
 fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
-    for state in [DeviceState::Waiting, DeviceState::Added] {
+    for state in [DeviceState::Waiting, DeviceState::Dead] {
         for held in [false, true] {
             let mut world = World::new().attached(4, state, EARLIER);
             if held {
@@ -1550,19 +1550,14 @@ fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is
 
 #[test]
 fn detach_touches_nothing_it_may_not() {
-    // Live under a server, and deleted before and still held.
-    for (state, expected) in [
-        (DeviceState::Live, Detached::Live(4)),
-        (DeviceState::Dead, Detached::Held(4)),
-    ] {
-        let world = World::new().attached(4, state, EARLIER);
-        let (mut control, mut records, shared) = fakes(world);
-        assert_eq!(
-            detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
-            expected
-        );
-        assert_eq!(shared.borrow().events, [Event::Info(4)]);
-    }
+    // Live under a server.
+    let world = World::new().attached(4, DeviceState::Live, EARLIER);
+    let (mut control, mut records, shared) = fakes(world);
+    assert_eq!(
+        detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
+        Detached::Live(4)
+    );
+    assert_eq!(shared.borrow().events, [Event::Info(4)]);
     // Not known to be this volume's, in any state.
     for state in STATES {
         for note in [None, Some([0x5A; 16])] {
@@ -1621,7 +1616,7 @@ fn unwrap(shared: Rc<RefCell<World>>) -> World {
 /// two has the lock, the other finds the volume locked: a daemon that
 /// came to serve keeps its device, its record and its note.
 fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
-    for state in [DeviceState::Waiting, DeviceState::Added] {
+    for state in [DeviceState::Waiting, DeviceState::Dead] {
         for at in 0..=6 {
             let mut world = World::new().attached(4, state, EARLIER);
             world.intrude_at = Some(at);
@@ -1782,26 +1777,52 @@ fn a_record_of_another_boot(mutants: u32) -> Result<(), String> {
     untouched(world, mutants, |s| matches!(s, Stop::Failed(_)))
 }
 
-/// This volume's device, with its note, that is deleted and still held
-/// is not taken over.
+/// This volume's device, with its note, that has no server and waits
+/// for none (never started, or deleted and still held) is not taken
+/// over: it is deleted, again if need be, and the daemon attaches
+/// afresh, passing its number by while it is held.
 fn our_dead_device(mutants: u32) -> Result<(), String> {
-    let world = World::new().attached(4, DeviceState::Dead, EARLIER);
-    let outcome = run(world, mutants);
-    rules(&outcome)?;
-    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
-    check(!ready.took_over && ready.number == 0, "a fresh device")?;
-    check(
-        !outcome
-            .world
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::BeginRecovery(_) | Event::Delete(_))),
-        "no recovery and no delete",
-    )?;
-    check(
-        outcome.world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
-        "the dead device is as it was",
-    )
+    for held in [false, true] {
+        let mut world = World::new().attached(4, DeviceState::Dead, EARLIER);
+        // Number 0 is another's, so that "afresh" is seen to pass over
+        // taken numbers.
+        world.devices.insert(
+            0,
+            DeviceInfo {
+                state: DeviceState::Live,
+                shape: EARLIER,
+            },
+        );
+        if held {
+            world.held.push(4);
+        }
+        let outcome = run(world, mutants);
+        rules(&outcome)?;
+        let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+        check(
+            !ready.took_over && ready.number != 0 && (ready.number != 4 || !held),
+            "a fresh device under a free number",
+        )?;
+        check(
+            !any(&outcome.world, |e| matches!(e, Event::BeginRecovery(_))),
+            "no recovery",
+        )?;
+        let events = &outcome.world.events;
+        let removed = events.iter().position(|e| *e == Event::RemoveNote(4));
+        let deleted = events.iter().position(|e| *e == Event::Delete(4));
+        check(
+            removed.is_some() && removed < deleted,
+            "the note is removed, then the device deleted",
+        )?;
+        check(
+            outcome.world.devices.get(&4).map(|d| d.state)
+                == held
+                    .then_some(DeviceState::Dead)
+                    .filter(|_| ready.number != 4),
+            "the dead device is gone, or stays while it is held",
+        )?;
+    }
+    Ok(())
 }
 
 #[test]

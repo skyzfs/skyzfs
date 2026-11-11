@@ -37,7 +37,7 @@ impl Control for Kernel {
         if self.devices.contains_key(&number) {
             return Err(AddError::Taken);
         }
-        let state = DeviceState::Added;
+        let state = DeviceState::Dead;
         self.devices.insert(
             number,
             DeviceInfo {
