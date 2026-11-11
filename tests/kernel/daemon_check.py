@@ -135,8 +135,7 @@ EXPECTED = {
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4 and serves nothing: no ready line, the device live at '
-                                    'no look in the 300 s after, no write of the writer completed after the '
-                                    'refusal. What the pool does then is ZFS\'s reaction to what it had in flight '
+                                    'no look in the 300 s after. What the pool does then is ZFS\'s reaction to what it had in flight '
                                     'and is reported in obs_b_refused_start_under_writes, not judged (with only '
                                     'writes waiting it did not suspend in 118 s, run 43086281904). The server is killed at rest '
                                     '(writer stopped, pool synced, writes and requests in flight still for a '
@@ -212,8 +211,9 @@ EXPECTED = {
 OBSERVED = {
     'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
-                                              'by second for 300 s, and whether a reader and a second writer started '
-                                              'at 120 s fail or hang'),
+                                              'by second for 300 s; whether the pool goes on acknowledging synced '
+                                              'writes; whether a reader and a second writer started at 120 s and a '
+                                              'scrub started at 240 s fail or hang'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
@@ -243,6 +243,11 @@ C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 # stand-in, whichever server is under test, because the daemon deletes
 # its device when the volume fails.
 REFERENCE_ONLY = set()
+
+# Observations only the daemon can make: on the stand-in the rig writes
+# no line for them and none is asked for. A line that says "not run"
+# is the rig's error whatever the server.
+DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes'}
 
 
 CHECKS = ('a', 'b', 'c', 'd', 'e')
@@ -322,6 +327,8 @@ def judge(results, checks, impl='reference'):
     for name, (check, _) in OBSERVED.items():
         if check not in checks:
             continue
+        if name not in results and impl == 'reference' and name in DAEMON_ONLY_OBSERVED:
+            continue
         if name not in results:
             errors.append(f'{name}: no observation')
         elif NOT_RUN.search(results[name]):
@@ -394,7 +401,8 @@ def render(results, rows, differs, errors, checks):
     out += ['', '### Observations (not judged)', '']
     for name, (check, question) in OBSERVED.items():
         if check in checks:
-            out.append(f"- **{question}** {results.get(name, 'no observation')}")
+            none = 'made only with the daemon' if name in DAEMON_ONLY_OBSERVED else 'no observation'
+            out.append(f"- **{question}** {results.get(name, none)}")
     context = [k for k in results if not k.startswith(('pin_', 'ctl_', 'obs_', 'case_'))]
     out += ['', '<details><summary>Everything else the rig wrote down</summary>', '']
     out += [f'- `{k}`: {results[k]}' for k in context] + ['', '</details>', '']

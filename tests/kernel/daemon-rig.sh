@@ -745,7 +745,7 @@ kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
 # pool has work when its device is refused. If the server never came
 # to rest, the control is the rig's error and not a verdict.
 check_b_short() {
-    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" arm="" fails mark zios n0 n1 live="" end io
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" arm="" fails mark zios n0 n1 live="" end io txg0="" txg1 scrub=""
     if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
     slog=$(new_slog bs)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
@@ -800,8 +800,9 @@ check_b_short() {
     t0=$(now_ms); was=""
     for i in $(seq 1 300); do
         st=$(pool_state "$pool")
-        if [ -e "/dev/ublkb$num" ]; then dev="node there, state '$(ublk_state "/dev/ublkb$num")'"; else dev="no node"; fi
-        lim 20 ublk list -n "$num" 2>/dev/null | grep -q '^dev id' || dev+=", unknown to the driver"
+        if [ -e "/dev/ublkb$num" ]; then dev="block node there"; else dev="no block node"; fi
+        if lim 20 ublk list -n "$num" 2>/dev/null | grep -q '^dev id'; then dev+=", the driver lists it as '$(ublk_state "/dev/ublkb$num")'"; else dev+=", unknown to the driver"; fi
+        [ "$i" != 10 ] || txg0=$(tail -n 1 "/proc/spl/kstat/zfs/$pool/txgs" 2>/dev/null | awk '{ print $1 " (" $3 ")" }')
         case $dev in *LIVE*) live=yes ;; esac
         if [ "$st; $dev" != "$was" ]; then was="$st; $dev"; line+="at $(( ($(now_ms) - t0) / 1000 )) s: pool $st, device $num: $dev. "; fi
         [ "$st" = SUSPENDED ] && break
@@ -810,24 +811,38 @@ check_b_short() {
             ( t=$(now_ms); lim 170 "$DD" if="$WORK/mnt/$pool/r.0" of=/dev/null bs=1M iflag=direct status=none 2> "$OUT/bs-reader.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/bs.reader" ) &
             ( t=$(now_ms); lim 170 "$DD" if=/dev/zero of="$WORK/mnt/$pool/second-writer" bs=1M count=4 conv=fsync status=none 2> "$OUT/bs-writer2.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/bs.writer2" ) &
         fi
+        # The reader above can be answered from memory (it was, in 109
+        # and 147 ms, run 43093721420). A scrub must read the device.
+        if [ "$i" = 240 ]; then
+            scrub=$(( ($(now_ms) - t0) / 1000 ))
+            ( t=$(now_ms); lim 50 zpool scrub "$pool" > "$OUT/bs-scrub.log" 2>&1; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/bs.scrub" ) &
+        fi
         sleep 1
     done
     end=$(( ($(now_ms) - t0) / 1000 ))
     touch "$WORK/bs.stop"
     n1=$(grep -c . "$WORK/bs.record")
+    txg1=$(tail -n 1 "/proc/spl/kstat/zfs/$pool/txgs" 2>/dev/null | awk '{ print $1 " (" $3 ")" }')
+    cp "/proc/spl/kstat/zfs/$pool/txgs" "$OUT/bs-txgs.txt" 2>/dev/null
     fails=$(grep -c . "$OUT/bs-writer.log")
     klog_since "$mark" > "$OUT/bs-klog.txt" 2>/dev/null
     zios=$(grep "$pool" "$OUT/bs-klog.txt" | grep -o 'type=[0-9]*' | sort | uniq -c | tr -s ' \n' ' ')
     if [ -n "$arm" ]; then
-        io="a reader and a second writer were started at $arm s: the reader: $(cat "$WORK/bs.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-reader.err" 2>/dev/null | tr '\n' ' '); the second writer: $(cat "$WORK/bs.writer2" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-writer2.err" 2>/dev/null | tr '\n' ' ')"
+        io="a reader (a file just written, which memory can answer) and a second writer were started at $arm s: the reader: $(cat "$WORK/bs.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-reader.err" 2>/dev/null | tr '\n' ' '); the second writer: $(cat "$WORK/bs.writer2" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-writer2.err" 2>/dev/null | tr '\n' ' ')"
     else
         io="no reader or second writer was started: the pool suspended before 120 s"
     fi
-    obs b_refused_start_under_writes "after the refusal (exit $SERVE_RC), with the writes of a writer waiting at the device: ${line}At the end, $end s: pool $st$([ "$st" = ONLINE ] && echo ' OVER A DEVICE THAT NEITHER SERVES NOR FAILS, if the device lines above say it is there'). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. $io. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
-    if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ] && [ "$n0" = "$n1" ]; then
-        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s, no write of the writer completed after the refusal; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
+    if [ -n "$scrub" ]; then
+        io+=". A scrub, which must read the device, was started at $scrub s: $(cat "$WORK/bs.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 160 "$OUT/bs-scrub.log" 2>/dev/null | tr '\n' ' ')"
+    fi
+    obs b_refused_start_under_writes "after the refusal (exit $SERVE_RC), with the writes of a writer waiting at the device: ${line}At the end, $end s: pool $st, the device: $dev. The pool's newest transaction group 10 s after the refusal: ${txg0:-not read}; at the end: ${txg1:-not read}. The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). $io. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
+    # Not judged: whether the writer's writes went on being
+    # acknowledged. They did in run 43093721420 with the daemon gone,
+    # by the pool and not by a server; the observation reports it.
+    if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ]; then
+        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
     else
-        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 exited ${SERVE_RC:-?}; ready line: $(grep -c '^ready' "$dir.ready"); the device live at a look: ${live:-no}; the writer's acknowledged files $n0 at the refusal, $n1 at the end; pool $st"
+        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 exited ${SERVE_RC:-?}; ready line: $(grep -c '^ready' "$dir.ready"); the device live at a look: ${live:-no}; pool $st"
     fi
 }
 # b: the daemon keeps its files off any pool. A volume directory or a
@@ -1695,7 +1710,6 @@ case $CHECKS in *" b "*)
     step "b, control: a recovered log that is too short"
     if [ "$IMPL" = reference ]; then
         ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
-        obs b_refused_start_under_writes "not run: the stand-in refuses no start"
     else
         check_b_short
     fi ;;

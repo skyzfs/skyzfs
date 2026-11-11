@@ -90,6 +90,24 @@ class Cases(unittest.TestCase):
         _, _, errors = dc.judge(r, self.C)
         self.assertTrue(errors)
 
+    def test_an_observation_only_the_daemon_makes(self):
+        name = 'obs_b_refused_start_under_writes'
+        self.assertIn(name, dc.DAEMON_ONLY_OBSERVED)
+        # the stand-in writes no line for it and none is asked for
+        r = as_expected()
+        del r[name]
+        self.assertEqual(dc.judge(r, self.C)[1:], ([], []))
+        # a line that says "not run" is the rig's error on either server
+        r[name] = 'not run: x'
+        self.assertEqual(len(dc.judge(r, self.C)[2]), 1)
+        # with the daemon it is asked for
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        del r[name]
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+        r[name] = 'not run: x'
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+
     def test_the_daemon_is_held_to_its_own_counts(self):
         r = as_expected('daemon')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
@@ -155,7 +173,8 @@ class Judge(unittest.TestCase):
             del r[name]
             _, differs, errors = dc.judge(r, ALL)
             self.assertEqual(differs, [], name)
-            self.assertEqual(len(errors), 1, name)
+            # but for an observation only the daemon makes (its own test below)
+            self.assertEqual(len(errors), 0 if name in dc.DAEMON_ONLY_OBSERVED else 1, name)
 
     def test_an_unknown_word_is_a_rig_error(self):
         r = as_expected()
