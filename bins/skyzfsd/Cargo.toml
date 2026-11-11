@@ -12,4 +12,10 @@ repository.workspace = true
 test-hooks = []
 
 [dependencies]
+skyzfs-local = { workspace = true }
+skyzfs-ublk = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+skyzfs-blk = { workspace = true }
+tempfile = { workspace = true }

@@ -4242,6 +4242,10 @@ dependencies = [
 name = "skyzfsd"
 version = "0.0.1"
 dependencies = [
+ "skyzfs-blk",
+ "skyzfs-local",
+ "skyzfs-ublk",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 

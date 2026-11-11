@@ -6,6 +6,7 @@
 //!                [--queues 1] [--depth N]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
+//! skyzfsd help
 //! ```
 //!
 //! `--queues` takes only 1: this milestone serves one queue.
@@ -62,7 +63,46 @@ pub const USAGE: &str = "usage:
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
-  skyzfsd status --dir DIR [--run-dir DIR]";
+  skyzfsd status --dir DIR [--run-dir DIR]
+  skyzfsd help";
+
+/// What `help` prints: the usage, and what an operator has to know
+/// before using a command.
+pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
+
+  skyzfsd create --dir DIR --size BYTES
+      Make a new, empty volume in DIR. BYTES is a multiple of 1 MiB.
+
+  skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+      Serve the volume until SIGTERM. When the device serves, one line
+      is printed: ready /dev/ublkbN.
+      If another instance holds the volume, serve tries again for 2 s
+      (20 times, 100 ms apart) and then exits with status 5.
+      If the volume's own device is still shown as live by the kernel
+      (the server before this one was killed a moment ago), serve asks
+      again for up to 5 s before it gives up with status 5.
+      A volume whose log failed in this boot is not served again
+      (status 4). If no client held its device, --acknowledge-failure
+      serves it: what was acknowledged to nobody may be gone. If a
+      client held the device, the volume is not served again before a
+      reboot, whatever is given.
+      One queue is all this version serves.
+
+  skyzfsd detach --dir DIR [--run-dir DIR]
+      Delete the volume's device if no server serves it. It never stops
+      a daemon: stop the daemon first (SIGTERM).
+      Export the pool first. A pool whose device is deleted under it
+      stays suspended, and the device keeps its number for as long as
+      the pool holds it.
+
+  skyzfsd status --dir DIR [--run-dir DIR]
+      Print the volume's state and the serving daemon's counters, one
+      `key value` per line. It opens no store and asks no daemon.
+
+Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
+3 the volume failed while it was served; 4 refused, the volume failed
+in this boot; 5 refused, another instance or a live server holds the
+volume.";
 
 /// The exit statuses. The kernel rig depends on each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +250,8 @@ pub enum Command {
     Detach(Volume),
     /// `status`.
     Status(Volume),
+    /// `help`, `--help` or `-h`: print [`HELP`].
+    Help,
 }
 
 impl Command {
@@ -220,6 +262,7 @@ impl Command {
             Command::Serve(_) => "serve",
             Command::Detach(_) => "detach",
             Command::Status(_) => "status",
+            Command::Help => "help",
         }
     }
 }
@@ -375,6 +418,10 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
     let mut args = args.into_iter();
     let command = args.next().ok_or(UsageError::Command)?;
     match command.as_str() {
+        "help" | "--help" | "-h" => match args.next() {
+            None => Ok(Command::Help),
+            Some(more) => Err(UsageError::Unknown(more)),
+        },
         "create" => {
             let given = Given::collect(CREATE, args, hooks)?;
             let dir = given.path("--dir")?;

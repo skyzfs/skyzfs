@@ -301,6 +301,32 @@ pub trait Control {
     fn client_holds(&mut self, number: u32) -> Option<bool>;
 }
 
+/// A borrowed control interface is one: so that a caller can hold the
+/// kernel's as a trait object (`&mut dyn Control`) and pass it on.
+impl<C: Control + ?Sized> Control for &mut C {
+    fn can_reissue(&mut self) -> io::Result<bool> {
+        (**self).can_reissue()
+    }
+    fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
+        (**self).info(number)
+    }
+    fn add(&mut self, number: u32, shape: &Shape) -> Result<(), AddError> {
+        (**self).add(number, shape)
+    }
+    fn disown(&mut self, number: u32) {
+        (**self).disown(number);
+    }
+    fn delete(&mut self, number: u32) -> io::Result<()> {
+        (**self).delete(number)
+    }
+    fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
+        (**self).begin_recovery(number)
+    }
+    fn client_holds(&mut self, number: u32) -> Option<bool> {
+        (**self).client_holds(number)
+    }
+}
+
 /// Which device is a volume's: recorded in the volume's directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attachment {

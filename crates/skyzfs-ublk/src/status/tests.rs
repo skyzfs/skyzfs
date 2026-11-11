@@ -335,9 +335,12 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "unstored",
             "status_write_failures",
             "age_ms",
+            "pid",
             "counters"
         ]
     );
+    // The process to signal: only while the kernel shows a live server.
+    assert_eq!(value(&lines, "pid"), Some("16909060"));
     assert_eq!(value(&lines, "state"), Some("serving"));
     assert_eq!(value(&lines, "device"), Some("/dev/ublkb4"));
     // The device's own values, not the file's.
@@ -366,6 +369,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             251,
         );
         assert_eq!(value(&lines, "state"), Some(said));
+        assert_eq!(value(&lines, "pid"), None);
         assert_eq!(
             value(&lines, "counters"),
             Some("left by a daemon that is gone, pid 16909060")
