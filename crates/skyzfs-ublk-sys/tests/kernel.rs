@@ -992,6 +992,31 @@ fn after_the_stop(
     stop
 }
 
+/// One line for a stop, printed as soon as the stop is over, for
+/// whoever asks why a defect did or did not show: a run that hangs
+/// later has said what it saw until then.
+fn say_stop(round: usize, stop: &Stop) {
+    println!(
+        "control_stop_under_writers_stop\t{round} ({}): {} ranges told (lowest {:#x}), {} \
+         deallocations gave told memory back, {} of the ranges no longer mapped; of \
+         the blocks taken afterwards (lowest {:#x}) {} lie where a told buffer was; \
+         up to {} writes in flight at the device meanwhile; {} bytes changed",
+        if stop.held {
+            "writers held until the memory was taken"
+        } else {
+            "under writes"
+        },
+        stop.told,
+        stop.lowest.0,
+        stop.freed,
+        stop.unmapped,
+        stop.lowest.1,
+        stop.overlapping,
+        stop.in_flight,
+        stop.changed
+    );
+}
+
 /// A server stopped under writers, many times: after each stop the
 /// queue's thread goes on working while the device is still live and
 /// requests arrive for tags whose fetch commands are still with the
@@ -1012,13 +1037,13 @@ fn after_the_stop(
 /// their next writes are then issued to tags whose fetch commands name
 /// the old addresses, and the test fails if none was issued in such a
 /// stop. With the buffers kept, the count is zero. With the buffers
-/// freed it is not zero when the allocator has handed the freed memory
-/// out again, which it does from the second stop on with glibc (the
-/// first free of blocks this large unmaps them); the line printed for
+/// freed it can only be other than zero where the allocator has handed
+/// the freed memory out again (glibc unmaps blocks this large at their
+/// first free and reuses them from then on); the line printed for
 /// each stop says whether the told ranges were still mapped, how many
 /// blocks taken afterwards lay where one was, and how many writes were
-/// in flight at the device. This part is as certain as the allocator's
-/// reuse: it shows the damage, the allocator check proves the property.
+/// in flight at the device. A zero here is not evidence that the
+/// buffers were kept: the allocator check is.
 /// At the other stops the writers' next writes arrive within
 /// microseconds of the stop, before any memory is taken, and block:
 /// those stops are for the commits of a stop, below.
@@ -1139,6 +1164,9 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             let (serving, device) = life;
             serving.stopper().stop();
             stops.push(serving.join().map_err(|e| format!("round {round}: {e}"))?);
+            if let Some(stop) = stops.last() {
+                say_stop(stops.len() - 1, stop);
+            }
             drop(device);
             until(&mut kernel, n, "waiting", |i| {
                 i.is_some_and(|i| i.state == DeviceState::Waiting)
@@ -1183,31 +1211,11 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         let (serving, _device) = life;
         serving.stopper().stop();
         stops.push(serving.join().map_err(|e| e.to_string())?);
+        if let Some(stop) = stops.last() {
+            say_stop(stops.len() - 1, stop);
+        }
         // The reads of the check above are not writes: not counted.
         let handed = seen.handed.load(Ordering::SeqCst);
-        // One line per stop, for whoever asks why a defect did or did
-        // not show.
-        for (round, stop) in stops.iter().enumerate() {
-            println!(
-                "control_stop_under_writers_stop\t{round} ({}): {} ranges told (lowest {:#x}), {} \
-                 deallocations gave told memory back, {} of the ranges no longer mapped; of \
-                 the blocks taken afterwards (lowest {:#x}) {} lie where a told buffer was; \
-                 up to {} writes in flight at the device meanwhile; {} bytes changed",
-                if stop.held {
-                    "writers held until the memory was taken"
-                } else {
-                    "under writes"
-                },
-                stop.told,
-                stop.lowest.0,
-                stop.freed,
-                stop.unmapped,
-                stop.lowest.1,
-                stop.overlapping,
-                stop.in_flight,
-                stop.changed
-            );
-        }
         let changed: u64 = stops.iter().map(|s| s.changed).sum();
         let freed: u64 = stops.iter().map(|s| s.freed).sum();
         let stops_freed = stops.iter().filter(|s| s.freed > 0).count();

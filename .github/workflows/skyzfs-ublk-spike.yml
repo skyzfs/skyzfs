@@ -194,14 +194,22 @@ jobs:
           bin=$(cargo test --release -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
           [ -x "$bin" ] || { echo "::error::no test binary"; exit 2; }
           rc=0
-          sudo "$bin" --ignored --test-threads 1 --nocapture --exact a_stop_under_writers_leaves_the_memory_taken_afterwards_alone > red.log 2>&1 || rc=$?
+          # With a limit, and streamed: a test that hangs with the
+          # defect is killed (exit 137) and has printed its stops.
+          set +o pipefail
+          sudo timeout -s KILL 180 "$bin" --ignored --test-threads 1 --nocapture --exact a_stop_under_writers_leaves_the_memory_taken_afterwards_alone 2>&1 | tee red.log
+          rc=${PIPESTATUS[0]}
+          set -o pipefail
+          if [ "$rc" -eq 137 ]; then
+            echo "::warning title=${{ matrix.variant }}::the test did not end within 180 s and was killed"
+            sudo dmesg | tail -40 || true
+          fi
           {
             echo "### the stop test with ${{ matrix.variant }} (exit $rc)"
             echo '```'
             grep -E '^control_|^test |panicked' red.log || cat red.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          cat red.log
           if [ "$rc" -eq 0 ]; then
             echo "verdict: FINDING: the stop test PASSED with the defect put back; its detail line is above" >> "$GITHUB_STEP_SUMMARY"
             echo "::error title=${{ matrix.variant }}::the stop test PASSED with the defect put back: it does not catch it"
