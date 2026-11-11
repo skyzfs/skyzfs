@@ -217,15 +217,19 @@ def controls(records, marks):
     return out
 
 
-# What each control is expected to do today. The job passes only when
-# the observed results equal this table, and fails when they differ in
-# either direction: a control that stops being caught is a regression,
-# and one that starts being caught means the rig got deeper and this
-# table must say so on purpose. Do not edit a control to fit the table.
-#   by: 'deep'  caught by the deep check and by no light check
-#       None    not caught: a known gap, stated in every run's summary
+# What each control is expected to do today. The job fails when a result
+# differs from this table. Do not edit a control to fit the table.
+#   by: 'any'   caught, by whichever check. So far that has been the
+#               deep check alone, because the victim was redundant
+#               metadata; a run whose victim is a file's block will be
+#               caught by the light check, and that is not a failure.
+#               (A prefix that fails the light check gets no deep
+#               check, so "the deep check too" cannot be required.)
+#       None    not caught: a known gap, stated in every run's summary.
+#               Strict in both directions: once a deeper check catches
+#               it, the job fails until this table is changed on purpose.
 EXPECTED = {
-    'drop': {'by': 'deep'},
+    'drop': {'by': 'any'},
     'reorder': {'by': None,
                 'gap': 'this rig does not yet detect a device that delays or loses one copy of redundant pool '
                        'metadata: the withheld block is one of three copies, the read-only import reads '
@@ -257,6 +261,8 @@ def judge_controls(ctl, expected=None):
         else:
             exp = 'caught by ' + want['by']
         match = exp == got
+        if want and want['by'] == 'any':
+            exp, match = 'caught', bool(c and c['caught'])
         ok = ok and match
         rows.append({'name': name, 'expected': exp, 'observed': got, 'match': match})
         if want and want.get('gap') and match:

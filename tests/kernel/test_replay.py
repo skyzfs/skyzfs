@@ -242,9 +242,13 @@ class Log(unittest.TestCase):
         rows, gaps, ok = replay_check.judge_controls([drop, reorder])
         self.assertTrue(ok)
         self.assertEqual([g['name'] for g in gaps], ['reorder'])
-        # a control that is no longer caught, or caught by something else
+        # a control that is no longer caught
         self.assertFalse(replay_check.judge_controls([dict(drop, caught=False, failed_by={}), reorder])[2])
-        self.assertFalse(replay_check.judge_controls([dict(drop, failed_by={'deep': 1, 'verify': 3}), reorder])[2])
+        # drop caught by the light check, with or without the deep check: the rig did better, not worse
+        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}):
+            rows, _, ok = replay_check.judge_controls([dict(drop, failed_by=by), reorder])
+            self.assertTrue(ok, by)
+            self.assertIn(sorted(by)[-1], rows[0]['observed'])
         # the gap closing is also a difference: the table has to be changed on purpose
         rows, gaps, ok = replay_check.judge_controls([drop, dict(reorder, caught=True, failed_by={'deep': 1})])
         self.assertFalse(ok)
