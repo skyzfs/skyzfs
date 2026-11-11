@@ -1028,7 +1028,9 @@ impl Model {
     /// durable, and of what was acknowledged the volume is held only to
     /// what a completed flush covered. The log that failed may have
     /// lost the rest, and a restart does not bring it back. This shows
-    /// when the volume is opened again ([`Model::reopened`]).
+    /// when the volume is opened again ([`Model::reopened`]). Requests
+    /// in flight are reissued all the same, and may be applied a second
+    /// time by a daemon that has not reported the failure yet.
     pub fn kill(&mut self) {
         if self.recovering.is_some() {
             return;
