@@ -1,0 +1,52 @@
+name: skyzfs-failed-volume
+
+# What ZFS does when the only device of a pool is deleted under it and
+# then comes back: with the same content, with older content, and
+# during a scrub (design §4.2; M1.T4, pins d.1 to d.5). Observations
+# only: the job is green unless the script could not set up. All the
+# logic is `tests/kernel/failed-volume-obs.sh`, which needs nothing but
+# the stock reference ublk server.
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "which scenarios: sync gone zed routes older scrub"
+        default: "sync gone zed routes older scrub"
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-26.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Observe
+        env:
+          SCENARIOS: ${{ inputs.scenarios || 'sync gone zed routes older scrub' }}
+        run: |
+          [[ $SCENARIOS =~ ^[a-z\ ]+$ ]] || { echo "::error::scenarios are names: $SCENARIOS"; exit 64; }
+          sudo tests/kernel/failed-volume-obs.sh "$PWD/obs-out" /mnt/skz-failed-volume "$SCENARIOS"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX obs-out 2>/dev/null || true
+          {
+            echo "## A device deleted under its pool, ${{ matrix.image }}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            sed 's/|/\//g; s/\t/` | /; s/^/| `/; s/$/ |/' obs-out/results.tsv 2>/dev/null || echo "| no results | |"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: failed-volume-${{ matrix.image }}
+          path: obs-out/
+          retention-days: 90
