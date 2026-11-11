@@ -28,7 +28,7 @@
 //!    back: not after a second power cut, and not behind records
 //!    appended later.
 //! 4. **Failure is final.** After a write or a sync has failed, nothing
-//!    succeeds. The next open refuses the log until the caller
+//!    succeeds, a replay included. The next open refuses the log until the caller
 //!    acknowledges the failure, and then the log holds at least what
 //!    every successful sync covered.
 //!

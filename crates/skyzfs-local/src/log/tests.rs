@@ -1253,6 +1253,38 @@ fn a_failed_sync_is_never_retried() {
     caught(scenario, Mutants::RETRY_SYNC, everywhere);
 }
 
+/// A failed log shows no records. After a failed sync the cache may
+/// hold records the disk does not, and they pass every check when read
+/// through the cache; someone who replayed them into a place that
+/// outlives the log would keep what the log itself loses at the next
+/// power cut. So a replay on a failed log is refused, like an append,
+/// a sync and a reclaim, and the positions stay readable. Mutant: a
+/// failed log that still replays.
+#[test]
+fn a_failed_log_replays_nothing() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        put(&mut log, env, 1)?;
+        s(log.sync())?;
+        let durable = log.durable();
+        put(&mut log, env, 2)?;
+        disk.fail_sync(0, false);
+        if log.sync().is_ok() {
+            return Err("a failing sync reported success".into());
+        }
+        let mut seen = 0;
+        match log.replay(log.floor(), log.tail(), &mut |_| seen += 1) {
+            Err(LogError::Failed) if seen == 0 => {}
+            other => return Err(format!("replay gave {other:?} and {seen} records")),
+        }
+        if !log.is_failed() || log.durable() != durable {
+            return Err("the failed log's positions changed".into());
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::REPLAY_WHEN_FAILED, everywhere);
+}
+
 // ---------------------------------------------------------------------
 // Recovery makes what it returns durable.
 

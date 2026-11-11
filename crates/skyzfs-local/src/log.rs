@@ -97,6 +97,8 @@ impl Mutants {
     /// Headers are tagged with a key that everybody knows: a payload can
     /// be made to look like a record.
     pub(crate) const PUBLIC_KEY: u32 = 1 << 22;
+    /// A failed log still replays what its cache shows.
+    pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -1287,12 +1289,28 @@ impl<D: Dir> Log<D> {
     /// [`Log::append`], [`Log::tail`], [`Log::floor`] or a recovery
     /// returned. Every record is checked again as it is read, and a
     /// damaged one is an error, never data.
+    ///
+    /// A failed log replays nothing: after a failed sync the cache can
+    /// show records the disk does not hold, and what the log holds is
+    /// known again only after a recovery.
+    ///
+    /// `to` may lie beyond [`Log::durable`], up to the tail. Records
+    /// beyond the durable position are in the log now and survive the
+    /// loss of the process, but a power cut may still take them back.
+    /// **Nothing beyond the durable position may be applied to anything
+    /// that outlives the log's own records** (a home image, an upload):
+    /// the volume would then hold what the log, after a power cut, never
+    /// had, and would not be a prefix. A caller that makes records
+    /// permanent replays up to [`Log::durable`].
     pub fn replay(
         &self,
         from: Lsn,
         to: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
+        if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
+            return Err(LogError::Failed);
+        }
         if from < self.current.floor || from > to {
             return Err(LogError::BadPosition(from));
         }

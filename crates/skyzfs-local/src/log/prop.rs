@@ -12,6 +12,8 @@
 //!   every record whole;
 //! - **after a second power cut straight after a recovery**, the same
 //!   records again;
+//! - **once a write or a sync has failed**, no records at all until
+//!   the log has been recovered: a replay is refused;
 //! - **later**, never anything that an earlier recovery dropped: the
 //!   model forgets what a recovery drops, and every later comparison is
 //!   exact.
@@ -270,6 +272,14 @@ impl Run {
     fn compare(&mut self) -> Result<(), String> {
         if self.model.uncertain {
             return Ok(());
+        }
+        if self.model.failed {
+            // A failed log shows nothing until it has been recovered.
+            return match read_all(self.log()?) {
+                Err(LogError::Failed) => Ok(()),
+                Ok(_) => Err("a failed log replayed its records".into()),
+                Err(other) => Err(format!("replay on a failed log: {other}")),
+            };
         }
         let held = read_all(self.log()?).map_err(|e| format!("replay: {e}"))?;
         if held != self.model.records {
@@ -550,6 +560,7 @@ fn random_programs_notice_broken_logs() {
             Mutants::REWRITE_DURABLE_BLOCK,
         ),
         ("a header tag anyone can make", Mutants::PUBLIC_KEY),
+        ("a failed log that replays", Mutants::REPLAY_WHEN_FAILED),
     ];
     let missed: Vec<&str> = broken
         .iter()
