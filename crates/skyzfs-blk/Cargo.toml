@@ -1,0 +1,21 @@
+[package]
+name = "skyzfs-blk"
+description = "The SkyZFS block target contract, its reference model, an in-memory target and the conformance suite (design §4.1)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[features]
+# The conformance suite is a library API so that every transport and store
+# can be run against it. It pulls in proptest, so it is opt-in: test rigs
+# enable it, the daemon does not.
+conformance = ["dep:proptest"]
+
+[dependencies]
+thiserror = { workspace = true }
+proptest = { workspace = true, optional = true }
+
+[dev-dependencies]
+# The crate's own tests run the suite against `MemTarget`.
+skyzfs-blk = { workspace = true, features = ["conformance"] }
