@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustix::fs::{fallocate, FallocateFlags};
-use skyzfs_blk::conformance::{cases, Config, Harness, HarnessError, Spec, Status};
+use skyzfs_blk::conformance::{
+    cases, Capabilities, Capability, Config, Harness, HarnessError, Spec, Status,
+};
 use skyzfs_blk::{
     Base, BlkError, BlockTarget, Completion, Geometry, Op, Request, RequestId, SubmitError,
     SubmitErrorKind, SIZE_UNIT,
@@ -207,6 +209,7 @@ struct DeviceHarness {
     command: String,
     depth: u32,
     timeout: Duration,
+    capabilities: Capabilities,
     next: u64,
     /// The volume before the newest, destroyed when the next is made.
     last: Option<u64>,
@@ -239,6 +242,14 @@ impl DeviceHarness {
 
 impl Harness for DeviceHarness {
     type Target = DeviceTarget;
+
+    /// Never a power cut, a base, a read-only volume or an invalid
+    /// request: the kernel is between the suite and the server. A log
+    /// that fails and a failed volume opened again only when the helper
+    /// command can do them (`--can`).
+    fn capabilities(&self) -> Capabilities {
+        self.capabilities
+    }
 
     fn create(&mut self, spec: &Spec) -> Result<DeviceTarget, HarnessError> {
         if spec.read_only {
@@ -278,12 +289,20 @@ impl Harness for DeviceHarness {
     fn fail_log(&mut self, target: &mut DeviceTarget) -> Result<(), HarnessError> {
         self.helper("fail", target.number).map(|_| ())
     }
+
+    fn reopen_failed(&mut self, target: DeviceTarget) -> Result<DeviceTarget, HarnessError> {
+        let number = target.number;
+        // The client lets go of the failed device first.
+        drop(target);
+        let path = self.helper("reopen", number)?;
+        DeviceTarget::open(number, &path, self.depth)
+    }
 }
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: skyzfs-blkcheck --harness CMD [--depth N] [--cases N] [--rounds N] [--seed N] \
-         [--timeout SECONDS] [--case NAME]..."
+        "usage: skyzfs-blkcheck --harness CMD [--can fail-log] [--can reopen-failed] [--depth N] \
+         [--cases N] [--rounds N] [--seed N] [--timeout SECONDS] [--case NAME]..."
     );
     ExitCode::from(2)
 }
@@ -302,6 +321,7 @@ pub fn main() -> ExitCode {
         ..Config::default()
     };
     let mut only: Vec<String> = Vec::new();
+    let (mut can_fail, mut can_reopen) = (false, false);
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let Some(value) = args.next() else {
@@ -311,6 +331,8 @@ pub fn main() -> ExitCode {
         match (flag.as_str(), number) {
             ("--harness", _) => command = Some(value),
             ("--case", _) => only.push(value),
+            ("--can", _) if value == "fail-log" => can_fail = true,
+            ("--can", _) if value == "reopen-failed" => can_reopen = true,
             ("--depth", Ok(n)) if n > 0 && n <= 1024 => depth = n as u32,
             ("--cases", Ok(n)) if n > 0 && n <= u64::from(u32::MAX) => config.cases = n as u32,
             ("--rounds", Ok(n)) if n > 0 && n <= u64::from(u32::MAX) => config.rounds = n as u32,
@@ -322,10 +344,22 @@ pub fn main() -> ExitCode {
     let Some(command) = command else {
         return usage();
     };
+    let mut capabilities = Capabilities::ALL
+        .without(Capability::PowerCut)
+        .without(Capability::Base)
+        .without(Capability::ReadOnly)
+        .without(Capability::InvalidRequests);
+    if !can_fail {
+        capabilities = capabilities.without(Capability::FailLog);
+    }
+    if !can_reopen {
+        capabilities = capabilities.without(Capability::ReopenFailed);
+    }
     let mut harness = DeviceHarness {
         command,
         depth,
         timeout: config.timeout,
+        capabilities,
         next: 0,
         last: None,
     };
@@ -335,6 +369,7 @@ pub fn main() -> ExitCode {
         }
         let (result, detail) = match case.run_on(&mut harness, &config) {
             Ok(Status::Passed) => ("PASS", String::new()),
+            Ok(Status::Weaker(what)) => ("WEAKER", what),
             Ok(Status::NotExercised(why)) => ("NOT_EXERCISED", why.to_string()),
             Err(e) => {
                 let text = e.to_string();

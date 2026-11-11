@@ -3,7 +3,8 @@
 //! its library interface (design §4.1; kernel rig, check c).
 //!
 //! ```text
-//! skyzfs-blkcheck --harness CMD [--depth N] [--cases N] [--rounds N]
+//! skyzfs-blkcheck --harness CMD [--can fail-log] [--can reopen-failed]
+//!                 [--depth N] [--cases N] [--rounds N]
 //!                 [--seed N] [--timeout SECONDS] [--case NAME]...
 //! ```
 //!
@@ -14,14 +15,23 @@
 //!   the path of its block device on the last line of stdout.
 //! - `CMD kill N`: kill the server of volume N with SIGKILL and serve
 //!   the volume again. Prints the device path.
-//! - `CMD fail N`: make the write log of volume N fail for good.
+//! - `CMD fail N`: make the write log of volume N fail for good. Only
+//!   called with `--can fail-log`.
+//! - `CMD reopen N`: volume N has failed and its device is closed;
+//!   serve it again as the operator of a repaired volume would. Prints
+//!   the device path. Only called with `--can reopen-failed`.
 //! - `CMD destroy N`: stop serving volume N and remove it.
 //!
 //! One line per case goes to stdout, `case<TAB>name<TAB>RESULT<TAB>detail`,
-//! where RESULT is `PASS`, `FAIL`, `NOT_EXERCISED` (the suite's own word
-//! for a rule the target cannot exercise) or `UNSUPPORTED` (the case
-//! asked the harness for something a block device cannot give: a power
-//! cut, a base, a read-only volume). The exit status is 0 whatever the
+//! where RESULT is `PASS`, `FAIL`, `WEAKER` (the rule held in a weaker
+//! form than the case has on a harness that can do everything; the
+//! detail says what was left out), `NOT_EXERCISED` (the suite's own word
+//! for a rule the target or the harness cannot exercise) or
+//! `UNSUPPORTED` (the suite asked the harness for something it had said
+//! it cannot do, which is a fault of the suite). The harness tells the
+//! suite that it has no power cut, no base, no read-only volume and no
+//! invalid requests, and a failing log and a reopened failed volume
+//! only with `--can`. The exit status is 0 whatever the
 //! cases did, 2 for a usage error: judging is the rig's table, not this
 //! tool.
 //!
