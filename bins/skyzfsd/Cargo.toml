@@ -9,12 +9,13 @@ repository.workspace = true
 [features]
 # Options that inject faults, for the kernel rig. Not in a default build:
 # without it the daemon refuses them as a usage error.
-test-hooks = []
+test-hooks = ["skyzfs-local/test-hooks"]
 
 [dependencies]
 skyzfs-blk = { workspace = true }
 skyzfs-local = { workspace = true }
 skyzfs-ublk = { workspace = true }
+skyzfs-ublk-sys = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

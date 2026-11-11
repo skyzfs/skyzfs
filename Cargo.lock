@@ -4239,12 +4239,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "skyzfs-ublk-sys"
+version = "0.0.1"
+dependencies = [
+ "io-uring",
+ "libc",
+ "libublk",
+ "skyzfs-blk",
+ "skyzfs-ublk",
+]
+
+[[package]]
 name = "skyzfsd"
 version = "0.0.1"
 dependencies = [
  "skyzfs-blk",
  "skyzfs-local",
  "skyzfs-ublk",
+ "skyzfs-ublk-sys",
  "tempfile",
  "thiserror 2.0.19",
 ]

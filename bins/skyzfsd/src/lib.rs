@@ -1,14 +1,19 @@
 //! `skyzfsd`, the SkyZFS daemon (design §4.2): one volume of the local
 //! store served as a ublk device.
 //!
-//! So far: the command line ([`cli`]), and `status` and `detach` over
-//! a control interface that is given to them ([`commands`]). The
-//! kernel's own control interface is not built yet, so the binary
-//! still runs no command but `help`. The rig that tests the daemon
-//! against a kernel is built to it, item by item.
+//! The command line is [`cli`]. `create`, `status` and `detach` are in
+//! [`commands`], over a control interface that is given to them, so
+//! that they are tested without a kernel. `serve` is in [`serve`], and
+//! is tested by the kernel rig (`tests/kernel/daemon-rig.sh`): it needs
+//! the driver.
+//!
+//! The binding to the kernel is the crate `skyzfs-ublk-sys`, the only
+//! one with `unsafe`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod cli;
 pub mod commands;
+#[cfg(target_os = "linux")]
+pub mod serve;
