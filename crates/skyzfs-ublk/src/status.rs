@@ -318,6 +318,9 @@ impl Mutants {
     pub(crate) const NO_INTERVAL: u32 = 1 << 2;
     /// A failed write is tried again at once.
     pub(crate) const RETRIES_AT_ONCE: u32 = 1 << 3;
+    /// A write asked for with [`Board::write_again`] that fails is
+    /// forgotten.
+    pub(crate) const OWED_FORGOTTEN: u32 = 1 << 4;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -479,7 +482,10 @@ impl Board {
 
     /// Have [`Board::publish`] write the file once more, at once, with
     /// what is posted: for a value the writer reads elsewhere and that
-    /// has changed. Nothing posted is replaced.
+    /// has changed. Nothing posted is replaced. The write is owed until
+    /// one succeeds: if it fails it is tried again an interval later,
+    /// as a failed write of changed counters is, and at the stop if it
+    /// is still owed then.
     pub fn write_again(&self) {
         self.lock().at_once = true;
         self.changed.notify_all();
@@ -516,15 +522,20 @@ impl Board {
         let now = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut failures = 0u64;
         let mut written_log = LogShown::default();
+        // A write that was asked for at once and has not succeeded
+        // yet. Neither the counters nor the log say that it is owed:
+        // both may equal what was written last.
+        let mut owed = false;
         let mut posted = self.lock();
         loop {
             let mut due = pace.due(&posted.counters, now());
-            if due == Due::Never && posted.log != written_log {
+            if due == Due::Never && (posted.log != written_log || owed) {
                 due = pace.due_changed(now());
             }
             let last = posted.stop;
             if posted.at_once || matches!(due, Due::Now) || (last && due != Due::Never) {
                 let (counters, log) = (posted.counters, posted.log);
+                owed |= posted.at_once && !pace.mutants.has(Mutants::OWED_FORGOTTEN);
                 posted.at_once = false;
                 drop(posted);
                 let written = write(&counters, &log, failures);
@@ -533,6 +544,7 @@ impl Board {
                 self.changed.notify_all();
                 match written {
                     Ok(()) => {
+                        owed = false;
                         written_log = log;
                         pace.wrote(counters, now());
                     }
