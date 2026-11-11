@@ -304,6 +304,9 @@ impl Mutants {
     /// At the failure, a completion that waited for its position is
     /// committed with its own result.
     pub(crate) const FAILED_UNSTORED_AS_IS: u32 = 1 << 19;
+    /// At the failure, a write that waits for its flush to be
+    /// submitted is not answered.
+    pub(crate) const FAILED_SKIPS_FLUSH_WAITERS: u32 = 1 << 20;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -452,7 +455,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             self.queue.commit(tag, result, buf);
             self.failed_answers += 1;
         }
+        let skips = self.mutants.has(Mutants::FAILED_SKIPS_FLUSH_WAITERS);
         for tag in 0..self.slots.len() {
+            if skips && matches!(self.slots[tag], Slot::WantsFlush(..)) {
+                continue;
+            }
             let buf = match std::mem::replace(&mut self.slots[tag], Slot::Idle) {
                 Slot::Idle | Slot::Finished => continue,
                 // The buffer is in the target and stays there.
