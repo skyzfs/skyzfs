@@ -58,9 +58,12 @@
 //!   Every operation in it is whole. What recovery exposes is durable
 //!   before the first request is served: a second power cut does not take
 //!   it back.
-//! - **R11 Failed volume.** Once the write log has failed for good, the
-//!   flush fails and so does every later request, reads included, also
-//!   after a daemon restart.
+//! - **R11 Failed volume.** Once the write log has failed for good, no
+//!   flush received from then on succeeds, and from the first failure
+//!   reported every later request fails, reads included, also after a
+//!   daemon restart. A request already in flight when the log fails may
+//!   complete either way; a flush among them succeeds only if its work
+//!   was done before the failure.
 //! - **R12 Read-only.** On a read-only target writes, write-zeroes and
 //!   discards fail and a flush succeeds.
 //!
@@ -141,11 +144,17 @@
 //!   a new operation in the order. The model lets an operation that was in
 //!   flight at a daemon loss occupy two positions: one before the loss,
 //!   which may or may not exist, and one after.
-//! - **When a failed volume starts failing** (rule R11). Once the log has
-//!   failed for good no flush succeeds. Requests between the failure and
-//!   its first report may succeed or fail: a store learns of the failure
-//!   from an append or an fsync, not at the instant it happens. Every
-//!   request submitted after the first reported failure fails.
+//! - **When a failed volume starts failing** (rule R11). A store learns
+//!   of the failure from an append or an fsync, not at the instant it
+//!   happens, and a completion may be delivered after the failure for
+//!   work done before it. So requests in flight at the failure, and
+//!   requests submitted before its first report, may succeed or fail;
+//!   only flushes submitted after the failure, and everything submitted
+//!   after the first report, must fail. A client cannot tell a flush that
+//!   finished before the failure from one that claims to have, so the
+//!   suite cannot catch a target whose in-flight flush succeeds without
+//!   having made anything durable: what a failed volume holds after a
+//!   power cut is not defined, and the suite does not cut power on one.
 //! - **The base race** (a delayed fetch of a base block racing a write to
 //!   it) needs a base whose fetches a test can delay. The model and
 //!   `MemTarget` have a non-empty base; the race case is deferred to M3.

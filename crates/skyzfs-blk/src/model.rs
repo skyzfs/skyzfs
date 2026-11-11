@@ -484,7 +484,9 @@ enum Pending {
         invalid: bool,
         /// A mutation on a read-only target: `ReadOnly` is right (R12).
         read_only: bool,
-        /// The log has failed: `Failed` is right (rule R11).
+        /// The log had failed when the request was submitted: `Failed` is
+        /// right (rule R11). It is also right if the log fails later,
+        /// while the request is in flight; that is judged at completion.
         failed: bool,
     },
     Read {
@@ -688,8 +690,11 @@ impl Model {
         }
     }
 
-    /// The write log has failed for good (rule R11). From now on every
-    /// flush must fail, and once any request has failed, all do.
+    /// The write log has failed for good (rule R11). Every flush submitted
+    /// from now on must fail, and every request submitted after the first
+    /// failure has been delivered. A request in flight now may complete
+    /// either way; if a flush among them succeeds, the model holds the
+    /// target to it: what it covered counts as durable.
     pub fn log_failed(&mut self) {
         if self.health == Health::Healthy {
             self.health = Health::Failing;
@@ -794,7 +799,8 @@ impl Model {
             return match got {
                 Err(e) if invalid && e.is_rejection() => Ok(()),
                 Err(BlkError::ReadOnly) if read_only => Ok(()),
-                Err(BlkError::Failed) if failed => {
+                // The log may have failed since the request was submitted.
+                Err(BlkError::Failed) if failed || self.health != Health::Healthy => {
                     self.health = Health::Failed;
                     Ok(())
                 }
@@ -812,14 +818,11 @@ impl Model {
         }
         if let Err(error) = got {
             if error == BlkError::Failed && self.health != Health::Healthy {
-                // The first failure of a failed volume. Whether the
-                // request took effect can no longer be observed.
+                // A failure of a failed volume. If the request was a
+                // mutation it may or may not have been applied, so it
+                // stays among the waiting operations: a read that was
+                // already in flight may still show it.
                 self.health = Health::Failed;
-                if let Pending::Mutation { op } = pending {
-                    for world in &mut self.worlds {
-                        world.waiting.retain(|w| w.op != op);
-                    }
-                }
                 return Ok(());
             }
             return Err(Violation::UnexpectedError { id, error });
@@ -1805,6 +1808,71 @@ mod tests {
         let w = c.write(0, 1, 2);
         assert!(c.clone().done(w, Ok(())).is_err());
         c.done(w, Err(BlkError::Failed)).unwrap();
+    }
+
+    /// R2, R11: a request that must fail for a reason known when it was
+    /// submitted (invalid; a mutation on a read-only target) may be
+    /// answered `Failed` if the log fails while it is in flight. The
+    /// model must judge by the volume's health at completion, not at
+    /// submission. (Found in review.)
+    #[test]
+    fn a_request_in_flight_when_the_log_fails_may_report_the_failure() {
+        let invalid = Op::Discard {
+            offset: 1,
+            len: BLOCK_SIZE,
+        };
+        let mut c = Client::new();
+        let id = c.submit(invalid);
+        c.model.log_failed();
+        c.done(id, Err(BlkError::Failed)).unwrap();
+
+        let mut c = Client::on(Base::Empty, true);
+        let id = c.write(0, 1, 1);
+        c.model.log_failed();
+        c.done(id, Err(BlkError::Failed)).unwrap();
+
+        // Without a log failure, `Failed` is not an answer.
+        let mut c = Client::on(Base::Empty, true);
+        let id = c.write(0, 1, 1);
+        assert!(c.done(id, Err(BlkError::Failed)).is_err());
+    }
+
+    /// R7, R11: a flush that was in flight when the log failed may still
+    /// succeed, if its work was done before the failure: the client cannot
+    /// tell a late completion from a late flush. What it covered is then
+    /// durable. A flush submitted after the failure must fail.
+    #[test]
+    fn a_flush_in_flight_when_the_log_fails_may_succeed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let early = c.submit(Op::Flush);
+        c.model.log_failed();
+        let late = c.submit(Op::Flush);
+        assert!(matches!(
+            c.clone().done(late, Ok(())),
+            Err(Violation::NotFailed { .. })
+        ));
+        // It may also fail.
+        c.clone().done(early, Err(BlkError::Failed)).unwrap();
+        c.done(early, Ok(())).unwrap();
+        // The model holds the target to that success.
+        c.model.power_cut();
+        assert!(c.model.readback().is_empty());
+    }
+
+    /// R11: a write that fails because the log failed may or may not have
+    /// been applied in memory. A read that was already in flight, and so
+    /// may still succeed, may return it.
+    #[test]
+    fn a_write_that_failed_with_the_log_may_still_be_seen() {
+        for answer in [0u8, 1] {
+            let mut c = Client::new();
+            let w = c.write(0, 1, 1);
+            let r = c.read(0, 1);
+            c.model.log_failed();
+            c.done(w, Err(BlkError::Failed)).unwrap();
+            c.returns(r, vec![answer; B]).unwrap();
+        }
     }
 
     /// R12: on a read-only target a mutation must fail with `ReadOnly`

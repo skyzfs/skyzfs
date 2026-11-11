@@ -62,6 +62,10 @@
 //!   order is still open.
 //! - One queue. Ordering across several queues of one target is not
 //!   tested.
+//! - A failed volume is tested only for what it answers. The suite does
+//!   not cut power on one, so it cannot tell whether a flush that was in
+//!   flight when the log failed, and succeeded, had made anything
+//!   durable.
 //! - [`Harness::power_cut`] can only keep a prefix of whole units. A rig
 //!   cannot yet ask for the device states a real log must turn into a
 //!   prefix: a torn last record, or a lost record followed by a surviving
@@ -161,7 +165,10 @@ pub trait Harness {
     /// picks any point, deterministically from `keep`.
     fn power_cut(&mut self, target: Self::Target, keep: u64) -> Result<Self::Target, HarnessError>;
 
-    /// Make the target's write log fail for good (rule R11).
+    /// Make the target's write log fail for good (rule R11). Completions
+    /// for work that finished before this call may still be delivered
+    /// after it, successfully; a flush the target receives after it must
+    /// fail.
     fn fail_log(&mut self, target: &mut Self::Target) -> Result<(), HarnessError>;
 
     /// Block numbers at which the implementation changes something inside:
