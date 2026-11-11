@@ -120,7 +120,16 @@ serve)
     flock -n 9 || { echo "another instance serves $DIR" >&2; exit 5; }
     n=$(cat "$DEVREC" 2>/dev/null || true)
     if [ -n "$n" ] && [ "$(dev_state "$n")" = LIVE ]; then
-        echo "another server is live on /dev/ublkb$n" >&2; exit 5
+        # A server that was just killed leaves its device LIVE for a
+        # moment before the kernel notices.
+        old=$(cat "$PIDREC" 2>/dev/null || true)
+        i=0
+        while [ -n "$old" ] && ! kill -0 "$old" 2>/dev/null && [ "$(dev_state "$n")" = LIVE ] && [ $i -lt 80 ]; do
+            sleep 0.25; i=$((i + 1))
+        done
+        if [ "$(dev_state "$n")" = LIVE ]; then
+            echo "another server is live on /dev/ublkb$n" >&2; exit 5
+        fi
     fi
     # A volume that failed in this boot.
     NOTE=$(note)
@@ -173,7 +182,9 @@ serve)
             mkdir -p "$RUN_DIR"
             { echo "boot $(cat /proc/sys/kernel/random/boot_id)"; echo "held $(held_open "/dev/ublkb$n")"; } > "$NOTE"
             if [ "${SKZ_REF_FAIL_STYLE:-delete}" = delete ]; then
-                lim 60 ublk del -n "$n" >/dev/null 2>&1
+                # Without waiting for whoever still holds the device
+                # open: a suspended pool never lets go.
+                lim 60 ublk del --async -n "$n" >/dev/null 2>&1
                 unlink "$DEVREC" 2>/dev/null
                 exit 3
             fi

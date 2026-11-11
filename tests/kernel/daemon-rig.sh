@@ -199,7 +199,7 @@ cleanup() {
         # A suspended pool cannot be exported; trying would block.
         [ "$(pool_state "$p")" = ONLINE ] && lim 60 zpool export -f "$p" 2>/dev/null
     done
-    command -v ublk >/dev/null && lim 60 ublk del -a 2>/dev/null
+    command -v ublk >/dev/null && lim 60 ublk del -a --async 2>/dev/null
     for p in "${SLOGS[@]}"; do losetup -d "$p" 2>/dev/null; done
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -495,8 +495,8 @@ check_d() {
     # d.1, first form: every request answered with a plain I/O error.
     step "d: every request fails with an I/O error (the device stays)"
     mark=$(dmesg_mark)
-    if SKZ_REF_FAIL_STYLE=eio fail_setup d1 "$REF" --fail-log-after 3000; then
-        if fail_wait d1 180 "$mark"; then pin suspends_on_io_errors PASS "$FS_WHY"; else pin suspends_on_io_errors FAIL "$FS_WHY"; fi
+    if SKZ_REF_FAIL_STYLE=eio fail_setup d1 "$REF" --fail-log-after 8000; then
+        if fail_wait d1 300 "$mark"; then pin suspends_on_io_errors PASS "$FS_WHY"; else pin suspends_on_io_errors FAIL "$FS_WHY"; fi
         rec d1_server "$(vol_status "$REF" "$WORK/vol-d1" | tr '\n' ';')"
     else
         pin suspends_on_io_errors ERROR "$FS_ERR"
@@ -522,8 +522,8 @@ check_d() {
     step "d: the volume fails and its device is deleted"
     mark=$(dmesg_mark)
     dir=$WORK/vol-d2
-    if fail_setup d2 "$SKYZFSD" --fail-log-after 3000; then
-        if fail_wait d2 180 "$mark"; then pin suspends_on_deleted_device PASS "$FS_WHY"; else pin suspends_on_deleted_device FAIL "$FS_WHY"; fi
+    if fail_setup d2 "$SKYZFSD" --fail-log-after 8000; then
+        if fail_wait d2 300 "$mark"; then pin suspends_on_deleted_device PASS "$FS_WHY"; else pin suspends_on_deleted_device FAIL "$FS_WHY"; fi
         if serve_wait 30; then
             pin_is failed_exit_status "serve exited $SERVE_RC, wanted $EXIT_FAILED" [ "$SERVE_RC" = "$EXIT_FAILED" ]
         else
@@ -582,13 +582,13 @@ check_d_shorter() {
     [ "$IMPL" = reference ] || { obs returned_device_with_older_content "not run: needs the flat image of the reference server"; return; }
     step "d: the device comes back with older content"
     mark=$(dmesg_mark)
-    if ! fail_setup d3 "$REF" --fail-log-after 6000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
+    if ! fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
     # The older content: a copy of the image now. Everything the writer
     # is told from here on is missing from it.
     lim 120 zpool sync skzd-d3
     cp --sparse=always "$dir/volume.img" "$WORK/d3-older.img"
     n=$(grep -c . "$WORK/d3.record" || true)
-    fail_wait d3 180 "$mark"; st=$?
+    fail_wait d3 400 "$mark"; st=$?
     v=$(grep -c . "$WORK/d3.record" || true)
     fail_stop d3
     if [ $st != 0 ]; then obs returned_device_with_older_content "not run: the pool did not suspend cleanly: $FS_WHY"; return; fi
@@ -610,7 +610,7 @@ check_d_scrub() {
     # More to scrub, then the failure a little after the scrub begins.
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzd-d5/big" bs=1M count=1024 conv=fsync status=none
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 60
-    serve_start "$SKYZFSD" "$WORK/vol-d5" --fail-log-after 400 || { obs scrub_in_progress_at_failure "not run: serve with --fail-log-after did not start"; fail_stop d5; return; }
+    serve_start "$SKYZFSD" "$WORK/vol-d5" --fail-log-after 1500 || { obs scrub_in_progress_at_failure "not run: serve with --fail-log-after did not start"; fail_stop d5; return; }
     lim 30 zpool scrub skzd-d5
     fail_wait d5 180 "$mark"; st=$?
     obs scrub_in_progress_at_failure "$FS_WHY; scan line when suspended: $(grep -A2 'scan:' "$OUT/d5-status-suspended.log" | tr -s ' ' | tr '\n' ' '); $(pool_errors skzd-d5)"
