@@ -101,12 +101,28 @@ class Log(unittest.TestCase):
         self.assertEqual(self.image(), self.model(sched))
         self.assertNotEqual(self.image(), self.model(range(len(self.entries))))
 
-    def test_discard_is_skipped_and_counted(self):
-        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(7)), ('discard', 1 << 20, SS), ('flush',)])
+    def test_discard_is_zeros_or_nothing(self):
+        ents = [('write', 1 << 20, blk(7, 4)), ('discard', (1 << 20) + SS, 2 * SS), ('flush',),
+                ('write', (1 << 20) + SS, blk(9)), ('discard', 5 << 20, 1 << 20)]
+        logwrites.write_log(self.log, SS, ents)
         idx = logwrites.index(self.log, DEV)
-        self.assertEqual(idx['records'][1]['flags'], ['discard'])
-        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3), (1, SS, 1))
-        self.assertEqual(self.image()[1 << 20:(1 << 20) + SS], blk(7))
+        self.assertEqual((idx['records'][1]['flags'], idx['records'][1]['offset'], idx['records'][1]['bytes']),
+                         (['discard'], (1 << 20) + SS, 2 * SS))
+        at = slice(1 << 20, (1 << 20) + 4 * SS)
+        # as nothing: what was there stays
+        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3, discard='skip'), (1, 4 * SS, 1))
+        self.assertEqual(self.image()[at], blk(7, 4))
+        # as zeros, the default: exactly the range, and a later write lands on top
+        with open(self.img, 'r+b') as f:
+            f.truncate(0)
+            f.truncate(DEV)
+        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3), (1, 4 * SS, 1))
+        self.assertEqual(self.image()[at], blk(7) + blk(0, 2) + blk(7))
+        logwrites.advance(self.log, idx, self.img, 3, 5)
+        self.assertEqual(self.image()[at], blk(7) + blk(9) + blk(0) + blk(7))
+        self.assertEqual(os.path.getsize(self.img), DEV)
+        with self.assertRaises(ValueError):
+            logwrites.advance(self.log, idx, self.img, 0, 1, discard='other')
 
     def test_damaged_logs_are_refused(self):
         with open(self.log, 'r+b') as f:

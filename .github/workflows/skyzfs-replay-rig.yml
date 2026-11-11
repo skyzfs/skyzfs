@@ -63,7 +63,7 @@ jobs:
       - name: Install ZFS, build the ublk server and replay-log
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup
+          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup strace
           # Only some kernel flavours split modules into this package;
           # where it does not exist, the modules are already there.
           sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
@@ -78,12 +78,12 @@ jobs:
         if: inputs.explore == 'yes'
         run: |
           for layout in slog whole; do
-            sudo bash -c 'export RIG_LAYOUT="$1" RIG_RECORD_ONLY=1 && exec tests/kernel/replay-rig.sh "$2" "/mnt/skz-$1"' \
+            sudo bash -c 'export RIG_LAYOUT="$1" RIG_RECORD_ONLY=1 RIG_AUTOTRIM=on && exec tests/kernel/replay-rig.sh "$2" "/mnt/skz-$1"' \
               rig "$layout" "$PWD/replay-out/$layout"
             slog=()
-            [ "$layout" = slog ] && slog=(--slog "/mnt/skz-$layout/slog.img")
+            [ "$layout" = slog ] && slog=(--slog "/mnt/skz-$layout/slog.img" --slog-base "/mnt/skz-$layout/slog-base.img")
             sudo python3 tests/kernel/zdb_explore.py --work "/mnt/skz-$layout" --pool skzreplay \
-              --out "$PWD/replay-out/$layout" "${slog[@]}"
+              --out "$PWD/replay-out/$layout" --replay-log "$RUNNER_TEMP/bin/replay-log" "${slog[@]}"
             sudo cat "replay-out/$layout/explore.md" >> "$GITHUB_STEP_SUMMARY"
           done
       - name: Record and replay

@@ -14,7 +14,11 @@ commands, and this is the reference implementation of both:
 
     logwrites.py advance --log LOG --index INDEX.json --image IMG
                          --from A --to B [--schedule SCHEDULE.json]
+                         [--discard zero|skip]
         Apply records A..B-1 to IMG, which already holds records 0..A-1.
+        After a discard the content of the range is unspecified. `zero`
+        (the default) makes it zeros, which is the harshest outcome for
+        whoever still needs the range; `skip` leaves what was there.
         A schedule is a JSON list of record numbers that replaces the
         natural order 0, 1, 2, ...; A and B then count positions in it.
         The rig's negative controls are schedules: a record left out, or
@@ -30,6 +34,7 @@ mark carries its text inside the header block. A discard and a flush
 carry no data. Blocks are `sectorsize` bytes, and `sector` counts them.
 """
 import argparse
+import ctypes
 import json
 import os
 import struct
@@ -122,13 +127,29 @@ def index(log_path, dev_bytes):
     return {'sectorsize': ss, 'dev_bytes': dev_bytes, 'records': records}
 
 
-def advance(log_path, idx, image_path, a, b, schedule=None):
+def zero_range(fd, offset, length):
+    """Make a range of the image read as zeros, without filling a sparse file."""
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_longlong, ctypes.c_longlong]
+        if libc.fallocate(fd, 0x1 | 0x2, offset, length) == 0:      # KEEP_SIZE | PUNCH_HOLE
+            return
+    except (OSError, AttributeError):
+        pass
+    step = 1 << 20
+    for o in range(offset, offset + length, step):
+        os.pwrite(fd, bytes(min(step, offset + length - o)), o)
+
+
+def advance(log_path, idx, image_path, a, b, schedule=None, discard='zero'):
     """Apply schedule[a:b] (records a..b-1 without a schedule) to the image.
 
-    -> (writes applied, bytes written, discards skipped). A discard is
-    not applied: after one the content of the range is unspecified, and
-    the old content is one of the allowed outcomes.
+    -> (writes applied, bytes written, discards seen). After a discard
+    the content of the range is unspecified: `discard` is 'zero' to make
+    it zeros, or 'skip' to leave what was there.
     """
+    if discard not in ('zero', 'skip'):
+        raise ValueError(f'discard must be zero or skip, not {discard}')
     records = idx['records']
     order = schedule if schedule is not None else range(len(records))
     if not 0 <= a <= b <= len(order):
@@ -140,6 +161,8 @@ def advance(log_path, idx, image_path, a, b, schedule=None):
             rec = records[order[k]]
             if 'discard' in rec['flags']:
                 discards += 1
+                if discard == 'zero' and rec['bytes']:
+                    zero_range(imgfd, rec['offset'], rec['bytes'])
                 continue
             if 'pos' not in rec:
                 continue
@@ -187,6 +210,7 @@ def main():
     p.add_argument('--from', dest='a', type=int, required=True)
     p.add_argument('--to', dest='b', type=int, required=True)
     p.add_argument('--schedule')
+    p.add_argument('--discard', choices=('zero', 'skip'), default='zero')
     args = ap.parse_args()
     try:
         if args.cmd == 'index':
@@ -201,8 +225,8 @@ def main():
             if args.schedule:
                 with open(args.schedule) as f:
                     schedule = json.load(f)
-            w, n, d = advance(args.log, idx, args.image, args.a, args.b, schedule)
-            print(f'{w} writes, {n} bytes, {d} discards skipped')
+            w, n, d = advance(args.log, idx, args.image, args.a, args.b, schedule, args.discard)
+            print(f"{w} writes, {n} bytes, {d} discards {'zeroed' if args.discard == 'zero' else 'skipped'}")
     except (ValueError, OSError) as e:
         sys.exit(f'logwrites: {e}')
 

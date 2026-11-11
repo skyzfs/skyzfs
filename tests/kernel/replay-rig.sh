@@ -31,6 +31,8 @@
 # local and is not recorded. RIG_LAYOUT=whole has no separate log
 # device: the intent log and its flushes land on the device under test,
 # and the image is the whole pool, which zdb needs.
+# RIG_AUTOTRIM=on sets the pool's autotrim property, as the product
+# will, so that discards reach the device under test and the log.
 # RIG_RECORD_ONLY=1 stops after recording and leaves base.img, log.img
 # and the manifest in WORK.
 #
@@ -135,6 +137,9 @@ zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MOUNTPOINT" -O at
     "$POOL" "$DEVICE" "${LOGVDEV[@]}"
 [ ! -b "${DEVICE}p1" ] || { echo "zpool create partitioned $DEVICE: the labels are not at byte 0" >&2; exit 1; }
 zpool export "$POOL"
+# The log device as it is now, for tools that cannot open the pool
+# without one (zdb): it matches the base image and nothing later.
+[ -z "$SLOG_LOOP" ] || cp --sparse=always "$WORK/slog.img" "$WORK/slog-base.img"
 log "copying the device as the base image"
 "$DD" if="$DEVICE" of="$WORK/base.img" bs=1M iflag=direct conv=sparse status=none
 truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
@@ -145,6 +150,7 @@ truncate -s "${LOG_MB}M" "$WORK/log.img"
 LOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/log.img" 2>/dev/null || losetup --find --show "$WORK/log.img")
 dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
 zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
+[ -z "${RIG_AUTOTRIM:-}" ] || zpool set autotrim="$RIG_AUTOTRIM" "$POOL"
 zpool status -P "$POOL" >&2
 
 mkdir -p "$SCRATCH"
@@ -153,7 +159,9 @@ mkdir -p "$SCRATCH"
 writer() {
     local n=0 sum
     while [ ! -e "$STOP" ]; do
-        head -c $((FILE_KB * 1024)) /dev/urandom > "$SCRATCH/f"
+        # The first 4 KiB name the file, so that its first block can be
+        # found in the write log; the rest is random.
+        { yes "SKZ-FILE-$(printf %08d "$n")" | head -c 4096; head -c $((FILE_KB * 1024 - 4096)) /dev/urandom; } > "$SCRATCH/f"
         sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
         "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
         # Listed only once complete and fsynced: a line here is a promise.

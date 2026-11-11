@@ -86,6 +86,8 @@ def main():
     ap.add_argument('--pool', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--slog', default='', help="image of the pool's log device as it was at the end, if it has one")
+    ap.add_argument('--slog-base', default='', help="image of the log device as it was when the base image was taken")
+    ap.add_argument('--replay-log', default='', help='xfstests replay-log, to see what it does with discards')
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
     base, log = os.path.join(args.work, 'base.img'), os.path.join(args.work, 'log.img')
@@ -99,7 +101,12 @@ def main():
     flush = replay_check.flush_points(records)
     ctl = {c['name']: c for c in replay_check.controls(records, marks)}
     mid = marks[len(marks) // 2][0]          # the prefix that ends with the middle mark
-    res = {'records': total, 'marks': len(marks), 'mid': mid, 'zdb': [], 'controls': {}}
+    discards = [r for r in records if 'discard' in r['flags']]
+    res = {'records': total, 'marks': len(marks), 'mid': mid, 'zdb': [], 'controls': {},
+           'discards': len(discards), 'discard_bytes': sum(r['bytes'] for r in discards),
+           'first_discard': discards[0]['i'] if discards else None}
+    print(f"{total} records, {len(discards)} discards covering {res['discard_bytes']} bytes"
+          + (f", the first is record {discards[0]['i']}" if discards else ''), flush=True)
     state = {'at': 0, 'sched': None}
 
     def image_at(n, schedule=None):
@@ -109,8 +116,8 @@ def main():
         logwrites.advance(log, idx, image, state['at'], n, schedule)
         state['at'] = n
 
-    def zdb(tag, opts, timeout=300):
-        rc, out, t = replay_check.run(['zdb', '-e', '-p', imgdir] + opts + [args.pool], timeout)
+    def zdb(tag, opts, timeout=300, pre=()):
+        rc, out, t = replay_check.run(list(pre) + ['zdb', '-e', '-p', imgdir] + opts + [args.pool], timeout)
         with gzip.open(os.path.join(args.out, f'zdb-{tag}.txt.gz'), 'wt') as f:
             f.write(out)
         said = [ln.strip()[:300] for ln in out.splitlines()
@@ -133,6 +140,43 @@ def main():
         shutil.copyfile(args.slog, os.path.join(imgdir, 'slog.img'))
         zdb(f'end-{total}-with-log-device-bcc', ['-bcc'])
         os.unlink(os.path.join(imgdir, 'slog.img'))
+
+    # Where do zdb's six seconds go? The same image, less and less work.
+    image_at(mid)
+    for tag, opts in (('time-u', ['-u']), ('time-b', ['-b']), ('time-txg-timeout-1-bcc', ['-o', 'zfs_txg_timeout=1', '-bcc'])):
+        zdb(f'mid-{mid}-{tag}', opts)
+    rc, out, _ = replay_check.run(['strace', '-f', '-c', '-e', 'trace=nanosleep,clock_nanosleep,futex,poll,select',
+                                   'zdb', '-e', '-p', imgdir, '-u', args.pool], 120)
+    res['strace'] = out.strip().splitlines()[-14:]
+    print('strace -c of zdb -u:\n' + '\n'.join(res['strace']), flush=True)
+
+    # With a log device image beside it that does not match the prefix:
+    # the one from pool creation, and the one from the end.
+    for name, path in (('base', args.slog_base), ('end', args.slog)):
+        if not path:
+            continue
+        shutil.copyfile(path, os.path.join(imgdir, 'slog.img'))
+        for where, n in (('early', flush[min(2, len(flush) - 1)]), ('mid', mid), ('end', total)):
+            image_at(n)
+            zdb(f'{where}-{n}-log-device-from-{name}-bcc', ['-bcc'])
+        os.unlink(os.path.join(imgdir, 'slog.img'))
+
+    # What replay-log does with discards: which of our two modes equals its image at the end?
+    if args.replay_log and discards:
+        other = os.path.join(imgdir, 'witness.img')
+        res['replay_log_discards'] = {}
+        for wname, wopts in (('default', []), ('--no-discard', ['--no-discard'])):
+            replay_check.run(['cp', '--sparse=always', base, other])
+            rc, out, _ = replay_check.run([args.replay_log, '--log', log, '--replay', other] + wopts)
+            row = {'rc': rc, 'tail': out.strip()[-200:]}
+            for mode in ('zero', 'skip'):
+                replay_check.run(['cp', '--sparse=always', base, image])
+                logwrites.advance(log, idx, image, 0, total, None, mode)
+                row[mode] = replay_check.run(['cmp', image, other])[0] == 0
+            res['replay_log_discards'][wname] = row
+            print(f'replay-log {wname}: rc {rc}; equals our zero: {row["zero"]}, our skip: {row["skip"]}', flush=True)
+        os.unlink(other)
+        state['at'], state['sched'] = 0, object()        # the image is no longer where image_at left it
 
     # 2. Every block pointer at the middle mark, on the true image.
     image_at(mid)
@@ -174,6 +218,11 @@ def main():
           '| what | options | rc | seconds | zdb said |', '|---|---|---|---|---|']
     for z in res['zdb']:
         md.append(f"| {z['tag']} | `{z['opts']}` | {z['rc']} | {z['s']} | {(' / '.join(z['said'][:2]) or '–').replace('|', '/')[:300]} |")
+    md.append(f"\nDiscards in the log: {res['discards']}, covering {res['discard_bytes']} bytes"
+              + (f"; the first is record {res['first_discard']}" if res['discards'] else '') + '.')
+    for k, row in res.get('replay_log_discards', {}).items():
+        md.append(f"replay-log {k}: rc {row['rc']}; its final image equals ours with discards as zeros: {row['zero']}, as nothing: {row['skip']}.")
+    md.append('\nstrace -c of `zdb -u`:\n```\n' + '\n'.join(res.get('strace', [])) + '\n```')
     t = res['true_mid']
     md.append(f"\nTrue image at the middle mark: {t['block_pointers']} block pointers ({t['by_copies']} by number of copies), "
               f"{t['copies_differ_count']} of {t['with_copies']} with several copies hold different bytes in them.\n")
