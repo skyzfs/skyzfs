@@ -1158,11 +1158,52 @@ impl<D: Dir> Store<D> {
         }
     }
 
+    /// Take the lock of the volume in `dir` and nothing else: nothing
+    /// is read, recovered or written. For whoever must act on the
+    /// volume's attachment without opening the store, or must read
+    /// something under the lock before the recovery
+    /// ([`Store::open_locked`]). While another instance has the lock
+    /// this fails with [`StoreError::Locked`]. Dropping the lock
+    /// releases it.
+    pub fn lock_volume(dir: &D) -> Result<D::Lock, StoreError> {
+        match dir.try_lock() {
+            Ok(lock) => Ok(lock),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(StoreError::Locked),
+            Err(e) => Err(io_error("locking the directory")(e)),
+        }
+    }
+
+    /// Open the store in `dir` under a lock that is held already
+    /// ([`Store::lock_volume`], on the same directory): recover the
+    /// log and rebuild the index. The store takes the lock over and
+    /// holds it for as long as it lives. If the open fails the lock
+    /// comes back with the error, still held.
+    pub fn open_locked(
+        dir: D,
+        lock: D::Lock,
+        options: OpenOptions,
+    ) -> Result<(Self, Recovery), (StoreError, D::Lock)> {
+        match Self::recover(dir, options) {
+            Ok((mut store, recovery)) => {
+                store.core._lock = Some(lock);
+                Ok((store, recovery))
+            }
+            Err(e) => Err((e, lock)),
+        }
+    }
+
     /// Open the store in `dir`: take its lock, recover the log, and
     /// rebuild the index from it. While another instance has the store
     /// open this fails with [`StoreError::Locked`] and changes nothing.
     pub fn open(dir: D, options: OpenOptions) -> Result<(Self, Recovery), StoreError> {
         let lock = Self::lock(&dir, &options)?;
+        let (mut store, recovery) = Self::recover(dir, options)?;
+        store.core._lock = lock;
+        Ok((store, recovery))
+    }
+
+    /// The open, without the lock.
+    fn recover(dir: D, options: OpenOptions) -> Result<(Self, Recovery), StoreError> {
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
             must_reach: options.must_reach,
@@ -1178,7 +1219,7 @@ impl<D: Dir> Store<D> {
             }
             Err(e) => return Err(io_error("opening the home image")(e)),
         };
-        Ok((Self::assemble(log, home, lock, options)?, recovery))
+        Ok((Self::assemble(log, home, None, options)?, recovery))
     }
 
     fn assemble(
