@@ -49,6 +49,14 @@ EXPECTED = {
                                            'over a run at least one call is outstanding when a server dies and is '
                                            'left to the kernel to issue again. Without that the kill cases test a '
                                            'restart only, and the run is a rig error'),
+    'pin_c_kill_with_applied_unacknowledged': ('c', 'PASS', SERVER,
+                                               'with a server that acknowledges a write some milliseconds after '
+                                               'applying it, the suite\'s kills leave writes applied and not '
+                                               'acknowledged, by the next server\'s own count at its take-over; the '
+                                               'kernel issues them again and they are applied a second time. A run '
+                                               'where the count is zero, or is not given, is a rig error'),
+    'pin_c_delay_cases': ('c', 'PASS', SERVER,
+                          'every case of the suite ends with that delay as it does without it'),
 
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
@@ -111,6 +119,7 @@ OBSERVED = {
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
+    'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
 }
 # Check c. skyzfs-blkcheck says for each case what the suite declares for

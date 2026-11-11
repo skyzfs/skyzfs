@@ -1021,6 +1021,65 @@ check_c() {
     else
         pin_is c_max_request "of the suite's devices:$result" [ "$result" = " $(grep -c 'max_hw_sectors_kb=' "$OUT/c-helper.log") max_hw_sectors_kb=1024 " ]
     fi
+    if [ $rc = 0 ]; then
+        check_c_delay "$tool" "${can[@]}"
+    else
+        obs c_delay_kills "not run: the pass without the delay did not end"
+        pin c_delay_cases ERROR "not run: the pass without the delay did not end"
+        pin c_kill_with_applied_unacknowledged ERROR "not run: the pass without the delay did not end"
+    fi
+}
+# The suite once more, with a server that applies a write and
+# acknowledges it only after a delay: a kill then leaves writes applied
+# and not acknowledged, which the kernel issues again to the next
+# server. Without the delay a call in flight at a death may or may not
+# have been applied, and nothing says which. Here the next server says
+# how many it found, and the suite's kill cases see a write applied
+# twice. The verdict is each case's result beside the first pass's.
+check_c_delay() {
+    local tool=$1 work=$WORK/cd rc t0 ms=${RIG_COMMIT_DELAY_MS:-20} n_live n_at_death found asked differ n
+    shift
+    step "c: the suite again, a write acknowledged $ms ms after it is applied"
+    mkdir -p "$work"
+    t0=$(date +%s)
+    BLKCHECK_TRACE=$OUT/cd-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work \
+        BLK_SERVE_ARGS="${RIG_SERVE_ARGS:-} --commit-delay-ms $ms" \
+        lim 3600 "$tool" --harness "$HERE/blkcheck-helper.sh" "$@" \
+        --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
+        > "$OUT/cd-cases.tsv" 2> "$OUT/cd-blkcheck.err"; rc=$?
+    cp "$work/helper.log" "$OUT/cd-helper.log" 2>/dev/null
+    read -r n_live n_at_death <<< "$(awk -F'\t' '
+        $3 == "sorted" { live++; split($5, w, " "); at_death += w[2] }
+        END { printf "%d %d", live, at_death }' "$OUT/cd-trace.tsv" 2>/dev/null)"
+    gzip -f "$OUT/cd-trace.tsv" 2>/dev/null
+    for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/cd-$(basename "$f")"; done
+    # What each new server found at its take-over, by its own account.
+    read -r asked found <<< "$(awk '$3 == "take-over" && $4 == "found" { n++; if ($5 ~ /^[0-9]+$/) t += $5; else bad++ }
+        END { printf "%d %s", n, bad ? "?" : t + 0 }' "$OUT/cd-helper.log" 2>/dev/null)"
+    obs c_delay_kills "${n_live:-0} kills of a live server with a commit delay of $ms ms: ${n_at_death:-0} calls of the tool (reads and writes) were in flight at a death; the next server found ${found:-?} requests applied and not acknowledged over ${asked:-0} take-overs. The two count different things: a call may reach the server as several requests, and a read is never counted by the server. The whole pass took $(( $(date +%s) - t0 )) s"
+    if [ $rc != 0 ]; then
+        pin c_delay_cases ERROR "skyzfs-blkcheck exit $rc with the delay: $(tail -n 1 "$OUT/cd-blkcheck.err")"
+        pin c_kill_with_applied_unacknowledged ERROR "the pass with the delay did not end"
+        return
+    fi
+    case ${found:-?} in
+        '?') pin c_kill_with_applied_unacknowledged ERROR "a take-over did not say what it found (status key takeover_unacked) at ${asked:-0} take-overs" ;;
+        0) pin c_kill_with_applied_unacknowledged ERROR "no server found a write applied and not acknowledged over ${asked:-0} take-overs: the delay did nothing, and the kill cases did not see a write applied twice" ;;
+        *) pin c_kill_with_applied_unacknowledged PASS "$found requests were applied and not acknowledged at a server's death and issued again, over ${asked} take-overs" ;;
+    esac
+    # Every case as in the pass without the delay.
+    differ=$(join -t $'\t' -j 1 \
+        <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/c-cases.tsv" | sort) \
+        <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/cd-cases.tsv" | sort) |
+        awk -F'\t' '$2 != $3 { printf "%s %s, with the delay %s; ", $1, $2, $3 }')
+    n=$(grep -c '^case' "$OUT/cd-cases.tsv")
+    if [ "$n" != "$(grep -c '^case' "$OUT/c-cases.tsv")" ]; then
+        pin c_delay_cases ERROR "$n cases with the delay, $(grep -c '^case' "$OUT/c-cases.tsv") without"
+    elif [ -n "$differ" ]; then
+        pin c_delay_cases FAIL "$differ$(grep -m 3 -h 'FAIL' "$OUT/cd-cases.tsv" | cut -f 2,4 | tr '\t\n' ' ;' | cut -c 1-600)"
+    else
+        pin c_delay_cases PASS "all $n cases as without the delay"
+    fi
 }
 
 check_e() {

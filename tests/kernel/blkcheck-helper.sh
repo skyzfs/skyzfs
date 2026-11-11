@@ -117,6 +117,10 @@ kill)
     echo "kill $N: sorted with the kernel counting ${in_r:-?} reads and ${in_w:-?} writes in flight" >> "$WORK/helper.log"
     sleep 0.3
     DEV=$(serve) || exit 1
+    # What the new server found applied and not acknowledged, by its own
+    # account; "?" from a server that does not say.
+    found=$(status_of takeover_unacked)
+    echo "kill $N take-over found ${found:-?}" >> "$WORK/helper.log"
     ;;
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
