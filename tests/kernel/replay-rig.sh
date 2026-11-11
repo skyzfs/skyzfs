@@ -159,9 +159,13 @@ mkdir -p "$SCRATCH"
 writer() {
     local n=0 sum
     while [ ! -e "$STOP" ]; do
-        # The first 4 KiB name the file, so that its first block can be
-        # found in the write log; the rest is random.
-        { yes "SKZ-FILE-$(printf %08d "$n")" | head -c 4096; head -c $((FILE_KB * 1024 - 4096)) /dev/urandom; } > "$SCRATCH/f"
+        # The first 4 KiB name the file (256 lines of 16 bytes), so that
+        # its first block can be found in the write log; the rest is
+        # random.
+        {
+            printf "SKZ-FILE-$(printf %06d "$n")\\n%.0s" {1..256}
+            head -c $((FILE_KB * 1024 - 4096)) /dev/urandom
+        } > "$SCRATCH/f"
         sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
         "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
         # Listed only once complete and fsynced: a line here is a promise.
