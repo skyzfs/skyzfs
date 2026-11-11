@@ -82,9 +82,19 @@ when it merges.
 - **No kernel features in cloud containers.** There is no ublk, ZFS,
   device-mapper or loop device here. Anything that needs one runs in
   GitHub Actions. Pure Rust builds and tests run locally.
-- **The workspace needs two system packages to build**, because of
-  `skynbd-agent`:
-  `apt-get update && apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev`.
+- **The workspace needs three system packages to build**, two because
+  of `skynbd-agent` and libclang because of the ublk binding
+  (`skyzfs-ublk-sys`):
+  `apt-get update && apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev`.
+- **Two cargo features hold code that the workspace's tests do not
+  build.** `skyzfsd --features test-hooks` has the daemon's fault hooks
+  (the rigs use that build), and
+  `skyzfs-ublk-sys --features control-test-program` has the test
+  program `skyzfs-ublk-control`, its parse tests and the binding's
+  kernel tests. Run clippy and the tests with each as well as plain.
+  The kernel tests are ignored tests (root and the ublk driver); until
+  M1.T7 brings the control rig's workflow, no workflow of the
+  repository runs them.
 - **Run `rustup update stable` before the local gates.** CI installs the
   current stable toolchain, and a container's can be months older. A
   newer clippy has lints an older one does not, so "clean locally" on
@@ -130,10 +140,14 @@ when it merges.
   kernel and ZFS on Ubuntu 24.04 and 26.04, about thirty-three minutes
   per image: parameters, overlapping writes, `kill -9` under load, a
   device that waits 300 s for a server, the conformance suite through
-  the block device, a failed volume, a held request. Until `skyzfsd`
-  serves, the server is a stand-in (`tests/kernel/skyzfsd-ref.sh`); the
-  variables `RIG_SKYZFSD` and `RIG_SERVE_ARGS` point the rig at the
-  daemon. The summary says for each line whether it rests on the kernel,
+  the block device, a failed volume, a held request. **On a pull
+  request the server is still the stand-in**
+  (`tests/kernel/skyzfsd-ref.sh`), also when the pull request changes
+  the daemon: a green rig job there says nothing about `skyzfsd`. For
+  the daemon, dispatch the workflow with `daemon` set to `true` (it
+  builds `skyzfsd` with its test hooks and points the rig at it through
+  `RIG_SKYZFSD`), and read that run. M1.T7 is to make the daemon the
+  default. The summary says for each line whether it rests on the kernel,
   on the server, or only shows that the check works. Exit 2 is an error
   of the rig and not a verdict on the server. Read the summary's table
   and not the colour. When check c fails, download the run's
