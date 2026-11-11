@@ -425,17 +425,30 @@
 //! from the index. The store runs one when the log is full, and the
 //! caller may at any time ([`store::Store::checkpoint`]).
 //!
+//! **One instance per volume** (design §4.2). Opening a store is a
+//! recovery that writes: an epoch, a seal. Before it reads or writes
+//! anything the store takes an exclusive lock on its directory
+//! ([`io::Dir::try_lock`]) and holds it until it is dropped. A second
+//! open, or a creation over a live store, fails at once with
+//! [`store::StoreError::Locked`] and changes nothing. On real files the
+//! lock is an advisory lock on the file `lock`, which the operating
+//! system releases when the process ends, however it ends.
+//!
 //! ## One request at a time
 //!
 //! Requests are executed one at a time in the order of submission, and
 //! each is completed before the next starts. That order is the
 //! "single order" of rule R8, and it is the log's order.
 //!
-//! - [`store::Store`] does the work in the caller's thread:
-//!   `submit` validates the id and the queue depth and queues the
-//!   request; `poll` and `wait` execute what is queued and return the
-//!   completions. So `poll` does file I/O, and `wait` never sleeps. It
-//!   is what the tests drive, because every step is then reproducible.
+//! - [`store::Store`] does the work in the caller's thread: `submit`
+//!   validates the id and the queue depth and queues the request;
+//!   `wait` executes what is queued and returns the completions, so it
+//!   does file I/O and never sleeps. Its `poll` does nothing and
+//!   returns 0: the contract says `poll` never blocks, executing a
+//!   request is I/O, and `wait` hands out every completion it makes,
+//!   so none is ever waiting. A caller of this driver has to call
+//!   `wait`. It is what the tests drive, because every step is then
+//!   reproducible.
 //! - [`store::Served`] ([`store::Store::serve`]) gives the store to one
 //!   worker thread. `submit` sends the request to it, `poll` takes what
 //!   has completed without blocking, `wait` blocks up to its timeout.
@@ -470,7 +483,9 @@
 //! as zeros whatever the base is (R5). A discard is recorded, for
 //! whoever uploads later, and changes nothing a read can see: the
 //! blocks keep their content, which R6 allows and which is the one
-//! choice that needs no reasoning about what "discarded" survives. A
+//! choice that needs no reasoning about what "discarded" survives.
+//! Nothing is written or erased locally, so **a discard is not a way
+//! to make data unreadable on the local disk**. A
 //! request that the geometry refuses is answered before anything else
 //! happens (R2), and on a read-only volume nothing is appended (R12).
 //!
@@ -479,38 +494,45 @@
 //! before it, since requests run in submission order, so the sync
 //! covers it (R7).
 //!
-//! *A checkpoint*, step by step, with what a crash leaves after each:
+//! *A checkpoint* works in batches of records, each from the log's
+//! start. Where the write unit is one block there is one batch. Step
+//! by step, with what a crash leaves after each:
 //!
 //! 1. Where the write unit is larger than a block: the blocks that
-//!    share a write unit with a block about to be written, and are not
-//!    themselves written, are copied into `home.pre`, which is synced.
-//!    (See [the preimage file](#the-preimage-file).) A crash here has
-//!    changed nothing.
-//! 2. The records from the log's start to the target are written into
-//!    the home image. Every block written is one that a record in the
-//!    log writes, so (H) says nothing about it, and the index sends
-//!    reads of it to the log. A block may now hold an older record's
-//!    data than the newest; the index still names the newest. A crash
-//!    here leaves the home image with any mixture in those blocks, and
-//!    the log, which is durable up to the target and beyond, with all
-//!    of the records: the next open rebuilds the index from them and
-//!    no read sees the mixture. Only records up to the durable
-//!    position are written, because a record beyond it can be lost
-//!    with the power, and then nothing would cover what the home image
-//!    got from it. (This also holds for the hold: records above it
-//!    stay in the log, and reads of them stay with the log.)
-//! 3. The home image is synced. Now every block that only records
-//!    below the target write has its final content durably.
-//! 4. The preimages are invalidated, then the log is reclaimed up to
-//!    the target. This is the step that makes (H) apply to those
-//!    blocks, and step 3 has made it true first. A crash between 3 and
-//!    4 leaves the records in the log: they are applied again by the
-//!    next checkpoint, which writes the same bytes.
+//!    share a write unit with a block about to be written, are not
+//!    themselves written, and are not written by a durable record
+//!    still in the log, are copied into `home.pre`, tagged for the
+//!    log's current start, and the file is synced. (See [the preimage
+//!    file](#the-preimage-file).) A crash here has changed nothing in
+//!    the home image.
+//! 2. The batch's records are written into the home image. Every
+//!    block written is one that a record in the log writes, so (H)
+//!    says nothing about it, and the index sends reads of it to the
+//!    log. A block may now hold an older record's data than the
+//!    newest; the index still names the newest. A crash here leaves
+//!    the home image with any mixture in those blocks, and the log,
+//!    which is durable up to the batch's end and beyond, with all of
+//!    the records: the next open rebuilds the index from them and no
+//!    read sees the mixture. Only records up to the durable position
+//!    are written, because a record beyond it can be lost with the
+//!    power, and then nothing would cover what the home image got from
+//!    it. (This also holds for the hold: records above it stay in the
+//!    log, and reads of them stay with the log.)
+//! 3. The home image is synced. Now every block that only records of
+//!    the batch write has its final content durably.
+//! 4. The log is reclaimed up to the batch's end. This is the step
+//!    that makes (H) apply to those blocks, and step 3 has made it
+//!    true first. It is also what retires the preimage file, which
+//!    counts only while the log starts where it did when the file was
+//!    written. A crash between 3 and 4 leaves the records in the log
+//!    and the file valid: the open writes the preimages back, which
+//!    changes nothing, and the next checkpoint applies the records
+//!    again, which writes the same bytes.
 //! 5. The index drops the entries whose record is below the new start.
 //!    Before the reclaim returned they still pointed into the log,
 //!    which could still serve them; after it, the home image does.
 //!    An entry whose record is above the new start stays, also for a
-//!    block that the checkpoint wrote.
+//!    block that the batch wrote.
 //!
 //! *The process is lost* (R9). Promise 1 of the log: every record whose
 //! append returned is there, with everything before it. An open
@@ -534,7 +556,14 @@
 //! the home image or the preimage file, and a failed read of any of
 //! them, fails the volume: the store completes the request with an
 //! error, writes the log's failure marker, and answers every later
-//! request, reads included, with an error. A flush asks the disk even
+//! request, reads included, with an error. **The failure is announced
+//! before the marker is attempted**: the marker needs the disk that
+//! has just failed, and a sync on a sick disk can take minutes or
+//! never return, while a transport must give up its attachment at
+//! once (design §4.2). So the store calls an observer
+//! ([`store::OpenOptions::on_failure`]) once, when it decides, from
+//! the thread that executes requests; the observer is to return
+//! quickly. A flush asks the disk even
 //! when the log has nothing new to make durable
 //! ([`Log::probe`](log::Log::probe)), so that no flush succeeds on a
 //! disk that has stopped taking syncs; this is the conservative
@@ -559,15 +588,17 @@
 //! Writing one block of the home image rewrites the whole write unit
 //! around it (see the rule about write units above), and a power cut
 //! during that write can leave any sector of the unit as garbage. The
-//! blocks the checkpoint itself writes are covered by the log. Their
-//! neighbours in the unit may be in the home image alone. So where the
-//! write unit is larger than a block, a checkpoint first saves those
-//! neighbours in `home.pre` and syncs it; an open that finds the file
-//! whole writes them back into the home image and syncs it; and the
-//! checkpoint invalidates the file once the home image is synced.
-//! Where the write unit is one block (4 KiB pages) there is no file.
+//! blocks a batch itself writes are covered by the log, and so is any
+//! block that a durable record still in the log writes. The other
+//! blocks of the unit may be in the home image alone. So where the
+//! write unit is larger than a block, a batch first saves those in
+//! `home.pre` and syncs it, and an open that finds the file whole and
+//! current writes them back into the home image, and syncs it, before
+//! anything is read from the home image. Where the write unit is one
+//! block (4 KiB pages) there is no file and no extra sync.
 //!
-//! All integers little-endian.
+//! All integers little-endian. A tag is SipHash-2-4 under the volume's
+//! key, the one the log's headers are tagged with.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
@@ -575,15 +606,41 @@
 //! | 8 | 4 | version, 1 |
 //! | 12 | 4 | number of blocks saved |
 //! | 16 | 16 | the volume |
-//! | 32 | 4 | CRC32C of the table |
-//! | 508 | 4 | CRC32C of bytes 0 to 507 |
-//! | 4096 | 16 each | the table: block number (8), CRC32C of the block (4), zero (4) |
+//! | 32 | 8 | the log's start when the batch began |
+//! | 40 | 8 | tag of: that start, then the table |
+//! | 48 | 456 | zero |
+//! | 504 | 8 | tag of bytes 0 to 503 |
+//! | 4096 | 16 each | the table: block number (8), tag of: the start, the block number, the block's content (8) |
 //! | after the table, rounded up to 4096 | 4096 each | the blocks, in the table's order |
 //!
-//! The file is whole if the header, the table and every block check
-//! out; anything less means the checkpoint had not started on the home
-//! image, because the file is synced before the first such write.
-//! Invalidating it zeroes the first sector and syncs.
+//! - **Whole.** The file is whole if the header's tag, the table's tag
+//!   and every block's tag match. The blocks are data a client wrote,
+//!   going back to places in the home image, so nothing here is a
+//!   plain checksum: content a client chose cannot make a torn file,
+//!   or a file with a block moved to another place, look whole.
+//! - **Current.** The file counts only if its start is where the log
+//!   starts now. A batch ends by moving the log's start, durably, and
+//!   the start never goes back, so a file of an earlier batch is never
+//!   taken for the current one. That is why the file is not erased
+//!   after a batch: nothing depends on it being gone. While the log's
+//!   start has not moved, writing the file back is always right: a
+//!   block in it either is in the home image alone, and then the file
+//!   has its content as of that start, or a record in the log writes
+//!   it, and then the home image's copy is not read.
+//! - **A cut while writing back** leaves the file as it was, and the
+//!   next open writes it back again.
+//! - **Bounded.** A batch saves at most 256 blocks, so the file is at
+//!   most 1 MiB and two blocks. A batch is as many records as fit that
+//!   bound, counting for each record the rest of its first and last
+//!   write unit, and at most 1024 records.
+//! - **Cost**, where the write unit is larger than a block, for each
+//!   batch: a read of each block saved, one write and one sync of
+//!   `home.pre`, on top of the sync of the home image and the reclaim
+//!   (a write and a sync of the superblock) that a batch costs
+//!   anywhere. In the worst case, single-block writes scattered one to
+//!   a 16 KiB unit, that is a batch for every 85 records, and so three
+//!   syncs and about 1 MiB of preimages for every 340 KiB applied.
+//!   Writes of whole units cost no preimages. Not measured.
 //!
 //! # Limits
 //!
@@ -592,10 +649,18 @@
 //! - **One worker.** Everything is serial, a flush included: see above
 //!   for what M1.3's queues need.
 //! - **Preimages cost a checkpoint** on machines whose pages are larger
-//!   than a block (16 KiB on Apple silicon and some arm64 kernels): a
-//!   read of each neighbour, a write and a sync of `home.pre`, and a
-//!   second sync to invalidate it. Direct I/O on the home image, whose
-//!   write unit is then the device's block, would remove the need.
+//!   than a block (16 KiB on Apple silicon and some arm64 kernels):
+//!   see [the preimage file](#the-preimage-file). Direct I/O on the
+//!   home image, whose write unit is then the device's block, would
+//!   remove the need.
+//! - **The log's files are created on demand**, up to the limit, and
+//!   not when the volume is made: a full local disk is found on the
+//!   commit path, as a failed volume, and not at creation as the
+//!   design intends. The log's limit is in memory and its files are
+//!   made by the append that needs one; creating them ahead belongs
+//!   with making the limit a property of the volume.
+//! - **The lock keeps out stores, not everything.** It is advisory: a
+//!   program that writes the files without asking is not stopped.
 //! - **Write-zeroes is written out as zeros** by a checkpoint, and a
 //!   discard frees nothing: no hole is punched in the home image.
 //! - **The home image is written through the page cache**, so a

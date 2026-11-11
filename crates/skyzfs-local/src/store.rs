@@ -13,7 +13,7 @@
 //!
 //! One request is executed at a time, in the order of submission.
 //! [`Store`] executes in the caller's thread, inside
-//! [`BlockTarget::poll`] and [`BlockTarget::wait`].
+//! [`BlockTarget::wait`]; [`Served`] has a worker thread for it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -961,10 +961,12 @@ fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
 /// The store, executing in the caller's thread.
 ///
 /// [`BlockTarget::submit`] queues a request and returns.
-/// [`BlockTarget::poll`] and [`BlockTarget::wait`] execute what is
-/// queued, in the order of submission, and return the completions: in
-/// this driver they do the store's I/O and so can take as long as a
-/// sync takes. A write that finds the log full behind a hold stays at
+/// [`BlockTarget::wait`] executes what is queued, in the order of
+/// submission, and returns the completions: in this driver it does the
+/// store's I/O and so can take as long as a sync takes.
+/// [`BlockTarget::poll`] never blocks, as the contract says, and so
+/// does nothing here: a caller of this driver has to call `wait`. A
+/// write that finds the log full behind a hold stays at
 /// the head of the queue, with everything submitted after it behind it,
 /// until the hold is released.
 pub struct Store<D: Dir> {

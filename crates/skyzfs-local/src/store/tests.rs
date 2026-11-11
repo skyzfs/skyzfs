@@ -1336,7 +1336,9 @@ fn the_served_store_passes_the_conformance_suite() {
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn what_the_suite_notices_of_each_defect() {
-    let defects: [(&str, u32); 11] = [
+    let defects: [(&str, u32); 13] = [
+        ("STALE_PREIMAGES", Mutants::STALE_PREIMAGES),
+        ("NO_RESTORE", Mutants::NO_RESTORE),
         ("CHECKPOINT_UNSYNCED", Mutants::CHECKPOINT_UNSYNCED),
         ("CHECKPOINT_PAST_HOLD", Mutants::CHECKPOINT_PAST_HOLD),
         (
