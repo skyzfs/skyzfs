@@ -440,9 +440,12 @@ pub fn in_directory<T>(
 /// it is empty then, so a file of anybody else keeps it.
 ///
 /// A second create that opened the lock file just before it is
-/// unlinked here gets its lock on a removed file and then fails with
-/// "no such file" when the directory goes: exit 1, nothing left
-/// behind. Left so; the two were racing for a directory neither had.
+/// unlinked here does not get its lock on the removed file: the lock
+/// is on the file the name names, or it is not taken
+/// (`FsDir::try_lock`). It opens the name again, which makes a new
+/// lock file if the directory is still there, and then this
+/// `remove_dir` fails and leaves the directory to it; or it finds the
+/// directory gone and fails with "no such file".
 fn unmake(path: &Path) {
     let Ok(dir) = FsDir::new(path) else {
         return;

@@ -128,6 +128,49 @@ impl Drop for Locked {
     }
 }
 
+/// How often [`FsDir::try_lock`] opens the lock file again when its
+/// lock landed on a file the name no longer names.
+const LOCK_TRIES: u32 = 4;
+
+/// Lock `file`, which was opened as `path`, and make sure that it is
+/// still the file `path` names. `None` if it is not (the name is gone,
+/// or names another file): the lock is then let go again, with the
+/// file. An error if the file is locked by another (`WouldBlock`) or
+/// cannot be locked or looked at.
+fn finish_lock(file: fs::File, path: &Path) -> io::Result<Option<FsLock>> {
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => return Err(io::ErrorKind::WouldBlock.into()),
+        Err(fs::TryLockError::Error(e)) => return Err(e),
+    }
+    if !still_named(&file, path)? {
+        return Ok(None);
+    }
+    Ok(Some(FsLock {
+        file: std::sync::Arc::new(Locked { file }),
+    }))
+}
+
+/// Whether `path` names the open `file`: the same device and inode.
+#[cfg(unix)]
+fn still_named(file: &fs::File, path: &Path) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let held = file.metadata()?;
+    match fs::metadata(path) {
+        Ok(named) => Ok(held.dev() == named.dev() && held.ino() == named.ino()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Not checked off Unix. Whether a lock file that is open can lose its
+/// name on Windows depends on how it was opened and on the system's
+/// version, and has not been tried: the daemon is not built there yet.
+#[cfg(not(unix))]
+fn still_named(_file: &fs::File, _path: &Path) -> io::Result<bool> {
+    Ok(true)
+}
+
 impl Dir for FsDir {
     type File = FsFile;
     type Lock = FsLock;
@@ -139,19 +182,29 @@ impl Dir for FsDir {
     /// its own is between its fork and its exec, the child holds the
     /// lock until the exec, and the next instance may see the
     /// directory locked for that moment.
+    ///
+    /// **The lock is on the file the name `lock` names.** A lock taken
+    /// on a file that was opened under that name and has since been
+    /// unlinked, or replaced by another file, excludes nobody: the
+    /// next instance opens the name, gets another file and locks that.
+    /// So once the lock is taken, the locked file is compared with
+    /// what the name names now; if they differ, the
+    /// lock is let go and the name is opened again, a few times, and
+    /// after that the directory counts as locked.
     fn try_lock(&self) -> io::Result<FsLock> {
-        let mut options = fs::OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let file = options.open(self.path.join(LOCK_NAME))?;
-        match file.try_lock() {
-            Ok(()) => Ok(FsLock {
-                file: std::sync::Arc::new(Locked { file }),
-            }),
-            Err(fs::TryLockError::WouldBlock) => Err(io::ErrorKind::WouldBlock.into()),
-            Err(fs::TryLockError::Error(e)) => Err(e),
+        let path = self.path.join(LOCK_NAME);
+        for _ in 0..LOCK_TRIES {
+            let mut options = fs::OpenOptions::new();
+            options.read(true).write(true).create(true).truncate(false);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            let file = options.open(&path)?;
+            if let Some(lock) = finish_lock(file, &path)? {
+                return Ok(lock);
+            }
         }
+        // The name changed under every try: somebody is at work here.
+        Err(io::ErrorKind::WouldBlock.into())
     }
 
     fn create(&self, name: &str) -> io::Result<FsFile> {
@@ -412,6 +465,55 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// The lock is on the file the name `lock` names. A lock that
+    /// lands on a file whose name was unlinked after it was opened, or
+    /// replaced by a new file, is not taken: such a lock excludes
+    /// nobody, since the next instance opens the name and locks
+    /// another file. The plain case locks, and a second try finds the
+    /// directory locked.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_on_a_file_the_name_no_longer_names_is_not_taken() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let path = keep.path().join(LOCK_NAME);
+        let open = || {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .expect("the lock file")
+        };
+        // Opened, then unlinked by whoever cleans up: the name is gone.
+        let early = open();
+        fs::remove_file(&path).expect("unlink");
+        assert!(finish_lock(early, &path).expect("no error").is_none());
+        // Opened, unlinked, and the name made again by a third: the
+        // name is another file.
+        let early = open();
+        fs::remove_file(&path).expect("unlink");
+        let dir = FsDir::new(keep.path()).expect("the directory");
+        let third = dir.try_lock().expect("the third's lock");
+        assert!(finish_lock(early, &path).expect("no error").is_none());
+        // The third holds the lock, and everybody else sees that.
+        let refused = dir.try_lock().expect_err("locked");
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        let refused = finish_lock(open(), &path).expect_err("locked");
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        drop(third);
+        // The plain case: the file the name names, locked.
+        let lock = finish_lock(open(), &path)
+            .expect("no error")
+            .expect("the lock");
+        assert_eq!(
+            dir.try_lock().expect_err("locked").kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(lock);
+        assert!(dir.try_lock().is_ok());
     }
 
     /// A shared lock is held until its last share is dropped, whichever
