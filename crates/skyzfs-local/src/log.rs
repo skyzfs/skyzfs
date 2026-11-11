@@ -217,6 +217,18 @@ pub enum Corruption {
     },
 }
 
+/// For test rigs: what a write of the superblock calls between its
+/// write and its sync.
+#[cfg(any(test, feature = "test-hooks"))]
+struct SuperblockPause(Box<dyn Fn() + Send>);
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl std::fmt::Debug for SuperblockPause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SuperblockPause")
+    }
+}
+
 /// What a log operation can fail with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum LogError {
@@ -703,6 +715,10 @@ pub struct Log<D: Dir> {
     /// Records validated by replays, for tests of what a replay costs.
     #[cfg(test)]
     walked: std::cell::Cell<u64>,
+    /// For test rigs: called when a superblock is written and not yet
+    /// synced. See [`Log::set_superblock_pause`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    superblock_pause: Option<SuperblockPause>,
     mutants: Mutants,
 }
 
@@ -1067,6 +1083,8 @@ impl<D: Dir> Log<D> {
             start: None,
             #[cfg(test)]
             walked: std::cell::Cell::new(0),
+            #[cfg(any(test, feature = "test-hooks"))]
+            superblock_pause: None,
             failed: false,
             dirty: BTreeSet::new(),
             dir_dirty: false,
@@ -1305,8 +1323,13 @@ impl<D: Dir> Log<D> {
         };
         let written = self
             .superblock
-            .write_at(copy * SUPER_COPY_STRIDE, &next.encode())
-            .and_then(|()| self.superblock.sync());
+            .write_at(copy * SUPER_COPY_STRIDE, &next.encode());
+        // The new superblock is written and not durable.
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(SuperblockPause(pause)) = &self.superblock_pause {
+            pause();
+        }
+        let written = written.and_then(|()| self.superblock.sync());
         if let Err(e) = written {
             return Err(self.fail("writing the superblock", &e));
         }
@@ -1855,6 +1878,15 @@ impl<D: Dir> Log<D> {
     /// has stay, whatever the limit.
     pub fn set_segment_limit(&mut self, limit: Option<usize>) {
         self.limit = limit;
+    }
+
+    /// For test rigs: have every write of the superblock call `pause`
+    /// between its write and its sync, when the new superblock is in
+    /// the file and not durable. A checkpoint step sets it around its
+    /// reclaim, to be killed there.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn set_superblock_pause(&mut self, pause: Option<Box<dyn Fn() + Send>>) {
+        self.superblock_pause = pause.map(SuperblockPause);
     }
 
     /// Give up the log before `before`, as far as the hold and the

@@ -2952,73 +2952,285 @@ fn a_served_store_steps_between_requests_and_when_idle() {
     env.reopen_ack(&disk).expect("opens after a kill");
 }
 
-/// A kill inside a step of the served store, through the worker's own
-/// rule: the step waits in its middle (the test hook), the store shows
-/// that a step is under way, and the process is killed there. The next
-/// open finds every acknowledged write, the rule goes on where the
-/// log was left, and the content stays right.
-#[test]
-fn a_kill_inside_a_step_of_the_worker_loses_nothing() {
+/// A kill, or a power cut, inside a step of the served store, through
+/// the worker's own rule and at each of the step's points: the step
+/// waits there (the test hook), the store shows that a step is under
+/// way and has not counted it, and the process is lost there. The
+/// next open finds every write it must (every acknowledged one after a
+/// kill; every flushed one after a power cut, where each write was
+/// flushed), the rule goes on where the log was left, and the content
+/// stays right.
+fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
     static NUMBER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    for env in environments(0) {
-        let gate = std::env::temp_dir().join(format!(
-            "skyzfs-step-gate-{}-{}",
-            std::process::id(),
-            NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        ));
-        let _ = std::fs::remove_file(&gate);
-        let (disk, mut store) = env.fresh().unwrap();
-        store.set_marks(Some(MARKS));
-        store.set_step_pause(Some(StepPause::Until(gate.clone())));
-        let mut served = store.serve().unwrap();
-        let mut done = Vec::new();
-        let mut newest = [0u8; 64];
-        let mut n = 0u64;
-        // Writes until the worker is inside its first step. It answers
-        // the write that reached the mark and then waits in the step.
-        while !served.log_state().stepping {
-            assert!(n < 64, "no step after {n} writes: {:?}", served.log_state());
-            let (slot, byte) = (n % 64, n as u8 + 1);
+    let what = format!("{point:?}, power cut {power_cut}, in {env:?}");
+    let gate = std::env::temp_dir().join(format!(
+        "skyzfs-step-gate-{}-{}",
+        std::process::id(),
+        NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_file(&gate);
+    let (disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), point);
+    let mut served = store.serve().unwrap();
+    let mut done = Vec::new();
+    let mut newest = [0u8; 64];
+    let mut n = 0u64;
+    let mut ids = 0u64;
+    // Writes until the worker is inside its first step. It answers
+    // the request that reached the mark and then waits in the step.
+    while !served.log_state().stepping {
+        assert!(n < 64, "no step after {n} writes: {:?}", served.log_state());
+        let (slot, byte) = (n % 64, n as u8 + 1);
+        let mut ops = vec![Op::Write {
+            offset: slot * 16 * BLOCK,
+            data: Buf::filled(16, byte),
+        }];
+        if power_cut {
+            ops.push(Op::Flush);
+        }
+        for op in ops {
             done.clear();
             served
                 .submit(Request {
-                    id: RequestId(n),
-                    op: Op::Write {
-                        offset: slot * 16 * BLOCK,
-                        data: Buf::filled(16, byte),
-                    },
+                    id: RequestId(ids),
+                    op,
                 })
                 .unwrap();
+            ids += 1;
             assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
-            assert_eq!(done[0].result, Ok(()));
-            newest[slot as usize] = byte;
-            n += 1;
+            assert_eq!(done[0].result, Ok(()), "{what}");
             // The worker decides about a step right after the answer.
             std::thread::sleep(Duration::from_millis(3));
+            if served.log_state().stepping {
+                break;
+            }
         }
-        assert_eq!(served.log_state().steps, 0, "the step has not ended");
+        // Counted only if its flush was answered too, where there is
+        // one: a write whose flush the step overtook is not promised
+        // across a power cut, and reads as it was or as it is.
+        if !power_cut || !served.log_state().stepping || done[0].buf.is_none() {
+            newest[slot as usize] = byte;
+        }
+        n += 1;
+    }
+    let state = served.log_state();
+    assert!(state.stepping, "{what}");
+    assert_eq!(state.steps, 0, "{what}: the step has not ended");
+    if power_cut {
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        disk.set_write_unit(u64::from(env.unit));
+    } else {
         disk.kill();
-        std::fs::write(&gate, b"").unwrap();
-        drop(served);
-        let _ = std::fs::remove_file(&gate);
-        let mut store = env
-            .reopen_ack(&disk)
-            .unwrap_or_else(|why| panic!("after a kill inside a step in {env:?}: {why}"));
+    }
+    std::fs::write(&gate, b"").unwrap();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let mut store = env
+        .reopen_ack(&disk)
+        .unwrap_or_else(|why| panic!("{what}: {why}"));
+    let check = |store: &mut SimStore, when: &str| {
+        for (slot, byte) in newest.iter().enumerate() {
+            let slot = slot as u64;
+            // The last write before the loss may be the one whose
+            // flush was not answered: its slot holds it or what was
+            // there before.
+            if power_cut && slot == (n - 1) % 64 {
+                let got = read(store, slot * 16, 16).unwrap();
+                let (old, new) = (*byte, (n - 1) as u8 + 1);
+                assert!(
+                    got.iter().all(|b| *b == old) || got.iter().all(|b| *b == new),
+                    "{what}: slot {slot} {when} is neither {old} nor {new}"
+                );
+                continue;
+            }
+            expect(store, slot * 16, 16, *byte, when).unwrap_or_else(|why| panic!("{what}: {why}"));
+        }
+    };
+    check(&mut store, "after the loss inside a step");
+    store.set_marks(Some(MARKS));
+    let found = store.log_state();
+    let above = found.live() >= MARKS.high;
+    let mut steps = 0;
+    while store.tend().unwrap() {
+        steps += 1;
+    }
+    // The rule goes on exactly when the log that survived is still
+    // at the high mark. It is not after a loss behind the log's new
+    // start being durable (the step is done), nor after a power cut
+    // that took the unflushed record which had reached the mark.
+    assert_eq!(
+        steps > 0,
+        above,
+        "{what}: the rule after the restart, with the log at {found:?}"
+    );
+    if !power_cut
+        && matches!(
+            point,
+            StepPoint::Saved | StepPoint::Written | StepPoint::Synced
+        )
+    {
+        assert!(
+            above,
+            "{what}: a kill before the new start kept the log at {found:?}"
+        );
+    }
+    check(&mut store, "after the steps that followed");
+}
+
+#[test]
+fn a_kill_inside_a_step_of_the_worker_loses_nothing() {
+    for env in environments(0) {
+        for point in [
+            StepPoint::Saved,
+            StepPoint::Written,
+            StepPoint::Synced,
+            StepPoint::StartWritten,
+            StepPoint::StartDurable,
+        ] {
+            lost_inside_a_step(&env, point, false);
+        }
+    }
+}
+
+#[test]
+fn a_power_cut_inside_a_step_of_the_worker_loses_nothing_that_was_flushed() {
+    for env in environments(0) {
+        for point in [
+            StepPoint::Saved,
+            StepPoint::Written,
+            StepPoint::Synced,
+            StepPoint::StartWritten,
+            StepPoint::StartDurable,
+        ] {
+            lost_inside_a_step(&env, point, true);
+        }
+    }
+}
+
+/// A record that alone exceeds the daemon's bound is a step of its
+/// own: a write-zeroes of 12 MiB between two small writes, under the
+/// bound of 8 MiB. The step before it ends in front of it, it is taken
+/// alone, and the zeros are in the home image afterwards, over what
+/// was there, also after a restart.
+#[test]
+fn a_write_zeroes_beyond_the_daemons_bound_is_a_step_of_its_own() {
+    const ZEROED: u64 = 12 << 20;
+    for env in environments(0) {
+        let config = StoreConfig {
+            size_mib: 32,
+            ..env.config()
+        };
+        let disk = SimDisk::new(7);
+        disk.set_write_unit(u64::from(env.unit));
+        let key = Key(*b"a key for tests!");
+        let mut store = Store::create_keyed(disk.clone(), &config, key, env.options()).unwrap();
+        // Something for the zeros to replace, in the home image.
+        let (first, last) = (1000u64, 1000 + ZEROED / BLOCK - 16);
+        write(&mut store, first, 16, 5).unwrap();
+        write(&mut store, last, 16, 6).unwrap();
+        write(&mut store, 300, 4, 7).unwrap();
+        flush(&mut store).unwrap();
+        checkpoint(&mut store).unwrap();
+
+        write(&mut store, 10, 1, 1).unwrap();
+        ok(
+            &mut store,
+            Op::WriteZeroes {
+                offset: first * BLOCK,
+                len: ZEROED,
+            },
+        )
+        .unwrap();
+        write(&mut store, 20, 1, 2).unwrap();
+        flush(&mut store).unwrap();
+        for (records, payload, more) in [(1, BLOCK, true), (1, ZEROED, true), (1, BLOCK, false)] {
+            let done = step(&mut store, StepBound::DAEMON).unwrap();
+            assert_eq!(
+                (done.records, done.payload, done.more),
+                (records, payload, more),
+                "{env:?}"
+            );
+        }
         let check = |store: &mut SimStore, when: &str| {
-            for (slot, byte) in newest.iter().enumerate() {
-                expect(store, slot as u64 * 16, 16, *byte, when)
+            for (block, count, byte) in [
+                (first, 16, 0),
+                (last, 16, 0),
+                (300, 4, 7),
+                (10, 1, 1),
+                (20, 1, 2),
+            ] {
+                expect(store, block, count, byte, when)
                     .unwrap_or_else(|why| panic!("{env:?}: {why}"));
             }
         };
-        check(&mut store, "after a kill inside a step");
-        store.set_marks(Some(MARKS));
-        let mut steps = 0;
-        while store.tend().unwrap() {
-            steps += 1;
-        }
-        assert!(steps > 0, "the rule did not go on after the restart");
-        check(&mut store, "after the steps that followed");
+        check(&mut store, "after the steps");
+        drop(store);
+        disk.kill();
+        let mut store = Store::open(disk.clone(), env.options()).unwrap().0;
+        check(&mut store, "after a restart");
     }
+}
+
+/// A loss between a step's sync of the home image and the log's new
+/// start, with a newer record for the same block further on in the
+/// log, beyond the step's batch: the home image then holds the block's
+/// older content, durably, and the log starts where it did. The next
+/// open reads the newer content, and still does after the step is
+/// applied again and after the steps that follow.
+#[test]
+fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_its_new_start() {
+    fn scenario(env: &Env) -> Outcome {
+        let one = StepBound {
+            payload: u64::MAX,
+            records: 1,
+        };
+        for power_cut in [false, true] {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 5, 1, 1)?;
+            write(&mut store, 9, 1, 3)?;
+            write(&mut store, 5, 1, 2)?;
+            flush(&mut store)?;
+            // The step takes the first record alone, writes block 5
+            // as 1 into the home image and syncs it; the log's new
+            // start cannot be made durable.
+            disk.fail_sync_of(crate::log::SUPER_NAME);
+            if store.checkpoint_step(one).is_ok() {
+                return Err("the step ended although its new start was not durable".into());
+            }
+            drop(store);
+            // The fault stood for the loss; the restart has none.
+            disk.clear_faults();
+            if power_cut {
+                let lost = env.lost();
+                disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+                disk.set_write_unit(u64::from(env.unit));
+            } else {
+                disk.kill();
+            }
+            let mut store = env.reopen_ack(&disk)?;
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                let when = format!("{when} (power cut {power_cut})");
+                expect(store, 5, 1, 2, &when)?;
+                expect(store, 9, 1, 3, &when)?;
+                expect(store, 6, 3, 0, &when)
+            };
+            check(&mut store, "after the loss")?;
+            let again = step(&mut store, one)?;
+            if again.records > 1 {
+                return Err(format!("the step applied again took {again:?}"));
+            }
+            check(&mut store, "after the step applied again")?;
+            while step(&mut store, one)?.more {}
+            check(&mut store, "after the steps that followed")?;
+            drop(store);
+            let mut store = env.reopen(&disk)?;
+            check(&mut store, "after another restart")?;
+        }
+        Ok(())
+    }
+    holds(scenario);
 }
 
 /// A long log that a start found is worked off once the store is

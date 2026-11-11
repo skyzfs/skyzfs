@@ -457,9 +457,12 @@ struct Core<D: Dir> {
     working: bool,
     /// The steps the rule has taken.
     steps: u64,
-    /// For test rigs: where every batch of a checkpoint waits.
+    /// The times the rule made the log durable itself, with no flush
+    /// of the client's, to have something to take.
+    own_syncs: u64,
+    /// For test rigs: how and where every batch of a checkpoint waits.
     #[cfg(any(test, feature = "test-hooks"))]
-    pause: Option<StepPause>,
+    pause: Option<(StepPause, StepPoint)>,
     mutants: Mutants,
 }
 
@@ -787,7 +790,18 @@ impl<D: Dir> Core<D> {
             end: self.log.tail().0,
             durable: self.log.durable().0,
             steps: self.steps,
+            own_syncs: self.own_syncs,
             stepping: false,
+        }
+    }
+
+    /// For test rigs: wait here if the hook is set for `point`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn pause_at(&self, point: StepPoint) {
+        if let Some((pause, at)) = &self.pause {
+            if *at == point {
+                pause.wait();
+            }
         }
     }
 
@@ -825,6 +839,7 @@ impl<D: Dir> Core<D> {
         let more_if_synced = reach(self.log.tail()) > reach(durable);
         if takeable < marks.step.payload && more_if_synced {
             self.flush()?;
+            self.own_syncs += 1;
         }
         if reach(self.log.durable()) <= floor {
             return Ok(false);
@@ -885,6 +900,10 @@ impl<D: Dir> Core<D> {
         if self.protect_neighbours(floor, target, limit).is_err() {
             return Err(self.fail());
         }
+        // (1) The neighbours are saved and durable; the home image is
+        // as it was.
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.pause_at(StepPoint::Saved);
         let home = &mut self.home;
         let mut written = Ok(());
         let replayed = self.log.replay_within(floor, target, limit, &mut |record| {
@@ -901,27 +920,40 @@ impl<D: Dir> Core<D> {
         if replayed.is_err() || written {
             return Err(self.fail());
         }
-        // The middle of a step: the home image holds the batch and is
-        // not durable, and the log still holds it too.
+        // (2) The middle of a step: the home image holds the batch and
+        // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(pause) = &self.pause {
-            pause.wait();
-        }
+        self.pause_at(StepPoint::Written);
         let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
         if !early && self.home.sync().is_err() {
             return Err(self.fail());
         }
+        // (3) The home image is durable, and the log starts where it
+        // did: a start now applies the batch again from the log.
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.pause_at(StepPoint::Synced);
         // The home image is durable. The reclaim moves the log's start,
         // and with that the preimages, which are bound to the start
         // they were written for, have done their work.
         if self.mutants.has(Mutants::CHECKPOINT_PAST_HOLD) {
             self.log.set_hold(None);
         }
+        // (4) The log's new start: written, then durable.
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some((pause, StepPoint::StartWritten)) = &self.pause {
+            let pause = pause.clone();
+            self.log
+                .set_superblock_pause(Some(Box::new(move || pause.wait())));
+        }
         let reclaimed = self.log.reclaim(target);
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.log.set_superblock_pause(None);
         self.log.set_hold(hold);
         let Ok(start) = reclaimed else {
             return Err(self.fail());
         };
+        #[cfg(any(test, feature = "test-hooks"))]
+        self.pause_at(StepPoint::StartDurable);
         if early && self.home.sync().is_err() {
             return Err(self.fail());
         }
@@ -1090,9 +1122,31 @@ impl StepBound {
     };
 }
 
+/// For test rigs: where in a batch of a checkpoint, and so in every
+/// step, the hook waits ([`Store::set_step_pause_at`]). The points are
+/// the cuts between a step's four parts; a kill at each must leave a
+/// store that opens with everything acknowledged.
+#[cfg(any(test, feature = "test-hooks"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StepPoint {
+    /// After (1): the neighbours of what the step writes are saved and
+    /// durable, and the home image is as it was.
+    Saved,
+    /// After (2): the home image holds the batch and is not durable.
+    #[default]
+    Written,
+    /// After (3): the home image is durable, and the log still starts
+    /// where it did.
+    Synced,
+    /// Inside (4): the log's new start is written and not durable.
+    StartWritten,
+    /// After (4): the log's new start is durable.
+    StartDurable,
+}
+
 /// For test rigs: how long every batch of a checkpoint, and so every
-/// step, waits in its middle, after it has written the home image and
-/// before it syncs it. A kill in that time lands inside a step.
+/// step, waits at its [`StepPoint`]. A kill in that time lands inside
+/// a step.
 #[cfg(any(test, feature = "test-hooks"))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StepPause {
@@ -1142,6 +1196,11 @@ pub struct LogState {
     pub durable: u64,
     /// The steps the rule of the marks has taken since the open.
     pub steps: u64,
+    /// The times the rule made the log durable itself since the open,
+    /// because too little of it was durable to take a step from and no
+    /// flush of the client's had come: what a client that does not
+    /// flush costs the store.
+    pub own_syncs: u64,
     /// Whether such a step is under way now.
     pub stepping: bool,
 }
@@ -1612,6 +1671,7 @@ impl<D: Dir> Store<D> {
                 marks: None,
                 working: false,
                 steps: 0,
+                own_syncs: 0,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
                 mutants: options.mutants,
@@ -1674,11 +1734,18 @@ impl<D: Dir> Store<D> {
         self.core.working = false;
     }
 
-    /// For test rigs: make every step wait in its middle. See
+    /// For test rigs: make every step wait in its middle, after it
+    /// has written the home image and before it syncs it. See
     /// [`StepPause`].
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_step_pause(&mut self, pause: Option<StepPause>) {
-        self.core.pause = pause;
+        self.core.pause = pause.map(|pause| (pause, StepPoint::default()));
+    }
+
+    /// For test rigs: make every step wait at `point`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_step_pause_at(&mut self, pause: StepPause, point: StepPoint) {
+        self.core.pause = Some((pause, point));
     }
 
     /// Apply the rule of the marks once: see [`Marks`]. Returns whether
@@ -1928,6 +1995,7 @@ struct Shown {
     end: AtomicU64,
     durable: AtomicU64,
     steps: AtomicU64,
+    own_syncs: AtomicU64,
     stepping: AtomicBool,
 }
 
@@ -1938,6 +2006,7 @@ impl Shown {
         self.end.store(state.end, Ordering::SeqCst);
         self.durable.store(state.durable, Ordering::SeqCst);
         self.steps.store(state.steps, Ordering::SeqCst);
+        self.own_syncs.store(state.own_syncs, Ordering::SeqCst);
         self.stepping.store(stepping, Ordering::SeqCst);
     }
 
@@ -1947,6 +2016,7 @@ impl Shown {
             end: self.end.load(Ordering::SeqCst),
             durable: self.durable.load(Ordering::SeqCst),
             steps: self.steps.load(Ordering::SeqCst),
+            own_syncs: self.own_syncs.load(Ordering::SeqCst),
             stepping: self.stepping.load(Ordering::SeqCst),
         }
     }
