@@ -8,7 +8,10 @@
 //!   (every other sector of it survives); or the next record is lost
 //!   and every later one survives. Sectors that belong to no such
 //!   record (the home image, the preimages, superblocks, segment
-//!   headers), names and lengths go as a seed decides.
+//!   headers), names and lengths go as a seed decides. One cut in
+//!   three strikes inside a checkpoint: the store starts one, and the
+//!   disk stops taking anything after a few writes and syncs, which
+//!   for what the disk then holds is the power going at that point.
 //! - `fail_log` makes every write and every sync fail from then on.
 //! - `reopen_failed` takes the fault away, kills the process and opens
 //!   the store with the failure acknowledged.
@@ -318,9 +321,19 @@ impl Harness for SimHarness {
 
     fn power_cut(&mut self, mut target: OnSim, keep: u64) -> Result<OnSim, HarnessError> {
         let mut records = Vec::new();
+        let (disk_of, read_only) = (target.disk.clone(), target.read_only);
         if let Some(store) = target.store() {
             let reached = keep as usize % (store.queue.len() + 1);
             store.run(reached, &mut Vec::new());
+            let mut rng = Rng(keep ^ store.position().0 ^ 0xC0FFEE);
+            if !read_only && rng.next() % 3 == 0 {
+                // Half of these checkpoints have everything to apply.
+                if rng.next() % 2 == 0 {
+                    let _ = store.core.flush();
+                }
+                disk_of.halt_after(rng.next() % 12);
+                let _ = store.checkpoint();
+            }
             for (start, end) in &store.core.unsynced {
                 if let Some((file, at)) = store.core.log.locate(*start) {
                     records.push((file, at, at + (end.0 - start.0)));

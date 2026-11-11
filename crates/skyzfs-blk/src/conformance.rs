@@ -1097,7 +1097,7 @@ fn invalid_op(geometry: Geometry, origin: u64, pick: u64) -> Op {
         },
         5 => Op::Discard {
             offset: at,
-            len: u64::MAX - at + 1 - BLOCK_SIZE,
+            len: (u64::MAX - at) / BLOCK_SIZE * BLOCK_SIZE,
         },
         6 => Op::WriteZeroes {
             offset: at + 1,

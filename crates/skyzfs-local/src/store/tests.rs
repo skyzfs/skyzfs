@@ -997,3 +997,48 @@ fn the_store_passes_the_conformance_suite() {
         );
     }
 }
+
+/// Not a property of the store: a measurement, run by hand, of what the
+/// conformance suite notices by itself. For each defect it prints the
+/// cases that failed, and in how many of the eight environments. The
+/// scenarios above are what catches each defect by name; this says how
+/// much of that the suite's own cases and random programs repeat.
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn what_the_suite_notices_of_each_defect() {
+    let defects: [(&str, u32); 11] = [
+        ("CHECKPOINT_UNSYNCED", Mutants::CHECKPOINT_UNSYNCED),
+        ("CHECKPOINT_PAST_HOLD", Mutants::CHECKPOINT_PAST_HOLD),
+        ("RECLAIM_BEFORE_HOME_SYNC", Mutants::RECLAIM_BEFORE_HOME_SYNC),
+        ("INDEX_SWITCH_EARLY", Mutants::INDEX_SWITCH_EARLY),
+        ("NO_INDEX_REBUILD", Mutants::NO_INDEX_REBUILD),
+        ("FLUSH_NO_SYNC", Mutants::FLUSH_NO_SYNC),
+        ("ACK_BEFORE_APPEND", Mutants::ACK_BEFORE_APPEND),
+        ("SERVE_AFTER_FAILURE", Mutants::SERVE_AFTER_FAILURE),
+        ("READ_HOME_ONLY", Mutants::READ_HOME_ONLY),
+        ("NO_PREIMAGES", Mutants::NO_PREIMAGES),
+        ("PREIMAGES_UNSYNCED", Mutants::PREIMAGES_UNSYNCED),
+    ];
+    let config = Config {
+        cases: 48,
+        ..Config::default()
+    };
+    for (name, mutants) in defects {
+        let mut by_case: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut environments = 0;
+        for mut harness in harnesses(mutants) {
+            let report = run_all(&mut harness, &config);
+            let failed = report.failed();
+            if !failed.is_empty() {
+                environments += 1;
+            }
+            for case in failed {
+                *by_case.entry(case).or_default() += 1;
+            }
+        }
+        println!("{name}: noticed in {environments} of 8 environments");
+        for (case, count) in by_case {
+            println!("    {case}: {count}");
+        }
+    }
+}
