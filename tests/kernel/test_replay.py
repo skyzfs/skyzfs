@@ -257,6 +257,22 @@ class Log(unittest.TestCase):
         self.assertFalse(replay_check.judge_controls([drop])[2])
         self.assertFalse(replay_check.judge_controls([drop, reorder, dict(drop, name='new')])[2])
 
+    def test_run_survives_a_command_that_prints_and_then_hangs(self):
+        rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertIn('before the hang', out)
+        self.assertIn('TIMEOUT after 1s', out)
+        self.assertLess(t, 10)
+        rc, out, _ = replay_check.run(['sleep', '30'], timeout=1)       # nothing captured
+        self.assertEqual((rc, out), (124, '\nTIMEOUT after 1s'))
+
+    def test_run_reports_other_trouble_as_a_result(self):
+        self.assertEqual(replay_check.run(['/nonexistent/skz-command'])[0], 127)
+        rc, out, _ = replay_check.run(['printf', '\\377\\376 ok'])       # output that is not UTF-8
+        self.assertEqual(rc, 0)
+        self.assertIn('ok', out)
+        self.assertEqual(replay_check.run(['sh', '-c', 'echo no; exit 3'])[:2], (3, 'no\n'))
+
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
                  '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')

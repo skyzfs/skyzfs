@@ -330,12 +330,20 @@ def facts_text(facts):
 
 # ------------------------------------------------------------- running
 def run(cmd, timeout=300):
+    """Run a command -> (exit code, output, seconds). Never raises for a command that hangs or cannot start."""
     t0 = time.monotonic()
     try:
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace',
+                           timeout=timeout)
         return p.returncode, p.stdout, time.monotonic() - t0
     except subprocess.TimeoutExpired as e:
-        return 124, (e.stdout or '') + f'\nTIMEOUT after {timeout}s', time.monotonic() - t0
+        # What was captured before a timeout is bytes, whatever text= says.
+        out = e.stdout or ''
+        if isinstance(out, bytes):
+            out = out.decode(errors='replace')
+        return 124, out + f'\nTIMEOUT after {timeout}s', time.monotonic() - t0
+    except OSError as e:
+        return 127, f'{cmd[0]}: {e}', time.monotonic() - t0
 
 
 class Rig:
