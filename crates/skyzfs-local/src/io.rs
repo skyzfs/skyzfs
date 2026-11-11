@@ -82,6 +82,11 @@ pub trait File {
     /// it, so that a later write inside it allocates nothing.
     fn preallocate(&mut self, len: u64) -> io::Result<()>;
 
+    /// Set the file's length to `len`, which is not below its present
+    /// length. The new part reads as zeros and need not have space
+    /// behind it.
+    fn extend(&mut self, len: u64) -> io::Result<()>;
+
     /// The file's length in bytes.
     fn len(&self) -> io::Result<u64>;
 

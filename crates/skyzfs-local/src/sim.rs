@@ -349,6 +349,8 @@ struct State {
     rng: Rng,
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
+    /// The file whose syncs all fail.
+    sync_fault_of: Option<String>,
     read_fault: Option<Fault>,
     /// How many live handles are open on each inode.
     open: BTreeMap<u64, u64>,
@@ -432,6 +434,7 @@ impl SimDisk {
                 rng: Rng(seed),
                 write_fault: None,
                 sync_fault: None,
+                sync_fault_of: None,
                 read_fault: None,
                 open: BTreeMap::new(),
                 device_reads: true,
@@ -466,6 +469,7 @@ impl SimDisk {
         state.close_all();
         state.write_fault = None;
         state.sync_fault = None;
+        state.sync_fault_of = None;
         state.read_fault = None;
         let inodes: Vec<u64> = state.inodes.keys().copied().collect();
         for id in inodes {
@@ -533,6 +537,15 @@ impl SimDisk {
     /// makes nothing durable and may drop unsynced data on the spot.
     pub fn fail_sync(&self, after: u64, sticky: bool) {
         self.lock().sync_fault = Some(Fault { after, sticky });
+    }
+
+    /// Every sync of the file called `name` fails from now on, until
+    /// the faults are cleared or the power is cut: for a test that
+    /// needs one particular file to stay unsynced, whatever else is
+    /// synced before it. What a failed sync leaves is as with
+    /// [`SimDisk::fail_sync`].
+    pub fn fail_sync_of(&self, name: &str) {
+        self.lock().sync_fault_of = Some(name.to_owned());
     }
 
     /// The read after the next `after` reads fails, and, if `sticky`,
@@ -609,6 +622,7 @@ impl SimDisk {
         let mut state = self.lock();
         state.write_fault = None;
         state.sync_fault = None;
+        state.sync_fault_of = None;
         state.read_fault = None;
     }
 
@@ -884,7 +898,9 @@ impl File for SimFile {
         let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
-        let failing = State::strikes(&mut state.sync_fault);
+        let named = state.sync_fault_of.as_deref();
+        let failing = (named.is_some() && named == state.name_of(self.inode))
+            || State::strikes(&mut state.sync_fault);
         let rng = &mut state.rng;
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if failing {
@@ -923,6 +939,11 @@ impl File for SimFile {
         }
         inode.len = len;
         Ok(())
+    }
+
+    fn extend(&mut self, len: u64) -> io::Result<()> {
+        // The simulated disk reserves nothing in either case.
+        self.preallocate(len)
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -1306,6 +1327,26 @@ mod tests {
                 assert!(disk.list().unwrap().is_empty());
             }
         }
+    }
+
+    /// Injected errors: with the syncs of one file failing, that file
+    /// stays unsynced while the others sync as usual.
+    #[test]
+    fn the_syncs_of_one_file_can_fail() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        let mut g = disk.create("g").unwrap();
+        disk.fail_sync_of("f");
+        f.write_at(0, &[2; 4]).unwrap();
+        g.write_at(0, &[3; 4]).unwrap();
+        g.sync().unwrap();
+        assert!(f.sync().is_err());
+        assert!(f.sync().is_err());
+        Dir::sync(&disk).unwrap();
+        disk.clear_faults();
+        g.sync().unwrap();
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
     }
 
     /// Length: growth that was not synced can be lost at a power cut,

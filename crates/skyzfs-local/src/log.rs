@@ -994,6 +994,12 @@ impl<D: Dir> Log<D> {
         Ok(None)
     }
 
+    /// The directory the log is in, for an owner that keeps files of
+    /// its own beside it.
+    pub fn dir(&self) -> &D {
+        &self.dir
+    }
+
     /// The log's identity.
     pub fn identity(&self) -> &Identity {
         &self.current.identity
@@ -1023,6 +1029,28 @@ impl<D: Dir> Log<D> {
     /// The number of segment files, in use or free.
     pub fn segment_files(&self) -> usize {
         self.slots.len()
+    }
+
+    /// Fail the log on behalf of its owner: something the owner keeps
+    /// beside the log has failed, and what the log holds must not be
+    /// served or extended any more. As after a failure of the log's own
+    /// files, nothing succeeds from now on, and the marker is written;
+    /// returns whether it was.
+    pub fn mark_failed(&mut self) -> bool {
+        self.failed = true;
+        write_marker(&self.dir, self.mutants)
+    }
+
+    /// The segment file that holds `position` and the offset in it, for
+    /// tests that decide the fate of single records at a power cut.
+    #[cfg(test)]
+    pub(crate) fn locate(&self, position: Lsn) -> Option<(String, u64)> {
+        let identity = self.current.identity;
+        let index = *self.live.get(&identity.base_of(position))?;
+        Some((
+            slot_name(self.slots[index].number),
+            position.0 % identity.segment_size,
+        ))
     }
 
     /// The hold: a position [`Log::reclaim`] never passes.
@@ -1392,7 +1420,7 @@ impl<D: Dir> Log<D> {
         self.replay_within(from, to, self.tail, visit)
     }
 
-    fn replay_within(
+    pub(crate) fn replay_within(
         &self,
         from: Lsn,
         to: Lsn,

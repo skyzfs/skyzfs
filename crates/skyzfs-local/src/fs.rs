@@ -321,6 +321,16 @@ impl File for FsFile {
         Ok(())
     }
 
+    fn extend(&mut self, len: u64) -> io::Result<()> {
+        if len < self.file.metadata()?.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "extend does not shrink a file",
+            ));
+        }
+        self.file.set_len(len)
+    }
+
     fn len(&self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len())
     }

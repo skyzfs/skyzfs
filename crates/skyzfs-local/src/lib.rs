@@ -470,3 +470,4 @@ pub mod fs;
 pub mod io;
 pub mod log;
 pub mod sim;
+pub mod store;
