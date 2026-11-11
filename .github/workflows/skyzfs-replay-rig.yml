@@ -77,6 +77,10 @@ jobs:
       UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - name: Install ZFS, build the ublk server and replay-log
         # Steps that need the network are tried three times. One that
         # still fails ends the job with exit 2 and a summary that says
