@@ -528,6 +528,11 @@ pub struct Wanted {
     /// How often the volume's own device is asked for again while it is
     /// live.
     pub live_retries: u32,
+    /// How often a device that was deleted is looked at again before
+    /// its number counts as held. The driver's delete does not wait:
+    /// the number of a device nobody holds comes free a moment after
+    /// the call, so one look straight after it says nothing.
+    pub gone_retries: u32,
     /// Whether the operator acknowledges a failure of the volume. It
     /// has no effect when nothing has failed, and none on a volume that
     /// failed while a client held it.
@@ -591,6 +596,9 @@ impl Mutants {
     /// device counts as not held while the device is still dead under
     /// its number.
     pub(crate) const UNKNOWN_WHILE_DEAD: u32 = 1 << 23;
+    /// A device that is still there at the first look after its delete
+    /// counts as held.
+    pub(crate) const HELD_AT_FIRST_LOOK: u32 = 1 << 24;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -896,7 +904,7 @@ fn settle<C: Control, R: Records>(
         Some(_) => {
             delete(control, records, number, mutants)
                 .map_err(error("deleting the failed volume's device"))?;
-            Ok(control.info(number).map_err(&asking)?.is_some())
+            lingers(control, records, number, wanted.gone_retries, mutants).map_err(&asking)
         }
         None if info.state == DeviceState::Dead => Ok(!mutants.has(Mutants::UNKNOWN_WHILE_DEAD)),
         None => Err(Stop::Error(format!(
@@ -942,6 +950,32 @@ fn settled<C: Control, R: Records>(
         info = control.info(number)?;
     }
     Ok(info)
+}
+
+/// Whether the device `number` is still there a stated time after its
+/// delete: looked at, and while it is there looked at again `retries`
+/// times with the records' pause between. The driver's delete returns
+/// before the device is gone, so a device nobody holds can still be
+/// there at the first look; only one that outlasts the time is held.
+fn lingers<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    retries: u32,
+    mutants: Mutants,
+) -> io::Result<bool> {
+    let mut there = control.info(number)?.is_some();
+    if mutants.has(Mutants::HELD_AT_FIRST_LOOK) {
+        return Ok(there);
+    }
+    for _ in 0..retries {
+        if !there {
+            break;
+        }
+        records.pause();
+        there = control.info(number)?.is_some();
+    }
+    Ok(there)
 }
 
 /// Delete this volume's device: its note first, then the device. A
@@ -1402,9 +1436,12 @@ pub enum Detached {
 ///
 /// The steps, for this volume's device that waits for a server or was
 /// never started: the note is removed, the device is deleted without
-/// waiting, the device is looked at once more, and the attachment
-/// record is removed. If the device is still there at that look, the
-/// answer says that its number is still held. A kill between any two
+/// waiting, the device is looked at again until it is gone or
+/// `gone_retries` looks have found it still there, and the attachment
+/// record is removed. If the device is still there after the last
+/// look, the answer says that its number is still held: one look
+/// straight after the delete would say that of a device nobody holds,
+/// since the driver's delete returns before the device is gone. A kill between any two
 /// steps leaves a state the next start or the next detach treats
 /// safely.
 ///
@@ -1424,15 +1461,22 @@ pub fn detach<C: Control, R: Records, V: Volume>(
     records: &mut R,
     volume: &mut V,
     lock_retries: u32,
+    gone_retries: u32,
 ) -> io::Result<Detached> {
-    detach_with(control, records, volume, lock_retries, Mutants::default())
+    detach_with(
+        control,
+        records,
+        volume,
+        (lock_retries, gone_retries),
+        Mutants::default(),
+    )
 }
 
 pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
     volume: &mut V,
-    lock_retries: u32,
+    (lock_retries, gone_retries): (u32, u32),
     mutants: Mutants,
 ) -> io::Result<Detached> {
     let _held = if mutants.has(Mutants::DETACH_WITHOUT_LOCK) {
@@ -1458,11 +1502,12 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
         DeviceState::Live => Ok(Detached::Live(number)),
         DeviceState::Waiting | DeviceState::Dead => {
             delete(control, records, number, mutants)?;
-            let after = control.info(number)?;
+            let held = lingers(control, records, number, gone_retries, mutants)?;
             records.remove_attachment()?;
-            Ok(match after {
-                None => Detached::Deleted(number),
-                Some(_) => Detached::DeletedHeld(number),
+            Ok(if held {
+                Detached::DeletedHeld(number)
+            } else {
+                Detached::Deleted(number)
             })
         }
     }

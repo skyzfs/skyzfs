@@ -158,9 +158,10 @@ impl Dir for FsDir {
     fn list(&self) -> io::Result<Vec<String>> {
         let mut names = Vec::new();
         for entry in fs::read_dir(&self.path)? {
-            if let Ok(name) = entry?.file_name().into_string() {
-                names.push(name);
-            }
+            // A name that is not UTF-8 is listed with its bad bytes
+            // replaced: it is no name of a store's, and whoever asks
+            // what else the directory holds must see that it is there.
+            names.push(entry?.file_name().to_string_lossy().into_owned());
         }
         names.sort();
         Ok(names)

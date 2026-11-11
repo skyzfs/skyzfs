@@ -42,6 +42,11 @@ struct World {
     /// A live device whose server is seen to be gone once it has been
     /// asked for this many more times.
     settles: Option<(u32, usize)>,
+    /// A delete of a device nobody holds returns before the device is
+    /// gone: it is still there for this many looks.
+    delete_takes: Option<u32>,
+    /// The device that is going, and for how many looks it is there.
+    going: Option<(u32, u32)>,
     /// Who holds the volume's lock.
     lock_holder: Option<u64>,
     locks: u64,
@@ -124,6 +129,8 @@ impl World {
             late: Vec::new(),
             held: Vec::new(),
             settles: None,
+            delete_takes: None,
+            going: None,
             lock_holder: None,
             locks: 0,
             locked_tries: 0,
@@ -238,6 +245,14 @@ impl Control for Fake {
                 w.settles = Some((settling, left - 1));
             }
         }
+        match w.going {
+            Some((going, 0)) if going == number => {
+                w.devices.remove(&number);
+                w.going = None;
+            }
+            Some((going, left)) if going == number => w.going = Some((going, left - 1)),
+            _ => {}
+        }
         Ok(w.devices
             .get(&number)
             .filter(|_| !w.late.contains(&number))
@@ -276,6 +291,13 @@ impl Control for Fake {
             if let Some(device) = w.devices.get_mut(&number) {
                 device.state = DeviceState::Dead;
             }
+        } else if let Some(looks) = w.delete_takes {
+            // Nobody holds it, and the delete has returned before the
+            // device is gone: it is there, dead, for `looks` looks.
+            if let Some(device) = w.devices.get_mut(&number) {
+                device.state = DeviceState::Dead;
+            }
+            w.going = Some((number, looks));
         } else {
             w.devices.remove(&number);
         }
@@ -470,12 +492,16 @@ impl Volume for Fake {
     }
 }
 
+/// How often the tests' lifecycle looks again at a deleted device.
+const GONE: u32 = 4;
+
 const WANTED: Wanted = Wanted {
     queues: 1,
     depth: 64,
     flags: FLAGS,
     lock_retries: 3,
     live_retries: 5,
+    gone_retries: GONE,
     acknowledge_failure: false,
 };
 
@@ -1385,7 +1411,7 @@ fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), Str
             &mut control,
             &mut records,
             &mut Fake(shared.clone()),
-            3,
+            (3, GONE),
             Mutants(mutants),
         );
         drop((control, records));
@@ -1417,7 +1443,13 @@ fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
-        let _ = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+        let _ = detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE,
+        );
         drop((control, records));
         let mut world = match Rc::try_unwrap(shared) {
             Ok(cell) => cell.into_inner(),
@@ -1515,44 +1547,97 @@ fn locate_says_whose_the_recorded_device_is_and_changes_nothing() {
     assert!(locate(&mut control, &mut records).is_err());
 }
 
-#[test]
-fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
+/// What the driver does with a delete, for the tests of the look that
+/// follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Going {
+    /// Nobody holds the device and it is gone when the delete returns.
+    AtOnce,
+    /// Nobody holds it, and it is still there for two looks: the
+    /// driver's delete does not wait.
+    Late,
+    /// A client holds it: it stays, dead.
+    Held,
+}
+
+/// A detach deletes without waiting and then looks until the device is
+/// gone or the stated looks are used: a device that goes late was held
+/// by nobody, one that outlasts them is held. Mutant: the first look
+/// after the delete decides.
+fn detach_says_held_only_of_a_device_that_stays(mutants: u32) -> Result<(), String> {
     for state in [DeviceState::Waiting, DeviceState::Dead] {
-        for held in [false, true] {
+        for going in [Going::AtOnce, Going::Late, Going::Held] {
             let mut world = World::new().attached(4, state, EARLIER);
-            if held {
-                world.held.push(4);
+            match going {
+                Going::AtOnce => {}
+                Going::Late => world.delete_takes = Some(2),
+                Going::Held => world.held.push(4),
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached =
-                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
+            let detached = detach_with(
+                &mut control,
+                &mut records,
+                &mut Fake(shared.clone()),
+                (3, GONE),
+                Mutants(mutants),
+            )
+            .map_err(|e| e.to_string())?;
             let world = shared.borrow();
-            if held {
-                assert_eq!(detached, Detached::DeletedHeld(4));
-                assert_eq!(
-                    world.devices.get(&4).map(|d| d.state),
-                    Some(DeviceState::Dead)
-                );
+            let what = format!("{state:?}, {going:?}");
+            // The looks after the delete: one, and one more after a
+            // pause for each time the device was still there.
+            let looks = match going {
+                Going::AtOnce => 0,
+                Going::Late => 2,
+                Going::Held => GONE as usize,
+            };
+            if going == Going::Held {
+                check(
+                    detached == Detached::DeletedHeld(4),
+                    &format!("{what}: {detached:?}"),
+                )?;
+                check(
+                    world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Dead),
+                    &format!("{what}: the held device is dead"),
+                )?;
             } else {
-                assert_eq!(detached, Detached::Deleted(4));
-                assert!(world.devices.is_empty());
+                check(
+                    detached == Detached::Deleted(4),
+                    &format!("{what}: {detached:?}"),
+                )?;
+                check(world.devices.is_empty(), &format!("{what}: gone"))?;
             }
-            assert!(world.notes.is_empty(), "the note is gone");
-            assert_eq!(world.attachment, None, "the record is gone");
-            // The note first, one delete, one look after it, and the
-            // record last.
-            assert_eq!(
-                world.events,
-                [
-                    Event::Info(4),
-                    Event::RemoveNote(4),
-                    Event::Delete(4),
-                    Event::Info(4),
-                    Event::RemoveAttachment
-                ]
-            );
+            check(world.notes.is_empty(), "the note is gone")?;
+            check(world.attachment.is_none(), "the record is gone")?;
+            // The note first, one delete, the looks, the record last.
+            let mut want = vec![
+                Event::Info(4),
+                Event::RemoveNote(4),
+                Event::Delete(4),
+                Event::Info(4),
+            ];
+            for _ in 0..looks {
+                want.extend([Event::Pause, Event::Info(4)]);
+            }
+            want.push(Event::RemoveAttachment);
+            check(
+                world.events == want,
+                &format!("{what}: the steps were {:?}", world.events),
+            )?;
         }
     }
+    Ok(())
+}
+
+#[test]
+fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is_held() {
+    holds(
+        detach_says_held_only_of_a_device_that_stays,
+        &[(
+            "held decided by the first look after the delete",
+            Mutants::HELD_AT_FIRST_LOOK,
+        )],
+    );
 }
 
 #[test]
@@ -1561,7 +1646,14 @@ fn detach_touches_nothing_it_may_not() {
     let world = World::new().attached(4, DeviceState::Live, EARLIER);
     let (mut control, mut records, shared) = fakes(world);
     assert_eq!(
-        detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
+        detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE
+        )
+        .expect("detach"),
         Detached::Live(4)
     );
     assert_eq!(shared.borrow().events, [Event::Info(4)]);
@@ -1574,8 +1666,14 @@ fn detach_touches_nothing_it_may_not() {
                 world.notes.insert(4, note);
             }
             let (mut control, mut records, shared) = fakes(world);
-            let detached =
-                detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
+            let detached = detach(
+                &mut control,
+                &mut records,
+                &mut Fake(shared.clone()),
+                3,
+                GONE,
+            )
+            .expect("detach");
             if state == DeviceState::Dead && note.is_none() {
                 // How this volume's device looks once it was deleted
                 // while something held it: said apart, and left.
@@ -1591,7 +1689,14 @@ fn detach_touches_nothing_it_may_not() {
     // No device.
     let (mut control, mut records, shared) = fakes(World::new());
     assert_eq!(
-        detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach"),
+        detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE
+        )
+        .expect("detach"),
         Detached::Nothing
     );
     assert!(shared.borrow().events.is_empty());
@@ -1639,7 +1744,7 @@ fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
                 &mut control,
                 &mut records,
                 &mut Fake(shared.clone()),
-                3,
+                (3, GONE),
                 Mutants(mutants),
             );
             drop((control, records));
@@ -1759,7 +1864,13 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
     world.locked_tries = 10;
     let (mut control, mut records, shared) = fakes(world);
-    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    let detached = detach(
+        &mut control,
+        &mut records,
+        &mut Fake(shared.clone()),
+        3,
+        GONE,
+    );
     assert_eq!(detached.expect("detach"), Detached::Locked);
     assert_eq!(shared.borrow().events, vec![Event::Pause; 3]);
 
@@ -1767,7 +1878,13 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
     world.locked_tries = 3;
     let (mut control, mut records, shared) = fakes(world);
-    let detached = detach(&mut control, &mut records, &mut Fake(shared.clone()), 3);
+    let detached = detach(
+        &mut control,
+        &mut records,
+        &mut Fake(shared.clone()),
+        3,
+        GONE,
+    );
     assert_eq!(detached.expect("detach"), Detached::Deleted(4));
     // Every step of it under the lock, which is free again afterwards.
     let world = shared.borrow();
@@ -2659,17 +2776,25 @@ fn unknown_and_gone(mutants: u32) -> Result<(), String> {
 }
 
 /// The failing daemon died before it deleted the device: this start
-/// removes the note, deletes, and looks again.
+/// removes the note, deletes, and looks again until the device is gone
+/// or the stated looks are used. A device that goes late was held by
+/// nobody. Mutant: the first look after the delete decides, and the
+/// answer is written down for the boot.
 fn unknown_and_not_yet_deleted(mutants: u32) -> Result<(), String> {
-    for held in [false, true] {
+    for going in [Going::AtOnce, Going::Late, Going::Held] {
+        let held = going == Going::Held;
         for state in [DeviceState::Waiting, DeviceState::Dead] {
             let mut world = unknown_world();
             world.notes.insert(4, [0xA5; 16]);
             if let Some(device) = world.devices.get_mut(&4) {
                 device.state = state;
             }
-            if held {
-                world.held.push(4);
+            match going {
+                Going::AtOnce => {}
+                // The driver's delete does not wait: nobody holds the
+                // device, and it is still there for two looks.
+                Going::Late => world.delete_takes = Some(2),
+                Going::Held => world.held.push(4),
             }
             let outcome = run_as(world, &ACKNOWLEDGING, mutants);
             rules(&outcome)?;
@@ -2703,7 +2828,13 @@ fn a_failure_of_unknown_holding_is_settled_by_what_the_driver_says_now() {
         )],
     );
     holds(unknown_and_gone, &[]);
-    holds(unknown_and_not_yet_deleted, &[]);
+    holds(
+        unknown_and_not_yet_deleted,
+        &[(
+            "held decided by the first look after the delete",
+            Mutants::HELD_AT_FIRST_LOOK,
+        )],
+    );
 }
 
 #[test]

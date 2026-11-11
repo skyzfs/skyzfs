@@ -48,6 +48,14 @@ pub const LOCK_RETRIES: u32 = 20;
 /// How long between two tries: 100 ms. With [`LOCK_RETRIES`], 2 s.
 pub const LOCK_PAUSE: Duration = Duration::from_millis(100);
 
+/// How often a device that was deleted is looked at again before its
+/// number is said to be held: with [`LOCK_PAUSE`] between, 5 s, the
+/// time a start gives a device that is still live. The driver's delete
+/// does not wait, and the binding's kernel tests measure how long the
+/// number of a device nobody holds takes to come free
+/// (`control_delete_frees_the_number_within`, with its detail line).
+pub const GONE_RETRIES: u32 = 50;
+
 /// The size of a new volume's log segments: 64 MiB. A constant, and
 /// recorded with the volume.
 pub const SEGMENT_SIZE: u64 = 64 << 20;
@@ -111,6 +119,66 @@ impl Now {
     }
 }
 
+/// A control interface that is opened when it is first asked
+/// something, and not before. `status` and `detach` ask the driver
+/// only when the volume has a record of this boot to ask about; after
+/// a reboot, before the driver is loaded, there is none, the answer is
+/// "detached", and the driver's absence must not turn it into an
+/// error. If the opening fails, every question fails with its error
+/// (it is tried again at the next question), and whether a client
+/// holds a device cannot be told.
+pub struct Lazy<F> {
+    open: F,
+    control: Option<Box<dyn Control>>,
+}
+
+impl<F: FnMut() -> io::Result<Box<dyn Control>>> Lazy<F> {
+    /// A control interface that `open` makes at the first question.
+    pub fn new(open: F) -> Self {
+        Self {
+            open,
+            control: None,
+        }
+    }
+
+    fn control(&mut self) -> io::Result<&mut Box<dyn Control>> {
+        if self.control.is_none() {
+            self.control = Some((self.open)()?);
+        }
+        self.control
+            .as_mut()
+            .ok_or_else(|| io::Error::other("no control interface"))
+    }
+}
+
+impl<F: FnMut() -> io::Result<Box<dyn Control>>> Control for Lazy<F> {
+    fn can_reissue(&mut self) -> io::Result<bool> {
+        self.control()?.can_reissue()
+    }
+    fn info(&mut self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
+        self.control()?.info(number)
+    }
+    fn add(&mut self, number: u32, shape: &lifecycle::Shape) -> Result<(), lifecycle::AddError> {
+        self.control()
+            .map_err(lifecycle::AddError::Other)?
+            .add(number, shape)
+    }
+    fn disown(&mut self, number: u32) {
+        if let Ok(control) = self.control() {
+            control.disown(number);
+        }
+    }
+    fn delete(&mut self, number: u32) -> io::Result<()> {
+        self.control()?.delete(number)
+    }
+    fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
+        self.control()?.begin_recovery(number)
+    }
+    fn client_holds(&mut self, number: u32) -> Option<bool> {
+        self.control().ok()?.client_holds(number)
+    }
+}
+
 /// The records of the volume in `dir`, if `dir` holds a volume.
 fn files(volume: &Volume, boot: [u8; 16]) -> Result<Files, Output> {
     let dir: &Path = &volume.dir;
@@ -149,6 +217,25 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
             None
         }
     };
+    // The run directory is named after the volume's directory, so a
+    // volume that was in this directory before and was made again
+    // leaves its status file where this one's would be. Counters are
+    // shown only from a file that names this store. The store is not
+    // opened for that: its identity is read from the superblock.
+    let file = match file {
+        None => None,
+        Some(file) => match FsDir::new(&volume.dir).and_then(|dir| Store::identity_of(&dir)) {
+            Ok(Some(identity)) if identity == file.identity => Some(file),
+            Ok(_) => None,
+            Err(e) => {
+                err = format!(
+                    "skyzfsd: the volume's identity cannot be read ({e}): the status file \
+                     is not shown\n"
+                );
+                None
+            }
+        },
+    };
     let noted = match records::read_failure(&records.failure_path()) {
         Ok(None) => Noted::Nothing,
         Ok(Some(stored)) => Noted::Whole(stored),
@@ -183,12 +270,23 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// | What was found | Exit status | Said on |
 /// |---|---|---|
 /// | no device of this boot is the volume's | 0 | standard output |
-/// | the device was deleted | 0 | standard output |
-/// | it was deleted and something still holds it open | 0 | standard error |
-/// | a device with no server and no note, with the recorded values: deleted before and still held, or another's | 0 | standard error |
+/// | the device was deleted, and its number is free | 0 | standard output |
+/// | it was deleted and something still holds it open | 6 | standard error |
+/// | a device with no server and no note, with the recorded values: deleted before and still held, or another's | 1 | standard error |
 /// | the device under the recorded number is not known to be the volume's | 1 | standard error |
 /// | a server is live on it | 5 | standard error |
 /// | a daemon holds the volume's lock, after 2 s of trying | 5 | standard error |
+///
+/// **Only 0 says that nothing of this volume is left attached on this
+/// node**, so that the volume may be served elsewhere on it. With 6
+/// the device is deleted and a client (a pool that was not exported)
+/// still holds it under its number; with 1 the device was left as it
+/// is because whose it is cannot be told; with 5 nothing was done.
+///
+/// The driver's delete does not wait, so "still held" is said only of
+/// a device that is still there 5 s after the delete
+/// ([`GONE_RETRIES`]): a detach of a held device takes that much
+/// longer.
 pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Output {
     let mut records = match files(volume, boot) {
         Ok(records) => records,
@@ -196,7 +294,13 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
     };
     let mut store = StoreVolume::new(&volume.dir, OpenOptions::default());
     let mut control = control;
-    let detached = match lifecycle::detach(&mut control, &mut records, &mut store, LOCK_RETRIES) {
+    let detached = match lifecycle::detach(
+        &mut control,
+        &mut records,
+        &mut store,
+        LOCK_RETRIES,
+        GONE_RETRIES,
+    ) {
         Ok(detached) => detached,
         Err(e) => return Output::error(format!("detach: {e}")),
     };
@@ -208,7 +312,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
         ),
         Detached::Deleted(n) => Output::said(Exit::Done, &format!("deleted /dev/ublkb{n}"), ""),
         Detached::DeletedHeld(n) => Output::said(
-            Exit::Done,
+            Exit::DeletedHeld,
             "",
             &format!(
                 "deleted /dev/ublkb{n}; something still holds it open, and it keeps its number \
@@ -217,7 +321,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
         ),
 
         Detached::DeadNoNote(n) => Output::said(
-            Exit::Done,
+            Exit::Error,
             "",
             &format!(
                 "device {n} under the recorded number has no server and no note: it is this \
@@ -260,7 +364,12 @@ fn hex(bytes: &[u8; 16]) -> String {
 }
 
 /// `create`: make a new volume with the id `id` in a directory that
-/// exists and holds none. `boot` is this boot, if it could be read:
+/// exists and holds none. The directory may hold nothing but what an
+/// interrupted create leaves
+/// ([`CREATE_LEFTOVERS`](skyzfs_local::store::CREATE_LEFTOVERS)); any
+/// other file makes create refuse it and touch nothing. A file under
+/// exactly one of those names is removed as a leftover, also if it was
+/// an operator's: create cannot tell them apart. `boot` is this boot, if it could be read:
 /// with it, a failure note of this boot under the run directory is
 /// warned of on standard error (the volume is made all the same, and
 /// the note stays).
@@ -292,7 +401,12 @@ pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
 
 /// Run `work` in the directory `path`, made first (its last component
 /// only, mode 0700) if it is missing. If `work` fails and the directory
-/// was made here, it is removed again if it is empty.
+/// was made here, what a create leaves in it is removed, by its exact
+/// names ([`CREATE_LEFTOVERS`](skyzfs_local::store::CREATE_LEFTOVERS)),
+/// and then the directory: a create that fails leaves nothing of a
+/// directory it made. A directory that was there before is left with
+/// whatever the failed create left in it; the next create removes
+/// that.
 pub fn in_directory<T>(
     path: &Path,
     work: impl FnOnce(FsDir) -> Result<T, Output>,
@@ -314,10 +428,35 @@ pub fn in_directory<T>(
         Err(e) => Err(Output::error(format_args!("{shown}: {e}"))),
     };
     if result.is_err() && made {
-        // Fails, and leaves it, if anything was put in it.
-        let _ = std::fs::remove_dir(path);
+        unmake(path);
     }
     result
+}
+
+/// Remove a directory this create made, and what a create leaves in
+/// it. Under the volume's lock, and only if the directory holds no
+/// volume: if another instance has the lock or made a volume here in
+/// the meantime, everything is left. The directory itself goes only if
+/// it is empty then, so a file of anybody else keeps it.
+fn unmake(path: &Path) {
+    let Ok(dir) = FsDir::new(path) else {
+        return;
+    };
+    if let Ok(lock) = Store::lock_volume(&dir) {
+        if !path.join(SUPER_NAME).exists() {
+            let lock_name = skyzfs_local::fs::LOCK_NAME;
+            for name in skyzfs_local::store::CREATE_LEFTOVERS {
+                if name != lock_name {
+                    let _ = std::fs::remove_file(path.join(name));
+                }
+            }
+            // Last, and still held: whoever opens the lock file from
+            // here on finds the directory gone or makes its own.
+            let _ = std::fs::remove_file(path.join(lock_name));
+        }
+        drop(lock);
+    }
+    let _ = std::fs::remove_dir(path);
 }
 
 /// Make the store of `create` in `dir`; its identity.
@@ -336,6 +475,13 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
         Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),
+        Err(StoreError::NotEmpty | StoreError::Log(LogError::NotEmpty)) => {
+            Err(Output::error(format_args!(
+                "{shown} holds {}, which is not left by a create: create makes a volume only \
+                 in a directory that holds nothing else. Nothing was done",
+                stranger(&create.dir)
+            )))
+        }
         Err(StoreError::Locked) => Err(Output::said(
             Exit::RefusedHeld,
             "",
@@ -344,6 +490,27 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
         Err(e) => Err(Output::error(format_args!(
             "creating a volume in {shown}: {e}"
         ))),
+    }
+}
+
+/// The file in `dir` that made the store refuse it, for the message.
+fn stranger(dir: &Path) -> String {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut strangers: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !skyzfs_local::store::CREATE_LEFTOVERS.contains(name))
+        .collect();
+    strangers.sort_unstable();
+    match strangers.as_slice() {
+        [] => "a file".to_owned(),
+        [one] => format!("`{one}`"),
+        [first, rest @ ..] => format!("`{first}` and {} more", rest.len()),
     }
 }
 

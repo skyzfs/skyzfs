@@ -18,5 +18,9 @@ skyzfs-ublk = { workspace = true }
 skyzfs-ublk-sys = { workspace = true }
 thiserror = { workspace = true }
 
+# statfs, for the rule that the daemon's files are on no ZFS pool.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

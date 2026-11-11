@@ -50,8 +50,8 @@ impl Queue for ScriptQueue {
         }
     }
 
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
-        Buf::filled(blocks, 0x40 + tag as u8)
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
+        Some(Buf::filled(blocks, 0x40 + tag as u8))
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
@@ -59,6 +59,10 @@ impl Queue for ScriptQueue {
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
         }
+    }
+
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        Ok(())
     }
 
     fn pause(&mut self) {}

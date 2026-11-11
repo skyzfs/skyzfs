@@ -47,7 +47,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           rustup update stable
           sudo modprobe ublk_drv
-          bin=$(cargo test --release --locked -p skyzfs-ublk-sys --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
+          bin=$(cargo test --release --locked -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
           [ -x "$bin" ] || { echo "::error::no test binary"; exit 1; }
           rc=0
           sudo "$bin" --ignored --test-threads 1 --nocapture > kernel-tests.log 2>&1 || rc=$?

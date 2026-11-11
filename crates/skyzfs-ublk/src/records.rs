@@ -61,7 +61,10 @@
 //! volume's log failed in this boot (design §4.2, "a failed volume
 //! gives up its attachment"). Made whole under another name and
 //! renamed; not synced, because it has to live exactly as long as the
-//! boot. A note of another boot counts as none.
+//! boot. A note of another boot counts as none. It has no checksum:
+//! it is replaced whole by a rename on a memory file system, and one
+//! whose length or magic is not exactly this version's is not a whole
+//! note, which counts as a failure while a client held the device.
 //!
 //! 64 bytes, little endian.
 //!
