@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::ops::ControlFlow;
 
 use crate::format::{
     chain_seed, Bad, Identity, Key, Kind, Lsn, RecordHeader, SegmentHeader, Superblock,
@@ -214,6 +215,18 @@ pub enum Corruption {
         /// What is wrong with it.
         stopped: Stop,
     },
+}
+
+/// For test rigs: what a write of the superblock calls between its
+/// write and its sync.
+#[cfg(any(test, feature = "test-hooks"))]
+struct SuperblockPause(Box<dyn Fn() + Send>);
+
+#[cfg(any(test, feature = "test-hooks"))]
+impl std::fmt::Debug for SuperblockPause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SuperblockPause")
+    }
 }
 
 /// What a log operation can fail with.
@@ -702,6 +715,10 @@ pub struct Log<D: Dir> {
     /// Records validated by replays, for tests of what a replay costs.
     #[cfg(test)]
     walked: std::cell::Cell<u64>,
+    /// For test rigs: called when a superblock is written and not yet
+    /// synced. See [`Log::set_superblock_pause`].
+    #[cfg(any(test, feature = "test-hooks"))]
+    superblock_pause: Option<SuperblockPause>,
     mutants: Mutants,
 }
 
@@ -1066,6 +1083,8 @@ impl<D: Dir> Log<D> {
             start: None,
             #[cfg(test)]
             walked: std::cell::Cell::new(0),
+            #[cfg(any(test, feature = "test-hooks"))]
+            superblock_pause: None,
             failed: false,
             dirty: BTreeSet::new(),
             dir_dirty: false,
@@ -1304,8 +1323,13 @@ impl<D: Dir> Log<D> {
         };
         let written = self
             .superblock
-            .write_at(copy * SUPER_COPY_STRIDE, &next.encode())
-            .and_then(|()| self.superblock.sync());
+            .write_at(copy * SUPER_COPY_STRIDE, &next.encode());
+        // The new superblock is written and not durable.
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(SuperblockPause(pause)) = &self.superblock_pause {
+            pause();
+        }
+        let written = written.and_then(|()| self.superblock.sync());
         if let Err(e) = written {
             return Err(self.fail("writing the superblock", &e));
         }
@@ -1634,6 +1658,25 @@ impl<D: Dir> Log<D> {
         limit: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
+        self.walk(from, to, limit, &mut |record| {
+            visit(record);
+            ControlFlow::Continue(())
+        })
+        .map(|_| ())
+    }
+
+    /// [`Log::replay`] that the visitor can end: the walk stops behind
+    /// the record at which `visit` breaks, and reads nothing beyond
+    /// it. For a reader that wants the first records of a long
+    /// stretch, as a checkpoint step does, without paying for the
+    /// whole stretch.
+    pub(crate) fn replay_until(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>) -> ControlFlow<()>,
+    ) -> Result<(), LogError> {
         self.walk(from, to, limit, visit).map(|_| ())
     }
 
@@ -1659,7 +1702,7 @@ impl<D: Dir> Log<D> {
         from: Lsn,
         to: Lsn,
         limit: Lsn,
-        visit: &mut dyn FnMut(&Record<'_>),
+        visit: &mut dyn FnMut(&Record<'_>) -> ControlFlow<()>,
     ) -> Result<(u64, Cursor), LogError> {
         if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
             return Err(LogError::Failed);
@@ -1762,7 +1805,7 @@ impl<D: Dir> Log<D> {
                         size,
                     )
                     .map_err(|e| read_error("reading the log", &e))?;
-                visit(&Record {
+                let flow = visit(&Record {
                     start,
                     end,
                     kind: header.kind,
@@ -1770,6 +1813,9 @@ impl<D: Dir> Log<D> {
                     length: header.length,
                     data,
                 });
+                if flow.is_break() {
+                    break;
+                }
             }
             cursor = Cursor {
                 position: end,
@@ -1834,6 +1880,15 @@ impl<D: Dir> Log<D> {
         self.limit = limit;
     }
 
+    /// For test rigs: have every write of the superblock call `pause`
+    /// between its write and its sync, when the new superblock is in
+    /// the file and not durable. A checkpoint step sets it around its
+    /// reclaim, to be killed there.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn set_superblock_pause(&mut self, pause: Option<Box<dyn Fn() + Send>>) {
+        self.superblock_pause = pause.map(SuperblockPause);
+    }
+
     /// Give up the log before `before`, as far as the hold and the
     /// durable position allow, and return where the log starts now.
     /// The new start must be a record boundary, where a record starts or
@@ -1861,7 +1916,12 @@ impl<D: Dir> Log<D> {
         let walked = if self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
             None
         } else {
-            Some(self.walk(target, target, self.tail, &mut |_| {})?)
+            Some(self.walk(
+                target,
+                target,
+                self.tail,
+                &mut |_| ControlFlow::Continue(()),
+            )?)
         };
         // A new epoch, as with every superblock that is written: what
         // is written from now on, a record or the header of a segment

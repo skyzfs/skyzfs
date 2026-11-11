@@ -55,17 +55,17 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use skyzfs_local::log::SUPER_NAME;
-use skyzfs_local::store::{FailureObserver, OpenOptions, Waker};
+use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
 use skyzfs_ublk::lifecycle::{self, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
-use skyzfs_ublk::status::{self, Board, Pace, Status};
+use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status};
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
@@ -73,7 +73,7 @@ use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
-use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
+use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES, SEGMENT_SIZE};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
@@ -333,16 +333,34 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
+/// The store's log state as the status file shows it.
+fn log_shown(log: &skyzfs_local::store::LogState) -> LogShown {
+    LogShown {
+        live: log.live(),
+        steps: log.steps,
+        stepping: log.stepping,
+        own_syncs: log.own_syncs,
+    }
+}
+
 /// Put the pump's counters up for the status file. A result the test
 /// build keeps back is a request the kernel still waits for: it counts
 /// as in flight.
 fn post<Q: skyzfs_ublk::pump::Queue>(
     board: &Board,
     pump: &mut Pump<Delayed<Q, SharedAck>, skyzfs_local::store::Served, LateAck<SharedAck>>,
+    shown: &mut LogShown,
 ) {
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
     board.post(counters);
+    // The log, as the store's worker last showed it. The worker wakes
+    // this thread when a checkpoint step begins and when it ends; those
+    // two are written to the status file at once.
+    let now = log_shown(&pump.target().log_state());
+    let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
+    board.post_log(now, step_changed);
+    *shown = now;
 }
 
 /// Run `serve`. Prints for itself: the ready line has to be out when
@@ -439,7 +457,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         gone_retries: GONE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
     };
-    let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
+    let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
         Err(Stop::CannotReissue) => {
             return Err(
@@ -476,6 +494,36 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err("the store holds no lock on the volume".into());
     };
     let (number, shape) = (ready.number, ready.shape);
+    // From here the store checkpoints by itself (design §5.1): not
+    // before the device is this instance's. The steps begin when the
+    // store's worker is started, a few lines down: that is before the
+    // device is started and before the ready line, so a long log that
+    // this start found is worked off without waiting for the first
+    // request. The start itself does not wait for a step: it goes on
+    // while the worker steps. The first request can wait for the one
+    // step that is under way when it arrives.
+    ready.store.set_marks(Some(Marks {
+        high: u64::from(serve.log_high) * SEGMENT_SIZE,
+        low: u64::from(serve.log_low) * SEGMENT_SIZE,
+        step: StepBound::DAEMON,
+    }));
+    #[cfg(feature = "test-hooks")]
+    if let Some(pause) = &serve.hooks.step_pause {
+        use crate::cli::StepPoint as At;
+        use skyzfs_local::store::{StepPause, StepPoint};
+        let pause = match pause {
+            crate::cli::StepPause::Ms(ms) => StepPause::For(Duration::from_millis(*ms)),
+            crate::cli::StepPause::Until(path) => StepPause::Until(path.clone()),
+        };
+        let at = match serve.hooks.step_pause_at {
+            At::Saved => StepPoint::Saved,
+            At::Written => StepPoint::Written,
+            At::Synced => StepPoint::Synced,
+            At::StartWritten => StepPoint::StartWritten,
+            At::StartDurable => StepPoint::StartDurable,
+        };
+        ready.store.set_step_pause_at(pause, at);
+    }
     let identity = ready.store.identity();
     // What the server before this one had applied and never answered:
     // the kernel issues those requests again, and they are applied a
@@ -502,6 +550,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
     let board = Arc::new(Board::new());
+    // The log as the start found it, on the board before the status
+    // thread's first write: without it the file says a live size of 0
+    // until the queue's thread has had its first turn, which on an
+    // idle device is the first request (seen on a kernel: `log_live 0`
+    // right after a start that had replayed 81 MB).
+    let first_log = log_shown(&served.log_state());
+    board.post_log(first_log, false);
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let hold = serve.hooks.hold;
@@ -514,8 +569,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main
                 // thread lets go of it.
+                let mut shown = first_log;
                 pumped(Pump::new(queue, served, ack), |pump, ended| {
-                    post(&board, pump);
+                    post(&board, pump, &mut shown);
                     if !ended {
                         faults(pump, &flags, &mut fail_after);
                     }
@@ -524,6 +580,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         })
         .map_err(|e| format!("the queue of device {number}: {e}"))?;
     let stopper = serving.stopper();
+    // How long the start took: known once the device serves, 0 until then.
+    let start_ms = Arc::new(AtomicU64::new(0));
     let publisher = std::thread::Builder::new()
         .name("skyzfsd-status".into())
         .spawn({
@@ -531,8 +589,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let path = records.volume_run_dir().join(status::STATUS);
             let (queues, depth) = (shape.queues, shape.depth);
             let stopper = stopper.clone();
+            let start_ms = start_ms.clone();
             move || {
-                board.publish(Pace::new(STATUS_INTERVAL_MS), |counters, failures| {
+                board.publish_with_log(Pace::new(STATUS_INTERVAL_MS), |counters, log, failures| {
                     let status = Status {
                         pid: std::process::id(),
                         queues,
@@ -544,6 +603,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                         failures,
                         first_write_copies: stopper.first_write_copies(),
                         recovered_unacknowledged: recovered,
+                        log: Some(LogStatus {
+                            shown: *log,
+                            start_ms: start_ms.load(Ordering::SeqCst),
+                            replayed_bytes: log_bytes,
+                        }),
                     };
                     status::write(&path, &status)
                 })
@@ -570,12 +634,22 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
+    // The start's time is known only now, after the status thread's
+    // first write: it is written without a post, which would replace
+    // the counters the queue's thread has put up.
+    start_ms.store(
+        u64::try_from((started - began).as_millis()).unwrap_or(u64::MAX),
+        Ordering::SeqCst,
+    );
+    board.write_again();
     // The order of a start: the status thread starts and writes the
     // file at once with what the board holds (zeros, or what the
     // queue's thread has posted by then); the device starts; the
     // queue's thread posts its counters after every turn, and each
     // post replaces the board's with newer ones of its own; `ready`
-    // follows the first write. Only the queue's thread posts.
+    // follows the first write. Only the queue's thread posts, but for
+    // the log's state at the start, which the main thread put on the
+    // board before either thread existed.
     //
     // `ready` only after this instance's first status write was tried,
     // done or failed: until then the status file is the one the
