@@ -19,7 +19,7 @@
 # so that a kill leaves writes applied and not acknowledged. A serve
 # that takes over from a dead server says on stderr how many it found
 # ("take-over: N writes beyond the acknowledged position"), and status
-# has the same number as `takeover_unacked`. For the stand-in the
+# has the same number as `recovered_unacknowledged`. For the stand-in the
 # number is the dead server's own count of requests in that wait; it
 # has no log to compare with an acknowledged position.
 #
@@ -131,7 +131,7 @@ status)
     [ "$(stat_field 6)" = 1 ] && echo "held 1" || echo "held 0"
     # The stand-in stores no acknowledged position, so none ever waits.
     echo "unstored 0"
-    echo "takeover_unacked $(cat "$TAKEOVER" 2>/dev/null || echo 0)"
+    echo "recovered_unacknowledged $(cat "$TAKEOVER" 2>/dev/null || echo 0)"
     ;;
 detach)
     n=$(cat "$DEVREC" 2>/dev/null || true)

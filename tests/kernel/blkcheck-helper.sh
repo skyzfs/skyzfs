@@ -119,7 +119,7 @@ kill)
     DEV=$(serve) || exit 1
     # What the new server found applied and not acknowledged, by its own
     # account; "?" from a server that does not say.
-    found=$(status_of takeover_unacked)
+    found=$(status_of recovered_unacknowledged)
     echo "kill $N take-over found ${found:-?}" >> "$WORK/helper.log"
     ;;
 fail)

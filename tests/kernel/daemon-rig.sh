@@ -1063,7 +1063,7 @@ check_c_delay() {
         return
     fi
     case ${found:-?} in
-        '?') pin c_kill_with_applied_unacknowledged ERROR "a take-over did not say what it found (status key takeover_unacked) at ${asked:-0} take-overs" ;;
+        '?') pin c_kill_with_applied_unacknowledged ERROR "a take-over did not say what it found (status key recovered_unacknowledged) at ${asked:-0} take-overs" ;;
         0) pin c_kill_with_applied_unacknowledged ERROR "no server found a write applied and not acknowledged over ${asked:-0} take-overs: the delay did nothing, and the kill cases did not see a write applied twice" ;;
         *) pin c_kill_with_applied_unacknowledged PASS "$found requests were applied and not acknowledged at a server's death and issued again, over ${asked} take-overs" ;;
     esac
