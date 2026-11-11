@@ -262,6 +262,7 @@ if scenario_start gone 2; then
     scenario_delete gone 2 wait || rec gone_note "the pool did not suspend"
     # zpool clear with no device behind the pool, and what is stuck with it.
     ( lim 100 zpool clear skzf-gone > "$OUT/gone-clear.log" 2>&1; echo $? > "$WORK/gone-clear.rc" ) &
+    clear_pid=$!
     sleep 15
     t0=$(date +%s)
     lim 30 zpool status skzf-gone > "$OUT/gone-status-during-clear.log" 2>&1; rc=$?
@@ -269,7 +270,9 @@ if scenario_start gone 2; then
     t0=$(date +%s)
     lim 30 zpool clear skzf-gone > "$OUT/gone-clear2.log" 2>&1; rc=$?
     rec gone_second_clear "a second zpool clear: rc $rc after $(( $(date +%s) - t0 )) s ($(tail -n 1 "$OUT/gone-clear2.log"))"
-    wait
+    # Not a bare wait: the readers and writers of the earlier scenarios
+    # are background jobs too, and they never return.
+    wait "$clear_pid"
     rec gone_first_clear "zpool clear with no device: rc $(cat "$WORK/gone-clear.rc" 2>/dev/null) (124: not returned after 100 s) ($(tail -n 1 "$OUT/gone-clear.log")); pool $(pool_state skzf-gone)"
     # Is there a way to be rid of the pool short of a reboot?
     t0=$(date +%s)
