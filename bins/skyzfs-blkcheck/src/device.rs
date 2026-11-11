@@ -98,6 +98,12 @@ fn describe(op: &Op) -> String {
 /// thread in one system call.
 struct DeviceTarget {
     number: u64,
+    /// The server's process, if the helper can say: the tool then
+    /// sends the SIGKILL itself, at once, so that it can land while
+    /// requests are in flight. Through the helper the signal comes
+    /// tens of milliseconds later, when a fast server has long
+    /// answered everything.
+    server: Option<rustix::process::Pid>,
     file: Arc<File>,
     /// The path, if it is a block device and not a plain file.
     device: Option<Arc<str>>,
@@ -219,6 +225,7 @@ impl DeviceTarget {
         let (done_tx, done_rx) = channel();
         Ok(Self {
             number,
+            server: None,
             file: Arc::new(file),
             device: is_device.then(|| Arc::from(path)),
             failed: Arc::new(AtomicBool::new(false)),
@@ -457,6 +464,12 @@ struct DeviceHarness {
 }
 
 impl DeviceHarness {
+    /// The server's pid from the helper's `pid`, if it has one to give.
+    fn server_of(&self, number: u64) -> Option<rustix::process::Pid> {
+        let pid: i32 = self.helper("pid", number).ok()?.parse().ok()?;
+        rustix::process::Pid::from_raw(pid)
+    }
+
     /// Run the helper; the last line of its stdout.
     fn helper(&self, verb: &str, number: u64) -> Result<String, HarnessError> {
         self.helper_watched(verb, number, &mut |_| {})
@@ -535,12 +548,24 @@ impl Harness for DeviceHarness {
         let number = self.next;
         let path = self.helper("create", number)?;
         self.last = Some(number);
-        DeviceTarget::open(number, &path, self.depth)
+        let mut target = DeviceTarget::open(number, &path, self.depth)?;
+        target.server = self.server_of(number);
+        Ok(target)
     }
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
-        trace(target.number, "kill", None, "");
         let number = target.number;
+        // The signal first, from here: nothing is faster.
+        let sent = target
+            .server
+            .take()
+            .map(|pid| rustix::process::kill_process(pid, rustix::process::Signal::KILL).is_ok());
+        trace(
+            number,
+            "kill",
+            None,
+            &format!("signal sent by the tool: {sent:?}"),
+        );
         // The helper says "dead R W" when the old server is gone and
         // the new one is not started: no request completes in between.
         // R and W are the kernel's counts of reads and writes in flight
@@ -571,6 +596,7 @@ impl Harness for DeviceHarness {
         trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
         trace(target.number, "settled", None, "");
+        target.server = self.server_of(number);
         Ok(target)
     }
 
@@ -593,6 +619,9 @@ impl Harness for DeviceHarness {
         // is still running. If the helper could not make the log fail,
         // the volume has not failed.
         trace(target.number, "fail", None, "");
+        // The server exits when its log fails: its pid is nobody's, or
+        // somebody else's, from here on.
+        target.server = None;
         target.failed.store(true, Ordering::SeqCst);
         if let Err(e) = self.helper("fail", target.number) {
             target.failed.store(false, Ordering::SeqCst);
@@ -607,7 +636,9 @@ impl Harness for DeviceHarness {
         drop(target);
         trace(number, "reopen", None, "");
         let path = self.helper("reopen", number)?;
-        DeviceTarget::open(number, &path, self.depth)
+        let mut target = DeviceTarget::open(number, &path, self.depth)?;
+        target.server = self.server_of(number);
+        Ok(target)
     }
 }
 

@@ -958,7 +958,7 @@ hold_test() {
 # The suite's verdict on each case, next to what the suite declares for
 # a harness that can do what this one can. The judge compares the two.
 check_c() {
-    local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n
+    local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n n_live n_before n_at_death n_differs n_dead
     # What the harness can do beyond a plain device. A failed volume is
     # opened again only by the stand-in: the daemon refuses, until the
     # next boot, a volume that failed while a client held its device,
@@ -980,8 +980,19 @@ check_c() {
     # the old server had completed (their resubmission is issued) and
     # those in flight when it died (the kernel issues them again). If
     # the second number is near nothing, the kill cases test little.
-    rec c_kills "$(awk -F'\t' '$3 == "kill" { k++ } $3 == "before_kill" { b++ } $3 == "carried" { c++ } $3 == "sorted" { s++ } $3 == "count_differs" { d++ }
-        END { printf "%d kills of a live server, %d of them sorted on the helper\047s line; calls outstanding at a kill: %d completed by the old server and issued again by the tool, %d in flight at its death and issued again by the kernel; kills where the tool had more calls outstanding than the kernel counted in flight: %d", k, s, b, c, d }' "$OUT/c-trace.tsv" 2>/dev/null)"
+    read -r n_live n_before n_at_death n_differs n_dead <<< "$(awk -F'\t' '
+        $3 == "sorted" { live++; split($5, w, " "); at_death += w[2] } $3 == "before_kill" { before++ }
+        $3 == "count_differs" { differs++ } $3 == "kill" { kills++ }
+        END { printf "%d %d %d %d %d", live, before, at_death, differs, kills - live }' "$OUT/c-trace.tsv" 2>/dev/null)"
+    rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again; kills where the tool had more calls outstanding than the kernel counted in flight: ${n_differs:-0}"
+    # A kill of an idle server exercises its restart and nothing of the
+    # reissue of requests. Over the whole run some call must have been
+    # in flight at a death, or the kill cases say less than they claim.
+    if [ "${n_live:-0}" -gt 0 ] && [ "${n_at_death:-0}" -gt 0 ]; then
+        pin c_kill_with_requests_in_flight PASS "${n_at_death} calls were in flight at a server's death over ${n_live} kills"
+    else
+        pin c_kill_with_requests_in_flight ERROR "no call was in flight at a server's death over ${n_live:-0} kills: the kill cases exercised a restart, not the reissue"
+    fi
     gzip -f "$OUT/c-trace.tsv" 2>/dev/null
     for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/c-$(basename "$f")"; done
     declare -A declared_as=()

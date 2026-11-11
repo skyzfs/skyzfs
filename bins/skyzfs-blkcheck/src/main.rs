@@ -13,6 +13,11 @@
 //!
 //! - `CMD create N`: make volume number N, empty, and serve it. Prints
 //!   the path of its block device on the last line of stdout.
+//! - `CMD pid N`: print the pid of the server of volume N. If the
+//!   helper has this, the tool sends the SIGKILL itself the moment the
+//!   suite asks for a kill, and calls `CMD kill N` for the rest: a
+//!   signal sent through the helper lands tens of milliseconds later,
+//!   when a fast server has answered every request long before.
 //! - `CMD kill N`: kill the server of volume N with SIGKILL, print
 //!   `dead R W` when it is gone, and serve the volume again. Prints the
 //!   device path on the last line.

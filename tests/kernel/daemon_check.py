@@ -44,6 +44,12 @@ EXPECTED = {
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
                           'cases about a 1 MiB request and a discard across the device test only the block layer'),
 
+    'pin_c_kill_with_requests_in_flight': ('c', 'PASS', SERVER,
+                                           'the kills of the conformance suite find requests in flight at the server: '
+                                           'over a run at least one call is outstanding when a server dies and is '
+                                           'left to the kernel to issue again. Without that the kill cases test a '
+                                           'restart only, and the run is a rig error'),
+
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
                             'a clean scrub, every file as the writer recorded it (§4.1, M1 exit). Writes '
