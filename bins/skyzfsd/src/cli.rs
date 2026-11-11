@@ -3,7 +3,7 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
-//!                [--queues 1] [--depth N]
+//!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -37,6 +37,18 @@
 //!   not from the kernel;
 //! - `serve --recover-short N`: this instance's recovery counts the log
 //!   as N records shorter than it found it;
+//! - `serve --step-pause-ms N` or `serve --step-pause-until PATH`:
+//!   every checkpoint step waits for N ms or until a file of that
+//!   path exists (a step that arrives there first makes the empty
+//!   file `PATH.reached`, and nothing here ever removes it or `PATH`:
+//!   a caller that uses a path again removes both files first, or the
+//!   next step does not wait and `PATH.reached` says nothing new). One
+//!   of the two at most. `--step-pause-at POINT`
+//!   says where, and needs one of them: `saved` (the blocks the step
+//!   writes over are saved), `written` (the home image is written and
+//!   not synced; this unless given), `synced` (the home image is
+//!   durable and the log starts where it did), `start-written` (the
+//!   log's new start is written and not durable) or `start-durable`;
 //! - `serve --commit-delay-ms N`: every request's result is given to
 //!   the kernel N ms after the store completed it, and the acknowledged
 //!   position is stored then and not before. Nothing else waits.
@@ -59,6 +71,17 @@ pub const MAX_DEPTH: u16 = 4096;
 /// is a usage error until more are served.
 pub const MAX_QUEUES: u16 = 1;
 
+/// The log's live size at which the daemon begins to checkpoint, in
+/// segments, unless told otherwise (design §5.1: two).
+pub const DEFAULT_LOG_HIGH: u32 = 2;
+
+/// The live size below which it stops, in segments, unless told
+/// otherwise: one.
+pub const DEFAULT_LOG_LOW: u32 = 1;
+
+/// The most segments either mark takes: 64 GiB of log.
+pub const MAX_LOG_SEGMENTS: u32 = 1024;
+
 /// One mebibyte: a volume's size is a multiple of it.
 const MIB: u64 = 1 << 20;
 
@@ -66,6 +89,7 @@ const MIB: u64 = 1 << 20;
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+                 [--log-high SEGMENTS] [--log-low SEGMENTS]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -88,6 +112,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+                [--log-high SEGMENTS] [--log-low SEGMENTS]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -101,6 +126,13 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       client held the device, the volume is not served again before a
       reboot, whatever is given.
       One queue is all this version serves.
+      While it serves, the daemon checkpoints the volume's log into
+      its home image: when the log holds --log-high segments (64 MiB
+      each; 2 unless given) it works it off in small steps between
+      the requests until it holds less than --log-low (1 unless
+      given). The high mark bounds the log, and with it the time the
+      next start takes to read it; a write load is slowed at the mark.
+      Both are at least 1, and low is below high.
 
   skyzfsd detach --dir DIR [--run-dir DIR]
       Delete the volume's device if no server serves it. It never stops
@@ -213,6 +245,12 @@ pub struct Serve {
     pub queues: u16,
     /// Depth of each queue of a device this instance adds.
     pub depth: u16,
+    /// The log's live size, in segments, at which the daemon begins
+    /// to checkpoint (design §5.1).
+    pub log_high: u32,
+    /// The live size, in segments, below which it stops: below
+    /// `log_high`.
+    pub log_low: u32,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -233,8 +271,53 @@ pub struct Hooks {
     pub boot_id_file: Option<PathBuf>,
     /// The recovery counts the log as so many records shorter.
     pub recover_short: u32,
+    /// Every checkpoint step waits.
+    pub step_pause: Option<StepPause>,
+    /// Where it waits.
+    pub step_pause_at: StepPoint,
     /// Every commit is delayed by so many milliseconds.
     pub commit_delay_ms: Option<u64>,
+}
+
+/// How long a checkpoint step waits in its middle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepPause {
+    /// For so many milliseconds.
+    Ms(u64),
+    /// Until a file of this path exists.
+    Until(PathBuf),
+}
+
+/// Where a checkpoint step waits: the cuts between its parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StepPoint {
+    /// The blocks it writes over are saved.
+    Saved,
+    /// The home image is written and not synced.
+    #[default]
+    Written,
+    /// The home image is durable; the log starts where it did.
+    Synced,
+    /// The log's new start is written and not durable.
+    StartWritten,
+    /// The log's new start is durable.
+    StartDurable,
+}
+
+impl StepPoint {
+    fn parse(text: &str) -> Result<Self, UsageError> {
+        match text {
+            "saved" => Ok(Self::Saved),
+            "written" => Ok(Self::Written),
+            "synced" => Ok(Self::Synced),
+            "start-written" => Ok(Self::StartWritten),
+            "start-durable" => Ok(Self::StartDurable),
+            _ => Err(UsageError::Value(
+                "--step-pause-at".into(),
+                "one of saved, written, synced, start-written, start-durable",
+            )),
+        }
+    }
 }
 
 /// One request to hold for a while.
@@ -325,6 +408,8 @@ const SERVE: &[Opt] = &[
     opt("--acknowledge-failure", false, false),
     opt("--queues", true, false),
     opt("--depth", true, false),
+    opt("--log-high", true, false),
+    opt("--log-low", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -332,6 +417,9 @@ const SERVE: &[Opt] = &[
     opt("--boot-id-file", true, true),
     opt("--recover-short", true, true),
     opt("--commit-delay-ms", true, true),
+    opt("--step-pause-ms", true, true),
+    opt("--step-pause-until", true, true),
+    opt("--step-pause-at", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -489,12 +577,65 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             let recover_short = given.number("--recover-short")?.unwrap_or(0);
             let recover_short = u32::try_from(recover_short)
                 .map_err(|_| UsageError::Value("--recover-short".into(), "out of range"))?;
+            let segments = |name: &'static str, default: u32| {
+                let Some(n) = given.number(name)? else {
+                    return Ok(default);
+                };
+                u32::try_from(n)
+                    .ok()
+                    .filter(|n| (1..=MAX_LOG_SEGMENTS).contains(n))
+                    .ok_or(UsageError::Value(name.into(), "out of range"))
+            };
+            let log_high = segments("--log-high", DEFAULT_LOG_HIGH)?;
+            let log_low = segments("--log-low", DEFAULT_LOG_LOW.min(log_high.max(2) - 1))?;
+            // The refusal names an option that was given, and the
+            // default it collided with if the other was not.
+            if log_high < 2 {
+                return Err(UsageError::Value(
+                    "--log-high".into(),
+                    "at least 2: the low mark is at least 1 and below it",
+                ));
+            }
+            if log_low >= log_high {
+                let why = if given.get("--log-high").is_some() {
+                    "not below --log-high"
+                } else {
+                    "not below --log-high, which is 2 unless given"
+                };
+                return Err(UsageError::Value("--log-low".into(), why));
+            }
+            let step_pause = match (
+                given.number("--step-pause-ms")?,
+                given.get("--step-pause-until"),
+            ) {
+                (Some(_), Some(_)) => {
+                    return Err(UsageError::Value(
+                        "--step-pause-until".into(),
+                        "not together with --step-pause-ms",
+                    ))
+                }
+                (Some(ms), None) => Some(StepPause::Ms(ms)),
+                (None, Some(path)) => Some(StepPause::Until(PathBuf::from(path))),
+                (None, None) => None,
+            };
+            let step_pause_at = match given.get("--step-pause-at") {
+                Some(_) if step_pause.is_none() => {
+                    return Err(UsageError::Value(
+                        "--step-pause-at".into(),
+                        "only with --step-pause-ms or --step-pause-until",
+                    ))
+                }
+                Some(text) => StepPoint::parse(text)?,
+                None => StepPoint::default(),
+            };
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
                 acknowledge_failure: given.flag("--acknowledge-failure"),
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
+                log_high,
+                log_low,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {
@@ -502,6 +643,8 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     hold: given.get("--hold-one-request").map(hold).transpose()?,
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     recover_short,
+                    step_pause,
+                    step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                 },
             }))

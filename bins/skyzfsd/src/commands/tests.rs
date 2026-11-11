@@ -182,6 +182,7 @@ fn sample() -> Status {
         failures: 0,
         first_write_copies: 0,
         recovered_unacknowledged: 0,
+        log: None,
     }
 }
 
