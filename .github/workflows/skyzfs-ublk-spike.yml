@@ -171,6 +171,26 @@ jobs:
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           rustup update stable
           sudo modprobe ublk_drv
+          # The unit test with no kernel: red with the buffers freed,
+          # green with the other defect.
+          unit=0
+          cargo test --release -p skyzfs-ublk-sys --lib the_buffers_are_never_given_back_to_the_allocator > unit.log 2>&1 || unit=$?
+          {
+            echo "### the unit test of the buffers with ${{ matrix.variant }} (exit $unit)"
+            echo '```'
+            grep -E '^test |panicked|left:|right:|went back' unit.log || tail -20 unit.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat unit.log
+          if [ "${{ matrix.variant }}" = buffers-freed ] && [ "$unit" -eq 0 ]; then
+            echo "verdict: FINDING: the unit test PASSED with the buffers freed" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error title=buffers-freed::the unit test passed with the buffers freed"
+            exit 1
+          fi
+          if [ "${{ matrix.variant }}" != buffers-freed ] && [ "$unit" -ne 0 ]; then
+            echo "::error title=${{ matrix.variant }}::the unit test of the buffers failed without that defect"
+            exit 2
+          fi
           bin=$(cargo test --release -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
           [ -x "$bin" ] || { echo "::error::no test binary"; exit 2; }
           rc=0

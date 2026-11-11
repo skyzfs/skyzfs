@@ -73,6 +73,14 @@ pub mod raw;
 pub mod signals;
 #[cfg(target_os = "linux")]
 mod wake;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod watch;
+
+/// The unit tests run on the watching allocator: see [`watch`].
+#[cfg(all(test, target_os = "linux"))]
+#[global_allocator]
+static WATCHING: watch::Watching = watch::Watching;
 
 #[cfg(target_os = "linux")]
 pub use mem::lock_all as lock_all_memory;

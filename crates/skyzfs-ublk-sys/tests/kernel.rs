@@ -32,6 +32,11 @@ use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
+/// The allocator of this binary counts the deallocations of memory it
+/// is told to watch: see `skyzfs_ublk_sys::watch`.
+#[global_allocator]
+static WATCHING: skyzfs_ublk_sys::watch::Watching = skyzfs_ublk_sys::watch::Watching;
+
 const SIZE: u64 = 64 << 20;
 const DEPTH: u16 = 8;
 
@@ -317,7 +322,7 @@ struct Seen {
 /// many it held is in `seen.gathered`, and it is for the test to fail
 /// on fewer than it asked for.
 fn memory_gathering(
-    mut queue: impl Queue,
+    queue: &mut impl Queue,
     content: Arc<Mutex<Vec<u8>>>,
     seen: &Seen,
     gather: usize,
@@ -415,7 +420,7 @@ fn life_gathering(
     let serving = device
         .serve(&wake, false, {
             let seen = seen.clone();
-            move |queue| memory_gathering(queue, content, &seen, gather)
+            move |mut queue| memory_gathering(&mut queue, content, &seen, gather)
         })
         .map_err(|e| format!("serve: {e}"))?;
     if let Err(e) = device.start() {
@@ -875,41 +880,124 @@ fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_g
     property("delete_frees_the_number_within", || result);
 }
 
-/// What a queue's thread does after its queue is dropped at a stop, in
-/// place of the store's shutdown: it takes memory of the size of the
-/// request buffers, fills it, goes through the kernel many times while
-/// the writers' requests keep arriving at the device, and counts the
-/// bytes that changed under it.
-fn canaries(count: usize, linger: Duration) -> u64 {
+/// What a queue's thread saw at one stop: see [`after_the_stop`].
+#[derive(Debug, Default)]
+struct Stop {
+    /// Deallocations that gave back memory the driver had been told.
+    freed: u64,
+    /// The ranges the driver had been told.
+    told: usize,
+    /// How many of them were no longer mapped after the drop.
+    unmapped: usize,
+    /// The blocks taken afterwards that overlap a told range.
+    overlapping: usize,
+    /// Bytes that changed in the blocks taken afterwards.
+    changed: u64,
+    /// The most writes the block layer showed in flight at the device
+    /// while the thread lingered.
+    in_flight: u64,
+    /// The lowest told address and the lowest taken one.
+    lowest: (usize, usize),
+}
+
+/// The writes in flight at the device, from the block layer.
+fn in_flight_writes(n: u32) -> u64 {
+    std::fs::read_to_string(format!("/sys/block/ublkb{n}/inflight"))
+        .ok()
+        .and_then(|text| text.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0)
+}
+
+/// What a queue's thread does at a stop, in place of the store's
+/// shutdown. It drops the queue and looks at the memory whose
+/// addresses the driver had been told: whether any of it went back to
+/// the allocator (the binary's allocator counts that: the check that
+/// is certain), and whether it is still mapped. Then it takes memory
+/// of the size of the request buffers, fills it, goes through the
+/// kernel many times while the writers' requests keep arriving at the
+/// device, and counts the bytes that changed under it and the blocks
+/// that lie where a told buffer was.
+fn after_the_stop(queue: skyzfs_ublk_sys::queue::KernelQueue<'_>, n: u32) -> Stop {
+    use skyzfs_ublk_sys::watch;
     const FILL: u8 = 0x5a;
-    let mut held: Vec<Buf> = (0..count)
+    const LINGER: Duration = Duration::from_millis(150);
+    let told = queue.told_ranges();
+    let watched = told
+        .iter()
+        .filter(|&&(start, len)| watch::watch(start, len))
+        .count();
+    let before = watch::freed();
+    drop(queue);
+    let mut stop = Stop {
+        // A range that could not be watched counts as one given back:
+        // the check must not pass for want of room.
+        freed: watch::freed() - before + (told.len() - watched) as u64,
+        told: told.len(),
+        unmapped: told
+            .iter()
+            .filter(|&&(start, len)| !watch::mapped(start, len))
+            .count(),
+        ..Stop::default()
+    };
+    let mut held: Vec<Buf> = (0..4 * usize::from(DEPTH))
         .map(|_| {
             let mut buf = Buf::zeroed((1 << 20) / BLOCK_SIZE as usize);
             buf.fill(FILL);
             buf
         })
         .collect();
+    stop.overlapping = held
+        .iter()
+        .filter(|buf| {
+            let (at, len) = (buf.as_ptr() as usize, buf.len());
+            told.iter()
+                .any(|&(start, told_len)| start < at + len && at < start + told_len)
+        })
+        .count();
+    stop.lowest = (
+        told.iter().map(|r| r.0).min().unwrap_or(0),
+        held.iter().map(|b| b.as_ptr() as usize).min().unwrap_or(0),
+    );
     let began = Instant::now();
-    while began.elapsed() < linger {
+    while began.elapsed() < LINGER {
         // Each return from the kernel is a moment at which the driver
         // copies an arrived write to the address its fetch names.
         std::thread::sleep(Duration::from_millis(2));
+        stop.in_flight = stop.in_flight.max(in_flight_writes(n));
     }
-    let changed = held
+    stop.changed = held
         .iter()
         .map(|buf| buf.iter().filter(|&&b| b != FILL).count() as u64)
         .sum();
     held.clear();
-    changed
+    stop
 }
 
 /// A server stopped under writers, many times: after each stop the
 /// queue's thread goes on working while the device is still live and
 /// requests arrive for tags whose fetch commands are still with the
 /// driver. The addresses those commands name must stay memory that
-/// nothing else uses: memory the thread takes after the stop is never
-/// written by the kernel, every write the writers were acknowledged
-/// reads back, and the next life takes over.
+/// nothing else uses.
+///
+/// **What is certain**: at every stop the queue says which memory the
+/// driver may have been told, the queue is dropped, and this binary's
+/// allocator must not have seen a deallocation of any byte of it
+/// ([`after_the_stop`]). That fails when the buffers are freed at the
+/// queue's drop, whatever the allocator then does with the memory and
+/// whether or not a request arrives.
+///
+/// **What is only observed**: the thread then takes memory of the
+/// buffers' size and counts the bytes the kernel changed in it. With
+/// the buffers kept this is zero. With the buffers freed it shows
+/// damage only if the allocator hands the freed memory out again and
+/// a write arrives for it in that time; the line printed for each stop
+/// says whether the told ranges were still mapped, whether any block
+/// taken afterwards lay where one was, and whether writes were in
+/// flight at the device. A zero here is not evidence that the buffers
+/// were kept.
+///
+/// Every write the writers were acknowledged reads back, and the next
+/// life takes over.
 ///
 /// And an orderly stop answers what it committed: every write is one
 /// request (1 MiB, the largest), the server commits every request it
@@ -920,10 +1008,6 @@ fn canaries(count: usize, linger: Duration) -> u64 {
 /// writers finished exactly when no committed request was issued
 /// again. (A request that arrives during a stop and is never handed to
 /// the server is issued to the next life and counted there once.)
-///
-/// What it cannot see is whether a request did arrive during a given
-/// stop: it reports how many writes the writers finished, and that
-/// they were writing across every stop.
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
@@ -948,10 +1032,9 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             let wake = Wake::new().map_err(|e| e.to_string())?;
             let (content, seen) = (content.clone(), seen.clone());
             let serving = device
-                .serve(&wake, false, move |queue| {
-                    // The queue is dropped when this returns.
-                    memory_gathering(queue, content, &seen, 0);
-                    canaries(4 * usize::from(DEPTH), Duration::from_millis(150))
+                .serve(&wake, false, move |mut queue| {
+                    memory_gathering(&mut queue, content, &seen, 0);
+                    after_the_stop(queue, n)
                 })
                 .map_err(|e| format!("serve: {e}"))?;
             if let Err(e) = device.start() {
@@ -992,7 +1075,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             })
             .collect();
 
-        let mut changed = 0u64;
+        let mut stops: Vec<Stop> = Vec::new();
         let mut idle_rounds = 0u32;
         for round in 0..ROUNDS {
             let before = finished.load(Ordering::SeqCst);
@@ -1002,7 +1085,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             }
             let (serving, device) = life;
             serving.stopper().stop();
-            changed += serving.join().map_err(|e| format!("round {round}: {e}"))?;
+            stops.push(serving.join().map_err(|e| format!("round {round}: {e}"))?);
             drop(device);
             until(&mut kernel, n, "waiting", |i| {
                 i.is_some_and(|i| i.state == DeviceState::Waiting)
@@ -1046,15 +1129,47 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         }
         let (serving, _device) = life;
         serving.stopper().stop();
-        changed += serving.join().map_err(|e| e.to_string())?;
+        stops.push(serving.join().map_err(|e| e.to_string())?);
         // The reads of the check above are not writes: not counted.
         let handed = seen.handed.load(Ordering::SeqCst);
+        // One line per stop, for whoever asks why a defect did or did
+        // not show.
+        for (round, stop) in stops.iter().enumerate() {
+            println!(
+                "control_stop_under_writers_stop\t{round}: {} ranges told (lowest {:#x}), {} \
+                 deallocations gave told memory back, {} of the ranges no longer mapped; of \
+                 the blocks taken afterwards (lowest {:#x}) {} lie where a told buffer was; \
+                 up to {} writes in flight at the device meanwhile; {} bytes changed",
+                stop.told,
+                stop.lowest.0,
+                stop.freed,
+                stop.unmapped,
+                stop.lowest.1,
+                stop.overlapping,
+                stop.in_flight,
+                stop.changed
+            );
+        }
+        let changed: u64 = stops.iter().map(|s| s.changed).sum();
+        let freed: u64 = stops.iter().map(|s| s.freed).sum();
+        let stops_freed = stops.iter().filter(|s| s.freed > 0).count();
+        let with_arrivals = stops.iter().filter(|s| s.in_flight > 0).count();
         println!(
             "control_stop_under_writers_detail\t{ROUNDS} stops under {WRITERS} writers of 1 MiB, \
              {total} writes finished, {handed} write requests handed to the servers, \
              {idle_rounds} rounds in which none finished before the stop, \
-             {changed} bytes changed in memory taken after a stop"
+             {changed} bytes changed in memory taken after a stop, \
+             {freed} deallocations of memory the driver had been told, \
+             writes in flight at the device after {with_arrivals} of the {} stops",
+            stops.len()
         );
+        if freed != 0 {
+            return Err(format!(
+                "{freed} deallocations gave memory back whose address the driver had been \
+                 told, at {stops_freed} of {} stops",
+                stops.len()
+            ));
+        }
         if handed != total {
             return Err(format!(
                 "{handed} write requests were handed to the servers for {total} writes that \
