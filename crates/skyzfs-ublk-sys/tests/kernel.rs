@@ -583,7 +583,15 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
         if longest != MIB as u64 {
             return Err(format!("the longest write handed over was {longest} bytes"));
         }
-        if copies == 0 || copies > u64::from(DEPTH) {
+        // No floor in this life: its writes go one at a time, so they
+        // can all land on tags whose first request was a read of
+        // something else (udev reads a device that appears), and then
+        // no write of this life is a tag's first request (seen once:
+        // run 43080463343, Ubuntu 24.04, 0 copies). `end` has compared
+        // the count with the tags the server saw begin with a write.
+        // The life after the take-over sends `depth` writes together
+        // and must have first writes: the floor is there.
+        if copies > u64::from(DEPTH) {
             return Err(format!("{copies} first-write copies in the first life"));
         }
         until(&mut kernel, n, "waiting", |i| {
@@ -808,6 +816,18 @@ fn a_device_with_larger_requests_than_the_buffers_is_not_opened() {
 /// if a number took longer than that, and prints the longest and the
 /// median time of each kind, and how often the device was still there
 /// at the first look.
+///
+/// "Free" is measured twice, because the two differ: a lookup that
+/// finds no device, which is what the lifecycle looks at, and an add
+/// under the number that succeeds. On one run (Ubuntu 26.04, kernel
+/// 7.0.0-1019, run 43079066283) an add right after a lookup had found
+/// nothing was answered "taken": the driver stops showing a deleted
+/// device a moment before it gives the number up. The lifecycle's add
+/// takes "taken" as an answer and walks on to the next number, so that
+/// costs a volume its old number and nothing else. The test therefore
+/// asks the add again until it succeeds, within the same limit from
+/// the delete, and prints how often that happened and how long it
+/// took.
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_gives() {
@@ -826,10 +846,39 @@ fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_g
             };
             let mut times = Vec::with_capacity(DELETES);
             let mut there_at_first_look = 0;
+            // The delete before this round's add, and the adds that
+            // were answered "taken" after a lookup had found nothing.
+            let mut deleted: Option<Instant> = None;
+            let mut taken_when_gone = 0;
+            let mut longest_to_add = Duration::ZERO;
             for round in 0..DELETES {
-                kernel
-                    .add(n, &shape())
-                    .map_err(|e| format!("{kind}, round {round}: add: {e:?}"))?;
+                let mut taken = false;
+                loop {
+                    match kernel.add(n, &shape()) {
+                        Ok(_) => break,
+                        Err(AddError::Taken)
+                            if deleted.is_some_and(|deleted| deleted.elapsed() <= LIMIT) =>
+                        {
+                            taken = true;
+                            std::thread::sleep(Duration::from_micros(200));
+                        }
+                        Err(e) => {
+                            return Err(format!(
+                                "{kind}, round {round}: add: {e:?}{}",
+                                deleted.map_or(String::new(), |deleted| format!(
+                                    ", {:?} after the delete of the device before",
+                                    deleted.elapsed()
+                                ))
+                            ))
+                        }
+                    }
+                }
+                if let Some(deleted) = deleted {
+                    longest_to_add = longest_to_add.max(deleted.elapsed());
+                }
+                if taken {
+                    taken_when_gone += 1;
+                }
                 if served {
                     let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
                     let life = life(n, false, &content)?;
@@ -865,13 +914,17 @@ fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_g
                     there_at_first_look += 1;
                 }
                 times.push(began.elapsed());
+                deleted = Some(began);
             }
             times.sort();
             lines.push(format!(
                 "{kind}: longest {:?}, median {:?}, still there at the first look in \
-                 {there_at_first_look} of {DELETES}",
+                 {there_at_first_look} of {DELETES}; the add that followed was answered \
+                 taken at first in {taken_when_gone} of {}, and the longest from a delete \
+                 to the next successful add was {longest_to_add:?}",
                 times[DELETES - 1],
-                times[DELETES / 2]
+                times[DELETES / 2],
+                DELETES - 1
             ));
         }
         println!(

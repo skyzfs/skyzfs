@@ -47,6 +47,11 @@ struct World {
     delete_takes: Option<u32>,
     /// The device that is going, and for how many looks it is there.
     going: Option<(u32, u32)>,
+    /// What takes the number at the very look at which the going
+    /// device is gone, so that the number is never seen free: another
+    /// volume's device, the note its start wrote for it if it has, and
+    /// whether the note cannot be read from then on.
+    successor: Option<(DeviceInfo, Option<[u8; 16]>, bool)>,
     /// Who holds the volume's lock.
     lock_holder: Option<u64>,
     locks: u64,
@@ -131,6 +136,7 @@ impl World {
             settles: None,
             delete_takes: None,
             going: None,
+            successor: None,
             lock_holder: None,
             locks: 0,
             locked_tries: 0,
@@ -249,6 +255,15 @@ impl Control for Fake {
             Some((going, 0)) if going == number => {
                 w.devices.remove(&number);
                 w.going = None;
+                if let Some((device, note, torn)) = w.successor.take() {
+                    w.devices.insert(number, device);
+                    if let Some(nonce) = note {
+                        w.notes.insert(number, nonce);
+                    }
+                    if torn {
+                        w.torn_note = Some(number);
+                    }
+                }
             }
             Some((going, left)) if going == number => w.going = Some((going, left - 1)),
             _ => {}
@@ -1638,6 +1653,199 @@ fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is
             Mutants::HELD_AT_FIRST_LOOK,
         )],
     );
+}
+
+/// One case of [`successors`]: its name, the device, its note, whether
+/// the note is unreadable, and whether the deleted device then counts
+/// as still there.
+type Successor = (&'static str, DeviceInfo, Option<[u8; 16]>, bool, bool);
+
+/// What takes a number right after its device is gone, for the tests
+/// of the looks: the device, its note, whether the note is unreadable,
+/// and whether the deleted device then counts as still there.
+fn successors() -> Vec<Successor> {
+    let other = Shape {
+        size: EARLIER.size * 2,
+        ..EARLIER
+    };
+    let device = |state, shape| DeviceInfo { state, shape };
+    vec![
+        // Another volume's device: gone, and nobody held it.
+        (
+            "waiting, the same values, with its note",
+            device(DeviceState::Waiting, EARLIER),
+            Some([0x5A; 16]),
+            false,
+            false,
+        ),
+        (
+            "dead, the same values, with its note",
+            device(DeviceState::Dead, EARLIER),
+            Some([0x5A; 16]),
+            false,
+            false,
+        ),
+        (
+            "live, the same values, no note yet",
+            device(DeviceState::Live, EARLIER),
+            None,
+            false,
+            false,
+        ),
+        (
+            "dead, other values, no note yet",
+            device(DeviceState::Dead, other),
+            None,
+            false,
+            false,
+        ),
+        // Not told apart from the deleted device: still there.
+        (
+            "dead, the same values, no note",
+            device(DeviceState::Dead, EARLIER),
+            None,
+            false,
+            true,
+        ),
+        (
+            "waiting, the same values, no note",
+            device(DeviceState::Waiting, EARLIER),
+            None,
+            false,
+            true,
+        ),
+        (
+            "dead, the same values, a note that cannot be read",
+            device(DeviceState::Dead, EARLIER),
+            Some([0x5A; 16]),
+            true,
+            true,
+        ),
+    ]
+}
+
+/// The looks after a delete ask about the deleted device, not about
+/// the number: nobody holds the device, it is there at the first look
+/// and gone at the second, and at that very look another volume's
+/// device stands under the number. A detach then says deleted, not
+/// held, unless what stands there cannot be told from the deleted
+/// device; and it leaves the other device and its note alone. Mutant:
+/// whatever stands under the number counts.
+fn detach_is_not_held_by_another_volumes_device(mutants: u32) -> Result<(), String> {
+    for (what, device, note, torn, stays) in successors() {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.delete_takes = Some(0);
+        world.successor = Some((device, note, torn));
+        let (mut control, mut records, shared) = fakes(world);
+        let detached = detach_with(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            (3, GONE),
+            Mutants(mutants),
+        )
+        .map_err(|e| e.to_string())?;
+        let world = shared.borrow();
+        let wanted = if stays {
+            Detached::DeletedHeld(4)
+        } else {
+            Detached::Deleted(4)
+        };
+        check(detached == wanted, &format!("{what}: {detached:?}"))?;
+        check(
+            world.devices.get(&4) == Some(&device),
+            &format!("{what}: the other device is as it was"),
+        )?;
+        check(
+            world.notes.get(&4).copied() == note,
+            &format!("{what}: the other device's note is as it was"),
+        )?;
+        check(
+            world
+                .events
+                .iter()
+                .filter(|e| **e == Event::Delete(4))
+                .count()
+                == 1,
+            &format!("{what}: one delete"),
+        )?;
+        check(world.attachment.is_none(), "the record is gone")?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_number_taken_by_another_volume_after_a_delete_does_not_make_the_deleted_device_held() {
+    holds(
+        detach_is_not_held_by_another_volumes_device,
+        &[(
+            "whatever stands under the number counts as the deleted device",
+            Mutants::ANY_OCCUPANT_LINGERS,
+        )],
+    );
+    holds(
+        settling_is_not_held_by_another_volumes_device,
+        &[(
+            "whatever stands under the number counts as the deleted device",
+            Mutants::ANY_OCCUPANT_LINGERS,
+        )],
+    );
+}
+
+/// The same for a start that settles a failure of unknown holding: the
+/// failing daemon died before it deleted the device, this start
+/// deletes it, and another volume's device takes the number as it
+/// goes. The failure is settled as not held and acknowledged, and this
+/// volume gets a device under another number (or the start stops on
+/// its own rule for a device with this volume's values and no note,
+/// which refuses nothing for the boot); what cannot be told from the
+/// deleted device keeps the volume refused for the boot.
+fn settling_is_not_held_by_another_volumes_device(mutants: u32) -> Result<(), String> {
+    for (what, device, note, torn, stays) in successors() {
+        let mut world = unknown_world();
+        world.notes.insert(4, [0xA5; 16]);
+        if let Some(own) = world.devices.get_mut(&4) {
+            own.state = DeviceState::Waiting;
+        }
+        world.delete_takes = Some(0);
+        world.successor = Some((device, note, torn));
+        let outcome = run_as(world, &ACKNOWLEDGING, mutants);
+        if stays {
+            check(
+                refusal(&outcome)?.contains("not served again in this boot"),
+                &format!("{what}: refused for the boot"),
+            )?;
+            check(
+                settled_as(&outcome)? == Held::Yes,
+                &format!("{what}: written down as held"),
+            )?;
+        } else {
+            // Not written down as held, whatever the start then does.
+            check(
+                !matches!(outcome.world.failure, Ok(Some(failure)) if failure.held == Held::Yes),
+                &format!("{what}: written down as held"),
+            )?;
+            match &outcome.result {
+                Ok(ready) => check(
+                    !ready.took_over && ready.number != 4,
+                    &format!("{what}: a fresh device under another number"),
+                )?,
+                // The start's own rule for a device under the recorded
+                // number with this volume's values and no note: whose
+                // it is cannot be told, and the start stops. That is
+                // not the looks' verdict, and nothing is refused for
+                // the boot.
+                Err(Stop::Error(why))
+                    if device.shape == EARLIER && note.is_none() && why.contains("no note") => {}
+                other => return Err(format!("{what}: {other:?}")),
+            }
+        }
+        check(
+            outcome.world.devices.get(&4) == Some(&device),
+            &format!("{what}: the other device is as it was"),
+        )?;
+    }
+    Ok(())
 }
 
 #[test]
