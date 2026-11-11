@@ -930,7 +930,7 @@ refused_start_arm() {
     case $did in *scrub*) io+="a scrub at $ts s: $(cat "$WORK/$tag.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-scrub.log" 2>/dev/null | tr '\n' ' '); " ;; esac
     RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. The device's error counters in zpool status at 10 s: $(vdev_say "$OUT/$tag-10s-status.txt" "$num"); 60 s: $(vdev_say "$OUT/$tag-60s-status.txt" "$num"); 110 s: $(vdev_say "$OUT/$tag-110s-status.txt" "$num"); 170 s: $(vdev_say "$OUT/$tag-170s-status.txt" "$num"); 230 s: $(vdev_say "$OUT/$tag-230s-status.txt" "$num"); the end: $(vdev_say "$OUT/$tag-end-status.txt" "$num"). Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end (and just before each of the three probes) are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
     if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ]; then
-        RS_CTL="FAIL killed at rest ($quiet; $logsay); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
+        RS_CTL="FAIL killed at rest ($quiet; $logsay); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s; the pool at the end: $st (reported, not judged; see the observation of this arm)"
     else
         RS_CTL="PASS killed at rest ($quiet); serve --recover-short 1 exited ${SERVE_RC:-?}; ready line: $(grep -c '^ready' "$dir.ready"); the device live at a look: ${live:-no}; pool $st"
     fi
@@ -943,11 +943,19 @@ refused_start_arm() {
 # With the daemon: the short-recovery control and what follows a refused
 # start, on a pool with a separate log device and on one without.
 check_b_short() {
+    # Each arm's outcome is a judged control line of its own: an arm
+    # that did not happen is ERROR there, which is the rig's error, and
+    # one whose start served is PASS, which differs from the table. So
+    # the observation beside it may say "nothing to report" when its
+    # arm ended before a refusal: the control's line carries why, and
+    # no outcome but "refused, and the course observed" leaves the run
+    # green.
     refused_start_arm bs yes
     ctl recovered_log_too_short "${RS_CTL%% *}" "${RS_CTL#* }"
-    obs b_refused_start_under_writes "${RS_OBS:-nothing to report: the control ended before a refusal ($RS_CTL)}"
+    obs b_refused_start_under_writes "${RS_OBS:-nothing to report: the control ended before a refusal (see ctl_recovered_log_too_short)}"
     refused_start_arm bn no
-    obs b_refused_start_no_log_device "${RS_OBS:-nothing to report: this arm ended before a refusal}; the daemon's answer in this arm: $RS_CTL"
+    ctl recovered_log_too_short_no_log_device "${RS_CTL%% *}" "${RS_CTL#* }"
+    obs b_refused_start_no_log_device "${RS_OBS:-nothing to report: this arm ended before a refusal (see ctl_recovered_log_too_short_no_log_device)}"
 }
 # b: the daemon keeps its files off any pool. A volume directory or a
 # run directory on a ZFS dataset is refused by `serve` before a device
@@ -1814,6 +1822,7 @@ case $CHECKS in *" b "*)
     step "b, control: a recovered log that is too short"
     if [ "$IMPL" = reference ]; then
         ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
+        ctl recovered_log_too_short_no_log_device WAITING "the stand-in has no log whose recovery could come out short"
     else
         check_b_short
     fi ;;

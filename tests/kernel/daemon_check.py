@@ -146,6 +146,12 @@ EXPECTED = {
                                     'which is where the newest acknowledged record starts. Killed under load '
                                     'the line would be a coin toss (run 43064604469)',
                                     'WAITING'),
+    'ctl_recovered_log_too_short_no_log_device': ('b', 'FAIL', WAITING,
+                                                  'the same control on a pool without a separate log device, the second '
+                                                  'arm of the course after a refused start: judged by the same rule, so '
+                                                  'that an arm that did not happen (ERROR) or whose start served (PASS) '
+                                                  'does not leave the run green behind an observation',
+                                                  'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
                                           'the daemon causes no file under /run/ublksrvd, the reference server\'s '

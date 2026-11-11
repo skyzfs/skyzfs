@@ -36,6 +36,7 @@ def as_expected(impl='reference'):
         r['pin_detach_of_held_says_6'] = 'PASS: seen'
         r['pin_orderly_stop_under_load'] = 'PASS: seen'
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
+        r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: seen'
         # And those the daemon cannot carry yet.
         for name in dc.WAITS_FOR_THE_DAEMON:
             r[name] = 'WAITING: seen'
@@ -108,6 +109,31 @@ class Cases(unittest.TestCase):
         r[name] = 'not run: x'
         self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
 
+    def test_the_arm_without_a_log_device_is_judged_too(self):
+        # An arm that did not happen, or whose start served, must not
+        # hide behind its observation.
+        name = 'ctl_recovered_log_too_short_no_log_device'
+
+        def daemon_run(value):
+            r = as_expected('daemon')
+            r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+            r[name] = value
+            r['obs_b_refused_start_no_log_device'] = 'nothing to report: this arm ended before a refusal'
+            return dc.judge(r, self.C, impl='daemon')[1:]
+
+        self.assertEqual(daemon_run('FAIL: refused, served nothing'), ([], []))
+        differs, errors = daemon_run('PASS: serve --recover-short 1 SERVED')
+        self.assertEqual((len(differs), errors), (1, []))
+        differs, errors = daemon_run('ERROR: zpool create failed')
+        self.assertEqual((differs, len(errors)), ([], 1))
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        del r[name]
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+        # on the stand-in it waits, like the first arm's control
+        self.assertEqual(as_expected()[name], 'WAITING: seen')
+        self.assertEqual(dc.judge(as_expected(), self.C)[1:], ([], []))
+
     def test_the_daemon_is_held_to_its_own_counts(self):
         r = as_expected('daemon')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
@@ -117,6 +143,7 @@ class Cases(unittest.TestCase):
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: none'
         r['pin_detach_of_held_says_6'] = 'PASS: exit 6'
+        r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: refused'
         r['pin_orderly_stop_under_load'] = 'PASS: exit 0'
         r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
