@@ -55,6 +55,27 @@
 //! once a volume is removed, which is why that record carries the
 //! store's identity as well.
 //!
+//! # The failure note
+//!
+//! [`FAILED`] in the volume's directory under the run directory: the
+//! volume's log failed in this boot (design §4.2, "a failed volume
+//! gives up its attachment"). Made whole under another name and
+//! renamed; not synced, because it has to live exactly as long as the
+//! boot. A note of another boot counts as none.
+//!
+//! 64 bytes, little endian.
+//!
+//! | Offset | Bytes | Field |
+//! |---|---|---|
+//! | 0 | 8 | magic `SKYZFAI1` |
+//! | 8 | 16 | the boot it was written in |
+//! | 24 | 16 | the store's identity, or zeros where it was not known |
+//! | 40 | 1 | whether a client held the device: 0 none did, 1 one did, 2 not known when the note was written |
+//! | 41 | 1 | the reason: 1 the log failed while serving, 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read |
+//! | 42 | 6 | zero |
+//! | 48 | 8 | when it was written: milliseconds since boot |
+//! | 56 | 8 | zero |
+//!
 //! The syncs are of the record's file and of its directory only. The
 //! daemon never syncs a file system or the whole machine: such a sync
 //! does not return while any ZFS pool on the machine is suspended.
@@ -78,7 +99,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::ack;
-use crate::lifecycle::{Attachment, MustReach, Records, Shape};
+use crate::lifecycle::{Attachment, Failure, Held, MustReach, Reason, Records, Shape};
 
 /// The attachment record's name in the volume's directory.
 pub const ATTACHMENT: &str = "attachment";
@@ -86,6 +107,12 @@ pub const ATTACHMENT: &str = "attachment";
 /// record of what was acknowledged.
 pub const ACKNOWLEDGED: &str = "acknowledged";
 
+/// The failure note's name in the volume's directory under the run
+/// directory.
+pub const FAILED: &str = "failed";
+
+const FAILED_MAGIC: &[u8; 8] = b"SKYZFAI1";
+const FAILED_LEN: usize = 64;
 const ATTACHMENT_MAGIC: &[u8; 8] = b"SKYZATT1";
 const ATTACHMENT_LEN: usize = 64;
 const NOTE_MAGIC: &[u8; 8] = b"SKYZNOT1";
@@ -159,6 +186,78 @@ fn decode_note(bytes: &[u8], number: u32) -> Option<[u8; 16]> {
         && bytes[8..12] == number.to_le_bytes()
         && bytes[12..16] == [0; 4];
     whole.then(|| array(&bytes[16..]))
+}
+
+/// A failure note as it is on the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoredFailure {
+    /// The boot it was written in.
+    pub boot: [u8; 16],
+    /// What it says.
+    pub failure: Failure,
+    /// When it was written, in milliseconds since boot.
+    pub written_ms: u64,
+}
+
+const REASONS: [(u8, Reason); 6] = [
+    (1, Reason::LogFailed),
+    (2, Reason::Short),
+    (3, Reason::RecoveryFailed),
+    (4, Reason::Marked),
+    (5, Reason::PositionUnreadable),
+    (6, Reason::DeviceNoteUnreadable),
+];
+
+fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {
+    let mut bytes = [0u8; FAILED_LEN];
+    bytes[..8].copy_from_slice(FAILED_MAGIC);
+    bytes[8..24].copy_from_slice(&stored.boot);
+    bytes[24..40].copy_from_slice(&stored.failure.identity);
+    bytes[40] = match stored.failure.held {
+        Held::No => 0,
+        Held::Yes => 1,
+        Held::Unknown => 2,
+    };
+    let code = REASONS.iter().find(|(_, r)| *r == stored.failure.reason);
+    bytes[41] = code.map_or(0, |(code, _)| *code);
+    bytes[48..56].copy_from_slice(&stored.written_ms.to_le_bytes());
+    bytes
+}
+
+fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
+    let whole = bytes.len() == FAILED_LEN
+        && &bytes[..8] == FAILED_MAGIC
+        && bytes[40] <= 2
+        && bytes[42..48] == [0; 6]
+        && bytes[56..] == [0; 8];
+    if !whole {
+        return None;
+    }
+    let (_, reason) = REASONS.iter().find(|(code, _)| *code == bytes[41])?;
+    Some(StoredFailure {
+        boot: array(&bytes[8..]),
+        failure: Failure {
+            held: match bytes[40] {
+                0 => Held::No,
+                1 => Held::Yes,
+                _ => Held::Unknown,
+            },
+            reason: *reason,
+            identity: array(&bytes[24..]),
+        },
+        written_ms: u64::from_le_bytes(array(&bytes[48..])),
+    })
+}
+
+/// Read the failure note at `path`, of whatever boot. `Ok(None)` if
+/// there is none. A file that is not a whole note is an error.
+pub fn read_failure(path: &Path) -> io::Result<Option<StoredFailure>> {
+    let Some(bytes) = read_if_there(path)? else {
+        return Ok(None);
+    };
+    decode_failure(&bytes)
+        .map(Some)
+        .ok_or_else(|| not_whole("not a failure note"))
 }
 
 fn read_if_there(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -328,6 +427,11 @@ impl Files {
         fs::create_dir_all(&self.volume_run_dir)
     }
 
+    /// Where the failure note is.
+    pub fn failure_path(&self) -> PathBuf {
+        self.volume_run_dir.join(FAILED)
+    }
+
     /// Where the record of what was acknowledged is.
     pub fn acknowledged_path(&self) -> PathBuf {
         if self.mutants.has(Mutants::ACK_AT_TOP) {
@@ -401,6 +505,44 @@ impl Records for Files {
                 position,
             })
         }))
+    }
+
+    fn remove_acknowledged(&mut self) -> io::Result<()> {
+        // No file is an empty record: the next daemon makes a new one.
+        match fs::remove_file(self.acknowledged_path()) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    fn failure(&mut self) -> io::Result<Option<Failure>> {
+        let stored = read_failure(&self.failure_path())?;
+        Ok(stored.filter(|s| s.boot == self.boot).map(|s| s.failure))
+    }
+
+    fn write_failure(&mut self, failure: &Failure) -> io::Result<()> {
+        // The volume's directory under the run directory may not be
+        // there yet: a start can fail before anything was served.
+        fs::create_dir_all(&self.volume_run_dir)?;
+        let stored = StoredFailure {
+            boot: self.boot,
+            failure: *failure,
+            // A note without its time is still the note.
+            written_ms: crate::status::uptime_ms().unwrap_or(0),
+        };
+        put(
+            &self.failure_path(),
+            &encode_failure(&stored),
+            false,
+            self.mutants,
+        )
+    }
+
+    fn remove_failure(&mut self) -> io::Result<()> {
+        match fs::remove_file(self.failure_path()) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 
     fn pause(&mut self) {

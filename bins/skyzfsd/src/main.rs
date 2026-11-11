@@ -2,7 +2,69 @@
 
 use std::process::ExitCode;
 
-use skyzfsd::cli::{self, Exit};
+use skyzfs_ublk::lifecycle::Control;
+use skyzfsd::cli::{self, Command, Exit};
+use skyzfsd::commands::{self, Now, Output};
+
+/// The kernel's control interface.
+fn kernel() -> Result<Box<dyn Control>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        skyzfs_ublk_sys::control::Kernel::new()
+            .map(|kernel| Box::new(kernel) as Box<dyn Control>)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err("ublk is a Linux driver: nothing to ask on this system".into())
+}
+
+fn run(command: &Command) -> Output {
+    let failed = |why: String| Output {
+        exit: Exit::Error,
+        out: String::new(),
+        err: format!("skyzfsd: {why}\n"),
+    };
+    match command {
+        Command::Help => Output {
+            exit: Exit::Done,
+            out: format!("{}\n", cli::HELP),
+            err: String::new(),
+        },
+        Command::Status(volume) => {
+            let mut control = match kernel() {
+                Ok(control) => control,
+                Err(why) => return failed(why),
+            };
+            match Now::read() {
+                Ok(now) => commands::status(volume, control.as_mut(), &now),
+                Err(e) => failed(format!("reading the boot id and the uptime: {e}")),
+            }
+        }
+        Command::Detach(volume) => {
+            let mut control = match kernel() {
+                Ok(control) => control,
+                Err(why) => return failed(why),
+            };
+            match Now::read() {
+                Ok(now) => commands::detach(volume, control.as_mut(), now.boot),
+                Err(e) => failed(format!("reading the boot id: {e}")),
+            }
+        }
+        Command::Create(create) => {
+            let mut id = [0u8; 16];
+            let random = std::fs::File::open("/dev/urandom")
+                .and_then(|mut source| std::io::Read::read_exact(&mut source, &mut id));
+            if let Err(e) = random {
+                return failed(format!("reading /dev/urandom for the volume's id: {e}"));
+            }
+            // Without the boot id there is no warning of a failure
+            // note; the volume is made all the same.
+            commands::create(create, id, Now::read().ok().map(|now| now.boot))
+        }
+        // `serve` prints for itself: see `main`.
+        Command::Serve(_) => failed("serve is run by main".into()),
+    }
+}
 
 fn main() -> ExitCode {
     let command = match cli::parse(std::env::args().skip(1)) {
@@ -13,7 +75,12 @@ fn main() -> ExitCode {
             return Exit::Usage.code();
         }
     };
-    // The commands are built on the transport, which is not here yet.
-    eprintln!("skyzfsd: {} is not built yet", command.name());
-    Exit::Error.code()
+    #[cfg(target_os = "linux")]
+    if let Command::Serve(serve) = &command {
+        return skyzfsd::serve::serve(serve).code();
+    }
+    let output = run(&command);
+    print!("{}", output.out);
+    eprint!("{}", output.err);
+    output.exit.code()
 }

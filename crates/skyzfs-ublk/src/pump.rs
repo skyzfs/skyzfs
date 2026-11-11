@@ -36,9 +36,9 @@
 //!   its own. The retry rides on the queue waking: for a request, for
 //!   the target, or, with no traffic at all, for the idle time-out of
 //!   the queue's own wait. In `libublk` 0.4.8 that is 20 seconds
-//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), read from the source and
-//!   still to be seen in a run; so the longest wait for a retry with
-//!   no traffic is 20 seconds.
+//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), and the kernel spike saw
+//!   it: two wakes in 45 idle seconds, 20 s apart. So the longest wait
+//!   for a retry with no traffic is 20 seconds.
 //! - **An orderly stop** completes what it accepted: once the queue
 //!   says stop, nothing more is accepted, what is in the target is
 //!   waited for and committed, and the pump ends. Requests that were
@@ -237,6 +237,9 @@ impl Mutants {
     pub(crate) const TAG_REUSED: u32 = 1 << 12;
     /// A completion nobody waits for is ignored.
     pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
+    /// A refusal with room is a fault, also when the target went in
+    /// that moment.
+    pub(crate) const REFUSAL_IS_FAULT: u32 = 1 << 14;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -428,7 +431,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// The target refused a request it had room for: because its worker
     /// ended in that moment, or against the contract.
     fn refused(&self) -> Stopped {
-        if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+        let fault = self.mutants.has(Mutants::GONE_AFTER_SUBMIT)
+            || self.mutants.has(Mutants::REFUSAL_IS_FAULT);
+        if self.is_gone() && !fault {
             Stopped::TargetGone
         } else {
             Stopped::TargetFault

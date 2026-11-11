@@ -22,8 +22,12 @@
 //!   in the run directory.
 //! - [`status`]: the file the serving daemon keeps for `status`, the
 //!   pace at which it is written, and the report made from it.
+//! - [`volume`]: the lifecycle's volume over the real store: the lock
+//!   as a step of its own, the open under it, and how the store's
+//!   errors are read.
 //!
-//! The binding to the kernel is built on these.
+//! The binding to the kernel is built on these, in the crate
+//! `skyzfs-ublk-sys`: the only one that may hold `unsafe`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -37,3 +41,5 @@ pub mod records;
 #[cfg(unix)]
 pub mod status;
 pub mod translate;
+#[cfg(unix)]
+pub mod volume;

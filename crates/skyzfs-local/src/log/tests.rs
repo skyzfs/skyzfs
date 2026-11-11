@@ -2028,6 +2028,7 @@ fn a_power_cut_during_recovery_is_recovered_from() {
         match Log::open(disk.clone(), env.options()) {
             Err(LogError::Io {
                 during: "writing the superblock",
+                failed: true,
                 ..
             }) => {}
             Err(other) => return Err(format!("the test's count of syncs is off: {other}")),

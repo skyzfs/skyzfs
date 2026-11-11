@@ -1,0 +1,16 @@
+[package]
+name = "skyzfs-ublk-sys"
+description = "The SkyZFS binding to the kernel's ublk driver: the control commands and one queue, over libublk (design §4.2). The only SkyZFS crate with unsafe code"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]
+skyzfs-blk = { workspace = true }
+skyzfs-ublk = { workspace = true }
+# The pin is the design's (§4.2, "Library"). The build needs libclang:
+# libublk-rs-sys makes its bindings from the header it ships.
+libublk = "=0.4.8"
+io-uring = "0.7.12"
+libc = "0.2"

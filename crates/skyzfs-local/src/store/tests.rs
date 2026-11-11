@@ -2255,3 +2255,127 @@ fn the_lock_is_taken_apart_from_the_open_and_comes_back_held_when_the_open_fails
     drop(store);
     drop(Store::lock_volume(&disk).unwrap());
 }
+
+/// The hook for test rigs: a served store whose owner fails it on
+/// demand answers what it completed before as completed, fails every
+/// later request, tells its owner, and is found marked as failed by
+/// the next open.
+#[test]
+fn a_served_store_failed_on_demand_fails_every_later_request_and_is_found_marked() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    let write = |id: u64, block: u64| Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(1, 9),
+        },
+    };
+    let mut done = Vec::new();
+    served.submit(write(1, 0)).unwrap();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    assert_eq!(done[0].result, Ok(()));
+    let woken = calls.load(Ordering::SeqCst);
+
+    served.fail_now();
+    assert!(
+        calls.load(Ordering::SeqCst) > woken,
+        "the owner is woken by the failure"
+    );
+    assert!(
+        !served.gone(),
+        "the worker lives: it answers with the failure"
+    );
+
+    let flush = Request {
+        id: RequestId(3),
+        op: Op::Flush,
+    };
+    let read = Request {
+        id: RequestId(4),
+        op: Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        },
+    };
+    for request in [write(2, 1), flush, read] {
+        done.clear();
+        served.submit(request).unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Err(BlkError::Failed), "{:?}", done[0].id);
+    }
+    // Failing twice is failing once.
+    served.fail_now();
+    drop(served);
+
+    match Store::open(disk.clone(), env.options()) {
+        Err(StoreError::Log(LogError::MarkedFailed)) => {}
+        other => panic!("the next open: {:?}", other.map(|_| ())),
+    }
+}
+
+/// An open that is told the acknowledged position counts the
+/// operations the log holds beyond it: what the life before appended
+/// whole and never acknowledged. Told nothing, or a position recorded
+/// for another store, it counts none.
+#[test]
+fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if store.recovered_unacknowledged() != 0 {
+            return Err("a new store counts operations".into());
+        }
+        // A new log holds no operation; its bytes are the log's own
+        // records (the mark a recovery or a creation leaves).
+        if store.replayed().1 != 0 {
+            return Err(format!("a new store replayed {:?}", store.replayed()));
+        }
+        write(&mut store, 0, 1, 1)?;
+        let first = store.acknowledged();
+        write(&mut store, 1, 1, 2)?;
+        let second = store.acknowledged();
+        write(&mut store, 2, 1, 3)?;
+        let last = store.acknowledged();
+        let identity = store.identity();
+        drop(store);
+        disk.kill();
+        for (must_reach, recorded_for, want) in [
+            (first, None, 2),
+            (second, None, 1),
+            (last, None, 0),
+            (None, None, 0),
+            (first, Some(identity), 2),
+            (first, Some(*b"some other store"), 0),
+        ] {
+            let options = OpenOptions {
+                must_reach,
+                must_reach_identity: recorded_for,
+                ..env.options()
+            };
+            let (store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
+            let got = store.recovered_unacknowledged();
+            let (bytes, records) = store.replayed();
+            if records != 3 || bytes == 0 {
+                return Err(format!(
+                    "replayed {records} records in {bytes} bytes, not 3"
+                ));
+            }
+            drop(store);
+            disk.kill();
+            if got != want {
+                return Err(format!(
+                    "must reach {must_reach:?} for {recorded_for:?}: counted {got}, not {want}"
+                ));
+            }
+        }
+        Ok(())
+    }
+    holds(scenario);
+}

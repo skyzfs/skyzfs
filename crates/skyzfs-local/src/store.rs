@@ -1082,6 +1082,10 @@ pub struct Store<D: Dir> {
     /// Where the newest record starts among the mutations whose
     /// completions have been handed out.
     acknowledged: Option<Lsn>,
+    /// See [`Store::recovered_unacknowledged`].
+    unacknowledged: u64,
+    /// See [`Store::replayed`].
+    replayed: (u64, u64),
     queue: VecDeque<Request>,
     /// The ids in flight: submitted and not yet returned.
     ids: BTreeSet<RequestId>,
@@ -1255,11 +1259,26 @@ impl<D: Dir> Store<D> {
         // The index: every record of the log, in order. After an open
         // the whole log is durable.
         let mut index = Index::default();
+        // A position recorded for another store counts as none, as in
+        // the log's own comparison.
+        let core_identity = crate::format::store_identity(log.key());
+        let acknowledged = options.must_reach.filter(|_| {
+            options
+                .must_reach_identity
+                .is_none_or(|recorded_for| recorded_for == core_identity)
+        });
+        let mut unacknowledged = 0u64;
+        let mut replayed = 0u64;
+        let replayed_bytes = log.tail().0.saturating_sub(log.floor().0);
         if !options.mutants.has(Mutants::NO_INDEX_REBUILD) {
             log.replay(log.floor(), log.tail(), &mut |record| {
                 let start = record.offset / BLOCK_SIZE;
                 let blocks = record.length / BLOCK_SIZE;
                 let at = record.start;
+                replayed += 1;
+                if acknowledged.is_some_and(|position| at > position) {
+                    unacknowledged += 1;
+                }
                 match record.kind {
                     Kind::Write => index.insert(
                         start,
@@ -1288,6 +1307,8 @@ impl<D: Dir> Store<D> {
                 appended: None,
                 mutants: options.mutants,
             },
+            unacknowledged,
+            replayed: (replayed_bytes, replayed),
             acknowledged: None,
             queue: VecDeque::new(),
             ids: BTreeSet::new(),
@@ -1359,6 +1380,34 @@ impl<D: Dir> Store<D> {
     /// recorded for another store counts as none.
     pub fn identity(&self) -> [u8; 16] {
         self.core.identity()
+    }
+
+    /// How many operations this open found in the log beyond the
+    /// position it was told was acknowledged
+    /// ([`OpenOptions::must_reach`]): writes, write-zeroes and discards
+    /// that the life before appended whole and whose completion it
+    /// never passed on. Zero when the open was told no position, or
+    /// one recorded for another store.
+    ///
+    /// **It is a lower bound** on what that life applied without
+    /// answering its client. An operation at or before the position
+    /// may also have gone unanswered: the position is recorded before
+    /// the answers of a batch are given, and a kill between the two
+    /// leaves answers ungiven that this count does not see. So does an
+    /// operation that a checkpoint has already taken out of the log. A
+    /// flush leaves no record and is never counted.
+    pub fn recovered_unacknowledged(&self) -> u64 {
+        self.unacknowledged
+    }
+
+    /// What this open read back to build its index: the bytes of the
+    /// log from its start to its end (the log's own records and
+    /// padding included, so not zero for a log without operations), and
+    /// the operations in it. Both
+    /// grow until a checkpoint gives up a part of the log, and the time
+    /// of an open grows with them.
+    pub fn replayed(&self) -> (u64, u64) {
+        self.replayed
     }
 
     /// Execute up to `limit` queued requests, in order, and collect
@@ -1448,6 +1497,9 @@ enum Command {
     /// For tests: the worker panics.
     #[cfg(test)]
     Panic,
+    /// For test rigs: fail the log now.
+    #[cfg(any(test, feature = "test-hooks"))]
+    Fail(mpsc::Sender<()>),
 }
 
 /// The store behind a worker thread.
@@ -1510,6 +1562,8 @@ where
         let Store {
             mut core,
             acknowledged,
+            unacknowledged: _,
+            replayed: _,
             mut queue,
             ids,
         } = self;
@@ -1570,6 +1624,22 @@ where
                         }
                         #[cfg(test)]
                         Some(Command::Panic) => panic!("a test asked the worker to panic"),
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        Some(Command::Fail(reply)) => {
+                            // As a failed sync does: the volume has
+                            // failed and the log is marked. A request
+                            // that was held gets its answer now.
+                            core.fail();
+                            held = false;
+                            // The owner is woken before the caller is
+                            // answered: when `fail_now` returns, the
+                            // owner has been told.
+                            if let Some(Waker(wake)) = &waker {
+                                wake();
+                            }
+                            let _ = reply.send(());
+                            continue;
+                        }
                         None => {}
                     }
                     let Some(Request { id, op }) = queue.pop_front() else {
@@ -1664,6 +1734,21 @@ impl Served {
     /// "busy" from then on. The owner is told through the [`Waker`].
     pub fn gone(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
+    }
+
+    /// For test rigs, under the cargo feature `test-hooks`: fail the
+    /// log now, as if its next sync had returned an error. It takes
+    /// effect behind the request the worker is executing, and this
+    /// waits for that; then the owner's waker is called. Every later
+    /// request fails, and a later open finds the volume marked as
+    /// failed. Requests completed before stay completed. With the
+    /// worker gone there is nothing to fail.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn fail_now(&self) {
+        let (reply, done) = mpsc::channel();
+        if self.send(Command::Fail(reply)) {
+            let _ = done.recv();
+        }
     }
 
     /// For tests: make the worker panic, and wait until it has.
