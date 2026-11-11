@@ -328,9 +328,9 @@ impl Spec {
 /// | [`Capability::PowerCut`] | has it only if it can drop, under the daemon, exactly what the daemon's storage had not been told to make durable, and bring the device back; a process kill is not one | the page cache survives a kill |
 /// | [`Capability::Base`] | has it only if it can build the volume's base outside the device under test | a base written through the device is a write, not a base |
 /// | [`Capability::ReadOnly`] | has it if it can attach the volume read-only | |
-/// | [`Capability::FailLog`] | has it only if it can make the storage under the daemon's log fail for good while the device stays attached | |
+/// | [`Capability::FailLog`] | has it only if it can make the daemon's log fail for good while a client holds the device. The device need not stay: a daemon may delete its device when its log fails, and the answers after that are the kernel's for a deleted device. The rig reports any I/O error from that point on as the failure | a failed volume gives up its attachment |
 /// | [`Capability::InvalidRequests`] | does not have it | the kernel refuses or splits such a request and answers with its own error; the target never sees it |
-/// | [`Capability::ReopenFailed`] | has it if it has `FailLog` and can repair the storage and attach again | |
+/// | [`Capability::ReopenFailed`] | has it if it has `FailLog`, can repair the storage, and the daemon serves the volume again. A daemon that refuses a volume that failed while a client held it, until the next boot, cannot be reopened by the rig: such a rig does not claim it | |
 pub trait Harness {
     /// The target type.
     type Target: BlockTarget;
@@ -360,8 +360,13 @@ pub trait Harness {
     /// real rig may ignore it.
     ///
     /// Under a kernel transport the kernel reissues in-flight requests by
-    /// itself. An adapter that drives such a device must then swallow the
-    /// suite's own resubmission of the same ids, or drop the kernel's.
+    /// itself, and user space cannot drop what the kernel reissues. An
+    /// adapter that drives such a device must therefore swallow the
+    /// suite's own resubmission of the same ids.
+    ///
+    /// After [`Harness::fail_log`] on a rig whose daemon gives up its
+    /// device when its log fails, there is no daemon left to lose: a
+    /// kill does nothing there.
     fn kill(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
 
     /// How many places beyond the durable part of its log the target could
