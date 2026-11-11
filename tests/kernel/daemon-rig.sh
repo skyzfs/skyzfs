@@ -722,26 +722,50 @@ kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
 }
 # With the daemon: after a kill, a recovery that drops the last record
 # must be refused, and the pool must suspend.
+#
+# The record that is dropped must be one whose write was acknowledged,
+# or dropping it loses nothing and the daemon rightly serves. A kill
+# under load leaves that to chance (run 43064604469: refused on one
+# image; on the other the start line said recovered_unacknowledged 1,
+# the daemon served, and it was right). So the server is killed when
+# nothing is in flight: the writer is stopped, the pool synced, and the
+# server's counts of writes and of requests in flight must stand still
+# over a second. A writer is started again after the kill, so that the
+# pool has work when its device is refused. If the server never came
+# to rest, the control is the rig's error and not a verdict.
 check_b_short() {
-    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held quiet=""
     if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
     slog=$(new_slog bs)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
     : > "$WORK/bs.record"; : > "$OUT/bs-writer.log"
     writer "$WORK/mnt/$pool" "$WORK/bs.record" "$OUT/bs-writer.log" "$WORK/bs.stop" &
     sleep 5
+    touch "$WORK/bs.stop"; wait "$!" 2>/dev/null
+    lim 120 zpool sync "$pool" > "$OUT/bs-sync.log" 2>&1
+    for i in $(seq 1 30); do
+        w0=$(vol_stat "$SKYZFSD" "$dir" writes); sleep 1
+        w1=$(vol_stat "$SKYZFSD" "$dir" writes); held=$(vol_stat "$SKYZFSD" "$dir" held)
+        if [[ $w0 =~ ^[0-9]+$ ]] && [ "$w0" = "$w1" ] && [ "$w0" -gt 0 ] && [ "${held:-0}" = 0 ]; then quiet="$w1 writes, none in flight, for 1 s"; break; fi
+    done
+    if [ -z "$quiet" ]; then
+        ctl recovered_log_too_short ERROR "the server did not come to rest before the kill (writes '${w0:-}' then '${w1:-}', in flight '${held:-}')"
+        return
+    fi
     pid=$(server_pid "$SKYZFSD" "$dir")
     kill -9 "$pid" 2>/dev/null
     [ -z "$SERVE_PID" ] || serve_wait 30
+    rm -f "$WORK/bs.stop"
+    writer "$WORK/mnt/$pool" "$WORK/bs.record" "$OUT/bs-writer.log" "$WORK/bs.stop" &
     serve_start "$SKYZFSD" "$dir" --recover-short 1; rc=$?
     for i in $(seq 1 120); do st=$(pool_state "$pool"); [ "$st" = SUSPENDED ] && break; sleep 1; done
     touch "$WORK/bs.stop"
     if [ $rc = 1 ] && [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && [ "$st" = SUSPENDED ]; then
-        ctl recovered_log_too_short FAIL "serve --recover-short 1 exited $SERVE_RC and the pool is $st"
+        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and the pool is $st"
     elif [ $rc = 2 ]; then
         ctl recovered_log_too_short ERROR "serve --recover-short 1 neither became ready nor exited"
     else
-        ctl recovered_log_too_short PASS "serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
+        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
     fi
 }
 # The kill test with a server that acknowledges a write some
