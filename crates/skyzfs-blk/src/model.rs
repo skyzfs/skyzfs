@@ -1810,6 +1810,30 @@ mod tests {
         assert!(!c.would_see(0, &[1, 1, 0, 1, 0, 7]));
     }
 
+    /// R11: a failed volume that is opened again serves again, and
+    /// holds what a completed flush covered; what no flush covered may
+    /// be there or not, as a prefix.
+    #[test]
+    fn reopened_volume_serves_again_and_keeps_what_was_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(1, 1, 2);
+        c.model.log_failed();
+        let r = c.read(0, 1);
+        c.done(r, Err(BlkError::Failed)).unwrap();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![1]);
+        // The flushed write is not open to question.
+        assert!(!c.would_see(0, &[0, 0]));
+        assert!(c.would_see(0, &[1, 0]));
+        c.sees(0, &[1, 2]).unwrap();
+        // And the volume takes requests again.
+        c.wrote(0, 1, 3);
+        c.sees(0, &[3, 2]).unwrap();
+    }
+
     /// R11: once the log has failed, a flush must fail, and after the
     /// first failure every request must, reads included.
     #[test]
