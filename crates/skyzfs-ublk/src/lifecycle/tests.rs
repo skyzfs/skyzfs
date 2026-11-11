@@ -1569,7 +1569,14 @@ fn detach_touches_nothing_it_may_not() {
             let (mut control, mut records, shared) = fakes(world);
             let detached =
                 detach(&mut control, &mut records, &mut Fake(shared.clone()), 3).expect("detach");
-            assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
+            if state == DeviceState::Dead && note.is_none() {
+                // How this volume's device looks once it was deleted
+                // while something held it: said apart, and left.
+                assert_eq!(detached, Detached::DeadNoNote(4));
+                assert!(shared.borrow().attachment.is_some(), "the record stays");
+            } else {
+                assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
+            }
             assert_eq!(shared.borrow().events, [Event::Info(4)]);
             assert_eq!(shared.borrow().notes.get(&4).copied(), note);
         }

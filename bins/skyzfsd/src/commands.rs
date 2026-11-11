@@ -160,6 +160,7 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// | no device of this boot is the volume's | 0 | standard output |
 /// | the device was deleted | 0 | standard output |
 /// | it was deleted and something still holds it open | 0 | standard error |
+/// | a device with no server and no note, with the recorded values: deleted before and still held, or another's | 0 | standard error |
 /// | the device under the recorded number is not known to be the volume's | 1 | standard error |
 /// | a server is live on it | 5 | standard error |
 /// | a daemon holds the volume's lock, after 2 s of trying | 5 | standard error |
@@ -190,6 +191,15 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
             ),
         ),
 
+        Detached::DeadNoNote(n) => Output::said(
+            Exit::Done,
+            "",
+            &format!(
+                "device {n} under the recorded number has no server and no note: it is this \
+                 volume's that was deleted before and is still held open, or another's that \
+                 was never started. Nothing was done"
+            ),
+        ),
         Detached::NotOurs(located) => {
             let why = match located.whose {
                 Whose::Unsure => "has this volume's values and no note",
