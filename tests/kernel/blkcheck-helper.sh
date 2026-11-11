@@ -133,6 +133,13 @@ kill)
     DEV=$(serve) || exit 1
     # What the new server found applied and not acknowledged, by its own
     # account; "?" from a server that does not say.
+    # The daemon writes its status on an interval: wait until the
+    # status is the new server's (another pid, alive) before reading.
+    for _ in $(seq 1 30); do
+        new=$(status_of pid)
+        { [ -n "$new" ] && [ "$new" != "$pid" ] && kill -0 "$new" 2>/dev/null; } && break
+        sleep 0.1
+    done
     found=$(status_of recovered_unacknowledged)
     echo "kill $N take-over found ${found:-?}" >> "$WORK/helper.log"
     ;;

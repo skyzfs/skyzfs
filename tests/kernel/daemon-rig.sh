@@ -170,6 +170,27 @@ pin_unstored() {
         *) pin "unstored_zero_$1" FAIL "status says unstored $v" ;;
     esac
 }
+# What the kernel log says went wrong with a device, in a file cut from
+# it: I/O errors, requests timed out, aborts. Not the bare word
+# "timeout": a hung-task report is full of it (hung_task_timeout_secs,
+# schedule_timeout in its stack) and says only that a task waited.
+klog_bad() { grep -vE '^\[[^]]*\] +(\? )?[A-Za-z0-9_.]+\+0x|hung_task_timeout_secs' "$1" 2>/dev/null | grep -ciE 'I/O error|timed out|abort'; }
+# The tasks the kernel reported as blocked, "name:pid" each, counted.
+klog_hung() { sed -n 's/.*INFO: task \([^ ]*\) blocked for more than \([0-9]*\) seconds.*/\1/p' "$1" 2>/dev/null | sort | uniq -c | tr -s ' \n' ' '; }
+# impl dir key least [ms]: a counter of `status`, read again until it
+# is at least `least` or the limit has passed (2 s). The daemon writes
+# its status file on an interval, so a counter read at once after the
+# event it counts can be a fraction of a second old.
+vol_stat_least() {
+    local v t0; t0=$(now_ms)
+    while :; do
+        v=$(vol_stat "$1" "$2" "$3")
+        { [[ $v =~ ^[0-9]+$ ]] && [ "$v" -ge "$4" ]; } && break
+        [ $(( $(now_ms) - t0 )) -lt "${5:-2000}" ] || break
+        sleep 0.1
+    done
+    echo "$v"
+}
 vol_stat() { vol_status "$1" "$2" | awk -v k="$3" '$1 == k { print $2; exit }'; }
 # The process to kill -9: the one `status` names, else the one started.
 server_pid() { local p; p=$(vol_stat "$1" "$2" pid); echo "${p:-$SERVE_PID}"; }
@@ -270,6 +291,11 @@ trap cleanup EXIT
 step "setup"
 rec impl "$IMPL: $SKYZFSD"
 rec kernel "$(uname -r)"
+# The kernel reports a blocked task only so many times per boot (ten by
+# default) and then says nothing more: with the limit spent, a log
+# without such reports means nothing. The rig lifts the limit and
+# writes down what it found.
+rec hung_task_warnings_start "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
 SETUP_OK=1
@@ -383,11 +409,11 @@ check_a() {
     local d0 z0 d1 z1 at=$((1 << 30)) probes=""
     d0=$(vol_stat "$SKYZFSD" "$dir" discards); z0=$(vol_stat "$SKYZFSD" "$dir" write_zeroes)
     lim 30 blkdiscard -f -o "$at" -l 1048576 "$BDEV" > "$OUT/a-blkdiscard.log" 2>&1; rc=$?
-    sleep 1.2; d1=$(vol_stat "$SKYZFSD" "$dir" discards)
+    d1=$(vol_stat_least "$SKYZFSD" "$dir" discards $(( ${d0:-0} + 1 )))
     v=no; [ "$rc" = 0 ] && [ "${d1:-0}" -gt "${d0:-0}" ] && v=yes
     pin_is discard_carried_out "blkdiscard of 1 MiB: rc $rc; the server's discards went from ${d0:-?} to ${d1:-?}" [ "$v" = yes ]
     lim 30 blkdiscard -f -z -o "$at" -l 1048576 "$BDEV" > "$OUT/a-blkzeroout.log" 2>&1; rc=$?
-    sleep 1.2; z1=$(vol_stat "$SKYZFSD" "$dir" write_zeroes)
+    z1=$(vol_stat_least "$SKYZFSD" "$dir" write_zeroes $(( ${z0:-0} + 1 )))
     v=no; [ "$rc" = 0 ] && [ "${z1:-0}" -gt "${z0:-0}" ] && v=yes
     pin_is write_zeroes_carried_out "blkdiscard -z (BLKZEROOUT) of 1 MiB: rc $rc; the server's write_zeroes went from ${z0:-?} to ${z1:-?}" [ "$v" = yes ]
     for v in "punch-hole keep-size no-hide-stale:7" "punch-hole keep-size:3" "zero-range keep-size:17"; do
@@ -432,7 +458,7 @@ PY
     f0=$(vol_stat "$SKYZFSD" "$dir" flushes)
     lim 60 "$DD" if=/dev/urandom of="$WORK/mnt/$pool/g" bs=1M count=8 status=none
     lim 120 zpool sync "$pool"
-    f1=$(vol_stat "$SKYZFSD" "$dir" flushes)
+    f1=$(vol_stat_least "$SKYZFSD" "$dir" flushes $(( ${f0:-0} + 2 )))
     if [ -z "$f0" ] || [ -z "$f1" ]; then
         pin flush_counted ERROR "status gave no flush counter"
     elif [ $((f1 - f0)) -ge 2 ]; then
@@ -452,7 +478,7 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw
     KT_WAITED=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
@@ -510,18 +536,26 @@ kill_test() {
         # KT_WAIT_S: after the first kill no server comes for that long.
         if [ "${KT_WAIT_S:-0}" -gt 0 ] && [ "$n" = 1 ]; then
             mark=$(dmesg_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
+            hw=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
             while [ $(( $(now_ms) - t0 )) -lt $((KT_WAIT_S * 1000)) ]; do
                 states+="$(ublk_state "$BDEV") "
                 sleep 10
             done
             dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
-            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(grep -ciE 'I/O error|timed out|abort' "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort, and hung-task warnings for: $(sed -n 's/.*INFO: task \([^:]*\):[0-9]* blocked for more than.*/\1/p' "$OUT/$name-wait-dmesg.log" | sort | uniq -c | tr -s ' \n' ' '); pool $(pool_state "$pool") at the end of the wait"
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(klog_bad "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")(the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
         serve_start "$impl" "$dir" "${KT_SERVE_EXTRA[@]}"; rc=$?
         ms=$(( $(now_ms) - t0 ))
         wait "$watcher"
+        # The status of the server that took over, not the dead one's
+        # last: its pid is another, and it is alive.
+        for i in $(seq 1 30); do
+            i=$(vol_stat "$impl" "$dir" pid)
+            { [ -n "$i" ] && [ "$i" != "$pid" ] && kill -0 "$i" 2>/dev/null; } && break
+            sleep 0.1
+        done
         i=$(vol_stat "$impl" "$dir" recovered_unacknowledged)
         if [[ $i =~ ^[0-9]+$ ]]; then KT_RECOVERED=$((KT_RECOVERED + i)); else KT_RECOVERED_UNSAID=$((KT_RECOVERED_UNSAID + 1)); fi
         read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
@@ -1048,7 +1082,7 @@ check_d_not_held() {
 # =================================================================== e
 # name seconds wanted: one read held `seconds`; judged against `wanted`.
 hold_test() {
-    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader took
+    local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad reader took rpid
     HT_ERR=""; HT_WHY=""
     mark=$(dmesg_mark)
     vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
@@ -1066,6 +1100,7 @@ hold_test() {
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
     done
     [ "${held:-0}" -ge 1 ] || { HT_ERR="status never said a request was held"; return 2; }
+    rpid=$(pgrep -f "if=$BDEV of=/dev/null" | tr '\n' ' ')
     t0=$(now_ms)
     for i in $(seq 1 $(((secs + 90) * 2))); do
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "$held" = 0 ] && break; sleep 0.5
@@ -1079,9 +1114,13 @@ hold_test() {
         kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; vol_detach "$SKYZFSD" "$dir"
         return 2
     fi
-    bad=$(grep -ciE 'I/O error|timeout|timed out|abort' "$OUT/$name-dmesg.log")
-    obs "${name}_kernel_log" "$(wc -l < "$OUT/$name-dmesg.log") lines while a request was held ${secs} s; hung-task warnings: $(grep -c 'blocked for more than' "$OUT/$name-dmesg.log"); lines with an I/O error, a timeout or an abort: $bad"
-    HT_WHY="the read took $(( took / 1000 )) s at the reader and was held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s, to within the polling, by both); the reader exited $rc; kernel log lines with an I/O error, a timeout or an abort: $bad"
+    # Tasks reported as blocked in this time are counted apart and by
+    # name and pid: they may be left from an earlier check (a pool that
+    # was suspended on purpose keeps its writer and its sync blocked for
+    # good), and only one with the reader's pid is the held read.
+    bad=$(klog_bad "$OUT/$name-dmesg.log")
+    obs "${name}_kernel_log" "$(wc -l < "$OUT/$name-dmesg.log") lines while a request was held ${secs} s; lines with an I/O error, a request timed out or an abort: $bad; tasks reported blocked: $(klog_hung "$OUT/$name-dmesg.log")(the reader was pid ${rpid:-unknown})"
+    HT_WHY="the read took $(( took / 1000 )) s at the reader and was held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s, to within the polling, by both); the reader exited $rc; kernel log lines with an I/O error, a request timed out or an abort: $bad"
     [ "$name" != e ] || pin_unstored e "$dir"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
@@ -1259,6 +1298,7 @@ elif [ "${n_entries:-0}" = 0 ]; then
 else
     pin no_ublksrvd_entry_from_daemon FAIL "$n_entries entries newer than the daemon's serve, over $n_serves serves: $(grep '^entry ' "$UBLKSRVD_SEEN" | head -n 5 | cut -d' ' -f2- | tr '\n' ' ')"
 fi
+rec hung_task_warnings_end "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable)"
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')($(find /run/ublksrvd -mindepth 1 2>/dev/null | wc -l) entries at the end of the run)"
 for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"
