@@ -12,6 +12,8 @@ use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig, StoreError};
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
+/// The seed of the kill test's moments, to repeat a run.
+const KILL_SEED: &str = "SKYZFS_KILL_SEED";
 
 fn config(size_mib: u64, align: u32) -> StoreConfig {
     StoreConfig {
@@ -219,6 +221,66 @@ fn store_kill_test_child() {
     }
 }
 
+/// A full log behind a hold, through the worker thread: a write that
+/// finds no room stays with the worker, and a read submitted after it
+/// waits behind it, neither completed nor failed; when the hold is
+/// released both complete, in order, and the data is there.
+#[test]
+fn a_write_held_behind_a_hold_completes_when_the_hold_moves() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let mut options = OpenOptions::default();
+    options.log_segments = Some(2);
+    let store = Store::create(dir, &config(64, 4096), options).unwrap();
+    let mut store = store.serve().unwrap();
+    write(&mut store, 0, Buf::filled(1, 1));
+    flush(&mut store);
+    store.set_hold(store.position()).unwrap();
+    // Two segments of 8 MiB take fewer than twenty writes of 1 MiB.
+    let mut done = Vec::new();
+    let mut held = None;
+    for n in 1..=20u64 {
+        let op = Op::Write {
+            offset: n * (1 << 20),
+            data: Buf::filled(256, n as u8),
+        };
+        store
+            .submit(Request {
+                id: RequestId(n),
+                op,
+            })
+            .unwrap();
+        if store.wait(&mut done, Duration::from_millis(1500)) == 0 {
+            held = Some(n);
+            break;
+        }
+        assert_eq!(done.pop().unwrap().result, Ok(()), "write {n}");
+    }
+    let held = held.expect("no write was held behind the hold");
+    let behind = Op::Read {
+        offset: 0,
+        buf: Buf::zeroed(1),
+    };
+    store
+        .submit(Request {
+            id: RequestId(100),
+            op: behind,
+        })
+        .unwrap();
+    assert_eq!(store.wait(&mut done, Duration::from_millis(300)), 0);
+    store.set_hold(None).unwrap();
+    while done.len() < 2 {
+        assert!(
+            store.wait(&mut done, TIMEOUT) > 0,
+            "the held requests did not complete"
+        );
+    }
+    assert_eq!((done[0].id, done[0].result), (RequestId(held), Ok(())));
+    assert_eq!((done[1].id, done[1].result), (RequestId(100), Ok(())));
+    assert_eq!(read(&mut store, held * 256, 1)[0], held as u8);
+    assert_eq!(read(&mut store, 0, 1)[0], 1);
+}
+
 /// Every file of a directory with its bytes, sorted by name.
 fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
     let mut out: Vec<_> = std::fs::read_dir(path)
@@ -282,7 +344,17 @@ fn acknowledged_writes_survive_kill_9() {
     // What each block must hold: the number of the last write to it.
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];
     let mut next = 1u64;
-    let mut moment = Instant::now().elapsed().subsec_nanos() as u64 | 1;
+    // The moments of the kills come from the clock, or from the seed a
+    // failed run printed.
+    let seed = match std::env::var(KILL_SEED) {
+        Ok(seed) => seed.parse().unwrap(),
+        Err(_) => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    };
+    println!("kill moments from seed {seed}: set {KILL_SEED}={seed} to repeat them");
+    let mut moment = seed | 1;
     for round in 0..6 {
         let mut child = Command::new(&exe)
             .args([
