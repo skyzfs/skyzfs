@@ -24,6 +24,76 @@ use skyzfs_blk::{
 /// into `UNSUPPORTED`.
 const UNSUPPORTED: &str = "not at a block device: ";
 
+/// A trace of every request, for the diagnosis of a failed case: the
+/// file named by `BLKCHECK_TRACE`, one line per event, tab-separated:
+/// milliseconds since the first event, volume, event, id, operation,
+/// first block, blocks, and a digest of each block's content.
+fn trace(volume: u64, event: &str, id: Option<RequestId>, what: &str) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::Instant;
+    static TRACE: OnceLock<Option<(Mutex<File>, Instant)>> = OnceLock::new();
+    let Some((file, start)) = TRACE.get_or_init(|| {
+        let path = std::env::var_os("BLKCHECK_TRACE")?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()?;
+        Some((Mutex::new(file), Instant::now()))
+    }) else {
+        return;
+    };
+    let id = id.map_or_else(|| "-".to_string(), |id| id.0.to_string());
+    let line = format!(
+        "{}\t{volume}\t{event}\t{id}\t{what}\n",
+        start.elapsed().as_millis()
+    );
+    if let Ok(mut file) = file.lock() {
+        // A trace that cannot be written is not worth failing a run for.
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+fn tracing() -> bool {
+    std::env::var_os("BLKCHECK_TRACE").is_some()
+}
+
+/// One digest per 4096-byte block, so that a block's content can be
+/// followed from the write that made it to the read that shows it.
+fn digests(bytes: &[u8]) -> String {
+    bytes
+        .chunks(4096)
+        .map(|block| {
+            if block.iter().all(|b| *b == 0) {
+                return "zero".to_string();
+            }
+            // FNV-1a, 64 bits: enough to tell contents apart.
+            let hash = block.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            format!("{hash:016x}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// "write<TAB>first block<TAB>blocks<TAB>digests" for the trace.
+fn describe(op: &Op) -> String {
+    let (name, data): (&str, Option<&[u8]>) = match op {
+        Op::Read { .. } => ("read", None),
+        Op::Write { data, .. } => ("write", Some(data)),
+        Op::Flush => ("flush", None),
+        Op::Discard { .. } => ("discard", None),
+        Op::WriteZeroes { .. } => ("write_zeroes", None),
+    };
+    let (first, blocks) = op.range().map_or((0, 0), |(o, l)| (o / 4096, l / 4096));
+    format!(
+        "{name}\t{first}\t{blocks}\t{}",
+        data.map(digests).unwrap_or_default()
+    )
+}
+
 /// A block device opened with `O_DIRECT`. Each request in flight is one
 /// thread in one system call.
 struct DeviceTarget {
@@ -186,6 +256,12 @@ impl DeviceTarget {
             }
         }
         for c in got {
+            trace(
+                self.number,
+                "carried",
+                Some(c.id),
+                &format!("{:?}", c.result),
+            );
             self.carried.insert(c.id, c);
         }
         Ok(())
@@ -212,6 +288,7 @@ impl BlockTarget for DeviceTarget {
         }
         self.in_flight.insert(request.id);
         if let Some(c) = self.carried.remove(&request.id) {
+            trace(self.number, "held_back", Some(c.id), "");
             self.ready.push(c);
             return Ok(());
         }
@@ -219,9 +296,21 @@ impl BlockTarget for DeviceTarget {
         let device = self.device.clone();
         let failed = Arc::clone(&self.failed);
         let tx = self.done_tx.clone();
+        let number = self.number;
+        if tracing() {
+            trace(number, "submit", Some(request.id), &describe(&request.op));
+        }
         std::thread::spawn(move || {
             let Request { id, op } = request;
+            let is_read = matches!(op, Op::Read { .. });
             let (result, buf) = perform(&file, device.as_deref(), op);
+            if tracing() {
+                let seen = match &buf {
+                    Some(buf) if is_read => digests(buf),
+                    _ => String::new(),
+                };
+                trace(number, "done", Some(id), &format!("{result:?}\t{seen}"));
+            }
             // Looked at when the call has returned, not when it began:
             // a request in flight while the log fails is answered by
             // the failure.
@@ -327,8 +416,11 @@ impl Harness for DeviceHarness {
     }
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
+        trace(target.number, "kill", None, "");
         self.helper("kill", target.number)?;
+        trace(target.number, "served_again", None, "");
         target.settle(self.timeout)?;
+        trace(target.number, "settled", None, "");
         Ok(target)
     }
 
@@ -350,6 +442,7 @@ impl Harness for DeviceHarness {
         // time comes back with the kernel's I/O error while the helper
         // is still running. If the helper could not make the log fail,
         // the volume has not failed.
+        trace(target.number, "fail", None, "");
         target.failed.store(true, Ordering::SeqCst);
         if let Err(e) = self.helper("fail", target.number) {
             target.failed.store(false, Ordering::SeqCst);
@@ -362,6 +455,7 @@ impl Harness for DeviceHarness {
         let number = target.number;
         // The client lets go of the failed device first.
         drop(target);
+        trace(number, "reopen", None, "");
         let path = self.helper("reopen", number)?;
         DeviceTarget::open(number, &path, self.depth)
     }

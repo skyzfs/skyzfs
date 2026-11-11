@@ -969,11 +969,14 @@ check_c() {
     if [ ! -x "$tool" ]; then rec c_run "ERROR: no skyzfs-blkcheck at '$tool' (RIG_BLKCHECK)"; return; fi
     mkdir -p "$work"
     t0=$(date +%s)
-    BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} \
+    # Every request the tool issues is written down, with a digest of
+    # each block: a failed case is diagnosed from this, not rerun.
+    BLKCHECK_TRACE=$OUT/c-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} \
         lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
+    gzip -f "$OUT/c-trace.tsv" 2>/dev/null
     for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/c-$(basename "$f")"; done
     declare -A declared_as=()
     n=0
