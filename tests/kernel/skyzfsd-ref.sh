@@ -8,7 +8,8 @@
 #
 #   skyzfsd-ref.sh create --dir DIR --size BYTES
 #   skyzfsd-ref.sh serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
-#                         [--fail-log-after N] [--hold-one-request SECONDS:read|write|flush]
+#                         [--fail-log-after N]
+#                         [--hold-one-request SECONDS:read:OFFSET|SECONDS:write:OFFSET|SECONDS:flush]
 #   skyzfsd-ref.sh detach --dir DIR
 #   skyzfsd-ref.sh status --dir DIR
 #
@@ -105,6 +106,7 @@ status)
 detach)
     n=$(cat "$DEVREC" 2>/dev/null || true)
     [ -n "$n" ] || exit 0
+    if [ "$(dev_state "$n")" = LIVE ]; then echo "a server is live on /dev/ublkb$n" >&2; exit 5; fi
     lim 60 ublk del -n "$n" >/dev/null 2>&1
     unlink "$DEVREC" 2>/dev/null
     unlink "$PIDREC" 2>/dev/null
@@ -113,7 +115,7 @@ detach)
 serve)
     [ -e "$IMG" ] || { echo "no volume in $DIR" >&2; exit 1; }
     [ -z "$FAIL_AFTER" ] || [[ $FAIL_AFTER =~ ^[0-9]+$ ]] || usage
-    [ -z "$HOLD" ] || [[ $HOLD =~ ^[0-9]+:(read|write|flush)$ ]] || usage
+    [ -z "$HOLD" ] || [[ $HOLD =~ ^[0-9]+:((read|write):[0-9]+|flush)$ ]] || usage
     # One instance per volume. The server must not inherit the lock: it
     # outlives this script when the script is killed.
     exec 9> "$DIR/lock" || exit 1

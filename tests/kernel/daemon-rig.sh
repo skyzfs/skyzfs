@@ -59,6 +59,7 @@ HOLD_S=${RIG_HOLD_S:-300}
 RUN_DIR=$WORK/run            # the server's --run-dir, so that a test can empty it
 VOL_BYTES=$((8 << 30))
 SLOG_MB=512
+HOLD_AT=$((3 << 30))         # the byte whose first read is held in check e
 
 # ------------------------------------------------------------ recording
 rec() { # key value. Tabs and newlines in the value are flattened.
@@ -669,10 +670,10 @@ hold_test() {
     local name=$1 secs=$2 want=$3 dir=$WORK/vol-$1 mark t0 t1 held i rc bad
     HT_ERR=""; HT_WHY=""
     mark=$(dmesg_mark)
-    vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
-    # The first read is held, whoever sends it: udev probes a new device
-    # too. This reader and udev's must all complete.
-    ( lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=256 iflag=direct status=none 2> "$OUT/$name-dd.err"; echo $? > "$WORK/$name.rc" ) &
+    vol_up "$SKYZFSD" "$dir" --hold-one-request "$secs:read:$HOLD_AT" || { HT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
+    # The held request is the first read of the block at HOLD_AT, a
+    # place nothing probes when a device appears.
+    ( lim $((secs + 120)) "$DD" if="$BDEV" of=/dev/null bs=4k count=16 skip=$((HOLD_AT / 4096)) iflag=direct status=none 2> "$OUT/$name-dd.err"; echo $? > "$WORK/$name.rc" ) &
     for i in $(seq 1 120); do
         held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
     done
