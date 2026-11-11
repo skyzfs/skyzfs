@@ -21,6 +21,12 @@ on:
       hold_s:
         description: "seconds one request is held"
         default: "300"
+  # A workflow that has never run cannot be dispatched from a branch.
+  # A push that changes this file runs it once on the testing branch.
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - .github/workflows/skyzfs-daemon-rig.yml
   pull_request:
     paths:
       - tests/kernel/**
