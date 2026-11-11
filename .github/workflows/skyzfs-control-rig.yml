@@ -77,8 +77,9 @@ jobs:
           rustup update stable
           # Built as the runner's user, run as root below. The kernel
           # tests' binary is named by cargo; the test program is built
-          # with it, since one of the tests runs it.
-          cargo test --locked -p skyzfs-ublk-sys --test kernel --no-run --message-format=json > "$RUNNER_TEMP/build.json"
+          # with it, since one of the tests runs it. Both are behind
+          # the feature control-test-program.
+          cargo test --locked -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run --message-format=json > "$RUNNER_TEMP/build.json"
           tests=$(python3 -I -c '
           import json, sys
           for line in open(sys.argv[1]):

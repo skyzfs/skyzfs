@@ -76,6 +76,19 @@ EXPECTED = {
         'PASS', CRATE, 'Library: the buffers',
         'writes of 4 KiB to 1 MiB through the binding\'s queue read back the same, in a first life of the '
         'device and after a take-over'),
+    'control_larger_requests_than_the_buffers_refused': (
+        'PASS', CRATE, 'Library: the buffers',
+        'a device whose largest request is above what the buffers hold is not opened for serving and is '
+        'left as it is'),
+    'control_delete_frees_the_number_within': (
+        'PASS', CRATE, 'row: a delete, unheld (the 5 s after which a number is called held)',
+        'over many deletes of an unheld device, never started and with its server ended, the number came '
+        'free within 5 s every time'),
+    'control_stop_under_writers_leaves_later_memory_alone': (
+        'PASS', CRATE, 'row: live, its server ends (an orderly stop)',
+        'across orderly stops under writers of 1 MiB: memory taken after a stop is never written by the '
+        'kernel, every acknowledged write reads back, and no committed request is handed to a server a '
+        'second time'),
     'control_test_program_steps': ('PASS', CRATE, 'none: the rig\'s own means',
                                    'the test program answers each step in one line'),
 
@@ -175,6 +188,10 @@ OBSERVED = {
     # Lines the crate's tests print beside their verdicts.
     'control_started_detail': 'the crate\'s test of a start: requests answered and first-write copies',
     'control_buffers_detail': 'the crate\'s test of the buffers: first-write copies and the longest write',
+    'control_delete_frees_the_number_detail': 'the crate\'s test of deletes: the longest and the median time '
+                                              'until the number was free, of each kind',
+    'control_stop_under_writers_detail': 'the crate\'s test of stops under writers: writes finished, requests '
+                                         'handed to the servers, rounds with none finished before the stop',
     'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
 }

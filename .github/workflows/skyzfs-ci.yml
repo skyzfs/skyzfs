@@ -91,6 +91,9 @@ jobs:
           shared-key: skyzfs-lint
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The control test program and its tests are behind a feature, so
+      # the workspace line above does not build them.
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
 
   test:
     needs: gate
@@ -105,3 +108,7 @@ jobs:
         with:
           shared-key: skyzfs-test
       - run: cargo test --workspace
+      # The control test program's own tests, which the workspace run
+      # no longer builds. Its kernel tests are ignored here and run in
+      # skyzfs-control-rig.yml.
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
