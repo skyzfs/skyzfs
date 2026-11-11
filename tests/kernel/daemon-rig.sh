@@ -1480,7 +1480,13 @@ case $CHECKS in *" c "*)
 esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.
-case $CHECKS in *" d "*) check_d ;; esac
+case $CHECKS in *" d "*)
+    check_d
+    # A volume that fails while the server holds a request: waits for
+    # the author's word on what the failure path does then, and for the
+    # control rig's figures on a delete under a held request.
+    pin failed_volume_while_a_request_is_held WAITING "not built: waits for what the failure path is to do while a request is held" ;;
+esac
 # Check b's control of a recovered log that is too short, after
 # everything else: on the daemon it suspends a pool on purpose with a
 # writer on it, and nothing can take that pool or its blocked tasks

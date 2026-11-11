@@ -121,14 +121,17 @@ EXPECTED = {
         'PASS', RIG, 'row: not there', 'a recovery begun on a free number answers that nothing is there'),
     'pin_delete_returns_while_held': (
         'PASS', RIG, 'row: in any state, held open, a delete',
-        'the binding\'s delete of a device a process holds open returns within 2 s'),
+        'the binding\'s delete of a device a process holds open returns within 2 s. The server holds no request '
+        'at the delete: this does NOT cover a live device whose server holds a request, where the delete '
+        'waits (obs_delete_while_the_server_holds_a_request)'),
     'pin_deleted_held_is_dead_and_keeps_number': (
         'PASS', RIG, 'row: in any state, held open, a delete',
         'the deleted device reads as dead, has no nodes, and an add under its number is "taken"'),
     'pin_delete_fails_requests': (
         'PASS', RIG, 'row: in any state, held open, a delete',
-        'the holder\'s read works before the delete and fails after it (the server holds no request at the '
-        'delete; what a held request does to a delete is obs_delete_while_the_server_holds_a_request)'),
+        'the holder\'s read works before the delete and fails after it. The server holds no request at the '
+        'delete: this does NOT cover a request the server holds at the delete, which does not fail while it '
+        'is held (obs_delete_while_the_server_holds_a_request)'),
     'pin_number_free_when_holder_lets_go': (
         'PASS', RIG, 'row: in any state, held open, a delete',
         'when the holder closes the device, a lookup of the number says nothing is there'),
@@ -196,7 +199,11 @@ OBSERVED = {
     'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
     'obs_delete_while_the_server_holds_a_request': 'a delete of a live device whose server holds a read for 20 s: how '
-                                                   'long the delete took, and what the reader got and when',
+                                                   'long the delete took, the device\'s state meanwhile and after, '
+                                                   'and what the reader got and when',
+    'obs_delete_while_the_server_holds_a_request_then_dies': 'the same with a hold of 60 s, and the server killed 5 s '
+                                                             'after the delete was sent: whether the delete then '
+                                                             'returns, and what the reader gets',
 }
 
 

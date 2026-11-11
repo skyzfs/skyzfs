@@ -49,7 +49,7 @@ KTEST=${RIG_KERNEL_TESTS:-}
 # The numbers: the binding's own devices, the strangers, and (from 200
 # on) the crate's kernel tests. Far from 0, where anything else on the
 # machine would start.
-OWN=40; OWN2=41; OWN3=42
+OWN=40; OWN2=41; OWN3=42; OWN4=43
 S_LIVE=60; S_WAITING=61; S_NEVER=62; S_DELETED=63; S_CTL=64; S_FREE=65
 SIZE=$((64 << 20))
 HOLD_A=$((32 << 20))         # the byte whose read is held across a kill
@@ -214,7 +214,7 @@ cleanup() {
     local n
     [ -z "${H_PID:-}" ] || kill -9 "$H_PID" 2>/dev/null
     pkill -9 -f "$CTL serve" 2>/dev/null; pkill -9 -f "$CTL take-over" 2>/dev/null
-    for n in $OWN $OWN2 $OWN3 $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
+    for n in $OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
     command -v ublk > /dev/null && lim 60 ublk del -a --async 2>/dev/null
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -476,35 +476,59 @@ DELETE_HELD="held: not run"; OWN_PID_OK="not run"
 own_device
 
 # A delete of a live device whose server holds a request. Observed, not
-# judged: the design's row is about a device a client holds, and the
-# daemon does not delete a device that another live server serves. The
-# line says how long the delete took against the time the server held
-# the request, and what the reader got.
+# judged until it has been measured: the design's row is about a device
+# a client holds, and the first run showed that this is another matter
+# (run 43070686788: the delete did not answer in 60 s while the server
+# held a read for 120 s, and the read did not fail meanwhile).
+#
+# delete_under_a_held_request NAME NUMBER HOLD_S KILL_AFTER_S: the
+# server holds one read for HOLD_S; the delete is sent 2 s into the
+# hold. With KILL_AFTER_S, the server is killed that long after the
+# delete was sent, while the delete waits: what the daemon's own
+# failure path would meet if its server went away under a delete. The
+# line says how long the delete took, what the device was a second
+# after the delete was sent and at the end, and what the reader got.
 delete_under_a_held_request() {
-    local hold=20 t0 ms v line t1
-    truncate -s "$SIZE" "$WORK/own3.img"
-    say add "$OWN3" --depth 8
-    if ! serve_bg own3-1 serve "$OWN3" --file "$WORK/own3.img" --hold-one-request "$hold:read:$HOLD_B"; then
-        obs delete_while_the_server_holds_a_request "not run: the device $OWN3 was not served: ${SRV_LINE:-no answer}"; return
+    local name=$1 n=$2 hold=$3 kill_after=${4:-} t0 t1 during after line ms v killed=""
+    truncate -s "$SIZE" "$WORK/$name.img"
+    say add "$n" --depth 8
+    if ! serve_bg "$name" serve "$n" --file "$WORK/$name.img" --hold-one-request "$hold:read:$HOLD_B"; then
+        obs "$name" "not run: the device $n was not served: ${SRV_LINE:-no answer}"; return
     fi
-    if ! holder_start hold-own3 "/dev/ublkb$OWN3" plain; then
-        obs delete_while_the_server_holds_a_request "not run: the holder could not open the device: $(head -n 1 "$H_OUT")"
+    if ! holder_start "hold-$name" "/dev/ublkb$n" plain; then
+        obs "$name" "not run: the holder could not open the device: $(head -n 1 "$H_OUT")"
         holder_end; kill -TERM "$SRV_PID" 2>/dev/null; return
     fi
     t1=$(now_ms)
     holder_cmd "read $HOLD_B"          # held by the server: in flight at the delete
     sleep 2
+    rm -f "$WORK/$name.del" "$WORK/$name.del-ms"
     t0=$(now_ms)
-    say delete "$OWN3"; v=$ANSWER
-    ms=$(( $(now_ms) - t0 ))
+    # In the background: the rig must be able to look, and to kill the
+    # server, while the delete waits.
+    { lim 90 "$CTL" delete "$n" > "$WORK/$name.del" 2>> "$OUT/control.err"; echo $(( $(now_ms) - t0 )) > "$WORK/$name.del-ms"; } &
+    sleep 1
+    info "$n"; during="$STATE$([ -e "$WORK/$name.del-ms" ] && echo ' (the delete had answered)')"
+    if [ -n "$kill_after" ]; then
+        sleep $((kill_after - 1))
+        if [ -e "$WORK/$name.del-ms" ]; then killed="; the delete had answered before the server was to be killed"
+        else killed="; the server was killed $(( $(now_ms) - t0 )) ms after the delete was sent"; fi
+        kill -9 "$SRV_PID" 2>/dev/null
+    fi
+    for _ in $(seq 1 900); do [ -e "$WORK/$name.del-ms" ] && break; sleep 0.1; done
+    ms=$(cat "$WORK/$name.del-ms" 2>/dev/null); v=$(head -n 1 "$WORK/$name.del" 2>/dev/null | cut -f3-)
+    cat "$WORK/$name.del" >> "$OUT/steps.log" 2>/dev/null
     line=$(holder_answer 2 60)
-    obs delete_while_the_server_holds_a_request "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing in 60 s} ($ms ms by the rig's clock); the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
+    info "$n"; after=$STATE
+    obs "$name" "the server held one read for $hold s; the delete, sent 2 s into the hold, answered: ${v:-nothing}, after ${ms:-more than 90000} ms$killed; the device read '$during' 1 s after the delete was sent and '$after' at the end; the held read: ${line:-no answer in 60 s more}, $(( $(now_ms) - t1 )) ms after it was sent"
     srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
     holder_end
-    wait_state "$OWN3" nothing 10 || echo "   $OWN3 is still there: $ANSWER"
+    wait_state "$n" nothing 10 || { echo "   $n is still there: $ANSWER"; lim 20 "$CTL" delete "$n" > /dev/null 2>&1; }
 }
 step "a delete of a live device whose server holds a request"
-delete_under_a_held_request
+delete_under_a_held_request delete_while_the_server_holds_a_request "$OWN3" 20
+step "the same, and the server is killed while the delete waits"
+delete_under_a_held_request delete_while_the_server_holds_a_request_then_dies "$OWN4" 60 5
 
 step "own: a delete of a waiting device nobody holds"
 truncate -s "$SIZE" "$WORK/own2.img"
@@ -606,9 +630,9 @@ fi
 # ============================================== the library's directory
 step "nothing of the binding under /run/ublksrvd"
 SEEN=$OUT/ublksrvd-seen.log; : > "$SEEN"
-for n in $OWN $OWN2 $OWN3 $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
+for n in $OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
 n=$(grep -c '^entry ' "$SEEN")
-pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
+pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')"
 
 step "done"

@@ -92,6 +92,15 @@ EXPECTED = {
     'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
                                  'every case of the suite ends as declared with the marks set low enough that '
                                  'the daemon checkpoints while the suite runs (no step taken is a rig error)', 'WAITING'),
+    'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
+                                                  'a volume that fails while the server holds a request (--hold '
+                                                  'with --fail-log-after) still ends: serve exits with the failed '
+                                                  'status within a stated time and its device is gone or dead. The '
+                                                  'driver\'s delete of a live device waits while that device\'s '
+                                                  'server holds a request (control rig, '
+                                                  'obs_delete_while_the_server_holds_a_request), and the daemon\'s '
+                                                  'failure path deletes its own live device before it stops its '
+                                                  'queue', 'WAITING'),
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
                             'a clean scrub, every file as the writer recorded it (§4.1, M1 exit). Writes '
@@ -258,6 +267,8 @@ WAITS_FOR_THE_DAEMON = {
     'pin_log_stays_below_high_mark': 'M1.3c: checkpoints',
     'pin_kills_inside_steps_lose_nothing': 'M1.3c: checkpoints',
     'pin_c_suite_with_low_marks': 'M1.3c: checkpoints',
+    'pin_failed_volume_while_a_request_is_held': 'the author\'s answer on what the failure path does while the '
+                                                 'pump holds a request',
 }
 
 
