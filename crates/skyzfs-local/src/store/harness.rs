@@ -216,7 +216,7 @@ impl Cut for RecordCut {
         let survives = |i: usize| match self.beyond {
             _ if i < self.keep => true,
             Beyond::Hole => i > self.keep,
-            Beyond::Torn => i == self.keep && index % 2 == 0,
+            Beyond::Torn => i == self.keep && index.is_multiple_of(2),
             Beyond::Lost => false,
         };
         if survives(first) || inside.any(survives) {
@@ -227,11 +227,11 @@ impl Cut for RecordCut {
     }
 
     fn name(&mut self, _: usize, _: usize) -> bool {
-        self.rng.next() % 4 != 0
+        !self.rng.next().is_multiple_of(4)
     }
 
     fn length(&mut self, _: Option<&str>) -> bool {
-        self.rng.next() % 2 == 0
+        self.rng.next().is_multiple_of(2)
     }
 }
 
@@ -331,9 +331,9 @@ impl Harness for SimHarness {
             let reached = keep as usize % (store.queue.len() + 1);
             store.run(reached, &mut Vec::new());
             let mut rng = Rng(keep ^ store.position().0 ^ 0xC0FFEE);
-            if !read_only && rng.next() % 3 == 0 {
+            if !read_only && rng.next().is_multiple_of(3) {
                 // Half of these checkpoints have everything to apply.
-                if rng.next() % 2 == 0 {
+                if rng.next().is_multiple_of(2) {
                     let _ = store.core.flush();
                 }
                 disk_of.halt_after(rng.next() % 12);

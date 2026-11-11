@@ -1009,7 +1009,10 @@ fn what_the_suite_notices_of_each_defect() {
     let defects: [(&str, u32); 11] = [
         ("CHECKPOINT_UNSYNCED", Mutants::CHECKPOINT_UNSYNCED),
         ("CHECKPOINT_PAST_HOLD", Mutants::CHECKPOINT_PAST_HOLD),
-        ("RECLAIM_BEFORE_HOME_SYNC", Mutants::RECLAIM_BEFORE_HOME_SYNC),
+        (
+            "RECLAIM_BEFORE_HOME_SYNC",
+            Mutants::RECLAIM_BEFORE_HOME_SYNC,
+        ),
         ("INDEX_SWITCH_EARLY", Mutants::INDEX_SWITCH_EARLY),
         ("NO_INDEX_REBUILD", Mutants::NO_INDEX_REBUILD),
         ("FLUSH_NO_SYNC", Mutants::FLUSH_NO_SYNC),

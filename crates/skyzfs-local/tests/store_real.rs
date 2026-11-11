@@ -204,7 +204,8 @@ fn store_kill_test_child() {
         out.write_all(line.as_bytes()).unwrap();
         out.flush().unwrap();
     };
-    for n in from.. {
+    // Until the parent kills this process.
+    for n in from..u64::MAX {
         let (block, _, data) = kill_write(n);
         write(&mut store, block, data);
         say(format!("ack {n}\n"));
@@ -391,7 +392,7 @@ fn store_sanity_numbers() {
             count as f64 / batched.as_secs_f64(),
             (count * bytes as u64) as f64 / batched.as_secs_f64() / (1 << 20) as f64,
             count as f64 / from_log.as_secs_f64(),
-            2 * count * bytes as u64 >> 20,
+            (2 * count * bytes as u64) >> 20,
             count as f64 / from_home.as_secs_f64(),
         );
     }

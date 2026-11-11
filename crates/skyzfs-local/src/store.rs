@@ -34,7 +34,7 @@ use crate::log::{Log, LogError, Options, Recovery};
 pub const HOME_NAME: &str = "home.img";
 /// The home image while it is being created.
 const HOME_NEW_NAME: &str = "home.new";
-/// The preimages of a checkpoint in progress: see [`Preimages`].
+/// The preimages of a checkpoint in progress: see [the crate documentation](crate#the-preimage-file).
 pub const PREIMAGE_NAME: &str = "home.pre";
 
 /// Deliberate defects, for the tests that show each defence is needed.
@@ -686,6 +686,9 @@ const PREIMAGE_MAGIC: &[u8; 8] = b"SKYZPRE\0";
 const PREIMAGE_VERSION: u32 = 1;
 const PREIMAGE_HEADER: usize = 512;
 
+/// Saved blocks: each with its number in the volume.
+type Saved = Vec<(u64, Vec<u8>)>;
+
 impl Preimages {
     fn table_len(count: usize) -> usize {
         (count * 16).div_ceil(BLOCK_USIZE) * BLOCK_USIZE
@@ -722,7 +725,7 @@ impl Preimages {
         file: &F,
         volume: &[u8; 16],
         device_blocks: u64,
-    ) -> io::Result<Option<Vec<(u64, Vec<u8>)>>> {
+    ) -> io::Result<Option<Saved>> {
         let word = |bytes: &[u8]| {
             let mut raw = [0u8; 4];
             raw.copy_from_slice(&bytes[..4]);
