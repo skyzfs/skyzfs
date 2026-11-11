@@ -1,0 +1,11 @@
+n1 superblock written without sync: noticed by 31: a_block_with_durable_records_is_not_written_again, the_log_matches_the_model, the_log_matches_the_model_at_4096, a_failed_sync_is_never_retried, a_failure_that_cannot_be_recorded_is_reported_as_such
+n4 a neighbour counts as logged whatever its record, durable or not: NOT NOTICED
+n6 preimage file bound to the batch end, not its start: noticed by 3: a_checkpoint_puts_only_its_own_blocks_at_risk, a_checkpoint_in_batches_can_be_cut_anywhere, the_store_passes_the_conformance_suite
+n8 lock released after the open: noticed by 1: a_second_instance_is_refused_and_changes_nothing
+n9 the store own failure is not announced: noticed by 2: the_observer_is_told_before_the_marker_is_attempted, the_failure_is_announced_before_the_marker_is_attempted
+n10 poll executes: noticed by 1: a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one
+n11 restore: home not synced: noticed by 1: the_store_passes_the_conformance_suite
+n13 block tag does not bind the start: noticed by 1: the_preimage_file_golden_bytes
+n14 batches never split: noticed by 1: a_checkpoint_in_batches_can_be_cut_anywhere
+n15 observer called twice: noticed by 2: the_observer_is_told_before_the_marker_is_attempted, the_failure_is_announced_before_the_marker_is_attempted
+n12 model: kill recovers nothing once the log failed, delivered or not: NOT NOTICED

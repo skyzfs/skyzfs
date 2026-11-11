@@ -1,0 +1,145 @@
+diff --git a/crates/skyzfs-blk/src/model.rs b/crates/skyzfs-blk/src/model.rs
+index d1a237f..16a5518 100644
+--- a/crates/skyzfs-blk/src/model.rs
++++ b/crates/skyzfs-blk/src/model.rs
+@@ -1864,6 +1864,26 @@ mod tests {
+         c.sees(0, &[1]).unwrap();
+     }
+ 
++    /// Review probe (PR #7, 6be3bb9): the same history as the test
++    /// above, except that the daemon is lost before it delivers the
++    /// failure of the flush. The flush that would have covered the
++    /// write is what failed; the store loses the write (64 of 64 seeds
++    /// in `review_fault_then_kill_before_any_failure_is_delivered`).
++    /// The model must allow the flushed content.
++    #[test]
++    fn review_a_restart_before_the_failure_is_delivered() {
++        let mut c = Client::new();
++        c.wrote(0, 1, 1);
++        let f = c.submit(Op::Flush);
++        c.ack(f);
++        c.wrote(0, 1, 2);
++        let _in_flight = c.submit(Op::Flush);
++        c.model.log_failed();
++        c.model.kill();
++        c.model.reopened();
++        c.sees(0, &[1]).unwrap();
++    }
++
+     /// R11: once the log has failed, a flush must fail, and after the
+     /// first failure every request must, reads included.
+     #[test]
+diff --git a/crates/skyzfs-local/src/store/tests.rs b/crates/skyzfs-local/src/store/tests.rs
+index 9409038..570f629 100644
+--- a/crates/skyzfs-local/src/store/tests.rs
++++ b/crates/skyzfs-local/src/store/tests.rs
+@@ -1377,3 +1377,109 @@ fn what_the_suite_notices_of_each_defect() {
+         }
+     }
+ }
++
++/// Review probe (PR #7, 6be3bb9): a neighbour whose newest record is
++/// not durable is saved. Block 5 is in the home image; a write to it is
++/// acknowledged and not flushed; a durable write to block 4 is
++/// checkpointed and the checkpoint is cut off. The power cut takes the
++/// unflushed record, so block 5 must read as the home image had it.
++/// Fails if a neighbour counts as covered by the log whenever the index
++/// names a record for it, durable or not.
++#[test]
++fn review_a_neighbour_with_an_unflushed_record_is_saved() {
++    fn scenario(env: &Env) -> Outcome {
++        let (disk, mut store) = env.fresh()?;
++        write(&mut store, 4, 4, 1)?;
++        flush(&mut store)?;
++        checkpoint(&mut store)?;
++        write(&mut store, 4, 1, 3)?;
++        flush(&mut store)?;
++        write(&mut store, 5, 1, 2)?;
++        disk.fail_sync_of(HOME_NAME);
++        if store.checkpoint().is_ok() {
++            return Err("the checkpoint did not notice the failed sync".into());
++        }
++        drop(store);
++        let lost = env.lost();
++        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
++        let mut store = env.reopen_ack(&disk)?;
++        expect(&mut store, 4, 1, 3, "the block the checkpoint wrote")?;
++        expect(&mut store, 5, 1, 1, "the neighbour whose record was lost")?;
++        expect(&mut store, 6, 2, 1, "the neighbours behind")
++    }
++    holds(scenario);
++}
++
++/// Review probe (PR #7, 6be3bb9): a write is acknowledged; a flush is
++/// in flight when the log fails; the daemon gets to the flush, which
++/// fails, and is killed before any failure is delivered; the volume is
++/// opened again with the failure acknowledged. Prints in how many of 64
++/// seeds the acknowledged, unflushed write is gone. Asserts only that
++/// what the earlier flush covered is there.
++#[test]
++fn review_fault_then_kill_before_any_failure_is_delivered() {
++    use skyzfs_blk::conformance::{Harness, Spec};
++    let (mut lost, mut kept) = (0, 0);
++    for seed in 0..64u64 {
++        let mut harness = SimHarness {
++            align: 64,
++            unit: 4096,
++            garbage: false,
++            queue_depth: 16,
++            segments: Some(3),
++            mutants: 0,
++            threaded: false,
++        };
++        let spec = Spec {
++            seed,
++            ..Spec::EMPTY
++        };
++        let mut target = harness.create(&spec).unwrap();
++        let mut done = Vec::new();
++        let at = 40 * BLOCK;
++        let ops = [
++            Op::Write {
++                offset: at,
++                data: Buf::filled(1, 1),
++            },
++            Op::Flush,
++            Op::Write {
++                offset: at,
++                data: Buf::filled(1, 2),
++            },
++        ];
++        for (id, op) in ops.into_iter().enumerate() {
++            let id = RequestId(id as u64);
++            target.submit(Request { id, op }).unwrap();
++            target.wait(&mut done, Duration::ZERO);
++        }
++        assert!(done.len() == 3 && done.iter().all(|c| c.result.is_ok()));
++        let flush = Request {
++            id: RequestId(7),
++            op: Op::Flush,
++        };
++        target.submit(flush).unwrap();
++        harness.fail_log(&mut target).unwrap();
++        // `kill` lets the daemon reach one queued request first.
++        let target = harness.kill(target, 1).unwrap();
++        let Ok(mut target) = harness.reopen_failed(target).unwrap() else {
++            panic!("the harness cannot reopen");
++        };
++        done.clear();
++        let read = Request {
++            id: RequestId(9),
++            op: Op::Read {
++                offset: at,
++                buf: Buf::zeroed(1),
++            },
++        };
++        target.submit(read).unwrap();
++        target.wait(&mut done, Duration::ZERO);
++        match done[0].buf.as_ref().unwrap()[0] {
++            2 => kept += 1,
++            1 => lost += 1,
++            other => panic!("seed {seed}: the block holds {other}"),
++        }
++    }
++    println!("the acknowledged, unflushed write: kept in {kept} seeds, lost in {lost}");
++}
