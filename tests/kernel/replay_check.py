@@ -245,7 +245,7 @@ EXPECTED = {
 # failed is one of these. Anything else (a loop device, the snapshot, an
 # export, a command that timed out or could not start) is the rig
 # failing: never a caught control, and never a pass.
-JUDGING = {'import', 'mount', 'verify', 'deep: import (writable)', 'deep: scrub'}
+JUDGING = {'import', 'mount', 'verify', 'deep: import (writable)', 'deep: scrub', 'copies: zdb', 'copies: differ'}
 RIG_RC = (124, 127)             # run(): timed out, could not start
 
 # The deep check must run at no less than this share of the flush
@@ -255,6 +255,106 @@ RIG_RC = (124, 127)             # run(): timed out, could not start
 # In practice the budget covers every boundary, and a run in which any
 # boundary goes without says so in a warning.
 DEEP_FLOOR = 0.5
+
+
+# ------------------------------------------------- the every-copy check
+# Is every block that the newest uberblock reaches on the device, in
+# every copy? Nothing is imported and nothing is written:
+#   1. `zdb -e -bbbbb -cc` walks everything reachable from the newest
+#      uberblock, verifies each block's checksum, checks that nothing is
+#      leaked, and prints every block pointer with all its copies. Its
+#      exit code is the verdict for a block with one copy.
+#   2. zdb is content with one good copy (it reads as a scrub does, and
+#      the read succeeds while any copy is good), so its exit code
+#      cannot see one bad copy among several. The rig therefore reads
+#      every copy of every block that has more than one, from the image,
+#      and requires them to be byte-identical. With 1, each copy then
+#      holds bytes that pass the block's checksum.
+# The list must be provably complete: pointers with addresses plus
+# embedded ones must equal zdb's own count. A ganged block, a line that
+# cannot be read, or a zdb that dies or times out stops the check as a
+# rig error; none of them is ever a pass or a verdict.
+# Not covered: the uberblock's own four label copies (the import
+# chooses among them), and intent-log chains beyond what zdb follows,
+# which may end early by design.
+DVA_OFFSET = 0x400000           # a DVA's offset counts from the end of the two front labels
+DVA_RE = re.compile(r'DVA\[(\d)\]=<(\d+):([0-9a-f]+):([0-9a-f]+)>')
+SIZE_RE = re.compile(r'size=([0-9a-f]+)L/([0-9a-f]+)P')
+
+
+def zdb_blocks(text):
+    """Read `zdb -bbbbb` -> block pointers and what is needed to prove the list complete."""
+    out = {'bps': [], 'embedded': 0, 'holes': 0, 'ganged': 0, 'unread': [], 'bp_count': None, 'ganged_count': None}
+    for line in text.splitlines():
+        m = re.match(r'\s*(bp count|ganged count):\s+(\d+)', line)
+        if m:
+            out['bp_count' if m.group(1) == 'bp count' else 'ganged_count'] = int(m.group(2))
+            continue
+        if not line.startswith('objset '):
+            continue
+        if ' EMBEDDED ' in line:
+            out['embedded'] += 1
+            continue
+        if ' HOLE ' in line:
+            out['holes'] += 1
+            continue
+        dvas, size = DVA_RE.findall(line), SIZE_RE.search(line)
+        if not dvas or not size or [int(k) for k, _, _, _ in dvas] != list(range(len(dvas))):
+            out['unread'].append(line.strip()[:300])
+            continue
+        if ' gang ' in line:
+            out['ganged'] += 1
+        out['bps'].append({'line': line.strip()[:400],
+                           'dvas': [(int(v), int(off, 16), int(asize, 16)) for _, v, off, asize in dvas],
+                           'psize': int(size.group(2), 16)})
+    return out
+
+
+def copies_that_differ(image, bps):
+    """-> (blocks with several copies, those whose copies do not all hold the same bytes)."""
+    bad, checked = [], 0
+    with open(image, 'rb') as f:
+        for bp in bps:
+            if len(bp['dvas']) < 2:
+                continue
+            checked += 1
+            datas = []
+            for _, off, _ in bp['dvas']:
+                f.seek(off + DVA_OFFSET)
+                datas.append(f.read(bp['psize']))
+            if any(d != datas[0] for d in datas[1:]) or len(datas[0]) != bp['psize']:
+                bad.append({'line': bp['line'], 'differs': [k for k, d in enumerate(datas) if d != datas[0]]})
+    return checked, bad
+
+
+def every_copy_verdict(rc, text, image):
+    """zdb's exit code and listing, and the image -> (stage that failed or None, detail, counts)."""
+    counts = {}
+    if rc in RIG_RC:
+        return stage('zdb', rc), text.strip()[-300:], counts
+    if rc < 0:
+        said = [ln.strip() for ln in text.splitlines() if re.search(r'PANIC|ASSERT|VERIFY', ln)][:2]
+        return f'rig: zdb died with signal {-rc}', ' | '.join(said)[:400], counts
+    if rc:
+        said = [ln.strip()[:200] for ln in text.splitlines() if re.search(r'rror|leak|cannot|failed', ln)][:3]
+        return 'copies: zdb', f'zdb exit code {rc}: ' + ' | '.join(said), counts
+    b = zdb_blocks(text)
+    counts.update(blocks=len(b['bps']), embedded=b['embedded'], bp_count=b['bp_count'])
+    if b['unread']:
+        return 'rig: zdb printed a block pointer the rig cannot read', b['unread'][0], counts
+    if b['bp_count'] is None or b['ganged_count'] is None:
+        return 'rig: zdb printed no block counts', '', counts
+    if len(b['bps']) + b['embedded'] != b['bp_count']:
+        return ('rig: the list of block pointers is not complete',
+                f"{len(b['bps'])} with addresses + {b['embedded']} embedded, but zdb counted {b['bp_count']}", counts)
+    if b['ganged'] or b['ganged_count']:
+        return 'rig: ganged blocks, whose copies this check cannot compare', f"{b['ganged_count']} ganged", counts
+    if any(v != 0 for bp in b['bps'] for v, _, _ in bp['dvas']):
+        return 'rig: a block on a device other than the image', '', counts
+    counts['with_copies'], bad = copies_that_differ(image, b['bps'])
+    if bad:
+        return 'copies: differ', f"{len(bad)} of {counts['with_copies']} blocks with several copies: " + bad[0]['line'][:300], counts
+    return None, '', counts
 
 
 def stage(name, rc):
@@ -273,7 +373,7 @@ def tally_control(results):
         if r['ok']:
             continue
         if r['failed'] in JUDGING:
-            key = 'deep' if r['failed'].startswith('deep: ') else r['failed']
+            key = r['failed'].split(': ')[0] if ': ' in r['failed'] else r['failed']
             by[key] = by.get(key, 0) + 1
             if first is None:
                 first = {'n': r['n'], 'failed': r['failed'], 'detail': r['detail']}

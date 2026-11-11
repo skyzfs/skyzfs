@@ -433,6 +433,92 @@ class Log(unittest.TestCase):
         finally:
             replay_check.run, replay_check.time.sleep = real, real_sleep
 
+    # ------------------------------------------------ the every-copy check
+    def zdb_text(self, extra='', bp_count=4, ganged=0):
+        a, b = 0x100000, 0x300000        # DVA offsets; on the device they sit 4 MiB further on
+        return (
+            'Traversing all blocks to verify checksums and verify nothing leaked ...\n\n'
+            f'objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:{a:x}:1000> DVA[1]=<0:{b:x}:1000> DVA[2]=<0:{b + 0x1000:x}:1000> '
+            '[L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=9L/9P fill=5 cksum=1:2:3:4\n'
+            f'objset 54 object 28 level 0 offset 0x0 DVA[0]=<0:{a + 0x2000:x}:2000> [L0 ZFS plain file] fletcher4 uncompressed '
+            'unencrypted LE contiguous unique single size=2000L/2000P birth=9L/9P fill=1 cksum=1:2:3:4\n'
+            f'objset 0 object 5 level 0 offset 0x0 DVA[0]=<0:{a + 0x4000:x}:1000> DVA[1]=<0:{b + 0x4000:x}:1000> '
+            '[L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique double size=20000L/600P birth=9L/9P fill=1 cksum=1:2:3:4\n'
+            'objset 0 object 34 level 0 offset 0x0 EMBEDDED [L0 DSL props] et=0 lz4 size=200L/4dP birth=4L\n'
+            'objset 0 object 0 level 0 offset 0x20000 HOLE [L0 DMU dnode] size=4000L birth=56L\n'
+            + extra +
+            f'\n\tNo leaks (block sum matches space maps exactly)\n\n\tbp count:   {bp_count}\n\tganged count:    {ganged}\n')
+
+    def good_image(self):
+        off = replay_check.DVA_OFFSET
+        with open(self.img, 'r+b') as f:
+            for at in (0x100000, 0x300000, 0x301000):
+                f.seek(off + at)
+                f.write(blk(0xAA))
+            for at in (0x104000, 0x304000):
+                f.seek(off + at)
+                f.write(blk(0xBB))          # only the first 0x600 bytes are the block
+
+    def test_every_copy_passes_a_good_image(self):
+        self.good_image()
+        b = replay_check.zdb_blocks(self.zdb_text())
+        self.assertEqual((len(b['bps']), b['embedded'], b['holes'], b['bp_count'], b['ganged_count'], b['unread']),
+                         (3, 1, 1, 4, 0, []))
+        self.assertEqual([len(x['dvas']) for x in b['bps']], [3, 1, 2])
+        self.assertEqual(b['bps'][2]['psize'], 0x600)
+        failed, _, counts = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
+        self.assertIsNone(failed)
+        self.assertEqual(counts['with_copies'], 2)
+
+    def test_every_copy_sees_one_stale_copy_among_three(self):
+        self.good_image()
+        off = replay_check.DVA_OFFSET
+        for at in (0x300000, 0x301000, 0x304000 + 0x5ff):      # each copy by itself, and the last byte of a short block
+            self.good_image()
+            with open(self.img, 'r+b') as f:
+                f.seek(off + at)
+                f.write(b'\x01')
+            failed, detail, _ = replay_check.every_copy_verdict(0, self.zdb_text(), self.img)
+            self.assertEqual(failed, 'copies: differ', hex(at))
+            self.assertIn(failed, replay_check.JUDGING)
+        # bytes after the end of a compressed block are not the block
+        self.good_image()
+        with open(self.img, 'r+b') as f:
+            f.seek(off + 0x304000 + 0x600)
+            f.write(b'\x01')
+        self.assertIsNone(replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[0])
+
+    def test_every_copy_takes_zdbs_exit_code_as_a_verdict(self):
+        self.good_image()
+        text = self.zdb_text('zdb_blkptr_cb: Got error 52 reading <54, 28, 0, 0>  -- skipping\n')
+        failed, detail, _ = replay_check.every_copy_verdict(3, text, self.img)
+        self.assertEqual(failed, 'copies: zdb')
+        self.assertIn('error 52', detail)
+
+    def test_every_copy_never_passes_what_it_could_not_check(self):
+        self.good_image()
+        gang = ('objset 54 object 9 level 0 offset 0x0 DVA[0]=<0:500000:1000> [L0 ZFS plain file] fletcher4 uncompressed '
+                'unencrypted LE gang unique single size=20000L/20000P birth=9L/9P fill=1 cksum=1:2:3:4\n')
+        cases = {
+            'timed out': (124, self.zdb_text()),
+            'not started': (127, ''),
+            'died': (-6, "libzpool: PANIC: Pool 'p' has encountered an uncorrectable I/O failure"),
+            'list too short': (0, self.zdb_text(bp_count=5)),
+            'list too long': (0, self.zdb_text(bp_count=3)),
+            'no counts': (0, self.zdb_text().split('\tbp count')[0]),
+            'a line it cannot read': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 something new\n')),
+            'copies out of order': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 DVA[1]=<0:1:1000> [L0 x] size=1000L/1000P\n', 5)),
+            'ganged': (0, self.zdb_text(gang, bp_count=5, ganged=1)),
+            'ganged by count only': (0, self.zdb_text(ganged=2)),
+            'another device': (0, self.zdb_text('objset 0 object 7 level 0 offset 0x0 DVA[0]=<1:500000:1000> [L0 x] size=1000L/1000P\n', 5)),
+            'empty output': (0, ''),
+        }
+        for name, (rc, text) in cases.items():
+            failed, _, _ = replay_check.every_copy_verdict(rc, text, self.img)
+            self.assertIsNotNone(failed, name)
+            self.assertTrue(failed.startswith('rig: '), (name, failed))
+            self.assertNotIn(failed, replay_check.JUDGING, name)
+
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
                  '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')
