@@ -141,6 +141,17 @@ serve_bg() {
     printf '   %s -> %s (pid %s)\n' "$*" "${SRV_LINE:-(no answer)}" "$SRV_PID"
     case $SRV_LINE in "live after"*) return 0 ;; *) return 1 ;; esac
 }
+# PID: a kill -9 and a wait of at most 30 s. A server that the kill
+# does not end (it sleeps in the driver) is left behind: the looks that
+# follow then say what the device reads, and no bare `wait` holds the
+# job to its limit.
+srv_kill() {
+    kill -9 "$1" 2>/dev/null
+    for _ in $(seq 1 300); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
+    if kill -0 "$1" 2>/dev/null; then printf '   server %s had not ended 30 s after SIGKILL\n' "$1"; return 1; fi
+    wait "$1" 2>/dev/null
+    return 0
+}
 # srv_end PID OUT SECONDS: wait for a server to end -> SRV_SERVED, its last line; 1 if it did not end
 srv_end() {
     for _ in $(seq 1 $(($3 * 10))); do kill -0 "$1" 2>/dev/null || break; sleep 0.1; done
@@ -424,7 +435,7 @@ own_device() {
     srv=$SRV_PID; srv_out=$SRV_OUT
 
     step "own: a kill, then a take-over with a reader waiting"
-    kill -9 "$srv"; wait "$srv" 2>/dev/null
+    srv_kill "$srv"
     if wait_state "$OWN" waiting 10; then
         obs killed_server_live_ms "$WAITED_MS ms from the kill until the binding's lookup said waiting"
         pin_is killed_server_device_waits "waiting $WAITED_MS ms after SIGKILL (the daemon's limit is 5000)" [ "$WAITED_MS" -le 5000 ]
@@ -458,7 +469,7 @@ own_device() {
     if [ -e "$WORK/rd2.rc" ]; then
         pin take_over_reissues_a_request_in_flight ERROR "the read that was to be held returned at once (exit $(cat "$WORK/rd2.rc")): the server held nothing"
     fi
-    kill -9 "$srv"; wait "$srv" 2>/dev/null
+    srv_kill "$srv"
     wait_state "$OWN" waiting 10
     if serve_bg own-4 take-over "$OWN" --file "$WORK/own.img"; then
         wait "$rd"; rd_rc=$(cat "$WORK/rd2.rc" 2>/dev/null)

@@ -167,6 +167,33 @@ class KernelTestsThatDidNotEnd(unittest.TestCase):
         _, differs, errors = cc.judge(r)
         self.assertEqual((len(differs), len(errors)), (1, 1))
 
+    def test_an_observation_of_a_hung_kernel_test_is_a_verdict_too(self):
+        # the crate's tests print these themselves; the rig only copies them
+        self.assertEqual(sorted(cc.CRATE_OBSERVED), sorted(n for n in cc.OBSERVED if n.startswith('control_')))
+        for name in cc.CRATE_OBSERVED:
+            # the binary was cut before the test that prints this line
+            r = as_expected()
+            r['pin_kernel_tests_end'] = 'FAIL: the test binary had not ended after 600 s'
+            del r[name]
+            _, differs, errors = cc.judge(r)
+            self.assertEqual(errors, [], name)
+            self.assertEqual(len(differs), 2, name)        # the pin and the line
+            self.assertEqual(Main().run_on(list(r.items())), 1, name)
+            # the tests ended well and the line is missing: the rig lost it
+            r = as_expected()
+            del r[name]
+            _, differs, errors = cc.judge(r)
+            self.assertEqual((differs, len(errors)), ([], 1), name)
+            self.assertEqual(Main().run_on(list(r.items())), 2, name)
+        # an observation of the rig's own is the rig's error either way
+        r = as_expected()
+        r['pin_kernel_tests_end'] = 'FAIL: ended with 101'
+        own = next(n for n in cc.OBSERVED if n.startswith('obs_'))
+        del r[own]
+        _, differs, errors = cc.judge(r)
+        self.assertEqual((len(differs), len(errors)), (1, 1))
+        self.assertEqual(Main().run_on(list(r.items())), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

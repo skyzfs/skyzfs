@@ -195,6 +195,18 @@ serve_wait() { # seconds: wait for the `serve` started last to exit; its status 
     done
     return 1
 }
+# PID SECONDS: wait for a background job of this shell to end. 1 when
+# it has not ended in time; it is then killed and not waited for. A
+# writer or reader on a pool whose device has no server does not end
+# when told to (its write sleeps in the kernel), and a bare `wait` on
+# it would hold the job to its limit with no line written.
+job_end() {
+    local i=0
+    while kill -0 "$1" 2>/dev/null && [ "$i" -lt $(($2 * 4)) ]; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$1" 2>/dev/null; then kill -9 "$1" 2>/dev/null; return 1; fi
+    wait "$1" 2>/dev/null
+    return 0
+}
 # The --run-dir of `status` and `detach`: the one every serve of
 # serve_start gets. A check that serves with the default empties this.
 VOL_RUN_ARGS=(--run-dir "$RUN_DIR")
@@ -804,7 +816,7 @@ SHORT_LOG_SAID="the log is shorter than what was acknowledged"
 # without end and suspended only at the first read.
 # -> RS_CTL ("FAIL|PASS|ERROR detail" for the control), RS_OBS.
 refused_start_arm() {
-    local tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
+    local w tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
     local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay said tw="" tr="" ts="" cold pc
     RS_CTL=""; RS_OBS=""
     if ! vol_up "$SKYZFSD" "$dir"; then RS_CTL="ERROR not created or served"; return; fi
@@ -835,8 +847,16 @@ refused_start_arm() {
     fi
     : > "$WORK/$tag.record"; : > "$OUT/$tag-writer.log"
     writer "$WORK/mnt/$pool" "$WORK/$tag.record" "$OUT/$tag-writer.log" "$WORK/$tag.stop" &
+    w=$!
     sleep 5
-    touch "$WORK/$tag.stop"; wait "$!" 2>/dev/null
+    touch "$WORK/$tag.stop"
+    # The server is serving here and nothing has been done to it yet:
+    # a writer that does not end is no part of the control, and the
+    # control did not happen.
+    if ! job_end "$w" 120; then
+        RS_CTL="ERROR the control did not happen: before the kill, with the server serving, the writer had not ended 120 s after it was told to (pool $(pool_state "$pool"), the device $(ublk_state "$BDEV"); the server's last line: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-200))"
+        return
+    fi
     # The writer's stop and this sync are not checked for themselves:
     # the look below is the condition (writes counted, unchanged for a
     # second, nothing held, nothing unstored), and a writer that wrote
@@ -1023,7 +1043,7 @@ check_b_on_zfs() {
 # was told is written reads back. An exit other than 0 is reported as
 # such, whatever the rest says.
 check_b_stop_under_load() {
-    local dir=$WORK/vol-b7 pool=skzd-b7 slog w rc i w0 w1 rec st files fails a
+    local dir=$WORK/vol-b7 pool=skzd-b7 slog w rc i w0 w1 rec st files fails a stuck=""
     step "b: an orderly stop under write load"
     if [ "$IMPL" = reference ]; then
         pin orderly_stop_under_load WAITING "the stand-in stops by being killed, so its next server can find requests in hand"
@@ -1041,23 +1061,32 @@ check_b_stop_under_load() {
     w0=$(vol_stat "$SKYZFSD" "$dir" writes); sleep 0.5; w1=$(vol_stat_least "$SKYZFSD" "$dir" writes $(( ${w0:-0} + 1 )) 3000)
     kill -TERM "$SERVE_PID" 2>/dev/null
     if ! serve_wait 60; then
+        # The verdict is the stop that did not come. What follows is
+        # the way out, each step under a limit: the next serve may not
+        # come either, and the writer's write then never returns.
         touch "$WORK/b7.stop"
-        pin orderly_stop_under_load FAIL "serve did not exit within 60 s of SIGTERM under load"
-        kill -9 "$SERVE_PID" 2>/dev/null; serve_wait 30; serve_start "$SKYZFSD" "$dir"; wait "$w" 2>/dev/null; kill_cleanup b7
+        kill -9 "$SERVE_PID" 2>/dev/null; serve_wait 30; serve_start "$SKYZFSD" "$dir"; i=$?
+        if job_end "$w" 120; then stuck="the writer ended"; else stuck="THE WRITER HAD NOT ENDED 120 s after it was told to, and was killed"; fi
+        pin orderly_stop_under_load FAIL "serve did not exit within 60 s of SIGTERM under load; it was then killed and served again with rc $i (serve exit ${SERVE_RC:-none}): $stuck; pool $(pool_state "$pool")"
+        kill_cleanup b7
         return
     fi
     rc=$SERVE_RC
     serve_start "$SKYZFSD" "$dir"; i=$?
     rec=$(vol_stat "$SKYZFSD" "$dir" recovered_unacknowledged)
     sleep 5
-    touch "$WORK/b7.stop"; wait "$w" 2>/dev/null
+    # Not a bare wait: when the serve above did not come back, the
+    # device waits for a server, the writer's synced write sleeps in
+    # the kernel and the stop file does not end it.
+    touch "$WORK/b7.stop"
+    job_end "$w" 120 || stuck="THE WRITER HAD NOT ENDED 120 s after it was told to, and was killed; "
     st=$(pool_state "$pool")
     fails=$(grep -c . "$OUT/b7-writer.log")
     files=$(lim 120 files_match "$WORK/mnt/$pool" "$WORK/b7.record" 2>&1 | tail -n 1)
-    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i, recovered_unacknowledged '${rec:-not said}'; the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: $files"
+    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i$([ $i = 0 ] || echo " (THE SERVER DID NOT COME BACK: serve exit ${SERVE_RC:-none})"), recovered_unacknowledged '${rec:-not said}'; ${stuck}the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: ${files:-not read in 120 s}"
     if ! { [[ ${w0:-} =~ ^[0-9]+$ ]] && [[ ${w1:-} =~ ^[0-9]+$ ]] && [ "$w1" -gt "$w0" ]; }; then
         pin orderly_stop_under_load ERROR "the stop did not find the writer at work: $a"
-    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ "$rec" = 0 ] && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
+    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ -z "$stuck" ] && [ "$rec" = 0 ] && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
         pin orderly_stop_under_load PASS "$a"
     elif [ "$rc" != 0 ]; then
         pin orderly_stop_under_load FAIL "serve ended with $rc on SIGTERM under plain load (wanted 0): $a; its log's end: $(tail -n 2 "$dir.serve.log" | tr '\n' ';' | cut -c1-300)"
@@ -1100,7 +1129,10 @@ check_b_detach_held() {
         pin detach_of_held_says_6 ERROR "the holder was gone before the detach was judged"
         return
     fi
-    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    # Its end closes a deleted device: under a limit like every wait
+    # on something that touches a device. If it has not ended, no add
+    # succeeds below and the line says so.
+    kill "$holder" 2>/dev/null; job_end "$holder" 30
     t0=$(now_ms)
     while [ $(( $(now_ms) - t0 )) -lt 5000 ]; do
         if lim 60 ublk add -t null -n "$num" > "$OUT/b-detach-held-add.log" 2>&1; then

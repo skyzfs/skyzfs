@@ -220,6 +220,20 @@ OBSERVED = {
                                                              'returns, and what the reader gets',
 }
 
+# The observations that the crate's kernel tests print themselves (the
+# rig copies every `control_` line out of their output and writes none
+# of its own). When the tests did not end as they must, one of these
+# that is missing is part of that failure, like a missing verdict of
+# theirs. An `obs_` line is the rig's, and missing it is the rig's
+# error whatever the tests did.
+CRATE_OBSERVED = (
+    'control_started_detail',
+    'control_buffers_detail',
+    'control_delete_frees_the_number_detail',
+    'control_stop_under_writers_detail',
+    'control_set_params_on_a_started_device',
+)
+
 
 def judge(results):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, who, row, claim)."""
@@ -247,7 +261,10 @@ def judge(results):
             differs.append(f'{name}: expected {want}, got {got}: {detail}')
         rows.append((name, want, got, detail, who, row, claim))
     for name in OBSERVED:
-        if name not in results:
+        if name not in results and tests_failed and name in CRATE_OBSERVED:
+            differs.append(f'{name}: no observation: the kernel tests did not end as they must '
+                           f'(see pin_kernel_tests_end)')
+        elif name not in results:
             errors.append(f'{name}: no observation')
         elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
