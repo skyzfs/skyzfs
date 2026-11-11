@@ -121,6 +121,9 @@ struct FakeTarget {
     gone: bool,
     /// Its worker ends in the moment of the next submit.
     goes_at_submit: bool,
+    /// The worker ends when its completions are taken: after the last
+    /// one it handed over.
+    goes_at_poll: bool,
     /// The most requests it ever held.
     most: usize,
 }
@@ -185,6 +188,9 @@ impl BlockTarget for FakeTarget {
 
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
         let n = self.ready.len();
+        if self.goes_at_poll && n > 0 {
+            self.gone = true;
+        }
         for (completion, position) in self.ready.drain(..) {
             if let Some(position) = position {
                 self.acknowledged = self.acknowledged.max(Some(position));
@@ -255,6 +261,7 @@ impl Rig {
             acknowledged: None,
             gone: false,
             goes_at_submit: false,
+            goes_at_poll: false,
             most: 0,
         };
         let ack = FakeAck {
@@ -1026,11 +1033,14 @@ fn a_write_carries_the_queues_buffer_there_and_back() {
     );
 }
 
-/// A pump with five requests held in every way a request can be held:
-/// tag 0 a write in the target, tag 1 a write with FUA whose flush is
-/// in the target, tag 2 a write the target completed and whose position
-/// could not be stored, tag 3 a read in the target, tag 4 a flush that
-/// waits for room. The target answers none of what it still has.
+/// A pump with five requests held in five of the six ways a request
+/// can be held: tag 0 a write in the target, tag 1 a write with FUA
+/// whose flush is in the target, tag 2 a write the target completed
+/// and whose position could not be stored, tag 3 a read in the target,
+/// tag 4 a flush that waits for room. The target answers none of what
+/// it still has. The sixth way, a write with FUA whose flush is not
+/// submitted yet, lasts beyond a turn only when the pump ends in it:
+/// `a_failed_volume_answers_a_write_whose_flush_was_never_submitted`.
 fn held_in_every_way(mutants: u32) -> Result<Rig, String> {
     let mut rig = Rig::new(mutants, 8, 3);
     rig.fetch(&[
@@ -1071,6 +1081,43 @@ fn stored(rig: &Rig) -> usize {
         .iter()
         .filter(|e| matches!(e, Event::Stored(_)))
         .count()
+}
+
+/// The sixth way a request is held: a write with FUA that the target
+/// completed and whose flush is not submitted yet. A turn submits that
+/// flush as soon as the write completes, so the state outlasts a turn
+/// only when the turn ends the pump in between: here the target's
+/// worker ends right after it handed the write's completion over. The
+/// daemon tells the pump of the failure after such a turn too, and the
+/// write is answered like the rest, its buffer given back. Mutant: the
+/// failure skips a write that waits for its flush.
+#[test]
+fn a_failed_volume_answers_a_write_whose_flush_was_never_submitted() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 3);
+        rig.fetch(&[request(1, op::WRITE, flag::FUA, 1, 1), write(0, 0)]);
+        rig.complete(1, Some(10));
+        rig.pump.target().goes_at_poll = true;
+        expect(rig.turn(), Some(Stopped::TargetGone), "the turn")?;
+        expect(
+            rig.submitted(),
+            vec![(1, "write"), (0, "write")],
+            "in the target: no flush",
+        )?;
+        expect(rig.committed(), vec![], "committed before the failure")?;
+        expect(rig.pump.fail(), 2, "answered at the failure")?;
+        let mut committed = rig.committed();
+        committed.sort_unstable();
+        expect(
+            committed,
+            vec![(0, -EIO), (1, -EIO)],
+            "committed at the failure",
+        )?;
+        let back: Vec<u16> = rig.pump.queue().returned.keys().copied().collect();
+        expect(back, vec![1], "the buffer of the write that waited")?;
+        expect(rig.pump.counters().in_flight, 0, "held after the failure")
+    }
+    caught(scenario, Mutants::FAILED_SKIPS_FLUSH_WAITERS);
 }
 
 /// A failed volume holds no request (M1.3d): when the pump is told

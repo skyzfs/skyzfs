@@ -616,6 +616,13 @@ impl Mutants {
     /// A start that refuses a failure nobody held, for want of the
     /// flag, changes the failure note.
     pub(crate) const REFUSAL_TOUCHES_NOTE: u32 = 1 << 27;
+    /// A device with the volume's values and no note that is dead is
+    /// said to need a delete by hand, like one that waits.
+    pub(crate) const DEAD_BY_HAND: u32 = 1 << 28;
+    /// When the driver's delete fails after the device's note was
+    /// removed, the note is not put back, and the answer still says
+    /// that the next start tries again.
+    pub(crate) const DELETE_FAILURE_STRANDS: u32 = 1 << 29;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -949,6 +956,7 @@ fn settle<C: Control, R: Records>(
         Some(_) if info.state == DeviceState::Live => Ok(true),
         Some(_) => {
             delete(control, records, number, mutants)
+                .map_err(io::Error::from)
                 .map_err(error("deleting the failed volume's device"))?;
             lingers(
                 control,
@@ -1066,20 +1074,118 @@ fn lingers<C: Control, R: Records>(
     Ok(there)
 }
 
+/// Why a device was not deleted, and what became of its note. The note
+/// decides what happens next: a start or a detach deletes only a
+/// device that carries this volume's note.
+#[derive(Debug)]
+pub enum Undeleted {
+    /// The note could not be removed. Nothing was changed, and the
+    /// driver was not asked.
+    NoteStays(io::Error),
+    /// The note was removed, the driver's delete failed, and the note
+    /// was put back: the device is as it was before.
+    NotePutBack(io::Error),
+    /// The note was removed, the driver's delete failed, and the note
+    /// is not back: it could not be written, or the driver could not
+    /// say whether the device is still there. No start and no detach
+    /// deletes this device.
+    NoNote(io::Error),
+}
+
+impl Undeleted {
+    /// What to say of device `number`: why it was not deleted, and
+    /// what removes it.
+    pub fn said(&self, number: u32) -> String {
+        const AGAIN: &str = "the next start of this volume or `skyzfsd detach` tries again";
+        match self {
+            Self::NoteStays(e) => format!(
+                "device {number} could not be deleted: its note could not be removed ({e}), and nothing was changed: {AGAIN}"
+            ),
+            Self::NotePutBack(e) => format!(
+                "device {number} could not be deleted ({e}), and its note was put back: {AGAIN}"
+            ),
+            Self::NoNote(e) => format!(
+                "device {number} could not be deleted ({e}) and is left without its note, which could not be put back: deleting it by hand, or a reboot, resolves it"
+            ),
+        }
+    }
+}
+
+impl From<Undeleted> for io::Error {
+    fn from(undeleted: Undeleted) -> Self {
+        match undeleted {
+            Undeleted::NoteStays(e) => e,
+            Undeleted::NotePutBack(e) => {
+                io::Error::new(e.kind(), format!("{e}; the device's note was put back"))
+            }
+            Undeleted::NoNote(e) => io::Error::new(
+                e.kind(),
+                format!("{e}; the device is left without its note: by hand, or a reboot"),
+            ),
+        }
+    }
+}
+
 /// Delete this volume's device: its note first, then the device. A
 /// note exists only while its device may exist.
+///
+/// The order stays also when the delete fails: the other order can
+/// leave this volume's note on a number that another's device then
+/// takes. But a delete that failed has left the device, and a device
+/// without its note is deleted by nobody. So the note is put back when
+/// the driver still shows a device under the number: the state is then
+/// the one before the call, and the next start or detach tries again.
+/// If the driver shows none, the delete is done whatever it said. If
+/// the driver cannot say, the note is not put back: a note on a number
+/// that may be free could become a note on another's device. A kill
+/// between the removal and the putting back leaves the device without
+/// a note, which is the state a kill between the removal and the
+/// delete always left.
 fn delete<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     number: u32,
     mutants: Mutants,
-) -> io::Result<()> {
+) -> Result<(), Undeleted> {
     if mutants.has(Mutants::DELETE_BEFORE_NOTE) {
-        control.delete(number)?;
-        return records.remove_note(number);
+        control.delete(number).map_err(Undeleted::NoNote)?;
+        return records.remove_note(number).map_err(Undeleted::NoteStays);
     }
-    records.remove_note(number)?;
-    control.delete(number)
+    // A note that cannot be read cannot be put back.
+    let nonce = records.note(number).ok().flatten();
+    records.remove_note(number).map_err(Undeleted::NoteStays)?;
+    let Err(e) = control.delete(number) else {
+        return Ok(());
+    };
+    if mutants.has(Mutants::DELETE_FAILURE_STRANDS) {
+        return Err(Undeleted::NotePutBack(e));
+    }
+    match (control.info(number), nonce) {
+        (Ok(None), _) => Ok(()),
+        (Ok(Some(_)), Some(nonce)) if records.write_note(number, &nonce).is_ok() => {
+            Err(Undeleted::NotePutBack(e))
+        }
+        _ => Err(Undeleted::NoNote(e)),
+    }
+}
+
+/// What to say of a device under the volume's recorded number that has
+/// the volume's values and no note: for a refused start and for
+/// `status`, in the same words. Whose it is cannot be told for
+/// certain. A dead one is, as far as its values tell, this volume's
+/// device after its delete, held open by a client: the ordinary state
+/// after a volume failed under an imported pool, with nothing left to
+/// delete. One that waits or is live is there, and a delete by hand
+/// does something.
+pub fn unnoted(number: u32, state: DeviceState) -> String {
+    match state {
+        DeviceState::Dead => format!(
+            "device {number} has this volume's size, queues, depth and flags and no note, and is dead: as far as that tells, it is this volume's, already deleted and still held open by a client (a suspended pool does that). Nothing is left to delete: it goes when the client lets go of it, or at a reboot"
+        ),
+        DeviceState::Waiting | DeviceState::Live => format!(
+            "device {number} has this volume's size, queues, depth and flags and no note, and was left: deleting it by hand, or a reboot, resolves it"
+        ),
+    }
 }
 
 /// A start found the volume failed: the failure note first, then the
@@ -1142,10 +1248,14 @@ fn failed<C: Control, R: Records>(
 /// or serves, and `skyzfsd detach` deletes a device that carries this
 /// volume's note and is not live. So a device left because it was
 /// still live, could not be asked about or could not be deleted goes
-/// at the next start or detach that finds it otherwise. A device left
-/// because nothing shows it to be this volume's (no note, or a note
-/// that cannot be read) is not deleted by either: by hand, or by a
-/// reboot. Each answer says which of the two applies.
+/// at the next start or detach that finds it otherwise; a delete that
+/// the driver refused has its note put back for that ([`Undeleted`]).
+/// A device left because nothing shows it to be this volume's (no
+/// note, or a note that cannot be read) is not deleted by either: by
+/// hand, or by a reboot. Each answer says which of the two applies. A
+/// dead device with the volume's values and no note needs neither: it
+/// is, as far as that tells, the device the failing daemon deleted,
+/// still held open by a client ([`unnoted`]).
 fn give_up_device<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
@@ -1211,23 +1321,24 @@ fn give_up_device<C: Control, R: Records>(
         if info.shape != attachment.shape {
             return String::new();
         }
-        return format!(
-            "; device {number} has this volume's size, queues, depth and flags and no note, \
-             and was left: deleting it by hand, or a reboot, resolves it"
-        );
+        let state = if mutants.has(Mutants::DEAD_BY_HAND) {
+            DeviceState::Waiting
+        } else {
+            info.state
+        };
+        return format!("; {}", unnoted(number, state));
     }
     if info.shape != attachment.shape {
+        // Neither a start nor a detach deletes it: both want the
+        // recorded values under the note.
         return format!(
             "; device {number} carries this volume's note and not the recorded values, and \
-             was left"
+             was left: deleting it by hand, or a reboot, resolves it"
         );
     }
     match delete(control, records, number, mutants) {
         Ok(()) => said(format!("; device {number} was deleted")),
-        Err(e) => said(format!(
-            "; device {number} could not be deleted ({e}): the next start of this volume or \
-             `skyzfsd detach` tries again"
-        )),
+        Err(undeleted) => said(format!("; {}", undeleted.said(number))),
     }
 }
 
@@ -1237,22 +1348,28 @@ fn give_up_device<C: Control, R: Records>(
 /// device's note, then the device, without waiting. The caller holds
 /// the volume's lock (the store does) and exits afterwards.
 ///
-/// Returns what was noted, and whether the note could be written.
+/// Returns what was noted, whether the note could be written, and
+/// whether the device was deleted. The daemon takes the two steps
+/// apart, with its wait for the queue's thread between them
+/// ([`note_failure`], [`delete_failed`]).
 pub fn fail_serving<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     number: u32,
     identity: [u8; 16],
-) -> (Failure, bool) {
+) -> (Failure, bool, Result<(), Undeleted>) {
     fail_serving_with(control, records, number, identity, Mutants::default())
 }
 
-pub(crate) fn fail_serving_with<C: Control, R: Records>(
+/// The first step of [`fail_serving`]: the failure note. Returns what
+/// was noted, and whether the note could be written. A daemon killed
+/// after it leaves the note and the device with its note, which waits
+/// for a server: the next start reads the note and deletes the device.
+pub fn note_failure<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
     number: u32,
     identity: [u8; 16],
-    mutants: Mutants,
 ) -> (Failure, bool) {
     let failure = Failure {
         held: match control.client_holds(number) {
@@ -1262,13 +1379,35 @@ pub(crate) fn fail_serving_with<C: Control, R: Records>(
         reason: Reason::LogFailed,
         identity,
     };
-    let after = mutants.has(Mutants::FAILURE_NOTE_AFTER_DELETE);
-    let mut written = after || records.write_failure(&failure).is_ok();
-    let _ = delete(control, records, number, mutants);
-    if after {
-        written = records.write_failure(&failure).is_ok();
-    }
+    let written = records.write_failure(&failure).is_ok();
     (failure, written)
+}
+
+/// The second step of [`fail_serving`]: the device's note, then the
+/// device, without waiting.
+pub fn delete_failed<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+) -> Result<(), Undeleted> {
+    delete(control, records, number, Mutants::default())
+}
+
+pub(crate) fn fail_serving_with<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    identity: [u8; 16],
+    mutants: Mutants,
+) -> (Failure, bool, Result<(), Undeleted>) {
+    if !mutants.has(Mutants::FAILURE_NOTE_AFTER_DELETE) {
+        let (failure, written) = note_failure(control, records, number, identity);
+        let deleted = delete(control, records, number, mutants);
+        return (failure, written, deleted);
+    }
+    let deleted = delete(control, records, number, mutants);
+    let (failure, written) = note_failure(control, records, number, identity);
+    (failure, written, deleted)
 }
 
 /// Step 4: whose is the device the record names.
@@ -1429,6 +1568,7 @@ fn attach<C: Control, R: Records>(
     };
     if let Some(number) = stale {
         delete(control, records, number, mutants)
+            .map_err(io::Error::from)
             .map_err(error("deleting a device that was never started"))?;
     }
     let shape = Shape {
@@ -1650,7 +1790,7 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
     match located.state {
         DeviceState::Live => Ok(Detached::Live(number)),
         DeviceState::Waiting | DeviceState::Dead => {
-            delete(control, records, number, mutants)?;
+            delete(control, records, number, mutants).map_err(io::Error::from)?;
             let held = lingers(
                 control,
                 records,
