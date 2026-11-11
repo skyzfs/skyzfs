@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Judge a run of the daemon rig (tests/kernel/daemon-rig.sh).
 
-    daemon_check.py OUT [--checks "a b d e"] > summary.md
+    daemon_check.py OUT [--checks "a b c d e"] > summary.md
 
 Reads OUT/results.tsv and compares every pin and every control with the
 table EXPECTED below. Exit status 0 if they are equal, 1 if a pin or a
@@ -34,6 +34,10 @@ EXPECTED = {
     'pin_label_at_byte_0': ('a', 'PASS', KERNEL, 'the pool is on the bare device, its first label at byte 0 (§4.2)'),
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
     'pin_unstored_zero_a': ('a', 'PASS', WAITING, 'no completion waits for the acknowledged position to be stored (status: unstored 0)'),
+
+    'pin_c_max_request': ('c', 'PASS', SERVER,
+                          'every device of the conformance suite takes requests of 1 MiB: without this, its '
+                          'cases about a 1 MiB request and a discard across the device test only the block layer'),
 
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
@@ -83,6 +87,15 @@ OBSERVED = {
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
 }
+# Check c. skyzfs-blkcheck says for each case what the suite declares for
+# a harness with its capabilities; a case must end as declared. How many
+# cases the suite declares each way, for a harness with no power cut, no
+# base, no read-only volume and no invalid requests, that can make the
+# log fail and reopen a failed volume. A change in the suite or in what
+# the harness can do changes these on purpose.
+C_DECLARED = 'PASS 1, WEAKER 15, NOT_EXERCISED 10'
+C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
+
 # With the daemon behind the device these cannot be taken: they bring a
 # device back from the reference server's flat image.
 REFERENCE_ONLY = {'pin_clear_resumes_on_returned_device'}
@@ -126,7 +139,34 @@ def judge(results, checks, impl='reference'):
     for name, (check, _) in OBSERVED.items():
         if check in checks and name not in results:
             errors.append(f'{name}: no observation')
+    if 'c' in checks:
+        judge_cases(results, rows, differs, errors, impl)
     return rows, differs, errors
+
+
+def judge_cases(results, rows, differs, errors, impl='reference'):
+    """Check c: each case of the conformance suite against what the suite declares."""
+    basis = SERVER if impl == 'reference' else 'measured on the daemon'
+    run = results.get('c_run')
+    if run is None or not run.startswith('ok'):
+        errors.append(f"c_run: {run or 'the suite did not run'}")
+    declared = results.get('c_declared')
+    if declared is None:
+        errors.append('c_declared: missing')
+    elif declared != C_DECLARED:
+        differs.append(f'the suite declares {declared}; the table C_DECLARED has {C_DECLARED}')
+    cases = {k[len('case_'):]: v for k, v in results.items() if k.startswith('case_')}
+    for name, value in cases.items():
+        got, _, rest = value.partition(': declared ')
+        want, _, detail = rest.partition(': ')
+        if got not in C_RESULTS or want not in C_RESULTS[:3]:
+            # UNSUPPORTED: the suite asked for what the harness said it cannot do.
+            errors.append(f'case_{name}: {value}')
+        elif got != want:
+            differs.append(f'case_{name}: the suite declares {want}, got {got}: {detail}')
+        rows.append((f'case_{name}', want, got, detail, basis, 'conformance suite of skyzfs-blk, through the kernel'))
+    if run is not None and run.startswith('ok') and not cases:
+        errors.append('check c ran and left no case')
 
 
 def render(results, rows, differs, errors, checks):
@@ -147,7 +187,7 @@ def render(results, rows, differs, errors, checks):
     for name, (check, question) in OBSERVED.items():
         if check in checks:
             out.append(f"- **{question}** {results.get(name, 'no observation')}")
-    context = [k for k in results if not k.startswith(('pin_', 'ctl_', 'obs_'))]
+    context = [k for k in results if not k.startswith(('pin_', 'ctl_', 'obs_', 'case_'))]
     out += ['', '<details><summary>Everything else the rig wrote down</summary>', '']
     out += [f'- `{k}`: {results[k]}' for k in context] + ['', '</details>', '']
     return '\n'.join(out)
@@ -156,7 +196,7 @@ def render(results, rows, differs, errors, checks):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('out')
-    ap.add_argument('--checks', default='a b d e')
+    ap.add_argument('--checks', default='a b c d e')
     args = ap.parse_args(argv)
     checks = set(args.checks.split())
     path = os.path.join(args.out, 'results.tsv')

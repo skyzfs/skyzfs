@@ -3,7 +3,8 @@ name: skyzfs-daemon-rig
 # The kernel rig for skyzfsd (design §4.1 and §4.2, M1): what the kernel
 # and ZFS do with a ublk device served through the daemon's command
 # line. Parameters; kill -9 under load; a second serve; an orderly
-# stop; a failed volume; one request held for minutes. Until the daemon
+# stop; the conformance suite of skyzfs-blk through the block device; a
+# failed volume; one request held for minutes. Until the daemon
 # exists the server is a stand-in on the reference ublk server
 # (`tests/kernel/skyzfsd-ref.sh`); the summary says for every pin what
 # it rests on. The job fails unless every pin and every control is as
@@ -13,8 +14,8 @@ on:
   workflow_dispatch:
     inputs:
       checks:
-        description: "which checks: a parameters, b kill under load, d a failed volume, e a held request"
-        default: "a b d e"
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request"
+        default: "a b c d e"
       kills:
         description: "kill -9 of the server under load, how many times"
         default: "20"
@@ -30,6 +31,8 @@ on:
   pull_request:
     paths:
       - tests/kernel/**
+      - bins/skyzfs-blkcheck/**
+      - crates/skyzfs-blk/**
       - crates/skyzfs-ublk/**
       - bins/skyzfsd/**
       - .github/workflows/skyzfs-daemon-rig.yml
@@ -56,7 +59,7 @@ jobs:
   rig:
     name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -67,15 +70,20 @@ jobs:
         # The settings go in a file: ubuntu-26.04's sudo-rs does not
         # carry the environment through.
         env:
-          CHECKS: ${{ inputs.checks || 'a b d e' }}
+          CHECKS: ${{ inputs.checks || 'a b c d e' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
         run: |
-          [[ $CHECKS =~ ^[abde\ ]+$ ]] || { echo "::error::checks are letters of a b d e: $CHECKS"; exit 64; }
+          [[ $CHECKS =~ ^[abcde\ ]+$ ]] || { echo "::error::checks are letters of a b c d e: $CHECKS"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
+          # Check c drives the block device with the suite's own tool.
+          if [[ $CHECKS == *c* ]]; then
+            cargo build --release --locked -p skyzfs-blkcheck
+          fi
           {
+            printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
             # To run the rig on the daemon: build it here and add
@@ -89,7 +97,7 @@ jobs:
         run: |
           sudo chmod -R a+rX rig-out 2>/dev/null || true
           rc=0
-          python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b d e}" > summary.md || rc=$?
+          python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d e}" > summary.md || rc=$?
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           cp summary.md rig-out/ 2>/dev/null || true
           case $rc in

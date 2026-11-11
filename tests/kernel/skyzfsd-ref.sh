@@ -13,6 +13,8 @@
 #   skyzfsd-ref.sh detach --dir DIR
 #   skyzfsd-ref.sh status --dir DIR
 #
+# SIGUSR1 to `serve` makes the volume fail, as in the daemon's test build.
+#
 # Exit statuses: 0 done, or `serve` stopped by SIGTERM; 2 usage; 3 the
 # volume failed while it was served; 4 refused, the volume failed in
 # this boot; 5 refused, another instance serves the volume; 1 anything
@@ -156,6 +158,7 @@ serve)
         if [ -n "$ACK" ] && grep -qx 'held 0' "$NOTE"; then
             unlink "$NOTE"
             : > "$STATS"            # the stand-in's "log" is whole again
+            unlink "$DIR/fail-now" 2>/dev/null
         else
             echo "the volume failed in this boot: $(tr '\n' ' ' < "$NOTE")" >&2; exit 4
         fi
@@ -163,8 +166,9 @@ serve)
     # No note, and yet the counters say failed: the note was emptied, as
     # a reboot empties /run. The stand-in has no log to check, so the
     # volume simply starts again.
-    [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || : > "$STATS"
+    [ -e "$NOTE" ] || [ "$(stat_field 7)" = 0 ] || { : > "$STATS"; unlink "$DIR/fail-now" 2>/dev/null; }
     export SKZ_STATS=$STATS
+    export SKZ_FAIL_FILE=$DIR/fail-now      # SIGUSR1, below
     [ -z "$FAIL_AFTER" ] || export SKZ_FAIL_AFTER=$FAIL_AFTER
     [ -z "$HOLD" ] || export SKZ_HOLD=$HOLD
     [ -z "${SKZ_REF_DROP_EVERY:-}" ] || export SKZ_DROP_EVERY=$SKZ_REF_DROP_EVERY
@@ -191,6 +195,8 @@ serve)
     echo "$pid" > "$PIDREC"
     STOP=""
     trap 'STOP=1' TERM INT
+    # As the daemon's test build: SIGUSR1 makes the log fail for good.
+    trap ': > "$DIR/fail-now"' USR1
     echo "ready /dev/ublkb$n"
     while :; do
         if [ -n "$STOP" ]; then

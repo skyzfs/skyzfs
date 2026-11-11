@@ -27,15 +27,17 @@
 #   obs_<name>   an observation: what happened, not judged.
 #   anything else: context.
 #
-# Checks, chosen with RIG_CHECKS (default "a b d e"):
+# Checks, chosen with RIG_CHECKS (default "a b c d e"):
 #   a  parameters of the device and of a pool on it
 #   b  kill -9 under load, RIG_KILLS times (default 20); a second serve;
 #      an orderly stop
 #   d  a failed volume: what ZFS does, and what the server refuses after
 #   e  one request held RIG_HOLD_S seconds (default 300)
 # RIG_SERVE_ARGS: options added to every serve.
-# Check c, the conformance suite through the block device, is a separate
-# tool and is not in this script yet.
+#   c  the conformance suite of skyzfs-blk through the block device:
+#      RIG_BLKCHECK is a built skyzfs-blkcheck, which drives the server
+#      through tests/kernel/blkcheck-helper.sh. RIG_C_CASES and
+#      RIG_C_ROUNDS (default 16 and 4) are the suite's sizes.
 set -uo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -54,7 +56,7 @@ export DEBIAN_FRONTEND=noninteractive
 REF=$HERE/skyzfsd-ref.sh
 SKYZFSD=${RIG_SKYZFSD:-$REF}
 IMPL=daemon; [ "$SKYZFSD" = "$REF" ] && IMPL=reference
-CHECKS=" ${RIG_CHECKS:-a b d e} "
+CHECKS=" ${RIG_CHECKS:-a b c d e} "
 KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
 # Options for every serve, split at spaces: for the daemon on a runner,
@@ -765,6 +767,49 @@ hold_test() {
     vol_detach "$SKYZFSD" "$dir"
     [ "$held" = 0 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
 }
+# =================================================================== c
+# The suite's verdict on each case, next to what the suite declares for
+# a harness that can do what this one can. The judge compares the two.
+check_c() {
+    local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n
+    step "c: the conformance suite through the block device"
+    if [ ! -x "$tool" ]; then rec c_run "ERROR: no skyzfs-blkcheck at '$tool' (RIG_BLKCHECK)"; return; fi
+    mkdir -p "$work"
+    t0=$(date +%s)
+    BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} \
+        lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" --can fail-log --can reopen-failed \
+        --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
+        > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
+    cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
+    for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/c-$(basename "$f")"; done
+    declare -A declared_as=()
+    n=0
+    while IFS=$'\t' read -r tag name result detail; do
+        case $tag in
+            declared) declared_as[$name]=$result ;;
+            case) rec "case_$name" "$result: declared ${declared_as[$name]:-nothing}: $detail"; n=$((n + 1)) ;;
+        esac
+    done < "$OUT/c-cases.tsv"
+    declared=$(awk -F'\t' '$1 == "declared" { n[$3]++ } END { printf "PASS %d, WEAKER %d, NOT_EXERCISED %d", n["PASS"], n["WEAKER"], n["NOT_EXERCISED"] }' "$OUT/c-cases.tsv")
+    rec c_declared "$declared"
+    rec c_cost "$(awk '$1 ~ /^(create|kill|fail|reopen|destroy)$/ && $4 == "ms" { n[$1]++; t[$1] += $3 }
+        END { for (v in n) printf "%s x%d, mean %d ms; ", v, n[v], t[v] / n[v] }' "$OUT/c-helper.log" 2>/dev/null)the whole suite $(( $(date +%s) - t0 )) s"
+    if [ $rc != 0 ]; then
+        rec c_run "ERROR: skyzfs-blkcheck exit $rc after $n cases: $(tail -n 1 "$OUT/c-blkcheck.err")"
+    else
+        rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}"
+    fi
+    # The cases about a request of exactly 1 MiB and a discard across the
+    # device test what the block layer forwards: they exercise the
+    # server only if every device advertised a 1 MiB maximum.
+    result=$(grep -o 'max_hw_sectors_kb=[0-9]*' "$OUT/c-helper.log" 2>/dev/null | sort | uniq -c | tr -s ' \n' ' ')
+    if [ -z "$result" ]; then
+        pin c_max_request ERROR "the helper wrote down no device"
+    else
+        pin_is c_max_request "of the suite's devices:$result" [ "$result" = " $(grep -c 'max_hw_sectors_kb=' "$OUT/c-helper.log") max_hw_sectors_kb=1024 " ]
+    fi
+}
+
 check_e() {
     local v
     step "e: one request held $HOLD_S s"
@@ -777,6 +822,7 @@ check_e() {
 
 case $CHECKS in *" a "*) check_a ;; esac
 case $CHECKS in *" b "*) check_b ;; esac
+case $CHECKS in *" c "*) check_c ;; esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.
 case $CHECKS in *" d "*) check_d ;; esac

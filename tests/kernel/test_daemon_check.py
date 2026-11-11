@@ -10,14 +10,71 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daemon_check as dc  # noqa: E402
 
-ALL = {'a', 'b', 'd', 'e'}
+ALL = {'a', 'b', 'c', 'd', 'e'}
+CASES = {'one': 'PASS: declared PASS: ', 'two': 'WEAKER: declared WEAKER: without a power cut: x',
+         'three': 'NOT_EXERCISED: declared NOT_EXERCISED: the harness cannot cut the power'}
 
 
 def as_expected():
     r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
     r.update(impl='reference: x', setup='ok')
+    r.update(c_run='ok: 3 cases', c_declared=dc.C_DECLARED)
+    r.update({f'case_{k}': v for k, v in CASES.items()})
     return r
+
+
+def with_cases(**changed):
+    """A run of check c in which every case ended as the suite declares."""
+    r = as_expected()
+    r.update({f'case_{k}': v for k, v in changed.items()})
+    return r
+
+
+class Cases(unittest.TestCase):
+    C = ALL
+
+    def test_cases_that_end_as_declared_pass(self):
+        _, differs, errors = dc.judge(with_cases(), self.C)
+        self.assertEqual((differs, errors), ([], []))
+
+    def test_a_failed_case_differs(self):
+        _, differs, errors = dc.judge(with_cases(two='FAIL: declared WEAKER: #3 failed'), self.C)
+        self.assertEqual(len(differs), 1)
+        self.assertEqual(errors, [])
+
+    def test_a_case_that_did_more_or_less_than_declared_differs(self):
+        for got in ('PASS', 'NOT_EXERCISED'):
+            _, differs, errors = dc.judge(with_cases(two=f'{got}: declared WEAKER: '), self.C)
+            self.assertEqual(len(differs), 1, got)
+            self.assertEqual(errors, [])
+
+    def test_what_the_harness_said_it_cannot_do_is_a_rig_error(self):
+        _, differs, errors = dc.judge(with_cases(two='UNSUPPORTED: declared WEAKER: a power cut'), self.C)
+        self.assertEqual(differs, [])
+        self.assertEqual(len(errors), 1)
+
+    def test_a_suite_that_declares_otherwise_differs(self):
+        r = with_cases()
+        r['c_declared'] = 'PASS 2, WEAKER 14, NOT_EXERCISED 10'
+        _, differs, errors = dc.judge(r, self.C)
+        self.assertEqual(len(differs), 1)
+        self.assertEqual(errors, [])
+
+    def test_a_suite_that_did_not_run_is_a_rig_error(self):
+        r = with_cases()
+        r['c_run'] = 'ERROR: skyzfs-blkcheck exit 124 after 3 cases'
+        _, differs, errors = dc.judge(r, self.C)
+        self.assertEqual(differs, [])
+        self.assertEqual(len(errors), 1)
+        r = {k: v for k, v in as_expected().items() if not k.startswith(('c_', 'case_'))}
+        _, _, errors = dc.judge(r, self.C)
+        self.assertTrue(errors)
+
+    def test_check_c_is_asked_for_only_when_it_ran(self):
+        r = {k: v for k, v in as_expected().items() if not k.startswith(('c_', 'case_', 'pin_c_'))}
+        _, differs, errors = dc.judge(r, ALL - {'c'})
+        self.assertEqual((differs, errors), ([], []))
 
 
 class Judge(unittest.TestCase):

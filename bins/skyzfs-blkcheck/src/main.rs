@@ -22,6 +22,11 @@
 //!   the device path. Only called with `--can reopen-failed`.
 //! - `CMD destroy N`: stop serving volume N and remove it.
 //!
+//! Before each case a line `declared<TAB>name<TAB>STATUS` says how the
+//! suite itself declares the case for a harness with these capabilities
+//! (`PASS`, `WEAKER` or `NOT_EXERCISED`); `--list` prints only those and
+//! runs nothing. A result other than the declared one is a finding.
+//!
 //! One line per case goes to stdout, `case<TAB>name<TAB>RESULT<TAB>detail`,
 //! where RESULT is `PASS`, `FAIL`, `WEAKER` (the rule held in a weaker
 //! form than the case has on a harness that can do everything; the

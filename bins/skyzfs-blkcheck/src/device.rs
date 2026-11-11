@@ -301,7 +301,7 @@ impl Harness for DeviceHarness {
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: skyzfs-blkcheck --harness CMD [--can fail-log] [--can reopen-failed] [--depth N] \
+        "usage: skyzfs-blkcheck --harness CMD [--list] [--can fail-log] [--can reopen-failed] [--depth N] \
          [--cases N] [--rounds N] [--seed N] [--timeout SECONDS] [--case NAME]..."
     );
     ExitCode::from(2)
@@ -322,8 +322,13 @@ pub fn main() -> ExitCode {
     };
     let mut only: Vec<String> = Vec::new();
     let (mut can_fail, mut can_reopen) = (false, false);
+    let mut list = false;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
+        if flag == "--list" {
+            list = true;
+            continue;
+        }
         let Some(value) = args.next() else {
             return usage();
         };
@@ -365,6 +370,19 @@ pub fn main() -> ExitCode {
     };
     for case in cases::<DeviceHarness>() {
         if !only.is_empty() && !only.iter().any(|n| n == case.name) {
+            continue;
+        }
+        // What the suite says of this case for a harness with these
+        // capabilities, before anything runs.
+        let declared = if case.requires.iter().any(|c| !capabilities.has(*c)) {
+            "NOT_EXERCISED"
+        } else if case.weaker.iter().any(|(c, _)| !capabilities.has(*c)) {
+            "WEAKER"
+        } else {
+            "PASS"
+        };
+        println!("declared\t{}\t{declared}", case.name);
+        if list {
             continue;
         }
         let (result, detail) = match case.run_on(&mut harness, &config) {
