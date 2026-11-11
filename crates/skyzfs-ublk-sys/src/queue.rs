@@ -98,6 +98,10 @@ const WAKE: u64 = (1 << 63) | 1;
 /// How long [`Queue::pause`] sleeps.
 pub const PAUSE: Duration = Duration::from_millis(100);
 
+/// How often [`Queue::flush`] submits again when a signal interrupted
+/// the call.
+const FLUSH_TRIES: u32 = 8;
+
 /// The name the library is given for the target. It appears in the
 /// library's own file of a take-over and nowhere else.
 const NAME: &str = "skyzfsd";
@@ -542,6 +546,21 @@ impl Queue for KernelQueue<'_> {
                 *ours = true;
             }
         }
+    }
+
+    /// One submit of what the ring holds, with no wait. A fetch that
+    /// completes in it belongs to a request nobody serves any more: it
+    /// stays with the kernel and is issued again to the next instance.
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        for _ in 0..FLUSH_TRIES {
+            match self.queue.flush_and_wake_io_tasks(|_, _, _| {}, 0) {
+                Ok(_) => return Ok(()),
+                Err(UblkError::IOError(e)) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(UblkError::UringIOError(n)) if n.abs() == libc::EINTR => {}
+                Err(_) => return Err(QueueDown),
+            }
+        }
+        Err(QueueDown)
     }
 
     fn pause(&mut self) {

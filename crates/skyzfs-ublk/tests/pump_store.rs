@@ -61,6 +61,10 @@ impl Queue for ScriptQueue {
         }
     }
 
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        Ok(())
+    }
+
     fn pause(&mut self) {}
 }
 

@@ -126,6 +126,15 @@ pub trait Queue {
     /// to store the acknowledged position. Not the queue's wait: it
     /// fetches nothing and returns after its time whatever happens.
     fn pause(&mut self);
+
+    /// Hand the driver every commit made so far, without waiting for
+    /// anything. A queue may keep a commit until its next
+    /// [`Queue::wait`]; the pump calls this once when it ends for a
+    /// stop, after its last commit, because no wait follows that one.
+    /// A request whose commit never reached the driver is issued again
+    /// to the next instance: safe, but not what an orderly stop says
+    /// it did. `Err` if they could not be handed over.
+    fn flush(&mut self) -> Result<(), QueueDown>;
 }
 
 /// What the pump needs of a target beyond the contract.
@@ -153,7 +162,8 @@ pub trait AckRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
     /// A stop was asked, and everything the target had accepted is
-    /// completed and committed.
+    /// completed and committed, and the commits were handed to the
+    /// driver ([`Queue::flush`]).
     Orderly,
     /// A stop was asked, the target has drained, and the acknowledged
     /// position could not be stored in the stated number of tries.
@@ -240,6 +250,8 @@ impl Mutants {
     /// A refusal with room is a fault, also when the target went in
     /// that moment.
     pub(crate) const REFUSAL_IS_FAULT: u32 = 1 << 14;
+    /// A stop ends with its last commits still in the queue.
+    pub(crate) const STOP_UNSENT: u32 = 1 << 15;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -414,6 +426,13 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             }
             self.queue.pause();
             self.commit_finished();
+        }
+        // The last commits of a stop have no wait behind them that
+        // would send them: the queue hands them over now. A stop whose
+        // commits could not be handed over completed nothing in the
+        // kernel's eyes and is not orderly.
+        if !self.mutants.has(Mutants::STOP_UNSENT) && self.queue.flush().is_err() {
+            return Some(Stopped::QueueDown);
         }
         if self.finished.is_empty() {
             Some(Stopped::Orderly)
