@@ -224,6 +224,9 @@ impl DeviceTarget {
     }
 
     fn take(&mut self, completion: Completion, out: &mut Vec<Completion>) {
+        // The moment the suite learns of the result: with the submits,
+        // these lines are the history the suite's model is given.
+        trace(self.number, "delivered", Some(completion.id), "");
         self.in_flight.remove(&completion.id);
         out.push(completion);
     }
