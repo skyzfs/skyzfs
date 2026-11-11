@@ -1012,13 +1012,13 @@ fn after_the_stop(
 /// their next writes are then issued to tags whose fetch commands name
 /// the old addresses, and the test fails if none was issued in such a
 /// stop. With the buffers kept, the count is zero. With the buffers
-/// freed it is not zero when the allocator has handed the freed memory
-/// out again, which it does from the second stop on with glibc (the
-/// first free of blocks this large unmaps them); the line printed for
+/// freed it can only be other than zero where the allocator has handed
+/// the freed memory out again (glibc unmaps blocks this large at their
+/// first free and reuses them from then on); the line printed for
 /// each stop says whether the told ranges were still mapped, how many
 /// blocks taken afterwards lay where one was, and how many writes were
-/// in flight at the device. This part is as certain as the allocator's
-/// reuse: it shows the damage, the allocator check proves the property.
+/// in flight at the device. A zero here is not evidence that the
+/// buffers were kept: the allocator check is.
 /// At the other stops the writers' next writes arrive within
 /// microseconds of the stop, before any memory is taken, and block:
 /// those stops are for the commits of a stop, below.
