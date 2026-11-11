@@ -51,6 +51,9 @@ jobs:
       - name: Package mirrors
         run: bash tests/lib/apt-fallback.sh
       - name: The binding's kernel tests
+        # A limit on the step, and the output streamed: a test that
+        # hangs fails the job after ten minutes with its lines printed.
+        timeout-minutes: 10
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           rustup update stable
@@ -58,16 +61,21 @@ jobs:
           bin=$(cargo test --release --locked -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
           [ -x "$bin" ] || { echo "::error::no test binary"; exit 1; }
           rc=0
-          sudo "$bin" --ignored --test-threads 1 --nocapture > kernel-tests.log 2>&1 || rc=$?
+          set +o pipefail
+          sudo "$bin" --ignored --test-threads 1 --nocapture 2>&1 | tee kernel-tests.log
+          rc=${PIPESTATUS[0]}
+          set -o pipefail
           {
             echo "### the binding's kernel tests on ${{ matrix.image }} (exit $rc)"
             echo '```'
             grep -E '^control_|^test |panicked' kernel-tests.log || cat kernel-tests.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          cat kernel-tests.log
           sudo ls -la /run/ublksrvd 2>&1 || true
+          # The step's colour follows the tests.
+          [ "$rc" -eq 0 ] || { echo "::error::the kernel tests ended with $rc"; exit 1; }
       - name: Rig, on the daemon
+        if: ${{ !cancelled() }}
         # The settings go in a file: ubuntu-26.04's sudo-rs does not
         # carry the environment through.
         env:
