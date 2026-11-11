@@ -2,11 +2,12 @@
 //! "attachment across restarts" and "what was acknowledged"), generic
 //! over what it acts on, so that the order is tested with fakes.
 //!
-//! **The control interface here is a guess.** [`Control`] names the
-//! steps the daemon needs of the ublk control device as this module
-//! needs them. It was written before the binding to `libublk`, and the
-//! binding may have to change its shape. What is not a guess is the
-//! order of the steps and the conditions, which are the design's.
+//! [`Control`] names the steps the daemon needs of the ublk control
+//! device as this module needs them. It was written before the binding
+//! and changed by what the kernel spike showed
+//! (`docs/skyzfs-ublk-spike.md`); the binding that implements it over
+//! the driver is the crate `skyzfs-ublk-sys`. The order of the steps
+//! and the conditions are the design's.
 //!
 //! # The order
 //!
@@ -310,17 +311,15 @@ pub struct Failure {
     pub identity: [u8; 16],
 }
 
-/// The steps the daemon needs of the kernel's control interface. A
-/// guess: see the [module documentation](self).
+/// The steps the daemon needs of the kernel's control interface.
 ///
-/// **Not settled: the flags.** The lifecycle compares the
-/// [`Shape::flags`] the kernel reports with the flags in the record,
-/// which is written before the add with the flags that were asked for.
-/// The kernel may report other flags for a device than the add asked
-/// for (it may add or mask bits). The binding has to make the two
-/// comparable: either [`Control::info`] reports the flags under a mask
-/// of the bits the daemon sets, or the record is completed after the
-/// add. The fake here reports what was asked for. The spike decides.
+/// **The flags.** The lifecycle compares the [`Shape::flags`] the
+/// kernel reports with the flags in the record, which is written
+/// before the add with the flags that were asked for. The driver
+/// reports more bits for a device than the add asked for. So
+/// [`Control::info`] reports the flags under the mask of the bits the
+/// daemon asks for, and the record holds what was asked. The fake in
+/// the tests reports what was asked for.
 pub trait Control {
     /// Whether the driver can reissue requests after a recovery.
     fn can_reissue(&mut self) -> io::Result<bool>;
@@ -1416,8 +1415,10 @@ pub enum Detached {
 /// this volume's device looks after it was deleted while something
 /// held it, since a note is removed before its delete.
 ///
-/// Not decided here, and on the list for the kernel spike: whether a
-/// detach can know beforehand that a client holds a waiting device.
+/// A detach does not ask beforehand whether a client holds the device:
+/// the kernel can say only that an exclusive holder exists
+/// ([`Control::client_holds`]). It deletes, looks again, and says
+/// whether the number is still held.
 pub fn detach<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,

@@ -4228,9 +4228,6 @@ dependencies = [
 name = "skyzfs-ublk"
 version = "0.0.1"
 dependencies = [
- "io-uring",
- "libc",
- "libublk",
  "proptest",
  "skyzfs-blk",
  "skyzfs-local",

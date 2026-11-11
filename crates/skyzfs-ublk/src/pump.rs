@@ -36,9 +36,9 @@
 //!   its own. The retry rides on the queue waking: for a request, for
 //!   the target, or, with no traffic at all, for the idle time-out of
 //!   the queue's own wait. In `libublk` 0.4.8 that is 20 seconds
-//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), read from the source and
-//!   still to be seen in a run; so the longest wait for a retry with
-//!   no traffic is 20 seconds.
+//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), and the kernel spike saw
+//!   it: two wakes in 45 idle seconds, 20 s apart. So the longest wait
+//!   for a retry with no traffic is 20 seconds.
 //! - **An orderly stop** completes what it accepted: once the queue
 //!   says stop, nothing more is accepted, what is in the target is
 //!   waited for and committed, and the pump ends. Requests that were

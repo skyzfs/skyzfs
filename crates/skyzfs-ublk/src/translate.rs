@@ -115,8 +115,8 @@ pub mod flag {
     /// which is ahead of Linux v7.0: v7.0's header ends at bit 18
     /// ([`INTEGRITY`]). A v7.0 kernel never sets the bit. Refusing it
     /// costs nothing there and is right on a kernel that has it, since
-    /// the daemon registers no such buffer. To be checked against the
-    /// source the binding is built on, when the spike runs.
+    /// the daemon registers no such buffer. The kernel spike compared
+    /// these constants with that header, bit by bit: they are equal.
     pub const SHMEM_ZC: u32 = 1 << 19;
     /// The flags that say the data is elsewhere.
     pub const DATA_ELSEWHERE: u32 = NEED_REG_BUF | INTEGRITY | SHMEM_ZC;
