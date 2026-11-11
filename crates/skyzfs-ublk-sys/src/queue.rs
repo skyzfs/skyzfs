@@ -145,7 +145,8 @@ impl Device {
     /// discard and write-zeroes of at most that, one segment each.
     ///
     /// A device whose largest request is above [`MAX_IO`] is refused
-    /// (`InvalidInput`) and left as it is: see [`fits`].
+    /// (`InvalidInput`) and left as it is: the driver would copy a
+    /// request of that size past a buffer's end.
     pub fn open(open: &Open) -> io::Result<Self> {
         let Ok(id) = i32::try_from(open.number) else {
             return Err(io::Error::other("no such device number"));

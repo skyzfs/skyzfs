@@ -277,7 +277,7 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
 
     /// The end of a stop. What still waits here waits behind a
     /// position that could not be stored when the stop arrived: it is
-    /// tried again [`STOP_TRIES`] times, paced by the queue's pause, as
+    /// tried again 20 times, paced by the queue's pause, as
     /// the pump does for its own completions. If something is left
     /// then, the stop is not orderly: the answer is `Err`, the pump
     /// ends with [`Stopped::QueueDown`](skyzfs_ublk::pump::Stopped) and
