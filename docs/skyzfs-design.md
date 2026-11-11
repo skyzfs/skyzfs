@@ -221,6 +221,7 @@ Design points:
 - **The control path is the port's existing control device.** `/dev/zfs` on macOS and the ZFS device on Windows already take ioctls from an administrator. Attach, wait and kick are three more.
 - **Two single-producer rings and a data area.** Descriptors are fixed-size: request id, operation, offset, length, data offset in the arena, priority, and the transaction group as a hint. Completions carry an id and a status.
 - **One copy each way**, in and out of the arena. The vdev queue above the frontend still bounds concurrency and aggregates adjacent I/O, so a ring depth of a few hundred is enough.
+- **No daemon code in the frontend.** The frontend module contains nothing from the daemon, and the daemon nothing from the frontend. They share only the protocol's definition, one header under a permissive licence. This keeps the CDDL code of the ports and the FSL daemon apart (§10).
 - **The kernel never trusts the arena.** Every descriptor field is copied out and validated before use. The daemon is privileged, but a corrupt daemon must not corrupt the kernel.
 - **Daemon loss.** When the daemon's handle closes, the provider holds new and in-flight zios. A daemon that re-attaches under the same name within a timeout gets the in-flight requests again. Request ids carry an attach generation, so a completion from before the loss cannot complete a reissued request. Past the timeout every request fails, as a device that is gone, and keeps failing until the daemon is back, so that a flush error ZFS ignores cannot be followed by an uberblock write that succeeds (§4.1). ZFS's `failmode=wait` then suspends the pool until it is cleared. This reuses ZFS's own handling of a vanished disk.
 - **A full data area makes the frontend wait**, holding nothing that memory reclaim needs. The area is sized for the largest request times the ring depth.
@@ -396,7 +397,7 @@ ZFS's defaults assume a large pool and an uncapped ARC. A pool per volume is oft
 | Install barrier | A package | Apple silicon: the user must lower the security policy to Reduced Security in Recovery and approve the extension[^applekext] | A signed driver. Microsoft requires an EV certificate and attestation signing through the Hardware Dev Center[^winsign] |
 | Daemon | systemd service, io_uring | launchd daemon | Windows service |
 
-**The macOS barrier is the largest risk in this design.** Apple discourages kernel extensions and is moving filesystems to user space with FSKit[^applekext][^fskit]. A ZFS kext needs the reduced-security step whatever we add to it, so the frontend adds no new barrier, but the barrier is real for the audience this product targets. §8 and the roadmap carry a hedge.
+**The macOS barrier is the largest risk in this design.** Apple discourages kernel extensions and is moving filesystems to user space with FSKit[^applekext][^fskit]. A ZFS kext needs the reduced-security step whatever we add to it, so the frontend adds no new barrier, but the barrier is real for a wide audience. The first releases accept it (decision D4): 1.x on macOS is for developers and enthusiasts, who can take that step. A client without kernel code follows in 2.x, on FSKit (§8).
 
 ## 8. Alternatives considered
 
@@ -405,7 +406,7 @@ ZFS's defaults assume a large pool and an uncapped ARC. A pool per volume is oft
 | **A new vdev type** talking to the daemon | Rejected. Breaks import on stock ZFS (§4.3). |
 | **A generic userspace block device per OS**, with the ports unpatched: DriverKit on macOS, WNBD or WinSpd on Windows[^wnbd] | Kept as the fallback for M6 and M7. It avoids carrying patches, and the device would serve other filesystems too. It adds a second kernel component to install and sign, puts a SCSI or block layer between ZFS and the daemon, and on macOS depends on an Apple entitlement that has not been investigated yet. |
 | **A Linux VM on the Mac or PC** running the Linux stack, with files shared to the host | Rejected as the product, kept as a test vehicle. One kernel codebase and no extensions, but the files are not native to the host. |
-| **ZFS in user space** behind FSKit on macOS and WinFsp on Windows, with the vdev in the daemon's own process | The hedge. No kernel code at all, and the block target contract already allows an in-process transport. It needs the ZFS POSIX layer outside the kernel, which upstream does not provide. Spiked in parallel with M5, decided at gate G4. |
+| **ZFS in user space** behind FSKit on macOS and WinFsp on Windows, with the vdev in the daemon's own process | Later, for 2.x (decision D4). No kernel code at all, and the block target contract already allows an in-process transport. It needs the ZFS POSIX layer outside the kernel, which upstream does not provide, so the plan is to follow the macOS port of OpenZFS when it moves to FSKit and not to build that layer here. The daemon, the contract and the frontend's common code as built into `libzpool` (M5) carry over. |
 | **Stay on dm-thin** | Rejected for this product. Linux only, and the snapshot cost is structural. |
 | **An object-store vdev inside ZFS**, as Delphix presented in 2021[^delphix] | Not available upstream. Worth reading for its agent protocol and restart handling before M5. It ties the pool format to the object store, where this design keeps ZFS unmodified above a block contract. |
 
@@ -424,8 +425,7 @@ flowchart LR
   M4 --> M9["M9 Streaming<br/>intent-log backup"]
   M6 --> M8
   M7 --> M8
-  M5 -.-> H["H Userspace ZFS spike<br/>FSKit, WinFsp"]
-  H -.-> M6
+  M8 -.-> H["H After 1.x: ZFS in user space<br/>FSKit, with the macOS port"]
 ```
 
 Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a small team. They are estimates to be replaced after M1.
@@ -442,7 +442,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M7** Windows client, alpha | L | Path dispatch in the port's disk vdev. Daemon as a service. Signed driver. | The same cross-OS restore pairs with Windows. Loads with memory integrity enabled. |
 | **M8** Product beta | L | Client UI, snapshot browser, policies, two object-store targets at once, fleet view for small businesses, security review. | External beta users restore without help. |
 | **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
-| **H** Userspace ZFS spike | S | A read-only pool served through FSKit from a process that links `libzpool`. | A written go or no-go for a kernel-free client. |
+| **H** ZFS in user space on macOS, after 1.x | Not sized | Deferred by decision D4, and no longer a hedge for M6. A macOS client on FSKit, built on the macOS port once that supports FSKit, with the daemon and the `udrive_shm` code of M5 reused. | Planned once 1.x has shipped and the port's FSKit work exists to build on. |
 
 Decision gates:
 
@@ -452,32 +452,33 @@ Decision gates:
 | G2 | M3 | Is cold restore good enough for the server case? If not, the read cache gets a milestone of its own before M4. |
 | G3 | M5 | Carry patches on the two ports, or switch M6 and M7 to a generic block device? Decided by the measured size and rebase cost of the frontend. |
 | G5 | M6 and M7 in alpha | Is the frontend stable enough to offer to the port maintainers (decision D3)? |
-| G4 | Before M6 leaves alpha | Is a kernel extension still acceptable on current macOS for this audience? If not, the macOS client follows the userspace path from H. |
+| G4 | Closed by decision D4 | Was: is a kernel extension still acceptable on current macOS for this audience? Yes for 1.x, whose macOS audience is developers and enthusiasts. Asked again when 2.x is planned. |
 
 ## 10. Risks and open questions
 
 | Risk | Consequence | Mitigation |
 |---|---|---|
-| Apple removes or further restricts kernel extensions | No native macOS client on this design | Hedge H and gate G4. The engine and contract do not depend on the transport. |
+| Apple removes or further restricts kernel extensions | No native macOS client until the FSKit client of 2.x | Accepted for 1.x (decision D4). The engine and the contract do not depend on the transport, and most of `udrive_shm` carries over to a client on FSKit. If Apple closes the door before 2.x exists, the macOS client waits for it. |
 | Rebase cost of patches on two ports that follow upstream | Ongoing maintenance, carried alone until gate G5 | Keep the hook minimal and below the disk vdev. Rebase in CI against both ports' development branches from M5 on, so drift shows early. Gates G3 and G5. |
 | Driver signing and distribution on Windows | Delay, and a dependency on Microsoft's process | Start the EV certificate and Hardware Dev Center account during M5. |
 | Daemon and kernel deadlock under memory pressure | Hung machine | Locked memory, no allocation in the daemon's I/O path, daemon files off its own pools, a stress test in the kernel rig. |
 | Flush cost on consumer SSDs, above all `F_FULLFSYNC` on macOS | Slow commits | Measure in M6. The log device is the only place that pays it per commit. Whether to offer an ordering-only class is a product decision taken on those numbers (§5.1). |
 | Many small pools on one machine sharing one ARC and one dirty-data limit | Stalls from a noisy neighbour | Measured in M4. |
 | One workload behind the evidence: pgbench, 1.5 GiB, very compressible, fresh pool | Results may not hold for large or aged pools | Add a database larger than RAM and an aged pool to the benchmark before M4 exits. |
-| Licensing | The frontend lives in CDDL code. The daemon is FSL. | Publish the frontend under CDDL and the protocol header under a permissive licence. Needs legal review. |
+| Licensing | The frontend lives in CDDL code. The daemon is FSL. | Publish the frontend under CDDL and the protocol header under a permissive licence, and link no daemon code into the frontend module (§4.3). A preliminary check on 2026-11-11, the owner's, made with two AI assistants, found the split sound on that condition. It is not a lawyer's opinion. One is still due before the frontend is distributed. |
 | ZFS trims late: freed blocks reach the device as discards at least two transaction groups after the free, batched over 32 | A cut carries blocks ZFS already considers free, so uploads exceed the live bytes | Measure in M4 against its upload criterion. Options: a smaller `zfs_trim_txg_batch`, or a second source of liveness. |
 | twovol's 2 s stalls in the benchmark are unexplained | The far-tail comparison may flatter ZFS without snapshots | Does not affect the snapshot result. Listed in the study as open. |
 
 ### 10.1 Decisions
 
-Recorded 2026-11-10.
+D1 to D3 were recorded on 2026-11-10, D4 on 2026-11-11.
 
 | # | Question | Decision |
 |---|---|---|
 | D1 | What does a Mac or Windows user see: a ZFS dataset, or a zvol formatted natively? | **Datasets.** Snapshots stay freeze-free and atomic across the pool. zvols remain a non-goal. |
 | D2 | Is losing the fsynced tail on node loss acceptable? | **Yes for M1, and through M4.** The log device stays local. Streaming backup of the intent log comes later as M9 (§5.5). |
 | D3 | Offer the frontend to the port maintainers from the start? | **No.** They are better served by a stable proof of concept that is likely to stick. The frontend is developed out of tree and offered at gate G5. |
+| D4 | Is a kernel extension acceptable for the macOS client? | **Yes for 1.x.** The first releases on macOS are for developers and enthusiasts and ship the ZFS kernel extension with the frontend. A client on FSKit comes later, in 2.x, when the macOS port of OpenZFS supports it. Most of the code, the `udrive_shm` frontend and the daemon, is reused. This closes gate G4 and moves the userspace work (H) behind 1.x. |
 
 ### 10.2 Review record
 
