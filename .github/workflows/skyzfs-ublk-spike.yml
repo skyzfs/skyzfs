@@ -42,6 +42,23 @@ jobs:
         image: [ubuntu-26.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
+      - name: The binding's kernel tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          rustup update stable
+          sudo modprobe ublk_drv
+          bin=$(cargo test --release --locked -p skyzfs-ublk-sys --test kernel --no-run 2>&1 | sed -n 's/.*Executable tests\/kernel.rs (\(.*\))/\1/p')
+          [ -x "$bin" ] || { echo "::error::no test binary"; exit 1; }
+          rc=0
+          sudo "$bin" --ignored --test-threads 1 --nocapture > kernel-tests.log 2>&1 || rc=$?
+          {
+            echo "### the binding's kernel tests on ${{ matrix.image }} (exit $rc)"
+            echo '```'
+            grep -E '^control_|^test |panicked' kernel-tests.log || cat kernel-tests.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat kernel-tests.log
+          sudo ls -la /run/ublksrvd 2>&1 || true
       - name: Rig, on the daemon
         # The settings go in a file: ubuntu-26.04's sudo-rs does not
         # carry the environment through.
