@@ -244,6 +244,7 @@ apt-get install -y --no-install-recommends zfsutils-linux python3 util-linux > "
 }
 modprobe zfs 2>> "$OUT/apt.log" || SETUP_OK=""
 rec zfs "$(cat /sys/module/zfs/version 2>/dev/null)"
+rec zfs_userland "$(zfs version 2>&1 | tr '\n' ' ')"
 if UBLKSRV_PATCH=$HERE/ublksrv-skz.patch "$HERE/build-ublksrv.sh" \
     "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
     rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver"), with ublksrv-skz.patch"

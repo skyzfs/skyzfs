@@ -6,7 +6,10 @@
 # `zpool clear` does with a device that reappears under the old name,
 # and this script is where that is seen.
 #
-#   failed-volume-obs.sh OUT [WORK]
+#   failed-volume-obs.sh OUT [WORK [SCENARIOS]]
+#
+# SCENARIOS is a list of the names below, in quotes; all of them if it
+# is left out.
 #
 # It needs only the stock reference ublk server (`ublk add`, `ublk del`):
 # no stand-in for the daemon and no patch. Everything it writes is an
@@ -15,6 +18,9 @@
 # scenario has its own pool with failmode=wait, a local log device, a
 # reader, and a writer that keeps its own record:
 #
+#   sync     what a sync waits for while a pool is suspended: fsync,
+#            fdatasync and syncfs of a file on another file system,
+#            sync(1) with a file, and at the very end sync() of everything.
 #   other    the device is deleted; the same content comes back. The old
 #            number is tried first; if the kernel refuses it, the
 #            content comes back under another number with nothing at the
@@ -38,6 +44,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 OUT=${1:?usage: failed-volume-obs.sh OUT [WORK]}
 WORK=${2:-/mnt/skz-failed-volume}
+SCENARIOS=" ${3:-sync gone zed routes older scrub} "
+want() { case $SCENARIOS in *" $1 "*) return 0 ;; esac; return 1; }
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK/mnt"
 OUT=$(cd "$OUT" && pwd)
@@ -88,13 +96,16 @@ rec kernel "$(uname -r)"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
 apt-get update > /dev/null 2>&1
-apt-get install -y --no-install-recommends zfsutils-linux python3 > "$OUT/apt.log" 2>&1
+apt-get install -y --no-install-recommends zfsutils-linux zfs-zed python3 > "$OUT/apt.log" 2>&1
 [ -e /dev/ublk-control ] || modprobe ublk_drv 2>> "$OUT/apt.log" || {
     apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/apt.log" 2>&1
     modprobe ublk_drv 2>> "$OUT/apt.log"
 }
 modprobe zfs 2>> "$OUT/apt.log"
 rec zfs "$(cat /sys/module/zfs/version 2>/dev/null)"
+rec zfs_userland "$(zfs version 2>&1 | tr '\n' ' ')"
+# The package starts the event daemon; only the zed scenario wants it.
+systemctl stop zfs-zed > /dev/null 2>&1
 if ! "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log" \
     || [ ! -e /dev/ublk-control ] || [ ! -r /proc/spl/kstat/zfs/arcstats ]; then
     rec setup "FAILED: see apt.log and ublksrv-build.log"
@@ -280,15 +291,15 @@ sync_all_probe() { # name: sync() of everything, last, since it may never return
 
 step "sync: what a sync waits for while a pool is suspended"
 rec sync_version "$(sync --version 2>&1 | head -n 1); $(readlink -f "$(command -v sync)")"
-sync_probe sync_before
-if scenario_start syncp 6; then
+want sync && sync_probe sync_before
+if want sync && scenario_start syncp 6; then
     scenario_delete syncp 6 || rec syncp_note "the pool did not suspend"
     sync_probe sync_suspended
 fi
 touch "$WORK/syncp.stop"
 
 step "gone: the device is deleted for good, with a delete that waits"
-if scenario_start gone 2; then
+if want gone && scenario_start gone 2; then
     scenario_delete gone 2 wait || rec gone_note "the pool did not suspend"
     # zpool clear with no device behind the pool, and what is stuck with it.
     ( lim 100 zpool clear skzf-gone > "$OUT/gone-clear.log" 2>&1; echo $? > "$WORK/gone-clear.rc" ) &
@@ -317,10 +328,10 @@ touch "$WORK/gone.stop"
 
 step "zed: the same with the event daemon running"
 zed_log() { journalctl -u zfs-zed --since "$1" --no-pager -o cat 2>/dev/null | sed 's/[0-9]\{4,\}/N/g' | sort | uniq -c | sort -rn | head -n 8 | tr -s ' ' | tr '\n' ';'; }
-systemctl start zfs-zed > "$OUT/zed-start.log" 2>&1
+want zed && systemctl start zfs-zed > "$OUT/zed-start.log" 2>&1
 sleep 2
 rec zed_started "$(systemctl is-active zfs-zed 2>/dev/null || echo unknown); $(pgrep -c -x zed 2>/dev/null || echo 0) zed process(es); $(tail -n 1 "$OUT/zed-start.log")"
-if scenario_start zed 3; then
+if want zed && scenario_start zed 3; then
     since=$(date '+%Y-%m-%d %H:%M:%S')
     scenario_delete zed 3 || rec zed_note "the pool did not suspend"
     sleep 30
@@ -346,7 +357,7 @@ RESUMED=""
 for route in other link; do
     step "$route: the device is deleted; the same content comes back ($route)"
     n=0; [ "$route" = link ] && n=1
-    if scenario_start "$route" "$n"; then
+    if want routes && scenario_start "$route" "$n"; then
         scenario_delete "$route" "$n" || rec "${route}_note" "the pool did not suspend; the rest is recorded as it went"
         bring_back "$route" "$n" "$WORK/$route.img" "$route"
         wait_unaided "$route" 60
@@ -358,7 +369,7 @@ rec routes_that_resumed "${RESUMED:-none}"
 
 step "older: the device comes back with an earlier copy of its image"
 route=${RESUMED%% *}; route=${route:-link}
-if scenario_start older 4; then
+if want older && scenario_start older 4; then
     lim 120 zpool sync skzf-older
     cp --sparse=always "$WORK/older.img" "$WORK/older-copy.img"
     rec older_copy "taken with $(grep -c . "$WORK/older.record") files acknowledged; it comes back by the route '$route'"
@@ -370,7 +381,7 @@ fi
 touch "$WORK/older.stop"
 
 step "scrub: the device is deleted while a scrub is running"
-if scenario_start scrub 5; then
+if want scrub && scenario_start scrub 5; then
     lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/skzf-scrub/big" bs=1M count=2048 conv=fsync status=none
     lim 30 zpool scrub skzf-scrub
     sleep 1
@@ -380,8 +391,10 @@ fi
 touch "$WORK/scrub.stop"
 
 step "sync, the end: everything at once, and the single file again after it"
-sync_all_probe sync_suspended
-sync_probe sync_after_sync_all
+if want sync; then
+    sync_all_probe sync_suspended
+    sync_probe sync_after_sync_all
+fi
 
 step "done"
 cat "$R"

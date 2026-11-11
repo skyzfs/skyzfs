@@ -8,6 +8,10 @@ name: skyzfs-failed-volume
 # the stock reference ublk server.
 on:
   workflow_dispatch:
+    inputs:
+      scenarios:
+        description: "which scenarios: sync gone zed routes older scrub"
+        default: "sync gone zed routes older scrub"
   # A push that changes the script runs it once on the testing branch:
   # these observations are inputs to the design and are wanted before
   # the rig around them is reviewed.
@@ -32,7 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Observe
-        run: sudo tests/kernel/failed-volume-obs.sh "$PWD/obs-out" /mnt/skz-failed-volume
+        env:
+          SCENARIOS: ${{ inputs.scenarios || 'sync gone zed routes older scrub' }}
+        run: |
+          [[ $SCENARIOS =~ ^[a-z\ ]+$ ]] || { echo "::error::scenarios are names: $SCENARIOS"; exit 64; }
+          sudo tests/kernel/failed-volume-obs.sh "$PWD/obs-out" /mnt/skz-failed-volume "$SCENARIOS"
       - name: Summary
         if: always()
         run: |
