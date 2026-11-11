@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 144
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 192
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,13 +18,14 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's second version. The first (`SKYZSTA1`, 128
-//! bytes) ended before the last two fields; a file of that version is
-//! read as no status.
+//! This is the file's third version. The second (`SKYZSTA2`, 144
+//! bytes) ended before the log's fields, from offset 144 on; a file
+//! of that version is still read, without them. The first
+//! (`SKYZSTA1`, 128 bytes) is read as no status.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA2` |
+//! | 0 | 8 | magic `SKYZSTA3` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -42,6 +43,12 @@
 //! | 120 | 8 | writes of this file that failed |
 //! | 128 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
 //! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
+//! | 144 | 8 | `log_live`: the bytes of the log from its start to its end, which the next start replays |
+//! | 152 | 8 | `checkpoint_steps`: the steps the store's checkpoint rule has taken since this daemon started serving |
+//! | 160 | 8 | 1 while such a step is under way, else 0 |
+//! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
+//! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
+//! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //!
 //! # The rules
 //!
@@ -60,7 +67,9 @@
 //!   thread does not wake while nothing changes: it waits for a change
 //!   without a time limit.
 //! - **At most one write per interval**, however fast the counters
-//!   move.
+//!   move, **except when a checkpoint step begins or ends**: that is
+//!   written at once ([`Board::post_log`] with `at_once`), so that
+//!   whoever watches the file sees a step while it is under way.
 //! - When the daemon stops in order, the last counters are written
 //!   before [`Board::publish`] returns, whatever the interval.
 //!
@@ -84,8 +93,11 @@ use crate::records::StoredFailure;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA2";
-const LEN: usize = 144;
+const MAGIC: &[u8; 8] = b"SKYZSTA3";
+const LEN: usize = 192;
+/// The second version: without the fields from offset 144 on.
+const SECOND_MAGIC: &[u8; 8] = b"SKYZSTA2";
+const SECOND_LEN: usize = 144;
 /// The first version: read as no status.
 const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
 const OLD_LEN: usize = 128;
@@ -116,6 +128,35 @@ pub struct Status {
     /// acknowledged position: applied by the daemon before it and never
     /// answered. A lower bound.
     pub recovered_unacknowledged: u64,
+    /// The log and the start, which the third version added. `None`
+    /// in a file of the second version.
+    pub log: Option<LogStatus>,
+}
+
+/// What the file says of the log and of the daemon's start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogStatus {
+    /// The log as the store shows it.
+    pub shown: LogShown,
+    /// How long the start took until the device served, in
+    /// milliseconds.
+    pub start_ms: u64,
+    /// The bytes of log the start replayed.
+    pub replayed_bytes: u64,
+}
+
+/// The log as the queue thread posts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LogShown {
+    /// The bytes from the log's start to its end.
+    pub live: u64,
+    /// The checkpoint steps taken since the daemon started serving.
+    pub steps: u64,
+    /// Whether a step is under way.
+    pub stepping: bool,
+    /// The syncs of the log the worker issued for its steps: its own,
+    /// apart from the flushes clients asked for.
+    pub own_syncs: u64,
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -133,6 +174,7 @@ fn encode(status: &Status) -> [u8; LEN] {
     bytes[16..32].copy_from_slice(&status.boot);
     bytes[32..48].copy_from_slice(&status.identity);
     let c = &status.counters;
+    let log = status.log.unwrap_or_default();
     let fields = [
         status.written_ms,
         c.reads,
@@ -146,6 +188,12 @@ fn encode(status: &Status) -> [u8; LEN] {
         status.failures,
         status.first_write_copies,
         status.recovered_unacknowledged,
+        log.shown.live,
+        log.shown.steps,
+        u64::from(log.shown.stepping),
+        log.start_ms,
+        log.replayed_bytes,
+        log.shown.own_syncs,
     ];
     for (i, field) in fields.iter().enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
@@ -154,9 +202,21 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    if bytes.len() != LEN || &bytes[..8] != MAGIC {
+    let third = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let second = bytes.len() == SECOND_LEN && &bytes[..8] == SECOND_MAGIC;
+    if !third && !second {
         return None;
     }
+    let log = third.then(|| LogStatus {
+        shown: LogShown {
+            live: u64_at(bytes, 144),
+            steps: u64_at(bytes, 152),
+            stepping: u64_at(bytes, 160) != 0,
+            own_syncs: u64_at(bytes, 184),
+        },
+        start_ms: u64_at(bytes, 168),
+        replayed_bytes: u64_at(bytes, 176),
+    });
     let mut boot = [0u8; 16];
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
@@ -181,6 +241,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
         failures: u64_at(bytes, 120),
         first_write_copies: u64_at(bytes, 128),
         recovered_unacknowledged: u64_at(bytes, 136),
+        log,
     })
 }
 
@@ -309,6 +370,16 @@ impl Pace {
         }
     }
 
+    /// When something that is not in the counters is due, at the time
+    /// `now`: as for counters that changed.
+    pub fn due_changed(&self, now: u64) -> Due {
+        let free_at = self.tried_at.map(|at| at.saturating_add(self.interval_ms));
+        match free_at {
+            Some(at) if now < at => Due::At(at),
+            _ => Due::Now,
+        }
+    }
+
     /// `counters` were written at `now`.
     pub fn wrote(&mut self, counters: Counters, now: u64) {
         self.written = Some(counters);
@@ -327,6 +398,10 @@ impl Pace {
 #[derive(Debug, Default)]
 struct Posted {
     counters: Counters,
+    log: LogShown,
+    /// The log as posted is to be written without waiting for the
+    /// interval.
+    at_once: bool,
     stop: bool,
     /// How often [`Board::publish`] has tried to write the file, done
     /// or failed.
@@ -366,6 +441,18 @@ impl Board {
         }
     }
 
+    /// Put the log's state up, as [`Board::post`] does the counters.
+    /// With `at_once` it is written without waiting for the interval:
+    /// for the begin and the end of a checkpoint step.
+    pub fn post_log(&self, log: LogShown, at_once: bool) {
+        let mut posted = self.lock();
+        if posted.log != log {
+            posted.log = log;
+            posted.at_once |= at_once;
+            self.changed.notify_all();
+        }
+    }
+
     /// Wait until [`Board::publish`] has tried to write the file at
     /// least once, done or failed, for at most `limit`; whether it
     /// has. The daemon says `ready` after this: until the new
@@ -390,6 +477,14 @@ impl Board {
         true
     }
 
+    /// Have [`Board::publish`] write the file once more, at once, with
+    /// what is posted: for a value the writer reads elsewhere and that
+    /// has changed. Nothing posted is replaced.
+    pub fn write_again(&self) {
+        self.lock().at_once = true;
+        self.changed.notify_all();
+    }
+
     /// Tell [`Board::publish`] to write what is posted and return.
     pub fn stop(&self) {
         self.lock().stop = true;
@@ -402,25 +497,45 @@ impl Board {
     /// counters and the number of failures so far.
     pub fn publish(
         &self,
-        mut pace: Pace,
+        pace: Pace,
         mut write: impl FnMut(&Counters, u64) -> io::Result<()>,
+    ) -> u64 {
+        self.publish_with_log(pace, |counters, _, failures| write(counters, failures))
+    }
+
+    /// [`Board::publish`] for a `write` that is also given the log's
+    /// state as posted ([`Board::post_log`]). A change of the log is
+    /// written as a change of the counters is, and at once if it was
+    /// posted so.
+    pub fn publish_with_log(
+        &self,
+        mut pace: Pace,
+        mut write: impl FnMut(&Counters, &LogShown, u64) -> io::Result<()>,
     ) -> u64 {
         let started = Instant::now();
         let now = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut failures = 0u64;
+        let mut written_log = LogShown::default();
         let mut posted = self.lock();
         loop {
-            let due = pace.due(&posted.counters, now());
+            let mut due = pace.due(&posted.counters, now());
+            if due == Due::Never && posted.log != written_log {
+                due = pace.due_changed(now());
+            }
             let last = posted.stop;
-            if matches!(due, Due::Now) || (last && due != Due::Never) {
-                let counters = posted.counters;
+            if posted.at_once || matches!(due, Due::Now) || (last && due != Due::Never) {
+                let (counters, log) = (posted.counters, posted.log);
+                posted.at_once = false;
                 drop(posted);
-                let written = write(&counters, failures);
+                let written = write(&counters, &log, failures);
                 posted = self.lock();
                 posted.attempts += 1;
                 self.changed.notify_all();
                 match written {
-                    Ok(()) => pace.wrote(counters, now()),
+                    Ok(()) => {
+                        written_log = log;
+                        pace.wrote(counters, now());
+                    }
                     Err(_) => {
                         failures += 1;
                         pace.failed(now());
@@ -545,6 +660,26 @@ pub fn report(
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
         ] {
             lines.push((key, value.to_string()));
+        }
+        if let Some(log) = &s.log {
+            for (key, value) in [
+                ("log_live", log.shown.live.to_string()),
+                ("checkpoint_steps", log.shown.steps.to_string()),
+                ("checkpoint_syncs", log.shown.own_syncs.to_string()),
+                (
+                    "checkpoint_step",
+                    if log.shown.stepping {
+                        "under way"
+                    } else {
+                        "none"
+                    }
+                    .to_string(),
+                ),
+                ("start_ms", log.start_ms.to_string()),
+                ("replayed_bytes", log.replayed_bytes.to_string()),
+            ] {
+                lines.push((key, value));
+            }
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);
         if live {

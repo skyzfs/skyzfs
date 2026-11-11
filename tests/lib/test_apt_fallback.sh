@@ -28,7 +28,8 @@ chmod +x "$T/lookup"
 run() { # DEAD-NAMES: run the script on $T/list; RC, OUT and SUMMARY are set
     : > "$T/summary"; : > "$T/lookups"
     OUT=$(DEAD="$1" LOOKUPS="$T/lookups" APT_FALLBACK_LOOKUP="$T/lookup" APT_MIRROR_LIST="$T/list" APT_SOURCES="$T/sources.d" \
-        APT_FALLBACK_MIRROR="${MIRROR:-https://mirror.example/ubuntu/}" GITHUB_STEP_SUMMARY="$T/summary" GITHUB_ACTIONS="" bash "$S" 2>&1); RC=$?
+        APT_FALLBACK_MIRROR="${MIRROR:-https://mirror.example/ubuntu/}" GITHUB_STEP_SUMMARY="$T/summary" GITHUB_ACTIONS="" \
+        RUNNER_ENVIRONMENT="${RUNNER_ENV:-}" bash "$S" 2>&1); RC=$?
     SUMMARY=$(cat "$T/summary")
 }
 
@@ -54,6 +55,31 @@ run "archive.ubuntu.com"
 has "a second run finds the fallback in place and changes nothing" "$OUT" "already holds the fallback"
 is "a second run looks nothing up" "$(wc -l < "$T/lookups" | tr -d ' ')" 0
 is "a second run keeps the image's list as saved" "$(cmp -s "$T/list.image" "$T/before" && echo same)" same
+
+is "the list that was put in place is readable by all" "$(stat -c %a "$T/list")" 644
+is "no half-made list is left beside it" "$([ -e "$T/list.new" ] && echo left)" ""
+
+image_list "$T/list"
+RUNNER_ENV=self-hosted run "archive.ubuntu.com security.ubuntu.com azure.archive.ubuntu.com"
+is "a self-hosted runner: the list is as it was" "$(cmp -s "$T/list" "$T/before" && echo same)" same
+has "a self-hosted runner: says so" "$OUT" "not github-hosted"
+is "a self-hosted runner: looks nothing up" "$(wc -l < "$T/lookups" | tr -d ' ')" 0
+RUNNER_ENV=github-hosted run "archive.ubuntu.com security.ubuntu.com azure.archive.ubuntu.com"
+is "a github-hosted runner: the fallback alone" "$(mirror_hosts "$T/list")" "mirror.example"
+
+# The directory cannot be written and there is no sudo that helps: the
+# list stays the image's, whole, and the message says so.
+image_list "$T/list"; mkdir "$T/bin"; printf '#!/bin/sh\nexit 1\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"
+chmod a-w "$T"
+if [ -w "$T" ]; then
+    echo "skip the list cannot be replaced: this user (root) can write anywhere"
+else
+    PATH="$T/bin:$PATH" run "archive.ubuntu.com"
+    is "the list cannot be replaced: exit 0" "$RC" 0
+    is "the list cannot be replaced: it is the image's, whole" "$(cmp -s "$T/list" "$T/before" && echo same)" same
+    has "the list cannot be replaced: the summary does not claim the fallback" "$SUMMARY" "Nothing changed"
+fi
+chmod u+w "$T"
 
 image_list "$T/list"
 run "security.ubuntu.com"

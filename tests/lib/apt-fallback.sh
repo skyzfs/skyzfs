@@ -15,8 +15,11 @@
 # not only the first: they are in one zone and failed together, but
 # during the outage single names answered now and then, and a list
 # with one dead name in it is slow. On a healthy day three lookups
-# cost milliseconds. The runner is thrown away after the job, so
-# nothing is put back. It replaces and does not append: with
+# cost milliseconds. Nothing is put back, because a GitHub-hosted
+# runner is thrown away after its job; for that reason the script
+# changes nothing on any other runner (RUNNER_ENVIRONMENT set and not
+# "github-hosted"), whose apt configuration outlives the job and is
+# its owner's. It replaces and does not append: with
 # the dead mirrors still in the list, `apt-get update` alone ran for
 # more than six minutes (run 43060459690), against 5 s with the
 # fallback alone.
@@ -65,7 +68,11 @@ say() { # to the log and to the job's summary
 }
 
 main() {
-    local hosts h dead="" fb_host tmp
+    local hosts h dead="" fb_host tmp as
+    if [ -n "${RUNNER_ENVIRONMENT:-}" ] && [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
+        echo "apt-fallback: this runner is $RUNNER_ENVIRONMENT, not github-hosted, and keeps its apt configuration after the job; nothing changed"
+        return 0
+    fi
     if [ ! -f "$APT_MIRROR_LIST" ]; then
         echo "apt-fallback: no $APT_MIRROR_LIST on this machine; nothing changed"
         return 0
@@ -100,13 +107,25 @@ main() {
         say "**Package mirrors:** $dead did not resolve, and neither did the fallback's name $fb_host. Nothing changed; a step that installs packages will fail, and that is a network outage, not the change under test."
         return 0
     fi
-    tmp=$(mktemp)
-    printf '%s\tpriority:1\n' "$APT_FALLBACK_MIRROR" > "$tmp"
-    if [ -w "$APT_MIRROR_LIST" ]; then
-        cp "$APT_MIRROR_LIST" "$APT_MIRROR_LIST.image" && cat "$tmp" > "$APT_MIRROR_LIST"
-    else
-        sudo cp "$APT_MIRROR_LIST" "$APT_MIRROR_LIST.image" && sudo cp "$tmp" "$APT_MIRROR_LIST" && sudo chmod 644 "$APT_MIRROR_LIST"
-    fi || { rm -f "$tmp"; say "**Package mirrors:** $dead did not resolve, and the list $APT_MIRROR_LIST could not be written. Nothing changed."; return 0; }
+    # The new list is made beside the old one and moved over it, so the
+    # list is at every moment the image's or the fallback's, whole.
+    tmp=$(mktemp) || { say "**Package mirrors:** $dead did not resolve, and no temporary file could be made. Nothing changed."; return 0; }
+    if ! { printf '%s\tpriority:1\n' "$APT_FALLBACK_MIRROR" > "$tmp" && chmod 644 "$tmp"; }; then
+        rm -f "$tmp"
+        say "**Package mirrors:** $dead did not resolve, and the new list could not be written to a temporary file. Nothing changed."
+        return 0
+    fi
+    if [ -w "$APT_MIRROR_LIST" ] && [ -w "$(dirname "$APT_MIRROR_LIST")" ]; then as=""; else as=sudo; fi
+    if ! $as cp "$APT_MIRROR_LIST" "$APT_MIRROR_LIST.image"; then
+        rm -f "$tmp"
+        say "**Package mirrors:** $dead did not resolve, and the image's list could not be copied to $APT_MIRROR_LIST.image. Nothing changed."
+        return 0
+    fi
+    if ! $as cp "$tmp" "$APT_MIRROR_LIST.new" || ! $as mv "$APT_MIRROR_LIST.new" "$APT_MIRROR_LIST"; then
+        rm -f "$tmp"
+        say "**Package mirrors:** $dead did not resolve, and the fallback could not be put in place. The list $APT_MIRROR_LIST is the image's, unchanged (a copy is in $APT_MIRROR_LIST.image)."
+        return 0
+    fi
     rm -f "$tmp"
     say "**Package mirrors: the fallback is in use.** The image's mirror $dead did not resolve, so this job installs its packages from $APT_FALLBACK_MIRROR. apt verifies them against the image's archive keys as before."
     [ -z "${GITHUB_ACTIONS:-}" ] || echo "::notice title=Package mirrors::$dead did not resolve; packages come from $APT_FALLBACK_MIRROR"

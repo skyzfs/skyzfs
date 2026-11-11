@@ -90,6 +90,121 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     }
 }
 
+/// The hook that makes a checkpoint step wait: a time or a file, not
+/// both, and not in a default build.
+#[test]
+fn the_step_pause_is_a_time_or_a_file() {
+    let pause = |line: &str| serve(&format!("serve --dir /v/a {line}")).hooks.step_pause;
+    assert_eq!(pause(""), None);
+    assert_eq!(pause("--step-pause-ms 250"), Some(StepPause::Ms(250)));
+    assert_eq!(
+        pause("--step-pause-until /tmp/go"),
+        Some(StepPause::Until("/tmp/go".into()))
+    );
+    assert!(parse_with(
+        "serve --dir /v/a --step-pause-ms 1 --step-pause-until /tmp/go"
+            .split(' ')
+            .map(str::to_string),
+        true
+    )
+    .is_err());
+    for hook in ["--step-pause-ms 1", "--step-pause-until /tmp/go"] {
+        assert!(
+            plain(&format!("serve --dir /v/a {hook}")).is_err(),
+            "{hook} was taken by a default build"
+        );
+    }
+}
+
+/// Where the step waits: after the home image is written unless given,
+/// one of the five cuts by name, and only beside a pause.
+#[test]
+fn the_step_pause_has_a_point() {
+    let at = |line: &str| {
+        serve(&format!("serve --dir /v/a --step-pause-ms 5 {line}"))
+            .hooks
+            .step_pause_at
+    };
+    assert_eq!(at(""), StepPoint::Written);
+    for (name, point) in [
+        ("saved", StepPoint::Saved),
+        ("written", StepPoint::Written),
+        ("synced", StepPoint::Synced),
+        ("start-written", StepPoint::StartWritten),
+        ("start-durable", StepPoint::StartDurable),
+    ] {
+        assert_eq!(at(&format!("--step-pause-at {name}")), point);
+    }
+    for line in [
+        "serve --dir /v/a --step-pause-ms 5 --step-pause-at later",
+        "serve --dir /v/a --step-pause-ms 5 --step-pause-at Saved",
+        "serve --dir /v/a --step-pause-at saved",
+    ] {
+        assert!(
+            parse_with(line.split(' ').map(str::to_string), true).is_err(),
+            "{line} was taken"
+        );
+    }
+    assert!(
+        plain("serve --dir /v/a --step-pause-ms 5 --step-pause-at saved").is_err(),
+        "the point was taken by a default build"
+    );
+}
+
+/// The two marks of the checkpoint rule: two segments and one unless
+/// given, each at least one, low below high. A high mark of one is
+/// refused without a low mark too: nothing is below it.
+#[test]
+fn serve_takes_the_marks_of_the_log_and_refuses_marks_that_cannot_work() {
+    let marks = |line: &str| {
+        let s = serve(&format!("serve --dir /v/a {line}"));
+        (s.log_high, s.log_low)
+    };
+    assert_eq!(marks(""), (2, 1));
+    assert_eq!(marks("--log-high 8"), (8, 1));
+    assert_eq!(marks("--log-high 8 --log-low 7"), (8, 7));
+    assert_eq!(marks("--log-low 1 --log-high 1024"), (1024, 1));
+    for bad in [
+        "--log-high 0",
+        "--log-high 1",
+        "--log-low 0",
+        "--log-low 2",
+        "--log-high 4 --log-low 4",
+        "--log-high 4 --log-low 5",
+        "--log-high 1025",
+        "--log-high x",
+        "--log-high 2 --log-high 3",
+    ] {
+        assert!(
+            plain(&format!("serve --dir /v/a {bad}")).is_err(),
+            "{bad} was taken"
+        );
+    }
+    // The refusal names an option the user gave, and the default it
+    // collided with when the other mark was not given.
+    for (line, said) in [
+        (
+            "--log-high 1",
+            "--log-high: at least 2: the low mark is at least 1 and below it",
+        ),
+        (
+            "--log-high 1 --log-low 1",
+            "--log-high: at least 2: the low mark is at least 1 and below it",
+        ),
+        (
+            "--log-low 2",
+            "--log-low: not below --log-high, which is 2 unless given",
+        ),
+        (
+            "--log-high 4 --log-low 4",
+            "--log-low: not below --log-high",
+        ),
+    ] {
+        let refused = plain(&format!("serve --dir /v/a {line}")).expect_err(line);
+        assert_eq!(refused.to_string(), said, "{line}");
+    }
+}
+
 /// `serve --dir DIR` with its defaults: the run directory `/run/skyzfsd`,
 /// one queue of depth 64, no acknowledgement, the deployment rules on,
 /// no hook. Each option changes its own field.
@@ -101,6 +216,8 @@ fn serve_has_the_agreed_defaults_and_options() {
         acknowledge_failure: false,
         queues: 1,
         depth: 64,
+        log_high: 2,
+        log_low: 1,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -166,6 +283,8 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             }),
             boot_id_file: Some("/tmp/boot".into()),
             recover_short: 1,
+            step_pause: None,
+            step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
         }
     );
