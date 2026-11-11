@@ -2148,8 +2148,20 @@ where
                             continue;
                         }
                         Some(Command::Hold(hold, reply)) => {
-                            let _ = reply.send(core.set_hold(hold));
+                            let changed = core.set_hold(hold);
                             held = false;
+                            // A hold that moved or went can leave the
+                            // rule of the marks something to take with
+                            // no request to follow: it is asked again.
+                            // The other events that change what it
+                            // finds: an explicit checkpoint (below; it
+                            // can leave a log that is long and not
+                            // durable), a request (asked after each),
+                            // and a step (asked until one takes
+                            // nothing). The position and the failure
+                            // hook leave it nothing new.
+                            busy |= changed.is_ok();
+                            let _ = reply.send(changed);
                             continue;
                         }
                         Some(Command::Checkpoint(reply)) => {
@@ -2159,6 +2171,7 @@ where
                                 core.checkpoint()
                             };
                             held = false;
+                            busy = true;
                             // As for a completion: whoever is answered
                             // finds the log as the checkpoint left it.
                             shown.publish(&core, false);
