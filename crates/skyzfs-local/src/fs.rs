@@ -7,14 +7,19 @@
 //! name survive on Linux and macOS; Windows has no such call and journals
 //! the name on its own.
 //!
+//! Files are created readable and writable by their owner only (mode
+//! 0600 on Unix): the log's superblock holds the log's key.
+//!
 //! [`File::read_device_at`] is a read through a second descriptor opened
-//! with `O_DIRECT`, on Linux only. Where the file system refuses that
+//! with `O_DIRECT`, on Linux only. It is opened together with the file,
+//! by the same name, and checked to be the same file, so that a later
+//! rename or a reuse of the name cannot make the two descriptors
+//! disagree. Where the file system refuses that
 //! flag (tmpfs did before Linux 6.6), and on the other systems for now,
 //! it fails as unsupported; it never falls back to a cached read. A
 //! file system that accepts the flag and reads from its cache all the
 //! same cannot be told apart here (see the crate's limits).
 
-use std::cell::OnceCell;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -85,20 +90,19 @@ impl Dir for FsDir {
     type File = FsFile;
 
     fn create(&self, name: &str) -> io::Result<FsFile> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(self.path.join(name))?;
-        Ok(FsFile::new(file, self.path.join(name)))
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let path = self.path.join(name);
+        let file = options.open(&path)?;
+        FsFile::new(file, &path)
     }
 
     fn open(&self, name: &str) -> io::Result<FsFile> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.path.join(name))?;
-        Ok(FsFile::new(file, self.path.join(name)))
+        let path = self.path.join(name);
+        let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
+        FsFile::new(file, &path)
     }
 
     fn remove(&self, name: &str) -> io::Result<()> {
@@ -137,10 +141,9 @@ impl Dir for FsDir {
 #[derive(Debug)]
 pub struct FsFile {
     file: fs::File,
-    path: PathBuf,
-    /// A second descriptor that bypasses the cache, opened at the first
-    /// device read. `None` inside: the file system has none to give.
-    direct: OnceCell<Option<fs::File>>,
+    /// A second descriptor on the same file that bypasses the cache.
+    /// `None`: the file system, or this system, has none to give.
+    direct: Option<fs::File>,
 }
 
 /// The alignment `O_DIRECT` wants of offsets, lengths and memory. 4 KiB
@@ -148,45 +151,48 @@ pub struct FsFile {
 const DIRECT_ALIGN: usize = 4096;
 
 impl FsFile {
-    fn new(file: fs::File, path: PathBuf) -> Self {
-        Self {
-            file,
-            path,
-            direct: OnceCell::new(),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn open_direct(&self) -> io::Result<Option<fs::File>> {
-        use std::os::unix::fs::OpenOptionsExt;
-        match fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECT)
-            .open(&self.path)
-        {
-            Ok(file) => Ok(Some(file)),
-            // How a file system says that it has no direct I/O.
-            Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn open_direct(&self) -> io::Result<Option<fs::File>> {
-        Ok(None)
+    /// `file`, which was just opened as `path`.
+    fn new(file: fs::File, path: &Path) -> io::Result<Self> {
+        let direct = open_direct(&file, path)?;
+        Ok(Self { file, direct })
     }
 
     fn direct(&self) -> io::Result<&fs::File> {
-        if self.direct.get().is_none() {
-            let opened = self.open_direct()?;
-            // Only this thread can have filled it meanwhile: not at all.
-            let _ = self.direct.set(opened);
-        }
-        match self.direct.get() {
-            Some(Some(file)) => Ok(file),
-            _ => Err(io::ErrorKind::Unsupported.into()),
-        }
+        self.direct
+            .as_ref()
+            .ok_or_else(|| io::ErrorKind::Unsupported.into())
     }
+}
+
+/// A descriptor for direct reads of `file`, opened by the name `file`
+/// was just opened by. The name could have been given to another file
+/// in between, so the two are compared, and a difference is an error:
+/// reads from the device must never come from another file.
+#[cfg(target_os = "linux")]
+fn open_direct(file: &fs::File, path: &Path) -> io::Result<Option<fs::File>> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let direct = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+    {
+        Ok(direct) => direct,
+        // How a file system says that it has no direct I/O.
+        Err(e) if e.kind() == io::ErrorKind::InvalidInput => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let (a, b) = (file.metadata()?, direct.metadata()?);
+    if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
+        return Err(io::Error::other(
+            "the file's name was given to another file while it was opened",
+        ));
+    }
+    Ok(Some(direct))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn open_direct(_: &fs::File, _: &Path) -> io::Result<Option<fs::File>> {
+    Ok(None)
 }
 
 /// Read as much of `buf` as the file has from `offset`.
@@ -372,6 +378,55 @@ mod tests {
                 .kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    /// Real files: a handle's reads from the device stay with its file.
+    /// After the file was renamed and its old name given to another
+    /// file, a device read through the handle returns the renamed
+    /// file's bytes, as its cached reads do; the same after it was
+    /// removed.
+    #[test]
+    fn real_device_reads_follow_the_file_not_the_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let mut old = dir.create("a").unwrap();
+        old.write_at(0, &[1u8; 8192]).unwrap();
+        old.sync().unwrap();
+        dir.rename("a", "b").unwrap();
+        let mut other = dir.create("a").unwrap();
+        other.write_at(0, &[2u8; 8192]).unwrap();
+        other.sync().unwrap();
+        let mut buf = [0u8; 4096];
+        match old.read_device_at(4096, &mut buf) {
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                eprintln!("no direct reads on {}: not exercised", tmp.path().display());
+                return;
+            }
+            other => other.unwrap(),
+        }
+        assert_eq!(buf, [1u8; 4096]);
+        other.read_device_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [2u8; 4096]);
+        dir.remove("b").unwrap();
+        old.write_at(0, &[3u8; 4096]).unwrap();
+        old.read_device_at(0, &mut buf).unwrap();
+        assert_eq!(buf, [3u8; 4096]);
+    }
+
+    /// Real files: a new file can be read and written by its owner
+    /// only, since one of the log's files holds the log's key.
+    #[cfg(unix)]
+    #[test]
+    fn real_files_are_private_to_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        dir.create("a").unwrap();
+        let mode = fs::metadata(tmp.path().join("a"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     /// Real files: create, write, read back, rename, list, reopen and

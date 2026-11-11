@@ -16,6 +16,9 @@
 //!   the log has been recovered: a replay is refused;
 //! - **after a recovery that met a read error**, what a kill leaves:
 //!   that recovery wrote nothing;
+//! - **with the newest superblock copy corrupt**, an error and an
+//!   untouched disk, or every record with at most an older start:
+//!   never a shorter log;
 //! - **later**, never anything that an earlier recovery dropped: the
 //!   model forgets what a recovery drops, and every later comparison is
 //!   exact.
@@ -87,6 +90,9 @@ enum Op {
     FailSync(u64),
     /// The operating system drops its clean pages.
     DropCaches,
+    /// The process is lost and the newest superblock copy is corrupt
+    /// when the log is opened again.
+    LoseSuperblock,
     /// The process is lost, and the read after so many fails while the
     /// log is opened again; then it is opened undisturbed.
     ReadError(u64),
@@ -114,6 +120,7 @@ fn op() -> impl Strategy<Value = Op> {
         1 => (0..4u64).prop_map(Op::FailSync),
         1 => Just(Op::DropCaches),
         2 => (0..8u64).prop_map(Op::ReadError),
+        2 => Just(Op::LoseSuperblock),
     ]
 }
 
@@ -166,6 +173,9 @@ struct Run {
     disk: SimDisk,
     log: Option<Log<SimDisk>>,
     model: Model,
+    /// The records reclaims gave up, oldest first: what an older
+    /// superblock copy may still describe.
+    given_up: Vec<Rec>,
     mutants: Mutants,
 }
 
@@ -210,7 +220,7 @@ impl Run {
         let reclaimed = model.maybe_reclaimed;
         if reclaimed > 0 && held.first() != all.first() {
             all.drain(..reclaimed);
-            model.records.drain(..reclaimed);
+            self.given_up.extend(model.records.drain(..reclaimed));
             model.synced -= reclaimed;
         }
         let with_extra = held.len() == all.len() + 1;
@@ -392,7 +402,7 @@ impl Run {
                         if dropped > self.model.synced {
                             return Err("reclaim passed the durable position".into());
                         }
-                        self.model.records.drain(..dropped);
+                        self.given_up.extend(self.model.records.drain(..dropped));
                         self.model.synced -= dropped;
                     }
                     Ok(start) => return Err(format!("reclaim returned {start}, expected {want}")),
@@ -431,6 +441,68 @@ impl Run {
             Op::FailWrite(after) => self.disk.fail_write(after, false),
             Op::FailSync(after) => self.disk.fail_sync(after, false),
             Op::DropCaches => self.disk.drop_caches(),
+            Op::LoseSuperblock => {
+                let model = &self.model;
+                if model.failed
+                    || model.uncertain
+                    || model.extra.is_some()
+                    || model.maybe_reclaimed > 0
+                {
+                    // Not from a state the model is unsure of.
+                    self.recover(true)?;
+                    return self.compare();
+                }
+                self.log = None;
+                self.disk.kill();
+                self.disk.clear_faults();
+                let at = super::tests::current_copy(&self.disk) * SUPER_COPY_STRIDE + 70;
+                let flip = |disk: &SimDisk| disk.corrupt(SUPER_NAME, at, 0x01);
+                flip(&self.disk).map_err(|e| e.to_string())?;
+                let image = self.disk.image();
+                let writes = self.disk.stats().writes;
+                let options = Options {
+                    acknowledge_failure: true,
+                    mutants: self.mutants,
+                };
+                match Log::open(self.disk.clone(), options) {
+                    // An error, and then the disk is as it was. With
+                    // the copy back, the log is what a kill leaves.
+                    Err(LogError::Corrupt(_)) => {
+                        if self.disk.image() != image || self.disk.stats().writes != writes {
+                            return Err("an open refused for a lost copy changed the disk".into());
+                        }
+                        flip(&self.disk).map_err(|e| e.to_string())?;
+                        self.recover(true)?;
+                    }
+                    Err(other) => return Err(format!("open with a lost copy: {other}")),
+                    // Or the same log: every record, and in front of
+                    // them at most what the last reclaims gave up.
+                    Ok((log, _)) => {
+                        let held = read_all(&log).map_err(|e| format!("replay: {e}"))?;
+                        let records = &self.model.records;
+                        if !held.ends_with(records) {
+                            return Err(format!(
+                                "with the newest superblock copy lost the log opened with {} \
+                                 records, not ending in the {} it held",
+                                held.len(),
+                                records.len()
+                            ));
+                        }
+                        let front = held.len() - records.len();
+                        if !self.given_up.ends_with(&held[..front]) {
+                            return Err("an older start brought back records nobody gave up".into());
+                        }
+                        let kept = self.given_up.len() - front;
+                        self.given_up.truncate(kept);
+                        self.model = Model {
+                            synced: held.len(),
+                            records: held,
+                            ..Model::default()
+                        };
+                        self.log = Some(log);
+                    }
+                }
+            }
             Op::ReadError(after) => {
                 self.log = None;
                 self.disk.kill();
@@ -492,6 +564,7 @@ fn run(shape: Shape, mutants: Mutants, seed: u64, program: &[Op]) -> Result<(), 
         disk,
         log: None,
         model: Model::default(),
+        given_up: Vec::new(),
         mutants,
     };
     run.recover(true)?;
@@ -566,7 +639,10 @@ fn noticed(mutants: u32, shapes: &[Shape], cases: u32) -> bool {
 /// were written for them: each of these broken logs is noticed within a
 /// fixed number of programs. (The scenario tests say which defect needs
 /// which history; the defects that only show together with another one,
-/// or only after two particular power cuts, are theirs.)
+/// or only after two particular power cuts, are theirs. So is the
+/// reclaim that keeps the epoch: it needs files reused twice over and
+/// then a lost superblock copy, which 60,000 random programs did not
+/// produce.)
 #[test]
 fn random_programs_notice_broken_logs() {
     let broken = [

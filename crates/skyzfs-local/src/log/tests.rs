@@ -68,11 +68,7 @@ impl Env {
     /// The key of the logs these tests make. With the defect of a key
     /// that everybody knows, that key.
     fn key(&self) -> Key {
-        if self.mutants.has(Mutants::PUBLIC_KEY) {
-            Key::PUBLIC
-        } else {
-            Key(*b"a key for tests!")
-        }
+        Key(*b"a key for tests!")
     }
 
     /// A new log on a new disk, opened with the environment's defects.
@@ -765,9 +761,11 @@ fn of_two_claims_to_one_segment_the_newer_counts() {
 
 /// A reused file. When a segment file is given a new part of the log,
 /// the records of its earlier life are still in it, at the same offsets.
-/// Each is refused twice: it does not follow the record before it (the
-/// chain), and it names a position in the part the file used to hold.
-/// Each check alone is enough; without both, records from the earlier
+/// Each is refused three times: it does not follow the record before it
+/// (the chain), it names a position in the part the file used to hold,
+/// and it is older than the file's new header, because the reclaim that
+/// freed the file started a new epoch. Each check alone is enough, also
+/// any two of them missing; without all three, records from the earlier
 /// life come back.
 #[test]
 fn the_position_and_the_chain_each_refuse_a_record_of_an_earlier_life() {
@@ -796,11 +794,15 @@ fn the_position_and_the_chain_each_refuse_a_record_of_an_earlier_life() {
         let (log, _) = env.reopen(&disk)?;
         expect(&log, &want, "after reusing a file")
     }
-    covered(scenario, Mutants::NO_CHAIN);
-    covered(scenario, Mutants::NO_POSITION_CHECK);
+    covered(scenario, Mutants::NO_CHAIN | Mutants::NO_POSITION_CHECK);
+    covered(scenario, Mutants::NO_CHAIN | Mutants::NO_EPOCH_CHECK);
+    covered(
+        scenario,
+        Mutants::NO_POSITION_CHECK | Mutants::NO_EPOCH_CHECK,
+    );
     caught(
         scenario,
-        Mutants::NO_CHAIN | Mutants::NO_POSITION_CHECK,
+        Mutants::NO_CHAIN | Mutants::NO_POSITION_CHECK | Mutants::NO_EPOCH_CHECK,
         everywhere,
     );
 }
@@ -1952,11 +1954,11 @@ fn the_failure_marker_survives_a_power_cut() {
 
 /// A segment header of a later epoch than the superblock's means the
 /// newest superblock copy is lost, like a record of a later epoch, and
-/// is reported at the segment, before any record is looked at. (In
-/// every history this log can produce, a record of the later epoch
-/// lies before such a segment and would be reported in its place: the
-/// check on headers is a second line.) Mutant: a log without it, which
-/// reports the record.
+/// is reported at the segment, before any record is looked at. Here a
+/// record of the later epoch lies before the segment and would be
+/// reported in its place; after reclaims the header can be the only
+/// witness (the next test). Mutant: a log without the check on headers,
+/// which reports the record.
 #[test]
 fn a_segment_newer_than_the_superblock_is_noticed() {
     fn scenario(env: &Env) -> Outcome {
@@ -1990,6 +1992,117 @@ fn a_segment_newer_than_the_superblock_is_noticed() {
     caught(scenario, Mutants::NO_HEADER_FUTURE_CHECK, everywhere);
 }
 
+/// The reviewer's sequence: fill segments 0 and S and start 2S;
+/// reclaim to S, then to 2S; go on into 3S and 4S, which reuse the
+/// files of 0 and S; reclaim to 4S; go on into 5S, in the file that
+/// held 3S; sync. Returns the disk and the tags from 4S on.
+fn reclaimed_twice_over(env: &Env) -> Result<(SimDisk, Vec<u8>), String> {
+    let (disk, mut log) = env.fresh()?;
+    let mut tag = 1;
+    let start_of = |filled: &[(u8, Appended)]| filled[filled.len() - 1].1.start;
+    let a = fill_to_roll(&mut log, env, &mut tag)?;
+    let b = fill_to_roll(&mut log, env, &mut tag)?;
+    s(log.sync())?;
+    s(log.reclaim(start_of(&a)))?;
+    s(log.reclaim(start_of(&b)))?;
+    fill_to_roll(&mut log, env, &mut tag)?;
+    let d = fill_to_roll(&mut log, env, &mut tag)?;
+    s(log.sync())?;
+    s(log.reclaim(start_of(&d)))?;
+    let e = fill_to_roll(&mut log, env, &mut tag)?;
+    s(log.sync())?;
+    if log.segment_files() != 3 {
+        return Err(format!("{} segment files", log.segment_files()));
+    }
+    let mut want = vec![d[d.len() - 1].0];
+    want.extend(e.iter().map(|(t, _)| *t));
+    drop(log);
+    disk.kill();
+    Ok((disk, want))
+}
+
+/// A superblock copy that is lost after reclaims. Every superblock that
+/// is written starts a new epoch, a reclaim's too. So whatever was
+/// written after the newest copy, a record or the header of a segment
+/// file that a reclaim freed, is of an epoch the older copy does not
+/// have, and an open that finds only the older copy fails: it does not
+/// take the older, shorter log that copy describes, and it does not
+/// erase the segments of the real one. The disk is as it was, and with
+/// the copy back the log opens whole. Here the only witness is the
+/// header of a segment that does not lie on the older copy's path.
+/// Mutants: a reclaim that keeps the epoch, and a log that does not
+/// check the epochs of segment headers.
+#[test]
+fn a_lost_superblock_copy_after_reclaims_is_noticed() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, want) = reclaimed_twice_over(env)?;
+        let at = current_copy(&disk) * SUPER_COPY_STRIDE + 70;
+        disk.corrupt(SUPER_NAME, at, 0x01)
+            .map_err(|e| e.to_string())?;
+        let image = disk.image();
+        let writes = disk.stats().writes;
+        match Log::open(disk.clone(), env.options()) {
+            Err(LogError::Corrupt(Corruption::SuperblockBehind { .. })) => {}
+            Err(other) => return Err(other.to_string()),
+            Ok((log, _)) => {
+                return Err(format!(
+                    "the log opened with a stale superblock and holds {:?}",
+                    tags(&log)
+                ))
+            }
+        }
+        if disk.image() != image || disk.stats().writes != writes {
+            return Err("the refused open changed the disk".into());
+        }
+        // The copy comes back (the same bit, flipped again).
+        disk.corrupt(SUPER_NAME, at, 0x01)
+            .map_err(|e| e.to_string())?;
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &want, "with the copy back")
+    }
+    caught(scenario, Mutants::RECLAIM_KEEPS_EPOCH, everywhere);
+    caught(scenario, Mutants::NO_HEADER_FUTURE_CHECK, everywhere);
+}
+
+/// The one case in which the older superblock copy is taken: nothing
+/// was written since the newest one. Then the older copy describes the
+/// whole log, with the start it had before the last reclaim: the open
+/// succeeds, and holds every record the lost copy's log held and, in
+/// front of them, the records that reclaim gave up. Nothing is missing
+/// at the end, and a second open finds the same.
+#[test]
+fn a_lost_superblock_copy_with_nothing_written_since_gives_the_older_start() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut tag = 1;
+        let a = fill_to_roll(&mut log, env, &mut tag)?;
+        let b = fill_to_roll(&mut log, env, &mut tag)?;
+        s(log.sync())?;
+        s(log.reclaim(a[a.len() - 1].1.start))?;
+        let older: Vec<u8> = tags(&log)?;
+        s(log.reclaim(b[b.len() - 1].1.start))?;
+        let newest: Vec<u8> = tags(&log)?;
+        if newest.len() >= older.len() || !older.ends_with(&newest) {
+            return Err("the second reclaim gave nothing up".into());
+        }
+        drop(log);
+        disk.kill();
+        disk.corrupt(
+            SUPER_NAME,
+            current_copy(&disk) * SUPER_COPY_STRIDE + 70,
+            0x01,
+        )
+        .map_err(|e| e.to_string())?;
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &older, "with the newest copy lost")?;
+        drop(log);
+        disk.power_cut(LoseAll);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &older, "after a power cut")
+    }
+    holds(scenario);
+}
+
 /// The key comes from the operating system's generator: two logs made
 /// one after the other have different keys.
 #[test]
@@ -2009,7 +2122,7 @@ fn every_new_log_has_its_own_key() {
 
 /// Which superblock copy is the current one: the valid one with the
 /// higher counter.
-fn current_copy(disk: &SimDisk) -> u64 {
+pub(super) fn current_copy(disk: &SimDisk) -> u64 {
     let file = disk.open(SUPER_NAME).unwrap();
     let counter = |copy: u64| {
         let mut raw = [0u8; SECTOR_LEN];
@@ -2020,10 +2133,12 @@ fn current_copy(disk: &SimDisk) -> u64 {
 }
 
 /// A lost superblock copy. Losing the older copy changes nothing.
-/// Losing the current one is an error: every recovery writes its seal
-/// in the epoch it starts, so the log always holds something newer than
-/// the older copy, and that copy cannot say where the log starts or
-/// what was durable. Opening with it must not give a log that ends
+/// Losing the current one is an error whenever anything was written
+/// since it was: here every recovery writes its seal in the epoch it
+/// starts, so the log holds something newer than the older copy, and
+/// that copy cannot say where the log starts or what was durable.
+/// (After reclaims, and with nothing written since: the two tests
+/// above.) Opening with it must not give a log that ends
 /// where the newer epoch begins. With both copies lost there is no log.
 #[test]
 fn a_lost_superblock_copy_is_noticed() {

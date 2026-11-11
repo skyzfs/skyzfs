@@ -104,6 +104,8 @@ impl Mutants {
     /// A segment header of a later epoch than the superblock's is taken
     /// as it is.
     pub(crate) const NO_HEADER_FUTURE_CHECK: u32 = 1 << 26;
+    /// A reclaim writes its superblock in the epoch it found.
+    pub(crate) const RECLAIM_KEEPS_EPOCH: u32 = 1 << 27;
     /// A failed log still replays what its cache shows.
     pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
 
@@ -607,8 +609,13 @@ impl<D: Dir> Log<D> {
             base: 0,
             epoch: 1,
         };
+        let tag_key = if options.mutants.has(Mutants::PUBLIC_KEY) {
+            Key::PUBLIC
+        } else {
+            key
+        };
         segment
-            .write_at(0, &header.encode(&key))
+            .write_at(0, &header.encode(&tag_key))
             .map_err(io("creating a segment"))?;
         segment.sync().map_err(io("creating a segment"))?;
         // The segment's name is durable before the superblock has one.
@@ -1439,9 +1446,18 @@ impl<D: Dir> Log<D> {
         if target <= self.current.floor {
             return Ok(self.current.floor);
         }
+        // A new epoch, as with every superblock that is written: what
+        // is written from now on, a record or the header of a segment
+        // file this reclaim frees, then carries an epoch the other copy
+        // does not have. If this copy is ever lost, the other one is
+        // known to be behind, and is not taken for the log.
+        let keep = self
+            .mutants
+            .has(Mutants::RECLAIM_KEEPS_EPOCH | Mutants::REUSE_BEFORE_FLOOR_SYNC);
         let next = Superblock {
             floor: target,
             durable_floor: self.durable.max(self.current.durable_floor),
+            epoch: self.current.epoch + u64::from(!keep),
             ..self.current
         };
         if self.mutants.has(Mutants::REUSE_BEFORE_FLOOR_SYNC) {

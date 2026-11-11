@@ -260,8 +260,9 @@ pub struct Superblock {
     pub(crate) key: Key,
     /// Incremented at every write of a copy.
     pub counter: u64,
-    /// Incremented by every recovery. A record is written with the epoch
-    /// of the instance that wrote it.
+    /// Incremented at every write of a superblock copy: by every
+    /// recovery and every reclaim. A record is written with the epoch
+    /// the superblock has at that moment.
     pub epoch: u64,
     /// Where the log starts: everything before it is reclaimed.
     pub floor: Lsn,
@@ -310,6 +311,10 @@ impl Superblock {
         volume.copy_from_slice(&bytes[16..32]);
         let mut key = [0u8; 16];
         key.copy_from_slice(&bytes[92..108]);
+        // No log is made with the key everybody knows.
+        if zero(&key) {
+            return Err(Bad::Field);
+        }
         let block = Self {
             key: Key(key),
             identity: Identity {
@@ -434,7 +439,7 @@ pub struct RecordHeader {
     pub kind: Kind,
     /// The record's own position in the log.
     pub position: Lsn,
-    /// The epoch of the instance that wrote it.
+    /// The epoch the superblock had when the record was written.
     pub epoch: u64,
     /// The byte offset on the volume it applies to.
     pub offset: u64,
@@ -751,6 +756,12 @@ mod tests {
         };
         let good = block.encode();
         assert_eq!(Superblock::decode(&[0; SECTOR_LEN]), Err(Bad::Blank));
+        // The key everybody knows is no key.
+        let unkeyed = Superblock {
+            key: Key::PUBLIC,
+            ..block
+        };
+        assert_eq!(Superblock::decode(&unkeyed.encode()), Err(Bad::Field));
         for bit in 0..SECTOR_LEN * 8 {
             let mut bytes = good;
             bytes[bit / 8] ^= 1 << (bit % 8);

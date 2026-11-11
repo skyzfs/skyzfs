@@ -22,6 +22,11 @@
 //!   file system that logs each file's name with that file's own sync.
 //!   What is left is durable, and every handle opened before the cut is
 //!   dead.
+//! - **Open handles.** A file that was removed, or replaced by a
+//!   rename, stays readable and writable through the handles that are
+//!   open on it, also across a directory sync, until the last of them
+//!   is dropped or the process is lost. A kill and a power cut end
+//!   every handle: the process that held them is gone.
 //! - **A process kill** ([`SimDisk::kill`]). Every handle is dead and
 //!   nothing is lost: what was written is still there to read. It is
 //!   still unsynced, so a later power cut can take it.
@@ -345,6 +350,8 @@ struct State {
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
     read_fault: Option<Fault>,
+    /// How many live handles are open on each inode.
+    open: BTreeMap<u64, u64>,
     device_reads: bool,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
@@ -380,10 +387,19 @@ impl State {
             .map(|(name, _)| name.as_str())
     }
 
+    /// Forget the files that nothing can reach any more: no name, no
+    /// name a power cut could bring back, and no open handle.
     fn drop_unreachable(&mut self) {
-        let (names, durable) = (&self.names, &self.durable_names);
-        self.inodes
-            .retain(|inode, _| names.values().chain(durable.values()).any(|i| i == inode));
+        let (names, durable, open) = (&self.names, &self.durable_names, &self.open);
+        self.inodes.retain(|inode, _| {
+            open.contains_key(inode) || names.values().chain(durable.values()).any(|i| i == inode)
+        });
+    }
+
+    /// The process is gone, and its handles with it.
+    fn close_all(&mut self) {
+        self.generation += 1;
+        self.open.clear();
     }
 }
 
@@ -409,6 +425,7 @@ impl SimDisk {
                 write_fault: None,
                 sync_fault: None,
                 read_fault: None,
+                open: BTreeMap::new(),
                 device_reads: true,
                 write_unit: SECTOR,
                 stats: Stats::default(),
@@ -427,7 +444,9 @@ impl SimDisk {
     /// The process dies. Every open handle is dead; nothing written is
     /// lost, and nothing unsynced has become durable.
     pub fn kill(&self) {
-        self.lock().generation += 1;
+        let mut state = self.lock();
+        state.close_all();
+        state.drop_unreachable();
     }
 
     /// Power is cut and returns. `cut` decides what is left of everything
@@ -436,7 +455,7 @@ impl SimDisk {
     pub fn power_cut(&self, mut cut: impl Cut) {
         let mut guard = self.lock();
         let state = &mut *guard;
-        state.generation += 1;
+        state.close_all();
         state.write_fault = None;
         state.sync_fault = None;
         state.read_fault = None;
@@ -616,11 +635,12 @@ impl SimDisk {
         Ok(())
     }
 
-    fn handle(&self, inode: u64, generation: u64) -> SimFile {
+    fn handle(&self, state: &mut State, inode: u64) -> SimFile {
+        *state.open.entry(inode).or_default() += 1;
         SimFile {
             disk: self.clone(),
             inode,
-            generation,
+            generation: state.generation,
         }
     }
 }
@@ -640,13 +660,13 @@ impl Dir for SimDisk {
         state
             .pending_names
             .push(NameOp::Create(name.to_owned(), inode));
-        Ok(self.handle(inode, state.generation))
+        Ok(self.handle(&mut state, inode))
     }
 
     fn open(&self, name: &str) -> io::Result<SimFile> {
-        let state = self.lock();
-        match state.names.get(name) {
-            Some(inode) => Ok(self.handle(*inode, state.generation)),
+        let mut state = self.lock();
+        match state.names.get(name).copied() {
+            Some(inode) => Ok(self.handle(&mut state, inode)),
             None => Err(io::ErrorKind::NotFound.into()),
         }
     }
@@ -707,6 +727,23 @@ impl SimFile {
             Err(io::Error::other(
                 "the handle was opened before a kill or a power cut",
             ))
+        }
+    }
+}
+
+impl Drop for SimFile {
+    fn drop(&mut self) {
+        let mut state = self.disk.lock();
+        if state.generation != self.generation {
+            // The process this handle belonged to is gone already.
+            return;
+        }
+        if let Some(count) = state.open.get_mut(&self.inode) {
+            *count -= 1;
+            if *count == 0 {
+                state.open.remove(&self.inode);
+                state.drop_unreachable();
+            }
         }
     }
 }
@@ -1148,6 +1185,48 @@ mod tests {
             disk.remove("g").unwrap_err().kind(),
             io::ErrorKind::NotFound
         );
+    }
+
+    /// Open handles: a file that was removed, or replaced by a rename,
+    /// keeps working through a handle that is open on it, also after
+    /// the directory was synced; the name shows the new file. A kill
+    /// ends the handle, and so does a power cut.
+    #[test]
+    fn open_handles_outlive_removal_and_replacement_across_a_directory_sync() {
+        for replace in [false, true] {
+            for cut in [false, true] {
+                let disk = disk_with(1, 1);
+                let mut old = disk.open("f").unwrap();
+                if replace {
+                    let mut new = disk.create("n").unwrap();
+                    new.write_at(0, &[7; 4]).unwrap();
+                    new.sync().unwrap();
+                    disk.rename("n", "f").unwrap();
+                } else {
+                    disk.remove("f").unwrap();
+                }
+                Dir::sync(&disk).unwrap();
+                let mut buf = [0u8; 4];
+                old.read_at(0, &mut buf).unwrap();
+                assert_eq!(buf, [1; 4]);
+                old.write_at(0, &[2; 4]).unwrap();
+                old.sync().unwrap();
+                old.read_device_at(0, &mut buf).unwrap();
+                assert_eq!(buf, [2; 4]);
+                if replace {
+                    assert_eq!(read(&disk, "f", 0, 4), [7; 4]);
+                } else {
+                    assert_eq!(disk.open("f").unwrap_err().kind(), io::ErrorKind::NotFound);
+                }
+                if cut {
+                    disk.power_cut(KeepAll);
+                } else {
+                    disk.kill();
+                }
+                assert!(old.read_at(0, &mut buf).is_err());
+                assert_eq!(disk.list().unwrap().len(), usize::from(replace));
+            }
+        }
     }
 
     /// Length: growth that was not synced can be lost at a power cut,

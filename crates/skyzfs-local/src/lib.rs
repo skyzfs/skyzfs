@@ -46,6 +46,10 @@
 //! space. With segments of `S` bytes, segment `k` holds positions
 //! `k * S .. (k + 1) * S`, whichever file it is in.
 //!
+//! This is version 1, and version 1 is not fixed until the store that
+//! owns the log ships: no log exists outside tests, and the layout has
+//! changed under this version number and may again.
+//!
 //! Every integer is little-endian. Every structure has a version and
 //! reserved bytes, written as zero and required to be zero. Checksums
 //! are CRC32C; tags are SipHash-2-4 with a 64-bit result, under the
@@ -68,7 +72,7 @@
 //! | 44 | 4 | record alignment, 64 or 4096 |
 //! | 48 | 8 | segment size |
 //! | 56 | 8 | counter: incremented at every write of a copy |
-//! | 64 | 8 | epoch: incremented by every recovery |
+//! | 64 | 8 | epoch: incremented at every write of a copy, so by every recovery and every reclaim |
 //! | 72 | 8 | start of the log |
 //! | 80 | 8 | durable floor: a position that was durable when the copy was written |
 //! | 88 | 4 | write unit: a power of two from 4096 to 65536 |
@@ -105,7 +109,7 @@
 //! | 5 | 1 | kind: 1 write, 2 write-zeroes, 3 discard, 4 pad, 5 mark |
 //! | 6 | 2 | reserved |
 //! | 8 | 8 | the record's own position |
-//! | 16 | 8 | epoch of the instance that wrote it |
+//! | 16 | 8 | epoch: the superblock's when the record was written |
 //! | 24 | 8 | byte offset on the volume |
 //! | 32 | 8 | byte length on the volume (pad: bytes skipped) |
 //! | 40 | 4 | payload length |
@@ -134,7 +138,10 @@
 //! [`format::Identity`], it is in no error, report or debug print (those
 //! name positions and kinds), and it must never be uploaded or logged.
 //! What remains: whoever can read the log's files has the key, and
-//! whoever can do that can already write them.
+//! whoever can do that can already write them. That holds only if the
+//! directory makes it so: **the log's directory must be readable by the
+//! store's own user only.** On Unix the files are created with mode
+//! 0600. A superblock whose key is all zeros is refused.
 //!
 //! A **pad** closes a segment: the log continues at the second write
 //! unit of the segment with the next base. A segment keeps its last
@@ -187,7 +194,11 @@
 //!    that it reads as never written proves nothing, since a sector
 //!    that was lost reads as it did before. The one exception is by
 //!    structure and not by content: the prefix ends with the pad that
-//!    closes a segment and no file holds the next segment.
+//!    closes a segment and no file holds the next segment. (Sealing
+//!    always is a simplification, not the repair of a known failure:
+//!    no history is known in which sealing only where something was
+//!    written loses anything, since the epoch already refuses what
+//!    could come back. It removes that case from the argument.)
 //! 5. It erases the header of every segment file that claims a part of
 //!    the log beyond the prefix, or a part that a newer file holds.
 //! 6. If the log was marked as failed and the caller acknowledged it,
@@ -255,6 +266,28 @@
 //! copy and the same files, and the next recovery finds the same
 //! prefix.
 //!
+//! **Every superblock starts an epoch.** A recovery and a reclaim each
+//! write a superblock copy, and each copy has an epoch one above the
+//! other's. The copy is synced before anything is written in its
+//! epoch. So everything written after the newest copy, a record or the
+//! header of a segment file, carries an epoch the older copy does not
+//! have. If the newest copy is lost to corruption, an open with the
+//! older one meets that epoch, in a record on its way or in the header
+//! of any segment file whether on its way or not, and fails with
+//! [`log::Corruption::SuperblockBehind`] before it has written
+//! anything. Without this, after reclaims, the older copy would
+//! describe a log made of files that have been reused since, the open
+//! would return that older and shorter log, and its erasing of "stale"
+//! segments would destroy the real one. The one case in which the
+//! older copy is taken is that nothing was written since the newest:
+//! then it describes the whole log, with the start it had before the
+//! last reclaim. An epoch may rise inside a segment without a seal;
+//! the walk only requires that it never falls.
+//!
+//! A reclaim that fails while writing its copy may or may not have
+//! left it; the log has failed, nothing is written in the new epoch,
+//! and the next open takes whichever copy is there.
+//!
 //! **What sealing costs.** One write unit of log space for each
 //! recovery, and no new segment file, ever: a log whose files are all
 //! in use recovers. A process that crashes in a loop uses one unit for
@@ -314,6 +347,12 @@
 //! A test for this needs a simulated disk whose sync can be held open
 //! between issue and completion.
 //!
+//! The same goes for a reclaim: it starts a new epoch, and the records
+//! appended from then on carry it. With appends running during a
+//! reclaim, the switch has to be ordered against them: no record of the
+//! new epoch before the superblock that starts it is durable, and none
+//! of the old epoch behind one of the new.
+//!
 //! # Failure
 //!
 //! After a failed write or sync the log is failed. A failed sync is
@@ -368,7 +407,10 @@
 //!   in the superblock ([`log::Corruption::BelowDurableFloor`]), and
 //!   records or segments of a later epoch than the superblock that was
 //!   found, which means the newest superblock copy is lost
-//!   ([`log::Corruption::SuperblockBehind`]). The floor is only advanced
+//!   ([`log::Corruption::SuperblockBehind`]). If the newest copy is
+//!   lost and nothing was written since, the log opens with the start
+//!   it had before the last reclaim: longer at the front, never
+//!   shorter at the end. The floor is only advanced
 //!   by recoveries and reclaims. A flipped bit above it ends the log
 //!   there, as a torn record would, and only recovery's report says
 //!   why.
