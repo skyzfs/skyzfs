@@ -106,6 +106,12 @@ status)
 detach)
     n=$(cat "$DEVREC" 2>/dev/null || true)
     [ -n "$n" ] || exit 0
+    # A server that has just died leaves its device LIVE for a moment.
+    old=$(cat "$PIDREC" 2>/dev/null || true)
+    i=0
+    while [ -n "$old" ] && ! kill -0 "$old" 2>/dev/null && [ "$(dev_state "$n")" = LIVE ] && [ $i -lt 80 ]; do
+        sleep 0.25; i=$((i + 1))
+    done
     if [ "$(dev_state "$n")" = LIVE ]; then echo "a server is live on /dev/ublkb$n" >&2; exit 5; fi
     lim 60 ublk del -n "$n" >/dev/null 2>&1
     unlink "$DEVREC" 2>/dev/null
