@@ -27,6 +27,13 @@
 # complete before that sync began. Those files must be in the pool at
 # every prefix from the mark on.
 #
+# RIG_LAYOUT=slog (default) is the product's layout: the log device is
+# local and is not recorded. RIG_LAYOUT=whole has no separate log
+# device: the intent log and its flushes land on the device under test,
+# and the image is the whole pool, which zdb needs.
+# RIG_RECORD_ONLY=1 stops after recording and leaves base.img, log.img
+# and the manifest in WORK.
+#
 # Knobs (environment): RIG_SYNCS=40, RIG_FILE_KB=256, RIG_FILE_SLEEP=0.05
 # (seconds between files), RIG_SYNC_SLEEP=0.6 (seconds between syncs),
 # RIG_BUDGET_S=840 and RIG_DEEP_BUDGET_S=240 (the check's main pass),
@@ -61,6 +68,8 @@ FILE_KB=${RIG_FILE_KB:-256}
 FILE_SLEEP=${RIG_FILE_SLEEP:-0.05}
 SYNC_SLEEP=${RIG_SYNC_SLEEP:-0.6}
 DEVICE=${RIG_DEVICE:-}
+LAYOUT=${RIG_LAYOUT:-slog}
+case $LAYOUT in slog|whole) ;; *) echo "RIG_LAYOUT must be slog or whole" >&2; exit 64 ;; esac
 MANIFEST=$WORK/manifest
 STOP=$WORK/stop
 SCRATCH=/dev/shm/skz-replay.$$
@@ -110,16 +119,20 @@ else
 fi
 
 # The log device is allocated storage: a file written through once.
-: > "$WORK/slog.img"
-"$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$SLOG_MB" oflag=direct conv=fsync status=none
-SLOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/slog.img" 2>/dev/null || losetup --find --show "$WORK/slog.img")
+LOGVDEV=(); LOGDIR=()
+if [ "$LAYOUT" = slog ]; then
+    : > "$WORK/slog.img"
+    "$DD" if=/dev/zero of="$WORK/slog.img" bs=1M count="$SLOG_MB" oflag=direct conv=fsync status=none
+    SLOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/slog.img" 2>/dev/null || losetup --find --show "$WORK/slog.img")
+    LOGVDEV=(log "$SLOG_LOOP"); LOGDIR=(-d "$SLOG_LOOP")
+fi
 
 # ------------------------------------------------- the pool, then the base
 # Created on the bare device, before any recording: the pool's labels
 # are then where they are in production, and the record starts from an
 # exported pool, which is the base image every prefix is built on.
 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MOUNTPOINT" -O atime=off \
-    "$POOL" "$DEVICE" log "$SLOG_LOOP"
+    "$POOL" "$DEVICE" "${LOGVDEV[@]}"
 [ ! -b "${DEVICE}p1" ] || { echo "zpool create partitioned $DEVICE: the labels are not at byte 0" >&2; exit 1; }
 zpool export "$POOL"
 log "copying the device as the base image"
@@ -131,7 +144,7 @@ truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
 truncate -s "${LOG_MB}M" "$WORK/log.img"
 LOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/log.img" 2>/dev/null || losetup --find --show "$WORK/log.img")
 dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
-zpool import -d "/dev/mapper/$LW" -d "$SLOG_LOOP" -o cachefile=none "$POOL"
+zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
 zpool status -P "$POOL" >&2
 
 mkdir -p "$SCRATCH"
@@ -168,9 +181,11 @@ log "recorded: $c files, log-writes status: $(dmsetup status "$LW")"
 for _ in $(seq 1 20); do dmsetup remove "$LW" 2>/dev/null && break; sleep 0.25; done
 ! dmsetup info "$LW" >/dev/null 2>&1 || { echo "could not remove $LW" >&2; exit 1; }
 losetup -d "$LOG_LOOP"; LOG_LOOP=""
-losetup -d "$SLOG_LOOP"; SLOG_LOOP=""
+[ -z "$SLOG_LOOP" ] || losetup -d "$SLOG_LOOP"; SLOG_LOOP=""
 if [ -n "$UBLK_UP" ]; then timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || true; UBLK_UP=""; fi
 log "log: $(du -m "$WORK/log.img" | cut -f1) MiB on disk"
+
+if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exit 0; fi
 
 # ----------------------------------------------------------------- check
 args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MANIFEST"

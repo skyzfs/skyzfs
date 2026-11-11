@@ -25,10 +25,19 @@ on:
       syncs:
         description: "pool syncs in the workload (transaction groups recorded)"
         default: "40"
+      explore:
+        description: "yes = do not run the rig: record both pool layouts and report what zdb says on the images"
+        default: "no"
   pull_request:
     paths:
       - tests/kernel/**
       - .github/workflows/skyzfs-replay-rig.yml
+
+# A newer push to a pull request supersedes the run of the older one; a
+# dispatched run is left alone.
+concurrency:
+  group: replay-rig-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
 
 # The job runs branch code and third-party code as root: its token can
 # read the repository and nothing else.
@@ -65,7 +74,20 @@ jobs:
           sudo modprobe dm_snapshot
           tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
           uname -r; sudo zfs version
+      - name: Explore zdb on both layouts (investigation, judges nothing)
+        if: inputs.explore == 'yes'
+        run: |
+          for layout in slog whole; do
+            sudo bash -c 'export RIG_LAYOUT="$1" RIG_RECORD_ONLY=1 && exec tests/kernel/replay-rig.sh "$2" "/mnt/skz-$1"' \
+              rig "$layout" "$PWD/replay-out/$layout"
+            slog=()
+            [ "$layout" = slog ] && slog=(--slog "/mnt/skz-$layout/slog.img")
+            sudo python3 tests/kernel/zdb_explore.py --work "/mnt/skz-$layout" --pool skzreplay \
+              --out "$PWD/replay-out/$layout" "${slog[@]}"
+            sudo cat "replay-out/$layout/explore.md" >> "$GITHUB_STEP_SUMMARY"
+          done
       - name: Record and replay
+        if: inputs.explore != 'yes'
         # Settings go in a file: ubuntu-26.04's sudo-rs does not carry
         # the environment through.
         env:
@@ -84,9 +106,11 @@ jobs:
             rig "$RUNNER_TEMP/rig.env" "$PWD/replay-out"
       - name: Summary
         if: always()
+        env:
+          EXPLORE: ${{ inputs.explore }}
         run: |
           sudo chmod -R a+rX replay-out 2>/dev/null || true
-          cat replay-out/replay-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+          [ "$EXPLORE" = yes ] || cat replay-out/replay-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         if: always()
         with:
