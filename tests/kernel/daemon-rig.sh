@@ -191,7 +191,7 @@ print(f'ok {len(want)} files' if want and not bad else f'MISMATCH {len(bad)} of 
 PY
 }
 
-# shellcheck disable=SC2317  # reached through the trap
+# shellcheck disable=SC2317,SC2329  # reached through the trap
 cleanup() {
     set +e
     touch "$WORK/stop-all"

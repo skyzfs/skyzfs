@@ -60,7 +60,7 @@ events() { lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k i
 add_dev() { lim 60 ublk add -t loop -n "$1" -f "$2" -q 1 -d 64 --max_io_buf_bytes 1048576 -r 1 -i 1; }   # number image
 
 SLOGS=()
-# shellcheck disable=SC2317  # reached through the trap
+# shellcheck disable=SC2317,SC2329  # reached through the trap
 cleanup() {
     set +e
     touch "$WORK/stop-all"
