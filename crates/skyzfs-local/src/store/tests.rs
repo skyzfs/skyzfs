@@ -1689,6 +1689,479 @@ fn the_served_store_passes_the_conformance_suite() {
     }
 }
 
+/// What was acknowledged (design §4.2): the store reports where the
+/// newest record starts among the mutations it has completed. A write,
+/// a write-zeroes and a discard move it to a position at or beyond the
+/// log's end before them and below its end after them; a read, a
+/// flush, a rejected request and a checkpoint leave it; a new instance
+/// starts with none.
+#[test]
+fn the_acknowledged_position_is_where_the_newest_completed_record_starts() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if store.acknowledged().is_some() {
+            return Err("a position before anything was acknowledged".into());
+        }
+        read(&mut store, 0, 1)?;
+        flush(&mut store)?;
+        if store.acknowledged().is_some() {
+            return Err("a read or a flush gave a position".into());
+        }
+        let mutations = [
+            Op::Write {
+                offset: 0,
+                data: Buf::filled(3, 1),
+            },
+            Op::WriteZeroes {
+                offset: BLOCK,
+                len: 2 * BLOCK,
+            },
+            Op::Discard {
+                offset: 0,
+                len: BLOCK,
+            },
+        ];
+        for op in mutations {
+            let before = store.position();
+            ok(&mut store, op)?;
+            let Some(at) = store.acknowledged() else {
+                return Err("no position after a mutation".into());
+            };
+            if at < before || at >= store.position() {
+                return Err(format!(
+                    "{at} is not a record between {before} and {}",
+                    store.position()
+                ));
+            }
+            read(&mut store, 0, 4)?;
+            flush(&mut store)?;
+            let rejected = Op::Discard {
+                offset: 1,
+                len: BLOCK,
+            };
+            if run(&mut store, rejected)?.result.is_ok() {
+                return Err("a misaligned discard was taken".into());
+            }
+            if store.acknowledged() != Some(at) {
+                return Err("something that is no mutation moved the position".into());
+            }
+        }
+        let at = store.acknowledged();
+        checkpoint(&mut store)?;
+        if store.acknowledged() != at {
+            return Err("a checkpoint moved the position".into());
+        }
+        drop(store);
+        let store = env.reopen(&disk)?;
+        if store.acknowledged().is_some() {
+            return Err("a new instance has a position".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// What was acknowledged (design §4.2): after a kill at any point, the
+/// prefix the next instance recovers ends beyond every position an
+/// earlier instance reported, so an open that is told what the log
+/// must reach ([`OpenOptions::must_reach`]) never refuses a store that
+/// was only killed. Across changes of log segment,
+/// behind checkpoints that gave the whole log up, with and without
+/// flushes in between, and killed again before anything new was
+/// written. Mutant: the position is the record's end, where the
+/// recovered prefix ends exactly and not beyond.
+#[test]
+fn a_kill_never_leaves_the_log_ending_at_or_before_what_was_acknowledged() {
+    fn scenario(env: &Env) -> Outcome {
+        let env = Env {
+            segments: Some(2),
+            ..*env
+        };
+        let (disk, mut store) = env.fresh()?;
+        let mut stored: Option<Lsn> = None;
+        let (mut segments, mut emptied, mut kills) = (0, 0, 0);
+        let mut segment = store.position().0 / SEGMENT;
+        for round in 0..400u64 {
+            let block = round * 7 % 1000;
+            match round % 5 {
+                0..=2 => write(&mut store, block, 1 + (round % 16) as usize, round as u8)?,
+                3 => ok(
+                    &mut store,
+                    Op::WriteZeroes {
+                        offset: block * BLOCK,
+                        len: 8 * BLOCK,
+                    },
+                )
+                .map(|_| ())?,
+                _ => ok(
+                    &mut store,
+                    Op::Discard {
+                        offset: block * BLOCK,
+                        len: BLOCK,
+                    },
+                )
+                .map(|_| ())?,
+            }
+            // What a transport would store before it tells its client.
+            stored = stored.max(store.acknowledged());
+            if store.position().0 / SEGMENT != segment {
+                segment = store.position().0 / SEGMENT;
+                segments += 1;
+            }
+            if round % 3 == 0 {
+                flush(&mut store)?;
+            }
+            if round % 37 == 36 {
+                flush(&mut store)?;
+                checkpoint(&mut store)?;
+                if store.log_start() == store.position() {
+                    emptied += 1;
+                }
+            }
+            // A kill after every operation for a while, then at
+            // changing distances, and twice in a row.
+            let kill = round < 60 || round % (2 + round % 5) == 0 || round % 37 == 36;
+            if kill {
+                for _ in 0..1 + round % 2 {
+                    drop(store);
+                    disk.kill();
+                    let options = OpenOptions {
+                        must_reach: stored,
+                        ..env.options()
+                    };
+                    let (reopened, recovery) = Store::open(disk.clone(), options)
+                        .map_err(|e| format!("round {round}, acknowledged {stored:?}: {e}"))?;
+                    store = reopened;
+                    kills += 1;
+                    let end = recovery.end;
+                    if stored.is_some_and(|stored| end <= stored) {
+                        return Err(format!(
+                            "round {round}: the recovered prefix ends at {end}, \
+                             acknowledged was {stored:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        if segments < 3 || emptied < 3 || kills < 100 {
+            return Err(format!(
+                "the scenario saw {segments} segment changes, {emptied} emptied logs, {kills} kills"
+            ));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::ACKNOWLEDGED_IS_END);
+}
+
+/// What was acknowledged (design §4.2), the other side: a log that
+/// comes back without an acknowledged record is refused by the open
+/// that is told what the log must reach, and that open writes nothing,
+/// so every later open with the same position refuses again. A write
+/// is flushed, a second is acknowledged and its position taken, and a
+/// power cut loses the second.
+///
+/// The comparison has to be inside the open and before the recovery
+/// writes: an open that is not told the position succeeds, reports a
+/// prefix that ends at or before the lost record, and seals it with a
+/// mark; from then on the log's end, and the prefix every later open
+/// finds, lie beyond the place of the lost record, and an open that is
+/// told the position no longer notices. The test shows that too.
+/// Mutant (of the log): the comparison is made after the recovery has
+/// sealed the prefix.
+#[test]
+fn an_open_refuses_a_log_that_lost_an_acknowledged_record_and_writes_nothing() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        flush(&mut store)?;
+        write(&mut store, 1, 1, 2)?;
+        let Some(stored) = store.acknowledged() else {
+            return Err("no position".into());
+        };
+        drop(store);
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let told = OpenOptions {
+            must_reach: Some(stored),
+            ..env.options()
+        };
+        let before = disk.image();
+        for attempt in 0..3 {
+            match Store::open(disk.clone(), told.clone()) {
+                Err(StoreError::Log(LogError::Short { end, must_reach })) => {
+                    if must_reach != stored || end > stored {
+                        return Err(format!("refused with {end} and {must_reach}"));
+                    }
+                }
+                Err(other) => return Err(format!("attempt {attempt}: {other}")),
+                Ok(_) => return Err(format!("attempt {attempt}: the short log was opened")),
+            }
+            disk.kill();
+            if disk.image() != before {
+                return Err(format!("attempt {attempt}: the refused open wrote"));
+            }
+        }
+        // An open that is not told: it reports the short prefix, and
+        // seals it.
+        let (mut store, recovery) =
+            Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        expect(&mut store, 1, 1, 0, "the write that was lost")?;
+        if recovery.end > stored {
+            return Err(format!(
+                "the prefix ends at {}, beyond the lost record at {stored}",
+                recovery.end
+            ));
+        }
+        if store.position() <= stored {
+            return Err("the log's end did not move past the lost record".into());
+        }
+        drop(store);
+        disk.kill();
+        // The evidence is gone: this is why the daemon never opens a
+        // store without the position it has stored.
+        match Store::open(disk.clone(), told) {
+            Ok((_, recovery)) if recovery.end > stored => Ok(()),
+            Ok(_) => Err("the sealed prefix does not end beyond the lost record".into()),
+            Err(e) => Err(format!("after an open that sealed: {e}")),
+        }
+    }
+    holds(scenario);
+    for env in environments(0) {
+        let env = Env {
+            log_mutants: crate::log::Mutants::COMPARE_AFTER_SEAL,
+            ..env
+        };
+        assert!(
+            scenario(&env).is_err(),
+            "a comparison after the seal was not noticed in {env:?}"
+        );
+    }
+}
+
+/// A position below the log's start, of a record that a checkpoint has
+/// given up, is reached; so is the position of the last record of a
+/// log that was only killed; and an open that is told nothing is never
+/// refused. A rig that pretends the log came back one record short
+/// (`pretend_short_by`) is refused for the last record's position and
+/// not for the one before it, with nothing written. A position that
+/// was recorded for another store counts as none.
+#[test]
+fn an_open_is_refused_exactly_when_the_prefix_does_not_reach_the_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        let first = store.acknowledged();
+        write(&mut store, 1, 1, 2)?;
+        let last = store.acknowledged();
+        drop(store);
+        disk.kill();
+        let open = |must_reach: Option<Lsn>, pretend_short_by: u32| {
+            let options = OpenOptions {
+                must_reach,
+                pretend_short_by,
+                ..env.options()
+            };
+            let before = disk.image();
+            let opened = Store::open(disk.clone(), options).map(|_| ());
+            disk.kill();
+            let short = matches!(opened, Err(StoreError::Log(LogError::Short { .. })));
+            if opened.is_err() && (!short || disk.image() != before) {
+                return Err(format!("{opened:?}, or the refused open wrote"));
+            }
+            Ok(opened.is_ok())
+        };
+        for (must_reach, pretend, want) in [
+            (last, 1, false),
+            (first, 1, true),
+            (first, 2, false),
+            (last, 5, false),
+            (None, 1, true),
+            (last, 0, true),
+            (first, 0, true),
+            (None, 0, true),
+        ] {
+            let got = open(must_reach, pretend)?;
+            if got != want {
+                return Err(format!(
+                    "must reach {must_reach:?}, short by {pretend}: opened {got}"
+                ));
+            }
+        }
+        // A position recorded for another store counts as none, and one
+        // recorded for this store counts.
+        let (store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        let identity = store.identity();
+        drop(store);
+        disk.kill();
+        for (recorded_for, want) in [(identity, false), (*b"some other store", true)] {
+            let options = OpenOptions {
+                must_reach: last,
+                must_reach_identity: Some(recorded_for),
+                pretend_short_by: 1,
+                ..env.options()
+            };
+            let opened = Store::open(disk.clone(), options).is_ok();
+            disk.kill();
+            if opened != want {
+                return Err(format!(
+                    "a position recorded for {recorded_for:?}: opened {opened}"
+                ));
+            }
+        }
+        // A checkpoint gives the whole log up: the position is below
+        // the log's start and still reached.
+        let (mut store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        if store.log_start() <= last.unwrap_or(Lsn(0)) {
+            return Err("the checkpoint did not give the record up".into());
+        }
+        drop(store);
+        disk.kill();
+        if !open(last, 0)? {
+            return Err("a position below the log's start was not reached".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// The store behind its worker reports the acknowledged position for
+/// what its owner has taken, never ahead of it: before a completion is
+/// taken there is none, although the worker has appended the record;
+/// once taken, it is that record's start. The waker is called once for
+/// every completion made ready.
+#[test]
+fn the_served_store_acknowledges_what_its_owner_has_taken() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    let before = served.position().unwrap();
+    let write = |id: u64, block: u64| Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(1, 9),
+        },
+    };
+    // The waker is called once the completion is ready to be taken.
+    let ready = |n: u32| {
+        for _ in 0..10_000 {
+            if calls.load(Ordering::SeqCst) >= n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("the waker was not called {n} times");
+    };
+    served.submit(write(1, 0)).unwrap();
+    ready(1);
+    let after_first = served.position().unwrap();
+    assert!(after_first > before);
+    assert_eq!(served.acknowledged(), None, "ahead of what was taken");
+    let mut done = Vec::new();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    let first = served.acknowledged().unwrap();
+    assert!(first >= before && first < after_first, "{first}");
+    served.submit(write(2, 1)).unwrap();
+    let read = Request {
+        id: RequestId(3),
+        op: Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(1),
+        },
+    };
+    served.submit(read).unwrap();
+    ready(3);
+    let end = served.position().unwrap();
+    assert_eq!(
+        served.acknowledged(),
+        Some(first),
+        "ahead of what was taken"
+    );
+    while done.len() < 3 {
+        served.wait(&mut done, Duration::from_secs(10));
+    }
+    let second = served.acknowledged().unwrap();
+    assert!(second >= after_first && second < end, "{second}");
+    assert!(!served.gone());
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        3,
+        "one call for each completion"
+    );
+    drop(served);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        4,
+        "and one when the worker ended"
+    );
+}
+
+/// A worker that has ended tells its owner: the waker is called, `gone`
+/// says so from then on, a request in flight stays in flight and a new
+/// one is not taken. Before that, `gone` is false.
+#[test]
+fn a_worker_that_has_ended_tells_its_owner() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    assert!(!served.gone());
+    served.panic_worker();
+    assert!(served.gone());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the owner is woken");
+    let flush = Request {
+        id: RequestId(1),
+        op: Op::Flush,
+    };
+    let refused = served.submit(flush).unwrap_err();
+    assert_eq!(refused.kind, SubmitErrorKind::Busy);
+    let mut done = Vec::new();
+    assert_eq!(served.poll(&mut done), 0);
+}
+
+/// The store's identity is the same at every open of one store and
+/// behind the worker, differs for a store made again for the same
+/// volume with another key, and is not the key.
+#[test]
+fn the_identity_belongs_to_the_store_and_is_not_its_key() {
+    let env = environments(0)[0];
+    let (disk, store) = env.fresh().unwrap();
+    let identity = store.identity();
+    drop(store);
+    let store = env.reopen(&disk).unwrap();
+    assert_eq!(store.identity(), identity);
+    let served = store.serve().unwrap();
+    assert_eq!(served.identity(), identity);
+    let key = *b"a key for tests!";
+    assert_ne!(identity, key);
+    assert_ne!(identity[..8], key[..8]);
+    assert_ne!(identity[8..], key[8..]);
+    assert_ne!(identity[..8], identity[8..]);
+    // The same volume, made again: another key, another store.
+    let other = SimDisk::new(7);
+    let again = Store::create_keyed(
+        other,
+        &env.config(),
+        Key(*b"another key here"),
+        env.options(),
+    )
+    .unwrap();
+    assert_ne!(again.identity(), identity);
+}
+
 /// Not a property of the store: a measurement, run by hand, of what the
 /// conformance suite notices by itself. For each defect it prints the
 /// cases that failed, and in how many of the eight environments. The
@@ -1737,4 +2210,48 @@ fn what_the_suite_notices_of_each_defect() {
             println!("    {case}: {count}");
         }
     }
+}
+
+/// The lock is a step of its own: it is taken without a recovery, an
+/// open takes it over, and an open that fails hands it back still held.
+#[test]
+fn the_lock_is_taken_apart_from_the_open_and_comes_back_held_when_the_open_fails() {
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 1, 7).unwrap();
+    let end = store.position();
+    drop(store);
+    disk.kill();
+    let files = disk.list().unwrap();
+
+    // Taking the lock reads and writes nothing, and keeps others out.
+    let lock = Store::lock_volume(&disk).unwrap();
+    assert_eq!(disk.list().unwrap(), files);
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+    assert!(matches!(
+        Store::open(disk.clone(), env.options()),
+        Err(StoreError::Locked)
+    ));
+
+    // An open that fails (the log does not reach the position) gives
+    // the lock back, and it is still held.
+    let options = OpenOptions {
+        must_reach: Some(end),
+        ..env.options()
+    };
+    let lock = match Store::open_locked(disk.clone(), lock, options) {
+        Err((StoreError::Log(LogError::Short { .. }), lock)) => lock,
+        other => panic!("{:?}", other.map(|_| ()).map_err(|(e, _)| e)),
+    };
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+
+    // An open that succeeds takes it over for as long as the store
+    // lives.
+    let (store, _) = match Store::open_locked(disk.clone(), lock, env.options()) {
+        Ok(opened) => opened,
+        Err((e, _)) => panic!("{e}"),
+    };
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+    drop(store);
+    drop(Store::lock_volume(&disk).unwrap());
 }
