@@ -299,11 +299,53 @@ class Log(unittest.TestCase):
         self.assertFalse(replay_check.judge_controls([drop, reorder])[2])
         self.assertFalse(replay_check.judge_controls([drop, reorder, data, dict(drop, name='new')])[2])
         # a known gap is strict in both directions, and is stated while it holds
-        table = {'reorder': {'by': None, 'gap': 'not seen yet'}}
+        table = {'reorder': {'block': {'by': None, 'gap': 'not seen yet'}}}
         rows, gaps, ok = replay_check.judge_controls([{'name': 'reorder', 'caught': False, 'failed_by': {}}], table)
         self.assertEqual((ok, gaps), (True, [{'name': 'reorder', 'gap': 'not seen yet'}]))
         rows, gaps, ok = replay_check.judge_controls([reorder], table)
         self.assertEqual((ok, gaps), (False, []))
+
+    def test_the_table_is_keyed_by_what_the_rule_picked(self):
+        reorder = {'name': 'reorder', 'caught': True, 'failed_by': {'copies': 1}}
+        data = {'name': 'data', 'caught': True, 'failed_by': {'verify': 3}}
+
+        def judged(**drop):
+            c = dict({'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}, **drop)
+            rows, _, ok = replay_check.judge_controls([c, reorder, data])
+            return ok, rows[1]
+        # an intent-log block must be caught by the fsync check, not by luck elsewhere
+        self.assertTrue(judged(**{'class': 'intent-log block', 'failed_by': {'fsync': 2}})[0])
+        self.assertFalse(judged(**{'class': 'intent-log block', 'failed_by': {'deep': 1}})[0])
+        self.assertFalse(judged(**{'class': 'intent-log block', 'caught': False, 'failed_by': {}})[0])
+        # a superseded write harms nothing: expected not to be caught, strictly, and the reason is given
+        ok, row = judged(**{'class': 'superseded', 'caught': False, 'failed_by': {}})
+        self.assertTrue(ok)
+        self.assertIn('written again', row['note'])
+        self.assertFalse(judged(**{'class': 'superseded', 'failed_by': {'deep': 1}})[0])
+        # a class the table does not name for that control fails the job
+        ok, row = judged(**{'class': 'something new'})
+        self.assertFalse(ok)
+        self.assertIn('does not name', row['expected'])
+        c = dict(data, **{'class': 'intent-log block'})
+        self.assertFalse(replay_check.judge_controls([dict(reorder), c, {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}}])[2])
+
+    def test_victim_class(self):
+        ents = [('write', 1 << 20, blk(1)),              # 0  rewritten whole before the next uberblock
+                ('write', 2 << 20, blk(2, 2)),           # 1  rewritten only in part
+                ('write', 3 << 20, blk(3)),              # 2  rewritten, but after the uberblock
+                ('write', 4 << 20, blk(4)),              # 3  never written again
+                ('write', 1 << 20, blk(5, 2)),           # 4
+                ('write', 2 << 20, blk(6)),              # 5
+                ('flush',), ('write', 128 << 10, UB), ('flush',),
+                ('write', 3 << 20, blk(7))]
+        zil = bytearray(blk(8))
+        zil[144:152] = (0x210da7ab10c7a11).to_bytes(8, 'little')
+        ents.append(('write', 5 << 20, bytes(zil)))      # 10
+        logwrites.write_log(self.log, SS, ents)
+        recs = logwrites.index(self.log, DEV)['records']
+        got = [replay_check.victim_class(recs, i, replay_check.victim_facts(self.log, recs, i)) for i in (0, 1, 2, 3, 10)]
+        self.assertEqual(got, ['superseded', 'block', 'block', 'block', 'intent-log block'])
+        self.assertEqual(replay_check.victim_class(recs, 0, None), 'block')
 
     def test_group_points(self):
         recs = self.idx['records']
@@ -340,6 +382,12 @@ class Log(unittest.TestCase):
         self.assertEqual(len(cov['errors']), 1)
         # a log in which no uberblock write is recognised cannot pass
         self.assertEqual(len(replay_check.coverage(recs, flush, groups=[])['errors']), 1)
+        # every fsync mark must have had the fsync check
+        marks = [{'n': 5, 'fsynced': 1, 't_deep': 0.1}, {'n': 9, 't_deep': 0.1}]
+        cov = replay_check.coverage(recs, flush + marks, fsync_points={5})
+        self.assertEqual((cov['errors'], cov['fsync_checked']), ([], 1))
+        cov = replay_check.coverage(recs, flush + marks, fsync_points={5, 9, 11})
+        self.assertEqual((len(cov['errors']), cov['fsync_checked'], cov['fsync_marks']), (1, 1, 3))
 
     def test_the_data_control_takes_a_files_block(self):
         # six groups; in group k, file k-1 is written: once to the intent log, then to its place

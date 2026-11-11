@@ -307,24 +307,43 @@ def controls(records, marks, find=None):
     return out
 
 
-# What each control is expected to do today. The job fails when a result
-# differs from this table. Do not edit a control to fit the table.
+# What each control is expected to do today, by the class of write its
+# fixed rule happened to pick (see victim_class). The job fails when a
+# result differs from this table, when a control did not run, and when
+# a control picked a class the table does not name. Do not edit a
+# control to fit the table.
 #   by: 'any'     caught, by whichever check
 #       a check   caught, and by that check among those that caught it:
 #                 'copies' (the every-copy check), 'verify' (the files'
-#                 checksums in the light check), 'deep' (the scrub)
-#       None      not caught: a known gap, stated in every run's summary
-#                 under 'gap'. Strict in both directions: once a check
+#                 checksums in the light check), 'fsync' (the fsynced
+#                 files after the intent log is replayed), 'deep' (the
+#                 scrub)
+#       None      not caught. Strict in both directions: once a check
 #                 catches it, the job fails until this table is changed
-#                 on purpose.
-# History: `reorder` was None until the every-copy check existed. Its
-# victim is one copy of several of pool metadata; the import reads
-# another copy and the scrub runs after a writable import, so neither
-# sees it.
+#                 on purpose. With 'gap' it is a hole in the rig, stated
+#                 as a warning in every run; with 'harmless' it is a
+#                 wrong replay that damages nothing, and the reason is
+#                 given.
+# History: `reorder` was not caught until the every-copy check existed:
+# its victim is one copy of several of pool metadata, which the import
+# and the scrub do not miss. `drop` of an intent-log block was not
+# caught until the fsync check existed.
 EXPECTED = {
-    'drop': {'by': 'any'},
-    'reorder': {'by': 'copies'},
-    'data': {'by': 'verify'},
+    'drop': {
+        'block': {'by': 'any'},
+        # Only where the intent log is on the device under test.
+        'intent-log block': {'by': 'fsync'},
+        'superseded': {'by': None,
+                       'harmless': 'the same place is written again, whole, before the next uberblock: no uberblock ever '
+                                   'reaches the dropped version, and from the rewrite on the image is the true one'},
+    },
+    'reorder': {
+        'block': {'by': 'copies'},
+        'intent-log block': {'by': 'fsync'},
+    },
+    'data': {
+        'block': {'by': 'verify'},
+    },
 }
 CHECK_NAMES = {'deep': 'the scrub', 'copies': 'the every-copy check', 'verify': "the files' checksums",
                'fsync': 'the fsynced files after the intent log is replayed',
@@ -505,13 +524,14 @@ def tally_control(results):
     return by, rig_errors, first
 
 
-def coverage(records, points, floor=DEEP_FLOOR, groups=None):
+def coverage(records, points, floor=DEEP_FLOOR, groups=None, fsync_points=None):
     """What the pass over `points` left out -> dict with 'errors' (fail the job) and 'warnings'.
 
     Every flush boundary must have been checked, and the scrub must
     have run at `floor` of them. With `groups` (see group_points), the
     every-copy check must have run at the first point of every
-    transaction group; how many last points had it is reported.
+    transaction group; how many last points had it is reported. With
+    `fsync_points`, the fsync check must have run at every one of them.
     """
     flush = set(flush_points(records))
     checked = {p['n'] for p in points}
@@ -542,6 +562,13 @@ def coverage(records, points, floor=DEEP_FLOOR, groups=None):
         if len(lasts & copies) < len(lasts):
             cov['warnings'].append(f'the every-copy check ran at the last point of {len(lasts & copies)} of {len(lasts)} '
                                    f'transaction groups; the rest went without it for time')
+    if fsync_points is not None:
+        done = {p['n'] for p in points if p.get('fsynced')}
+        want = set(fsync_points)
+        cov.update(fsync_marks=len(want), fsync_checked=len(want & done))
+        if want - done:
+            cov['errors'].append(f'the fsync check did not run at {len(want - done)} of {len(want)} fsync marks '
+                                 f'(first: prefix {min(want - done)})')
     return cov
 
 
@@ -572,7 +599,9 @@ def judge_controls(ctl, expected=None):
     seen = {c['name']: c for c in ctl}
     rows, gaps, ok = [], [], True
     for name in sorted(set(expected) | set(seen)):
-        want, c = expected.get(name), seen.get(name)
+        c = seen.get(name)
+        cls = c.get('class', 'block') if c else None
+        want = expected.get(name, {}).get(cls) if c else None
         if c is None:
             got = 'not run'
         elif c.get('rig_errors'):
@@ -583,8 +612,10 @@ def judge_controls(ctl, expected=None):
         else:
             got = 'caught by ' + ', '.join(CHECK_NAMES.get(k, k) for k in sorted(c['failed_by']))
         clean = bool(c and c['caught'] and not c.get('rig_errors'))
-        if want is None:
-            exp, match = 'not in the table', False
+        if c is None:
+            exp, match = 'to run', False
+        elif want is None:
+            exp, match = f'nothing: the table does not name a {cls} for this control', False
         elif want['by'] is None:
             exp, match = 'not caught', got == 'not caught'
         elif want['by'] == 'any':
@@ -592,10 +623,27 @@ def judge_controls(ctl, expected=None):
         else:
             exp, match = 'caught, and by ' + CHECK_NAMES[want['by']], clean and want['by'] in c['failed_by']
         ok = ok and match
-        rows.append({'name': name, 'expected': exp, 'observed': got, 'match': match})
+        rows.append({'name': name, 'class': cls, 'expected': exp, 'observed': got, 'match': match,
+                     'note': (want or {}).get('harmless', '') if match else ''})
         if want and want.get('gap') and match:
             gaps.append({'name': name, 'gap': want['gap']})
     return rows, gaps, ok
+
+
+def victim_class(records, victim, facts):
+    """What kind of write a control's fixed rule picked: the table is keyed by this."""
+    if not facts:
+        return 'block'
+    if facts.get('intent_log'):
+        return 'intent-log block'
+    later = facts.get('later')
+    if later is not None:
+        v, w = records[victim], records[later]
+        whole = w['offset'] <= v['offset'] and v['offset'] + v['bytes'] <= w['offset'] + w['bytes']
+        next_ub = next((i for i in range(victim + 1, len(records)) if records[i].get('ub')), len(records))
+        if whole and later < next_ub:
+            return 'superseded'
+    return 'block'
 
 
 def blocks_at(bps, lo, hi):
@@ -1067,6 +1115,14 @@ def main():
     copies_at = firsts | set(spread(lasts, max(0, room)))
     for n in copies_at:
         kind.setdefault(n, 'group')
+    # The fsync promise is judged where it starts to hold: at the prefix
+    # that ends with a file's fsync mark. By the next flush boundary a
+    # transaction group may already hold the file, and a lost intent-log
+    # block would no longer show.
+    fsync_at = {pos for pos, _ in fmarks}
+    deep |= fsync_at
+    for n in fsync_at:
+        kind.setdefault(n, 'fsync')
     avail['groups'] = len(groups)
     res['calibration'] = {'points': len(cal), 't_light_mean': t_light, 't_deep_mean': t_deep, 't_copies_mean': t_copies,
                           'budget_points': budget_points, 'deep_points': deep_points, 'copies_points': len(copies_at)}
@@ -1098,7 +1154,7 @@ def main():
         if j % 200 == 0:
             print(f'  {j} of {len(kind)} prefixes, {time.monotonic() - start:.0f}s', flush=True)
     res['main_pass_s'] = time.monotonic() - start
-    res['coverage'] = cov = coverage(records, points, groups=groups)
+    res['coverage'] = cov = coverage(records, points, groups=groups, fsync_points=fsync_at if fmarks else None)
     for e in cov['errors']:
         print(f'::error title=replay rig, coverage::{e}', flush=True)
     for w in cov['warnings']:
@@ -1160,8 +1216,11 @@ def main():
         lo, hi = c['points'][0], c['points'][-1]
         gp = group_points([records[i] for i in c['schedule']])
         ctl_copies = {n for pair in gp for n in pair if lo <= n <= hi}
-        pts = sorted(set(c['points']) | ctl_copies)
-        deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']}
+        # And its fsync marks: where a file's promise starts to hold.
+        ctl_fsync = {n for n in range(max(lo, 1), hi + 1)
+                     if fmarks and records[c['schedule'][n - 1]].get('mark', '').startswith('fsync-')}
+        pts = sorted(set(c['points']) | ctl_copies | ctl_fsync)
+        deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']} | ctl_fsync
         results = [rig.point(n, files_at(marks, n), n in deep_at, n in ctl_copies, due(n)) for n in pts]
         checked = len(results)
         by, rig_errors, first = tally_control(results)
@@ -1175,6 +1234,7 @@ def main():
             v = records[c['victim']]
             facts['blocks'] = blocks_at(zdb_blocks(out)['bps'], v['offset'], v['offset'] + v['bytes']) if rc == 0 else None
         ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
+                    'class': victim_class(records, c['victim'], facts),
                     'deep_points': len(deep_at), 'copies_points': len(ctl_copies), 'caught': first is not None,
                     'first': first, 'failed_by': by,
                     'rig_errors': rig_errors})
@@ -1188,7 +1248,8 @@ def main():
         print(f"::warning title=replay rig, known gap::control {g['name']} is not caught: {g['gap']}", flush=True)
     for r in res['control_rows']:
         if not r['match']:
-            print(f"::error title=replay rig::control {r['name']}: expected {r['expected']}, observed {r['observed']}", flush=True)
+            print(f"::error title=replay rig::control {r['name']} ({r['class']}): expected {r['expected']}, "
+                  f"observed {r['observed']}", flush=True)
 
     # The index goes with the results: a finding needs the records around it.
     run(['cp', rig.index_path, os.path.join(args.out, 'replay-index.json')])
@@ -1217,7 +1278,8 @@ def summary(res):
     for k, label, n_av in (('flush', 'flush boundary', av['flush']),
                            ('ub_window', f'within {WINDOW} records of an uberblock write', av['ub_window']),
                            ('random', 'any other, at random', av['other']),
-                           ('group', 'taken only for the every-copy check', '–'), ('end', 'first and last', 2)):
+                           ('group', 'taken only for the every-copy check', '–'),
+                           ('fsync', 'taken only because it ends with an fsync mark', '–'), ('end', 'first and last', 2)):
         sel = [p for p in pts if p['kind'] == k]
         ts = [p['t_light'] + p['t_advance'] for p in sel]
         out.append(f"| {label} | {n_av} | {len(sel)} | {sum(1 for p in sel if not p['ok'])} | "
@@ -1237,8 +1299,11 @@ def summary(res):
     fs = [p for p in pts if p.get('fsynced')]
     if fs:
         ahead = [p['fsynced'] - p['files'] for p in fs]
+        cv = res.get('coverage', {})
         out.append(f"\nFsync check (in the same writable import, after the intent log is replayed: every file whose fsync had "
-                   f"returned): {len(fs)} flush boundaries, {sum(1 for p in fs if p.get('failed') == 'fsync: files')} failed. "
+                   f"returned): {len(fs)} prefixes, among them {cv.get('fsync_checked', '?')} of {cv.get('fsync_marks', '?')} "
+                   f"that end with a file's fsync mark (all are required), "
+                   f"{sum(1 for p in fs if p.get('failed') == 'fsync: files')} failed. "
                    f"At {sum(1 for a in ahead if a > 0)} of them it covered files that no completed sync had yet promised, "
                    f"up to {max(ahead)} such files.")
     cp = [p for p in pts if 't_copies' in p]
@@ -1290,10 +1355,14 @@ def summary(res):
                        f"{'yes, ' + by if c['caught'] else 'no'} | {first.replace('|', '/')} |")
         out.append('\nAgainst what each control is expected to do today (`EXPECTED` in `replay_check.py`; '
                    'a difference fails the job):\n')
-        out.append('| control | expected | observed | |')
-        out.append('|---|---|---|---|')
+        out.append('| control | what its rule picked | expected | observed | |')
+        out.append('|---|---|---|---|---|')
         for r in res.get('control_rows', []):
-            out.append(f"| {r['name']} | {r['expected']} | {r['observed']} | {'as expected' if r['match'] else '**DIFFERS**'} |")
+            out.append(f"| {r['name']} | {r.get('class') or '–'} | {r['expected']} | {r['observed']} | "
+                       f"{'as expected' if r['match'] else '**DIFFERS**'} |")
+        for r in res.get('control_rows', []):
+            if r.get('note'):
+                out.append(f"\n`{r['name']}` picked a write that is {r['class']}: not caught, and not a fault, because {r['note']}.")
         for g in res.get('gaps', []):
             out.append(f"\n> [!WARNING]\n> Known gap (`{g['name']}` is not caught): {g['gap']}")
         for c in res['controls']:

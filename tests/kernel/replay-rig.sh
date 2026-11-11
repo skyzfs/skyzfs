@@ -20,7 +20,9 @@
 #     dm-log-writes log. RIG_PROVIDER names another provider command,
 #     and RIG_LOG the log it reads (see logwrites.py for the contract).
 #
-# Workload: a writer creates files that are never changed afterwards,
+# Workload: a writer creates files that are never changed afterwards
+# (each has its own name and is written once, so what a file held when
+# its fsync returned is what it holds for good),
 # each with an fsync, and records each file's checksum when it is
 # complete. Meanwhile the pool is synced RIG_SYNCS times, and after each
 # sync a mark goes into the log with the number of files that were
