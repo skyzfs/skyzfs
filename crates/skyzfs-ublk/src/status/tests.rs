@@ -32,6 +32,16 @@ fn sample() -> Status {
         failures: 10,
         first_write_copies: 11,
         recovered_unacknowledged: 12,
+        log: Some(LogStatus {
+            shown: LogShown {
+                live: 13,
+                steps: 14,
+                stepping: true,
+                own_syncs: 18,
+            },
+            start_ms: 16,
+            replayed_bytes: 17,
+        }),
     }
 }
 
@@ -39,16 +49,127 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA2");
+    expected.extend(b"SKYZSTA3");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
-    for field in 1..=12u64 {
+    // The step under way is 1 at offset 160, between 14 and 16.
+    for field in (1..=14u64).chain([1, 16, 17, 18]) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 144);
+    assert_eq!(bytes.len(), 192);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
+}
+
+/// A file of the second version (144 bytes, `SKYZSTA2`) is still read:
+/// everything it has, and nothing of the log. The report then has no
+/// key of the log.
+#[test]
+fn a_file_of_the_second_version_is_read_without_the_log() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut second = encode(&sample())[..144].to_vec();
+    second[..8].copy_from_slice(b"SKYZSTA2");
+    fs::write(&path, &second).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    assert_eq!(
+        read,
+        Status {
+            log: None,
+            ..sample()
+        }
+    );
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "writes"), Some("3"));
+    assert_eq!(value(&lines, "log_live"), None);
+    // The third version's magic at the second's length is no file.
+    second[..8].copy_from_slice(b"SKYZSTA3");
+    fs::write(&path, &second).expect("write");
+    assert!(super::read(&path).is_err());
+}
+
+/// The report shows the log: its live size, the steps taken, whether
+/// one is under way, and what the start took and replayed.
+#[test]
+fn the_report_shows_the_log_and_the_start() {
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&sample()),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "log_live"), Some("13"));
+    assert_eq!(value(&lines, "checkpoint_steps"), Some("14"));
+    assert_eq!(value(&lines, "checkpoint_syncs"), Some("18"));
+    assert_eq!(value(&lines, "checkpoint_step"), Some("under way"));
+    assert_eq!(value(&lines, "start_ms"), Some("16"));
+    assert_eq!(value(&lines, "replayed_bytes"), Some("17"));
+    let resting = Status {
+        log: Some(LogStatus::default()),
+        ..sample()
+    };
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&resting),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "checkpoint_step"), Some("none"));
+}
+
+/// A change of the log that is posted "at once" is written without
+/// waiting for the interval, each one: the begin and the end of a step
+/// are both in the file's history although they are closer together
+/// than the interval. A change posted without it keeps the pace.
+#[test]
+fn a_steps_begin_and_end_are_written_at_once() {
+    let board = Arc::new(Board::new());
+    let (wrote, written) = mpsc::channel::<LogShown>();
+    let publisher = std::thread::spawn({
+        let board = board.clone();
+        // An interval no test waits for.
+        move || {
+            board.publish_with_log(Pace::new(3_600_000), |_, log, _| {
+                wrote.send(*log).map_err(|_| io::Error::other("gone"))
+            })
+        }
+    });
+    let wait = Duration::from_secs(10);
+    // The first write: nothing was written yet.
+    assert_eq!(written.recv_timeout(wait), Ok(LogShown::default()));
+    let begun = LogShown {
+        live: 100,
+        steps: 0,
+        stepping: true,
+        own_syncs: 0,
+    };
+    board.post_log(begun, true);
+    assert_eq!(written.recv_timeout(wait), Ok(begun));
+    let ended = LogShown {
+        live: 60,
+        steps: 1,
+        stepping: false,
+        own_syncs: 1,
+    };
+    board.post_log(ended, true);
+    assert_eq!(written.recv_timeout(wait), Ok(ended));
+    // Not at once: it waits for the interval, which never ends here.
+    let grown = LogShown { live: 90, ..ended };
+    board.post_log(grown, false);
+    assert!(written.recv_timeout(Duration::from_millis(100)).is_err());
+    // The stop writes what is posted.
+    board.stop();
+    assert_eq!(written.recv_timeout(wait), Ok(grown));
+    assert_eq!(publisher.join().expect("the publisher"), 0);
 }
 
 /// A file of the first version (128 bytes, `SKYZSTA1`) is no status,
@@ -356,6 +477,12 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "recovered_unacknowledged",
             "status_write_failures",
             "age_ms",
+            "log_live",
+            "checkpoint_steps",
+            "checkpoint_syncs",
+            "checkpoint_step",
+            "start_ms",
+            "replayed_bytes",
             "pid",
             "counters"
         ]
@@ -600,4 +727,152 @@ fn waiting_for_the_first_write_leaves_the_posted_counters_as_they_are() {
         seen.iter().all(|written| *written == counters(7, 2)),
         "{seen:?}"
     );
+}
+
+/// `write_again` has the file written once more with what is posted,
+/// at once and whatever the interval, and replaces nothing: for a
+/// value the writer reads elsewhere (the start's time) that changed
+/// after the first write.
+#[test]
+fn write_again_writes_what_is_posted_once_more_and_replaces_nothing() {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, seen) = (board.clone(), seen.clone());
+        std::thread::spawn(move || {
+            // An interval far beyond the test: only `write_again`
+            // explains a second write.
+            board.publish(Pace::new(3_600_000), |counters, _| {
+                seen.lock().expect("lock").push(*counters);
+                Ok(())
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    assert_eq!(seen.lock().expect("lock").len(), 1);
+    board.write_again();
+    let began = Instant::now();
+    while seen.lock().expect("lock").len() < 2 {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "not written again"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    board.stop();
+    thread.join().expect("the publishing thread");
+    let seen = seen.lock().expect("lock");
+    assert!(
+        seen.iter().all(|written| *written == counters(7, 2)),
+        "{seen:?}"
+    );
+}
+
+/// A board that publishes with `pace` and a write that fails at its
+/// second attempt only; the times of the attempts go to the list.
+fn fails_second(
+    pace: Pace,
+) -> (
+    Arc<Board>,
+    Arc<Mutex<Vec<Instant>>>,
+    std::thread::JoinHandle<u64>,
+) {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let tried = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, tried) = (board.clone(), tried.clone());
+        std::thread::spawn(move || {
+            board.publish(pace, |_, _| {
+                let mut tried = tried.lock().expect("lock");
+                tried.push(Instant::now());
+                if tried.len() == 2 {
+                    Err(io::Error::other("the second write fails"))
+                } else {
+                    Ok(())
+                }
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    (board, tried, thread)
+}
+
+/// A write asked for with `write_again` is owed until one succeeds. On
+/// an idle board (nothing posted changes) the write that fails is
+/// tried again, an interval later and not at once. Before, nothing
+/// remembered it: the counters and the log equalled what was written
+/// last, so the value the write was asked for (the start's time)
+/// stayed out of the file for as long as the volume was idle. Mutants:
+/// the owed write is forgotten; a failed write is tried again at once.
+#[test]
+fn a_write_asked_for_again_that_fails_is_tried_again_an_interval_later() {
+    const INTERVAL: Duration = Duration::from_millis(400);
+    fn scenario(mutants: u32) -> Result<(), String> {
+        let pace = Pace::new(INTERVAL.as_millis() as u64).with(mutants);
+        let (board, tried, thread) = fails_second(pace);
+        // Beyond the interval of the first write, so that what holds
+        // the retry back is the failed write's own interval.
+        std::thread::sleep(INTERVAL + Duration::from_millis(50));
+        board.write_again();
+        let began = Instant::now();
+        let third = loop {
+            if let Some(third) = tried.lock().expect("lock").get(2).copied() {
+                break Some(third);
+            }
+            if began.elapsed() > Duration::from_secs(4) {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let second = tried.lock().expect("lock").get(1).copied();
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        let (Some(second), Some(third)) = (second, third) else {
+            return Err("the write that failed was not tried again in 4 s".into());
+        };
+        // The pace counts the interval from when the failed write
+        // returned, which is after the time noted inside it.
+        if third.duration_since(second) < INTERVAL {
+            return Err(format!(
+                "tried again after {:?}, sooner than the interval",
+                third.duration_since(second)
+            ));
+        }
+        if failures != 1 {
+            return Err(format!("{failures} failures"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
+    assert!(scenario(Mutants::RETRIES_AT_ONCE).is_err(), "at once");
+}
+
+/// A write that is still owed at the stop is written by the stop, also
+/// when the interval has not passed. Mutant: the owed write is
+/// forgotten, and the stop writes nothing.
+#[test]
+fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
+    fn scenario(mutants: u32) -> Result<(), String> {
+        let (board, tried, thread) = fails_second(Pace::new(3_600_000).with(mutants));
+        board.write_again();
+        let began = Instant::now();
+        while tried.lock().expect("lock").len() < 2 {
+            if began.elapsed() > Duration::from_secs(20) {
+                return Err("not written again".into());
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        let attempts = tried.lock().expect("lock").len();
+        if (attempts, failures) != (3, 1) {
+            return Err(format!("{attempts} attempts, {failures} failures"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
 }
