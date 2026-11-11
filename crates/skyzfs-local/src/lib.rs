@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod format;
 pub mod fs;
 pub mod io;
 pub mod sim;

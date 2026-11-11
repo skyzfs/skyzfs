@@ -3805,6 +3805,7 @@ dependencies = [
 name = "skyzfs-local"
 version = "0.0.1"
 dependencies = [
+ "crc32c",
  "libc",
  "proptest",
  "tempfile",

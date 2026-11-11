@@ -1,0 +1,593 @@
+//! The write log's bytes. The layout is described in the
+//! [crate documentation](crate#layout); this module encodes and decodes
+//! it and does no I/O.
+//!
+//! Every integer is little-endian. Every structure carries a version and
+//! reserved bytes, which are written as zero and required to be zero.
+
+use std::fmt;
+
+/// The version of the format this code writes and reads.
+pub const VERSION: u32 = 1;
+
+/// The bytes of one superblock copy, of a segment header and of the
+/// unit a disk keeps or loses.
+pub const SECTOR_LEN: usize = 512;
+
+/// Where the second superblock copy starts in its file. The first starts
+/// at 0. They are far enough apart never to share a sector, whatever the
+/// sector size.
+pub const SUPER_COPY_STRIDE: u64 = 4096;
+
+/// The bytes at the start of every segment that hold its header. Records
+/// start here.
+pub const SEGMENT_HEADER: u64 = 4096;
+
+/// The bytes of a record header.
+pub const RECORD_HEADER: usize = 64;
+
+/// The largest payload a record can carry, whatever the segment size.
+pub const MAX_DATA: u32 = 1 << 20;
+
+const SUPER_MAGIC: &[u8; 8] = b"SKYZLOG\0";
+const SEGMENT_MAGIC: &[u8; 8] = b"SKYZSEG\0";
+const RECORD_MAGIC: &[u8; 4] = b"SKZR";
+
+/// A position in the log: a byte offset in an unbounded space, always on
+/// a record boundary. Segment `k` of a log with segments of `S` bytes
+/// holds positions `k * S .. (k + 1) * S`, and its first record is at
+/// `k * S + SEGMENT_HEADER`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Lsn(pub u64);
+
+impl fmt::Display for Lsn {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "@{}", self.0)
+    }
+}
+
+/// Why bytes are not the structure they should be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bad {
+    /// Every byte is zero: nothing was ever written here, or recovery
+    /// erased it.
+    Blank,
+    /// The magic number is wrong.
+    Magic,
+    /// A version this code does not read.
+    Version,
+    /// The checksum does not match. For a record header this includes a
+    /// header that does not follow the record before it.
+    Checksum,
+    /// A field has a value the format does not allow.
+    Field,
+}
+
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(&bytes[at..at + 4]);
+    u32::from_le_bytes(raw)
+}
+
+fn u64_at(bytes: &[u8], at: usize) -> u64 {
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&bytes[at..at + 8]);
+    u64::from_le_bytes(raw)
+}
+
+fn zero(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0)
+}
+
+/// What a log is for and how it is laid out. Fixed when the log is
+/// created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Identity {
+    /// The volume the log belongs to.
+    pub volume: [u8; 16],
+    /// The volume's size in bytes.
+    pub device_size: u64,
+    /// The volume's block size in bytes.
+    pub block_size: u32,
+    /// What every record's header and payload are padded to: 64 or 4096.
+    pub align: u32,
+    /// The bytes of one segment.
+    pub segment_size: u64,
+}
+
+impl Identity {
+    /// Whether the values can describe a log.
+    pub fn valid(&self) -> bool {
+        (self.align == 64 || self.align == 4096)
+            && self.segment_size.is_multiple_of(SEGMENT_HEADER)
+            && self.segment_size >= SEGMENT_HEADER + 4 * u64::from(self.align).max(512)
+            && self.block_size > 0
+    }
+
+    /// The bytes a record with `data_len` bytes of payload takes.
+    pub fn record_size(&self, data_len: u32) -> u64 {
+        let align = u64::from(self.align);
+        align + u64::from(data_len).div_ceil(align) * align
+    }
+
+    /// The largest payload a record of this log can carry: a segment
+    /// must hold its header, the record, and the header of the marker
+    /// that closes it.
+    pub fn max_data(&self) -> u32 {
+        let align = u64::from(self.align);
+        let room = (self.segment_size - SEGMENT_HEADER).saturating_sub(2 * align);
+        (room / align * align).min(u64::from(MAX_DATA)) as u32
+    }
+
+    /// The first position of the segment that holds `position`.
+    pub fn base_of(&self, position: Lsn) -> u64 {
+        position.0 / self.segment_size * self.segment_size
+    }
+}
+
+/// The superblock: the only structure that is updated in place. Two
+/// copies are written alternately; the valid one with the higher counter
+/// counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Superblock {
+    /// What the log is for.
+    pub identity: Identity,
+    /// Incremented at every write of a copy.
+    pub counter: u64,
+    /// Incremented by every recovery. A record is written with the epoch
+    /// of the instance that wrote it.
+    pub epoch: u64,
+    /// Where the log starts: everything before it is reclaimed.
+    pub floor: Lsn,
+    /// A position that was durable when this copy was written. A
+    /// recovery that finds less has found corruption.
+    pub durable_floor: Lsn,
+}
+
+impl Superblock {
+    /// The bytes of one copy.
+    pub fn encode(&self) -> [u8; SECTOR_LEN] {
+        let mut out = [0u8; SECTOR_LEN];
+        out[0..8].copy_from_slice(SUPER_MAGIC);
+        out[8..12].copy_from_slice(&VERSION.to_le_bytes());
+        out[16..32].copy_from_slice(&self.identity.volume);
+        out[32..40].copy_from_slice(&self.identity.device_size.to_le_bytes());
+        out[40..44].copy_from_slice(&self.identity.block_size.to_le_bytes());
+        out[44..48].copy_from_slice(&self.identity.align.to_le_bytes());
+        out[48..56].copy_from_slice(&self.identity.segment_size.to_le_bytes());
+        out[56..64].copy_from_slice(&self.counter.to_le_bytes());
+        out[64..72].copy_from_slice(&self.epoch.to_le_bytes());
+        out[72..80].copy_from_slice(&self.floor.0.to_le_bytes());
+        out[80..88].copy_from_slice(&self.durable_floor.0.to_le_bytes());
+        let crc = crc32c::crc32c(&out[..SECTOR_LEN - 4]);
+        out[SECTOR_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// Read one copy.
+    pub fn decode(bytes: &[u8; SECTOR_LEN]) -> Result<Self, Bad> {
+        if zero(bytes) {
+            return Err(Bad::Blank);
+        }
+        if &bytes[0..8] != SUPER_MAGIC {
+            return Err(Bad::Magic);
+        }
+        if u32_at(bytes, SECTOR_LEN - 4) != crc32c::crc32c(&bytes[..SECTOR_LEN - 4]) {
+            return Err(Bad::Checksum);
+        }
+        if u32_at(bytes, 8) != VERSION {
+            return Err(Bad::Version);
+        }
+        let mut volume = [0u8; 16];
+        volume.copy_from_slice(&bytes[16..32]);
+        let block = Self {
+            identity: Identity {
+                volume,
+                device_size: u64_at(bytes, 32),
+                block_size: u32_at(bytes, 40),
+                align: u32_at(bytes, 44),
+                segment_size: u64_at(bytes, 48),
+            },
+            counter: u64_at(bytes, 56),
+            epoch: u64_at(bytes, 64),
+            floor: Lsn(u64_at(bytes, 72)),
+            durable_floor: Lsn(u64_at(bytes, 80)),
+        };
+        let reserved = zero(&bytes[12..16]) && zero(&bytes[88..SECTOR_LEN - 4]);
+        if !reserved || !block.identity.valid() || block.floor > block.durable_floor {
+            return Err(Bad::Field);
+        }
+        Ok(block)
+    }
+}
+
+/// The header at the start of a segment's file. It says which part of
+/// the log the file holds now; the file's name says nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentHeader {
+    /// The volume the log belongs to.
+    pub volume: [u8; 16],
+    /// The position of the segment's first byte.
+    pub base: u64,
+    /// The epoch in which the file was given this base.
+    pub epoch: u64,
+}
+
+impl SegmentHeader {
+    /// The header's bytes.
+    pub fn encode(&self) -> [u8; SECTOR_LEN] {
+        let mut out = [0u8; SECTOR_LEN];
+        out[0..8].copy_from_slice(SEGMENT_MAGIC);
+        out[8..12].copy_from_slice(&VERSION.to_le_bytes());
+        out[16..32].copy_from_slice(&self.volume);
+        out[32..40].copy_from_slice(&self.base.to_le_bytes());
+        out[40..48].copy_from_slice(&self.epoch.to_le_bytes());
+        let crc = crc32c::crc32c(&out[..SECTOR_LEN - 4]);
+        out[SECTOR_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// Read a header.
+    pub fn decode(bytes: &[u8; SECTOR_LEN]) -> Result<Self, Bad> {
+        if zero(bytes) {
+            return Err(Bad::Blank);
+        }
+        if &bytes[0..8] != SEGMENT_MAGIC {
+            return Err(Bad::Magic);
+        }
+        if u32_at(bytes, SECTOR_LEN - 4) != crc32c::crc32c(&bytes[..SECTOR_LEN - 4]) {
+            return Err(Bad::Checksum);
+        }
+        if u32_at(bytes, 8) != VERSION {
+            return Err(Bad::Version);
+        }
+        if !zero(&bytes[12..16]) || !zero(&bytes[48..SECTOR_LEN - 4]) {
+            return Err(Bad::Field);
+        }
+        let mut volume = [0u8; 16];
+        volume.copy_from_slice(&bytes[16..32]);
+        Ok(Self {
+            volume,
+            base: u64_at(bytes, 32),
+            epoch: u64_at(bytes, 40),
+        })
+    }
+}
+
+/// What a record is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Data written to the volume. The payload is the data.
+    Write,
+    /// A range of the volume set to zeros. No payload.
+    WriteZeroes,
+    /// A range of the volume discarded. No payload.
+    Discard,
+    /// The rest of the segment is unused; the log continues in the next.
+    /// Written by the log itself and never returned by a replay.
+    Pad,
+}
+
+impl Kind {
+    fn code(self) -> u8 {
+        match self {
+            Kind::Write => 1,
+            Kind::WriteZeroes => 2,
+            Kind::Discard => 3,
+            Kind::Pad => 4,
+        }
+    }
+
+    fn from_code(code: u8) -> Option<Self> {
+        Some(match code {
+            1 => Kind::Write,
+            2 => Kind::WriteZeroes,
+            3 => Kind::Discard,
+            4 => Kind::Pad,
+            _ => return None,
+        })
+    }
+}
+
+/// The header of a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordHeader {
+    /// What the record is.
+    pub kind: Kind,
+    /// The record's own position in the log.
+    pub position: Lsn,
+    /// The epoch of the instance that wrote it.
+    pub epoch: u64,
+    /// The byte offset on the volume it applies to.
+    pub offset: u64,
+    /// The number of bytes of the volume it applies to. For a pad, the
+    /// bytes it skips.
+    pub length: u64,
+    /// The bytes of payload that follow the header.
+    pub data_len: u32,
+    /// The CRC32C of the payload.
+    pub data_crc: u32,
+}
+
+/// The value the first record of a segment is chained to.
+pub fn chain_seed(volume: &[u8; 16], base: u64) -> u32 {
+    crc32c::crc32c_append(crc32c::crc32c(volume), &base.to_le_bytes())
+}
+
+impl RecordHeader {
+    /// The header's bytes, chained to `chain`: the header checksum of the
+    /// record before it, or [`chain_seed`] at the start of a segment.
+    /// Returns the bytes and this header's checksum, which the next
+    /// record is chained to.
+    pub fn encode(&self, chain: u32) -> ([u8; RECORD_HEADER], u32) {
+        let mut out = [0u8; RECORD_HEADER];
+        out[0..4].copy_from_slice(RECORD_MAGIC);
+        out[4] = VERSION as u8;
+        out[5] = self.kind.code();
+        out[8..16].copy_from_slice(&self.position.0.to_le_bytes());
+        out[16..24].copy_from_slice(&self.epoch.to_le_bytes());
+        out[24..32].copy_from_slice(&self.offset.to_le_bytes());
+        out[32..40].copy_from_slice(&self.length.to_le_bytes());
+        out[40..44].copy_from_slice(&self.data_len.to_le_bytes());
+        out[44..48].copy_from_slice(&self.data_crc.to_le_bytes());
+        let crc = crc32c::crc32c_append(chain, &out[..RECORD_HEADER - 4]);
+        out[RECORD_HEADER - 4..].copy_from_slice(&crc.to_le_bytes());
+        (out, crc)
+    }
+
+    /// Read a header that must follow `chain`. Returns it with its
+    /// checksum.
+    pub fn decode(bytes: &[u8; RECORD_HEADER], chain: u32) -> Result<(Self, u32), Bad> {
+        if zero(bytes) {
+            return Err(Bad::Blank);
+        }
+        if &bytes[0..4] != RECORD_MAGIC {
+            return Err(Bad::Magic);
+        }
+        let crc = u32_at(bytes, RECORD_HEADER - 4);
+        if crc != crc32c::crc32c_append(chain, &bytes[..RECORD_HEADER - 4]) {
+            return Err(Bad::Checksum);
+        }
+        if u32::from(bytes[4]) != VERSION {
+            return Err(Bad::Version);
+        }
+        let Some(kind) = Kind::from_code(bytes[5]) else {
+            return Err(Bad::Field);
+        };
+        if !zero(&bytes[6..8]) || !zero(&bytes[48..RECORD_HEADER - 4]) {
+            return Err(Bad::Field);
+        }
+        let header = Self {
+            kind,
+            position: Lsn(u64_at(bytes, 8)),
+            epoch: u64_at(bytes, 16),
+            offset: u64_at(bytes, 24),
+            length: u64_at(bytes, 32),
+            data_len: u32_at(bytes, 40),
+            data_crc: u32_at(bytes, 44),
+        };
+        if kind != Kind::Write && header.data_len != 0 {
+            return Err(Bad::Field);
+        }
+        Ok((header, crc))
+    }
+
+    /// Whether `bytes` look like a record header that says it is at
+    /// `position`, without checking what it is chained to. For reports
+    /// only: nothing is ever replayed on the strength of this.
+    pub fn looks_like(bytes: &[u8; RECORD_HEADER], position: Lsn) -> bool {
+        &bytes[0..4] == RECORD_MAGIC && u64_at(bytes, 8) == position.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn identity() -> Identity {
+        Identity {
+            volume: *b"0123456789abcdef",
+            device_size: 1 << 30,
+            block_size: 4096,
+            align: 64,
+            segment_size: 1 << 16,
+        }
+    }
+
+    /// The checksum is CRC32C (Castagnoli), by its standard check value,
+    /// so the golden bytes below do not rest on one library's word.
+    #[test]
+    fn the_checksum_is_crc32c() {
+        assert_eq!(crc32c::crc32c(b"123456789"), 0xE306_9283);
+    }
+
+    /// Format, version 1: the superblock's bytes are fixed. A change to
+    /// them needs a new version and a test that still reads these.
+    #[test]
+    fn superblock_golden_bytes() {
+        let block = Superblock {
+            identity: identity(),
+            counter: 3,
+            epoch: 5,
+            floor: Lsn(4096),
+            durable_floor: Lsn(8192),
+        };
+        let bytes = block.encode();
+        assert_eq!(&bytes[..12], b"SKYZLOG\0\x01\0\0\0");
+        assert_eq!(&bytes[16..32], b"0123456789abcdef");
+        assert_eq!(bytes[32..40], (1u64 << 30).to_le_bytes());
+        assert_eq!(bytes[40..44], 4096u32.to_le_bytes());
+        assert_eq!(bytes[44..48], 64u32.to_le_bytes());
+        assert_eq!(bytes[48..56], (1u64 << 16).to_le_bytes());
+        assert_eq!(bytes[56..64], 3u64.to_le_bytes());
+        assert_eq!(bytes[64..72], 5u64.to_le_bytes());
+        assert_eq!(bytes[72..80], 4096u64.to_le_bytes());
+        assert_eq!(bytes[80..88], 8192u64.to_le_bytes());
+        assert!(bytes[88..508].iter().all(|b| *b == 0));
+        assert_eq!(bytes[508..], 0x34A4_0BEBu32.to_le_bytes());
+        assert_eq!(Superblock::decode(&bytes), Ok(block));
+    }
+
+    /// Format, version 1: the segment header's bytes are fixed.
+    #[test]
+    fn segment_header_golden_bytes() {
+        let header = SegmentHeader {
+            volume: *b"0123456789abcdef",
+            base: 1 << 16,
+            epoch: 7,
+        };
+        let bytes = header.encode();
+        assert_eq!(&bytes[..12], b"SKYZSEG\0\x01\0\0\0");
+        assert_eq!(&bytes[16..32], b"0123456789abcdef");
+        assert_eq!(bytes[32..40], (1u64 << 16).to_le_bytes());
+        assert_eq!(bytes[40..48], 7u64.to_le_bytes());
+        assert!(bytes[48..508].iter().all(|b| *b == 0));
+        assert_eq!(bytes[508..], 0xC292_2001u32.to_le_bytes());
+        assert_eq!(SegmentHeader::decode(&bytes), Ok(header));
+    }
+
+    /// Format, version 1: the record header's bytes are fixed, and its
+    /// checksum depends on what it is chained to.
+    #[test]
+    fn record_header_golden_bytes() {
+        let header = RecordHeader {
+            kind: Kind::Write,
+            position: Lsn(4096),
+            epoch: 2,
+            offset: 8192,
+            length: 4096,
+            data_len: 4096,
+            data_crc: 0xDEAD_BEEF,
+        };
+        let seed = chain_seed(b"0123456789abcdef", 0);
+        assert_eq!(seed, 0x9896_25E2);
+        let (bytes, crc) = header.encode(seed);
+        assert_eq!(&bytes[..8], b"SKZR\x01\x01\0\0");
+        assert_eq!(bytes[8..16], 4096u64.to_le_bytes());
+        assert_eq!(bytes[16..24], 2u64.to_le_bytes());
+        assert_eq!(bytes[24..32], 8192u64.to_le_bytes());
+        assert_eq!(bytes[32..40], 4096u64.to_le_bytes());
+        assert_eq!(bytes[40..44], 4096u32.to_le_bytes());
+        assert_eq!(bytes[44..48], 0xDEAD_BEEFu32.to_le_bytes());
+        assert!(bytes[48..60].iter().all(|b| *b == 0));
+        assert_eq!(crc, 0xA3AF_0933);
+        assert_eq!(bytes[60..], crc.to_le_bytes());
+        assert_eq!(RecordHeader::decode(&bytes, seed), Ok((header, crc)));
+        // Chained to anything else, it is not this record.
+        assert_eq!(RecordHeader::decode(&bytes, seed ^ 1), Err(Bad::Checksum));
+        assert_ne!(header.encode(seed ^ 1).1, crc);
+        assert!(RecordHeader::looks_like(&bytes, Lsn(4096)));
+        assert!(!RecordHeader::looks_like(&bytes, Lsn(4160)));
+    }
+
+    /// Format: every way a structure can be wrong is told apart, and a
+    /// single flipped bit anywhere is never accepted.
+    #[test]
+    fn damaged_structures_are_refused() {
+        let block = Superblock {
+            identity: identity(),
+            counter: 1,
+            epoch: 1,
+            floor: Lsn(4096),
+            durable_floor: Lsn(4096),
+        };
+        let good = block.encode();
+        assert_eq!(Superblock::decode(&[0; SECTOR_LEN]), Err(Bad::Blank));
+        for bit in 0..SECTOR_LEN * 8 {
+            let mut bytes = good;
+            bytes[bit / 8] ^= 1 << (bit % 8);
+            assert!(Superblock::decode(&bytes).is_err(), "bit {bit}");
+        }
+        let segment = SegmentHeader {
+            volume: [1; 16],
+            base: 0,
+            epoch: 1,
+        }
+        .encode();
+        assert_eq!(SegmentHeader::decode(&[0; SECTOR_LEN]), Err(Bad::Blank));
+        for bit in 0..SECTOR_LEN * 8 {
+            let mut bytes = segment;
+            bytes[bit / 8] ^= 1 << (bit % 8);
+            assert!(SegmentHeader::decode(&bytes).is_err(), "bit {bit}");
+        }
+        let header = RecordHeader {
+            kind: Kind::Discard,
+            position: Lsn(4096),
+            epoch: 1,
+            offset: 0,
+            length: 4096,
+            data_len: 0,
+            data_crc: 0,
+        };
+        let (record, _) = header.encode(9);
+        assert_eq!(
+            RecordHeader::decode(&[0; RECORD_HEADER], 9),
+            Err(Bad::Blank)
+        );
+        for bit in 0..RECORD_HEADER * 8 {
+            let mut bytes = record;
+            bytes[bit / 8] ^= 1 << (bit % 8);
+            assert!(RecordHeader::decode(&bytes, 9).is_err(), "bit {bit}");
+        }
+        // Fields the format does not allow, under a valid checksum.
+        let reencode = |mut bytes: [u8; RECORD_HEADER]| {
+            let crc = crc32c::crc32c_append(9, &bytes[..RECORD_HEADER - 4]);
+            bytes[RECORD_HEADER - 4..].copy_from_slice(&crc.to_le_bytes());
+            RecordHeader::decode(&bytes, 9)
+        };
+        let mut bytes = record;
+        bytes[5] = 9;
+        assert_eq!(reencode(bytes), Err(Bad::Field));
+        let mut bytes = record;
+        bytes[4] = 2;
+        assert_eq!(reencode(bytes), Err(Bad::Version));
+        let mut bytes = record;
+        bytes[50] = 1;
+        assert_eq!(reencode(bytes), Err(Bad::Field));
+        let mut bytes = record;
+        bytes[40] = 1;
+        assert_eq!(reencode(bytes), Err(Bad::Field));
+    }
+
+    /// Layout arithmetic: record sizes at both alignments, the largest
+    /// payload a segment allows, and what an identity must satisfy.
+    #[test]
+    fn sizes_follow_the_alignment() {
+        let small = identity();
+        assert_eq!(small.record_size(0), 64);
+        assert_eq!(small.record_size(1), 128);
+        assert_eq!(small.record_size(4096), 64 + 4096);
+        let direct = Identity {
+            align: 4096,
+            ..small
+        };
+        assert_eq!(direct.record_size(0), 4096);
+        assert_eq!(direct.record_size(4096), 8192);
+        assert_eq!(direct.record_size(4097), 3 * 4096);
+        assert_eq!(small.max_data(), (1 << 16) - 4096 - 128);
+        assert_eq!(direct.max_data(), (1 << 16) - 3 * 4096);
+        let big = Identity {
+            segment_size: 64 << 20,
+            ..small
+        };
+        assert_eq!(big.max_data(), MAX_DATA);
+        assert_eq!(small.base_of(Lsn((1 << 16) + 5000)), 1 << 16);
+        assert!(small.valid() && direct.valid() && big.valid());
+        assert!(!Identity {
+            align: 512,
+            ..small
+        }
+        .valid());
+        assert!(!Identity {
+            segment_size: 5000,
+            ..small
+        }
+        .valid());
+        assert!(!Identity {
+            segment_size: 4096,
+            ..small
+        }
+        .valid());
+        assert_eq!(Lsn(7).to_string(), "@7");
+    }
+}
