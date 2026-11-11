@@ -22,6 +22,9 @@ on:
       hold_s:
         description: "seconds one request is held"
         default: "300"
+      daemon:
+        description: "true: build skyzfsd with its test hooks and run the rig on it. Otherwise the stand-in"
+        default: "false"
   # A workflow that has never run cannot be dispatched from a branch.
   # A push that changes this file runs it once on the testing branch.
   push:
@@ -55,6 +58,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_daemon_check.py -v
+      - run: bash tests/kernel/test_klog.sh
+      - run: bash tests/kernel/test_looks.sh
+      - run: bash tests/kernel/test_ublksrvd_look.sh
 
   rig:
     name: ${{ matrix.image }}
@@ -73,6 +79,7 @@ jobs:
           CHECKS: ${{ inputs.checks || 'a b c d e' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
+          DAEMON: ${{ inputs.daemon || 'false' }}
         run: |
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
@@ -84,16 +91,25 @@ jobs:
           if [[ $CHECKS == *c* ]]; then
             cargo build --release --locked -p skyzfs-blkcheck
           fi
+          case $DAEMON in
+            true)
+              # The workspace's system packages, and libclang for the
+              # binding's library.
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+              cargo build --release --locked -p skyzfsd --features test-hooks ;;
+            false) ;;
+            *) echo "::error::daemon is true or false: '$DAEMON'"; exit 64 ;;
+          esac
           {
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
-            # To run the rig on the daemon: build it before this block,
-            #   sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
-            #   cargo build --release --locked -p skyzfsd --features test-hooks
-            # and add here
-            #   printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
-            #   printf 'export RIG_SERVE_ARGS=%q\n' "--unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem"
+            # On the daemon, with its own defaults: no --unsafe-allow-*
+            # override until a run shows that one is needed.
+            if [ "$DAEMON" = true ]; then
+              printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
+            fi
           } > "$RUNNER_TEMP/rig.env"
           echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
           sudo bash -c '. "$1" && exec tests/kernel/daemon-rig.sh "$2" /mnt/skz-daemon-rig' \

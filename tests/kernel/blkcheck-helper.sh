@@ -29,6 +29,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
+# shellcheck source=tests/kernel/ublksrvd-look.sh
+. "$HERE/ublksrvd-look.sh"
 { [ $# = 2 ] && [[ $2 =~ ^[0-9]+$ ]]; } || { echo "usage: blkcheck-helper.sh create|pid|kill|fail|reopen|destroy N" >&2; exit 2; }
 VERB=$1; N=$2
 WORK=${BLK_WORK:?}
@@ -46,7 +48,8 @@ status_of() { lim 30 "$SKYZFSD" status --dir "$DIR" --run-dir "$RUN" 2>/dev/null
 server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>/dev/null)}"; }
 # [serve options]: serve in the background, wait for "ready", print the device.
 serve() {
-    local dev pid
+    local dev pid t0
+    t0=$(( $(date +%s) - 1 ))
     : > "$DIR.ready"; : > "$DIR.serve.pid"
     # Detached from this script's stdout, which the caller reads to its end.
     # A later call of this script must learn the exit status of serve,
@@ -63,7 +66,11 @@ serve() {
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
         dev=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$DIR.ready" | head -n 1)
-        if [ -n "$dev" ] && [ -b "$dev" ]; then echo "$dev" > "$DIR.device"; echo "$dev"; return 0; fi
+        if [ -n "$dev" ] && [ -b "$dev" ]; then
+            # BLK_UBLKSRVD_SEEN: set by the rig when the server is the daemon.
+            ublksrvd_look "${dev#/dev/ublkb}" "$t0" "${BLK_UBLKSRVD_SEEN:-}"
+            echo "$dev" > "$DIR.device"; echo "$dev"; return 0
+        fi
         kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
@@ -124,6 +131,17 @@ kill)
     [ "$reply" = sorted ] || die "the caller answered '$reply' to the 'dead' line, not 'sorted'"
     echo "kill $N: sorted with the kernel counting ${in_r:-?} reads and ${in_w:-?} writes in flight" >> "$WORK/helper.log"
     DEV=$(serve) || exit 1
+    # What the new server found applied and not acknowledged, by its own
+    # account; "?" from a server that does not say.
+    # The daemon writes its status on an interval: wait until the
+    # status is the new server's (another pid, alive) before reading.
+    for _ in $(seq 1 30); do
+        new=$(status_of pid)
+        { [ -n "$new" ] && [ "$new" != "$pid" ] && kill -0 "$new" 2>/dev/null; } && break
+        sleep 0.1
+    done
+    found=$(status_of recovered_unacknowledged)
+    echo "kill $N take-over found ${found:-?}" >> "$WORK/helper.log"
     ;;
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
