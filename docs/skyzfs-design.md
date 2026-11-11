@@ -184,13 +184,13 @@ ublk is the in-kernel userspace block driver, driven by io_uring passthrough com
   | in any state | an add under its number | unchanged; the add is refused as taken | spike, for a device that was added and for one deleted and held; reading for the rest |
   | dead, never started | its parameters are set, its queue fetches, it is started | live | spike |
   | dead, never started | the process that added it ends | unchanged | spike |
-  | live | its server ends, by a kill or by an orderly stop, which never stops the device | waiting, after a moment in which it still reads live (above). Requests in flight and new ones are held, without error | daemon rig, spike |
+  | live | its server ends, by a kill or by an orderly stop, which never stops the device | waiting, after a moment in which it still reads live (above). Requests in flight and new ones are held, without error | daemon rig and spike for a kill; spike alone for an orderly stop, since the rig's stand-in server stops by being killed |
   | live | another process begins a recovery | unchanged; the recovery is refused as busy | reading |
   | waiting | a server begins a recovery, fetches, and ends the recovery | live. No request is delivered before the end; then the requests that were in flight are issued again, and none fails | daemon rig, spike |
   | waiting | a server begins a recovery and ends before ending it | unchanged; the next server can take over | spike, one run per image |
   | waiting | no server comes | unchanged, with no limit in time: the driver never times a request out for a device added by root | reading |
-  | in any state, with nothing holding the block device open | a delete | not there; the number is free | spike |
-  | in any state, held open | a delete | dead, with no nodes; every request in flight and every later one fails; the number stays taken. When the holder lets go the device is not there | failed-volume observations, spike |
+  | in any state, with nothing holding the block device open | a delete | not there; the number is free | spike; daemon rig for a waiting device |
+  | in any state, held open | a delete | dead, with no nodes; every request in flight and every later one fails; the number stays taken. Nothing under `/dev` or `/sys` names the device any more, so a look through those does not show it and only a lookup of its number does. When the holder lets go the device is not there | failed-volume observations, spike |
   | dead after a delete | anything but its holder letting go | unchanged: it cannot be started, taken over or added over | spike for the add; reading for the rest |
 
   The daemon sends no command that stops a device without deleting it, so that event is not in the table. A dead device that was never started and one that was deleted while held differ in their nodes and in nothing the driver reports; the rules above do not need to tell them apart.
