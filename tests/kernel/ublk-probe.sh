@@ -210,7 +210,7 @@ if [ -n "$SRV" ] && [ -e /dev/ublk-control ]; then
         # Raw data path: 64 MiB written through the device must be what
         # the backing file holds, and must read back through the device.
         "$DD" if=/dev/urandom of="$WORK/pattern" bs=1M count=64 status=none
-        if lim 120 "$DD" if="$WORK/pattern" of="$BDEV" bs=1M oflag=direct conv=fsync status=none 2>"$OUT/raw.log" \
+        if lim 120 "$DD" if="$WORK/pattern" of="$BDEV" bs=1M oflag=direct conv=fsync,nocreat status=none 2>"$OUT/raw.log" \
             && lim 120 "$DD" if="$BDEV" of="$WORK/readback" bs=1M count=64 iflag=direct status=none 2>>"$OUT/raw.log" \
             && cmp -s "$WORK/pattern" "$WORK/readback" \
             && cmp -s -n $((64 << 20)) "$WORK/pattern" "$IMG"; then
