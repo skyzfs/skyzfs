@@ -2212,7 +2212,50 @@ fn what_the_suite_notices_of_each_defect() {
     }
 }
 
-<<<<<<< HEAD
+/// The lock is a step of its own: it is taken without a recovery, an
+/// open takes it over, and an open that fails hands it back still held.
+#[test]
+fn the_lock_is_taken_apart_from_the_open_and_comes_back_held_when_the_open_fails() {
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 1, 7).unwrap();
+    let end = store.position();
+    drop(store);
+    disk.kill();
+    let files = disk.list().unwrap();
+
+    // Taking the lock reads and writes nothing, and keeps others out.
+    let lock = Store::lock_volume(&disk).unwrap();
+    assert_eq!(disk.list().unwrap(), files);
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+    assert!(matches!(
+        Store::open(disk.clone(), env.options()),
+        Err(StoreError::Locked)
+    ));
+
+    // An open that fails (the log does not reach the position) gives
+    // the lock back, and it is still held.
+    let options = OpenOptions {
+        must_reach: Some(end),
+        ..env.options()
+    };
+    let lock = match Store::open_locked(disk.clone(), lock, options) {
+        Err((StoreError::Log(LogError::Short { .. }), lock)) => lock,
+        other => panic!("{:?}", other.map(|_| ()).map_err(|(e, _)| e)),
+    };
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+
+    // An open that succeeds takes it over for as long as the store
+    // lives.
+    let (store, _) = match Store::open_locked(disk.clone(), lock, env.options()) {
+        Ok(opened) => opened,
+        Err((e, _)) => panic!("{e}"),
+    };
+    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
+    drop(store);
+    drop(Store::lock_volume(&disk).unwrap());
+}
+
 /// The hook for test rigs: a served store whose owner fails it on
 /// demand answers what it completed before as completed, fails every
 /// later request, tells its owner, and is found marked as failed by
@@ -2276,48 +2319,4 @@ fn a_served_store_failed_on_demand_fails_every_later_request_and_is_found_marked
         Err(StoreError::Log(LogError::MarkedFailed)) => {}
         other => panic!("the next open: {:?}", other.map(|_| ())),
     }
-=======
-/// The lock is a step of its own: it is taken without a recovery, an
-/// open takes it over, and an open that fails hands it back still held.
-#[test]
-fn the_lock_is_taken_apart_from_the_open_and_comes_back_held_when_the_open_fails() {
-    let env = environments(0)[0];
-    let (disk, mut store) = env.fresh().unwrap();
-    write(&mut store, 0, 1, 7).unwrap();
-    let end = store.position();
-    drop(store);
-    disk.kill();
-    let files = disk.list().unwrap();
-
-    // Taking the lock reads and writes nothing, and keeps others out.
-    let lock = Store::lock_volume(&disk).unwrap();
-    assert_eq!(disk.list().unwrap(), files);
-    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
-    assert!(matches!(
-        Store::open(disk.clone(), env.options()),
-        Err(StoreError::Locked)
-    ));
-
-    // An open that fails (the log does not reach the position) gives
-    // the lock back, and it is still held.
-    let options = OpenOptions {
-        must_reach: Some(end),
-        ..env.options()
-    };
-    let lock = match Store::open_locked(disk.clone(), lock, options) {
-        Err((StoreError::Log(LogError::Short { .. }), lock)) => lock,
-        other => panic!("{:?}", other.map(|_| ()).map_err(|(e, _)| e)),
-    };
-    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
-
-    // An open that succeeds takes it over for as long as the store
-    // lives.
-    let (store, _) = match Store::open_locked(disk.clone(), lock, env.options()) {
-        Ok(opened) => opened,
-        Err((e, _)) => panic!("{e}"),
-    };
-    assert!(matches!(Store::lock_volume(&disk), Err(StoreError::Locked)));
-    drop(store);
-    drop(Store::lock_volume(&disk).unwrap());
->>>>>>> skyzfs-coding
 }
