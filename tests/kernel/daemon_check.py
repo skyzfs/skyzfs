@@ -211,9 +211,12 @@ EXPECTED = {
 OBSERVED = {
     'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
-                                              'by second for 300 s; whether the pool goes on acknowledging synced '
-                                              'writes; whether a reader and a second writer started at 120 s and a '
-                                              'scrub started at 240 s fail or hang'),
+                                              'by second for 300 s; what waited at the device; the transaction '
+                                              'groups; whether the pool goes on acknowledging synced writes; whether '
+                                              'a second writer (120 s), a read of an uncached file (180 s) and a '
+                                              'scrub (240 s) fail or hang; what an operator would see'),
+    'obs_b_refused_start_no_log_device': ('b', 'the same course on a pool without a separate log device: does a synced '
+                                               'write then hang, fail, or still return?'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
@@ -247,7 +250,7 @@ REFERENCE_ONLY = set()
 # Observations only the daemon can make: on the stand-in the rig writes
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
-DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes'}
+DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device'}
 
 
 CHECKS = ('a', 'b', 'c', 'd', 'e')
