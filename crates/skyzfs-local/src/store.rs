@@ -1930,9 +1930,10 @@ where
                 // Whether the request at the head was tried and cannot
                 // proceed until something changes.
                 let mut held = false;
-                // Whether the rule of the marks took a step and is to
-                // be asked again, request or no request.
-                let mut busy = false;
+                // Whether the rule of the marks is to be asked, request
+                // or no request: at the start, for a long log that the
+                // open found, and after every step it took.
+                let mut busy = true;
                 loop {
                     shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing

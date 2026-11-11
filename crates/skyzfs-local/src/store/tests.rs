@@ -2977,3 +2977,34 @@ fn a_kill_inside_a_step_of_the_worker_loses_nothing() {
         check(&mut store, "after the steps that followed");
     }
 }
+
+/// A long log that a start found is worked off once the store is
+/// served, with no request at all: the worker asks the rule before it
+/// waits for its first command.
+#[test]
+fn a_long_log_found_at_the_start_is_worked_off_without_a_request() {
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    drop(store);
+    disk.kill();
+    let mut store = env.reopen_ack(&disk).unwrap();
+    assert!(store.log_state().live() > MARKS.high);
+    store.set_marks(Some(MARKS));
+    let served = store.serve().unwrap();
+    let began = std::time::Instant::now();
+    loop {
+        let state = served.log_state();
+        if state.live() < MARKS.low && !state.stepping {
+            assert!(state.steps > 0);
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "with no request the log stayed at {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
