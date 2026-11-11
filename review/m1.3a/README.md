@@ -22,8 +22,8 @@ Held against `docs/skyzfs-design.md` §4.2 at zfs-topology 2551937.
     devices, strangers' devices (twins and others, with and without
     another volume's note), a lost run directory.
 - `probes.out`: their output.
-- `planted-defects.py`, `planted-defects.out`: 59 defects where a rule has
-  no crate-private switch. 51 are noticed by a test. Not noticed: a failed
+- `planted-defects.py`, `planted-defects.out`: 58 defects where a rule has
+  no crate-private switch. 50 are noticed by a test. Not noticed: a failed
   volume deleting by a record of another boot; this volume's noted device
   that is deleted and still held being taken over; the three syncs of the
   attachment record (no test with real files can show them); a completion
