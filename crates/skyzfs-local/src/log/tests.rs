@@ -14,6 +14,7 @@
 //! both and shows that each alone is enough.
 
 use super::*;
+use crate::format::Key;
 use crate::io::SECTOR;
 use crate::sim::{BySector, Cut, Fate, LoseAll, SeededCut, SimDisk};
 
@@ -64,11 +65,25 @@ impl Env {
         }
     }
 
+    /// The key of the logs these tests make. With the defect of a key
+    /// that everybody knows, that key.
+    fn key(&self) -> Key {
+        if self.mutants.has(Mutants::PUBLIC_KEY) {
+            Key::PUBLIC
+        } else {
+            Key(*b"a key for tests!")
+        }
+    }
+
     /// A new log on a new disk, opened with the environment's defects.
     fn fresh(&self) -> Result<(SimDisk, SimLog), String> {
         let disk = SimDisk::new(self.seed);
-        drop(s(Log::create(disk.clone(), self.identity()))?);
-        let (log, _) = self.reopen(&disk)?;
+        let log = s(Log::create_keyed(
+            disk.clone(),
+            self.identity(),
+            self.key(),
+            self.options(),
+        ))?;
         Ok((disk, log))
     }
 
@@ -276,15 +291,18 @@ fn garbage(env: &Env) -> bool {
 fn records_round_trip() {
     fn scenario(env: &Env) -> Outcome {
         let (_disk, mut log) = env.fresh()?;
-        let start = log.tail();
-        if start != log.floor() || start != log.durable() {
+        if log.tail() != log.durable() || !tags(&log)?.is_empty() {
             return Err("a new log is not empty".into());
         }
         let a = s(log.append(Kind::Write, 8192, 3, b"abc"))?;
+        let start = a.start;
+        if start < log.floor() || start.0 % BLOCK != 0 {
+            return Err("the first record is not on a unit boundary".into());
+        }
         let b = s(log.append(Kind::WriteZeroes, 4096, 1 << 20, &[]))?;
         let c = s(log.append(Kind::Discard, 0, 8192, &[]))?;
         let d = put(&mut log, env, 7)?;
-        if a.start != start || a.end != b.start || b.end != c.start || c.end != d.start {
+        if a.end != b.start || b.end != c.start || c.end != d.start {
             return Err("positions are not contiguous".into());
         }
         if d.end != log.tail() {
@@ -432,7 +450,7 @@ fn a_kill_keeps_every_appended_record() {
             return Err(format!("recovery after a kill: {recovery:?}"));
         }
         expect(&log, &want, "after a kill")?;
-        if log.durable() != tail {
+        if log.durable() != log.tail() || log.tail() < tail {
             return Err("recovery did not make the prefix durable".into());
         }
         put(&mut log, env, 99)?;
@@ -767,6 +785,13 @@ fn the_position_and_the_chain_each_refuse_a_record_of_an_earlier_life() {
         }
         let mut want = vec![f1_tag];
         want.extend(second.iter().map(|(t, _)| *t));
+        // The file's earlier life began with a recovery's mark, so its
+        // records sit one header later than the new ones. One small
+        // record brings the new life into step with the old.
+        if env.align == 4096 {
+            put_small(&mut log, 250)?;
+            want.push(250);
+        }
         drop(log);
         let (log, _) = env.reopen(&disk)?;
         expect(&log, &want, "after reusing a file")
@@ -800,6 +825,175 @@ fn the_log_does_not_continue_past_a_missing_segment() {
         }
         let want: Vec<u8> = first[..first.len() - 1].iter().map(|(t, _)| *t).collect();
         expect(&log, &want, "with the middle segment missing")
+    }
+    holds(scenario);
+}
+
+/// A payload is never taken for a record. A record appended directly
+/// behind another can span the next unit boundary, and a walk looks at
+/// that boundary before it looks directly behind a record. So the bytes
+/// there are a client's, and the client may have made them a record
+/// header: here a discard of some other part of the volume, correct in
+/// every field, chained to the record before, with a valid tag under a
+/// key that is not the log's. The walk must not take it; it must find
+/// the real record. Mutant: a log whose headers are tagged with a key
+/// everybody knows, which is what a plain chained checksum was.
+#[test]
+fn a_payload_that_looks_like_a_record_is_not_taken_for_one() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let before = put_small(&mut log, 1)?;
+        let boundary = Lsn(before.end.0.div_ceil(BLOCK) * BLOCK);
+        if boundary == before.end {
+            // Records of this alignment start on boundaries only: no
+            // payload lies where a walk looks for a header.
+            return Ok(());
+        }
+        let payload_start = before.end.0 + u64::from(env.align);
+        let at = (boundary.0 - payload_start) as usize;
+        let mut payload = vec![7u8; at + 64 + 200];
+        payload[at..at + 64].copy_from_slice(&log.lookalike_header(boundary, 77 * 4096));
+        let victim = s(log.append(Kind::Write, 7 * 4096, 4096, &payload))?;
+        if victim.start != before.end {
+            return Err("the record is not directly behind the one before".into());
+        }
+        put_small(&mut log, 3)?;
+        drop(log);
+        let (log, _) = env.reopen(&disk)?;
+        let mut seen = Vec::new();
+        s(log.replay(log.floor(), log.tail(), &mut |r| {
+            seen.push((r.kind, r.offset, r.data.to_vec()));
+        }))?;
+        let want = vec![
+            (Kind::Discard, 4096, vec![]),
+            (Kind::Write, 7 * 4096, payload),
+            (Kind::Discard, 3 * 4096, vec![]),
+        ];
+        if seen != want {
+            let shape: Vec<_> = seen.iter().map(|(k, o, d)| (*k, *o, d.len())).collect();
+            return Err(format!("the log holds {shape:?}"));
+        }
+        Ok(())
+    }
+    fn small_records(env: &Env) -> bool {
+        env.align == 64
+    }
+    caught(scenario, Mutants::PUBLIC_KEY, small_records);
+}
+
+/// Recovery always seals, and never needs a free segment file to do it.
+/// Forty recoveries in a row on a log whose last segment is nearly
+/// full: each finds the same records, none adds a segment file, and
+/// when the segment has no room left for a mark the seal is the marker
+/// that closes it, after which a recovery writes no seal at all. The
+/// log then goes on in the next segment.
+#[test]
+fn repeated_recoveries_on_a_full_log_find_the_same_prefix() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut tag = 1;
+        let mut want: Vec<u8> = Vec::new();
+        for _ in 0..2 {
+            let filled = fill_to_roll(&mut log, env, &mut tag)?;
+            want.extend(filled.iter().map(|(t, _)| *t));
+        }
+        // Fill the last segment as far as records of this size go.
+        let base = log.tail().0 / SEG;
+        loop {
+            s(log.sync())?;
+            let record = put(&mut log, env, tag)?;
+            if record.start.0 / SEG != base {
+                break;
+            }
+            want.push(tag);
+            tag += 1;
+        }
+        // That last record rolled into one more segment: lose it, so
+        // that the log ends in the full one.
+        drop(log);
+        disk.power_cut(LoseAll);
+        let (log, _) = env.reopen(&disk)?;
+        let held = tags(&log)?;
+        if held != want {
+            return Err(format!("after the power cut the log holds {held:?}"));
+        }
+        let files = log.segment_files();
+        drop(log);
+        let mut sealed_tails = Vec::new();
+        for round in 0..40 {
+            let (log, recovery) = env.reopen(&disk)?;
+            if tags(&log)? != held {
+                return Err(format!("round {round}: the log holds {:?}", tags(&log)?));
+            }
+            if log.segment_files() != files {
+                return Err(format!("round {round}: recovery added a segment file"));
+            }
+            if log.tail().0 / SEG > recovery.end.0 / SEG {
+                return Err(format!("round {round}: recovery left the segment"));
+            }
+            sealed_tails.push(log.tail());
+        }
+        // The seals stopped once the segment was closed.
+        if sealed_tails[38] != sealed_tails[39] {
+            return Err("recoveries went on writing seals in a closed segment".into());
+        }
+        let (mut log, _) = env.reopen(&disk)?;
+        let next = put(&mut log, env, 240)?;
+        if next.start.0 / SEG <= sealed_tails[39].0 / SEG {
+            return Err("the log did not go on in the next segment".into());
+        }
+        s(log.sync())?;
+        drop(log);
+        disk.power_cut(LoseAll);
+        let (log, _) = env.reopen(&disk)?;
+        let mut want = held;
+        want.push(240);
+        expect(&log, &want, "after going on")
+    }
+    holds(scenario);
+}
+
+/// A segment's header is written once for each use of its file: when
+/// the file is given a part of the log, and never while it holds
+/// records the log still needs. So nothing the log does later (appends,
+/// syncs, a reclaim that stays within the segment, recoveries) puts a
+/// header at risk: a power cut that turns every unsynced sector of
+/// every header unit into garbage loses nothing.
+#[test]
+fn the_header_of_a_segment_in_use_is_never_written_again() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut tag = 1;
+        let first = fill_to_roll(&mut log, env, &mut tag)?;
+        s(log.sync())?;
+        let mut want: Vec<u8> = first.iter().map(|(t, _)| *t).collect();
+        // Everything the log does to segments that are in use.
+        for _ in 0..3 {
+            put(&mut log, env, tag)?;
+            want.push(tag);
+            tag += 1;
+            s(log.sync())?;
+        }
+        let (_, second) = first[1];
+        s(log.reclaim(second.start))?;
+        want.remove(0);
+        put(&mut log, env, tag)?;
+        want.push(tag);
+        s(log.sync())?;
+        drop(log);
+        let (mut log, _) = env.reopen(&disk)?;
+        put(&mut log, env, 200)?;
+        drop(log);
+        disk.power_cut(BySector(|_: Option<&str>, index| {
+            if index < BLOCK / SECTOR {
+                Fate::Garbage
+            } else {
+                Fate::Latest
+            }
+        }));
+        let (log, _) = env.reopen(&disk)?;
+        want.push(200);
+        expect(&log, &want, "after garbage in every header unit")
     }
     holds(scenario);
 }
@@ -1632,12 +1826,12 @@ fn current_copy(disk: &SimDisk) -> u64 {
     u64::from(counter(1) > counter(0))
 }
 
-/// A lost superblock copy. Losing the older copy changes nothing. Losing
-/// the current one is harmless while the log holds nothing newer than
-/// the older copy. Once records of the current epoch exist, the older
-/// copy cannot say where the log starts or what was durable: opening
-/// with it is an error, not a log that ends where the newer epoch
-/// begins. With both copies lost there is no log.
+/// A lost superblock copy. Losing the older copy changes nothing.
+/// Losing the current one is an error: every recovery writes its seal
+/// in the epoch it starts, so the log always holds something newer than
+/// the older copy, and that copy cannot say where the log starts or
+/// what was durable. Opening with it must not give a log that ends
+/// where the newer epoch begins. With both copies lost there is no log.
 #[test]
 fn a_lost_superblock_copy_is_noticed() {
     fn scenario(env: &Env) -> Outcome {
@@ -1651,15 +1845,9 @@ fn a_lost_superblock_copy_is_noticed() {
         disk.kill();
         // The older copy.
         flip(&disk, 1 - current_copy(&disk))?;
-        let (log, _) = env.reopen(&disk)?;
-        expect(&log, &[1], "with the older copy lost")?;
-        drop(log);
-        disk.kill();
-        // The current copy, with nothing written in its epoch.
-        flip(&disk, current_copy(&disk))?;
         let (mut log, _) = env.reopen(&disk)?;
-        expect(&log, &[1], "with the current copy lost and nothing new")?;
-        // The current copy, with a record of its epoch in the log.
+        expect(&log, &[1], "with the older copy lost")?;
+        // The current copy. (That open wrote the damaged one afresh.)
         put(&mut log, env, 2)?;
         drop(log);
         disk.kill();

@@ -20,6 +20,7 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestRng, TestRunner};
 
 use super::*;
+use crate::format::Key;
 use crate::sim::{LoseAll, SeededCut, SimDisk};
 
 /// A log's geometry, and what the disk under it rewrites as a whole.
@@ -64,6 +65,9 @@ const PAGED_TOO_SMALL: Shape = Shape {
 enum Op {
     /// Append a record: a kind, a payload length, a byte to fill it with.
     Append(u8, usize, u8),
+    /// Append a write whose payload holds, where a walk looks for the
+    /// next record, what would be that record but for the key.
+    Lookalike(u8),
     Sync,
     /// Reclaim up to the record this number selects.
     Reclaim(usize),
@@ -93,6 +97,7 @@ fn op() -> impl Strategy<Value = Op> {
     ];
     prop_oneof![
         12 => (0..3u8, len, 1..=255u8).prop_map(|(k, l, f)| Op::Append(k, l, f)),
+        2 => (1..=255u8).prop_map(Op::Lookalike),
         4 => Just(Op::Sync),
         2 => any::<usize>().prop_map(Op::Reclaim),
         1 => proptest::option::of(any::<usize>()).prop_map(Op::Hold),
@@ -277,6 +282,34 @@ impl Run {
         Ok(())
     }
 
+    fn append(
+        &mut self,
+        kind: Kind,
+        offset: u64,
+        length: u64,
+        data: Vec<u8>,
+    ) -> Result<(), String> {
+        let failed = self.model.failed;
+        match self.log()?.append(kind, offset, length, &data) {
+            Ok(at) if !failed => self.model.records.push(Rec {
+                start: at.start,
+                end: at.end,
+                kind,
+                offset,
+                length,
+                data,
+            }),
+            Ok(_) => return Err("an append succeeded on a failed log".into()),
+            Err(LogError::Failed) if failed => {}
+            Err(LogError::Io { .. }) if !failed => {
+                self.model.failed = true;
+                self.model.extra = Some((kind, offset, length, data));
+            }
+            Err(other) => return Err(format!("append: {other}")),
+        }
+        Ok(())
+    }
+
     fn step(&mut self, op: &Op) -> Result<(), String> {
         match *op {
             Op::Append(kind, len, fill) => {
@@ -286,25 +319,23 @@ impl Run {
                 } else {
                     Vec::new()
                 };
-                let (offset, length) = (u64::from(fill) * 4096, len as u64);
-                let failed = self.model.failed;
-                match self.log()?.append(kind, offset, length, &data) {
-                    Ok(at) if !failed => self.model.records.push(Rec {
-                        start: at.start,
-                        end: at.end,
-                        kind,
-                        offset,
-                        length,
-                        data,
-                    }),
-                    Ok(_) => return Err("an append succeeded on a failed log".into()),
-                    Err(LogError::Failed) if failed => {}
-                    Err(LogError::Io { .. }) if !failed => {
-                        self.model.failed = true;
-                        self.model.extra = Some((kind, offset, length, data));
-                    }
-                    Err(other) => return Err(format!("append: {other}")),
+                self.append(kind, u64::from(fill) * 4096, len as u64, data)?;
+            }
+            Op::Lookalike(fill) => {
+                let log = self.log()?;
+                let identity = *log.identity();
+                let start = log.next_start();
+                let boundary = identity.unit_up(start.0);
+                let payload_start = start.0 + u64::from(identity.align);
+                let mut data = vec![fill; 300];
+                if boundary >= payload_start && !log.is_failed() {
+                    let at = (boundary - payload_start) as usize;
+                    data = vec![fill; at + RECORD_HEADER + usize::from(fill)];
+                    let lookalike = log.lookalike_header(Lsn(boundary), 0);
+                    data[at..at + RECORD_HEADER].copy_from_slice(&lookalike);
                 }
+                let length = data.len() as u64;
+                self.append(Kind::Write, u64::from(fill) * 4096, length, data)?;
             }
             Op::Sync => {
                 let failed = self.model.failed;
@@ -411,7 +442,11 @@ fn run(shape: Shape, mutants: Mutants, seed: u64, program: &[Op]) -> Result<(), 
         segment_size: shape.segment_size,
         write_unit: shape.write_unit,
     };
-    drop(Log::create(disk.clone(), identity).map_err(|e| e.to_string())?);
+    let key = Key(*b"property testing");
+    drop(
+        Log::create_keyed(disk.clone(), identity, key, Options::default())
+            .map_err(|e| e.to_string())?,
+    );
     let mut run = Run {
         disk,
         log: None,
@@ -514,6 +549,7 @@ fn random_programs_notice_broken_logs() {
             "a durable block written again",
             Mutants::REWRITE_DURABLE_BLOCK,
         ),
+        ("a header tag anyone can make", Mutants::PUBLIC_KEY),
     ];
     let missed: Vec<&str> = broken
         .iter()

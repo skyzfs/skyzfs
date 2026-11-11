@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use crate::format::{
-    chain_seed, Bad, Identity, Kind, Lsn, RecordHeader, SegmentHeader, Superblock, RECORD_HEADER,
-    SECTOR_LEN, SUPER_COPY_STRIDE,
+    chain_seed, Bad, Identity, Key, Kind, Lsn, RecordHeader, SegmentHeader, Superblock,
+    RECORD_HEADER, SECTOR_LEN, SUPER_COPY_STRIDE,
 };
 use crate::io::{Dir, File};
 
@@ -94,6 +94,9 @@ impl Mutants {
     /// A record appended after a sync or a recovery goes into the block
     /// that holds durable records, and so rewrites it.
     pub(crate) const REWRITE_DURABLE_BLOCK: u32 = 1 << 21;
+    /// Headers are tagged with a key that everybody knows: a payload can
+    /// be made to look like a record.
+    pub(crate) const PUBLIC_KEY: u32 = 1 << 22;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -366,7 +369,7 @@ struct Cursor {
     /// next unit boundary.
     position: Lsn,
     /// What its header must be chained to.
-    chain: u32,
+    chain: u64,
     /// The lowest epoch it may have.
     min_epoch: u64,
 }
@@ -375,17 +378,18 @@ struct Cursor {
 #[derive(Debug, Clone, Copy)]
 struct Rules {
     identity: Identity,
+    key: Key,
     /// The highest epoch a record may have.
     max_epoch: u64,
     mutants: Mutants,
 }
 
 impl Rules {
-    fn seed(&self, base: u64) -> u32 {
+    fn seed(&self, base: u64) -> u64 {
         if self.mutants.has(Mutants::NO_CHAIN) {
             0
         } else {
-            chain_seed(&self.identity.volume, base)
+            chain_seed(&self.key, &self.identity.volume, base)
         }
     }
 
@@ -402,24 +406,17 @@ impl Rules {
         reader: &mut Reader,
         window: &mut Window,
         cursor: &Cursor,
-    ) -> io::Result<Result<Found, Break>> {
+    ) -> io::Result<Result<Found, Stop>> {
         let here = cursor.position;
         let boundary = Lsn(self.identity.unit_up(here.0));
-        let mut blank = true;
         if boundary != here {
             match self.record_at(file, reader, window, cursor, boundary)? {
                 Ok(found) => return Ok(Ok(found)),
-                Err(stop @ Stop::FutureEpoch(_)) => return Ok(Err(Break { stop, blank: false })),
-                Err(stop) => blank &= stop == Stop::Header(Bad::Blank),
+                Err(stop @ Stop::FutureEpoch(_)) => return Ok(Err(stop)),
+                Err(_) => {}
             }
         }
-        Ok(match self.record_at(file, reader, window, cursor, here)? {
-            Ok(found) => Ok(found),
-            Err(stop) => Err(Break {
-                stop,
-                blank: blank && stop == Stop::Header(Bad::Blank),
-            }),
-        })
+        self.record_at(file, reader, window, cursor, here)
     }
 
     /// Read and validate a record at `start`, following the cursor.
@@ -445,7 +442,7 @@ impl Rules {
         } else {
             cursor.chain
         };
-        let (header, crc) = match RecordHeader::decode(&raw, chain) {
+        let (header, crc) = match RecordHeader::decode(&raw, &self.key, chain) {
             Ok(decoded) => decoded,
             Err(bad) => return Ok(Err(Stop::Header(bad))),
         };
@@ -487,21 +484,12 @@ impl Rules {
 #[derive(Debug, Clone, Copy)]
 struct Found {
     header: RecordHeader,
-    /// The header's checksum: what the next record is chained to.
-    crc: u32,
+    /// The header's tag: what the next record is chained to.
+    crc: u64,
     start: Lsn,
     end: Lsn,
     /// Only with the defect that skips damaged records: this is one.
     damaged: bool,
-}
-
-/// Why a walk found no record.
-#[derive(Debug, Clone, Copy)]
-struct Break {
-    /// What is wrong at the cursor.
-    stop: Stop,
-    /// Nothing was ever written where the record could be.
-    blank: bool,
 }
 
 /// Record the failure where a later open will find it. Returns whether
@@ -539,13 +527,15 @@ pub struct Log<D: Dir> {
     superblock: D::File,
     /// The superblock as last written, and the copy that holds it.
     current: Superblock,
+    /// The key headers are tagged with: the superblock's.
+    key: Key,
     copy: u64,
     slots: Vec<Slot<D::File>>,
     /// The segments of the log, by first position.
     live: BTreeMap<u64, usize>,
     /// The end of the last record.
     tail: Lsn,
-    chain: u32,
+    chain: u64,
     durable: Lsn,
     /// The write unit the tail is in holds records that are durable, or
     /// that a sync has been issued for: the next record starts at the
@@ -565,8 +555,20 @@ pub struct Log<D: Dir> {
 }
 
 impl<D: Dir> Log<D> {
-    /// Make a new, empty log in `dir` and open it.
+    /// Make a new, empty log in `dir`, with a new random key, and open
+    /// it.
     pub fn create(dir: D, identity: Identity) -> Result<Self, LogError> {
+        Self::create_keyed(dir, identity, Key::random(), Options::default())
+    }
+
+    /// Make a new log with a given key, and open it with `options`. The
+    /// tests use it to be reproducible to the bit.
+    pub(crate) fn create_keyed(
+        dir: D,
+        identity: Identity,
+        key: Key,
+        options: Options,
+    ) -> Result<Self, LogError> {
         if !identity.valid() {
             return Err(LogError::InvalidConfig);
         }
@@ -592,7 +594,7 @@ impl<D: Dir> Log<D> {
             epoch: 1,
         };
         segment
-            .write_at(0, &header.encode())
+            .write_at(0, &header.encode(&key))
             .map_err(io("creating a segment"))?;
         segment.sync().map_err(io("creating a segment"))?;
         let mut superblock = dir
@@ -603,6 +605,7 @@ impl<D: Dir> Log<D> {
             .map_err(io("creating the superblock"))?;
         let first = Superblock {
             identity,
+            key,
             counter: 1,
             epoch: 1,
             floor: Lsn(identity.unit()),
@@ -619,7 +622,7 @@ impl<D: Dir> Log<D> {
             .map_err(io("creating the log"))?;
         dir.sync().map_err(io("creating the log"))?;
         drop((segment, superblock));
-        Self::open(dir, Options::default()).map(|(log, _)| log)
+        Self::open(dir, options).map(|(log, _)| log)
     }
 
     /// Open the log in `dir` and recover it: find the longest valid
@@ -697,6 +700,11 @@ impl<D: Dir> Log<D> {
         };
         let identity = current.identity;
         let size = identity.segment_size;
+        let key = if mutants.has(Mutants::PUBLIC_KEY) {
+            Key::PUBLIC
+        } else {
+            current.key
+        };
 
         // The segments: what each file says it holds. Of two that claim
         // the same part of the log, the one written in the later epoch.
@@ -714,7 +722,7 @@ impl<D: Dir> Log<D> {
                 reader
                     .read(&file, 0, &mut raw)
                     .map_err(|e| read_error("reading a segment", &e))?;
-                if let Ok(header) = SegmentHeader::decode(&raw) {
+                if let Ok(header) = SegmentHeader::decode(&raw, &key) {
                     let valid =
                         header.volume == identity.volume && header.base.is_multiple_of(size);
                     if valid && header.epoch > current.epoch {
@@ -747,6 +755,7 @@ impl<D: Dir> Log<D> {
         // in.
         let rules = Rules {
             identity,
+            key,
             max_epoch: current.epoch,
             mutants,
         };
@@ -788,10 +797,7 @@ impl<D: Dir> Log<D> {
                     || mutants.has(Mutants::NO_SEGMENT_EPOCH_CHECK)
             });
             let Some((epoch, next_index)) = claim else {
-                break Break {
-                    stop: Stop::NoNextSegment,
-                    blank: false,
-                };
+                break Stop::NoNextSegment;
             };
             base = next;
             index = next_index;
@@ -807,10 +813,6 @@ impl<D: Dir> Log<D> {
                 cursor.min_epoch = 0;
             }
         };
-        let Break {
-            stop: stopped,
-            blank,
-        } = stopped;
         let end = cursor.position;
         if let Stop::FutureEpoch(found) = stopped {
             return Err(Corruption::SuperblockBehind {
@@ -835,6 +837,7 @@ impl<D: Dir> Log<D> {
             dir,
             superblock,
             current,
+            key,
             copy,
             slots,
             live,
@@ -867,11 +870,15 @@ impl<D: Dir> Log<D> {
             })?;
         }
         // 2. Seal the end of the prefix: write a record of the new epoch
-        //    where the next record would be looked for first, so that
-        //    nothing that is there now, or behind it, can follow the
-        //    prefix again. Not needed where nothing was ever written, or
-        //    where the prefix ends with a closed segment.
-        if !mutants.has(Mutants::NO_TAIL_ERASE) && !blank && !log.closed {
+        //    where the next record is looked for first, so that nothing
+        //    that is there now, or behind it, can follow the prefix
+        //    again. Always: that the place reads as never written proves
+        //    nothing, since a lost sector can read as it did before. The
+        //    one exception is by structure: the prefix ends with the
+        //    marker that closes a segment, and (after step 3) no file
+        //    holds the next one, so there is no place where anything
+        //    could follow.
+        if !mutants.has(Mutants::NO_TAIL_ERASE) && !log.closed {
             log.seal()?;
         }
         // 3. Erase the header of every file that claims a part of the
@@ -979,7 +986,7 @@ impl<D: Dir> Log<D> {
     }
 
     /// What the next record's header is chained to.
-    fn chain(&self) -> u32 {
+    fn chain(&self) -> u64 {
         if self.mutants.has(Mutants::NO_CHAIN) {
             0
         } else {
@@ -1036,7 +1043,7 @@ impl<D: Dir> Log<D> {
         &mut self,
         kind: Kind,
         during: &'static str,
-    ) -> Result<(usize, Lsn, u32), LogError> {
+    ) -> Result<(usize, Lsn, u64), LogError> {
         let identity = self.current.identity;
         let size = identity.segment_size;
         let base = identity.base_of(self.tail);
@@ -1057,7 +1064,7 @@ impl<D: Dir> Log<D> {
             data_len: 0,
             data_crc: 0,
         };
-        let (bytes, crc) = header.encode(self.chain());
+        let (bytes, crc) = header.encode(&self.key, self.chain());
         if let Err(e) = self.slots[index].file.write_at(start.0 % size, &bytes) {
             return Err(self.fail(during, &e));
         }
@@ -1132,7 +1139,7 @@ impl<D: Dir> Log<D> {
         } else {
             slot.file.preallocate(size)
         }
-        .and_then(|()| slot.file.write_at(0, &header.encode()));
+        .and_then(|()| slot.file.write_at(0, &header.encode(&self.key)));
         if let Err(e) = prepared {
             return Err(self.fail("starting a segment", &e));
         }
@@ -1142,7 +1149,7 @@ impl<D: Dir> Log<D> {
         self.closed = false;
         self.fresh_block = false;
         self.tail = Lsn(next + identity.unit());
-        self.chain = chain_seed(&identity.volume, next);
+        self.chain = chain_seed(&self.key, &identity.volume, next);
         Ok(())
     }
 
@@ -1202,7 +1209,7 @@ impl<D: Dir> Log<D> {
             data_len,
             data_crc: crc32c::crc32c(data),
         };
-        let (bytes, crc) = header.encode(self.chain());
+        let (bytes, crc) = header.encode(&self.key, self.chain());
         // Header and payload go out in one write, each padded to the
         // alignment.
         let mut scratch = std::mem::take(&mut self.scratch);
@@ -1296,6 +1303,7 @@ impl<D: Dir> Log<D> {
         let size = identity.segment_size;
         let rules = Rules {
             identity,
+            key: self.key,
             max_epoch: self.current.epoch,
             mutants: self.mutants,
         };
@@ -1319,7 +1327,7 @@ impl<D: Dir> Log<D> {
                 .map_err(|e| read_error("reading the log", &e))?;
             let found = step.map_err(|stopped| Corruption::Record {
                 position: cursor.position,
-                stopped: stopped.stop,
+                stopped,
             })?;
             let header = found.header;
             if header.kind == Kind::Pad {
@@ -1399,6 +1407,54 @@ impl<D: Dir> Log<D> {
         let first = self.current.identity.base_of(target);
         self.live.retain(|base, _| *base >= first);
         Ok(target)
+    }
+}
+
+#[cfg(test)]
+impl<D: Dir> Log<D> {
+    /// For tests that play the part of someone who knows everything
+    /// about the log but its key: the header of a discard at
+    /// `position`, which must lie in the segment the log ends in,
+    /// correct in every field and chained to the records that segment
+    /// holds, tagged with the key everybody knows.
+    pub(crate) fn lookalike_header(&self, position: Lsn, offset: u64) -> [u8; RECORD_HEADER] {
+        let identity = self.current.identity;
+        let rules = Rules {
+            identity,
+            key: self.key,
+            max_epoch: self.current.epoch,
+            mutants: self.mutants,
+        };
+        let base = identity.base_of(self.tail);
+        let mut chain = chain_seed(&Key::PUBLIC, &identity.volume, base);
+        if let Some(slot) = self.live.get(&base) {
+            let file = &self.slots[*slot].file;
+            let mut reader = Reader {
+                device: false,
+                checked: true,
+            };
+            let mut window = Window::default();
+            let mut cursor = Cursor {
+                position: Lsn(base + identity.unit()),
+                chain: rules.seed(base),
+                min_epoch: 0,
+            };
+            while let Ok(Ok(found)) = rules.record(file, &mut reader, &mut window, &cursor) {
+                chain = found.header.encode(&Key::PUBLIC, chain).1;
+                cursor.position = found.end;
+                cursor.chain = found.crc;
+            }
+        }
+        let lookalike = RecordHeader {
+            kind: Kind::Discard,
+            position,
+            epoch: self.current.epoch,
+            offset,
+            length: 4096,
+            data_len: 0,
+            data_crc: 0,
+        };
+        lookalike.encode(&Key::PUBLIC, chain).0
     }
 }
 

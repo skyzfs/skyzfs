@@ -48,7 +48,8 @@
 //!
 //! Every integer is little-endian. Every structure has a version and
 //! reserved bytes, written as zero and required to be zero. Checksums
-//! are CRC32C.
+//! are CRC32C; tags are SipHash-2-4 with a 64-bit result, under the
+//! log's key (below).
 //!
 //! **Superblock.** Two copies of 512 bytes, at offsets 0 and 65536 of
 //! `log.super`: the largest write unit apart, so that writing one never
@@ -71,7 +72,8 @@
 //! | 72 | 8 | start of the log |
 //! | 80 | 8 | durable floor: a position that was durable when the copy was written |
 //! | 88 | 4 | write unit: a power of two from 4096 to 65536 |
-//! | 92 | 416 | reserved |
+//! | 92 | 16 | key: 128 random bits drawn when the log is created |
+//! | 108 | 400 | reserved |
 //! | 508 | 4 | CRC32C of bytes 0..508 |
 //!
 //! **Segment file.** The first write unit is for its header, of which
@@ -88,8 +90,8 @@
 //! | 16 | 16 | volume id |
 //! | 32 | 8 | base: the position of the file's first byte |
 //! | 40 | 8 | epoch in which the file was given this base |
-//! | 48 | 460 | reserved |
-//! | 508 | 4 | CRC32C of bytes 0..508 |
+//! | 48 | 456 | reserved |
+//! | 504 | 8 | tag of eight zero bytes followed by bytes 0..504 |
 //!
 //! **Record.** A header of 64 bytes, padded to the record alignment,
 //! then the payload, padded to the alignment. With alignment 4096 the
@@ -108,13 +110,29 @@
 //! | 32 | 8 | byte length on the volume (pad: bytes skipped) |
 //! | 40 | 4 | payload length |
 //! | 44 | 4 | CRC32C of the payload |
-//! | 48 | 12 | reserved |
-//! | 60 | 4 | CRC32C of bytes 0..60, seeded with the chain value |
+//! | 48 | 8 | reserved |
+//! | 56 | 8 | tag of the chain value (8 bytes) followed by bytes 0..56 |
 //!
-//! The **chain value** of a record is the header checksum of the record
-//! before it. For the first record of a segment it is the CRC32C of the
-//! volume id followed by the segment's base, so that a replay can start
-//! at any segment.
+//! The **chain value** of a record is the tag of the record before it.
+//! For the first record of a segment it is the tag of the volume id
+//! followed by the segment's base, so that a replay can start at any
+//! segment. A record's tag so covers everything a recovery acts on: the
+//! kind, the position, the epoch, the range of the volume, the payload's
+//! length and the payload's checksum, and through the chain every
+//! record before it in the segment.
+//!
+//! **The key.** A walk looks for the next record at a unit boundary
+//! first, and at alignment 64 that boundary can lie inside the payload
+//! of a record, where the bytes are a client's. A client knows or can
+//! guess every field of a header, so with a plain checksum it could
+//! write a payload that a recovery takes for a record: a discard or a
+//! write anywhere on the volume, and the end of the real log. The tag
+//! is therefore keyed, with a key the client does not have. The key is
+//! in the superblock and nowhere else: it is not part of
+//! [`format::Identity`], it is in no error, report or debug print (those
+//! name positions and kinds), and it must never be uploaded or logged.
+//! What remains: whoever can read the log's files has the key, and
+//! whoever can do that can already write them.
 //!
 //! A **pad** closes a segment: the log continues at the second write
 //! unit of the segment with the next base. A segment keeps its last
@@ -163,16 +181,19 @@
 //! 3. It increments the epoch in the superblock and syncs that.
 //! 4. It seals the end of what it found: at the next unit boundary it
 //!    writes a mark (or, where the segment has no room to go on, a pad)
-//!    of the new epoch, and syncs it. Where nothing was ever written
-//!    behind the prefix, it writes nothing.
+//!    of the new epoch, and syncs it. Always, whatever the place holds:
+//!    that it reads as never written proves nothing, since a sector
+//!    that was lost reads as it did before. The one exception is by
+//!    structure and not by content: the prefix ends with the pad that
+//!    closes a segment and no file holds the next segment.
 //! 5. It erases the header of every segment file that claims a part of
 //!    the log beyond the prefix, or a part that a newer file holds.
 //! 6. If the log was marked as failed and the caller acknowledged it,
 //!    it removes the marker and syncs the directory, last: a crash
 //!    before that leaves the marker.
 //!
-//! A record is valid if its header's checksum matches under the chain
-//! value of the record before it; it names the position it is at; its
+//! A record is valid if its header's tag matches under the log's key
+//! and the chain value of the record before it; it names the position it is at; its
 //! epoch is not below the epoch of the record before it, nor of its
 //! segment's header, nor above the superblock's; its lengths fit the
 //! segment; and its payload matches its checksum. A segment follows the
@@ -181,7 +202,8 @@
 //! that name the same base, is the one of the later epoch.
 //!
 //! **A torn record is not accepted.** Any missing or foreign sector of
-//! a record is in its header or its payload, and each has a checksum.
+//! a record is in its header or its payload; the header has its tag
+//! and the payload its checksum, which the tag covers.
 //!
 //! **A record after a gap is not accepted.** The walk only ever moves
 //! from a valid record to the next, and stops for good at the first
@@ -208,10 +230,10 @@
 //! survives: a later record `R`, or a later segment.
 //!
 //! - To accept `R` again, a walk must first accept a record that ends
-//!   where `R` starts and whose header checksum `R` is chained to. The
+//!   where `R` starts and whose tag `R` is chained to. The
 //!   records that were there are gone or damaged; a record written
 //!   later has the new epoch in its header, so it is a different
-//!   header with a different checksum. (And `R`, being older than that
+//!   header with a different tag. (And `R`, being older than that
 //!   record, also fails the epoch rule.)
 //! - The first record of a segment is chained to a value that does not
 //!   change. There the epoch decides: after recovery a segment's file
@@ -230,6 +252,22 @@
 //! A power cut during recovery itself leaves the superblock's previous
 //! copy and the same files, and the next recovery finds the same
 //! prefix.
+//!
+//! **What sealing costs.** One write unit of log space for each
+//! recovery, and no new segment file, ever: a log whose files are all
+//! in use recovers. A process that crashes in a loop uses one unit for
+//! each start until the segment's last unit, which takes the closing
+//! pad; from then on a recovery writes no seal. With segments of 64 MiB
+//! and a unit of 4096 that is at most 16383 recoveries' worth of space
+//! in one segment, and then none. The space comes back when the segment
+//! is reclaimed.
+//!
+//! **A segment header is written once for each use of its file**: when
+//! the log rolls into the file, which must be free (it holds nothing at
+//! or above the start of the log, and the start that says so is
+//! durable). It is never written while the file holds records the log
+//! needs, and recovery erases only headers of files that are not
+//! segments of the log it found.
 //!
 //! # Order of acknowledgements
 //!
@@ -279,10 +317,14 @@
 //! - **Corruption that a 32-bit checksum does not see.** The checksums
 //!   are there to refuse torn, stale and misplaced records after a
 //!   crash. Positions, epochs and the chain do part of that work, and
-//!   ZFS checksums every block above the log. They are not an integrity
-//!   guarantee against bit rot or against anyone who chooses the data:
-//!   a client that could predict the log's headers could write a
-//!   payload that looks like them.
+//!   ZFS checksums every block above the log. A payload's checksum is
+//!   not an integrity guarantee against bit rot.
+//! - **Someone who can read the log's files.** The key keeps a client
+//!   that only chooses payloads from forging a header. It is stored in
+//!   the clear beside the log, and protects nothing from a reader of
+//!   the device, who could write the device as well. A forged tag is
+//!   right by chance with probability 2^-64 for each header a recovery
+//!   looks at.
 //! - **Corruption of what was durable is detected and reported, never
 //!   repaired.** The log has no redundancy against media corruption,
 //!   the superblock included; a volume that loses durable records falls

@@ -58,11 +58,104 @@ pub enum Bad {
     Magic,
     /// A version this code does not read.
     Version,
-    /// The checksum does not match. For a record header this includes a
-    /// header that does not follow the record before it.
+    /// The checksum or the keyed tag does not match. For a record header
+    /// this includes a header that does not follow the record before
+    /// it, and bytes that only look like a header.
     Checksum,
     /// A field has a value the format does not allow.
     Field,
+}
+
+/// The log's key: 128 random bits drawn when the log is created and
+/// stored in the superblock, nowhere else. Every record header and
+/// segment header carries a tag computed with it, so that nothing a
+/// client writes into a payload can pass for a header. It is never
+/// shown: not in a debug print, a report or an error.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Key(pub(crate) [u8; 16]);
+
+impl Key {
+    /// A key that everybody knows: what the log would be without one.
+    /// Only the tests' deliberately broken log uses it.
+    pub(crate) const PUBLIC: Key = Key([0; 16]);
+
+    /// A new key from the operating system's randomness.
+    pub(crate) fn random() -> Key {
+        use std::hash::{BuildHasher, Hasher};
+        // The standard library seeds each `RandomState` from the
+        // operating system; two of them give 128 bits.
+        let mut key = [0u8; 16];
+        for half in key.chunks_mut(8) {
+            let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            hasher.write(b"skyzfs-local log key");
+            half.copy_from_slice(&hasher.finish().to_le_bytes());
+        }
+        Key(key)
+    }
+}
+
+impl fmt::Debug for Key {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Key(..)")
+    }
+}
+
+/// SipHash-2-4 with a 64-bit result (Aumasson and Bernstein, 2012): the
+/// keyed function behind every tag.
+pub fn siphash24(key: &Key, data: &[u8]) -> u64 {
+    let k0 = u64_at(&key.0, 0);
+    let k1 = u64_at(&key.0, 8);
+    let mut v = [
+        k0 ^ 0x736f_6d65_7073_6575,
+        k1 ^ 0x646f_7261_6e64_6f6d,
+        k0 ^ 0x6c79_6765_6e65_7261,
+        k1 ^ 0x7465_6462_7974_6573,
+    ];
+    fn round(v: &mut [u64; 4]) {
+        v[0] = v[0].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(13);
+        v[1] ^= v[0];
+        v[0] = v[0].rotate_left(32);
+        v[2] = v[2].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(16);
+        v[3] ^= v[2];
+        v[0] = v[0].wrapping_add(v[3]);
+        v[3] = v[3].rotate_left(21);
+        v[3] ^= v[0];
+        v[2] = v[2].wrapping_add(v[1]);
+        v[1] = v[1].rotate_left(17);
+        v[1] ^= v[2];
+        v[2] = v[2].rotate_left(32);
+    }
+    let (words, rest) = data.as_chunks::<8>();
+    for word in words {
+        let m = u64::from_le_bytes(*word);
+        v[3] ^= m;
+        round(&mut v);
+        round(&mut v);
+        v[0] ^= m;
+    }
+    let mut last = [0u8; 8];
+    last[..rest.len()].copy_from_slice(rest);
+    last[7] = data.len() as u8;
+    let m = u64::from_le_bytes(last);
+    v[3] ^= m;
+    round(&mut v);
+    round(&mut v);
+    v[0] ^= m;
+    v[2] ^= 0xff;
+    for _ in 0..4 {
+        round(&mut v);
+    }
+    v[0] ^ v[1] ^ v[2] ^ v[3]
+}
+
+/// The tag of `fields` behind `before`: a keyed function of both.
+fn tag(key: &Key, before: u64, fields: &[u8]) -> u64 {
+    let mut input = [0u8; 8 + SECTOR_LEN];
+    input[..8].copy_from_slice(&before.to_le_bytes());
+    input[8..8 + fields.len()].copy_from_slice(fields);
+    siphash24(key, &input[..8 + fields.len()])
 }
 
 fn u32_at(bytes: &[u8], at: usize) -> u32 {
@@ -168,6 +261,8 @@ impl Identity {
 pub struct Superblock {
     /// What the log is for.
     pub identity: Identity,
+    /// The log's key.
+    pub(crate) key: Key,
     /// Incremented at every write of a copy.
     pub counter: u64,
     /// Incremented by every recovery. A record is written with the epoch
@@ -196,6 +291,7 @@ impl Superblock {
         out[72..80].copy_from_slice(&self.floor.0.to_le_bytes());
         out[80..88].copy_from_slice(&self.durable_floor.0.to_le_bytes());
         out[88..92].copy_from_slice(&self.identity.write_unit.to_le_bytes());
+        out[92..108].copy_from_slice(&self.key.0);
         let crc = crc32c::crc32c(&out[..SECTOR_LEN - 4]);
         out[SECTOR_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
         out
@@ -217,7 +313,10 @@ impl Superblock {
         }
         let mut volume = [0u8; 16];
         volume.copy_from_slice(&bytes[16..32]);
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&bytes[92..108]);
         let block = Self {
+            key: Key(key),
             identity: Identity {
                 volume,
                 device_size: u64_at(bytes, 32),
@@ -231,7 +330,7 @@ impl Superblock {
             floor: Lsn(u64_at(bytes, 72)),
             durable_floor: Lsn(u64_at(bytes, 80)),
         };
-        let reserved = zero(&bytes[12..16]) && zero(&bytes[92..SECTOR_LEN - 4]);
+        let reserved = zero(&bytes[12..16]) && zero(&bytes[108..SECTOR_LEN - 4]);
         if !reserved || !block.identity.valid() || block.floor > block.durable_floor {
             return Err(Bad::Field);
         }
@@ -252,34 +351,34 @@ pub struct SegmentHeader {
 }
 
 impl SegmentHeader {
-    /// The header's bytes.
-    pub fn encode(&self) -> [u8; SECTOR_LEN] {
+    /// The header's bytes, tagged with the log's key.
+    pub fn encode(&self, key: &Key) -> [u8; SECTOR_LEN] {
         let mut out = [0u8; SECTOR_LEN];
         out[0..8].copy_from_slice(SEGMENT_MAGIC);
         out[8..12].copy_from_slice(&VERSION.to_le_bytes());
         out[16..32].copy_from_slice(&self.volume);
         out[32..40].copy_from_slice(&self.base.to_le_bytes());
         out[40..48].copy_from_slice(&self.epoch.to_le_bytes());
-        let crc = crc32c::crc32c(&out[..SECTOR_LEN - 4]);
-        out[SECTOR_LEN - 4..].copy_from_slice(&crc.to_le_bytes());
+        let tag = tag(key, 0, &out[..SECTOR_LEN - 8]);
+        out[SECTOR_LEN - 8..].copy_from_slice(&tag.to_le_bytes());
         out
     }
 
-    /// Read a header.
-    pub fn decode(bytes: &[u8; SECTOR_LEN]) -> Result<Self, Bad> {
+    /// Read a header written with the log's key.
+    pub fn decode(bytes: &[u8; SECTOR_LEN], key: &Key) -> Result<Self, Bad> {
         if zero(bytes) {
             return Err(Bad::Blank);
         }
         if &bytes[0..8] != SEGMENT_MAGIC {
             return Err(Bad::Magic);
         }
-        if u32_at(bytes, SECTOR_LEN - 4) != crc32c::crc32c(&bytes[..SECTOR_LEN - 4]) {
+        if u64_at(bytes, SECTOR_LEN - 8) != tag(key, 0, &bytes[..SECTOR_LEN - 8]) {
             return Err(Bad::Checksum);
         }
         if u32_at(bytes, 8) != VERSION {
             return Err(Bad::Version);
         }
-        if !zero(&bytes[12..16]) || !zero(&bytes[48..SECTOR_LEN - 4]) {
+        if !zero(&bytes[12..16]) || !zero(&bytes[48..SECTOR_LEN - 8]) {
             return Err(Bad::Field);
         }
         let mut volume = [0u8; 16];
@@ -353,17 +452,26 @@ pub struct RecordHeader {
     pub data_crc: u32,
 }
 
-/// The value the first record of a segment is chained to.
-pub fn chain_seed(volume: &[u8; 16], base: u64) -> u32 {
-    crc32c::crc32c_append(crc32c::crc32c(volume), &base.to_le_bytes())
+/// The value the first record of a segment is chained to: a keyed
+/// function of the volume and the segment's base.
+pub fn chain_seed(key: &Key, volume: &[u8; 16], base: u64) -> u64 {
+    let mut input = [0u8; 24];
+    input[..16].copy_from_slice(volume);
+    input[16..].copy_from_slice(&base.to_le_bytes());
+    siphash24(key, &input)
 }
 
 impl RecordHeader {
-    /// The header's bytes, chained to `chain`: the header checksum of the
-    /// record before it, or [`chain_seed`] at the start of a segment.
-    /// Returns the bytes and this header's checksum, which the next
-    /// record is chained to.
-    pub fn encode(&self, chain: u32) -> ([u8; RECORD_HEADER], u32) {
+    /// The header's bytes, chained to `chain`: the tag of the record
+    /// before it, or [`chain_seed`] at the start of a segment. Returns
+    /// the bytes and this header's tag, which the next record is chained
+    /// to.
+    ///
+    /// The tag is a keyed function of `chain` and of every other byte of
+    /// the header: kind, position, epoch, the range of the volume, the
+    /// payload's length and the payload's checksum. Nothing a recovery
+    /// acts on is outside it.
+    pub fn encode(&self, key: &Key, chain: u64) -> ([u8; RECORD_HEADER], u64) {
         let mut out = [0u8; RECORD_HEADER];
         out[0..4].copy_from_slice(RECORD_MAGIC);
         out[4] = VERSION as u8;
@@ -374,22 +482,21 @@ impl RecordHeader {
         out[32..40].copy_from_slice(&self.length.to_le_bytes());
         out[40..44].copy_from_slice(&self.data_len.to_le_bytes());
         out[44..48].copy_from_slice(&self.data_crc.to_le_bytes());
-        let crc = crc32c::crc32c_append(chain, &out[..RECORD_HEADER - 4]);
-        out[RECORD_HEADER - 4..].copy_from_slice(&crc.to_le_bytes());
-        (out, crc)
+        let tag = tag(key, chain, &out[..RECORD_HEADER - 8]);
+        out[RECORD_HEADER - 8..].copy_from_slice(&tag.to_le_bytes());
+        (out, tag)
     }
 
-    /// Read a header that must follow `chain`. Returns it with its
-    /// checksum.
-    pub fn decode(bytes: &[u8; RECORD_HEADER], chain: u32) -> Result<(Self, u32), Bad> {
+    /// Read a header that must follow `chain`. Returns it with its tag.
+    pub fn decode(bytes: &[u8; RECORD_HEADER], key: &Key, chain: u64) -> Result<(Self, u64), Bad> {
         if zero(bytes) {
             return Err(Bad::Blank);
         }
         if &bytes[0..4] != RECORD_MAGIC {
             return Err(Bad::Magic);
         }
-        let crc = u32_at(bytes, RECORD_HEADER - 4);
-        if crc != crc32c::crc32c_append(chain, &bytes[..RECORD_HEADER - 4]) {
+        let stored = u64_at(bytes, RECORD_HEADER - 8);
+        if stored != tag(key, chain, &bytes[..RECORD_HEADER - 8]) {
             return Err(Bad::Checksum);
         }
         if u32::from(bytes[4]) != VERSION {
@@ -398,7 +505,7 @@ impl RecordHeader {
         let Some(kind) = Kind::from_code(bytes[5]) else {
             return Err(Bad::Field);
         };
-        if !zero(&bytes[6..8]) || !zero(&bytes[48..RECORD_HEADER - 4]) {
+        if !zero(&bytes[6..8]) || !zero(&bytes[48..RECORD_HEADER - 8]) {
             return Err(Bad::Field);
         }
         let header = Self {
@@ -413,12 +520,12 @@ impl RecordHeader {
         if kind != Kind::Write && header.data_len != 0 {
             return Err(Bad::Field);
         }
-        Ok((header, crc))
+        Ok((header, stored))
     }
 
     /// Whether `bytes` look like a record header that says it is at
-    /// `position`, without checking what it is chained to. For reports
-    /// only: nothing is ever replayed on the strength of this.
+    /// `position`, without the key. For reports only: nothing is ever
+    /// replayed on the strength of this.
     pub fn looks_like(bytes: &[u8; RECORD_HEADER], position: Lsn) -> bool {
         &bytes[0..4] == RECORD_MAGIC && u64_at(bytes, 8) == position.0
     }
@@ -439,11 +546,46 @@ mod tests {
         }
     }
 
+    /// The key of the SipHash paper's test vectors: bytes 0 to 15.
+    const KEY: Key = Key([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+
     /// The checksum is CRC32C (Castagnoli), by its standard check value,
     /// so the golden bytes below do not rest on one library's word.
     #[test]
     fn the_checksum_is_crc32c() {
         assert_eq!(crc32c::crc32c(b"123456789"), 0xE306_9283);
+    }
+
+    /// The keyed function is SipHash-2-4, by the test vectors of its
+    /// reference implementation: key 00..0f, messages of bytes 00, 01,
+    /// ... of every length from 0 to 15, which crosses a word boundary.
+    #[test]
+    fn the_tag_function_is_siphash_2_4() {
+        let vectors: [u64; 16] = [
+            0x726f_db47_dd0e_0e31,
+            0x74f8_39c5_93dc_67fd,
+            0x0d6c_8009_d9a9_4f5a,
+            0x8567_6696_d7fb_7e2d,
+            0xcf27_94e0_2771_87b7,
+            0x1876_5564_cd99_a68d,
+            0xcbc9_466e_58fe_e3ce,
+            0xab02_00f5_8b01_d137,
+            0x93f5_f579_9a93_2462,
+            0x9e00_82df_0ba9_e4b0,
+            0x7a5d_bbc5_94dd_b9f3,
+            0xf4b3_2f46_226b_ada7,
+            0x751e_8fbc_860e_e5fb,
+            0x14ea_5627_c084_3d90,
+            0xf723_ca90_8e7a_f2ee,
+            0xa129_ca61_49be_45e5,
+        ];
+        let message: Vec<u8> = (0..15).collect();
+        for (len, want) in vectors.iter().enumerate() {
+            assert_eq!(siphash24(&KEY, &message[..len]), *want, "length {len}");
+        }
+        // The key matters, and it is never printed.
+        assert_ne!(siphash24(&Key::PUBLIC, &message), vectors[15]);
+        assert_eq!(format!("{KEY:?}"), "Key(..)");
     }
 
     /// Format, version 1: the superblock's bytes are fixed. A change to
@@ -452,6 +594,7 @@ mod tests {
     fn superblock_golden_bytes() {
         let block = Superblock {
             identity: identity(),
+            key: KEY,
             counter: 3,
             epoch: 5,
             floor: Lsn(4096),
@@ -469,12 +612,16 @@ mod tests {
         assert_eq!(bytes[72..80], 4096u64.to_le_bytes());
         assert_eq!(bytes[80..88], 8192u64.to_le_bytes());
         assert_eq!(bytes[88..92], 4096u32.to_le_bytes());
-        assert!(bytes[92..508].iter().all(|b| *b == 0));
-        assert_eq!(bytes[508..], 0xC691_D3C9u32.to_le_bytes());
+        assert_eq!(bytes[92..108], KEY.0);
+        assert!(bytes[108..508].iter().all(|b| *b == 0));
+        assert_eq!(bytes[508..], 0x7DFB_028Eu32.to_le_bytes());
         assert_eq!(Superblock::decode(&bytes), Ok(block));
+        // A debug print of a superblock does not show the key.
+        assert!(!format!("{block:?}").contains("15"));
     }
 
-    /// Format, version 1: the segment header's bytes are fixed.
+    /// Format, version 1: the segment header's bytes are fixed, and its
+    /// tag depends on the key.
     #[test]
     fn segment_header_golden_bytes() {
         let header = SegmentHeader {
@@ -482,18 +629,22 @@ mod tests {
             base: 1 << 16,
             epoch: 7,
         };
-        let bytes = header.encode();
+        let bytes = header.encode(&KEY);
         assert_eq!(&bytes[..12], b"SKYZSEG\0\x01\0\0\0");
         assert_eq!(&bytes[16..32], b"0123456789abcdef");
         assert_eq!(bytes[32..40], (1u64 << 16).to_le_bytes());
         assert_eq!(bytes[40..48], 7u64.to_le_bytes());
-        assert!(bytes[48..508].iter().all(|b| *b == 0));
-        assert_eq!(bytes[508..], 0xC292_2001u32.to_le_bytes());
-        assert_eq!(SegmentHeader::decode(&bytes), Ok(header));
+        assert!(bytes[48..504].iter().all(|b| *b == 0));
+        assert_eq!(bytes[504..], 0xA123_3219_BAD1_D58Eu64.to_le_bytes());
+        assert_eq!(SegmentHeader::decode(&bytes, &KEY), Ok(header));
+        assert_eq!(
+            SegmentHeader::decode(&bytes, &Key::PUBLIC),
+            Err(Bad::Checksum)
+        );
     }
 
     /// Format, version 1: the record header's bytes are fixed, and its
-    /// checksum depends on what it is chained to.
+    /// tag depends on the key and on what it is chained to.
     #[test]
     fn record_header_golden_bytes() {
         let header = RecordHeader {
@@ -505,9 +656,9 @@ mod tests {
             data_len: 4096,
             data_crc: 0xDEAD_BEEF,
         };
-        let seed = chain_seed(b"0123456789abcdef", 0);
-        assert_eq!(seed, 0x9896_25E2);
-        let (bytes, crc) = header.encode(seed);
+        let seed = chain_seed(&KEY, b"0123456789abcdef", 0);
+        assert_eq!(seed, 0x2204_A407_D865_B0FF);
+        let (bytes, tag) = header.encode(&KEY, seed);
         assert_eq!(&bytes[..8], b"SKZR\x01\x01\0\0");
         assert_eq!(bytes[8..16], 4096u64.to_le_bytes());
         assert_eq!(bytes[16..24], 2u64.to_le_bytes());
@@ -515,15 +666,80 @@ mod tests {
         assert_eq!(bytes[32..40], 4096u64.to_le_bytes());
         assert_eq!(bytes[40..44], 4096u32.to_le_bytes());
         assert_eq!(bytes[44..48], 0xDEAD_BEEFu32.to_le_bytes());
-        assert!(bytes[48..60].iter().all(|b| *b == 0));
-        assert_eq!(crc, 0xA3AF_0933);
-        assert_eq!(bytes[60..], crc.to_le_bytes());
-        assert_eq!(RecordHeader::decode(&bytes, seed), Ok((header, crc)));
-        // Chained to anything else, it is not this record.
-        assert_eq!(RecordHeader::decode(&bytes, seed ^ 1), Err(Bad::Checksum));
-        assert_ne!(header.encode(seed ^ 1).1, crc);
+        assert!(bytes[48..56].iter().all(|b| *b == 0));
+        assert_eq!(tag, 0x267C_1166_1407_E8FD);
+        assert_eq!(bytes[56..], tag.to_le_bytes());
+        assert_eq!(RecordHeader::decode(&bytes, &KEY, seed), Ok((header, tag)));
+        // Chained to anything else, or under another key, it is not this
+        // record.
+        assert_eq!(
+            RecordHeader::decode(&bytes, &KEY, seed ^ 1),
+            Err(Bad::Checksum)
+        );
+        assert_eq!(
+            RecordHeader::decode(&bytes, &Key::PUBLIC, seed),
+            Err(Bad::Checksum)
+        );
+        assert_ne!(header.encode(&KEY, seed ^ 1).1, tag);
+        assert_ne!(chain_seed(&KEY, b"0123456789abcdef", 1 << 16), seed);
         assert!(RecordHeader::looks_like(&bytes, Lsn(4096)));
         assert!(!RecordHeader::looks_like(&bytes, Lsn(4160)));
+    }
+
+    /// The tag covers every field a recovery acts on: changing any one
+    /// of kind, position, epoch, the volume range, the payload length or
+    /// the payload checksum under a genuine tag is refused.
+    #[test]
+    fn the_tag_covers_every_field() {
+        let header = RecordHeader {
+            kind: Kind::Write,
+            position: Lsn(4096),
+            epoch: 2,
+            offset: 8192,
+            length: 4096,
+            data_len: 4096,
+            data_crc: 0xDEAD_BEEF,
+        };
+        let (genuine, tag) = header.encode(&KEY, 9);
+        let others = [
+            RecordHeader {
+                kind: Kind::Discard,
+                data_len: 0,
+                ..header
+            },
+            RecordHeader {
+                position: Lsn(4160),
+                ..header
+            },
+            RecordHeader { epoch: 3, ..header },
+            RecordHeader {
+                offset: 0,
+                ..header
+            },
+            RecordHeader {
+                length: 8192,
+                ..header
+            },
+            RecordHeader {
+                data_len: 4097,
+                ..header
+            },
+            RecordHeader {
+                data_crc: 1,
+                ..header
+            },
+        ];
+        for other in others {
+            // The other record's fields under the genuine record's tag.
+            let (mut forged, other_tag) = other.encode(&KEY, 9);
+            assert_ne!(other_tag, tag);
+            forged[56..].copy_from_slice(&genuine[56..]);
+            assert_eq!(
+                RecordHeader::decode(&forged, &KEY, 9),
+                Err(Bad::Checksum),
+                "{other:?}"
+            );
+        }
     }
 
     /// Format: every way a structure can be wrong is told apart, and a
@@ -532,6 +748,7 @@ mod tests {
     fn damaged_structures_are_refused() {
         let block = Superblock {
             identity: identity(),
+            key: KEY,
             counter: 1,
             epoch: 1,
             floor: Lsn(4096),
@@ -549,12 +766,15 @@ mod tests {
             base: 0,
             epoch: 1,
         }
-        .encode();
-        assert_eq!(SegmentHeader::decode(&[0; SECTOR_LEN]), Err(Bad::Blank));
+        .encode(&KEY);
+        assert_eq!(
+            SegmentHeader::decode(&[0; SECTOR_LEN], &KEY),
+            Err(Bad::Blank)
+        );
         for bit in 0..SECTOR_LEN * 8 {
             let mut bytes = segment;
             bytes[bit / 8] ^= 1 << (bit % 8);
-            assert!(SegmentHeader::decode(&bytes).is_err(), "bit {bit}");
+            assert!(SegmentHeader::decode(&bytes, &KEY).is_err(), "bit {bit}");
         }
         let header = RecordHeader {
             kind: Kind::Discard,
@@ -565,34 +785,34 @@ mod tests {
             data_len: 0,
             data_crc: 0,
         };
-        let (record, _) = header.encode(9);
+        let (record, _) = header.encode(&KEY, 9);
         assert_eq!(
-            RecordHeader::decode(&[0; RECORD_HEADER], 9),
+            RecordHeader::decode(&[0; RECORD_HEADER], &KEY, 9),
             Err(Bad::Blank)
         );
         for bit in 0..RECORD_HEADER * 8 {
             let mut bytes = record;
             bytes[bit / 8] ^= 1 << (bit % 8);
-            assert!(RecordHeader::decode(&bytes, 9).is_err(), "bit {bit}");
+            assert!(RecordHeader::decode(&bytes, &KEY, 9).is_err(), "bit {bit}");
         }
-        // Fields the format does not allow, under a valid checksum.
-        let reencode = |mut bytes: [u8; RECORD_HEADER]| {
-            let crc = crc32c::crc32c_append(9, &bytes[..RECORD_HEADER - 4]);
-            bytes[RECORD_HEADER - 4..].copy_from_slice(&crc.to_le_bytes());
-            RecordHeader::decode(&bytes, 9)
+        // Fields the format does not allow, under a valid tag.
+        let retag = |mut bytes: [u8; RECORD_HEADER]| {
+            let tag = tag(&KEY, 9, &bytes[..RECORD_HEADER - 8]);
+            bytes[RECORD_HEADER - 8..].copy_from_slice(&tag.to_le_bytes());
+            RecordHeader::decode(&bytes, &KEY, 9)
         };
         let mut bytes = record;
         bytes[5] = 9;
-        assert_eq!(reencode(bytes), Err(Bad::Field));
+        assert_eq!(retag(bytes), Err(Bad::Field));
         let mut bytes = record;
         bytes[4] = 2;
-        assert_eq!(reencode(bytes), Err(Bad::Version));
+        assert_eq!(retag(bytes), Err(Bad::Version));
         let mut bytes = record;
         bytes[50] = 1;
-        assert_eq!(reencode(bytes), Err(Bad::Field));
+        assert_eq!(retag(bytes), Err(Bad::Field));
         let mut bytes = record;
         bytes[40] = 1;
-        assert_eq!(reencode(bytes), Err(Bad::Field));
+        assert_eq!(retag(bytes), Err(Bad::Field));
     }
 
     /// Layout arithmetic: record sizes at both alignments, the largest
