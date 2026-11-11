@@ -336,6 +336,13 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
         Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),
+        Err(StoreError::NotEmpty | StoreError::Log(LogError::NotEmpty)) => {
+            Err(Output::error(format_args!(
+                "{shown} holds {}, which is not left by a create: create makes a volume only \
+                 in a directory that holds nothing else. Nothing was done",
+                stranger(&create.dir)
+            )))
+        }
         Err(StoreError::Locked) => Err(Output::said(
             Exit::RefusedHeld,
             "",
@@ -344,6 +351,27 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
         Err(e) => Err(Output::error(format_args!(
             "creating a volume in {shown}: {e}"
         ))),
+    }
+}
+
+/// The file in `dir` that made the store refuse it, for the message.
+fn stranger(dir: &Path) -> String {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut strangers: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !skyzfs_local::store::CREATE_LEFTOVERS.contains(name))
+        .collect();
+    strangers.sort_unstable();
+    match strangers.as_slice() {
+        [] => "a file".to_owned(),
+        [one] => format!("`{one}`"),
+        [first, rest @ ..] => format!("`{first}` and {} more", rest.len()),
     }
 }
 

@@ -36,6 +36,31 @@ use crate::log::{Log, LogError, Observer, Options, Recovery};
 pub const HOME_NAME: &str = "home.img";
 /// The home image while it is being created.
 const HOME_NEW_NAME: &str = "home.new";
+
+/// Every name a creation of a store that was interrupted can leave in
+/// the directory, and so every name [`Store::create`] accepts in it:
+/// the lock file, the home image under its first and its final name,
+/// and what the log's creation leaves ([`crate::log::CREATE_LEFTOVERS`]).
+/// A creation removes these, by these exact names, and no other file.
+/// A directory that holds any other name is refused
+/// ([`StoreError::NotEmpty`]) with nothing removed and nothing written:
+/// the store cannot know whose `home.tar` or `log.txt` it is.
+pub const CREATE_LEFTOVERS: [&str; 5] = [
+    crate::fs::LOCK_NAME,
+    HOME_NEW_NAME,
+    HOME_NAME,
+    crate::log::CREATE_LEFTOVERS[0],
+    crate::log::CREATE_LEFTOVERS[1],
+];
+
+/// The first name in `names` that is not one of [`CREATE_LEFTOVERS`]:
+/// what makes [`Store::create`] refuse a directory that holds no store.
+pub fn stranger(names: &[String]) -> Option<&str> {
+    names
+        .iter()
+        .map(String::as_str)
+        .find(|name| !CREATE_LEFTOVERS.contains(name))
+}
 /// The preimages of a checkpoint in progress: see [the crate documentation](crate#the-preimage-file).
 pub const PREIMAGE_NAME: &str = "home.pre";
 
@@ -265,6 +290,11 @@ pub enum StoreError {
     /// written.
     #[error("the store is open in another instance")]
     Locked,
+    /// `create`: the directory holds a file that no creation leaves
+    /// ([`CREATE_LEFTOVERS`]). Nothing was removed or written, not even
+    /// the lock file.
+    #[error("the directory holds a file that is not a store's")]
+    NotEmpty,
     /// The store's files do not fit together.
     #[error("the store is damaged: {0}")]
     Damaged(&'static str),
@@ -1107,16 +1137,26 @@ impl<D: Dir> Store<D> {
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
         let identity = config.identity().ok_or(StoreError::InvalidConfig)?;
-        let lock = Self::lock(&dir, &options)?;
-        let names = dir.list().map_err(io_error("listing the directory"))?;
-        if names.iter().any(|name| name == crate::log::SUPER_NAME) {
-            return Err(LogError::Exists.into());
+        // Before the lock, which makes a file: a directory with a file
+        // of somebody else is refused and left exactly as it was. A
+        // directory that holds a store has its lock file already, and
+        // whether that store is in use is what the lock says first.
+        // Then everything again under the lock, for what another
+        // instance did in between.
+        let found = dir.list().map_err(io_error("listing the directory"))?;
+        if !found.iter().any(|name| name == crate::log::SUPER_NAME) && stranger(&found).is_some() {
+            return Err(StoreError::NotEmpty);
         }
+        let lock = Self::lock(&dir, &options)?;
+        let names = Self::creatable(&dir)?;
         // The log's superblock is what makes a store, and it is made
-        // last. Whatever else is here is left from a creation that was
-        // interrupted.
-        for name in names.iter().filter(|name| name.starts_with("home.")) {
-            dir.remove(name).map_err(io_error("removing leftovers"))?;
+        // last. What is here under one of a creation's own names is
+        // left from a creation that was interrupted; nothing is removed
+        // under any other name.
+        for name in [HOME_NEW_NAME, HOME_NAME] {
+            if names.iter().any(|found| found == name) {
+                dir.remove(name).map_err(io_error("removing leftovers"))?;
+            }
         }
         let creating = io_error("creating the home image");
         let mut home = dir.create(HOME_NEW_NAME).map_err(&creating)?;
@@ -1151,6 +1191,19 @@ impl<D: Dir> Store<D> {
     /// Take the directory's lock: one instance per volume (design
     /// §4.2). Opening a store is a recovery that writes, so this comes
     /// before anything is read or written.
+    /// The names in `dir`, if a store can be created there: no store
+    /// yet, and no name but a creation's own.
+    fn creatable(dir: &D) -> Result<Vec<String>, StoreError> {
+        let names = dir.list().map_err(io_error("listing the directory"))?;
+        if names.iter().any(|name| name == crate::log::SUPER_NAME) {
+            return Err(LogError::Exists.into());
+        }
+        if stranger(&names).is_some() {
+            return Err(StoreError::NotEmpty);
+        }
+        Ok(names)
+    }
+
     fn lock(dir: &D, options: &OpenOptions) -> Result<Option<D::Lock>, StoreError> {
         if options.mutants.has(Mutants::NO_LOCK) {
             return Ok(None);

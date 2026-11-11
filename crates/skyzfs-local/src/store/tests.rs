@@ -1496,6 +1496,49 @@ fn an_interrupted_creation_leaves_no_store_or_a_whole_one() {
     assert!(none > 0 && whole > 0, "none {none}, whole {whole}");
 }
 
+/// A creation removes only what a creation leaves, by its exact names.
+/// A directory with any other name in it, also one that begins like a
+/// store's own, is refused with every file as it was and nothing made,
+/// not even the lock file.
+#[test]
+fn a_creation_refuses_a_directory_with_a_file_that_is_not_its_own() {
+    let env = environments(0)[0];
+    let key = Key(*b"a key for tests!");
+    for stranger in [
+        "home.tar",
+        "home.pre",
+        "home.img.bak",
+        "log.txt",
+        "log.000001",
+        "log.failed",
+        "log.super.old",
+        "notes",
+    ] {
+        let disk = SimDisk::new(1);
+        for name in [stranger, "home.new", "log.000000"] {
+            let mut file = disk.create(name).unwrap();
+            file.write_at(0, name.as_bytes()).unwrap();
+            file.sync().unwrap();
+        }
+        disk.sync().unwrap();
+        let before = disk.list().unwrap();
+        let created = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+        assert!(
+            matches!(created, Err(StoreError::NotEmpty)),
+            "{stranger}: {:?}",
+            created.err()
+        );
+        assert_eq!(disk.list().unwrap(), before, "{stranger}");
+        for name in &before {
+            let mut bytes = vec![0u8; name.len()];
+            disk.open(name).unwrap().read_at(0, &mut bytes).unwrap();
+            assert_eq!(bytes, name.as_bytes(), "{stranger}: {name}");
+        }
+    }
+    assert_eq!(crate::log::CREATE_LEFTOVERS[0], crate::log::slot_name(0));
+    assert!(super::stranger(&CREATE_LEFTOVERS.map(str::to_owned)).is_none());
+}
+
 /// A checkpoint that cannot make its preimages durable has not touched
 /// the home image: after a power cut that garbles everything unsynced,
 /// every flushed block is there.

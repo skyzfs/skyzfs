@@ -668,3 +668,79 @@ fn a_failed_create_leaves_no_directory_it_made() {
     assert_eq!(in_directory(&fine, |_| Ok(7)).ok(), Some(7));
     assert!(fine.is_dir());
 }
+
+/// `create` in a directory that holds files of somebody else, also
+/// ones whose names begin like the store's own: refused with status 1,
+/// the file named, and the directory exactly as it was, with no lock
+/// file added. Once they are gone the same command makes the volume.
+#[test]
+fn create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothing() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let run_dir = keep.path().join("run");
+    let listing = |dir: &Path| {
+        let mut names: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+            .expect("list")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                let name = entry.file_name().into_string().expect("a name");
+                (name, std::fs::read(entry.path()).expect("read"))
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    for strangers in [
+        &["home.tar", "log.txt"][..],
+        &["home.pre"],
+        &["log.000001"],
+        &["log.failed"],
+        &["notes"],
+        &["home.img.bak", "home.new", "log.000000"],
+    ] {
+        let dir = keep.path().join("volume");
+        std::fs::create_dir(&dir).expect("the directory");
+        for name in strangers {
+            std::fs::write(dir.join(name), name.as_bytes()).expect("write");
+        }
+        let before = listing(&dir);
+        let output = create(
+            &creating(&dir, &run_dir, 1 << 20, None),
+            [1; 16],
+            Some(BOOT),
+        );
+        assert_eq!(
+            (output.exit, output.out.as_str()),
+            (Exit::Error, ""),
+            "{strangers:?}"
+        );
+        assert!(
+            output.err.contains("Nothing was done"),
+            "{strangers:?}: {}",
+            output.err
+        );
+        assert!(
+            strangers
+                .iter()
+                .any(|name| output.err.contains(&format!("`{name}`"))),
+            "{strangers:?}: {}",
+            output.err
+        );
+        assert_eq!(listing(&dir), before, "{strangers:?}");
+        std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    // What an interrupted create leaves, under its exact names, is
+    // create's own: removed and made again.
+    let dir = keep.path().join("volume");
+    std::fs::create_dir(&dir).expect("the directory");
+    for name in skyzfs_local::store::CREATE_LEFTOVERS {
+        std::fs::write(dir.join(name), b"left").expect("write");
+    }
+    let output = create(
+        &creating(&dir, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    assert!(Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).is_ok());
+}
