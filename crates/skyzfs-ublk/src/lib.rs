@@ -8,11 +8,13 @@
 //! - [`translate`]: pure. A ublk request descriptor becomes a plan in
 //!   the contract's terms, and an outcome becomes the result the kernel
 //!   is given.
+//! - [`pump`]: moves requests between one queue and one block target,
+//!   generic over both. Tested with a fake queue.
 //!
-//! The pump between a queue and a target, and the binding to the
-//! kernel, are built on it.
+//! The binding to the kernel is built on these.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod pump;
 pub mod translate;
