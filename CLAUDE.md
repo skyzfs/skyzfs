@@ -102,12 +102,16 @@ when it merges.
   fails when a property the design depends on does not hold on the
   runner (`pin_*` lines in its summary).
 - **The replay rig.** `skyzfs-replay-rig.yml` runs on a pull request
-  that touches `tests/kernel/`, and by dispatch, and takes about fifteen
-  minutes. It records a pool's writes and checks the pool at every
-  record prefix. It also fails when a negative control's result differs
-  from the table `EXPECTED` in `tests/kernel/replay_check.py`, in either
-  direction: changing what the rig catches means changing that table on
-  purpose. Every push starts a run, so cancel the superseded ones.
+  that touches `tests/kernel/`, and by dispatch. It has two kernel jobs,
+  one per pool layout, of about twenty and twenty-six minutes. It
+  records a pool's writes and checks the pool at every record prefix,
+  every copy of every reachable block at the first and last prefix of
+  each transaction group, and what `fsync` promised. It also fails when
+  a negative control's result differs from the table `EXPECTED` in
+  `tests/kernel/replay_check.py`, in either direction: changing what the
+  rig catches means changing that table on purpose. A newer push to a
+  pull request cancels the older run. The dispatch input `discard`
+  chooses whether a discarded range is zeroed or left as it was.
 - **The benchmark runs by dispatch only** on `zfs-topology` and
   `skyzfs-*` branches: dispatch `topology-bench.yml` with the branch as
   the ref. A push no longer starts it there. On any other branch but
