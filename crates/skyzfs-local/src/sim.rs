@@ -388,11 +388,19 @@ impl State {
     }
 
     /// Forget the files that nothing can reach any more: no name, no
-    /// name a power cut could bring back, and no open handle.
+    /// name a power cut could bring back, and no open handle. A power
+    /// cut can bring back a durable name, and the name of a creation
+    /// that is not synced yet, whatever was done to that name since: it
+    /// may keep the creation and lose a removal that followed it.
     fn drop_unreachable(&mut self) {
         let (names, durable, open) = (&self.names, &self.durable_names, &self.open);
+        let pending = &self.pending_names;
         self.inodes.retain(|inode, _| {
-            open.contains_key(inode) || names.values().chain(durable.values()).any(|i| i == inode)
+            open.contains_key(inode)
+                || names.values().chain(durable.values()).any(|i| i == inode)
+                || pending
+                    .iter()
+                    .any(|op| matches!(op, NameOp::Create(_, created) if created == inode))
         });
     }
 
@@ -532,6 +540,19 @@ impl SimDisk {
     /// device count alike. A failed read changes nothing.
     pub fn fail_read(&self, after: u64, sticky: bool) {
         self.lock().read_fault = Some(Fault { after, sticky });
+    }
+
+    /// The names that do not lead to a file. There are none: this is
+    /// for tests to check the disk itself with.
+    pub fn dangling_names(&self) -> Vec<String> {
+        let state = self.lock();
+        state
+            .names
+            .iter()
+            .chain(&state.durable_names)
+            .filter(|(_, inode)| !state.inodes.contains_key(inode))
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     /// The bytes the device holds of every file, by name, and each
@@ -1225,6 +1246,64 @@ mod tests {
                 }
                 assert!(old.read_at(0, &mut buf).is_err());
                 assert_eq!(disk.list().unwrap().len(), usize::from(replace));
+            }
+        }
+    }
+
+    /// Names: a file that was created and removed again before any
+    /// directory sync is still there if a power cut keeps the creation
+    /// and loses the removal, with its synced content, also when its
+    /// last handle was dropped or the process was killed before the
+    /// cut. The same when it was renamed in between.
+    #[test]
+    fn a_power_cut_can_bring_back_a_file_that_was_created_and_removed() {
+        struct Keep(Vec<bool>);
+        impl Cut for Keep {
+            fn sector(&mut self, _: Option<&str>, _: u64, _: usize) -> Fate {
+                Fate::Latest
+            }
+            fn name(&mut self, index: usize, pending: usize) -> bool {
+                assert_eq!(pending, self.0.len());
+                self.0[index]
+            }
+            fn length(&mut self, _: Option<&str>) -> bool {
+                true
+            }
+        }
+        for rename in [false, true] {
+            for kill in [false, true] {
+                let disk = SimDisk::new(0);
+                let mut a = disk.create("a").unwrap();
+                a.write_at(0, &[4; 8]).unwrap();
+                a.sync().unwrap();
+                let last = if rename {
+                    disk.rename("a", "b").unwrap();
+                    "b"
+                } else {
+                    "a"
+                };
+                disk.remove(last).unwrap();
+                drop(a);
+                if kill {
+                    disk.kill();
+                }
+                assert!(disk.dangling_names().is_empty());
+                // The creation survives, and the rename; the removal
+                // does not.
+                let kept = if rename {
+                    vec![true, true, false]
+                } else {
+                    vec![true, false]
+                };
+                disk.power_cut(Keep(kept));
+                assert_eq!(disk.list().unwrap(), vec![last.to_owned()]);
+                assert!(disk.dangling_names().is_empty());
+                assert_eq!(read(&disk, last, 0, 8), [4; 8]);
+                // Once the removal is durable the file is gone for good.
+                disk.remove(last).unwrap();
+                Dir::sync(&disk).unwrap();
+                disk.power_cut(KeepAll);
+                assert!(disk.list().unwrap().is_empty());
             }
         }
     }

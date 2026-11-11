@@ -529,6 +529,11 @@ impl Run {
                 self.recover(true)?;
             }
         }
+        // The disk itself: every name leads to a file, whatever was cut.
+        let dangling = self.disk.dangling_names();
+        if !dangling.is_empty() {
+            return Err(format!("the disk has names without files: {dangling:?}"));
+        }
         self.compare()
     }
 
