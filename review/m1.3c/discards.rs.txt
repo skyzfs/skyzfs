@@ -1,0 +1,17 @@
+// Appended to crates/skyzfs-local/src/store/tests.rs for the run.
+#[test]
+fn review_discards_are_outside_the_bound() {
+    let env = environments(0).remove(0);
+    let (_disk, mut store) = env.fresh().expect("a store");
+    write(&mut store, 0, 1, 1).expect("write");
+    for n in 0..5000u64 {
+        ok(&mut store, Op::Discard { offset: (n % 64) * BLOCK, len: BLOCK }).expect("discard");
+    }
+    flush(&mut store).expect("flush");
+    let before = store.core.log.walked();
+    let state = store.log_state();
+    let done = step(&mut store, StepBound { payload: u64::MAX, records: 1 }).expect("step");
+    eprintln!("step {done:?}; log was {state:?}; walked {}", store.core.log.walked() - before);
+}
+// Output: step Step { start: Lsn(332352), records: 1, payload: 4096, more: false };
+// log was LogState { start: 4096, end: 332352, durable: 332352, .. }; walked 15006
