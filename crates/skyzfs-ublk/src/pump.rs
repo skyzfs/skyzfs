@@ -364,6 +364,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         &mut self.target
     }
 
+    /// End the pump and give its target back: for a caller that must
+    /// keep the target alive (the store holds the volume's lock) beyond
+    /// the thread the pump ran on. The queue and the record are
+    /// dropped.
+    pub fn into_target(self) -> T {
+        self.target
+    }
+
     /// The record of what was acknowledged.
     pub fn ack(&mut self) -> &mut A {
         &mut self.ack

@@ -34,7 +34,7 @@
 //! the queue is dropped (a stop, an error, a queue that could not be
 //! made whole) while the device is live, each tag's fetch still names
 //! its buffer, and a request that arrives while the thread goes on to
-//! other work (the store's shutdown runs on it) is copied to that
+//! other work (whatever the caller's body does before it returns) is copied to that
 //! address. (Read in the driver's source, `ublk_drv.c`: a request
 //! reaches the server through task work on the queue's task, where a
 //! write's data is copied to the address of the tag's fetch command.)

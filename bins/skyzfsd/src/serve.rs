@@ -159,6 +159,42 @@ fn boot(serve: &Serve) -> io::Result<[u8; 16]> {
     }
 }
 
+/// Run `pump` until it stops, calling `each` after every turn (with
+/// `false`) and once after the last (with `true`), and give the pump's
+/// target back with how it stopped: `None` if the pump panicked.
+///
+/// The target is the store, which holds the volume's lock. It is not
+/// dropped on the queue's thread, where its end would free the lock
+/// while the main thread still has the failure's cleanup to do: it
+/// goes back as the thread's result, and the lock is held until the
+/// main thread drops it. That holds when the pump panics too: the
+/// panic is caught here, the pump is still whole enough to give its
+/// target up (a panic is no reason to trust what it did, but the
+/// target is moved, not used), and the main thread gets the store and
+/// reports the panic.
+pub fn pumped<Q, T, A>(
+    mut pump: Pump<Q, T, A>,
+    mut each: impl FnMut(&mut Pump<Q, T, A>, bool),
+) -> (Option<Stopped>, T)
+where
+    Q: skyzfs_ublk::pump::Queue,
+    T: skyzfs_ublk::pump::Positions,
+    A: skyzfs_ublk::pump::AckRecord,
+{
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let stopped = loop {
+            if let Some(stopped) = pump.turn() {
+                break stopped;
+            }
+            each(&mut pump, false);
+        };
+        each(&mut pump, true);
+        stopped
+    }))
+    .ok();
+    (stopped, pump.into_target())
+}
+
 /// What the main thread and the queue's thread share.
 #[derive(Default)]
 struct Flags {
@@ -351,18 +387,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             move |queue| {
                 let (queue, ack) =
                     Delayed::new(queue, SharedAck::new(ack), delay, hold, move || wake.wake());
-                let mut pump = Pump::new(queue, served, ack);
-                let stopped = loop {
-                    if let Some(stopped) = pump.turn() {
-                        break stopped;
+                // The store goes back to the main thread with the
+                // outcome: the volume's lock is held until the main
+                // thread lets go of it.
+                pumped(Pump::new(queue, served, ack), |pump, ended| {
+                    post(&board, pump);
+                    if !ended {
+                        faults(pump, &flags, &mut fail_after);
                     }
-                    post(&board, &mut pump);
-                    faults(&mut pump, &flags, &mut fail_after);
-                };
-                post(&board, &mut pump);
-                // The pump is dropped here, and with it the store: the
-                // volume's lock is held until then.
-                stopped
+                })
             }
         })
         .map_err(|e| format!("the queue of device {number}: {e}"))?;
@@ -481,8 +514,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     };
     if why == Why::Failed {
-        // The store still holds the volume's lock: the queue's thread
-        // has not ended, or has only just.
+        // The store still holds the volume's lock: it is in the pump on
+        // the queue's thread, or in that thread's result, which nobody
+        // has taken yet. It is let go of when this function returns.
         let (failure, written) =
             lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
@@ -498,14 +532,26 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // The delete takes the queue down. A stop as well, for a
         // device whose delete did not.
         stopper.stop();
-        let _ = serving.join();
+        let _store = serving.join();
         finish(&board);
         return Ok(Exit::Failed);
     }
     if why == Why::Stop {
         stopper.stop();
     }
-    let stopped = serving.join().map_err(|e| e.to_string());
+    // `_store` holds the volume's lock until this function returns:
+    // past the failure's cleanup below, which writes the failure note
+    // and deletes the device under its number. Without the lock a
+    // detach or another serve could act on the attachment in between,
+    // and this process would delete a device it no longer owns.
+    let (stopped, _store) = match serving.join() {
+        Ok((Some(stopped), store)) => (Ok(stopped), Some(store)),
+        Ok((None, store)) => (
+            Err(format!("the queue's thread of device {number} panicked")),
+            Some(store),
+        ),
+        Err(e) => (Err(e.to_string()), None),
+    };
     finish(&board);
     // A failure can arrive with the queue's end.
     if flags.failed.load(Ordering::SeqCst) {
@@ -633,5 +679,90 @@ mod tests {
             nearest_existing(&absolute, Path::new("/nowhere")).expect("absolute"),
             cwd.join("there")
         );
+    }
+
+    /// A queue that says stop at its first wait, or panics there.
+    struct Ending {
+        panics: bool,
+    }
+
+    impl skyzfs_ublk::pump::Queue for Ending {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            _fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            assert!(!self.panics, "the queue panics, as the test asks");
+            Ok(skyzfs_ublk::pump::Wake::Stop)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, _tag: u16, _result: i32, _buf: Option<skyzfs_blk::Buf>) {}
+        fn pause(&mut self) {}
+        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    struct NoRecord;
+
+    impl skyzfs_ublk::pump::AckRecord for NoRecord {
+        fn advance(&mut self, _position: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The volume's lock is still held when the queue's thread has
+    /// ended, by a stop and by a panic alike: the store comes back to
+    /// the thread that joins, which is where the failure's cleanup
+    /// runs, and the lock is free only when that thread drops it.
+    #[test]
+    fn the_volumes_lock_outlives_the_queues_thread_until_the_joiner_lets_go() {
+        use skyzfs_local::fs::FsDir;
+        use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+        for panics in [false, true] {
+            let keep = tempfile::tempdir().expect("a directory");
+            let dir = || FsDir::new(keep.path()).expect("the directory");
+            let config = StoreConfig {
+                volume: *b"a volume on disk",
+                size_mib: 8,
+                base: skyzfs_blk::Base::Empty,
+                align: 4096,
+                segment_size: 8 << 20,
+                write_unit: skyzfs_local::format::Identity::system_write_unit(),
+            };
+            let served = Store::create(dir(), &config, OpenOptions::default())
+                .expect("create")
+                .serve_with(None)
+                .expect("the worker");
+            let turns = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let thread = std::thread::spawn({
+                let turns = turns.clone();
+                move || {
+                    pumped(
+                        Pump::new(Ending { panics }, served, NoRecord),
+                        |_, ended| {
+                            if ended {
+                                turns.fetch_add(1, Ordering::SeqCst);
+                            }
+                        },
+                    )
+                }
+            });
+            let (stopped, store) = thread.join().expect("the panic is caught on the thread");
+            assert_eq!(stopped.is_none(), panics, "{stopped:?}");
+            assert_eq!(turns.load(Ordering::SeqCst), u32::from(!panics));
+            // The queue's thread is gone. This is the moment of the
+            // failure's cleanup: nobody else gets the lock.
+            assert!(
+                matches!(Store::lock_volume(&dir()), Err(StoreError::Locked)),
+                "panics: {panics}: the lock was free after the queue's thread ended"
+            );
+            drop(store);
+            assert!(Store::lock_volume(&dir()).is_ok(), "panics: {panics}");
+        }
     }
 }
