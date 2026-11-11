@@ -8,7 +8,7 @@ use libublk::ctrl::UblkCtrl;
 use libublk::sys;
 use skyzfs_ublk::lifecycle::{AddError, Control, DeviceInfo, DeviceState, Shape};
 
-use crate::{io_error, raw, FLAGS, MAX_IO};
+use crate::{raw, FLAGS, MAX_IO};
 
 /// The kernel's ublk driver, as the lifecycle sees it.
 ///
@@ -52,6 +52,13 @@ impl Kernel {
         Ok(Self)
     }
 }
+
+/// How often the begin of a recovery is asked again while the driver
+/// answers that the device is busy: 50 times, 5 s with [`BUSY_PAUSE`].
+pub const BUSY_RETRIES: u32 = 50;
+
+/// How long between two such tries.
+pub const BUSY_PAUSE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The path of the block device with this number.
 pub fn block_device(number: u32) -> String {
@@ -119,16 +126,22 @@ impl Control for Kernel {
         raw::delete(number)
     }
 
+    /// The driver answers `EBUSY` while the server before is still
+    /// being torn down, which can outlast the moment the device is
+    /// first reported as waiting. That is asked again, up to
+    /// [`BUSY_RETRIES`] times, [`BUSY_PAUSE`] apart; every other answer
+    /// is passed on at once. (The retry is this crate's reading: the
+    /// library does the same, for up to 30 s.)
     fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
-        // A control object of the library for a device that exists,
-        // made without the add flag: dropping it deletes nothing.
-        let Ok(id) = i32::try_from(number) else {
-            return Err(io::Error::other("no such device number"));
-        };
-        let control = UblkCtrl::new_simple(id).map_err(io_error)?;
-        match control.start_user_recover().map_err(io_error)? {
-            refused if refused < 0 => Err(io::Error::from_raw_os_error(-refused)),
-            _ => Ok(()),
+        let mut tries = 0;
+        loop {
+            match raw::begin_recovery(number) {
+                Err(e) if e.raw_os_error() == Some(libc::EBUSY) && tries < BUSY_RETRIES => {
+                    tries += 1;
+                    std::thread::sleep(BUSY_PAUSE);
+                }
+                other => return other,
+            }
         }
     }
 

@@ -1,22 +1,29 @@
 name: skyzfs-ublk-spike
 
-# The libublk spike of work package M1.3b (docs/skyzfs-ublk-spike.md):
-# builds `skyzfs-ublk-spike` and runs `tests/kernel/ublk-spike.sh`
-# against the runner's kernel. It runs nothing but the spike. It prints
-# observations and judges nothing: the job fails only if the program does not build or a served
-# device never comes up. It is temporary: it goes when the spike's
-# answers are recorded and the binding is tested by the daemon rig.
+# Temporary, for work package M1.3b: the kernel rig of the daemon
+# (tests/kernel/daemon-rig.sh) pointed at `skyzfsd` itself and not at
+# the stand-in. It is how the binding (crates/skyzfs-ublk-sys) gets its
+# first runs against a kernel. It goes before M1.3b's pull request: the
+# proper way is an input of skyzfs-daemon-rig.yml, which is the testing
+# session's.
+#
+# The daemon runs with its safeguards on: no `--unsafe-allow-*` in
+# RIG_SERVE_ARGS.
 on:
   workflow_dispatch:
-  # A workflow that has never run cannot be dispatched from a branch: a
-  # push that changes the spike runs it.
-  push:
-    branches: ['skyzfs-coding*']
-    paths:
-      - .github/workflows/skyzfs-ublk-spike.yml
+    inputs:
+      checks:
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request"
+        default: "a b c d"
+      kills:
+        description: "kill -9 of the server under load, how many times"
+        default: "20"
+      hold_s:
+        description: "seconds one request is held"
+        default: "300"
 
 concurrency:
-  group: ublk-spike-${{ github.ref }}
+  group: daemon-first-run-${{ github.ref }}
   cancel-in-progress: true
 
 # The job runs branch code and third-party code as root: its token can
@@ -25,39 +32,69 @@ permissions:
   contents: read
 
 jobs:
-  spike:
+  rig:
     name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 20
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         image: [ubuntu-26.04, ubuntu-24.04]
     steps:
       - uses: actions/checkout@v6
-      - name: What the build needs
+      - name: Rig, on the daemon
+        # The settings go in a file: ubuntu-26.04's sudo-rs does not
+        # carry the environment through.
+        env:
+          CHECKS: ${{ inputs.checks || 'a b c d' }}
+          KILLS: ${{ inputs.kills || '20' }}
+          HOLD_S: ${{ inputs.hold_s || '300' }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libclang-dev fio libdevmapper-dev libudev-dev
+          [[ $CHECKS =~ ^[abcde](\ [abcde])*$ ]] || { echo "::error::checks are letters of a b c d e with a space between: '$CHECKS'"; exit 64; }
+          for v in "$KILLS" "$HOLD_S"; do
+            [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
+          done
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           rustup update stable
-          rustc --version
-      - name: Build
-        run: cargo build --release --locked -p skyzfs-ublk --features spike --bin skyzfs-ublk-spike
-      - name: Run
-        run: sudo tests/kernel/ublk-spike.sh "$PWD/target/release/skyzfs-ublk-spike" "$PWD/spike-out"
-      - name: Answers
+          cargo build --release --locked -p skyzfsd --features test-hooks
+          if [[ $CHECKS == *c* ]]; then
+            cargo build --release --locked -p skyzfs-blkcheck
+          fi
+          {
+            printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
+            printf 'export RIG_CHECKS=%q\n' "$CHECKS"
+            echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
+            printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
+          } > "$RUNNER_TEMP/rig.env"
+          echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
+          sudo bash -c '. "$1" && exec tests/kernel/daemon-rig.sh "$2" /mnt/skz-daemon-rig' \
+            rig "$RUNNER_TEMP/rig.env" "$PWD/rig-out"
+      - name: What is under /run/ublksrvd and the daemon's run directory
         if: always()
         run: |
-          sudo chmod -R a+rX spike-out 2>/dev/null || true
           {
-            echo "### libublk spike on ${{ matrix.image }}"
+            echo "### after the rig on ${{ matrix.image }}"
             echo '```'
-            cat spike-out/answers.txt 2>/dev/null || grep '^spike_' spike-out/spike.log 2>/dev/null || echo "no answers"
+            sudo ls -la /run/ublksrvd 2>&1 || true
+            sudo find /run/skyzfsd -maxdepth 2 2>&1 | head -50 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Judge against the table
+        if: always()
+        run: |
+          sudo chmod -R a+rX rig-out 2>/dev/null || true
+          rc=0
+          python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d}" > summary.md || rc=$?
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          cp summary.md rig-out/ 2>/dev/null || true
+          case $rc in
+            0) ;;
+            1) echo "::error title=daemon rig::results differ from the table EXPECTED"; exit 1 ;;
+            *) echo "::error title=daemon rig::the rig itself failed; this is not a verdict on the server"; exit 2 ;;
+          esac
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: ublk-spike-${{ matrix.image }}
-          path: spike-out/
+          name: daemon-first-run-${{ matrix.image }}
+          path: rig-out/
           retention-days: 30

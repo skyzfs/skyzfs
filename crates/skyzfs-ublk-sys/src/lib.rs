@@ -9,16 +9,17 @@
 //! # What is the library's and what is ours
 //!
 //! The queue is `libublk` `=0.4.8`: the fetch, the commit, the ring and
-//! its idle time-out. So are three control steps, through a control
+//! its idle time-out. So are two control steps, through a control
 //! object of the library that is made **only for a device that already
 //! exists and with none of the library's flags**: the parameters and
-//! the start of a device that was never started, and the begin of a
-//! recovery.
+//! the start of a device that was never started. The same object is
+//! the handle the library's queue needs.
 //!
-//! Four control commands are sent by this crate itself ([`raw`]): the
-//! add, the lookup (a device's info and its parameters), the
-//! asynchronous delete, and the end of a recovery (for the reason
-//! given with the library's file, below). The kernel spike (`docs/skyzfs-ublk-spike.md`)
+//! The other control commands are sent by this crate itself ([`raw`]):
+//! the add, the lookup (a device's info and its parameters), the
+//! asynchronous delete, and the begin and the end of a recovery (the
+//! end for the reason given with the library's file, below; the begin
+//! so that a take-over gets the driver's own answer). The kernel spike (`docs/skyzfs-ublk-spike.md`)
 //! showed why. The library answers every failed control command with
 //! "not supported", so a taken number cannot be told from any other
 //! failure; and its failed add deletes whatever device stands under the
