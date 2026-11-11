@@ -41,84 +41,87 @@ fn slot_index(name: &str) -> Option<usize> {
 /// Deliberate defects, for testing that the tests notice. Not part of
 /// the API: the crate's own tests set them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u32);
+pub(crate) struct Mutants(pub(crate) u64);
 
 impl Mutants {
     /// A record whose payload is damaged is skipped, and the records
     /// after it are accepted.
-    pub(crate) const ACCEPT_AFTER_GAP: u32 = 1 << 0;
+    pub(crate) const ACCEPT_AFTER_GAP: u64 = 1 << 0;
     /// Recovery does not bump the epoch.
-    pub(crate) const NO_EPOCH_BUMP: u32 = 1 << 1;
+    pub(crate) const NO_EPOCH_BUMP: u64 = 1 << 1;
     /// Recovery does not seal the end of the prefix: it writes nothing
     /// over what it found there.
-    pub(crate) const NO_TAIL_ERASE: u32 = 1 << 2;
+    pub(crate) const NO_TAIL_ERASE: u64 = 1 << 2;
     /// Recovery does not erase segments beyond the prefix.
-    pub(crate) const KEEP_STALE_SEGMENTS: u32 = 1 << 3;
+    pub(crate) const KEEP_STALE_SEGMENTS: u64 = 1 << 3;
     /// Records are not chained: every header is checked against a
     /// constant.
-    pub(crate) const NO_CHAIN: u32 = 1 << 4;
+    pub(crate) const NO_CHAIN: u64 = 1 << 4;
     /// A record's epoch is not checked.
-    pub(crate) const NO_EPOCH_CHECK: u32 = 1 << 5;
+    pub(crate) const NO_EPOCH_CHECK: u64 = 1 << 5;
     /// A record's own position is not checked.
-    pub(crate) const NO_POSITION_CHECK: u32 = 1 << 6;
+    pub(crate) const NO_POSITION_CHECK: u64 = 1 << 6;
     /// A record's payload is not checked: a torn record is accepted.
-    pub(crate) const NO_DATA_CHECK: u32 = 1 << 7;
+    pub(crate) const NO_DATA_CHECK: u64 = 1 << 7;
     /// Sync returns without syncing.
-    pub(crate) const SYNC_EARLY: u32 = 1 << 8;
+    pub(crate) const SYNC_EARLY: u64 = 1 << 8;
     /// Sync syncs only the segment being written.
-    pub(crate) const SYNC_ONLY_TAIL: u32 = 1 << 9;
+    pub(crate) const SYNC_ONLY_TAIL: u64 = 1 << 9;
     /// Sync does not sync the directory after a segment file was created.
-    pub(crate) const SYNC_NO_DIR: u32 = 1 << 10;
+    pub(crate) const SYNC_NO_DIR: u64 = 1 << 10;
     /// A failed sync does not fail the log; the next one may succeed.
-    pub(crate) const RETRY_SYNC: u32 = 1 << 11;
+    pub(crate) const RETRY_SYNC: u64 = 1 << 11;
     /// Recovery validates through the cache.
-    pub(crate) const VALIDATE_CACHED: u32 = 1 << 12;
+    pub(crate) const VALIDATE_CACHED: u64 = 1 << 12;
     /// Recovery does not sync before it validates.
-    pub(crate) const NO_SYNC_BEFORE_VALIDATE: u32 = 1 << 13;
+    pub(crate) const NO_SYNC_BEFORE_VALIDATE: u64 = 1 << 13;
     /// Reclaim frees segments before the new floor is durable.
-    pub(crate) const REUSE_BEFORE_FLOOR_SYNC: u32 = 1 << 14;
+    pub(crate) const REUSE_BEFORE_FLOOR_SYNC: u64 = 1 << 14;
     /// Reclaim ignores the hold.
-    pub(crate) const IGNORE_HOLD: u32 = 1 << 15;
+    pub(crate) const IGNORE_HOLD: u64 = 1 << 15;
     /// No marker is written when the log fails.
-    pub(crate) const NO_MARKER: u32 = 1 << 16;
+    pub(crate) const NO_MARKER: u64 = 1 << 16;
     /// The epoch of a segment's header is not checked against the
     /// records around it.
-    pub(crate) const NO_SEGMENT_EPOCH_CHECK: u32 = 1 << 17;
+    pub(crate) const NO_SEGMENT_EPOCH_CHECK: u64 = 1 << 17;
     /// The superblock is always written to the same copy.
-    pub(crate) const ONE_SUPER_COPY: u32 = 1 << 18;
+    pub(crate) const ONE_SUPER_COPY: u64 = 1 << 18;
     /// A prefix that ends below the durable floor is accepted.
-    pub(crate) const NO_DURABLE_FLOOR: u32 = 1 << 19;
+    pub(crate) const NO_DURABLE_FLOOR: u64 = 1 << 19;
     /// Of two files that claim the same part of the log, the one written
     /// in the earlier epoch is taken.
-    pub(crate) const PREFER_OLDER_CLAIM: u32 = 1 << 20;
+    pub(crate) const PREFER_OLDER_CLAIM: u64 = 1 << 20;
     /// A record appended after a sync or a recovery goes into the block
     /// that holds durable records, and so rewrites it.
-    pub(crate) const REWRITE_DURABLE_BLOCK: u32 = 1 << 21;
+    pub(crate) const REWRITE_DURABLE_BLOCK: u64 = 1 << 21;
     /// Headers are tagged with a key that everybody knows: a payload can
     /// be made to look like a record.
-    pub(crate) const PUBLIC_KEY: u32 = 1 << 22;
+    pub(crate) const PUBLIC_KEY: u64 = 1 << 22;
     /// A read error during recovery is taken for the end of the log.
-    pub(crate) const READ_ERROR_ENDS_LOG: u32 = 1 << 24;
+    pub(crate) const READ_ERROR_ENDS_LOG: u64 = 1 << 24;
     /// The failure marker's name is not synced.
-    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 25;
+    pub(crate) const MARKER_UNSYNCED: u64 = 1 << 25;
     /// A segment header of a later epoch than the superblock's is taken
     /// as it is.
-    pub(crate) const NO_HEADER_FUTURE_CHECK: u32 = 1 << 26;
+    pub(crate) const NO_HEADER_FUTURE_CHECK: u64 = 1 << 26;
     /// A reclaim writes its superblock in the epoch it found.
-    pub(crate) const RECLAIM_KEEPS_EPOCH: u32 = 1 << 27;
+    pub(crate) const RECLAIM_KEEPS_EPOCH: u64 = 1 << 27;
     /// A replay does not stop at a record that starts where the range
     /// ends.
-    pub(crate) const REPLAY_PAST_START: u32 = 1 << 28;
+    pub(crate) const REPLAY_PAST_START: u64 = 1 << 28;
     /// A reclaim takes any position for the start of the log.
-    pub(crate) const RECLAIM_UNCHECKED: u32 = 1 << 29;
+    pub(crate) const RECLAIM_UNCHECKED: u64 = 1 << 29;
     /// A replay goes beyond the durable position.
-    pub(crate) const REPLAY_UNSYNCED: u32 = 1 << 30;
+    pub(crate) const REPLAY_UNSYNCED: u64 = 1 << 30;
     /// The failure observer is called after the marker was attempted.
-    pub(crate) const OBSERVE_AFTER_MARKER: u32 = 1 << 31;
+    pub(crate) const OBSERVE_AFTER_MARKER: u64 = 1 << 31;
+    /// A reclaim keeps the cursor it had for the log's start and calls
+    /// it current.
+    pub(crate) const STALE_CURSOR: u64 = 1 << 32;
     /// A failed log still replays what its cache shows.
-    pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
+    pub(crate) const REPLAY_WHEN_FAILED: u64 = 1 << 23;
 
-    fn has(self, flag: u32) -> bool {
+    fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
 }
@@ -600,6 +603,14 @@ pub struct Log<D: Dir> {
     limit: Option<usize>,
     /// Told once, when the log fails.
     observer: Option<Observer>,
+    /// A validated cursor at or below the log's start, with the base
+    /// of the segment it is in: where the last reclaim's walk to its
+    /// target ended. A replay that begins in that segment begins here
+    /// and not at the segment's first record.
+    start: Option<(u64, Cursor)>,
+    /// Records validated by replays, for tests of what a replay costs.
+    #[cfg(test)]
+    walked: std::cell::Cell<u64>,
     mutants: Mutants,
 }
 
@@ -920,6 +931,9 @@ impl<D: Dir> Log<D> {
             closed: stopped == Stop::NoNextSegment,
             hold: None,
             observer: None,
+            start: None,
+            #[cfg(test)]
+            walked: std::cell::Cell::new(0),
             failed: false,
             dirty: BTreeSet::new(),
             dir_dirty: false,
@@ -1504,6 +1518,33 @@ impl<D: Dir> Log<D> {
         limit: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
+        self.walk(from, to, limit, visit).map(|_| ())
+    }
+
+    /// Records validated by replays so far.
+    #[cfg(test)]
+    pub(crate) fn walked(&self) -> u64 {
+        self.walked.get()
+    }
+
+    /// The replay. Returns where the walk ended: a cursor at or below
+    /// `to`, validated from the segment's beginning or from the cursor
+    /// kept for the log's start, and the base of its segment.
+    ///
+    /// A walk has to begin where the chain's value is known. That is a
+    /// segment's first record, or the cursor a reclaim left at the
+    /// log's start: without it every replay would validate again what
+    /// lies between the segment's beginning and the start, and a
+    /// checkpoint in batches would cost the square of the records in a
+    /// segment. A cursor that does not belong where it is used shows as
+    /// a record that does not validate, never as a wrong record.
+    fn walk(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(u64, Cursor), LogError> {
         if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
             return Err(LogError::Failed);
         }
@@ -1532,10 +1573,17 @@ impl<D: Dir> Log<D> {
             chain: rules.seed(base),
             min_epoch: 0,
         };
+        if let Some((kept_base, kept)) = self.start {
+            if kept_base == base && kept.position <= from {
+                cursor = kept;
+            }
+        }
         while cursor.position < to {
             let Some(&index) = self.live.get(&base) else {
                 return Err(Corruption::MissingSegment { base }.into());
             };
+            #[cfg(test)]
+            self.walked.set(self.walked.get() + 1);
             let step = rules
                 .record(&self.slots[index].file, &mut reader, &mut window, &cursor)
                 .map_err(|e| read_error("reading the log", &e))?;
@@ -1602,7 +1650,7 @@ impl<D: Dir> Log<D> {
                 min_epoch: header.epoch,
             };
         }
-        Ok(())
+        Ok((base, cursor))
     }
 
     /// Read `buf.len()` bytes of the payload of the write record that
@@ -1683,9 +1731,11 @@ impl<D: Dir> Log<D> {
         // unreadable from its start. An empty replay at the position
         // walks its segment and refuses a position inside a record or
         // in a gap.
-        if !self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
-            self.replay_within(target, target, self.tail, &mut |_| {})?;
-        }
+        let walked = if self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
+            None
+        } else {
+            Some(self.walk(target, target, self.tail, &mut |_| {})?)
+        };
         // A new epoch, as with every superblock that is written: what
         // is written from now on, a record or the header of a segment
         // file this reclaim frees, then carries an epoch the other copy
@@ -1707,6 +1757,13 @@ impl<D: Dir> Log<D> {
         }
         let first = self.current.identity.base_of(target);
         self.live.retain(|base, _| *base >= first);
+        // The walk to the new start is where the next replay begins.
+        self.start = match (self.start, walked) {
+            (Some((_, stale)), _) if self.mutants.has(Mutants::STALE_CURSOR) => {
+                Some((first, stale))
+            }
+            (_, walked) => walked,
+        };
         Ok(target)
     }
 }

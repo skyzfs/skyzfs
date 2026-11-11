@@ -216,7 +216,7 @@ fn fill_to_roll(log: &mut SimLog, env: &Env, tag: &mut u8) -> Result<Vec<(u8, Ap
     }
 }
 
-fn environments(mutants: u32) -> Vec<Env> {
+fn environments(mutants: u64) -> Vec<Env> {
     let mut out = Vec::new();
     for align in [64, 4096] {
         for garbage in [false, true] {
@@ -242,7 +242,7 @@ fn holds(scenario: fn(&Env) -> Outcome) {
 
 /// The scenario holds for the log as it is, and fails for the log with
 /// `mutants` in every environment that `where_` selects.
-fn caught(scenario: fn(&Env) -> Outcome, mutants: u32, where_: fn(&Env) -> bool) {
+fn caught(scenario: fn(&Env) -> Outcome, mutants: u64, where_: fn(&Env) -> bool) {
     holds(scenario);
     let mut ran = 0;
     for env in environments(mutants).into_iter().filter(where_) {
@@ -255,7 +255,7 @@ fn caught(scenario: fn(&Env) -> Outcome, mutants: u32, where_: fn(&Env) -> bool)
 }
 
 /// The scenario still holds with `mutants`: another defence covers.
-fn covered(scenario: fn(&Env) -> Outcome, mutants: u32) {
+fn covered(scenario: fn(&Env) -> Outcome, mutants: u64) {
     for env in environments(mutants) {
         if let Err(why) = scenario(&env) {
             panic!("the defect {mutants:#x} alone already breaks {env:?}: {why}");
@@ -2511,4 +2511,77 @@ fn the_observer_is_told_before_the_marker_is_attempted() {
         Ok(())
     }
     caught(scenario, Mutants::OBSERVE_AFTER_MARKER, everywhere);
+}
+
+/// The cursor a reclaim keeps at the log's start changes what a replay
+/// costs and nothing else: after every reclaim, to each record's start
+/// in turn and across segments, a replay of what is left gives the
+/// records that are left, and so does a new instance, which has no
+/// cursor. Mutant: a reclaim that keeps the cursor it had and calls it
+/// current; a replay from it does not validate, and says so.
+#[test]
+fn a_replay_from_the_kept_cursor_gives_the_same_records() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut starts = Vec::new();
+        for tag in 1..=40u8 {
+            starts.push(put(&mut log, env, tag)?.start);
+            if tag % 3 == 0 {
+                s(log.sync())?;
+            }
+        }
+        s(log.sync())?;
+        if log.segment_files() < 3 {
+            return Err("the records fit in fewer than three segments".into());
+        }
+        for (i, start) in starts.iter().enumerate().skip(1) {
+            s(log.reclaim(*start))?;
+            let want: Vec<u8> = (i as u8 + 1..=40).collect();
+            expect(&log, &want, "after a reclaim, from the kept cursor")?;
+            // A part of what is left, beginning behind the start.
+            if let Some(later) = starts.get(i + 2) {
+                let got = s(tags_between(&log, *later, log.tail()))?;
+                if got != want[2..] {
+                    return Err(format!("from a later record: {got:?}"));
+                }
+            }
+            if i % 7 == 0 {
+                drop(log);
+                log = env.reopen(&disk)?.0;
+                expect(&log, &want, "in a new instance, without a cursor")?;
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::STALE_CURSOR, everywhere);
+}
+
+/// What a checkpoint in batches costs the log is linear in the records:
+/// 700 records in one segment, taken in turn by a replay of the next
+/// one and a reclaim behind it, validate a few records each time and
+/// not the segment's prefix again. Without the kept cursor this is
+/// about 490,000 validations (measured); with it, under 3,500.
+#[test]
+fn replays_from_the_start_do_not_walk_the_segment_again() {
+    let env = environments(0)
+        .into_iter()
+        .find(|env| env.align == 64)
+        .unwrap();
+    let (_disk, mut log) = env.fresh().unwrap();
+    let mut records = Vec::new();
+    for n in 0..700u64 {
+        records.push(log.append(Kind::Discard, n * 4096, 4096, &[]).unwrap());
+    }
+    log.sync().unwrap();
+    assert_eq!(log.segment_files(), 1, "the records are in one segment");
+    let before = log.walked();
+    for record in &records {
+        let mut seen = 0;
+        log.replay(record.start, record.end, &mut |_| seen += 1)
+            .unwrap();
+        assert_eq!(seen, 1);
+        log.reclaim(record.end).unwrap();
+    }
+    let walked = log.walked() - before;
+    assert!(walked < 5 * 700, "{walked} records validated");
 }

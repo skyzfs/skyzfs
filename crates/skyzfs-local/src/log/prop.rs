@@ -664,7 +664,7 @@ proptest! {
 
 /// Whether random programs notice a log with `mutants`, in one of
 /// `shapes`, within `cases`.
-fn noticed(mutants: u32, shapes: &[Shape], cases: u32) -> bool {
+fn noticed(mutants: u64, shapes: &[Shape], cases: u32) -> bool {
     let mut runner = TestRunner::new_with_rng(
         ProptestConfig {
             cases,

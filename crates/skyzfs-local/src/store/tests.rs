@@ -31,7 +31,7 @@ struct Env {
     base: Base,
     segments: Option<usize>,
     /// Defects of the log under the store.
-    log_mutants: u32,
+    log_mutants: u64,
 }
 
 impl Env {
@@ -689,7 +689,9 @@ fn a_checkpoint_in_batches_can_be_cut_anywhere() {
 /// blocks a checkpoint has to save: 2048 isolated one-block
 /// write-zeroes records on a volume of 2048 write units of 16 KiB make
 /// 6144 blocks to save, and the file never holds more than one batch
-/// of them. After a restart every block is right.
+/// of them; and the checkpoint's work on the log grows with the
+/// records, not with their square. After a restart every block is
+/// right.
 #[test]
 fn many_isolated_records_do_not_grow_the_preimage_file() {
     let env = Env {
@@ -714,9 +716,14 @@ fn many_isolated_records_do_not_grow_the_preimage_file() {
     }
     flush(&mut store).unwrap();
     let before = disk.stats();
+    let walked = store.core.log.walked();
     checkpoint(&mut store).unwrap();
     let batches = (disk.stats().syncs - before.syncs) / 3;
     assert!(batches >= 24, "{batches} batches");
+    // And the log's records are validated a few times each, not once
+    // for every batch behind them in the segment.
+    let walked = store.core.log.walked() - walked;
+    assert!(walked <= 8 * 2048, "{walked} records validated");
     let largest = (4096 + Preimages::table_len(PREIMAGE_BATCH) + PREIMAGE_BATCH * 4096) as u64;
     let len = disk.open(PREIMAGE_NAME).unwrap().len().unwrap();
     assert!(len <= largest && len > 0, "{len} bytes");
@@ -979,7 +986,7 @@ fn a_second_instance_is_refused_and_changes_nothing() {
 /// was in the directory.
 type Seen = std::sync::Arc<std::sync::Mutex<Vec<bool>>>;
 
-fn observed(env: &Env, disk: &SimDisk, log_mutants: u32) -> (OpenOptions, Seen) {
+fn observed(env: &Env, disk: &SimDisk, log_mutants: u64) -> (OpenOptions, Seen) {
     let seen = Seen::default();
     let (watch, record) = (disk.clone(), seen.clone());
     let options = OpenOptions {
@@ -1004,7 +1011,7 @@ fn observed(env: &Env, disk: &SimDisk, log_mutants: u32) -> (OpenOptions, Seen) 
 /// marker.
 #[test]
 fn the_failure_is_announced_before_the_marker_is_attempted() {
-    fn scenario(env: &Env, log_mutants: u32) -> Outcome {
+    fn scenario(env: &Env, log_mutants: u64) -> Outcome {
         for case in 0..3 {
             let (disk, store) = env.fresh()?;
             drop(store);
