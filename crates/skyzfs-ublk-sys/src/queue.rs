@@ -574,8 +574,11 @@ impl Queue for KernelQueue<'_> {
             Buffers::put(place, buf);
         }
         // A request whose buffer never came back (the pump commits a
-        // failed one without it) gets a new one: unlocked, and never
-        // seen in a run. The driver is told whatever address is here.
+        // failed one without it) gets a new one, which the queue does
+        // not lock itself. In the daemon it is locked all the same:
+        // the daemon locks all memory, present and future, unless it
+        // was started with `--allow-unlocked-memory`. Never seen in a
+        // run. The driver is told whatever address is here.
         let own = place.get_or_insert_with(|| Buf::with_capacity(MAX_BLOCKS));
         // The whole buffer, so that the slice is not empty: the library
         // gives the driver the address of a slice that has a length,

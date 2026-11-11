@@ -828,6 +828,20 @@ fn a_device_with_larger_requests_than_the_buffers_is_not_opened() {
 /// asks the add again until it succeeds, within the same limit from
 /// the delete, and prints how often that happened and how long it
 /// took.
+///
+/// Why that is no weakening of what the lifecycle needs, as a reading
+/// of the driver's source and not as something a run showed (the tree
+/// read is newer than the runners' kernels): a lookup finds the
+/// device's entry and takes a reference only if the count is not
+/// already zero, and the number is given up when the release of the
+/// last reference has run. So "nothing to a lookup, taken to an add"
+/// is the time between the last reference going and its release
+/// having run, and nobody holds the device in that time. "Nothing
+/// found means nobody holds it" is what the 5 s rule needs of a
+/// lookup, and that is untouched; that an add succeeds at once the
+/// driver never promised. Seen after a server ended on 26.04 in 1 and
+/// 2 of 39 adds (runs 43079066283, 43080463343) and in 0 of 39 in the
+/// four other job runs of those two and of 43082993738.
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn a_delete_frees_the_number_of_an_unheld_device_within_the_time_the_lifecycle_gives() {
@@ -1504,4 +1518,70 @@ fn the_control_test_program_answers_each_step_in_one_line() {
     let _ = std::fs::remove_file(&file);
     clean(n);
     property("test_program_steps", || result);
+}
+
+/// The control test program deletes its own device while it serves it
+/// (`--delete-after-ms`), which is what a daemon does whose volume
+/// failed. With nothing held the delete returns, the driver ends the
+/// queue, the program says so in its lines and ends by itself, and the
+/// number is free. This is the measure the rig uses with a request
+/// held: the time printed here is the one without.
+#[cfg(feature = "control-test-program")]
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn the_control_test_program_deletes_its_own_device_while_it_serves() {
+    use std::io::Read;
+    let n = number(9);
+    claim(n, "test_program_self_delete");
+    let file = std::env::temp_dir().join(format!("skyzfs-ublk-control-{n}.img"));
+    let _ = std::fs::remove_file(&file);
+    let result = (|| {
+        step(n, &format!("add --size {SIZE} --depth 8"))?;
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_skyzfs-ublk-control"))
+            .args(["serve", &n.to_string(), "--file"])
+            .arg(&file)
+            .args(["--size", &SIZE.to_string(), "--delete-after-ms", "300"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("the program: {e}"))?;
+        let from = Instant::now();
+        let status = loop {
+            match child.try_wait().map_err(|e| e.to_string())? {
+                Some(status) => break status,
+                None if from.elapsed() > Duration::from_secs(30) => {
+                    let _ = child.kill();
+                    return Err("the program had not ended 30 s after its start".into());
+                }
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        };
+        let mut said = String::new();
+        child
+            .stdout
+            .take()
+            .ok_or("no pipe")?
+            .read_to_string(&mut said)
+            .map_err(|e| e.to_string())?;
+        let lines: Vec<&str> = said.lines().collect();
+        let has = |start: &str| lines.iter().any(|l| l.starts_with(start));
+        println!(
+            "control_test_program_self_delete_detail\texit {status:?} after {:?}; {}",
+            from.elapsed(),
+            lines.join(" | ")
+        );
+        if !status.success()
+            || !has(&format!("serve\t{n}\tlive after "))
+            || !has(&format!("self-delete\t{n}\tsent after 300 ms"))
+            || !has(&format!("self-delete\t{n}\treturned after "))
+            || !has(&format!("served\t{n}\tended by the queue ended"))
+        {
+            return Err(format!("exit {status:?}, said {said:?}"));
+        }
+        let mut kernel = kernel()?;
+        until(&mut kernel, n, "gone", Option::is_none)?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&file);
+    clean(n);
+    property("test_program_self_delete", || result);
 }

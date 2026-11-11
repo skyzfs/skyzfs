@@ -579,6 +579,30 @@ impl Board {
     }
 }
 
+/// What every message about a failed or refused volume says of a pool
+/// that is imported on its device, and `status` with it. The daemon
+/// does not act on a pool: it is below ZFS, the device is gone, and it
+/// knows no pool. It says the state and the step; making the pool read
+/// is the operator's, and later the agent's.
+///
+/// What it says was measured by the testing session on the daemon
+/// (runs 43093721420, 43100887191, 43100211375) and read in OpenZFS
+/// 2.4.1 (`zio_done`): after the device is gone the pool's writes fail
+/// at once, and ZFS executes a failed allocating write again without
+/// end instead of suspending, so the pool reads ONLINE with one
+/// transaction group syncing for ever; with a log device, synchronous
+/// writes were still acknowledged minutes later. The first read that
+/// had to reach the device suspended the pool within a second or two
+/// (a read of an uncached file, the start of a scrub). It does not
+/// say "export the pool": what an export does in that state is not
+/// measured. (That a pool is exported before its volume is detached
+/// is said where `detach` is described: that is about before.)
+pub const POOL_WARNING: &str = "a pool imported on this volume's device does not notice that \
+     the device is gone while it only writes: it goes on reading ONLINE and, with a log \
+     device, acknowledging synchronous writes that never reach the volume. A read that must \
+     reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be \
+     imported again before a reboot";
+
 /// The volume's failure note, as `status` found it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Noted {
@@ -598,7 +622,13 @@ pub enum Noted {
 ///
 /// A failure note of this boot decides the state, and is printed after
 /// everything else: its boot, whether a client held the device, why,
-/// and how long ago. A note of another boot is not shown.
+/// and how long ago; then what became of the volume's device
+/// (`failure_device`: none under the recorded number, or which and in
+/// what state, and what removes it) and [`POOL_WARNING`]
+/// (`failure_pool`). All of it comes from the notes and the driver, so
+/// it is the same with no daemon running: this is where an operator
+/// reads a failure or a refused start after the daemon has exited. A
+/// note of another boot is not shown.
 ///
 /// `located` is the device under the volume's recorded number
 /// ([`lifecycle::locate`](crate::lifecycle::locate)), `status` the
@@ -722,6 +752,32 @@ pub fn report(
                 uptime_ms.saturating_sub(stored.written_ms).to_string(),
             ));
         }
+    }
+    if failure.is_some() {
+        let device = match located {
+            None => "none under the volume's recorded number: deleted, or never there".to_string(),
+            Some(l) if l.whose == Whose::Ours => format!(
+                "/dev/ublkb{} is this volume's and {}",
+                l.number,
+                match l.state {
+                    DeviceState::Live => "live: it has a server",
+                    DeviceState::Waiting =>
+                        "waits for a server it will not get: the next serve or a detach \
+                         deletes it",
+                    DeviceState::Dead =>
+                        "deleted, and something still holds it: its number is free when \
+                         that lets go",
+                }
+            ),
+            // The words of a refused start, for the same device.
+            Some(l) if l.whose == Whose::Unsure => crate::lifecycle::unnoted(l.number, l.state),
+            Some(l) => format!(
+                "device {} under the recorded number is not this volume's",
+                l.number
+            ),
+        };
+        lines.push(("failure_device", device));
+        lines.push(("failure_pool", POOL_WARNING.to_string()));
     }
     lines
 }
