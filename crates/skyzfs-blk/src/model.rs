@@ -995,8 +995,16 @@ impl Model {
     /// Nothing acknowledged is lost. Recovery makes the whole log durable,
     /// including whatever the lost daemon had applied of the requests in
     /// flight.
+    ///
+    /// Not so on a volume that has failed (rule R11): the daemon that
+    /// returns serves nothing and recovers nothing, and of what was
+    /// acknowledged the volume is held only to what a completed flush
+    /// covered. The log that failed may have lost the rest, and a
+    /// restart does not bring it back. Until the volume is opened again
+    /// ([`Model::reopened`]) nothing can be read, so this only shows
+    /// there.
     pub fn kill(&mut self) {
-        if self.recovering.is_some() {
+        if self.recovering.is_some() || self.health == Health::Failed {
             return;
         }
         self.now += 1;
@@ -1832,6 +1840,28 @@ mod tests {
         // And the volume takes requests again.
         c.wrote(0, 1, 3);
         c.sees(0, &[3, 2]).unwrap();
+    }
+
+    /// R11 over R9: a daemon restart on a failed volume recovers nothing.
+    /// A write that was acknowledged and that no completed flush covered
+    /// may be gone when the volume is opened again, restart or not: the
+    /// flush that would have covered it is what failed.
+    #[test]
+    fn a_restart_does_not_make_a_failed_volume_keep_what_was_not_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(0, 1, 2);
+        c.model.log_failed();
+        let f = c.submit(Op::Flush);
+        c.done(f, Err(BlkError::Failed)).unwrap();
+        c.model.kill();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![0]);
+        assert!(c.would_see(0, &[2]));
+        assert!(!c.would_see(0, &[0]));
+        c.sees(0, &[1]).unwrap();
     }
 
     /// R11: once the log has failed, a flush must fail, and after the
