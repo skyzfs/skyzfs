@@ -37,20 +37,33 @@
 //!    and flags. The new instance then follows the device's values,
 //!    whatever its own options say.
 //!    - The device is live under another server: refuse, add nothing.
+//!      (A live device whose note is missing or another's is not this
+//!      volume's device at all: see below.)
 //!    - The device was added and never started, and its note is this
 //!      volume's or missing: delete it, attach afresh.
 //!    - The device is gone, or the record is of another boot or absent:
 //!      attach afresh.
+//!    - The note is there and cannot be read: the volume counts as
+//!      failed while a client held it; the device is left.
 //!    - Anything else under that number (a device that waits and whose
 //!      note is another's, or whose values differ from the record): it
 //!      cannot be told whose it is. The daemon stops and leaves it.
 //! 5. Attaching afresh: a number and a fresh nonce are **recorded
 //!    durably in the volume's directory before the device is added**
-//!    under that number. If the kernel says the number is taken, the
-//!    next is recorded and tried. Once the add has succeeded the device
+//!    under that number. Numbers the kernel shows as taken are passed
+//!    over first; if the add still finds the number taken, the next
+//!    free one is recorded and tried. Once the add has succeeded the device
 //!    is **disowned at once**, so that nothing but an explicit call
 //!    deletes it, and only then is the note for the device written in
 //!    the run directory, before the device is started.
+//!
+//! A record can name a device that is not the volume's: another
+//! server's device appears under the number just recorded, the add
+//! fails, and the daemon is killed before it records the next number.
+//! The note tells: it is written only after this daemon's add
+//! succeeded, and before the device is started. So a **live** device
+//! whose note is missing or another's was never this volume's, and the
+//! daemon attaches afresh and leaves it.
 //!
 //! Readings where the design is silent, marked here and reported: a
 //! device that was added and never started is deleted when its note is
@@ -411,12 +424,20 @@ fn find<C: Control, R: Records>(
     let Some(info) = info else {
         return Ok(Found::Afresh(None));
     };
-    let note = records
-        .note(number)
-        .map_err(error("reading the device's note"))?;
+    // A note that is there and cannot be read cannot say whose the
+    // device is: the volume counts as failed while held, and the device
+    // is left, since it cannot be shown to be this volume's.
+    let Ok(note) = records.note(number) else {
+        return Err(Stop::Failed(
+            "the note for the volume's device cannot be read",
+        ));
+    };
     let noted = note == Some(attachment.nonce);
     let recorded = info.shape == attachment.shape || mutants.has(Mutants::ANY_SHAPE);
     match info.state {
+        // A live device without this record's note was never this
+        // volume's: the note is written before a device is started.
+        DeviceState::Live if !noted => Ok(Found::Afresh(None)),
         DeviceState::Live if !mutants.has(Mutants::TAKE_LIVE) => Err(Stop::Held),
         DeviceState::Live | DeviceState::Waiting
             if (noted || mutants.has(Mutants::ANY_NONCE)) && recorded =>
@@ -478,6 +499,14 @@ fn attach<C: Control, R: Records>(
             boot,
             shape,
         };
+        // A number that is seen to be taken is not recorded: a record
+        // names another's device only if that device appeared between
+        // this look and the add, and the daemon was killed before it
+        // recorded the next number.
+        let seen = control.info(number).map_err(error("asking for a device"))?;
+        if seen.is_some() {
+            continue;
+        }
         let early = mutants.has(Mutants::ADD_BEFORE_RECORD);
         if !early {
             records

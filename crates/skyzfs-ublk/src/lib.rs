@@ -17,6 +17,9 @@
 //!   opened first, then a device is taken over or added. Generic over
 //!   the kernel's control interface, the store and the records, and
 //!   tested with fakes.
+//! - [`records`]: the lifecycle's records as files: which device is a
+//!   volume's, in the volume's directory, and the note for each device
+//!   in the run directory.
 //!
 //! The binding to the kernel is built on these.
 
@@ -27,4 +30,6 @@
 pub mod ack;
 pub mod lifecycle;
 pub mod pump;
+#[cfg(unix)]
+pub mod records;
 pub mod translate;

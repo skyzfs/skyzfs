@@ -29,9 +29,16 @@ struct World {
     events: Vec<Event>,
     can_reissue: bool,
     devices: BTreeMap<u32, DeviceInfo>,
+    /// Devices that appear between the daemon's look and its add.
+    late: Vec<u32>,
+    /// The daemon is killed once this many things have happened: from
+    /// then on nothing it does has an effect.
+    dies_at: Option<usize>,
     disowned: Vec<u32>,
     attachment: Option<Attachment>,
     notes: BTreeMap<u32, [u8; 16]>,
+    /// The note of this device is there and is not a whole record.
+    torn_note: Option<u32>,
     acknowledged: Result<Option<MustReach>, ()>,
     /// Where the store's valid log ends.
     log_end: u64,
@@ -41,15 +48,31 @@ struct World {
     nonces: u8,
 }
 
+fn killed() -> io::Error {
+    io::Error::other("killed")
+}
+
 impl World {
+    /// Note that `event` happens, unless the daemon is dead.
+    fn happens(&mut self, event: Event) -> io::Result<()> {
+        if self.dies_at.is_some_and(|at| self.events.len() >= at) {
+            return Err(killed());
+        }
+        self.events.push(event);
+        Ok(())
+    }
+
     fn new() -> Self {
         Self {
             events: Vec::new(),
             can_reissue: true,
             devices: BTreeMap::new(),
+            late: Vec::new(),
+            dies_at: None,
             disowned: Vec::new(),
             attachment: None,
             notes: BTreeMap::new(),
+            torn_note: None,
             acknowledged: Ok(None),
             log_end: 1000,
             identity: [3; 16],
@@ -80,18 +103,23 @@ struct Fake(Rc<RefCell<World>>);
 impl Control for Fake {
     fn can_reissue(&mut self) -> io::Result<bool> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::Features);
+        w.happens(Event::Features)?;
         Ok(w.can_reissue)
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::Info(number));
-        Ok(w.devices.get(&number).copied())
+        w.happens(Event::Info(number))?;
+        Ok(w.devices
+            .get(&number)
+            .filter(|_| !w.late.contains(&number))
+            .copied())
     }
     fn add(&mut self, number: u32, shape: &Shape) -> Result<(), AddError> {
         let mut w = self.0.borrow_mut();
         let taken = w.devices.contains_key(&number);
-        w.events.push(Event::Add(number, !taken));
+        w.happens(Event::Add(number, !taken))
+            .map_err(AddError::Other)?;
+        w.late.retain(|late| *late != number);
         if taken {
             return Err(AddError::Taken);
         }
@@ -106,19 +134,19 @@ impl Control for Fake {
     }
     fn disown(&mut self, number: u32) {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::Disown(number));
-        w.disowned.push(number);
+        if w.happens(Event::Disown(number)).is_ok() {
+            w.disowned.push(number);
+        }
     }
     fn delete(&mut self, number: u32) -> io::Result<()> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::Delete(number));
+        w.happens(Event::Delete(number))?;
         w.devices.remove(&number);
         Ok(())
     }
     fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::BeginRecovery(number));
-        Ok(())
+        w.happens(Event::BeginRecovery(number))
     }
 }
 
@@ -136,27 +164,31 @@ impl Records for Fake {
     }
     fn write_attachment(&mut self, attachment: &Attachment) -> io::Result<()> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::WriteAttachment(attachment.number));
+        w.happens(Event::WriteAttachment(attachment.number))?;
         w.attachment = Some(*attachment);
         Ok(())
     }
     fn note(&mut self, number: u32) -> io::Result<Option<[u8; 16]>> {
-        Ok(self.0.borrow().notes.get(&number).copied())
+        let w = self.0.borrow();
+        if w.torn_note == Some(number) {
+            return Err(io::Error::other("not a whole record"));
+        }
+        Ok(w.notes.get(&number).copied())
     }
     fn write_note(&mut self, number: u32, nonce: &[u8; 16]) -> io::Result<()> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::WriteNote(number));
+        w.happens(Event::WriteNote(number))?;
         w.notes.insert(number, *nonce);
         Ok(())
     }
     fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
         let mut w = self.0.borrow_mut();
-        w.events.push(Event::Acknowledged);
+        w.happens(Event::Acknowledged)?;
         w.acknowledged
             .map_err(|()| io::Error::other("not a whole record"))
     }
     fn pause(&mut self) {
-        self.0.borrow_mut().events.push(Event::Pause);
+        let _ = self.0.borrow_mut().happens(Event::Pause);
     }
 }
 
@@ -179,8 +211,10 @@ impl Volume for Fake {
                 _ => Ok((Opened, SIZE)),
             },
         };
-        w.events.push(Event::Open(must_reach, result.is_ok()));
-        result
+        match w.happens(Event::Open(must_reach, result.is_ok())) {
+            Ok(()) => result,
+            Err(_) => Err(OpenError::Other("killed".into())),
+        }
     }
 }
 
@@ -340,6 +374,7 @@ fn fresh(mutants: u32) -> Result<(), String> {
                 Event::Features,
                 Event::Acknowledged,
                 Event::Open(None, true),
+                Event::Info(0),
                 Event::WriteAttachment(0),
                 Event::Add(0, true),
                 Event::Disown(0),
@@ -364,6 +399,8 @@ fn a_first_start_opens_the_store_records_adds_disowns_and_notes_in_that_order() 
 
 fn taken_number(mutants: u32) -> Result<(), String> {
     let mut world = World::new();
+    // Device 0 is seen. Device 1 appears after the daemon looked.
+    world.late.push(1);
     for number in 0..2 {
         world.devices.insert(
             number,
@@ -380,16 +417,17 @@ fn taken_number(mutants: u32) -> Result<(), String> {
     check(
         outcome.world.events[3..]
             == [
-                Event::WriteAttachment(0),
-                Event::Add(0, false),
+                Event::Info(0),
+                Event::Info(1),
                 Event::WriteAttachment(1),
                 Event::Add(1, false),
+                Event::Info(2),
                 Event::WriteAttachment(2),
                 Event::Add(2, true),
                 Event::Disown(2),
                 Event::WriteNote(2),
             ],
-        "the record is rewritten before each number is tried",
+        "a taken number is not recorded, and the record is rewritten before the next add",
     )?;
     check(
         outcome.world.devices.len() == 3 && outcome.world.notes.len() == 1,
@@ -697,4 +735,101 @@ fn an_error_that_may_pass_stops_the_daemon_and_leaves_the_device() {
     let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
     world.opens.push_back(OpenError::Other("no space".into()));
     assert_eq!(untouched(world, 0, |s| matches!(s, Stop::Error(_))), Ok(()));
+}
+
+#[test]
+fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
+    for state in [DeviceState::Waiting, DeviceState::Added, DeviceState::Live] {
+        let mut world = World::new().attached(4, state, EARLIER);
+        world.torn_note = Some(4);
+        assert_eq!(
+            untouched(world, 0, |s| matches!(s, Stop::Failed(_))),
+            Ok(())
+        );
+    }
+}
+
+/// Kill the daemon after each number of steps of a start, then start
+/// again: the second start serves, by the rules, and the volume has
+/// one device and no more.
+fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Result<(), String> {
+    let others = world().devices.len() - usize::from(took_over);
+    let steps = run(world(), 0).world.events.len();
+    for at in 0..=steps {
+        let mut first = world();
+        first.dies_at = Some(at);
+        let mut between = run(first, mutants).world;
+        between.dies_at = None;
+        between.events.clear();
+        let outcome = run(between, mutants);
+        rules(&outcome).map_err(|e| format!("killed after {at} steps: {e}"))?;
+        let ready = outcome
+            .result
+            .as_ref()
+            .map_err(|e| format!("killed after {at} steps: {e:?}"))?;
+        check(
+            ready.took_over == took_over,
+            &format!("killed after {at} steps: took over or not"),
+        )?;
+        check(
+            outcome.world.devices.len() == others + 1,
+            &format!("killed after {at} steps: a device was left behind"),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_device() {
+    let with_others = || {
+        let mut world = World::new();
+        world.late.push(1);
+        for number in 0..2 {
+            world.devices.insert(
+                number,
+                DeviceInfo {
+                    state: DeviceState::Live,
+                    shape: EARLIER,
+                },
+            );
+        }
+        world
+    };
+    assert_eq!(killed_anywhere(World::new, false, 0), Ok(()));
+    // A device that is added before it is recorded is left behind by a
+    // kill between the two.
+    assert!(killed_anywhere(World::new, false, Mutants::ADD_BEFORE_RECORD).is_err());
+    assert_eq!(
+        killed_anywhere(
+            || World::new().attached(4, DeviceState::Waiting, EARLIER),
+            true,
+            0
+        ),
+        Ok(())
+    );
+    // Another's device appears at the number just recorded, and the
+    // daemon is killed before it records the next: the record names a
+    // live device that is not this volume's.
+    assert_eq!(killed_anywhere(with_others, false, 0), Ok(()));
+}
+
+#[test]
+fn a_live_device_without_this_volumes_note_is_anothers_and_is_left() {
+    for note in [None, Some([0x5A; 16])] {
+        let mut world = World::new().attached(0, DeviceState::Live, EARLIER);
+        world.notes.clear();
+        if let Some(note) = note {
+            world.notes.insert(0, note);
+        }
+        let outcome = run(world, 0);
+        assert_eq!(rules(&outcome), Ok(()));
+        let ready = outcome.result.expect("serves");
+        assert_eq!((ready.number, ready.took_over), (1, false));
+        assert_eq!(
+            outcome.world.devices.get(&0).map(|d| d.state),
+            Some(DeviceState::Live)
+        );
+        assert!(!outcome.world.events.contains(&Event::Delete(0)));
+        assert_eq!(outcome.world.notes.get(&0).copied(), note);
+    }
 }
