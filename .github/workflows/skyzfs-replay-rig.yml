@@ -60,7 +60,10 @@ jobs:
       - name: Install ZFS, build the ublk server and replay-log
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup "linux-modules-extra-$(uname -r)" || true
+          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup
+          # Only some kernel flavours split modules into this package;
+          # where it does not exist, the modules are already there.
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
           sudo modprobe zfs
           sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
           sudo modprobe ublk_drv
