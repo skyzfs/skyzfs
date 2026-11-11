@@ -119,8 +119,7 @@
 //! this volume's device without its note, which is the case that
 //! cannot be told, above: a device that was never started is left, and
 //! one that waits for a server stops the next start until it is deleted
-//! by hand. (This order is this module's reading; the design does not
-//! say which goes first.)
+//! by hand.
 
 use std::io;
 
@@ -237,6 +236,8 @@ pub trait Records {
     fn note(&mut self, number: u32) -> io::Result<Option<[u8; 16]>>;
     /// Write the note for a device.
     fn write_note(&mut self, number: u32, nonce: &[u8; 16]) -> io::Result<()>;
+    /// Remove the volume's attachment record, if there is one, durably.
+    fn remove_attachment(&mut self) -> io::Result<()>;
     /// Remove the note for a device, if there is one.
     fn remove_note(&mut self, number: u32) -> io::Result<()>;
     /// What was acknowledged in this boot, if anything was recorded.
@@ -354,8 +355,8 @@ impl Mutants {
     /// A device without a note is taken for a stranger's whatever its
     /// values.
     pub(crate) const NO_NOTE_IS_A_STRANGER: u32 = 1 << 12;
-    /// A device is deleted and its note is left.
-    pub(crate) const NOTE_OUTLIVES_DEVICE: u32 = 1 << 13;
+    /// A device is deleted before its note is removed.
+    pub(crate) const DELETE_BEFORE_NOTE: u32 = 1 << 13;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -495,6 +496,22 @@ fn settled<C: Control, R: Records>(
     Ok(info)
 }
 
+/// Delete this volume's device: its note first, then the device. A
+/// note exists only while its device may exist.
+fn delete<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    mutants: Mutants,
+) -> io::Result<()> {
+    if mutants.has(Mutants::DELETE_BEFORE_NOTE) {
+        control.delete(number)?;
+        return records.remove_note(number);
+    }
+    records.remove_note(number)?;
+    control.delete(number)
+}
+
 /// The volume has failed: a device of it that waits for a server is
 /// deleted, never taken over. The delete does not wait: a device that
 /// a client still holds keeps its number, deleted.
@@ -518,13 +535,7 @@ fn failed<C: Control, R: Records>(
                 ..
             })) = info
             {
-                // The note goes first: see "a note does not outlive its
-                // device" in the module documentation.
-                let removed = mutants.has(Mutants::NOTE_OUTLIVES_DEVICE)
-                    || records.remove_note(number).is_ok();
-                if removed {
-                    let _ = control.delete(number);
-                }
+                let _ = delete(control, records, number, mutants);
             }
         }
     }
@@ -669,13 +680,7 @@ fn attach<C: Control, R: Records>(
         Found::Afresh { stale, left } => (stale, left),
     };
     if let Some(number) = stale {
-        if !mutants.has(Mutants::NOTE_OUTLIVES_DEVICE) {
-            records.remove_note(number).map_err(error(
-                "removing the note of a device that was never started",
-            ))?;
-        }
-        control
-            .delete(number)
+        delete(control, records, number, mutants)
             .map_err(error("deleting a device that was never started"))?;
     }
     let shape = Shape {
@@ -814,13 +819,32 @@ pub enum Detached {
 }
 
 /// Give up the volume's device: delete it if it is this volume's and
-/// no server serves it. Opens no store. The delete does not wait: the
-/// device is looked at once more afterwards, and if it is still there
-/// the answer says that its number is still held.
+/// no server serves it. It never stops a daemon. Opens no store and
+/// does not touch what was acknowledged.
 ///
-/// A reading, marked: a device that is **live** is refused, not
-/// stopped. Stopping a serving daemon is not this function's.
+/// The steps, for this volume's device that waits for a server or was
+/// never started: the note is removed, the device is deleted without
+/// waiting, the device is looked at once more, and the attachment
+/// record is removed. If the device is still there at that look, the
+/// answer says that its number is still held. A kill between any two
+/// steps leaves a state the next start or the next detach treats
+/// safely.
+///
+/// A device that is live is refused. One that was deleted before and is
+/// still held is reported. One that cannot be shown to be this
+/// volume's is left, and the answer says which number.
+///
+/// Not decided here, and on the list for the kernel spike: whether a
+/// detach can know beforehand that a client holds a waiting device.
 pub fn detach<C: Control, R: Records>(control: &mut C, records: &mut R) -> io::Result<Detached> {
+    detach_with(control, records, Mutants::default())
+}
+
+pub(crate) fn detach_with<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    mutants: Mutants,
+) -> io::Result<Detached> {
     let Some(located) = locate(control, records)? else {
         return Ok(Detached::Nothing);
     };
@@ -832,10 +856,10 @@ pub fn detach<C: Control, R: Records>(control: &mut C, records: &mut R) -> io::R
         DeviceState::Live => Ok(Detached::Live(number)),
         DeviceState::Dead => Ok(Detached::Held(number)),
         DeviceState::Waiting | DeviceState::Added => {
-            // The note first: a note does not outlive its device.
-            records.remove_note(number)?;
-            control.delete(number)?;
-            Ok(match control.info(number)? {
+            delete(control, records, number, mutants)?;
+            let after = control.info(number)?;
+            records.remove_attachment()?;
+            Ok(match after {
                 None => Detached::Deleted(number),
                 Some(_) => Detached::DeletedHeld(number),
             })

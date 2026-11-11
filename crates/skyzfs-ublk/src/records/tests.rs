@@ -98,6 +98,10 @@ fn what_is_written_is_read_and_what_is_absent_is_none() {
         .map(|e| e.expect("entry").file_name())
         .collect();
     assert_eq!(left, [std::ffi::OsString::from(ATTACHMENT)]);
+
+    files.remove_attachment().expect("remove");
+    assert_eq!(files.attachment().expect("read"), None);
+    files.remove_attachment().expect("nothing to remove");
 }
 
 /// Every prefix of a record, and a record with one byte changed in its

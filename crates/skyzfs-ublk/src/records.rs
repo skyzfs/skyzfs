@@ -367,6 +367,14 @@ impl Records for Files {
         )
     }
 
+    fn remove_attachment(&mut self) -> io::Result<()> {
+        match fs::remove_file(self.volume_dir.join(ATTACHMENT)) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            other => other?,
+        }
+        fs::File::open(&self.volume_dir)?.sync_all()
+    }
+
     fn remove_note(&mut self, number: u32) -> io::Result<()> {
         match fs::remove_file(note_path(&self.run_dir, number)) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),

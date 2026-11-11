@@ -22,6 +22,7 @@ enum Event {
     Disown(u32),
     WriteNote(u32),
     RemoveNote(u32),
+    RemoveAttachment,
     Delete(u32),
     BeginRecovery(u32),
 }
@@ -202,6 +203,12 @@ impl Records for Fake {
         let mut w = self.0.borrow_mut();
         w.happens(Event::WriteNote(number))?;
         w.notes.insert(number, *nonce);
+        Ok(())
+    }
+    fn remove_attachment(&mut self) -> io::Result<()> {
+        let mut w = self.0.borrow_mut();
+        w.happens(Event::RemoveAttachment)?;
+        w.attachment = None;
         Ok(())
     }
     fn remove_note(&mut self, number: u32) -> io::Result<()> {
@@ -1063,36 +1070,110 @@ fn a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_dev
     assert_eq!(killed_anywhere(twins, false, 0), Ok((2, 2)));
 }
 
-/// The volume fails and its waiting device is deleted. Whatever is
-/// given the number next, with the same values, is not this volume's.
-fn the_number_is_given_to_another(mutants: u32) -> Result<(), String> {
-    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
-    world.opens.push_back(OpenError::MarkedFailed);
-    let outcome = run(world, mutants);
-    check(matches!(outcome.result, Err(Stop::Failed(_))), "failed")?;
-    check(outcome.world.devices.is_empty(), "deleted")?;
-
-    let mut next = outcome.world;
-    next.events.clear();
-    next.devices.insert(
+/// Whatever is given this volume's old number, with the same values,
+/// is not taken for this volume's by the next start: it is neither
+/// taken over nor deleted.
+fn a_stranger_arrives(mut world: World, mutants: u32, at: usize) -> Result<(), String> {
+    world.dies_at = None;
+    world.events.clear();
+    if world.devices.contains_key(&4) {
+        // Not deleted yet: there is no freed number to arrive on.
+        return Ok(());
+    }
+    world.devices.insert(
         4,
         DeviceInfo {
             state: DeviceState::Waiting,
             shape: EARLIER,
         },
     );
-    untouched(next, mutants, |s| matches!(s, Stop::Error(_)))
+    let outcome = run(world, mutants);
+    check(
+        !outcome.result.as_ref().is_ok_and(|r| r.took_over),
+        &format!("killed after {at} steps: a stranger was taken over"),
+    )?;
+    check(
+        outcome.world.devices.get(&4).map(|d| d.state) == Some(DeviceState::Waiting),
+        &format!("killed after {at} steps: a stranger was deleted"),
+    )
+}
+
+/// The volume fails and its waiting device is deleted, and the daemon
+/// is killed after each number of steps.
+fn a_failed_volumes_number_is_given_to_another(mutants: u32) -> Result<(), String> {
+    for at in 0..=8 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.opens.push_back(OpenError::MarkedFailed);
+        world.dies_at = Some(at);
+        let outcome = run(world, mutants);
+        a_stranger_arrives(outcome.world, mutants, at)?;
+    }
+    Ok(())
+}
+
+/// A detach is killed after each number of steps.
+fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), String> {
+    for at in 0..=6 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.dies_at = Some(at);
+        let (mut control, mut records, shared) = fakes(world);
+        let _ = detach_with(&mut control, &mut records, Mutants(mutants));
+        drop((control, records));
+        let world = match Rc::try_unwrap(shared) {
+            Ok(cell) => cell.into_inner(),
+            Err(_) => panic!("the fakes are dropped"),
+        };
+        a_stranger_arrives(world, mutants, at)?;
+    }
+    Ok(())
 }
 
 #[test]
 fn a_note_does_not_outlive_its_device() {
-    holds(
-        the_number_is_given_to_another,
-        &[(
-            "the note outlives the device",
-            Mutants::NOTE_OUTLIVES_DEVICE,
-        )],
-    );
+    let defect = [(
+        "delete before the note is removed",
+        Mutants::DELETE_BEFORE_NOTE,
+    )];
+    holds(a_failed_volumes_number_is_given_to_another, &defect);
+    holds(a_detached_volumes_number_is_given_to_another, &defect);
+}
+
+/// A detach killed after each number of steps, then a start: it serves
+/// one device by the rules, or stops and says the device has no note.
+#[test]
+fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
+    let mut stopped = 0;
+    for at in 0..=6 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.dies_at = Some(at);
+        let (mut control, mut records, shared) = fakes(world);
+        let _ = detach(&mut control, &mut records);
+        drop((control, records));
+        let mut world = match Rc::try_unwrap(shared) {
+            Ok(cell) => cell.into_inner(),
+            Err(_) => panic!("the fakes are dropped"),
+        };
+        world.dies_at = None;
+        world.events.clear();
+        let had_device = world.devices.contains_key(&4);
+        let had_note = world.notes.contains_key(&4);
+        let outcome = run(world, 0);
+        assert_eq!(rules(&outcome), Ok(()), "killed after {at} steps");
+        match (&outcome.result, had_device, had_note) {
+            // Untouched: taken over.
+            (Ok(ready), true, true) => assert!(ready.took_over),
+            // The note gone and the device still there: it cannot be
+            // told whose the device is.
+            (Err(Stop::Error(e)), true, false) => {
+                assert!(e.contains("no note"), "{e}");
+                stopped += 1;
+            }
+            // Deleted: a fresh device.
+            (Ok(ready), false, _) => assert!(!ready.took_over),
+            other => panic!("killed after {at} steps: {other:?}"),
+        }
+    }
+    assert_eq!(stopped, 1, "the kill between the note and the delete");
 }
 
 fn fakes(world: World) -> (Fake, Fake, Rc<RefCell<World>>) {
@@ -1186,14 +1267,17 @@ fn detach_deletes_this_volumes_unserved_device_without_waiting_and_says_if_it_is
                 assert!(world.devices.is_empty());
             }
             assert!(world.notes.is_empty(), "the note is gone");
-            // The note first, one delete, one look after it.
+            assert_eq!(world.attachment, None, "the record is gone");
+            // The note first, one delete, one look after it, and the
+            // record last.
             assert_eq!(
                 world.events,
                 [
                     Event::Info(4),
                     Event::RemoveNote(4),
                     Event::Delete(4),
-                    Event::Info(4)
+                    Event::Info(4),
+                    Event::RemoveAttachment
                 ]
             );
         }
