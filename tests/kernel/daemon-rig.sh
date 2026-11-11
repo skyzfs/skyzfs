@@ -76,7 +76,9 @@ pin_is() { # name detail test...: PASS if the test holds, else FAIL
 }
 obs() { rec "obs_$1" "$2"; }
 step() { printf '\n######## %s\n' "$*"; }
-lim() { local s=$1; shift; timeout -k 5 "$s" "$@"; }
+# A limit that holds even when the command cannot be killed.
+# shellcheck source=tests/lib/lim.sh
+. "$HERE/../lib/lim.sh"
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 dmesg_mark() { dmesg | wc -l; }
 dmesg_since() { dmesg | tail -n +"$(($1 + 1))"; }

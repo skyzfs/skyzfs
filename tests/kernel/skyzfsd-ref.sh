@@ -52,7 +52,8 @@ STATS=$DIR/stats
 DEVREC=$DIR/device          # the ublk device number of this volume
 PIDREC=$DIR/server.pid
 
-lim() { local s=$1; shift; timeout -k 5 "$s" "$@"; }
+# shellcheck source=tests/lib/lim.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/lim.sh"
 dev_state() { lim 20 ublk list -n "$1" 2>/dev/null | sed -n 's/.*state \([A-Z_]*\).*/\1/p' | head -n 1; }
 dev_pid() { lim 20 ublk list -n "$1" 2>/dev/null | sed -n 's/.*daemon pid \([0-9]*\).*/\1/p' | head -n 1; }
 stat_field() { # index into the patched server's counters (enum skz_stat)

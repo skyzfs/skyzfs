@@ -47,7 +47,9 @@ rec() {
     printf '== %s: %s\n' "$1" "$v"
 }
 step() { printf '\n######## %s\n' "$*"; }
-lim() { local s=$1; shift; timeout -k 5 "$s" "$@"; }
+# A limit that holds even when the command cannot be killed.
+# shellcheck source=tests/lib/lim.sh
+. "$HERE/../lib/lim.sh"
 pool_state() { cat "/proc/spl/kstat/zfs/$1/state" 2>/dev/null || echo unknown; }
 status_lines() { # pool file: zpool status, kept whole in the file, the lines that matter on stdout
     lim 30 zpool status -v "$1" > "$2" 2>&1 || echo "zpool status failed or timed out (rc $?)" >> "$2"
