@@ -82,6 +82,29 @@ def parse_marks(records):
     return marks
 
 
+def fsync_marks(records):
+    """-> [(prefix at which the mark is in the log, files whose fsync had returned)], in order.
+
+    A mark reads fsync-N: the fsync of file f.N has returned, and the
+    files are written one after another, so N + 1 files are safe."""
+    out = []
+    for i, r in enumerate(records):
+        f = r.get('mark', '').split('-')
+        if len(f) == 2 and f[0] == 'fsync' and f[1].isdigit():
+            out.append((i + 1, int(f[1]) + 1))
+    return out
+
+
+def fsynced_at(fmarks, n):
+    """Files whose fsync had returned by prefix n."""
+    c = 0
+    for pos, count in fmarks:
+        if pos > n:
+            break
+        c = max(c, count)
+    return c
+
+
 def files_at(marks, n):
     """Files that must verify at prefix n: those of the last mark at or before it."""
     c = 0
@@ -304,13 +327,15 @@ EXPECTED = {
     'data': {'by': 'verify'},
 }
 CHECK_NAMES = {'deep': 'the scrub', 'copies': 'the every-copy check', 'verify': "the files' checksums",
+               'fsync': 'the fsynced files after the intent log is replayed',
                'import': 'the import', 'mount': 'the mount'}
 
 # A failed check says something about the image only when the stage that
 # failed is one of these. Anything else (a loop device, the snapshot, an
 # export, a command that timed out or could not start) is the rig
 # failing: never a caught control, and never a pass.
-JUDGING = {'import', 'mount', 'verify', 'deep: import (writable)', 'deep: scrub', 'copies: zdb', 'copies: differ'}
+JUDGING = {'import', 'mount', 'verify', 'deep: import (writable)', 'deep: scrub', 'copies: zdb', 'copies: differ',
+           'fsync: files'}
 RIG_RC = (124, 127)             # run(): timed out, could not start
 
 # The deep check must run at no less than this share of the flush
@@ -801,11 +826,8 @@ class Rig:
             res = ('export', out.strip()[-400:])
         return res
 
-    def light_imported(self, files, t):
-        rc, out, t['mount'] = run(['zfs', 'mount', self.a.pool], 60)
-        if rc:
-            return stage('mount', rc), out.strip()[-400:]
-        t0 = time.monotonic()
+    def verify(self, files):
+        """The first `files` files of the manifest, in the mounted pool -> what is wrong with the first bad one, or None."""
         root = self.alt + self.a.mountpoint
         for want, name in self.manifest[:files]:
             try:
@@ -814,16 +836,33 @@ class Rig:
                     for chunk in iter(lambda: f.read(1 << 20), b''):
                         h.update(chunk)
             except OSError as e:
-                return 'verify', f'{name}: {e}'
+                return f'{name}: {e}'
             if h.hexdigest() != want:
-                return 'verify', f'{name}: checksum differs'
+                return f'{name}: checksum differs'
+        return None
+
+    def light_imported(self, files, t):
+        rc, out, t['mount'] = run(['zfs', 'mount', self.a.pool], 60)
+        if rc:
+            return stage('mount', rc), out.strip()[-400:]
+        t0 = time.monotonic()
+        bad = self.verify(files)
+        if bad:
+            return 'verify', bad
         t['verify'] = time.monotonic() - t0
         return None, ''
 
     SNAP = 'skz-replay-snap'
 
-    def deep(self):
-        """Writable import of a throwaway snapshot, and a scrub -> (failure or None, detail, seconds)."""
+    def deep(self, fsynced=0):
+        """Writable import of a throwaway snapshot, and a scrub -> (failure or None, detail, seconds).
+
+        With `fsynced` files, also the fsync promise: mounting the
+        writable pool replays the intent log, and after that every file
+        whose fsync had returned must be there and whole. This is only
+        asked where the intent log is on the image.
+        """
+        self.fsynced = fsynced
         t0 = time.monotonic()
         left = self.leftover()
         if left:
@@ -892,6 +931,13 @@ class Rig:
         bad = scrub_verdict(out)
         if bad:
             return 'scrub', bad
+        if self.fsynced:
+            rc, out, _ = run(['zfs', 'mount', self.a.pool], 120)
+            if rc:
+                return 'mount (writable)', out.strip()[-400:]
+            bad = self.verify(self.fsynced)
+            if bad:
+                return 'fsync', f'of {self.fsynced} files whose fsync had returned, {bad}'
         return None, ''
 
     def copies(self):
@@ -901,7 +947,7 @@ class Rig:
         failed, detail, counts = every_copy_verdict(rc, out, self.image)
         return failed, detail, time.monotonic() - t0, counts
 
-    def point(self, n, files, deep, copies=False):
+    def point(self, n, files, deep, copies=False, fsynced=0):
         """All the checks due at prefix n. A check runs only if those before it passed."""
         res = {'n': n, 'files': files, 't_advance': self.advance(n)}
         t0 = time.monotonic()
@@ -909,9 +955,10 @@ class Rig:
         res['t_light'] = time.monotonic() - t0
         res['t'] = t
         if failed is None and deep:
-            failed, detail, res['t_deep'] = self.deep()
+            failed, detail, res['t_deep'] = self.deep(fsynced)
+            res['fsynced'] = fsynced
             if failed:
-                failed = 'deep: ' + failed
+                failed = 'fsync: files' if failed == 'fsync' else 'deep: ' + failed
         if failed is None and copies:
             failed, detail, res['t_copies'], res['copies'] = self.copies()
         res['ok'] = failed is None
@@ -960,6 +1007,8 @@ def main():
     ap.add_argument('--copies-budget-s', type=float, default=300, help='seconds of every-copy checks in the main pass')
     ap.add_argument('--log-device-image', default='',
                     help="image of the pool's log device as it was when the base image was taken, where the pool has one")
+    ap.add_argument('--fsync-check', action='store_true',
+                    help='the intent log is on the image: after a writable import, files whose fsync returned must be there')
     ap.add_argument('--discard', choices=('zero', 'skip'), default='zero',
                     help='what a discarded range holds afterwards: zeros (the harsher), or what was there')
     args = ap.parse_args()
@@ -974,6 +1023,15 @@ def main():
            'discards': sum(1 for r in records if 'discard' in r['flags']),
            'discard_bytes': sum(r['bytes'] for r in records if 'discard' in r['flags']), 'discard_mode': args.discard}
     groups = group_points(records)
+    fmarks = fsync_marks(records) if args.fsync_check else []
+    res['fsync_marks'] = len(fmarks)
+    if args.fsync_check and not fmarks:
+        sys.exit('the fsync check was asked for, but the log has no fsync marks')
+
+    def due(n):
+        """Files the scrub's writable import must show at prefix n: synced ones, and fsynced ones where that is asked."""
+        return max(files_at(marks, n), fsynced_at(fmarks, n)) if fmarks else 0
+
     print(f"log: {total} records, {len(marks)} marks, {res['write_bytes'] >> 20} MiB written, {len(rig.manifest)} files", flush=True)
     trouble = manifest_trouble(marks, len(rig.manifest))
     if trouble:
@@ -986,7 +1044,7 @@ def main():
     cal_copies = {g[0] for g in spread(groups, 2)}
     cal_pts = sorted(set(spread(range(total + 1), 8)) | set(spread(flush, 2)) | cal_copies)
     for n in cal_pts:
-        r = rig.point(n, files_at(marks, n), n in set(spread(flush, 2)), n in cal_copies)
+        r = rig.point(n, files_at(marks, n), n in set(spread(flush, 2)), n in cal_copies, due(n))
         r['kind'] = 'calibration'
         cal.append(r)
         print(f"calibration {n}: {'ok' if r['ok'] else 'FAILED ' + r['failed']} light {r['t_light']:.2f}s"
@@ -1028,7 +1086,7 @@ def main():
         if kind[n] == 'random' and over > args.budget_s or kind[n] == 'ub_window' and over > args.budget_s * 1.25:
             skipped += 1
             continue
-        r = rig.point(n, files_at(marks, n), n in deep, n in copies_at)
+        r = rig.point(n, files_at(marks, n), n in deep, n in copies_at, due(n))
         r['kind'] = kind[n]
         points.append(r)
         if not r['ok']:
@@ -1104,7 +1162,7 @@ def main():
         ctl_copies = {n for pair in gp for n in pair if lo <= n <= hi}
         pts = sorted(set(c['points']) | ctl_copies)
         deep_at = {n for n in pts if n and 'flush' in records[c['schedule'][n - 1]]['flags']}
-        results = [rig.point(n, files_at(marks, n), n in deep_at, n in ctl_copies) for n in pts]
+        results = [rig.point(n, files_at(marks, n), n in deep_at, n in ctl_copies, due(n)) for n in pts]
         checked = len(results)
         by, rig_errors, first = tally_control(results)
         facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
@@ -1176,6 +1234,13 @@ def summary(res):
         out.append(f"\nScrub (writable import of a snapshot, then a scrub): {len(deep)} flush boundaries, "
                    f"{statistics.mean(deep):.2f} s each on average, {max(deep):.2f} s at most, "
                    f"{sum(1 for p in pts if 't_deep' in p and not p['ok'])} failed.")
+    fs = [p for p in pts if p.get('fsynced')]
+    if fs:
+        ahead = [p['fsynced'] - p['files'] for p in fs]
+        out.append(f"\nFsync check (in the same writable import, after the intent log is replayed: every file whose fsync had "
+                   f"returned): {len(fs)} flush boundaries, {sum(1 for p in fs if p.get('failed') == 'fsync: files')} failed. "
+                   f"At {sum(1 for a in ahead if a > 0)} of them it covered files that no completed sync had yet promised, "
+                   f"up to {max(ahead)} such files.")
     cp = [p for p in pts if 't_copies' in p]
     if cp:
         tc = [p['t_copies'] for p in cp]

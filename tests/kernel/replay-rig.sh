@@ -25,7 +25,9 @@
 # complete. Meanwhile the pool is synced RIG_SYNCS times, and after each
 # sync a mark goes into the log with the number of files that were
 # complete before that sync began. Those files must be in the pool at
-# every prefix from the mark on.
+# every prefix from the mark on. A mark also follows each file's fsync:
+# where the intent log is on the device under test (RIG_LAYOUT=whole),
+# the file must survive from there on, once the intent log is replayed.
 #
 # RIG_LAYOUT=slog (default) is the product's layout: the log device is
 # local and is not recorded. RIG_LAYOUT=whole has no separate log
@@ -170,6 +172,8 @@ writer() {
         } > "$SCRATCH/f"
         sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
         "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
+        # The fsync has returned: from here on in the log, the file is safe.
+        dmsetup message "$LW" 0 mark "fsync-$n"
         # Listed only once complete and fsynced: a line here is a promise.
         echo "$sum f.$n" >> "$MANIFEST"
         n=$((n + 1))
@@ -207,6 +211,9 @@ args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MAN
       --budget-s "${RIG_BUDGET_S:-840}" --deep-budget-s "${RIG_DEEP_BUDGET_S:-240}"
       --copies-budget-s "${RIG_COPIES_BUDGET_S:-300}" --discard "${RIG_DISCARD:-zero}")
 [ "$LAYOUT" != slog ] || args+=(--log-device-image "$WORK/slog-base.img")
+# Only where the intent log is on the device under test can the image
+# show whether an fsynced file survived.
+[ "$LAYOUT" != whole ] || args+=(--fsync-check)
 [ -z "${RIG_PROVIDER:-}" ] || args+=(--provider "$RIG_PROVIDER")
 [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
 [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)

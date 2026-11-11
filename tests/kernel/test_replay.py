@@ -147,6 +147,17 @@ class Log(unittest.TestCase):
         self.assertEqual(replay_check.files_at(marks, first), 3)
         self.assertEqual(replay_check.files_at(marks, len(self.entries)), 18)
 
+    def test_fsync_marks(self):
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(1)), ('flush',), ('mark', 'fsync-0'), ('mark', 'sync-1-0'),
+                                           ('write', 2 << 20, blk(2)), ('flush',), ('mark', 'fsync-1'), ('mark', 'fsync-2'),
+                                           ('mark', 'sync-2-3'), ('mark', 'fsync-x'), ('mark', 'other')])
+        recs = logwrites.index(self.log, DEV)['records']
+        fm = replay_check.fsync_marks(recs)
+        self.assertEqual(fm, [(3, 1), (7, 2), (8, 3)])
+        self.assertEqual([replay_check.fsynced_at(fm, n) for n in (0, 2, 3, 6, 7, 8, 11)], [0, 0, 1, 1, 2, 3, 3])
+        # the sync marks are read as before, whatever stands between them
+        self.assertEqual(replay_check.parse_marks(recs), [(4, 1, 0), (9, 2, 3)])
+
     def test_plan_takes_every_flush_boundary_first(self):
         recs = self.idx['records']
         flush = set(replay_check.flush_points(recs))
@@ -514,6 +525,15 @@ class Log(unittest.TestCase):
                 for failed in (rig.light(0)[0], rig.deep()[0]):
                     self.assertTrue(failed.startswith('rig: '), (rc, out, failed))
                 self.assertNotIn(['zpool', 'import'], state['calls'][n:])
+            # the fsync promise: after the scrub, a file whose fsync returned must be in the mounted pool
+            state.update(imported=False, fail=set())
+            rig.manifest = [['0' * 64, 'f.0']]
+            r = rig.point(0, 0, True, False, 1)
+            self.assertEqual((r['ok'], r['failed']), (False, 'fsync: files'))
+            self.assertIn(r['failed'], replay_check.JUDGING)
+            self.assertIn('f.0', r['detail'])
+            self.assertFalse(state['imported'])
+            rig.manifest = []
             # and with nothing failing, both checks pass
             state.update(imported=False, fail=set())
             self.assertTrue(rig.point(0, 0, True)['ok'])
