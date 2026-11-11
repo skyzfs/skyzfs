@@ -47,7 +47,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use skyzfs_local::log::SUPER_NAME;
-use skyzfs_local::store::{FailureObserver, OpenOptions, Waker};
+use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
 use skyzfs_ublk::lifecycle::{self, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
@@ -60,7 +60,7 @@ use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
-use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
+use crate::commands::{LOCK_PAUSE, LOCK_RETRIES, SEGMENT_SIZE};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
@@ -264,7 +264,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         live_retries: LIVE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
     };
-    let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
+    let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
         Err(Stop::CannotReissue) => {
             return Err(
@@ -290,6 +290,14 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         say(format_args!("a failure was acknowledged: {reason}"));
     }
     let (number, shape) = (ready.number, ready.shape);
+    // From here the store checkpoints by itself (design §5.1): not
+    // before the device is this instance's, so a long log that this
+    // start found is worked off while the client is served.
+    ready.store.set_marks(Some(Marks {
+        high: u64::from(serve.log_high) * SEGMENT_SIZE,
+        low: u64::from(serve.log_low) * SEGMENT_SIZE,
+        step: StepBound::DAEMON,
+    }));
     let identity = ready.store.identity();
     // What the server before this one had applied and never answered:
     // the kernel issues those requests again, and they are applied a

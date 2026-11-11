@@ -3,7 +3,7 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
-//!                [--queues 1] [--depth N]
+//!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -59,6 +59,17 @@ pub const MAX_DEPTH: u16 = 4096;
 /// is a usage error until more are served.
 pub const MAX_QUEUES: u16 = 1;
 
+/// The log's live size at which the daemon begins to checkpoint, in
+/// segments, unless told otherwise (design §5.1: two).
+pub const DEFAULT_LOG_HIGH: u32 = 2;
+
+/// The live size below which it stops, in segments, unless told
+/// otherwise: one.
+pub const DEFAULT_LOG_LOW: u32 = 1;
+
+/// The most segments either mark takes: 64 GiB of log.
+pub const MAX_LOG_SEGMENTS: u32 = 1024;
+
 /// One mebibyte: a volume's size is a multiple of it.
 const MIB: u64 = 1 << 20;
 
@@ -66,6 +77,7 @@ const MIB: u64 = 1 << 20;
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+                 [--log-high SEGMENTS] [--log-low SEGMENTS]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -85,6 +97,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
+                [--log-high SEGMENTS] [--log-low SEGMENTS]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -98,6 +111,13 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       client held the device, the volume is not served again before a
       reboot, whatever is given.
       One queue is all this version serves.
+      While it serves, the daemon checkpoints the volume's log into
+      its home image: when the log holds --log-high segments (64 MiB
+      each; 2 unless given) it works it off in small steps between
+      the requests until it holds less than --log-low (1 unless
+      given). The high mark bounds the log, and with it the time the
+      next start takes to read it; a write load is slowed at the mark.
+      Both are at least 1, and low is below high.
 
   skyzfsd detach --dir DIR [--run-dir DIR]
       Delete the volume's device if no server serves it. It never stops
@@ -203,6 +223,12 @@ pub struct Serve {
     pub queues: u16,
     /// Depth of each queue of a device this instance adds.
     pub depth: u16,
+    /// The log's live size, in segments, at which the daemon begins
+    /// to checkpoint (design §5.1).
+    pub log_high: u32,
+    /// The live size, in segments, below which it stops: below
+    /// `log_high`.
+    pub log_low: u32,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -315,6 +341,8 @@ const SERVE: &[Opt] = &[
     opt("--acknowledge-failure", false, false),
     opt("--queues", true, false),
     opt("--depth", true, false),
+    opt("--log-high", true, false),
+    opt("--log-low", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -479,12 +507,31 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             let recover_short = given.number("--recover-short")?.unwrap_or(0);
             let recover_short = u32::try_from(recover_short)
                 .map_err(|_| UsageError::Value("--recover-short".into(), "out of range"))?;
+            let segments = |name: &'static str, default: u32| {
+                let Some(n) = given.number(name)? else {
+                    return Ok(default);
+                };
+                u32::try_from(n)
+                    .ok()
+                    .filter(|n| (1..=MAX_LOG_SEGMENTS).contains(n))
+                    .ok_or(UsageError::Value(name.into(), "out of range"))
+            };
+            let log_high = segments("--log-high", DEFAULT_LOG_HIGH)?;
+            let log_low = segments("--log-low", DEFAULT_LOG_LOW.min(log_high.max(2) - 1))?;
+            if log_low >= log_high {
+                return Err(UsageError::Value(
+                    "--log-low".into(),
+                    "not below --log-high",
+                ));
+            }
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
                 acknowledge_failure: given.flag("--acknowledge-failure"),
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
+                log_high,
+                log_low,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {

@@ -89,6 +89,37 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     }
 }
 
+/// The two marks of the checkpoint rule: two segments and one unless
+/// given, each at least one, low below high. A high mark of one is
+/// refused without a low mark too: nothing is below it.
+#[test]
+fn serve_takes_the_marks_of_the_log_and_refuses_marks_that_cannot_work() {
+    let marks = |line: &str| {
+        let s = serve(&format!("serve --dir /v/a {line}"));
+        (s.log_high, s.log_low)
+    };
+    assert_eq!(marks(""), (2, 1));
+    assert_eq!(marks("--log-high 8"), (8, 1));
+    assert_eq!(marks("--log-high 8 --log-low 7"), (8, 7));
+    assert_eq!(marks("--log-low 1 --log-high 1024"), (1024, 1));
+    for bad in [
+        "--log-high 0",
+        "--log-high 1",
+        "--log-low 0",
+        "--log-low 2",
+        "--log-high 4 --log-low 4",
+        "--log-high 4 --log-low 5",
+        "--log-high 1025",
+        "--log-high x",
+        "--log-high 2 --log-high 3",
+    ] {
+        assert!(
+            plain(&format!("serve --dir /v/a {bad}")).is_err(),
+            "{bad} was taken"
+        );
+    }
+}
+
 /// `serve --dir DIR` with its defaults: the run directory `/run/skyzfsd`,
 /// one queue of depth 64, no acknowledgement, the deployment rules on,
 /// no hook. Each option changes its own field.
@@ -100,6 +131,8 @@ fn serve_has_the_agreed_defaults_and_options() {
         acknowledge_failure: false,
         queues: 1,
         depth: 64,
+        log_high: 2,
+        log_low: 1,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
