@@ -38,12 +38,12 @@
 //!    whatever its own options say. Otherwise, for a record of this
 //!    boot whose device the kernel has:
 //!
-//!    | The device | Its note is this volume's | Its note is missing or another's |
-//!    |---|---|---|
-//!    | waits for a server | taken over; if its values are not the recorded ones, the daemon stops and leaves it | the daemon stops and leaves it: it may have this volume's client on it |
-//!    | is live | waited for, for a stated time (below); if it stays live: refused, nothing added | left; attach afresh |
-//!    | was added and never started | deleted; attach afresh | left; attach afresh under another number |
-//!    | is deleted and still held | attach afresh | attach afresh |
+//!    | The device | Its note is this volume's | Another volume's note, or no note and other values than recorded | No note, and the recorded values |
+//!    |---|---|---|---|
+//!    | waits for a server | taken over; if its values are not the recorded ones, the daemon stops and leaves it | left; attach afresh under another number | the daemon stops and leaves it |
+//!    | is live | waited for, for a stated time (below); if it stays live: refused, nothing added | left; attach afresh under another number | the daemon stops and leaves it |
+//!    | was added and never started | deleted; attach afresh | left; attach afresh under another number | left; attach afresh under another number |
+//!    | is deleted and still held | attach afresh | attach afresh | attach afresh |
 //!
 //!    - The device is gone, or the record is of another boot or absent:
 //!      attach afresh.
@@ -80,25 +80,35 @@
 //!
 //! # Whose device it is
 //!
-//! The note tells: it is written only after this daemon's add
-//! succeeded, and before the device is started. A record alone does
-//! not: another server's device can appear under the number just
-//! recorded, and the daemon can be killed before it records the next.
+//! A record alone does not tell: another server's device can appear
+//! under the number just recorded, and the daemon can be killed before
+//! it records the next. The note tells first, the kernel's values
+//! second.
 //!
-//! - A **live** device without the record's note was never this
-//!   volume's. It is left.
-//! - A device that was **added and never started**, without the
-//!   record's note, is this volume's from a kill between the add and
-//!   the note, or another program's that is between its own add and
-//!   start. It cannot be told, so it is left, and the daemon attaches
-//!   under another number and says which number it left and why
-//!   ([`Ready::left`]). A device that was never started has never had a
-//!   client, so this cannot give the volume two devices. The cost is
-//!   one leaked number for a kill in a window of milliseconds, until an
-//!   operator deletes it or the machine reboots.
-//! - A device that **waits for a server** without the record's note may
-//!   still have this volume's client on it (if the run directory was
-//!   emptied). The daemon stops and leaves it.
+//! - **A whole note with the record's nonce: this volume's.** The note
+//!   is written only after this daemon's add succeeded, and before the
+//!   device is started.
+//! - **A whole note with another nonce: another volume's**, in every
+//!   state. It is left, and the daemon attaches under another number.
+//! - **No note, and the kernel reports other values than the record:
+//!   not this volume's**, in every state. A device is added with
+//!   exactly the recorded size, queues, depth and flags, they do not
+//!   change afterwards, and the record is rewritten only before an add
+//!   on a number that looked free.
+//! - **No note, and the recorded values: it cannot be told.** A device
+//!   that was added and never started is this volume's from a kill
+//!   between the add and the note, or another program's twin between
+//!   its add and its start; it never had a client, so it is left and
+//!   the daemon attaches under another number. The cost is one leaked
+//!   number for a kill in a window of milliseconds, until an operator
+//!   deletes it or the machine reboots. A device that is live or waits
+//!   for a server is this volume's whose note was lost with the run
+//!   directory, or a stranger's twin: the daemon stops, touches
+//!   nothing, and says so. Deleting the device by hand, or a reboot,
+//!   resolves it.
+//!
+//! Whenever a device is left and another number taken, [`Ready::left`]
+//! says which and why, for the daemon's log.
 
 use std::io;
 
@@ -150,6 +160,15 @@ pub enum AddError {
 
 /// The steps the daemon needs of the kernel's control interface. A
 /// guess: see the [module documentation](self).
+///
+/// **Not settled: the flags.** The lifecycle compares the
+/// [`Shape::flags`] the kernel reports with the flags in the record,
+/// which is written before the add with the flags that were asked for.
+/// The kernel may report other flags for a device than the add asked
+/// for (it may add or mask bits). The binding has to make the two
+/// comparable: either [`Control::info`] reports the flags under a mask
+/// of the bits the daemon sets, or the record is completed after the
+/// add. The fake here reports what was asked for. The spike decides.
 pub trait Control {
     /// Whether the driver can reissue requests after a recovery.
     fn can_reissue(&mut self) -> io::Result<bool>;
@@ -318,6 +337,9 @@ impl Mutants {
     pub(crate) const NO_FEATURE_CHECK: u32 = 1 << 10;
     /// The volume's own device, found live, is refused at once.
     pub(crate) const LIVE_REFUSED_AT_ONCE: u32 = 1 << 11;
+    /// A device without a note is taken for a stranger's whatever its
+    /// values.
+    pub(crate) const NO_NOTE_IS_A_STRANGER: u32 = 1 << 12;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -524,25 +546,33 @@ fn find<C: Control, R: Records>(
                 left: Some((number, why)),
             })
         };
+        if info.state == DeviceState::Dead {
+            return Ok(afresh);
+        }
+        if note.is_some() {
+            if info.state == DeviceState::Waiting && mutants.has(Mutants::ANY_NONCE) {
+                return Ok(Found::TakeOver(number, info.shape));
+            }
+            // A note is written by a daemon after its own add: this is
+            // another volume's device, in whatever state.
+            return left("its note is another volume's");
+        }
+        // No note. A device is added with exactly the recorded values,
+        // and they do not change afterwards.
+        if info.shape != attachment.shape || mutants.has(Mutants::NO_NOTE_IS_A_STRANGER) {
+            return left("it has no note and its values are not the recorded ones");
+        }
         return match info.state {
-            DeviceState::Waiting if mutants.has(Mutants::ANY_NONCE) => {
-                Ok(Found::TakeOver(number, info.shape))
-            }
-            // It may have this volume's client on it.
-            DeviceState::Waiting => Err(Stop::Error(format!(
-                "device {number} is recorded for this volume and waits for a server, and its \
-                 note is not this volume's: it is left as it is"
-            ))),
-            // The note is written before a device is started: this one
-            // was never this volume's.
-            DeviceState::Live => left("it is live and its note is not this volume's"),
             // This volume's, from a kill between the add and the note,
-            // or another's that is being set up: it cannot be told, and
-            // a device that was never started has no client.
-            DeviceState::Added => {
-                left("it was added and never started, and its note is not this volume's")
-            }
-            DeviceState::Dead => Ok(afresh),
+            // or another's twin that is being set up: it never had a
+            // client.
+            DeviceState::Added => left("it was added and never started, and has no note"),
+            _ => Err(Stop::Error(format!(
+                "device {number} has this volume's size, queues, depth and flags and no note: \
+                 it is this volume's device whose note was lost with the run directory, or \
+                 another's with the same values. It is left as it is. Deleting it by hand, or \
+                 a reboot, resolves it"
+            ))),
         };
     }
     let info = if mutants.has(Mutants::TAKE_LIVE) {

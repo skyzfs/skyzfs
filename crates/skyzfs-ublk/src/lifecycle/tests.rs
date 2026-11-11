@@ -532,10 +532,76 @@ fn untouched(world: World, mutants: u32, stop: fn(&Stop) -> bool) -> Result<(), 
     )
 }
 
+/// A start that leaves the device under the recorded number alone and
+/// attaches under another.
+fn left_alone(world: World, number: u32, mutants: u32) -> Result<(), String> {
+    let before = world.devices.get(&number).copied();
+    let note = world.notes.get(&number).copied();
+    let outcome = run(world, mutants);
+    rules(&outcome)?;
+    let ready = outcome.result.as_ref().map_err(|e| format!("{e:?}"))?;
+    check(
+        !ready.took_over && ready.number != number,
+        "attached afresh",
+    )?;
+    check(
+        ready.left.is_some_and(|(left, _)| left == number),
+        "says which device it left",
+    )?;
+    check(
+        outcome.world.devices.get(&number).copied() == before
+            && outcome.world.notes.get(&number).copied() == note,
+        "the device and its note are as they were",
+    )?;
+    check(
+        !outcome
+            .world
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::Delete(_) | Event::BeginRecovery(_))),
+        "nothing is deleted or recovered",
+    )
+}
+
+const STATES: [DeviceState; 3] = [DeviceState::Added, DeviceState::Live, DeviceState::Waiting];
+
 fn another_nonce(mutants: u32) -> Result<(), String> {
-    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
-    world.notes.insert(4, [0x5A; 16]);
-    untouched(world, mutants, |s| matches!(s, Stop::Error(_)))
+    for state in STATES {
+        let mut world = World::new().attached(0, state, EARLIER);
+        world.notes.insert(0, [0x5A; 16]);
+        left_alone(world, 0, mutants)?;
+    }
+    Ok(())
+}
+
+/// No note, and other values than the record: a stranger's.
+fn no_note_other_values(mutants: u32) -> Result<(), String> {
+    for state in STATES {
+        let mut world = World::new().attached(0, state, EARLIER);
+        world.notes.clear();
+        if let Some(device) = world.devices.get_mut(&0) {
+            device.shape.depth = 16;
+        }
+        left_alone(world, 0, mutants)?;
+    }
+    Ok(())
+}
+
+/// No note, and the recorded values: this volume's device whose run
+/// directory was wiped, or a stranger's twin.
+fn no_note_same_values(mutants: u32) -> Result<(), String> {
+    for state in [DeviceState::Live, DeviceState::Waiting] {
+        let mut world = World::new().attached(0, state, EARLIER);
+        world.notes.clear();
+        untouched(
+            world,
+            mutants,
+            |s| matches!(s, Stop::Error(e) if e.contains("no note")),
+        )?;
+    }
+    let mut world = World::new().attached(0, DeviceState::Added, EARLIER);
+    world.notes.clear();
+    left_alone(world, 0, mutants)
 }
 
 fn live(mutants: u32) -> Result<(), String> {
@@ -554,6 +620,11 @@ fn other_values(mutants: u32) -> Result<(), String> {
 #[test]
 fn a_device_that_is_not_surely_this_volumes_is_neither_taken_over_nor_replaced() {
     holds(another_nonce, &[("any nonce", Mutants::ANY_NONCE)]);
+    holds(no_note_other_values, &[]);
+    holds(
+        no_note_same_values,
+        &[("no note is a stranger", Mutants::NO_NOTE_IS_A_STRANGER)],
+    );
     holds(live, &[("take live", Mutants::TAKE_LIVE)]);
     holds(other_values, &[("any values", Mutants::ANY_SHAPE)]);
 }
@@ -571,34 +642,6 @@ fn this_volumes_device_that_was_never_started_is_deleted_and_replaced() {
         [Event::Info(4), Event::Delete(4)]
     );
     assert_eq!(outcome.world.devices.len(), 1);
-}
-
-#[test]
-fn a_device_that_was_never_started_and_has_not_this_volumes_note_is_left() {
-    // With no note it is this volume's from a kill between the add and
-    // the note, or another program's between its add and its start.
-    for note in [None, Some([0x5A; 16])] {
-        let mut world = World::new().attached(0, DeviceState::Added, EARLIER);
-        world.notes.clear();
-        if let Some(note) = note {
-            world.notes.insert(0, note);
-        }
-        let outcome = run(world, 0);
-        assert_eq!(rules(&outcome), Ok(()));
-        let ready = outcome.result.expect("serves");
-        assert_eq!((ready.number, ready.took_over), (1, false));
-        assert!(matches!(ready.left, Some((0, _))), "{:?}", ready.left);
-        assert!(!outcome
-            .world
-            .events
-            .iter()
-            .any(|e| matches!(e, Event::Delete(_))));
-        assert_eq!(
-            outcome.world.devices.get(&0).map(|d| d.state),
-            Some(DeviceState::Added)
-        );
-        assert_eq!(outcome.world.notes.get(&0).copied(), note);
-    }
 }
 
 fn settles(mutants: u32) -> Result<(), String> {
@@ -880,26 +923,41 @@ fn a_note_that_cannot_be_read_fails_the_volume_and_leaves_the_device() {
 }
 
 /// Kill the daemon after each number of steps of a start, then start
-/// again: the second start serves, by the rules. Beside the device it
-/// serves and the devices of others, at most one device is there: one
-/// that was added and never started and has no note, from a kill
-/// between the add and the note. Returns how many kills left one.
-fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Result<usize, String> {
+/// again. The second start serves, by the rules, or stops and touches
+/// nothing. Beside the device it serves and the devices of others, at
+/// most one device is there: one that was added and never started and
+/// has no note, from a kill between the add and the note. Returns how
+/// many kills left such a device, and after how many the second start
+/// stopped.
+fn killed_anywhere(
+    world: fn() -> World,
+    took_over: bool,
+    mutants: u32,
+) -> Result<(usize, usize), String> {
     let others: Vec<u32> = world().devices.keys().copied().collect();
     let steps = run(world(), 0).world.events.len();
-    let mut leaked = 0;
+    let (mut leaked, mut stopped) = (0, 0);
     for at in 0..=steps {
         let mut first = world();
         first.dies_at = Some(at);
         let mut between = run(first, mutants).world;
         between.dies_at = None;
         between.events.clear();
+        let (devices, attachment) = (between.devices.clone(), between.attachment);
         let outcome = run(between, mutants);
         rules(&outcome).map_err(|e| format!("killed after {at} steps: {e}"))?;
-        let ready = outcome
-            .result
-            .as_ref()
-            .map_err(|e| format!("killed after {at} steps: {e:?}"))?;
+        let ready = match &outcome.result {
+            Ok(ready) => ready,
+            Err(Stop::Error(_)) => {
+                check(
+                    outcome.world.devices == devices && outcome.world.attachment == attachment,
+                    &format!("killed after {at} steps: stopped, and changed something"),
+                )?;
+                stopped += 1;
+                continue;
+            }
+            Err(e) => return Err(format!("killed after {at} steps: {e:?}")),
+        };
         check(
             ready.took_over == took_over,
             &format!("killed after {at} steps: took over or not"),
@@ -926,59 +984,65 @@ fn killed_anywhere(world: fn() -> World, took_over: bool, mutants: u32) -> Resul
         check(extra.len() <= 1, "more than one device was left")?;
         leaked += extra.len();
     }
-    Ok(leaked)
+    Ok((leaked, stopped))
+}
+
+/// Device 0 is another's and is seen. Device 1 is another's, live, and
+/// appears after the daemon looked.
+fn with_strangers(shape: Shape) -> World {
+    let mut world = World::new();
+    world.late.push(1);
+    for number in 0..2 {
+        world.devices.insert(
+            number,
+            DeviceInfo {
+                state: DeviceState::Live,
+                shape,
+            },
+        );
+    }
+    world
 }
 
 #[test]
 fn a_daemon_killed_at_any_step_of_a_start_is_followed_by_one_that_serves_one_device() {
-    let with_others = || {
-        let mut world = World::new();
-        world.late.push(1);
-        for number in 0..2 {
-            world.devices.insert(
-                number,
-                DeviceInfo {
-                    state: DeviceState::Live,
-                    shape: EARLIER,
-                },
-            );
-        }
-        world
-    };
     // The kills between the add and the note leave a device: before
     // the disowning, and after it.
-    assert_eq!(killed_anywhere(World::new, false, 0), Ok(2));
+    assert_eq!(killed_anywhere(World::new, false, 0), Ok((2, 0)));
     assert_eq!(
         killed_anywhere(
             || World::new().attached(4, DeviceState::Waiting, EARLIER),
             true,
             0
         ),
-        Ok(0)
+        Ok((0, 0))
     );
     // Another's device appears at the number just recorded, and the
     // daemon is killed before it records the next: the record names a
-    // live device that is not this volume's.
-    assert_eq!(killed_anywhere(with_others, false, 0), Ok(2));
-}
-
-#[test]
-fn a_live_device_without_this_volumes_note_is_anothers_and_is_left() {
-    for note in [None, Some([0x5A; 16])] {
-        let mut world = World::new().attached(0, DeviceState::Live, EARLIER);
-        world.notes.clear();
-        if let Some(note) = note {
-            world.notes.insert(0, note);
-        }
-        let outcome = run(world, 0);
-        assert_eq!(rules(&outcome), Ok(()));
-        let ready = outcome.result.expect("serves");
-        assert_eq!((ready.number, ready.took_over), (1, false));
-        assert_eq!(
-            outcome.world.devices.get(&0).map(|d| d.state),
-            Some(DeviceState::Live)
-        );
-        assert!(!outcome.world.events.contains(&Event::Delete(0)));
-        assert_eq!(outcome.world.notes.get(&0).copied(), note);
-    }
+    // live device that is not this volume's. With other values than
+    // ours it is known for a stranger's, and the start attaches afresh.
+    assert_eq!(
+        killed_anywhere(|| with_strangers(EARLIER), false, 0),
+        Ok((2, 0))
+    );
+    // A twin, with exactly the values this daemon records: after the
+    // two kills that leave the record naming it (after the add that
+    // found it, and after the look at the next number), the start
+    // stops and touches nothing.
+    let twin = Shape {
+        size: SIZE,
+        queues: WANTED.queues,
+        depth: WANTED.depth,
+        flags: WANTED.flags,
+    };
+    assert_eq!(twin, run(World::new(), 0).result.expect("serves").shape);
+    let twins = || {
+        with_strangers(Shape {
+            size: SIZE,
+            queues: WANTED.queues,
+            depth: WANTED.depth,
+            flags: WANTED.flags,
+        })
+    };
+    assert_eq!(killed_anywhere(twins, false, 0), Ok((2, 2)));
 }

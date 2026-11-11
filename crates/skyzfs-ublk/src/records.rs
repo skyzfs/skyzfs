@@ -43,6 +43,18 @@
 //! | 12 | 4 | zero |
 //! | 16 | 16 | the nonce |
 //!
+//! # What belongs to a volume in the run directory
+//!
+//! The run directory is shared by every daemon on the machine, so
+//! nothing in it is per run directory. A device note is named by its
+//! device number, which is unique on the machine. Everything that
+//! belongs to a volume is under `<run dir>/v-<dev>-<ino>/`
+//! ([`volume_run_dir`]): the device and inode numbers of the volume's
+//! directory, in hex. There is the record of what was acknowledged
+//! ([`ACKNOWLEDGED`]). An inode number can be used again within a boot
+//! once a volume is removed, which is why that record carries the
+//! store's identity as well.
+//!
 //! The syncs are of the record's file and of its directory only. The
 //! daemon never syncs a file system or the whole machine: such a sync
 //! does not return while any ZFS pool on the machine is suspended.
@@ -55,10 +67,10 @@
 //!
 //! # Where the design is silent
 //!
-//! The file names, the layouts, and one run directory per daemon (one
-//! volume per daemon in this package) are this module's choice. The
-//! boot is the kernel's `boot_id`; the nonce is 16 bytes of the
-//! kernel's random source.
+//! The file names and the layouts are this module's choice. The boot
+//! is the kernel's `boot_id`; the nonce is 16 bytes of the kernel's
+//! random source. The volume's directory is examined by its path when
+//! the records are made, not through a descriptor the daemon holds.
 
 use std::fs;
 use std::io::{self, Read, Write};
@@ -70,8 +82,8 @@ use crate::lifecycle::{Attachment, MustReach, Records, Shape};
 
 /// The attachment record's name in the volume's directory.
 pub const ATTACHMENT: &str = "attachment";
-/// The name, in the run directory, of the record of what was
-/// acknowledged.
+/// The name, in the volume's directory under the run directory, of the
+/// record of what was acknowledged.
 pub const ACKNOWLEDGED: &str = "acknowledged";
 
 const ATTACHMENT_MAGIC: &[u8; 8] = b"SKYZATT1";
@@ -82,6 +94,15 @@ const NOTE_LEN: usize = 32;
 /// Where the note for device `number` is, under `run_dir`.
 pub fn note_path(run_dir: &Path, number: u32) -> PathBuf {
     run_dir.join(format!("ublk{number}.note"))
+}
+
+/// Where the volume in `volume_dir` keeps what is its own under
+/// `run_dir`: named by the device and inode numbers of the volume's
+/// directory.
+pub fn volume_run_dir(run_dir: &Path, volume_dir: &Path) -> io::Result<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = fs::metadata(volume_dir)?;
+    Ok(run_dir.join(format!("v-{:x}-{:x}", meta.dev(), meta.ino())))
 }
 
 fn not_whole(what: &'static str) -> io::Error {
@@ -159,6 +180,9 @@ impl Mutants {
     pub(crate) const TORN_IS_NONE: u32 = 1 << 1;
     /// A note is taken for any device's.
     pub(crate) const ANY_NUMBER: u32 = 1 << 2;
+    /// What was acknowledged is kept at the top of the run directory,
+    /// one file for every volume.
+    pub(crate) const ACK_AT_TOP: u32 = 1 << 3;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -253,6 +277,7 @@ pub fn boot_id() -> io::Result<[u8; 16]> {
 pub struct Files {
     volume_dir: PathBuf,
     run_dir: PathBuf,
+    volume_run_dir: PathBuf,
     boot: [u8; 16],
     pause: Duration,
     mutants: Mutants,
@@ -261,15 +286,22 @@ pub struct Files {
 impl Files {
     /// The records of the volume in `volume_dir`, with the daemon's
     /// notes in `run_dir`, in the boot `boot`. `pause` is how long
-    /// [`Records::pause`] waits before a locked store is tried again.
-    pub fn new(volume_dir: &Path, run_dir: &Path, boot: [u8; 16], pause: Duration) -> Self {
-        Self {
+    /// [`Records::pause`] waits before it is asked again. Creates
+    /// nothing. An error if the volume's directory cannot be examined.
+    pub fn new(
+        volume_dir: &Path,
+        run_dir: &Path,
+        boot: [u8; 16],
+        pause: Duration,
+    ) -> io::Result<Self> {
+        Ok(Self {
             volume_dir: volume_dir.into(),
             run_dir: run_dir.into(),
+            volume_run_dir: volume_run_dir(run_dir, volume_dir)?,
             boot,
             pause,
             mutants: Mutants::default(),
-        }
+        })
     }
 
     #[cfg(test)]
@@ -278,9 +310,23 @@ impl Files {
         self
     }
 
+    /// The volume's own directory under the run directory.
+    pub fn volume_run_dir(&self) -> &Path {
+        &self.volume_run_dir
+    }
+
+    /// Make the run directory and the volume's directory under it, if
+    /// they are not there.
+    pub fn create_run_dirs(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.volume_run_dir)
+    }
+
     /// Where the record of what was acknowledged is.
     pub fn acknowledged_path(&self) -> PathBuf {
-        self.run_dir.join(ACKNOWLEDGED)
+        if self.mutants.has(Mutants::ACK_AT_TOP) {
+            return self.run_dir.join(ACKNOWLEDGED);
+        }
+        self.volume_run_dir.join(ACKNOWLEDGED)
     }
 }
 

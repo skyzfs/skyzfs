@@ -36,7 +36,11 @@ fn dirs() -> Dirs {
 }
 
 fn files(dirs: &Dirs, mutants: u32) -> Files {
-    Files::new(&dirs.volume, &dirs.run, BOOT, Duration::ZERO).with(mutants)
+    let files = Files::new(&dirs.volume, &dirs.run, BOOT, Duration::ZERO)
+        .expect("the volume's directory")
+        .with(mutants);
+    files.create_run_dirs().expect("run directories");
+    files
 }
 
 #[test]
@@ -207,7 +211,8 @@ fn what_was_acknowledged_counts_only_in_the_boot_it_was_recorded_in() {
     );
 
     // Another boot: no client holds a device across a reboot.
-    let mut later = Files::new(&dirs.volume, &dirs.run, [8; 16], Duration::ZERO);
+    let mut later =
+        Files::new(&dirs.volume, &dirs.run, [8; 16], Duration::ZERO).expect("the volume");
     assert_eq!(later.acknowledged().expect("read"), None);
 
     // Not a whole record: an error, which the lifecycle takes as a
@@ -240,4 +245,49 @@ fn nonces_differ() {
     let dirs = dirs();
     let mut files = files(&dirs, 0);
     assert_ne!(files.nonce().expect("nonce"), files.nonce().expect("nonce"));
+}
+
+/// Two volumes, one run directory: each sees only its own position.
+fn two_volumes(mutants: u32) -> Result<(), String> {
+    let dirs = dirs();
+    let other = dirs.volume.with_file_name("other");
+    fs::create_dir(&other).expect("volume");
+    let mut first = files(&dirs, mutants);
+    let mut second = Files::new(&other, &dirs.run, BOOT, Duration::ZERO)
+        .expect("the volume")
+        .with(mutants);
+    second.create_run_dirs().expect("run directories");
+
+    let mut ack = AckFile::open(&first.acknowledged_path(), [1; 16], BOOT).expect("open");
+    ack.advance(100).expect("advance");
+    let mut ack = AckFile::open(&second.acknowledged_path(), [2; 16], BOOT).expect("open");
+    ack.advance(200).expect("advance");
+
+    for (files, identity, position) in [(&mut first, [1; 16], 100), (&mut second, [2; 16], 200)] {
+        let read = files.acknowledged().map_err(|e| e.to_string())?;
+        if read != Some(MustReach { identity, position }) {
+            return Err(format!("the volume at {position} was given {read:?}"));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn what_belongs_to_a_volume_in_a_shared_run_directory_is_under_the_volumes_own_name() {
+    assert_eq!(two_volumes(0), Ok(()));
+    assert!(two_volumes(Mutants::ACK_AT_TOP).is_err());
+
+    use std::os::unix::fs::MetadataExt;
+    let dirs = dirs();
+    let files = files(&dirs, 0);
+    let meta = fs::metadata(&dirs.volume).expect("there");
+    assert_eq!(
+        files.acknowledged_path(),
+        dirs.run
+            .join(format!("v-{:x}-{:x}", meta.dev(), meta.ino()))
+            .join("acknowledged")
+    );
+    // The notes of devices are not per volume: a number is one device
+    // on the machine.
+    assert_eq!(note_path(&dirs.run, 7), dirs.run.join("ublk7.note"));
 }
