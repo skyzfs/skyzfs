@@ -79,3 +79,20 @@ by the empty closure, the request stays with the driver and goes to the
 next life. The driver gives ublk devices `max_segments = USHRT_MAX`, so
 a 1 MiB direct write is one request and `handed == total` does not fail
 by splitting.
+
+## Second look, 20f8a8c..9f32dbb
+
+Run here at 9f32dbb: the same package tests pass; clippy `-D warnings`
+clean with and without the feature `control-test-program`; fmt clean.
+No kernel test was run.
+
+- `serve --run-dir relrun/deep` (relative, missing) passes the ZFS rule
+  and stops at the missing driver, exit 1 (was refused before).
+- Read: the store goes back from the queue's thread as its result and
+  the main thread keeps it to the end of `run`. Left over: if the
+  queue's thread panics outside `pumped`'s catch, or the queue was never
+  made, `join` is an error, the store was dropped on that thread, and
+  the failure cleanup after it can still run without the lock.
+- Read: the gathering server in `kernel.rs` falls out of gathering
+  after an idle wait and nothing records that it did, so the take-over
+  test does not itself show that `depth` writes were held at once.
