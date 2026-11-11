@@ -40,6 +40,10 @@ pub(crate) struct SimHarness {
     /// The log's limit of segment files.
     pub(crate) segments: Option<usize>,
     pub(crate) mutants: u32,
+    /// Put the store behind its worker thread ([`Served`]). The suite
+    /// then cannot choose how far a request in flight got, or which
+    /// records a power cut keeps: the thread and a seed do.
+    pub(crate) threaded: bool,
 }
 
 impl SimHarness {
@@ -70,6 +74,19 @@ impl SimHarness {
 
     fn open(&self, disk: SimDisk, read_only: bool) -> Result<OnSim, HarnessError> {
         let inner = match Store::open(disk.clone(), self.options(read_only)) {
+            Ok((store, _)) if self.threaded => {
+                let geometry = store.geometry();
+                let served = store
+                    .serve()
+                    .map_err(|e| HarnessError(format!("the worker thread: {e}")))?;
+                return Ok(OnSim {
+                    inner: Inner::Served(Box::new(served)),
+                    disk,
+                    geometry,
+                    read_only,
+                    mark: None,
+                });
+            }
             Ok((store, _)) => Inner::Live(Box::new(store)),
             // The volume failed and the client is still attached: the
             // daemon does not serve it again.
@@ -78,7 +95,9 @@ impl SimHarness {
         };
         let geometry = match &inner {
             Inner::Live(store) => store.geometry(),
-            Inner::Gone(_) => return Err(HarnessError("no geometry of a failed store".into())),
+            Inner::Served(_) | Inner::Gone(_) => {
+                return Err(HarnessError("no geometry of a failed store".into()))
+            }
         };
         Ok(OnSim {
             inner,
@@ -103,6 +122,8 @@ pub(crate) struct OnSim {
 
 enum Inner {
     Live(Box<Store<SimDisk>>),
+    /// The store behind its worker thread.
+    Served(Box<Served>),
     /// The store failed and was not opened again: everything fails.
     Gone(Vec<Request>),
 }
@@ -111,7 +132,7 @@ impl OnSim {
     pub(crate) fn store(&mut self) -> Option<&mut Store<SimDisk>> {
         match &mut self.inner {
             Inner::Live(store) => Some(store),
-            Inner::Gone(_) => None,
+            Inner::Served(_) | Inner::Gone(_) => None,
         }
     }
 }
@@ -132,6 +153,7 @@ impl BlockTarget for OnSim {
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
         match &mut self.inner {
             Inner::Live(store) => store.submit(request),
+            Inner::Served(served) => served.submit(request),
             Inner::Gone(queue) => {
                 queue.push(request);
                 Ok(())
@@ -142,6 +164,7 @@ impl BlockTarget for OnSim {
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
         match &mut self.inner {
             Inner::Live(store) => store.poll(out),
+            Inner::Served(served) => served.poll(out),
             Inner::Gone(queue) => {
                 let n = queue.len();
                 out.extend(queue.drain(..).map(|Request { id, op }| Completion {
@@ -157,6 +180,7 @@ impl BlockTarget for OnSim {
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
         match &mut self.inner {
             Inner::Live(store) => store.wait(out, timeout),
+            Inner::Served(served) => served.wait(out, timeout),
             Inner::Gone(_) => self.poll(out),
         }
     }
@@ -323,7 +347,7 @@ impl Harness for SimHarness {
     fn cut_points(&mut self, target: &OnSim) -> u64 {
         match &target.inner {
             Inner::Live(store) => store.core.unsynced.len() as u64,
-            Inner::Gone(_) => 0,
+            Inner::Served(_) | Inner::Gone(_) => 0,
         }
     }
 
@@ -412,6 +436,10 @@ impl Harness for SimHarness {
     fn maintenance(&mut self, target: &mut OnSim, seed: u64) -> Result<(), HarnessError> {
         let bounded = self.segments.is_some();
         let mark = target.mark;
+        if let Inner::Served(served) = &target.inner {
+            let _ = served.checkpoint();
+            return Ok(());
+        }
         let Some(store) = target.store() else {
             return Ok(());
         };

@@ -1272,6 +1272,7 @@ fn harnesses(mutants: u32) -> Vec<SimHarness> {
                     queue_depth: 16,
                     segments: Some(3),
                     mutants,
+                    threaded: false,
                 });
             }
         }
@@ -1294,6 +1295,35 @@ fn the_store_passes_the_conformance_suite() {
             report.not_exercised().is_empty(),
             "in {harness:?} not exercised: {:?}",
             report.not_exercised()
+        );
+    }
+}
+
+/// The contract, rules R1 to R12, through the worker thread: the suite
+/// passes against [`Served`] too, at both write units. Here the thread
+/// decides how far requests in flight got, so the fixed cases carry
+/// this test and the random programs are fewer; the one case that
+/// needs a power cut after a chosen record is not exercised.
+#[test]
+fn the_served_store_passes_the_conformance_suite() {
+    let config = Config {
+        cases: 12,
+        ..Config::default()
+    };
+    for mut harness in harnesses(0) {
+        if harness.align != 64 || !harness.garbage {
+            continue;
+        }
+        harness.threaded = true;
+        let report = run_all(&mut harness, &config);
+        assert!(report.passed(), "in {harness:?}:\n{report}");
+        // Behind the thread the harness cannot name the records a cut
+        // keeps, so the one case that cuts after each record is left
+        // to the inline driver.
+        assert_eq!(
+            report.not_exercised(),
+            ["power_cut_at_every_point_leaves_a_prefix"],
+            "in {harness:?}"
         );
     }
 }

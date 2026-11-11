@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use skyzfs_blk::{Base, BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId};
 use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig};
+use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig, StoreError};
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -219,7 +219,52 @@ fn store_kill_test_child() {
     }
 }
 
-/// Process kill, for real (rule R9): a child process serves a writer
+/// Every file of a directory with its bytes, sorted by name.
+fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+    let mut out: Vec<_> = std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (entry.file_name(), std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// One instance per volume, on real files (design §4.2): while a store
+/// is open a second open, and a creation over it, are refused with
+/// their own error and leave every file as it was; once the first
+/// instance is dropped the store opens.
+#[test]
+fn a_second_instance_is_refused_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let store = Store::create(dir.clone(), &config(16, 64), OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    write(&mut store, 3, Buf::filled(4, 1));
+    flush(&mut store);
+    let before = snapshot(tmp.path());
+    assert!(matches!(
+        Store::open(dir.clone(), OpenOptions::default()),
+        Err(StoreError::Locked)
+    ));
+    assert!(matches!(
+        Store::create(dir.clone(), &config(16, 64), OpenOptions::default()),
+        Err(StoreError::Locked)
+    ));
+    assert_eq!(snapshot(tmp.path()), before);
+    write(&mut store, 4, Buf::filled(1, 2));
+    drop(store);
+    let (store, _) = Store::open(dir, OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    assert_eq!(read(&mut store, 3, 1)[0], 1);
+    assert_eq!(read(&mut store, 4, 1)[0], 2);
+}
+
+/// Process kill, for real (rule R9), and the lock with it: while the
+/// child lives the parent cannot open the store, and after the kill it
+/// can. A child process serves a writer
 /// through the store's worker thread and reports each acknowledged
 /// write over a pipe; the parent kills it with SIGKILL at a moment the
 /// clock chooses, opens the store, and finds in every block the last
@@ -271,6 +316,17 @@ fn acknowledged_writes_survive_kill_9() {
             };
             note(&line);
             seen += 1;
+        }
+        // While the child lives the store is its own: one instance per
+        // volume, across processes.
+        if seen > 0 {
+            assert!(
+                matches!(
+                    Store::open(dir.clone(), options.clone()),
+                    Err(StoreError::Locked)
+                ),
+                "round {round}: the store opened under a live instance"
+            );
         }
         child.kill().unwrap();
         // Acknowledgements that were in the pipe when it died count too.
