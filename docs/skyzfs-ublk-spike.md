@@ -29,8 +29,11 @@ spike's program.
   `EBUSY` means held; anything else is "unknown", which the next start
   settles by what the driver says about the number.
 
-The program, its cargo feature and its script are gone from the tree
-(they are in the history, last at commit ab0a965). The file names
+The program, its cargo feature, its script and its workflow are gone
+from the tree. They are in the history of the branch
+`skyzfs-coding-m1.3b`, the program and the script last at commit
+ab0a965; the workflow, which later ran the binding's kernel tests and
+the daemon rig on the daemon, to that branch's end. The file names
 under "What ran" are as they were then.
 
 ## What ran
