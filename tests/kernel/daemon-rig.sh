@@ -787,7 +787,7 @@ vdev_say() {
 # -> RS_CTL ("FAIL|PASS|ERROR detail" for the control), RS_OBS.
 refused_start_arm() {
     local tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
-    local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay
+    local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay said
     RS_CTL=""; RS_OBS=""
     if ! vol_up "$SKYZFSD" "$dir"; then RS_CTL="ERROR not created or served"; return; fi
     if [ "$logdev" = yes ]; then
@@ -850,19 +850,22 @@ refused_start_arm() {
         # unacknowledged let a short log through: that is the finding.
         touch "$WORK/$tag.stop"
         i=$(vol_stat "$SKYZFSD" "$dir" recovered_unacknowledged)
-        # With 0 it is a finding only if the log held a mutation to
-        # drop: with none in it the hook compares the log's end, serves
-        # and says 0, rightly. A daemon without the key does not
-        # checkpoint and cannot have emptied its log.
-        # `checkpoint_step` is the text "none" when no step is under
-        # way; anything else, or the key missing beside log_live, is
-        # "cannot tell".
-        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ] && { [ -z "$ll" ] || { [[ $ll =~ ^[0-9]+$ ]] && [ "$ll" -gt 8192 ] && [ "$step" = none ]; }; }; then
-            RS_CTL="PASS killed at rest ($quiet; $logsay); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through"
+        # With 0 it is a finding only if the log's newest part was an
+        # acknowledged mutation: with no data record in what is
+        # replayed the hook compares the log's end, serves and says 0,
+        # rightly. The kill at rest has seen that (this instance's
+        # writes above 0, nothing held, unstored 0); a checkpoint step
+        # under way could still take the record out, so the status must
+        # say `checkpoint_step none`, or have no such key (a daemon
+        # that does not checkpoint). log_live is reported and not
+        # relied on: a log can hold records that are not mutations.
+        said=$(grep 'serving device' "$dir.serve.log" | tail -n 1 | cut -c1-300)
+        if [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ] && { [ "$step" = none ] || [ -z "$ll$steps$step" ]; }; then
+            RS_CTL="PASS killed at rest ($quiet; $logsay); serve --recover-short 1 SERVED ($BDEV) and found recovered_unacknowledged 0: a log shorter than what was acknowledged was let through; the start's own line: ${said:-none}"
         elif [[ ${i:-} =~ ^[0-9]+$ ]] && [ "$i" = 0 ]; then
-            RS_CTL="ERROR the control did not happen: killed at rest ($quiet), serve --recover-short 1 served with recovered_unacknowledged 0, but the log may have held no mutation to drop ($logsay; an empty log is 8192 bytes)"
+            RS_CTL="ERROR the control did not happen: killed at rest ($quiet), serve --recover-short 1 served with recovered_unacknowledged 0, but a checkpoint step may have taken the last mutation out of the log ($logsay); the start's own line: ${said:-none}"
         else
-            RS_CTL="ERROR the control did not happen: killed at rest ($quiet), yet serve --recover-short 1 served and says recovered_unacknowledged '${i:-nothing}': the log's last mutation was not an acknowledged one"
+            RS_CTL="ERROR the control did not happen: killed at rest ($quiet), yet serve --recover-short 1 served and says recovered_unacknowledged '${i:-nothing}': the log's last mutation was not an acknowledged one; the start's own line: ${said:-none}"
         fi
         RS_OBS="the start was not refused, so there is no course after a refusal to report"
         return
