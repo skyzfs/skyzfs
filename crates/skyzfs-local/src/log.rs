@@ -41,78 +41,89 @@ fn slot_index(name: &str) -> Option<usize> {
 /// Deliberate defects, for testing that the tests notice. Not part of
 /// the API: the crate's own tests set them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u32);
+pub(crate) struct Mutants(pub(crate) u64);
 
 impl Mutants {
     /// A record whose payload is damaged is skipped, and the records
     /// after it are accepted.
-    pub(crate) const ACCEPT_AFTER_GAP: u32 = 1 << 0;
+    pub(crate) const ACCEPT_AFTER_GAP: u64 = 1 << 0;
     /// Recovery does not bump the epoch.
-    pub(crate) const NO_EPOCH_BUMP: u32 = 1 << 1;
+    pub(crate) const NO_EPOCH_BUMP: u64 = 1 << 1;
     /// Recovery does not seal the end of the prefix: it writes nothing
     /// over what it found there.
-    pub(crate) const NO_TAIL_ERASE: u32 = 1 << 2;
+    pub(crate) const NO_TAIL_ERASE: u64 = 1 << 2;
     /// Recovery does not erase segments beyond the prefix.
-    pub(crate) const KEEP_STALE_SEGMENTS: u32 = 1 << 3;
+    pub(crate) const KEEP_STALE_SEGMENTS: u64 = 1 << 3;
     /// Records are not chained: every header is checked against a
     /// constant.
-    pub(crate) const NO_CHAIN: u32 = 1 << 4;
+    pub(crate) const NO_CHAIN: u64 = 1 << 4;
     /// A record's epoch is not checked.
-    pub(crate) const NO_EPOCH_CHECK: u32 = 1 << 5;
+    pub(crate) const NO_EPOCH_CHECK: u64 = 1 << 5;
     /// A record's own position is not checked.
-    pub(crate) const NO_POSITION_CHECK: u32 = 1 << 6;
+    pub(crate) const NO_POSITION_CHECK: u64 = 1 << 6;
     /// A record's payload is not checked: a torn record is accepted.
-    pub(crate) const NO_DATA_CHECK: u32 = 1 << 7;
+    pub(crate) const NO_DATA_CHECK: u64 = 1 << 7;
     /// Sync returns without syncing.
-    pub(crate) const SYNC_EARLY: u32 = 1 << 8;
+    pub(crate) const SYNC_EARLY: u64 = 1 << 8;
     /// Sync syncs only the segment being written.
-    pub(crate) const SYNC_ONLY_TAIL: u32 = 1 << 9;
+    pub(crate) const SYNC_ONLY_TAIL: u64 = 1 << 9;
     /// Sync does not sync the directory after a segment file was created.
-    pub(crate) const SYNC_NO_DIR: u32 = 1 << 10;
+    pub(crate) const SYNC_NO_DIR: u64 = 1 << 10;
     /// A failed sync does not fail the log; the next one may succeed.
-    pub(crate) const RETRY_SYNC: u32 = 1 << 11;
+    pub(crate) const RETRY_SYNC: u64 = 1 << 11;
     /// Recovery validates through the cache.
-    pub(crate) const VALIDATE_CACHED: u32 = 1 << 12;
+    pub(crate) const VALIDATE_CACHED: u64 = 1 << 12;
     /// Recovery does not sync before it validates.
-    pub(crate) const NO_SYNC_BEFORE_VALIDATE: u32 = 1 << 13;
+    pub(crate) const NO_SYNC_BEFORE_VALIDATE: u64 = 1 << 13;
     /// Reclaim frees segments before the new floor is durable.
-    pub(crate) const REUSE_BEFORE_FLOOR_SYNC: u32 = 1 << 14;
+    pub(crate) const REUSE_BEFORE_FLOOR_SYNC: u64 = 1 << 14;
     /// Reclaim ignores the hold.
-    pub(crate) const IGNORE_HOLD: u32 = 1 << 15;
+    pub(crate) const IGNORE_HOLD: u64 = 1 << 15;
     /// No marker is written when the log fails.
-    pub(crate) const NO_MARKER: u32 = 1 << 16;
+    pub(crate) const NO_MARKER: u64 = 1 << 16;
     /// The epoch of a segment's header is not checked against the
     /// records around it.
-    pub(crate) const NO_SEGMENT_EPOCH_CHECK: u32 = 1 << 17;
+    pub(crate) const NO_SEGMENT_EPOCH_CHECK: u64 = 1 << 17;
     /// The superblock is always written to the same copy.
-    pub(crate) const ONE_SUPER_COPY: u32 = 1 << 18;
+    pub(crate) const ONE_SUPER_COPY: u64 = 1 << 18;
     /// A prefix that ends below the durable floor is accepted.
-    pub(crate) const NO_DURABLE_FLOOR: u32 = 1 << 19;
+    pub(crate) const NO_DURABLE_FLOOR: u64 = 1 << 19;
     /// Of two files that claim the same part of the log, the one written
     /// in the earlier epoch is taken.
-    pub(crate) const PREFER_OLDER_CLAIM: u32 = 1 << 20;
+    pub(crate) const PREFER_OLDER_CLAIM: u64 = 1 << 20;
     /// A record appended after a sync or a recovery goes into the block
     /// that holds durable records, and so rewrites it.
-    pub(crate) const REWRITE_DURABLE_BLOCK: u32 = 1 << 21;
+    pub(crate) const REWRITE_DURABLE_BLOCK: u64 = 1 << 21;
     /// Headers are tagged with a key that everybody knows: a payload can
     /// be made to look like a record.
-    pub(crate) const PUBLIC_KEY: u32 = 1 << 22;
+    pub(crate) const PUBLIC_KEY: u64 = 1 << 22;
     /// A read error during recovery is taken for the end of the log.
-    pub(crate) const READ_ERROR_ENDS_LOG: u32 = 1 << 24;
+    pub(crate) const READ_ERROR_ENDS_LOG: u64 = 1 << 24;
     /// The failure marker's name is not synced.
-    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 25;
+    pub(crate) const MARKER_UNSYNCED: u64 = 1 << 25;
     /// A segment header of a later epoch than the superblock's is taken
     /// as it is.
-    pub(crate) const NO_HEADER_FUTURE_CHECK: u32 = 1 << 26;
+    pub(crate) const NO_HEADER_FUTURE_CHECK: u64 = 1 << 26;
     /// A reclaim writes its superblock in the epoch it found.
-    pub(crate) const RECLAIM_KEEPS_EPOCH: u32 = 1 << 27;
+    pub(crate) const RECLAIM_KEEPS_EPOCH: u64 = 1 << 27;
     /// A replay does not stop at a record that starts where the range
     /// ends.
-    pub(crate) const REPLAY_PAST_START: u32 = 1 << 28;
+    pub(crate) const REPLAY_PAST_START: u64 = 1 << 28;
+    /// A reclaim takes any position for the start of the log.
+    pub(crate) const RECLAIM_UNCHECKED: u64 = 1 << 29;
+    /// A replay goes beyond the durable position.
+    pub(crate) const REPLAY_UNSYNCED: u64 = 1 << 30;
+    /// The failure observer is called after the marker was attempted.
+    pub(crate) const OBSERVE_AFTER_MARKER: u64 = 1 << 31;
+    /// A reclaim keeps the cursor it had for the log's start and calls
+    /// it current.
+    pub(crate) const STALE_CURSOR: u64 = 1 << 32;
+    /// A position inside a segment's header passes for a boundary.
+    pub(crate) const HEADER_IS_BOUNDARY: u64 = 1 << 33;
     /// A failed log still replays what its cache shows.
-    pub(crate) const REPLAY_WHEN_FAILED: u32 = 1 << 23;
+    pub(crate) const REPLAY_WHEN_FAILED: u64 = 1 << 23;
 
-    fn has(self, flag: u32) -> bool {
+    fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
 }
@@ -181,6 +192,11 @@ pub enum LogError {
     /// acknowledge it.
     #[error("the log is marked as failed")]
     MarkedFailed,
+    /// `append`: the record needs another segment file, and the log has
+    /// as many as it may have, none of them free. Nothing was written
+    /// and the log has not failed: a reclaim makes room.
+    #[error("the log is full")]
+    Full,
     /// The log has failed: an earlier write or sync returned an error.
     /// Nothing succeeds any more.
     #[error("the log has failed")]
@@ -535,6 +551,22 @@ fn read_error(during: &'static str, e: &io::Error) -> LogError {
     }
 }
 
+/// Who is told that the log has failed: see [`Log::set_observer`].
+pub struct Observer(Box<dyn FnMut() + Send>);
+
+impl Observer {
+    /// An observer that calls `f`.
+    pub fn new(f: impl FnMut() + Send + 'static) -> Self {
+        Self(Box::new(f))
+    }
+}
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Observer")
+    }
+}
+
 /// The write log. One writer owns it: appends are written in order, one
 /// at a time, and that is what makes an acknowledged record imply every
 /// earlier one (see the crate documentation, "Order of
@@ -569,6 +601,18 @@ pub struct Log<D: Dir> {
     /// A segment file was created and the directory not synced since.
     dir_dirty: bool,
     scratch: Vec<u8>,
+    /// The most segment files the log may have.
+    limit: Option<usize>,
+    /// Told once, when the log fails.
+    observer: Option<Observer>,
+    /// A validated cursor at or below the log's start, with the base
+    /// of the segment it is in: where the last reclaim's walk to its
+    /// target ended. A replay that begins in that segment begins here
+    /// and not at the segment's first record.
+    start: Option<(u64, Cursor)>,
+    /// Records validated by replays, for tests of what a replay costs.
+    #[cfg(test)]
+    walked: std::cell::Cell<u64>,
     mutants: Mutants,
 }
 
@@ -888,10 +932,15 @@ impl<D: Dir> Log<D> {
             fresh_block: !mutants.has(Mutants::REWRITE_DURABLE_BLOCK),
             closed: stopped == Stop::NoNextSegment,
             hold: None,
+            observer: None,
+            start: None,
+            #[cfg(test)]
+            walked: std::cell::Cell::new(0),
             failed: false,
             dirty: BTreeSet::new(),
             dir_dirty: false,
             scratch: Vec::new(),
+            limit: None,
             mutants,
         };
 
@@ -982,6 +1031,12 @@ impl<D: Dir> Log<D> {
         Ok(None)
     }
 
+    /// The directory the log is in, for an owner that keeps files of
+    /// its own beside it.
+    pub fn dir(&self) -> &D {
+        &self.dir
+    }
+
     /// The log's identity.
     pub fn identity(&self) -> &Identity {
         &self.current.identity
@@ -1013,6 +1068,64 @@ impl<D: Dir> Log<D> {
         self.slots.len()
     }
 
+    /// Fail the log on behalf of its owner: something the owner keeps
+    /// beside the log has failed, and what the log holds must not be
+    /// served or extended any more. As after a failure of the log's own
+    /// files, nothing succeeds from now on, and the marker is written;
+    /// returns whether it was.
+    pub fn mark_failed(&mut self) -> bool {
+        self.failed = true;
+        self.announce()
+    }
+
+    /// Call `observer` once, at the moment the log fails: after the
+    /// decision and before the marker is attempted. The marker needs
+    /// the disk that has just failed, and a sync on a sick disk can
+    /// take minutes or never return; whoever must act on the failure
+    /// at once (a transport giving up its attachment) cannot wait for
+    /// it. The observer runs in the thread that owns the log and is to
+    /// return quickly.
+    pub fn set_observer(&mut self, observer: Observer) {
+        self.observer = Some(observer);
+    }
+
+    /// Tell the observer, then attempt the marker. Returns whether the
+    /// marker was written.
+    fn announce(&mut self) -> bool {
+        let late = self.mutants.has(Mutants::OBSERVE_AFTER_MARKER);
+        let mut observer = self.observer.take();
+        if !late {
+            if let Some(Observer(call)) = observer.as_mut() {
+                call();
+            }
+        }
+        let written = write_marker(&self.dir, self.mutants);
+        if late {
+            if let Some(Observer(call)) = observer.as_mut() {
+                call();
+            }
+        }
+        written
+    }
+
+    /// The key the log's headers are tagged with, for what the store
+    /// keeps beside the log. It stays inside this crate.
+    pub(crate) fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// The segment file that holds `position` and the offset in it, for
+    /// tests that decide the fate of single records at a power cut.
+    #[cfg(test)]
+    pub(crate) fn locate(&self, position: Lsn) -> Option<(String, u64)> {
+        let identity = self.current.identity;
+        let index = *self.live.get(&identity.base_of(position))?;
+        Some((
+            slot_name(self.slots[index].number),
+            position.0 % identity.segment_size,
+        ))
+    }
+
     /// The hold: a position [`Log::reclaim`] never passes.
     pub fn hold(&self) -> Option<Lsn> {
         self.hold
@@ -1039,7 +1152,7 @@ impl<D: Dir> Log<D> {
         LogError::Io {
             during,
             kind: e.kind(),
-            marker_written: write_marker(&self.dir, self.mutants),
+            marker_written: self.announce(),
         }
     }
 
@@ -1232,6 +1345,13 @@ impl<D: Dir> Log<D> {
         let align = u64::from(identity.align);
         let record = identity.record_size(data_len);
         if self.closed || !identity.fits(self.next_start().0 % size, data_len) {
+            // The record goes into the next segment. If that needs one
+            // file more than the log may have, say so before anything
+            // is written, the closing pad included.
+            let in_use = self.live.len();
+            if in_use == self.slots.len() && self.limit.is_some_and(|limit| in_use >= limit) {
+                return Err(LogError::Full);
+            }
             self.roll()?;
         }
         let start = self.next_start();
@@ -1337,31 +1457,98 @@ impl<D: Dir> Log<D> {
     /// show records the disk does not hold, and what the log holds is
     /// known again only after a recovery.
     ///
-    /// `to` may lie beyond [`Log::durable`], up to the tail. Records
-    /// beyond the durable position are in the log now and survive the
-    /// loss of the process, but a power cut may still take them back.
-    /// **Nothing beyond the durable position may be applied to anything
-    /// that outlives the log's own records** (a home image, an upload):
-    /// the volume would then hold what the log, after a power cut, never
-    /// had, and would not be a prefix. A caller that makes records
-    /// permanent replays up to [`Log::durable`].
+    /// `to` may not lie beyond [`Log::durable`]. Records beyond the
+    /// durable position are in the log and survive the loss of the
+    /// process, but a power cut may still take them back, and nothing
+    /// that a power cut can take back may be applied to anything that
+    /// outlives the log's own records (a home image, an upload): the
+    /// volume would then hold what the log never had, and would not be
+    /// a prefix. So a replay does not hand them out. After an open the
+    /// whole log is durable. The payload of a single record that is not
+    /// durable yet, to serve a client its own write, is read with
+    /// [`Log::read_payload`].
     pub fn replay(
         &self,
         from: Lsn,
         to: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
+        let limit = if self.mutants.has(Mutants::REPLAY_UNSYNCED) {
+            self.tail
+        } else {
+            self.durable
+        };
+        self.replay_within(from, to, limit, visit)
+    }
+
+    /// [`Log::replay`] with the tail as the limit: for the tests, which
+    /// look at records before they are synced.
+    #[cfg(test)]
+    pub(crate) fn replay_unsynced(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(), LogError> {
+        self.replay_within(from, to, self.tail, visit)
+    }
+
+    pub(crate) fn replay_within(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(), LogError> {
+        self.walk(from, to, limit, visit).map(|_| ())
+    }
+
+    /// Records validated by replays so far.
+    #[cfg(test)]
+    pub(crate) fn walked(&self) -> u64 {
+        self.walked.get()
+    }
+
+    /// The replay. Returns where the walk ended: a cursor at or below
+    /// `to`, validated from the segment's beginning or from the cursor
+    /// kept for the log's start, and the base of its segment.
+    ///
+    /// A walk has to begin where the chain's value is known. That is a
+    /// segment's first record, or the cursor a reclaim left at the
+    /// log's start: without it every replay would validate again what
+    /// lies between the segment's beginning and the start, and a
+    /// checkpoint in batches would cost the square of the records in a
+    /// segment. A cursor that does not belong where it is used shows as
+    /// a record that does not validate, never as a wrong record.
+    fn walk(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>),
+    ) -> Result<(u64, Cursor), LogError> {
         if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
             return Err(LogError::Failed);
         }
         if from < self.current.floor || from > to {
             return Err(LogError::BadPosition(from));
         }
-        if to > self.tail {
+        if to > limit {
             return Err(LogError::BadPosition(to));
         }
         let identity = self.current.identity;
         let size = identity.segment_size;
+        // A segment begins with its header, one unit long, and no
+        // record starts or ends in it. The walk below begins behind the
+        // header and would never meet such a position, so it is refused
+        // here.
+        if !self.mutants.has(Mutants::HEADER_IS_BOUNDARY) {
+            for bound in [from, to] {
+                if bound.0 - identity.base_of(bound) < identity.unit() {
+                    return Err(LogError::BadPosition(bound));
+                }
+            }
+        }
         let rules = Rules {
             identity,
             key: self.key,
@@ -1379,10 +1566,17 @@ impl<D: Dir> Log<D> {
             chain: rules.seed(base),
             min_epoch: 0,
         };
+        if let Some((kept_base, kept)) = self.start {
+            if kept_base == base && kept.position <= from {
+                cursor = kept;
+            }
+        }
         while cursor.position < to {
             let Some(&index) = self.live.get(&base) else {
                 return Err(Corruption::MissingSegment { base }.into());
             };
+            #[cfg(test)]
+            self.walked.set(self.walked.get() + 1);
             let step = rules
                 .record(&self.slots[index].file, &mut reader, &mut window, &cursor)
                 .map_err(|e| read_error("reading the log", &e))?;
@@ -1449,12 +1643,67 @@ impl<D: Dir> Log<D> {
                 min_epoch: header.epoch,
             };
         }
-        Ok(())
+        Ok((base, cursor))
+    }
+
+    /// Read `buf.len()` bytes of the payload of the write record that
+    /// starts at `record`, from `skip` bytes into it.
+    ///
+    /// `record` must be the start of a write record that is in the log
+    /// now: one [`Log::append`] returned to this instance, or one a
+    /// replay showed it. Every such record was validated by this
+    /// process: it wrote the record itself, or recovery checked it
+    /// against the device. The record need not be durable; this is how
+    /// a client is served a write it was acknowledged before any sync.
+    /// A position that is not the start of a write record of at least
+    /// that length is refused; the header at the position is checked
+    /// for being a record's at that position, not for its tag, which
+    /// would need the record before it.
+    pub fn read_payload(&self, record: Lsn, skip: u64, buf: &mut [u8]) -> Result<(), LogError> {
+        if self.failed {
+            return Err(LogError::Failed);
+        }
+        let identity = self.current.identity;
+        let size = identity.segment_size;
+        let align = u64::from(identity.align);
+        let base = identity.base_of(record);
+        let at = record.0 % size;
+        if record < self.current.floor || record >= self.tail || at + align > size {
+            return Err(LogError::BadPosition(record));
+        }
+        let Some(&index) = self.live.get(&base) else {
+            return Err(Corruption::MissingSegment { base }.into());
+        };
+        let file = &self.slots[index].file;
+        let mut raw = [0u8; RECORD_HEADER];
+        file.read_at(at, &mut raw)
+            .map_err(|e| read_error("reading the log", &e))?;
+        let Some((kind, data_len)) = RecordHeader::peek(&raw, record) else {
+            return Err(LogError::BadPosition(record));
+        };
+        let wanted = skip.checked_add(buf.len() as u64);
+        if kind != Kind::Write
+            || wanted.is_none_or(|end| end > u64::from(data_len))
+            || !identity.fits(at, data_len)
+        {
+            return Err(LogError::BadPosition(record));
+        }
+        file.read_at(at + align + skip, buf)
+            .map_err(|e| read_error("reading the log", &e))
+    }
+
+    /// The most segment files the log may have, or `None` for no limit
+    /// (which it is after every open). When a record needs one more,
+    /// [`Log::append`] returns [`LogError::Full`]. Files the log already
+    /// has stay, whatever the limit.
+    pub fn set_segment_limit(&mut self, limit: Option<usize>) {
+        self.limit = limit;
     }
 
     /// Give up the log before `before`, as far as the hold and the
     /// durable position allow, and return where the log starts now.
-    /// `before` must be a record boundary. Segments that lie wholly
+    /// The new start must be a record boundary, where a record starts or
+    /// ends; any other position is refused and nothing changes. Segments that lie wholly
     /// before the new start become free for reuse, and only after the
     /// new start is durable.
     pub fn reclaim(&mut self, before: Lsn) -> Result<Lsn, LogError> {
@@ -1470,6 +1719,16 @@ impl<D: Dir> Log<D> {
         if target <= self.current.floor {
             return Ok(self.current.floor);
         }
+        // The start of the log is durable state: a start that is not a
+        // record boundary would outlive this process and make the log
+        // unreadable from its start. An empty replay at the position
+        // walks its segment and refuses a position inside a record or
+        // in a gap.
+        let walked = if self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
+            None
+        } else {
+            Some(self.walk(target, target, self.tail, &mut |_| {})?)
+        };
         // A new epoch, as with every superblock that is written: what
         // is written from now on, a record or the header of a segment
         // file this reclaim frees, then carries an epoch the other copy
@@ -1491,6 +1750,13 @@ impl<D: Dir> Log<D> {
         }
         let first = self.current.identity.base_of(target);
         self.live.retain(|base, _| *base >= first);
+        // The walk to the new start is where the next replay begins.
+        self.start = match (self.start, walked) {
+            (Some((_, stale)), _) if self.mutants.has(Mutants::STALE_CURSOR) => {
+                Some((first, stale))
+            }
+            (_, walked) => walked,
+        };
         Ok(target)
     }
 }

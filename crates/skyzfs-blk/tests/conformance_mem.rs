@@ -93,6 +93,9 @@ fn passes(name: &str) {
             Some(Ok(Status::NotExercised(why))) => {
                 panic!("{name} was not exercised against {config:?}: {why}")
             }
+            Some(Ok(Status::Weaker(what))) => {
+                panic!("{name} ran in a weaker form against {config:?}: {what}")
+            }
             Some(Err(failure)) => panic!("{name} failed against {config:?}:\n{failure}"),
             None => panic!("the suite has no case named {name}"),
         }
@@ -121,6 +124,8 @@ const TESTED: &[&str] = &[
     "kill_keeps_acknowledged_operations",
     "reissue_after_kill_is_idempotent",
     "failed_volume_fails_every_request",
+    "reopened_failed_volume_holds_what_was_flushed",
+    "restart_after_the_log_failed_recovers_nothing",
     "read_only_target_refuses_mutations",
     "prop_invalid_requests_are_rejected_without_effect",
     "prop_concurrent_programs_match_model",
@@ -153,6 +158,7 @@ fn run_all_passes_and_reports_every_case() {
     assert_eq!(report.outcomes.len(), TESTED.len());
     assert!(report.failed().is_empty());
     assert!(report.not_exercised().is_empty());
+    assert!(report.weaker().is_empty(), "{report}");
 }
 
 /// Not a contract rule: a case whose rule the target cannot exercise is
@@ -325,6 +331,21 @@ fn reissue_after_kill_is_idempotent() {
 #[test]
 fn failed_volume_fails_every_request() {
     passes("failed_volume_fails_every_request");
+}
+
+/// R11: a failed volume that is opened again after a repair holds at
+/// least what every completed flush covered, and serves again.
+#[test]
+fn reopened_failed_volume_holds_what_was_flushed() {
+    passes("reopened_failed_volume_holds_what_was_flushed");
+}
+
+/// R11 over R9: the log fails and the daemon restarts before any
+/// failure was reported; opened again, the volume holds everything
+/// flushed, and may have lost what was only acknowledged.
+#[test]
+fn restart_after_the_log_failed_recovers_nothing() {
+    passes("restart_after_the_log_failed_recovers_nothing");
 }
 
 /// R12: on a read-only target write, write-zeroes and discard fail

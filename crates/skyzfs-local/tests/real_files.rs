@@ -252,6 +252,7 @@ fn sanity_numbers() {
                 latencies.push(t.elapsed());
             }
             latencies.sort();
+            log.sync().unwrap();
             let reading = Instant::now();
             let mut seen = 0u64;
             log.replay(log.floor(), log.tail(), &mut |_| seen += 1)

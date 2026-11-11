@@ -55,7 +55,9 @@
 //!   [`Model::readback`] lists before it submits anything but reads.
 //! - Once the log has failed ([`Model::log_failed`]) and the first failure
 //!   has been delivered, nothing can be observed any more; the model then
-//!   only requires that everything fails.
+//!   only requires that everything fails, until the volume is opened
+//!   again ([`Model::reopened`]). There it asks for a prefix, as rule
+//!   R11 does.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -485,6 +487,11 @@ type Readback = BTreeMap<u64, Vec<Option<Cid>>>;
 
 #[derive(Debug, Clone)]
 enum Pending {
+    /// A flush submitted after the log had failed, with nothing to make
+    /// durable: every operation acknowledged before it was covered by a
+    /// completed flush. It promises nothing new and may complete either
+    /// way (rule R11).
+    IdleFlush,
     /// The request must fail. Where it is wrong in more than one way the
     /// contract does not say which error wins, so each that applies is
     /// accepted.
@@ -630,6 +637,11 @@ pub struct Model {
     pending: BTreeMap<RequestId, Pending>,
     /// When each mutation was acknowledged.
     acked: BTreeMap<usize, u64>,
+    /// When the last operation was acknowledged that the volume, as it
+    /// has been recovered, does not hold durably for certain.
+    last_ack: Option<u64>,
+    /// The latest moment a completed flush was submitted at.
+    flush_cover: u64,
     /// A clock that ticks at every event.
     now: u64,
     health: Health,
@@ -663,6 +675,8 @@ impl Model {
             }],
             pending: BTreeMap::new(),
             acked: BTreeMap::new(),
+            last_ack: None,
+            flush_cover: 0,
             now: 0,
             health: Health::Healthy,
             recovering: None,
@@ -699,9 +713,12 @@ impl Model {
         }
     }
 
-    /// The write log has failed for good (rule R11). Every flush submitted
-    /// from now on must fail, and every request submitted after the first
-    /// failure has been delivered. A request in flight now may complete
+    /// The write log has failed for good (rule R11): a write or a sync
+    /// of it has failed. Every flush submitted from now on that has
+    /// something to make durable must fail, and every request submitted
+    /// after the first failure has been delivered. A flush that finds
+    /// every acknowledged operation covered by a completed flush has
+    /// nothing to make durable and may complete either way until then. A request in flight now may complete
     /// either way; if a flush among them succeeds, the model holds the
     /// target to it: what it covered counts as durable.
     pub fn log_failed(&mut self) {
@@ -729,9 +746,14 @@ impl Model {
         self.now += 1;
         let invalid = self.geometry.validate(&request.op).is_err();
         let read_only = self.geometry.read_only() && !is_read && request.op != Op::Flush;
-        let must_fail = self.health == Health::Failed
-            || (self.health == Health::Failing && request.op == Op::Flush);
-        let pending = if invalid || read_only || must_fail {
+        // A flush on a failed log must fail if it has something to make
+        // durable. One that has not need not find out.
+        let idle = self.last_ack.is_none_or(|at| at < self.flush_cover);
+        let failing_flush = self.health == Health::Failing && request.op == Op::Flush;
+        let must_fail = self.health == Health::Failed || (failing_flush && !idle);
+        let pending = if failing_flush && idle && !invalid {
+            Pending::IdleFlush
+        } else if invalid || read_only || must_fail {
             Pending::MustFail {
                 invalid,
                 read_only,
@@ -825,6 +847,9 @@ impl Model {
                 }),
             };
         }
+        if matches!(pending, Pending::IdleFlush) && got.is_ok() {
+            return Ok(());
+        }
         if let Err(error) = got {
             if error == BlkError::Failed && self.health != Health::Healthy {
                 // A failure of a failed volume. If the request was a
@@ -837,7 +862,7 @@ impl Model {
             return Err(Violation::UnexpectedError { id, error });
         }
         match pending {
-            Pending::MustFail { .. } => {}
+            Pending::MustFail { .. } | Pending::IdleFlush => {}
             Pending::Mutation { op } => self.acknowledge(op),
             Pending::Flush { at } => self.flushed(at),
             Pending::Read {
@@ -871,6 +896,7 @@ impl Model {
 
     fn acknowledge(&mut self, op: usize) {
         self.acked.insert(op, self.now);
+        self.last_ack = Some(self.now);
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             match world.waiting.iter().find(|w| w.op == op) {
@@ -896,6 +922,7 @@ impl Model {
     }
 
     fn flushed(&mut self, at: u64) {
+        self.flush_cover = self.flush_cover.max(at);
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             let acked = &self.acked;
@@ -993,10 +1020,27 @@ impl Model {
     /// Nothing acknowledged is lost. Recovery makes the whole log durable,
     /// including whatever the lost daemon had applied of the requests in
     /// flight.
+    ///
+    /// Not so once the log has failed (rule R11), whether or not the
+    /// client has been told yet: the rule that an acknowledged operation
+    /// survives the daemon holds for a log that has not failed. The
+    /// recovery of the daemon that returns cannot make its prefix
+    /// durable, and of what was acknowledged the volume is held only to
+    /// what a completed flush covered. The log that failed may have
+    /// lost the rest, and a restart does not bring it back. This shows
+    /// when the volume is opened again ([`Model::reopened`]). Requests
+    /// in flight are reissued all the same, and may be applied a second
+    /// time by a daemon that has not reported the failure yet.
     pub fn kill(&mut self) {
         if self.recovering.is_some() {
             return;
         }
+        // Once the log has failed, reported or not, the restart
+        // recovers nothing: what was acknowledged and not flushed stays
+        // what it was, at the mercy of the reopen. The rest of a
+        // restart is the transport's and does not depend on the log:
+        // requests in flight are issued again.
+        let healthy = self.health == Health::Healthy;
         self.now += 1;
         let now = self.now;
         let live: Vec<usize> = self
@@ -1010,8 +1054,10 @@ impl Model {
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             for mut world in world.settle(&self.cx, now, &|_| true, None) {
-                let all = vec![true; world.tail.len()];
-                world.absorb(&self.cx, &all);
+                if healthy {
+                    let all = vec![true; world.tail.len()];
+                    world.absorb(&self.cx, &all);
+                }
                 // Every request in flight is issued again and will be
                 // applied, perhaps for the second time, from now on.
                 world.waiting = live.iter().map(|op| Waiting { op: *op, lb: now }).collect();
@@ -1019,6 +1065,10 @@ impl Model {
             }
         }
         self.set_worlds(next);
+        if healthy {
+            // Recovery has made the whole log durable.
+            self.last_ack = None;
+        }
         for pending in self.pending.values_mut() {
             if let Pending::Read { since, .. } = pending {
                 *since = now;
@@ -1033,6 +1083,8 @@ impl Model {
     pub fn power_cut(&mut self) {
         self.now += 1;
         self.pending.clear();
+        // What recovery exposes is durable.
+        self.last_ack = None;
         let mut worlds = BTreeSet::new();
         for world in &self.worlds {
             worlds.extend(world.settle(&self.cx, self.now, &|_| true, None));
@@ -1060,6 +1112,21 @@ impl Model {
         self.recovering = Some((needed, Readback::new()));
         // Nothing to read back means nothing to decide.
         let _ = self.finish_recovery();
+    }
+
+    /// A failed volume was repaired and opened again, for a new client
+    /// (rule R11). Requests in flight are gone. The volume serves again,
+    /// and holds at least what every completed flush covered, on either
+    /// side of the failure.
+    ///
+    /// As after a power cut, the volume holds a prefix of the daemon's
+    /// order that includes everything flushed, and the model learns
+    /// which from a read-back (see [`Model::readback`]). Of the
+    /// operations no flush covered, any may be missing, but not an
+    /// earlier one without the later ones.
+    pub fn reopened(&mut self) {
+        self.health = Health::Healthy;
+        self.power_cut();
     }
 
     fn read_back(&mut self, first: u64, buf: &[u8]) -> Result<(), Violation> {
@@ -1789,6 +1856,202 @@ mod tests {
         assert!(c.would_see(0, &[1, 1, 1, 1, 0, 7]));
         assert!(c.would_see(0, &[1, 1, 1, 0, 0, 7]));
         assert!(!c.would_see(0, &[1, 1, 0, 1, 0, 7]));
+    }
+
+    /// R11: a failed volume that is opened again serves again, and
+    /// holds what a completed flush covered; what no flush covered may
+    /// be there or not, as a prefix.
+    #[test]
+    fn reopened_volume_serves_again_and_keeps_what_was_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(1, 1, 2);
+        c.model.log_failed();
+        let r = c.read(0, 1);
+        c.done(r, Err(BlkError::Failed)).unwrap();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![1]);
+        // The flushed write is not open to question.
+        assert!(!c.would_see(0, &[0, 0]));
+        assert!(c.would_see(0, &[1, 0]));
+        c.sees(0, &[1, 2]).unwrap();
+        // And the volume takes requests again.
+        c.wrote(0, 1, 3);
+        c.sees(0, &[3, 2]).unwrap();
+    }
+
+    /// R11 over R9: a daemon restart on a failed volume recovers nothing.
+    /// A write that was acknowledged and that no completed flush covered
+    /// may be gone when the volume is opened again, restart or not: the
+    /// flush that would have covered it is what failed.
+    #[test]
+    fn a_restart_does_not_make_a_failed_volume_keep_what_was_not_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(0, 1, 2);
+        c.model.log_failed();
+        let f = c.submit(Op::Flush);
+        c.done(f, Err(BlkError::Failed)).unwrap();
+        c.model.kill();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![0]);
+        assert!(c.would_see(0, &[2]));
+        assert!(!c.would_see(0, &[0]));
+        c.sees(0, &[1]).unwrap();
+    }
+
+    /// R11 over R9, before anyone was told: the log fails, no request
+    /// completes, the daemon restarts. The rule is about the log having
+    /// failed, not about a failure having been reported: the write that
+    /// no flush covered may be gone when the volume is opened again.
+    #[test]
+    fn a_restart_after_the_log_failed_unreported_keeps_only_what_was_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(0, 1, 2);
+        c.model.log_failed();
+        c.model.kill();
+        c.model.reopened();
+        assert_eq!(c.model.readback(), vec![0]);
+        assert!(c.would_see(0, &[2]));
+        c.sees(0, &[1]).unwrap();
+    }
+
+    /// R11: on a failed log a flush with nothing to make durable may
+    /// complete either way, and promises nothing: here every
+    /// acknowledged write is covered by a completed flush, or there is
+    /// none. With an acknowledged write that no flush covers, it must
+    /// fail. Once a failure has been delivered, every flush fails.
+    #[test]
+    fn a_flush_with_nothing_to_make_durable_need_not_notice_the_failure() {
+        for covered in [false, true] {
+            let mut c = Client::new();
+            if covered {
+                c.wrote(0, 1, 1);
+                let f = c.submit(Op::Flush);
+                c.ack(f);
+            }
+            c.model.log_failed();
+            let f = c.submit(Op::Flush);
+            c.clone().done(f, Err(BlkError::Failed)).unwrap();
+            c.done(f, Ok(())).unwrap();
+            // Still nothing to make durable: either way again.
+            let f = c.submit(Op::Flush);
+            c.done(f, Ok(())).unwrap();
+            // A write that is acknowledged now is something to make
+            // durable, and the flush behind it must fail.
+            c.wrote(1, 1, 2);
+            let f = c.submit(Op::Flush);
+            assert!(matches!(
+                c.clone().done(f, Ok(())),
+                Err(Violation::NotFailed { .. })
+            ));
+            c.done(f, Err(BlkError::Failed)).unwrap();
+            let f = c.submit(Op::Flush);
+            assert!(c.clone().done(f, Ok(())).is_err());
+            c.done(f, Err(BlkError::Failed)).unwrap();
+        }
+    }
+
+    /// R11, the other boundary of the flush with nothing to make
+    /// durable: once any failure has been delivered, such a flush must
+    /// fail too. The failure is delivered by a write that was never
+    /// acknowledged, or by an earlier flush of the same kind.
+    #[test]
+    fn a_flush_with_nothing_to_make_durable_fails_once_a_failure_was_delivered() {
+        for first in ["write", "flush"] {
+            let mut c = Client::new();
+            c.wrote(0, 1, 1);
+            let f = c.submit(Op::Flush);
+            c.ack(f);
+            c.model.log_failed();
+            let id = match first {
+                "write" => c.write(1, 1, 2),
+                _ => c.submit(Op::Flush),
+            };
+            c.done(id, Err(BlkError::Failed)).unwrap();
+            let f = c.submit(Op::Flush);
+            assert!(
+                matches!(c.clone().done(f, Ok(())), Err(Violation::NotFailed { .. })),
+                "after a failed {first}"
+            );
+            c.done(f, Err(BlkError::Failed)).unwrap();
+        }
+    }
+
+    /// R11: a mutation still in flight when a flush is submitted is not
+    /// something that flush has to make durable, by the flush rule
+    /// itself (R7), so on a failed log the flush may still complete
+    /// either way. Acknowledged before the flush was submitted, it is,
+    /// and the flush must fail.
+    #[test]
+    fn a_mutation_in_flight_is_nothing_a_flush_must_make_durable() {
+        let mut c = Client::new();
+        let w = c.write(0, 1, 1);
+        c.model.log_failed();
+        let f = c.submit(Op::Flush);
+        c.ack(w);
+        c.clone().done(f, Err(BlkError::Failed)).unwrap();
+        c.done(f, Ok(())).unwrap();
+        let f = c.submit(Op::Flush);
+        assert!(matches!(
+            c.clone().done(f, Ok(())),
+            Err(Violation::NotFailed { .. })
+        ));
+        c.done(f, Err(BlkError::Failed)).unwrap();
+    }
+
+    /// R11 over R9, with a failure not yet delivered: a flush is in
+    /// flight when the log fails and the daemon is lost before the
+    /// flush's failure reaches the client. The write that only that
+    /// flush would have covered may be gone when the volume is opened
+    /// again. (The review's history against the store.)
+    #[test]
+    fn a_restart_before_the_failure_is_delivered_keeps_only_what_was_flushed() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        let f = c.submit(Op::Flush);
+        c.ack(f);
+        c.wrote(0, 1, 2);
+        let _in_flight = c.submit(Op::Flush);
+        c.model.log_failed();
+        c.model.kill();
+        c.model.reopened();
+        c.sees(0, &[1]).unwrap();
+    }
+
+    /// R9 on a log that has failed and has not said so: the restart
+    /// recovers nothing, but the transport still issues the requests in
+    /// flight again, and a target that serves from memory until its
+    /// first failure is delivered may apply one a second time. The
+    /// history of `a_reissued_operation_may_be_in_the_order_twice` with
+    /// the log failed before the daemon is lost: W1 on block 0 and W2
+    /// on block 1 after the power cut is explained only by the order
+    /// W1, W2, W1 with the last record lost.
+    #[test]
+    fn a_restart_on_a_failed_log_still_reissues_what_was_in_flight() {
+        let history = |kill: bool| {
+            let mut c = Client::new();
+            let w1 = c.write(0, 2, 1);
+            let w2 = c.write(1, 1, 2);
+            c.ack(w2);
+            c.model.log_failed();
+            if kill {
+                c.model.kill();
+            }
+            c.ack(w1);
+            c.sees(1, &[1]).unwrap();
+            c.model.power_cut();
+            c.would_see(0, &[1, 2])
+        };
+        assert!(!history(false));
+        assert!(history(true));
     }
 
     /// R11: once the log has failed, a flush must fail, and after the

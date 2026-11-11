@@ -146,8 +146,14 @@ pub enum Fault {
     RecoveryNotDurable,
     /// R11: reads still succeed on a failed volume.
     FailedServesReads,
+    /// R11: a flush succeeds on a failed log although it has something
+    /// to make durable.
+    FlushSucceedsOnFailedLog,
     /// R11: a daemon restart forgets that the volume has failed.
     FailureForgottenOnKill,
+    /// R11: a failed volume that is opened again has lost the last
+    /// record a flush covered.
+    ReopenLosesFlushed,
     /// R12: a read-only target accepts writes.
     ReadOnlyAcceptsWrites,
     /// R4: a write of up to eight blocks also zeroes the block 128 blocks
@@ -388,6 +394,19 @@ impl MemTarget {
         self
     }
 
+    /// The failed volume is repaired and opened again for a new client
+    /// (rule R11): as after a power cut that keeps `keep` records beyond
+    /// the durable ones, and no longer failed.
+    pub fn reopen_failed(mut self, keep: u64) -> Self {
+        self.failed = false;
+        self.reported = false;
+        if self.fault(Fault::ReopenLosesFlushed) && self.durable > 0 {
+            self.durable -= 1;
+            self.log.truncate(self.durable);
+        }
+        self.power_cut(keep)
+    }
+
     /// The write log is lost for good (rule R11). What the requests in
     /// flight and the next ones get is [`MemConfig::failure`]'s choice.
     pub fn fail_log(&mut self) {
@@ -505,7 +524,8 @@ impl MemTarget {
     /// the volume reported its failure.
     fn refuse(&self, id: u64, op: &Op, done: bool, doomed: bool) -> Option<BlkError> {
         let is_read = matches!(op, Op::Read { .. });
-        if self.failed && !(is_read && self.fault(Fault::FailedServesReads)) {
+        let blind_flush = *op == Op::Flush && self.fault(Fault::FlushSucceedsOnFailedLog);
+        if self.failed && !(is_read && self.fault(Fault::FailedServesReads)) && !blind_flush {
             let fails = match self.config.failure {
                 LogFailure::AtOnce => true,
                 // Only what still needs the log runs into the failure.
@@ -804,6 +824,10 @@ impl MemHarness {
 impl crate::conformance::Harness for MemHarness {
     type Target = MemTarget;
 
+    fn capabilities(&self) -> crate::conformance::Capabilities {
+        crate::conformance::Capabilities::ALL
+    }
+
     fn create(
         &mut self,
         spec: &crate::conformance::Spec,
@@ -843,6 +867,14 @@ impl crate::conformance::Harness for MemHarness {
     fn fail_log(&mut self, target: &mut MemTarget) -> Result<(), crate::conformance::HarnessError> {
         target.fail_log();
         Ok(())
+    }
+
+    fn reopen_failed(
+        &mut self,
+        target: MemTarget,
+    ) -> Result<MemTarget, crate::conformance::HarnessError> {
+        let keep = target.cut_points() / 2;
+        Ok(target.reopen_failed(keep))
     }
 }
 

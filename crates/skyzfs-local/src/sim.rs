@@ -349,7 +349,17 @@ struct State {
     rng: Rng,
     write_fault: Option<Fault>,
     sync_fault: Option<Fault>,
+    /// The file whose syncs all fail.
+    sync_fault_of: Option<String>,
+    /// The file whose writes all fail, and the one whose reads do.
+    write_fault_of: Option<String>,
+    read_fault_of: Option<String>,
     read_fault: Option<Fault>,
+    /// The machine stops after this many more writes and syncs.
+    halt: Option<u64>,
+    /// Who holds the directory's lock, and the next holder's number.
+    lock: Option<u64>,
+    next_lock: u64,
     /// How many live handles are open on each inode.
     open: BTreeMap<u64, u64>,
     device_reads: bool,
@@ -363,6 +373,21 @@ fn injected(what: &str) -> io::Error {
 }
 
 impl State {
+    /// Whether the machine has stopped. A write or a sync (`counts`)
+    /// uses up one of the calls it still takes.
+    fn halted(&mut self, counts: bool) -> bool {
+        match &mut self.halt {
+            None => false,
+            Some(0) => true,
+            Some(left) => {
+                if counts {
+                    *left -= 1;
+                }
+                false
+            }
+        }
+    }
+
     /// Whether the fault in `slot` strikes this call.
     fn strikes(slot: &mut Option<Fault>) -> bool {
         match slot {
@@ -408,6 +433,7 @@ impl State {
     fn close_all(&mut self) {
         self.generation += 1;
         self.open.clear();
+        self.lock = None;
     }
 }
 
@@ -432,7 +458,13 @@ impl SimDisk {
                 rng: Rng(seed),
                 write_fault: None,
                 sync_fault: None,
+                sync_fault_of: None,
+                write_fault_of: None,
+                read_fault_of: None,
                 read_fault: None,
+                halt: None,
+                lock: None,
+                next_lock: 0,
                 open: BTreeMap::new(),
                 device_reads: true,
                 write_unit: SECTOR,
@@ -466,6 +498,10 @@ impl SimDisk {
         state.close_all();
         state.write_fault = None;
         state.sync_fault = None;
+        state.sync_fault_of = None;
+        state.write_fault_of = None;
+        state.read_fault_of = None;
+        state.halt = None;
         state.read_fault = None;
         let inodes: Vec<u64> = state.inodes.keys().copied().collect();
         for id in inodes {
@@ -533,6 +569,39 @@ impl SimDisk {
     /// makes nothing durable and may drop unsynced data on the spot.
     pub fn fail_sync(&self, after: u64, sticky: bool) {
         self.lock().sync_fault = Some(Fault { after, sticky });
+    }
+
+    /// Every sync of the file called `name` fails from now on, until
+    /// the faults are cleared or the power is cut: for a test that
+    /// needs one particular file to stay unsynced, whatever else is
+    /// synced before it. What a failed sync leaves is as with
+    /// [`SimDisk::fail_sync`].
+    pub fn fail_sync_of(&self, name: &str) {
+        self.lock().sync_fault_of = Some(name.to_owned());
+    }
+
+    /// Every write to the file called `name` fails from now on and
+    /// writes nothing, until the faults are cleared or the power is
+    /// cut: for a test that needs one particular file to refuse.
+    pub fn fail_write_of(&self, name: &str) {
+        self.lock().write_fault_of = Some(name.to_owned());
+    }
+
+    /// Every read of the file called `name` fails from now on, through
+    /// the cache and from the device, until the faults are cleared or
+    /// the power is cut.
+    pub fn fail_read_of(&self, name: &str) {
+        self.lock().read_fault_of = Some(name.to_owned());
+    }
+
+    /// The machine stops taking anything: after the next `after` writes
+    /// and syncs, every write, sync, change of a length and change of a
+    /// name fails and leaves nothing, until the faults are cleared or
+    /// the power is cut. With a power cut next, this is the power going
+    /// at that point of whatever the caller does in between, which the
+    /// caller then sees as errors and cannot act on.
+    pub fn halt_after(&self, after: u64) {
+        self.lock().halt = Some(after);
     }
 
     /// The read after the next `after` reads fails, and, if `sticky`,
@@ -609,6 +678,10 @@ impl SimDisk {
         let mut state = self.lock();
         state.write_fault = None;
         state.sync_fault = None;
+        state.sync_fault_of = None;
+        state.write_fault_of = None;
+        state.read_fault_of = None;
+        state.halt = None;
         state.read_fault = None;
     }
 
@@ -666,11 +739,48 @@ impl SimDisk {
     }
 }
 
+/// The simulated directory's lock, held. A kill and a power cut release
+/// it, as the end of a process does; a holder that is dropped after
+/// that releases nothing.
+#[derive(Debug)]
+pub struct SimLock {
+    disk: SimDisk,
+    holder: u64,
+}
+
+impl Drop for SimLock {
+    fn drop(&mut self) {
+        let mut state = self.disk.lock();
+        if state.lock == Some(self.holder) {
+            state.lock = None;
+        }
+    }
+}
+
 impl Dir for SimDisk {
     type File = SimFile;
+    type Lock = SimLock;
+
+    /// The lock is no file here: taking it leaves the disk as it was.
+    fn try_lock(&self) -> io::Result<SimLock> {
+        let mut state = self.lock();
+        if state.lock.is_some() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        let holder = state.next_lock;
+        state.next_lock += 1;
+        state.lock = Some(holder);
+        Ok(SimLock {
+            disk: self.clone(),
+            holder,
+        })
+    }
 
     fn create(&self, name: &str) -> io::Result<SimFile> {
         let mut state = self.lock();
+        if state.halted(false) {
+            return Err(injected("halt"));
+        }
         if state.names.contains_key(name) {
             return Err(io::ErrorKind::AlreadyExists.into());
         }
@@ -694,6 +804,9 @@ impl Dir for SimDisk {
 
     fn remove(&self, name: &str) -> io::Result<()> {
         let mut state = self.lock();
+        if state.halted(false) {
+            return Err(injected("halt"));
+        }
         if state.names.remove(name).is_none() {
             return Err(io::ErrorKind::NotFound.into());
         }
@@ -703,6 +816,9 @@ impl Dir for SimDisk {
 
     fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         let mut state = self.lock();
+        if state.halted(false) {
+            return Err(injected("halt"));
+        }
         let Some(inode) = state.names.remove(from) else {
             return Err(io::ErrorKind::NotFound.into());
         };
@@ -720,6 +836,9 @@ impl Dir for SimDisk {
     fn sync(&self) -> io::Result<()> {
         let mut guard = self.lock();
         let state = &mut *guard;
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
         if State::strikes(&mut state.sync_fault) {
             return Err(injected("sync"));
         }
@@ -780,6 +899,11 @@ impl SimFile {
         if device && !state.device_reads {
             return Err(io::ErrorKind::Unsupported.into());
         }
+        if state.read_fault_of.is_some()
+            && state.read_fault_of.as_deref() == state.name_of(self.inode)
+        {
+            return Err(injected("read"));
+        }
         if State::strikes(&mut state.read_fault) {
             return Err(injected("read"));
         }
@@ -822,6 +946,14 @@ impl File for SimFile {
         let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
+        if state.write_fault_of.is_some()
+            && state.write_fault_of.as_deref() == state.name_of(self.inode)
+        {
+            return Err(injected("write"));
+        }
         state.stats.writes += 1;
         let failing = State::strikes(&mut state.write_fault);
         let end = offset
@@ -884,7 +1016,12 @@ impl File for SimFile {
         let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
-        let failing = State::strikes(&mut state.sync_fault);
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
+        let named = state.sync_fault_of.as_deref();
+        let failing = (named.is_some() && named == state.name_of(self.inode))
+            || State::strikes(&mut state.sync_fault);
         let rng = &mut state.rng;
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if failing {
@@ -914,6 +1051,9 @@ impl File for SimFile {
     fn preallocate(&mut self, len: u64) -> io::Result<()> {
         let mut state = self.disk.lock();
         self.check(&state)?;
+        if state.halted(false) {
+            return Err(injected("halt"));
+        }
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if len < inode.len {
             return Err(io::Error::new(
@@ -923,6 +1063,11 @@ impl File for SimFile {
         }
         inode.len = len;
         Ok(())
+    }
+
+    fn extend(&mut self, len: u64) -> io::Result<()> {
+        // The simulated disk reserves nothing in either case.
+        self.preallocate(len)
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -1306,6 +1451,97 @@ mod tests {
                 assert!(disk.list().unwrap().is_empty());
             }
         }
+    }
+
+    /// Injected errors: with the syncs of one file failing, that file
+    /// stays unsynced while the others sync as usual.
+    #[test]
+    fn the_syncs_of_one_file_can_fail() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        let mut g = disk.create("g").unwrap();
+        disk.fail_sync_of("f");
+        f.write_at(0, &[2; 4]).unwrap();
+        g.write_at(0, &[3; 4]).unwrap();
+        g.sync().unwrap();
+        assert!(f.sync().is_err());
+        assert!(f.sync().is_err());
+        Dir::sync(&disk).unwrap();
+        disk.clear_faults();
+        g.sync().unwrap();
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
+    }
+
+    /// The lock: one holder at a time; dropping it, a kill and a power
+    /// cut release it, and a holder from before a kill releases nothing
+    /// that was taken after.
+    #[test]
+    fn the_directory_lock_has_one_holder_and_dies_with_the_process() {
+        let disk = disk_with(1, 1);
+        let first = disk.try_lock().unwrap();
+        let refused = disk.try_lock().unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        let second = disk.try_lock().unwrap();
+        disk.kill();
+        let third = disk.try_lock().unwrap();
+        drop(second);
+        assert!(disk.try_lock().is_err());
+        disk.power_cut(LoseAll);
+        let fourth = disk.try_lock().unwrap();
+        drop(third);
+        assert!(disk.try_lock().is_err());
+        drop(fourth);
+        disk.try_lock().unwrap();
+    }
+
+    /// Injected errors: a halted disk takes the writes and syncs it was
+    /// still given, then refuses every write, sync, length and name
+    /// change and keeps nothing of them, until the power is cut.
+    #[test]
+    fn a_halted_disk_takes_nothing_more() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        disk.halt_after(2);
+        f.write_at(0, &[2; 4]).unwrap();
+        f.sync().unwrap();
+        assert!(f.write_at(0, &[3; 4]).is_err());
+        assert!(f.sync().is_err());
+        assert!(f.preallocate(8 * SECTOR).is_err());
+        assert!(disk.create("g").is_err());
+        assert!(disk.rename("f", "h").is_err());
+        assert!(disk.remove("f").is_err());
+        assert!(Dir::sync(&disk).is_err());
+        assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
+        assert_eq!(disk.list().unwrap(), ["f"]);
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
+        let mut f = disk.open("f").unwrap();
+        f.write_at(0, &[4; 4]).unwrap();
+        f.sync().unwrap();
+    }
+
+    /// Injected errors: the writes and the reads of one file can fail
+    /// while the others work, and a write that fails so leaves nothing.
+    #[test]
+    fn the_writes_and_reads_of_one_file_can_fail() {
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        let mut g = disk.create("g").unwrap();
+        f.write_at(0, &[1; 4]).unwrap();
+        disk.fail_write_of("f");
+        assert!(f.write_at(0, &[2; 4]).is_err());
+        g.write_at(0, &[3; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [1; 4]);
+        disk.fail_read_of("f");
+        let mut buf = [0u8; 4];
+        assert!(f.read_at(0, &mut buf).is_err());
+        assert!(f.read_device_at(0, &mut buf).is_err());
+        assert_eq!(read(&disk, "g", 0, 4), [3; 4]);
+        disk.clear_faults();
+        f.write_at(0, &[2; 4]).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4), [2; 4]);
     }
 
     /// Length: growth that was not synced can be lost at a power cut,
