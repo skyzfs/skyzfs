@@ -503,6 +503,7 @@ fn open<C: Control, R: Records, V: Volume>(
         Ok(must_reach) => must_reach,
         Err(_) => {
             let why = "the record of what was acknowledged cannot be read";
+            let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
             let stop = failed(control, records, wanted, mutants, why);
             drop(held);
             return Err(stop);

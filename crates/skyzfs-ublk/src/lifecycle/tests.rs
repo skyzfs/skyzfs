@@ -61,6 +61,9 @@ struct World {
     /// The note of this device is there and is not a whole record.
     torn_note: Option<u32>,
     acknowledged: Result<Option<MustReach>, ()>,
+    /// The record of what was acknowledged cannot be read once, and can
+    /// from then on.
+    ack_unreadable_once: bool,
     /// Where the store's valid log ends.
     log_end: u64,
     identity: [u8; 16],
@@ -113,6 +116,7 @@ impl World {
             notes: BTreeMap::new(),
             torn_note: None,
             acknowledged: Ok(None),
+            ack_unreadable_once: false,
             log_end: 1000,
             identity: [3; 16],
             opens: VecDeque::new(),
@@ -307,6 +311,9 @@ impl Records for Fake {
         self.intrude();
         let mut w = self.0.borrow_mut();
         w.happens(Event::Acknowledged)?;
+        if std::mem::take(&mut w.ack_unreadable_once) {
+            return Err(io::Error::other("not a whole record"));
+        }
         w.acknowledged
             .map_err(|()| io::Error::other("not a whole record"))
     }
@@ -1570,11 +1577,28 @@ fn a_daemon_starts_during_a_failing_start(mutants: u32) -> Result<(), String> {
     Ok(())
 }
 
+/// The same, for a start that fails because the record of what was
+/// acknowledged cannot be read. The second start can read it.
+fn a_daemon_starts_during_a_start_that_cannot_read_the_position(
+    mutants: u32,
+) -> Result<(), String> {
+    for at in 0..=8 {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.ack_unreadable_once = true;
+        world.intrude_at = Some(at);
+        let outcome = run(world, mutants);
+        served_intact(&outcome.world).map_err(|e| format!("after {at} steps: {e}"))?;
+    }
+    Ok(())
+}
+
 #[test]
 fn a_start_that_fails_deletes_under_the_lock() {
+    let defect = [("unlocked before the delete", Mutants::UNLOCK_BEFORE_FAILED)];
+    holds(a_daemon_starts_during_a_failing_start, &defect);
     holds(
-        a_daemon_starts_during_a_failing_start,
-        &[("unlocked before the delete", Mutants::UNLOCK_BEFORE_FAILED)],
+        a_daemon_starts_during_a_start_that_cannot_read_the_position,
+        &defect,
     );
 }
 
