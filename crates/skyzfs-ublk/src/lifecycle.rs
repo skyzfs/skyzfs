@@ -849,6 +849,11 @@ fn noted_failure<C: Control, R: Records>(
         )));
     }
     if !acknowledges {
+        // Nothing is touched (design: a failure nobody held, asked
+        // without the flag). That includes a device of this volume
+        // that a daemon killed between the failure note and the delete
+        // left waiting: it stays until a start with the flag or a
+        // detach deletes it.
         return Err(Stop::Failed(format!(
             "{reason}; no client held its device. It is served again with --acknowledge-failure"
         )));
@@ -1099,6 +1104,19 @@ fn failed<C: Control, R: Records>(
 /// survive the boot), a number that carries another attachment's note,
 /// or a number under which nothing stands. So an answer without a
 /// device in it means that this start knows of none.
+///
+/// **What becomes of a device that was left.** A start that finds the
+/// failure note comes through here again when the note says a client
+/// held the device or cannot be read (it then refuses) and when the
+/// failure is acknowledged (it then serves), but not when it refuses
+/// a failure nobody held for want of the flag: that start touches
+/// nothing. `skyzfsd detach` deletes a device that carries this
+/// volume's note and is not live. So a device left because it was
+/// still live, could not be asked about or could not be deleted goes
+/// at the next start or detach that finds it otherwise. A device left
+/// because nothing shows it to be this volume's (no note, or a note
+/// that cannot be read) is not deleted by either: by hand, or by a
+/// reboot. Each answer says which of the two applies.
 fn give_up_device<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
@@ -1135,7 +1153,8 @@ fn give_up_device<C: Control, R: Records>(
         Ok(None) => false,
         Err(e) => {
             return said(format!(
-                "; the note of device {number} could not be read ({e}), and the device was left"
+                "; the note of device {number} could not be read ({e}), and the device was \
+                 left: deleting it by hand, or a reboot, resolves it"
             ))
         }
     };
@@ -1147,13 +1166,15 @@ fn give_up_device<C: Control, R: Records>(
         Ok(None) => return String::new(),
         Err(e) => {
             return said(format!(
-                "; device {number} could not be asked about ({e}), and was left"
+                "; device {number} could not be asked about ({e}), and was left: the next \
+                 start of this volume or `skyzfsd detach` tries again"
             ))
         }
     };
     if info.state == DeviceState::Live {
         return said(format!(
-            "; device {number} is still live after {} looks, and was left: it has a server",
+            "; device {number} is still live after {} looks, and was left: it has a server. \
+             Once it has none, the next start of this volume or `skyzfsd detach` deletes it",
             wanted.live_retries
         ));
     }
@@ -1174,7 +1195,10 @@ fn give_up_device<C: Control, R: Records>(
     }
     match delete(control, records, number, mutants) {
         Ok(()) => said(format!("; device {number} was deleted")),
-        Err(e) => said(format!("; device {number} could not be deleted ({e})")),
+        Err(e) => said(format!(
+            "; device {number} could not be deleted ({e}): the next start of this volume or \
+             `skyzfsd detach` tries again"
+        )),
     }
 }
 
