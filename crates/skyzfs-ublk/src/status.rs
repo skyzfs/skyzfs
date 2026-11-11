@@ -453,16 +453,28 @@ impl Board {
 }
 
 /// What every message about a failed or refused volume says of a pool
-/// that is imported on its device. Measured by the testing session on
-/// the daemon (run 43093721420, one run per image): after a refusal
-/// with the device deleted, the pool read ONLINE for the more than 300
-/// seconds watched and went on acknowledging synchronous writes out of
-/// its own log device; a pool suspends at once for a failed read or
-/// flush, and did not for failed writes alone. Until the daemon can
-/// make the pool notice, it says so.
-pub const POOL_WARNING: &str = "a pool imported on this volume's device may go on reading \
-     ONLINE and acknowledging synchronous writes that never reach the volume: export the \
-     pool, or reboot the node";
+/// that is imported on its device, and `status` with it. The daemon
+/// does not act on a pool: it is below ZFS, the device is gone, and it
+/// knows no pool. It says the state and the step; making the pool read
+/// is the operator's, and later the agent's.
+///
+/// What it says was measured by the testing session on the daemon
+/// (runs 43093721420, 43100887191, 43100211375) and read in OpenZFS
+/// 2.4.1 (`zio_done`): after the device is gone the pool's writes fail
+/// at once, and ZFS executes a failed allocating write again without
+/// end instead of suspending, so the pool reads ONLINE with one
+/// transaction group syncing for ever; with a log device, synchronous
+/// writes were still acknowledged minutes later. The first read that
+/// had to reach the device suspended the pool within a second or two
+/// (a read of an uncached file, the start of a scrub). It does not
+/// say "export the pool": what an export does in that state is not
+/// measured. (That a pool is exported before its volume is detached
+/// is said where `detach` is described: that is about before.)
+pub const POOL_WARNING: &str = "a pool imported on this volume's device does not notice that \
+     the device is gone while it only writes: it goes on reading ONLINE and, with a log \
+     device, acknowledging synchronous writes that never reach the volume. A read that must \
+     reach the device suspends it (for example `zpool scrub POOL`), and the pool cannot be \
+     imported again before a reboot";
 
 /// The volume's failure note, as `status` found it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
