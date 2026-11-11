@@ -151,6 +151,40 @@ class Log(unittest.TestCase):
         self.assertEqual(counts['ub_window'], avail['ub_window'])
         self.assertEqual(counts['random'], avail['other'])
 
+    def test_windows_that_merge_are_still_counted_as_windows(self):
+        # Uberblock writes closer together than the window: one window
+        # over the whole log, too large to take whole.
+        recs = self.idx['records']
+        kind, _, avail = replay_check.plan(recs, 10000, 100, window=50)
+        counts = {k: sum(1 for v in kind.values() if v == k) for k in ('ub_window', 'random')}
+        self.assertEqual(avail['other'], 0)
+        self.assertEqual(counts, {'ub_window': avail['ub_window'], 'random': 0})
+        kind, _, _ = replay_check.plan(recs, 30, 3, window=50)
+        self.assertGreater(sum(1 for v in kind.values() if v == 'ub_window'), 0)
+        self.assertEqual(sum(1 for v in kind.values() if v == 'random'), 0)
+
+    def test_victim_facts(self):
+        a, b = blk(0xA1), blk(0xB2)
+        logwrites.write_log(self.log, SS, [
+            ('write', 1 << 20, b),              # 0
+            ('write', 2 << 20, a),              # 1  the victim
+            ('write', 3 << 20, blk(1) + a),     # 2  the same block inside a larger write
+            ('flush',),
+            ('write', 2 << 20, b),              # 4  overwrites the victim's place
+            ('write', 1 << 20, b),              # 5  changes nothing
+            ('write', 4 << 20, blk(0)),         # 6  zeros over an empty device
+        ])
+        recs = logwrites.index(self.log, DEV)['records']
+        f = replay_check.victim_facts(self.log, recs, 1, self.img)
+        self.assertEqual(f['copies'], [{'record': 2, 'offset': (3 << 20) + SS}])
+        self.assertEqual((f['earlier'], f['later'], f['zeros'], f['same_as_before']), (None, 4, False, False))
+        f = replay_check.victim_facts(self.log, recs, 5, self.img)
+        self.assertEqual((f['earlier'], f['later'], f['same_as_before']), (0, None, True))
+        self.assertEqual([c['record'] for c in f['copies']], [0, 4])
+        f = replay_check.victim_facts(self.log, recs, 6, self.img)
+        self.assertEqual((f['zeros'], f['same_as_before'], f['copies']), (True, True, []))
+        self.assertIn('record 2 at byte', replay_check.facts_text(replay_check.victim_facts(self.log, recs, 1)))
+
     def test_plan_is_repeatable(self):
         recs = self.idx['records']
         self.assertEqual(replay_check.plan(recs, 25, 3, seed=7, window=2), replay_check.plan(recs, 25, 3, seed=7, window=2))

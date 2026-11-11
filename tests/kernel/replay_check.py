@@ -45,6 +45,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import statistics
@@ -116,7 +117,10 @@ def plan(records, budget_points, deep_points, seed=1, window=WINDOW):
 
     Priority: the two ends and every flush boundary; then whole windows
     around uberblock writes, for at most 60% of what is left; then random
-    prefixes. A prefix that is several things counts as the first.
+    prefixes. A prefix that is several things counts as the first, and a
+    random pick that falls inside a window counts as the window's: when
+    uberblock writes are closer together than the window, the windows
+    merge and may be too large to take whole.
     """
     total = len(records)
     flush = flush_points(records)
@@ -150,7 +154,7 @@ def plan(records, budget_points, deep_points, seed=1, window=WINDOW):
     rest = [n for n in range(total + 1) if n not in kind]
     rng = random.Random(seed)
     for n in rng.sample(rest, min(max(left, 0), len(rest))):
-        kind[n] = 'random'
+        kind[n] = 'ub_window' if n in in_window else 'random'
     deep = set(spread([n for n in sorted(kind) if kind[n] == 'flush'], deep_points))
     return kind, deep, avail
 
@@ -207,6 +211,64 @@ def controls(records, marks):
                 'what': f'record {victim} (a write of {records[victim]["bytes"]} bytes at byte {records[victim]["offset"]}, '
                         f'the last data write before flush {a}) is applied only after the uberblocks of its transaction group'})
     return out
+
+
+def victim_facts(log_path, records, victim, base_path=None):
+    """What can be said from the log alone about the block a control withholds.
+
+    A control that is not caught needs explaining, and these are the
+    cheap explanations: the write changed nothing, the same block went
+    to another place as well (ZFS keeps two or three copies of its
+    metadata), or it was overwritten soon after.
+    """
+    v = records[victim]
+    lo, hi = v['offset'], v['offset'] + v['bytes']
+    facts = {'copies': [], 'earlier': None, 'later': None, 'same_as_before': None}
+    with open(log_path, 'rb') as f:
+        f.seek(v['pos'])
+        data = f.read(v['bytes'])
+        facts['zeros'] = not any(data)
+        for r in records:
+            if 'pos' not in r:
+                continue
+            overlaps = r['offset'] < hi and lo < r['offset'] + r['bytes']
+            if r['i'] != victim and overlaps:
+                if r['i'] < victim:
+                    facts['earlier'] = r['i']
+                elif facts['later'] is None:
+                    facts['later'] = r['i']
+            if r['bytes'] < len(data):
+                continue
+            f.seek(r['pos'])
+            payload = f.read(r['bytes'])
+            at = payload.find(data)
+            while at >= 0:
+                if not (r['i'] == victim and at == 0) and len(facts['copies']) < 16:
+                    facts['copies'].append({'record': r['i'], 'offset': r['offset'] + at})
+                at = payload.find(data, at + len(data))
+        before = None
+        e = facts['earlier']
+        if e is not None and records[e]['offset'] <= lo and hi <= records[e]['offset'] + records[e]['bytes']:
+            f.seek(records[e]['pos'] + lo - records[e]['offset'])
+            before = f.read(len(data))
+        elif e is None and base_path:
+            with open(base_path, 'rb') as b:
+                b.seek(lo)
+                before = b.read(len(data))
+        if before is not None:
+            facts['same_as_before'] = before == data
+    return facts
+
+
+def facts_text(facts):
+    c = facts['copies']
+    parts = ['all zeros' if facts['zeros'] else None,
+             'the device already held the same bytes there' if facts['same_as_before'] else None,
+             (f"the same bytes are also written at {len(c)} other place(s): "
+              + ', '.join(f"record {x['record']} at byte {x['offset']}" for x in c[:4])) if c else 'no other write in the log carries the same bytes',
+             f"that place is next written by record {facts['later']}" if facts['later'] is not None else 'that place is not written again',
+             f"and was last written by record {facts['earlier']}" if facts['earlier'] is not None else 'and was not written earlier in the log']
+    return '; '.join(x for x in parts if x)
 
 
 # ------------------------------------------------------------- running
@@ -480,7 +542,9 @@ def main():
     for n in spread(flush, 3):
         rig.advance(n)
         rc, out, t = run(['zdb', '-e', '-p', rig.imgdir, '-bcc', args.pool], 300)
-        zdb.append({'n': n, 'rc': rc, 's': t, 'tail': ' | '.join(out.strip().splitlines()[-3:])[-300:]})
+        said = [ln.strip() for ln in out.splitlines() if re.search(r'ASSERT|VERIFY|PANIC|panic|failed|cannot|error', ln)][:4]
+        zdb.append({'n': n, 'rc': rc, 's': t, 'tail': ' | '.join(out.strip().splitlines()[-3:])[-300:],
+                    'said': ' | '.join(said)[:600]})
         print(f'zdb -e -bcc at prefix {n}: rc {rc} in {t:.1f}s', flush=True)
     res['zdb'] = zdb
 
@@ -513,12 +577,15 @@ def main():
                 by[r['failed'].split(':')[0]] = by.get(r['failed'].split(':')[0], 0) + 1
                 if first is None:
                     first = {'n': n, 'failed': r['failed'], 'detail': r['detail']}
-        ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked,
+        facts = victim_facts(args.log, records, c['victim'], args.base) if not args.provider else None
+        ctl.append({'name': c['name'], 'what': c['what'], 'victim': c['victim'], 'points': checked, 'facts': facts,
                     'deep_points': len(deep_at), 'caught': first is not None, 'first': first, 'failed_by': by})
         print(f"control {c['name']}: {'caught' if first else 'NOT CAUGHT'} over {checked} prefixes"
               + (f", first at {first['n']} by {first['failed']}" if first else ''), flush=True)
     res['controls'] = ctl
 
+    # The index goes with the results: a finding needs the records around it.
+    run(['cp', rig.index_path, os.path.join(args.out, 'replay-index.json')])
     res['points'] = points
     res['failures'] = failures
     with open(os.path.join(args.out, 'replay-results.json'), 'w') as f:
@@ -565,7 +632,7 @@ def summary(res):
                    + '; '.join(f"prefix {z['n']}: rc {z['rc']} in {z['s']:.1f} s" for z in res['zdb']) + '.')
         bad = [z for z in res['zdb'] if z['rc']]
         if bad:
-            out.append(f"zdb said: `{bad[0]['tail']}`")
+            out.append(f"zdb said: `{bad[0].get('said') or bad[0]['tail']}`")
     if res.get('witness'):
         out.append('\nProvider against xfstests `replay-log`: '
                    + '; '.join(f"prefix {w['n']}: {'same image' if w['same'] else 'DIFFERENT'}" for w in res['witness']) + '.')
@@ -580,6 +647,9 @@ def summary(res):
             by = ', '.join(f'{k} {v}' for k, v in c['failed_by'].items())
             out.append(f"| {c['name']} | {c['what']} | {c['points']} ({c['deep_points']}) | "
                        f"{'yes, ' + by if c['caught'] else '**NO**'} | {first.replace('|', '/')} |")
+        for c in res['controls']:
+            if c.get('facts'):
+                out.append(f"\nThe block withheld by `{c['name']}`: {facts_text(c['facts'])}.")
     if res['failures']:
         out.append('\n### Failures\n')
         for p in res['failures'][:25]:

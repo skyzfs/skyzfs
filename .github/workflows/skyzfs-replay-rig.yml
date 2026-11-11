@@ -27,14 +27,6 @@ on:
     paths:
       - tests/kernel/**
       - .github/workflows/skyzfs-replay-rig.yml
-  # Until the workflow has run once it cannot be dispatched from a
-  # branch. This trigger goes away before the pull request is opened.
-  push:
-    branches: [skyzfs-testing]
-    paths:
-      - tests/kernel/replay*
-      - tests/kernel/logwrites.py
-      - .github/workflows/skyzfs-replay-rig.yml
 
 # The job runs branch code and third-party code as root: its token can
 # read the repository and nothing else.
