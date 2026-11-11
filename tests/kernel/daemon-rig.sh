@@ -402,7 +402,8 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw
+    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states
+    KT_WAITED=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
@@ -456,6 +457,16 @@ kill_test() {
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
+        # KT_WAIT_S: after the first kill no server comes for that long.
+        if [ "${KT_WAIT_S:-0}" -gt 0 ] && [ "$n" = 1 ]; then
+            mark=$(dmesg_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
+            while [ $(( $(now_ms) - t0 )) -lt $((KT_WAIT_S * 1000)) ]; do
+                states+="$(ublk_state "$BDEV") "
+                sleep 10
+            done
+            dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(grep -ciE 'I/O error|timeout|timed out|abort|blocked for more than' "$OUT/$name-wait-dmesg.log") with an I/O error, a timeout, an abort or a hung task; pool $(pool_state "$pool") at the end of the wait"
+        fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
         serve_start "$impl" "$dir" "${KT_SERVE_EXTRA[@]}"; rc=$?
@@ -702,6 +713,19 @@ check_b() {
     vol_detach "$REF" "$WORK/vol-b0"
 
     check_b_delay
+
+    # A waiting device with no server: the design's table of states has
+    # it unchanged with no limit in time, from a reading of the driver.
+    # Here it waits 300 s under a pool, and is then taken over.
+    step "b, observation: a killed server's device waits ${RIG_WAIT_S:-300} s for the next"
+    KT_WAIT_S=${RIG_WAIT_S:-300} kill_test "$SKYZFSD" bw 1
+    kill_verdict
+    if [ -z "$KT_WAITED" ]; then
+        obs b_device_waits_for_a_server "not run: ${KT_ERR:-the kill test did not reach the wait}"
+    else
+        obs b_device_waits_for_a_server "$KT_WAITED. Then served again: $KT_VERDICT, ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+    fi
+    kill_cleanup bw
 }
 
 # =================================================================== d
