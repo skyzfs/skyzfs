@@ -6,10 +6,25 @@ edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
+[features]
+# The libublk spike (docs/skyzfs-ublk-spike.md): a program that asks the
+# kernel what the design read in the library's source. It needs
+# libclang to build. Nothing else in the workspace is built on it, and
+# a default build does not compile the library.
+spike = ["dep:libublk", "dep:io-uring", "dep:libc"]
+
+[[bin]]
+name = "skyzfs-ublk-spike"
+required-features = ["spike"]
+
 [dependencies]
 skyzfs-blk = { workspace = true }
 skyzfs-local = { workspace = true }
 thiserror = { workspace = true }
+# The spike only. The pin is the design's (§4.2, "Library").
+libublk = { version = "=0.4.8", optional = true }
+io-uring = { version = "0.7.12", optional = true }
+libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
 # The integration tests fail a served store's log at will.
