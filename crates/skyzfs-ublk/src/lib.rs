@@ -20,6 +20,8 @@
 //! - [`records`]: the lifecycle's records as files: which device is a
 //!   volume's, in the volume's directory, and the note for each device
 //!   in the run directory.
+//! - [`status`]: the file the serving daemon keeps for `status`, the
+//!   pace at which it is written, and the report made from it.
 //!
 //! The binding to the kernel is built on these.
 
@@ -32,4 +34,6 @@ pub mod lifecycle;
 pub mod pump;
 #[cfg(unix)]
 pub mod records;
+#[cfg(unix)]
+pub mod status;
 pub mod translate;
