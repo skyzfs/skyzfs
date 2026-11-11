@@ -517,7 +517,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             return Ok(Exit::RefusedHeld);
         }
         Err(Stop::Failed(why)) => {
-            say(why);
+            // `status` says the same from the notes, after this
+            // process has gone.
+            say(format_args!("{why}. Note: {}", status::POOL_WARNING));
             return Ok(Exit::RefusedFailed);
         }
         Err(Stop::Error(why)) => return Err(why),
@@ -745,7 +747,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         let (failure, written) =
             lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
-            "the volume failed while it was served ({}); client holds the device: {:?}{}; {}",
+            "the volume failed while it was served ({}); client holds the device: {:?}{}; {}. \
+             Note: {}",
             failure.reason,
             failure.held,
             if written {
@@ -760,7 +763,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 )
             } else {
                 "the delete has returned".to_string()
-            }
+            },
+            status::POOL_WARNING
         ));
         // The delete takes the queue down. A stop as well, for a
         // device whose delete did not.
@@ -790,8 +794,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     if flags.failed.load(Ordering::SeqCst) {
         let (failure, _) = lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
-            "the volume failed while it was served ({})",
-            failure.reason
+            "the volume failed while it was served ({}). Note: {}",
+            failure.reason,
+            status::POOL_WARNING
         ));
         return Ok(Exit::Failed);
     }

@@ -452,6 +452,18 @@ impl Board {
     }
 }
 
+/// What every message about a failed or refused volume says of a pool
+/// that is imported on its device. Measured by the testing session on
+/// the daemon (run 43093721420, one run per image): after a refusal
+/// with the device deleted, the pool read ONLINE for the more than 300
+/// seconds watched and went on acknowledging synchronous writes out of
+/// its own log device; a pool suspends at once for a failed read or
+/// flush, and did not for failed writes alone. Until the daemon can
+/// make the pool notice, it says so.
+pub const POOL_WARNING: &str = "a pool imported on this volume's device may go on reading \
+     ONLINE and acknowledging synchronous writes that never reach the volume: export the \
+     pool, or reboot the node";
+
 /// The volume's failure note, as `status` found it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Noted {
@@ -471,7 +483,13 @@ pub enum Noted {
 ///
 /// A failure note of this boot decides the state, and is printed after
 /// everything else: its boot, whether a client held the device, why,
-/// and how long ago. A note of another boot is not shown.
+/// and how long ago; then what became of the volume's device
+/// (`failure_device`: none under the recorded number, or which and in
+/// what state, and what removes it) and [`POOL_WARNING`]
+/// (`failure_pool`). All of it comes from the notes and the driver, so
+/// it is the same with no daemon running: this is where an operator
+/// reads a failure or a refused start after the daemon has exited. A
+/// note of another boot is not shown.
 ///
 /// `located` is the device under the volume's recorded number
 /// ([`lifecycle::locate`](crate::lifecycle::locate)), `status` the
@@ -575,6 +593,35 @@ pub fn report(
                 uptime_ms.saturating_sub(stored.written_ms).to_string(),
             ));
         }
+    }
+    if failure.is_some() {
+        let device = match located {
+            None => "none under the volume's recorded number: deleted, or never there".to_string(),
+            Some(l) if l.whose == Whose::Ours => format!(
+                "/dev/ublkb{} is this volume's and {}",
+                l.number,
+                match l.state {
+                    DeviceState::Live => "live: it has a server",
+                    DeviceState::Waiting =>
+                        "waits for a server it will not get: the next serve or a detach \
+                         deletes it",
+                    DeviceState::Dead =>
+                        "deleted, and something still holds it: its number is free when \
+                         that lets go",
+                }
+            ),
+            Some(l) if l.whose == Whose::Unsure => format!(
+                "device {} has this volume's values and no note, and is left: deleting it \
+                 by hand, or a reboot, resolves it",
+                l.number
+            ),
+            Some(l) => format!(
+                "device {} under the recorded number is not this volume's",
+                l.number
+            ),
+        };
+        lines.push(("failure_device", device));
+        lines.push(("failure_pool", POOL_WARNING.to_string()));
     }
     lines
 }
