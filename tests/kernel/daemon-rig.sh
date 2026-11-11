@@ -976,6 +976,12 @@ check_c() {
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
+    # At each kill the tool sorts the calls it has outstanding: those
+    # the old server had completed (their resubmission is issued) and
+    # those in flight when it died (the kernel issues them again). If
+    # the second number is near nothing, the kill cases test little.
+    rec c_kills "$(awk -F'\t' '$3 == "kill" { k++ } $3 == "before_kill" { b++ } $3 == "carried" { c++ } $3 == "sorted" { s++ } $3 == "count_differs" { d++ }
+        END { printf "%d kills of a live server, %d of them sorted on the helper\047s line; calls outstanding at a kill: %d completed by the old server and issued again by the tool, %d in flight at its death and issued again by the kernel; kills where the tool had more calls outstanding than the kernel counted in flight: %d", k, s, b, c, d }' "$OUT/c-trace.tsv" 2>/dev/null)"
     gzip -f "$OUT/c-trace.tsv" 2>/dev/null
     for f in "$work"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/c-$(basename "$f")"; done
     declare -A declared_as=()

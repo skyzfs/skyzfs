@@ -13,9 +13,9 @@
 //!
 //! - `CMD create N`: make volume number N, empty, and serve it. Prints
 //!   the path of its block device on the last line of stdout.
-//! - `CMD kill N`: stop the server of volume N, print `stopped`, kill
-//!   it with SIGKILL and serve the volume again. Prints the device path
-//!   on the last line.
+//! - `CMD kill N`: kill the server of volume N with SIGKILL, print
+//!   `dead R W` when it is gone, and serve the volume again. Prints the
+//!   device path on the last line.
 //! - `CMD fail N`: make the write log of volume N fail for good. Only
 //!   called with `--can fail-log`.
 //! - `CMD reopen N`: volume N has failed and its device is closed;
@@ -62,10 +62,17 @@
 //!   been given yet, is another matter: the kernel issues nothing of it
 //!   again, while the suite's model takes every unacknowledged request
 //!   to be applied from the kill on. Its resubmission is issued. To
-//!   tell the two apart, `CMD kill N` stops the server, prints the line
-//!   `stopped`, and only then kills it: what has returned by that line
-//!   was completed before the kill. Without that line every
-//!   outstanding call is taken as in flight at the death.
+//!   tell the two apart, `CMD kill N` prints the line `dead R W` when
+//!   the old server is gone and before the new one is started: no
+//!   request completes in between, so what has returned by that line
+//!   was completed before the kill. R and W are the kernel's counts of
+//!   reads and writes in flight at the device then. The tool checks
+//!   its sorting twice and exits with status 3, an error of the rig
+//!   and not a verdict, if either check fails: a call taken as in
+//!   flight must not have returned before the sorting, and the calls
+//!   still outstanding must not outnumber the requests the kernel
+//!   counts. Without that line every outstanding call is taken as in
+//!   flight at the death.
 //!
 //! `skyzfs-blkcheck --replay TRACE VOLUME [SIZE_MIB]` gives a trace
 //! written with `BLKCHECK_TRACE=FILE` back to the suite's model, event

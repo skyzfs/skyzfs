@@ -111,6 +111,14 @@ struct DeviceTarget {
     geometry: Geometry,
     done_tx: Sender<Completion>,
     done_rx: Receiver<Completion>,
+    /// When each call returned, by the clock of the thread that made it.
+    returned: Arc<std::sync::Mutex<BTreeMap<RequestId, std::time::Instant>>>,
+    /// Flushes among the ids in flight: the kernel's count of requests
+    /// in flight at a device is of reads and writes.
+    flushes: BTreeSet<RequestId>,
+    /// When the calls outstanding at the last kill were sorted into
+    /// "completed before" and "in flight at the death".
+    sorted_at: Option<std::time::Instant>,
     /// Ids handed to a thread whose completion has not been returned.
     in_flight: BTreeSet<RequestId>,
     /// Results of requests that were in flight at a kill. The kernel
@@ -217,6 +225,9 @@ impl DeviceTarget {
             geometry,
             done_tx,
             done_rx,
+            returned: Arc::default(),
+            flushes: BTreeSet::new(),
+            sorted_at: None,
             in_flight: BTreeSet::new(),
             carried: BTreeMap::new(),
             ready: Vec::new(),
@@ -228,6 +239,7 @@ impl DeviceTarget {
         // these lines are the history the suite's model is given.
         trace(self.number, "delivered", Some(completion.id), "");
         self.in_flight.remove(&completion.id);
+        self.flushes.remove(&completion.id);
         out.push(completion);
     }
 
@@ -261,7 +273,13 @@ impl DeviceTarget {
                 &format!("{:?}", c.result),
             );
         }
+        self.sorted_at = Some(std::time::Instant::now());
         got.len()
+    }
+
+    /// Reads, writes, discards and writes of zeros still outstanding.
+    fn outstanding_data_calls(&self) -> usize {
+        self.in_flight.len() - self.flushes.len()
     }
 
     /// Wait for every outstanding call to return, and keep the results
@@ -282,6 +300,7 @@ impl DeviceTarget {
                 }
             }
         }
+        let returned = self.returned.lock().map(|r| r.clone()).unwrap_or_default();
         for c in got {
             trace(
                 self.number,
@@ -289,8 +308,12 @@ impl DeviceTarget {
                 Some(c.id),
                 &format!("{:?}", c.result),
             );
+            if let Some(what) = sorted_wrongly(returned.get(&c.id).copied(), self.sorted_at) {
+                rig_error(&format!("volume {}, request {}: {what}", self.number, c.id));
+            }
             self.carried.insert(c.id, c);
         }
+        self.sorted_at = None;
         Ok(())
     }
 }
@@ -314,6 +337,9 @@ impl BlockTarget for DeviceTarget {
             });
         }
         self.in_flight.insert(request.id);
+        if request.op == Op::Flush {
+            self.flushes.insert(request.id);
+        }
         if let Some(c) = self.carried.remove(&request.id) {
             trace(self.number, "held_back", Some(c.id), "");
             self.ready.push(c);
@@ -323,6 +349,7 @@ impl BlockTarget for DeviceTarget {
         let device = self.device.clone();
         let failed = Arc::clone(&self.failed);
         let tx = self.done_tx.clone();
+        let returned = Arc::clone(&self.returned);
         let number = self.number;
         if tracing() {
             trace(number, "submit", Some(request.id), &describe(&request.op));
@@ -331,6 +358,9 @@ impl BlockTarget for DeviceTarget {
             let Request { id, op } = request;
             let is_read = matches!(op, Op::Read { .. });
             let (result, buf) = perform(&file, device.as_deref(), op);
+            if let Ok(mut returned) = returned.lock() {
+                returned.insert(id, std::time::Instant::now());
+            }
             if tracing() {
                 let seen = match &buf {
                     Some(buf) if is_read => digests(buf),
@@ -365,6 +395,43 @@ impl BlockTarget for DeviceTarget {
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => 0,
         }
     }
+}
+
+/// The sorting of the calls outstanding at a kill cannot be trusted:
+/// say so and stop, with a status the rig reports as its own error. The
+/// suite must not judge a server on a history the tool got wrong.
+fn rig_error(what: &str) -> ! {
+    eprintln!("RIG ERROR: {what}");
+    std::process::exit(3)
+}
+
+/// A call carried across a kill as "in flight at the server's death"
+/// must have returned after the sorting, which is done while no server
+/// runs. One that returned before it was completed by the old server
+/// and should have been issued again: `Some(why)`.
+fn sorted_wrongly(
+    returned: Option<std::time::Instant>,
+    sorted_at: Option<std::time::Instant>,
+) -> Option<String> {
+    let (returned, sorted_at) = (returned?, sorted_at?);
+    (returned < sorted_at).then(|| {
+        format!(
+            "the call returned {:?} before the calls outstanding at the kill were sorted, and was taken as in flight at the server's death",
+            sorted_at - returned
+        )
+    })
+}
+
+/// The kernel's count of reads and writes in flight at the device while
+/// no server runs, against the calls the tool still has outstanding.
+/// More calls outstanding than requests in flight means one of them has
+/// in fact been completed: `Some(why)`.
+fn more_outstanding_than_in_flight(outstanding: usize, in_flight: u64) -> Option<String> {
+    (outstanding as u64 > in_flight).then(|| {
+        format!(
+            "{outstanding} calls are outstanding with no server running, and the kernel counts {in_flight} requests in flight at the device"
+        )
+    })
 }
 
 /// What a result means once the log has been made to fail. The server
@@ -474,11 +541,31 @@ impl Harness for DeviceHarness {
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
         trace(target.number, "kill", None, "");
         let number = target.number;
-        // The helper says "stopped" when the server can complete
-        // nothing more and is about to be killed.
+        // The helper says "dead R W" when the old server is gone and
+        // the new one is not started: no request completes in between.
+        // R and W are the kernel's counts of reads and writes in flight
+        // at the device at that moment.
         self.helper_watched("kill", number, &mut |line| {
-            if line == "stopped" {
-                target.returned_before_kill();
+            let mut words = line.split_whitespace();
+            if words.next() != Some("dead") {
+                return;
+            }
+            target.returned_before_kill();
+            let counts: Vec<u64> = words.filter_map(|w| w.parse().ok()).collect();
+            let outstanding = target.outstanding_data_calls();
+            trace(
+                number,
+                "sorted",
+                None,
+                &format!("outstanding {outstanding}\tkernel in flight {counts:?}"),
+            );
+            // Recorded, not yet acted on: whether the kernel counts a
+            // request that waits to be issued again is to be seen in
+            // the runs first (the trace line above has both numbers).
+            if let [reads, writes] = counts[..] {
+                if let Some(what) = more_outstanding_than_in_flight(outstanding, reads + writes) {
+                    trace(number, "count_differs", None, &what);
+                }
             }
         })?;
         trace(target.number, "served_again", None, "");
@@ -794,7 +881,7 @@ mod tests {
         t.submit(write(0xaa)).unwrap();
         // The call returns; the suite has not polled.
         std::thread::sleep(Duration::from_millis(200));
-        // The helper says the server is stopped: what has returned by
+        // The helper says the old server is dead: what has returned by
         // now was completed before the kill.
         assert_eq!(t.returned_before_kill(), 1);
         t.settle(Duration::from_secs(30)).unwrap();
@@ -815,16 +902,41 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
     }
 
-    /// The helper's line "stopped" is acted on when it is printed, not
-    /// when the helper has finished: by then a new server is up.
+    /// The two checks on the sorting of calls at a kill.
+    #[test]
+    fn a_wrong_sorting_is_noticed() {
+        let now = std::time::Instant::now();
+        let later = now + Duration::from_millis(5);
+        assert!(
+            sorted_wrongly(Some(now), Some(later)).is_some(),
+            "returned before the sorting"
+        );
+        assert!(
+            sorted_wrongly(Some(later), Some(now)).is_none(),
+            "returned after it"
+        );
+        assert!(
+            sorted_wrongly(Some(now), None).is_none(),
+            "no sorting: a helper without the line"
+        );
+        assert!(sorted_wrongly(None, Some(now)).is_none());
+        assert!(more_outstanding_than_in_flight(3, 2).is_some());
+        assert!(more_outstanding_than_in_flight(2, 2).is_none());
+        assert!(more_outstanding_than_in_flight(0, 0).is_none());
+        // A request the kernel split is counted more than once there.
+        assert!(more_outstanding_than_in_flight(1, 4).is_none());
+    }
+
+    /// The helper's line is acted on when it is printed, not when the
+    /// helper has finished: by then a new server is up.
     #[test]
     fn the_stop_is_noticed_while_the_helper_runs() {
-        let (h, script) = harness("stops", "echo stopped; sleep 1; echo /dev/null");
+        let (h, script) = harness("stops", "echo dead 0 0; sleep 1; echo /dev/null");
         let started = std::time::Instant::now();
         let mut at = None;
         let last = h
             .helper_watched("kill", 1, &mut |line| {
-                if line == "stopped" {
+                if line == "dead 0 0" {
                     at = Some(started.elapsed());
                 }
             })
