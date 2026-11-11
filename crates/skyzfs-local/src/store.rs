@@ -17,6 +17,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use skyzfs_blk::{
@@ -1079,6 +1081,234 @@ impl<D: Dir> BlockTarget for Store<D> {
         // Everything that can complete does so in `run`. What is left is
         // held behind a hold, which only this thread can release.
         self.run(usize::MAX, out)
+    }
+}
+
+/// What the owner of a [`Served`] store asks of its worker.
+enum Command {
+    Request(Request),
+    Hold(Option<Lsn>),
+    Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
+    Position(mpsc::Sender<Lsn>),
+}
+
+/// The store behind a worker thread.
+///
+/// The worker owns the log, the home image and the index, and executes
+/// requests one at a time in the order of submission.
+/// [`BlockTarget::submit`] hands a request to the worker and returns;
+/// [`BlockTarget::poll`] takes the completions that have arrived and
+/// [`BlockTarget::wait`] waits for the first. Neither does I/O. A write
+/// that finds the log full behind a hold stays with the worker, and
+/// everything behind it, until the hold is released.
+///
+/// Dropping it ends the worker after the request it is executing;
+/// requests that were queued behind are not executed, as when the
+/// process is lost.
+pub struct Served {
+    geometry: Geometry,
+    commands: Option<mpsc::Sender<Command>>,
+    completions: mpsc::Receiver<Completion>,
+    ids: BTreeSet<RequestId>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl<D> Store<D>
+where
+    D: Dir + Send + 'static,
+    D::File: Send,
+{
+    /// Put the store behind a worker thread. Requests that are queued
+    /// are executed first.
+    pub fn serve(self) -> io::Result<Served> {
+        let Store {
+            mut core,
+            mut queue,
+            ids,
+        } = self;
+        let geometry = core.geometry;
+        let (commands, inbox) = mpsc::channel::<Command>();
+        let (outbox, completions) = mpsc::channel::<Completion>();
+        let worker = thread::Builder::new()
+            .name("skyzfs-store".into())
+            .spawn(move || {
+                // Whether the request at the head was tried and cannot
+                // proceed until something changes.
+                let mut held = false;
+                loop {
+                    // Take what has arrived; wait if there is nothing
+                    // to do.
+                    let command = if queue.is_empty() || held {
+                        match inbox.recv() {
+                            Ok(command) => Some(command),
+                            Err(_) => return,
+                        }
+                    } else {
+                        match inbox.try_recv() {
+                            Ok(command) => Some(command),
+                            Err(mpsc::TryRecvError::Empty) => None,
+                            Err(mpsc::TryRecvError::Disconnected) => return,
+                        }
+                    };
+                    match command {
+                        Some(Command::Request(request)) => {
+                            queue.push_back(request);
+                            continue;
+                        }
+                        Some(Command::Hold(hold)) => {
+                            core.log.set_hold(hold);
+                            held = false;
+                            continue;
+                        }
+                        Some(Command::Checkpoint(reply)) => {
+                            let result = if core.failed {
+                                Err(BlkError::Failed)
+                            } else {
+                                core.checkpoint()
+                            };
+                            held = false;
+                            let _ = reply.send(result);
+                            continue;
+                        }
+                        Some(Command::Position(reply)) => {
+                            let _ = reply.send(core.log.tail());
+                            continue;
+                        }
+                        None => {}
+                    }
+                    let Some(Request { id, op }) = queue.pop_front() else {
+                        continue;
+                    };
+                    match core.execute(op) {
+                        Ok((result, buf)) => {
+                            if outbox.send(Completion { id, result, buf }).is_err() {
+                                return;
+                            }
+                        }
+                        Err(op) => {
+                            queue.push_front(Request { id, op });
+                            held = true;
+                        }
+                    }
+                }
+            })?;
+        Ok(Served {
+            geometry,
+            commands: Some(commands),
+            completions,
+            ids,
+            worker: Some(worker),
+        })
+    }
+}
+
+impl Served {
+    fn send(&self, command: Command) -> bool {
+        self.commands
+            .as_ref()
+            .is_some_and(|commands| commands.send(command).is_ok())
+    }
+
+    /// Set or release the hold: see [`Store::set_hold`]. It takes
+    /// effect behind the request the worker is executing.
+    pub fn set_hold(&self, hold: Option<Lsn>) {
+        self.send(Command::Hold(hold));
+    }
+
+    /// Checkpoint, behind the request the worker is executing: see
+    /// [`Store::checkpoint`]. Waits for it.
+    pub fn checkpoint(&self) -> Result<Lsn, BlkError> {
+        let (reply, result) = mpsc::channel();
+        if !self.send(Command::Checkpoint(reply)) {
+            return Err(BlkError::Failed);
+        }
+        result.recv().unwrap_or(Err(BlkError::Failed))
+    }
+
+    /// The end of the log, behind the request the worker is executing:
+    /// see [`Store::position`]. `None` if the worker is gone.
+    pub fn position(&self) -> Option<Lsn> {
+        let (reply, result) = mpsc::channel();
+        if !self.send(Command::Position(reply)) {
+            return None;
+        }
+        result.recv().ok()
+    }
+
+    fn took(&mut self, completion: Completion, out: &mut Vec<Completion>) {
+        self.ids.remove(&completion.id);
+        out.push(completion);
+    }
+}
+
+impl Drop for Served {
+    fn drop(&mut self) {
+        // The worker ends when the commands' sender is gone.
+        self.commands = None;
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl BlockTarget for Served {
+    fn geometry(&self) -> Geometry {
+        self.geometry
+    }
+
+    fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
+        let kind = if self.ids.contains(&request.id) {
+            Some(SubmitErrorKind::DuplicateId)
+        } else if self.ids.len() >= self.geometry.queue_depth() as usize {
+            Some(SubmitErrorKind::Busy)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            return Err(SubmitError { kind, request });
+        }
+        let id = request.id;
+        match self.commands.as_ref() {
+            Some(commands) => match commands.send(Command::Request(request)) {
+                Ok(()) => {
+                    self.ids.insert(id);
+                    Ok(())
+                }
+                // The worker is gone, which only a panic in it does.
+                Err(mpsc::SendError(Command::Request(request))) => Err(SubmitError {
+                    kind: SubmitErrorKind::Busy,
+                    request,
+                }),
+                Err(_) => Ok(()),
+            },
+            None => Err(SubmitError {
+                kind: SubmitErrorKind::Busy,
+                request,
+            }),
+        }
+    }
+
+    fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        let mut taken = 0;
+        while let Ok(completion) = self.completions.try_recv() {
+            self.took(completion, out);
+            taken += 1;
+        }
+        taken
+    }
+
+    fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        let taken = self.poll(out);
+        if taken > 0 || self.ids.is_empty() {
+            return taken;
+        }
+        match self.completions.recv_timeout(timeout) {
+            Ok(completion) => {
+                self.took(completion, out);
+                1 + self.poll(out)
+            }
+            Err(_) => 0,
+        }
     }
 }
 
