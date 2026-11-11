@@ -116,6 +116,19 @@ EXPECTED = {
     'pin_detach_frees_number': ('b', 'PASS', WAITING,
                                 'with the server stopped and the pool exported, detach exits 0 and the device '
                                 'number is free again (§4.2)'),
+    'pin_serve_on_zfs_refused': ('b', 'PASS', WAITING,
+                                 'serve with the volume\'s directory on a ZFS dataset, and serve with the run '
+                                 'directory on one, each exits with an error that says so, before any device '
+                                 'exists (§4.2: the daemon keeps its files off any pool)', 'WAITING'),
+    'pin_orderly_stop_under_load': ('b', 'PASS', WAITING,
+                                    'SIGTERM while a writer writes and syncs: serve exits 0, the next serve of the '
+                                    'boot finds nothing applied and not acknowledged, no write fails and every '
+                                    'file the writer was told is written reads back (§4.2). A stop that did not '
+                                    'find the writer at work is a rig error', 'WAITING'),
+    'pin_detach_of_held_says_6': ('b', 'PASS', WAITING,
+                                  'detach of a stopped device that a process holds open deletes it and exits 6: '
+                                  'the number stays taken while it is held, and an add under it succeeds within '
+                                  '5 s of the holder closing it (§4.2)', 'WAITING'),
     'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
                                          'no serve after a kill is refused by the check of what was acknowledged '
                                          '(§4.2): a false alarm would suspend a healthy pool'),

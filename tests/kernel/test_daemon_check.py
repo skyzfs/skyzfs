@@ -33,6 +33,9 @@ def as_expected(impl='reference'):
         # A pin only the daemon can carry; the tests below set the
         # other one that waits on the stand-in by hand.
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: seen'
+        r['pin_detach_of_held_says_6'] = 'PASS: seen'
+        r['pin_orderly_stop_under_load'] = 'PASS: seen'
+        r['pin_serve_on_zfs_refused'] = 'PASS: seen'
         # And those the daemon cannot carry yet.
         for name in dc.WAITS_FOR_THE_DAEMON:
             r[name] = 'WAITING: seen'
@@ -95,6 +98,9 @@ class Cases(unittest.TestCase):
         r = as_expected('reference')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: none'
+        r['pin_detach_of_held_says_6'] = 'PASS: exit 6'
+        r['pin_orderly_stop_under_load'] = 'PASS: exit 0'
+        r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])

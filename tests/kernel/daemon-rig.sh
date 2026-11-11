@@ -779,6 +779,141 @@ check_b_short() {
         ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
     fi
 }
+# b: the daemon keeps its files off any pool. A volume directory or a
+# run directory on a ZFS dataset is refused by `serve` before a device
+# exists: a pool whose device's files lie on a pool can wait for itself.
+# The volume is made off ZFS and copied, so that only `serve` is asked.
+check_b_on_zfs() {
+    local dir=$WORK/vol-b8 z=$WORK/mnt/skzd-z k d r rc said before after bad="" a=""
+    step "b: serve with its files on a ZFS dataset"
+    if [ "$IMPL" = reference ]; then
+        pin serve_on_zfs_refused WAITING "the stand-in does not look where its files are"
+        return
+    fi
+    truncate -s 512M "$WORK/z.img"
+    if ! vol_create "$SKYZFSD" "$dir" > "$OUT/b8-create.log" 2>&1 \
+        || ! lim 60 zpool create -f -m "$z" skzd-z "$WORK/z.img" > "$OUT/b8-zpool.log" 2>&1 \
+        || ! cp -a "$dir" "$z/vol" || ! mkdir "$z/run" "$WORK/b8-run"; then
+        pin serve_on_zfs_refused ERROR "the volume, the pool or the copy was not made: $(tail -n 1 "$OUT/b8-zpool.log")"
+        lim 60 zpool destroy -f skzd-z > /dev/null 2>&1
+        return
+    fi
+    for k in volume run; do
+        if [ $k = volume ]; then d=$z/vol; r=$WORK/b8-run; else d=$dir; r=$z/run; fi
+        before=$(lim 20 ublk list 2>/dev/null | grep -c '^dev id')
+        lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$d" --run-dir "$r" > "$OUT/b8-$k.out" 2> "$OUT/b8-$k.err"; rc=$?
+        after=$(lim 20 ublk list 2>/dev/null | grep -c '^dev id')
+        said=$(grep -m 1 'is on ZFS' "$OUT/b8-$k.err" | cut -c1-200)
+        a+="$k directory on a dataset: serve exit $rc, $([ -n "$said" ] && echo "said: $said" || echo "did NOT say it is on ZFS (stderr's end: $(tail -n 1 "$OUT/b8-$k.err" | cut -c1-200))"), ublk devices $before then $after$(grep -q '^ready' "$OUT/b8-$k.out" && echo ', IT SAID READY'); "
+        { [ $rc != 0 ] && [ $rc != 124 ] && [ -n "$said" ] && [ "$before" = "$after" ] && ! grep -q '^ready' "$OUT/b8-$k.out"; } || bad+="$k "
+        # A serve that was not refused may have left a device.
+        lim 90 "$SKYZFSD" detach --dir "$d" --run-dir "$r" > /dev/null 2>&1
+    done
+    if [ -z "$bad" ]; then pin serve_on_zfs_refused PASS "$a"; else pin serve_on_zfs_refused FAIL "not refused as wanted for: $bad; $a"; fi
+    lim 60 zpool destroy -f skzd-z > /dev/null 2>&1
+}
+# b: an orderly stop under write load. The older pin stops a server
+# that has nothing in hand. Here a writer is writing and syncing when
+# the SIGTERM comes: the server ends with 0, the next serve of the same
+# boot finds nothing applied and not acknowledged (an orderly stop ends
+# what it has in hand), no write of the writer fails, and every file it
+# was told is written reads back. An exit other than 0 is reported as
+# such, whatever the rest says.
+check_b_stop_under_load() {
+    local dir=$WORK/vol-b7 pool=skzd-b7 slog w rc i w0 w1 rec st files fails a
+    step "b: an orderly stop under write load"
+    if [ "$IMPL" = reference ]; then
+        pin orderly_stop_under_load WAITING "the stand-in stops by being killed, so its next server can find requests in hand"
+        return
+    fi
+    if ! vol_up "$SKYZFSD" "$dir"; then pin orderly_stop_under_load ERROR "not created or served: ${SERVE_RC:-}"; return; fi
+    slog=$(new_slog b7)
+    if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/b7-create.log" 2>&1; then pin orderly_stop_under_load ERROR "zpool create failed"; kill_cleanup b7; return; fi
+    : > "$WORK/b7.record"; : > "$OUT/b7-writer.log"
+    writer "$WORK/mnt/$pool" "$WORK/b7.record" "$OUT/b7-writer.log" "$WORK/b7.stop" &
+    w=$!
+    sleep 5
+    # The stop must find the writer at work: writes counted by the
+    # server grow over the half second before the signal.
+    w0=$(vol_stat "$SKYZFSD" "$dir" writes); sleep 0.5; w1=$(vol_stat_least "$SKYZFSD" "$dir" writes $(( ${w0:-0} + 1 )) 3000)
+    kill -TERM "$SERVE_PID" 2>/dev/null
+    if ! serve_wait 60; then
+        touch "$WORK/b7.stop"
+        pin orderly_stop_under_load FAIL "serve did not exit within 60 s of SIGTERM under load"
+        kill -9 "$SERVE_PID" 2>/dev/null; serve_wait 30; serve_start "$SKYZFSD" "$dir"; wait "$w" 2>/dev/null; kill_cleanup b7
+        return
+    fi
+    rc=$SERVE_RC
+    serve_start "$SKYZFSD" "$dir"; i=$?
+    rec=$(vol_stat "$SKYZFSD" "$dir" recovered_unacknowledged)
+    sleep 5
+    touch "$WORK/b7.stop"; wait "$w" 2>/dev/null
+    st=$(pool_state "$pool")
+    fails=$(grep -c . "$OUT/b7-writer.log")
+    files=$(lim 120 files_match "$WORK/mnt/$pool" "$WORK/b7.record" 2>&1 | tail -n 1)
+    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i, recovered_unacknowledged '${rec:-not said}'; the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: $files"
+    if ! { [[ ${w0:-} =~ ^[0-9]+$ ]] && [[ ${w1:-} =~ ^[0-9]+$ ]] && [ "$w1" -gt "$w0" ]; }; then
+        pin orderly_stop_under_load ERROR "the stop did not find the writer at work: $a"
+    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ "$rec" = 0 ] && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
+        pin orderly_stop_under_load PASS "$a"
+    elif [ "$rc" != 0 ]; then
+        pin orderly_stop_under_load FAIL "serve ended with $rc on SIGTERM under plain load (wanted 0): $a; its log's end: $(tail -n 2 "$dir.serve.log" | tr '\n' ';' | cut -c1-300)"
+    else
+        pin orderly_stop_under_load FAIL "$a"
+    fi
+    kill_cleanup b7
+}
+# b: `detach` of a stopped device that a process still holds open. The
+# daemon deletes it and says so with its own exit status (6): the
+# number stays taken until the holder lets go, and the operator must
+# know that from the status and not from a later failure. "Free" is
+# then an add under the number that succeeds, not only a lookup that
+# finds nothing (the two differ by some milliseconds; see the control
+# rig's free_for_add).
+EXIT_DELETED_HELD=6
+check_b_detach_held() {
+    local dir=$WORK/vol-b6 num holder rc st t0 ms said taken=0 free="" a
+    step "b: detach of a stopped device a process holds open"
+    if [ "$IMPL" = reference ]; then
+        pin detach_of_held_says_6 WAITING "the stand-in deletes with the reference server's tool, which waits for the holder"
+        return
+    fi
+    if ! vol_up "$SKYZFSD" "$dir"; then pin detach_of_held_says_6 ERROR "not created or served: ${SERVE_RC:-}"; return; fi
+    num=${BDEV#/dev/ublkb}
+    # The holder opens the device while it is served, reads nothing and
+    # keeps it open.
+    # shellcheck disable=SC2217  # the open is the point, not the input
+    sleep 600 < "$BDEV" &
+    holder=$!
+    kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
+    if [ -n "$SERVE_PID" ]; then pin detach_of_held_says_6 ERROR "the server did not stop on SIGTERM"; kill "$holder" 2>/dev/null; return; fi
+    st=$(ublk_state "/dev/ublkb$num")
+    t0=$(now_ms)
+    lim 90 "$SKYZFSD" detach --dir "$dir" "${VOL_RUN_ARGS[@]}" > "$OUT/b-detach-held.out" 2> "$OUT/b-detach-held.err"; rc=$?
+    ms=$(( $(now_ms) - t0 ))
+    said=$(tail -n 1 "$OUT/b-detach-held.err" | cut -c1-200)
+    if ublk_number_free "$num"; then taken=0; else taken=1; fi
+    if ! kill -0 "$holder" 2>/dev/null; then
+        pin detach_of_held_says_6 ERROR "the holder was gone before the detach was judged"
+        return
+    fi
+    kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+    t0=$(now_ms)
+    while [ $(( $(now_ms) - t0 )) -lt 5000 ]; do
+        if lim 60 ublk add -t null -n "$num" > "$OUT/b-detach-held-add.log" 2>&1; then
+            free="an add under $num succeeded $(( $(now_ms) - t0 )) ms after the holder closed it"
+            lim 60 ublk del -n "$num" > /dev/null 2>&1
+            break
+        fi
+        sleep 0.05
+    done
+    a="the device was $st with no server and held open by a process; detach exit $rc after $ms ms ($said); the number was $([ $taken = 1 ] && echo 'still taken' || echo 'FREE') while held; ${free:-no add under $num succeeded in 5 s after the holder closed it: $(tail -n 1 "$OUT/b-detach-held-add.log")}"
+    if [ "$rc" = "$EXIT_DELETED_HELD" ] && [ $taken = 1 ] && [ -n "$free" ]; then
+        pin detach_of_held_says_6 PASS "$a"
+    else
+        pin detach_of_held_says_6 FAIL "$a (wanted exit $EXIT_DELETED_HELD, the number taken while held, free after)"
+    fi
+}
 # The kill test with a server that acknowledges a write some
 # milliseconds after applying it: every kill then leaves writes applied
 # and not acknowledged, which the next server is given again. The pool
@@ -926,6 +1061,10 @@ check_b() {
             pin detach_frees_number FAIL "the device was $st with no server; detach exit $rc (wanted 0); number $num $(ublk_number_free "$num" && echo 'is free' || echo 'is still taken'); $(tail -n 1 "$OUT/b-detach-stopped.err")"
         fi
     fi
+
+    check_b_detach_held
+    check_b_stop_under_load
+    check_b_on_zfs
 
     step "b, control: recovery without reissue"
     SKZ_REF_REISSUE=0 kill_test "$REF" b0 5
