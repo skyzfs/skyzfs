@@ -12,7 +12,7 @@ use skyzfs_blk::{Base, BlkError, BlockTarget, Buf, Completion, Op, Request, Requ
 
 use super::*;
 use crate::io::SECTOR;
-use crate::sim::{BySector, Fate, LoseAll, SimDisk};
+use crate::sim::{BySector, Fate, SimDisk};
 
 type SimStore = Store<SimDisk>;
 type Outcome = Result<(), String>;
@@ -536,9 +536,45 @@ fn a_checkpoint_puts_only_its_own_blocks_at_risk() {
 }
 
 // ---------------------------------------------------------------------
-// What LoseAll is for: used below.
+// The conformance suite.
 
-#[allow(dead_code)]
-fn lose_all(disk: &SimDisk) {
-    disk.power_cut(LoseAll);
+use super::harness::SimHarness;
+use skyzfs_blk::conformance::{run_all, Config};
+
+fn harnesses(mutants: u32) -> Vec<SimHarness> {
+    let mut out = Vec::new();
+    for align in [64, 4096] {
+        for unit in [4096, 16384] {
+            for garbage in [false, true] {
+                out.push(SimHarness {
+                    align,
+                    unit,
+                    garbage,
+                    queue_depth: 16,
+                    segments: Some(3),
+                    mutants,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The contract, rules R1 to R12: the conformance suite of `skyzfs-blk`
+/// passes against the store on the simulated disk in every environment.
+#[test]
+fn the_store_passes_the_conformance_suite() {
+    let config = Config {
+        cases: 48,
+        ..Config::default()
+    };
+    for mut harness in harnesses(0) {
+        let report = run_all(&mut harness, &config);
+        assert!(report.passed(), "in {harness:?}:\n{report}");
+        assert!(
+            report.not_exercised().is_empty(),
+            "in {harness:?} not exercised: {:?}",
+            report.not_exercised()
+        );
+    }
 }

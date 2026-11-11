@@ -425,8 +425,18 @@ impl<D: Dir> Core<D> {
         if self.mutants.has(Mutants::FLUSH_NO_SYNC) {
             return Ok(());
         }
-        match self.log.sync() {
-            Ok(_) => {
+        // With nothing to make durable the log's sync does not touch
+        // the disk, and would report success on a disk that has died.
+        // The contract lets no flush succeed once the log has failed,
+        // so the store asks the disk every time. (The conservative
+        // reading: such a flush would promise nothing false.)
+        let synced = if self.log.durable() == self.log.tail() {
+            self.log.probe()
+        } else {
+            self.log.sync().map(|_| ())
+        };
+        match synced {
+            Ok(()) => {
                 self.unsynced.clear();
                 Ok(())
             }
@@ -1072,5 +1082,7 @@ impl<D: Dir> BlockTarget for Store<D> {
     }
 }
 
+#[cfg(test)]
+mod harness;
 #[cfg(test)]
 mod tests;
