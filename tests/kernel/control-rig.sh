@@ -32,6 +32,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/../lib/lim.sh"
 # shellcheck source=tests/kernel/ublksrvd-look.sh
 . "$HERE/ublksrvd-look.sh"
+# shellcheck source=tests/lib/net-try.sh
+. "$HERE/../lib/net-try.sh"
 
 OUT=${1:?usage: control-rig.sh OUT [WORK]}
 WORK=${2:-/mnt/skz-control-rig}
@@ -238,7 +240,7 @@ done
 if [ -n "$built" ]; then
     rec ublk_server "$(tail -n 1 "$OUT/ublksrv.ver") (built at try $try)"
 else
-    rec ublk_server "BUILD FAILED in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|E: ' "$OUT/ublksrv-build.log" || tail -n 1 "$OUT/ublksrv-build.log")"; SETUP_OK=""
+    rec ublk_server "BUILD FAILED in three tries: $(net_why "$OUT/ublksrv-build.log" "$OUT/apt.log")"; SETUP_OK=""
 fi
 modprobe ublk_drv 2>> "$OUT/control.err" || true
 [ -e /dev/ublk-control ] || { rec ublk_driver "no /dev/ublk-control after modprobe ublk_drv"; SETUP_OK=""; }

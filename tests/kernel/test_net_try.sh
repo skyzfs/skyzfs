@@ -15,5 +15,21 @@ flaky() { echo x >> "$T/calls"; [ "$(wc -l < "$T/calls")" -ge "$1" ]; }       # 
 is "one that never works is tried three times and fails" "$([ $rc != 0 ] && echo failed)/$(wc -l < "$T/calls" | tr -d ' ')" failed/3
 net_try sh -c 'exit 7'; is "the last status is passed on" "$?" 7
 
+cat > "$T/apt.log" <<'LOGEOF'
+Ign:4 http://azure.archive.ubuntu.com/ubuntu noble-updates/main amd64 libudev-dev amd64 255.4
+Err:2 https://security.ubuntu.com/ubuntu noble-updates/universe amd64 libclang-18-dev amd64 1:18.1.3
+  Temporary failure resolving 'azure.archive.ubuntu.com'
+E: Unable to fetch some archives, maybe run apt-get update or try with --fix-missing?
+LOGEOF
+case $(net_why "$T/apt.log") in "could not resolve the package mirrors"*"a network outage"*) v=named ;; *) v=$(net_why "$T/apt.log") ;; esac
+is "a name that does not resolve is said so" "$v" named
+printf 'fatal: unable to access https://github.com/x/: Could not resolve host: github.com\n' > "$T/git.log"
+case $(net_why "$T/git.log") in "could not resolve"*) v=named ;; *) v=other ;; esac
+is "for a clone as well" "$v" named
+printf 'Reading package lists...\nE: Unable to locate package nosuch\n' > "$T/other.log"
+is "another failure is given as it is" "$(net_why "$T/other.log")" "E: Unable to locate package nosuch"
+: > "$T/empty.log"
+is "a log with no reason says so" "$(net_why "$T/empty.log")" "no reason found in empty.log"
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

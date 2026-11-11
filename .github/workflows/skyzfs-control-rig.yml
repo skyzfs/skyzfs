@@ -51,6 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_control_check.py -v
+      - run: bash tests/kernel/test_net_try.sh
 
   rig:
     name: ${{ matrix.image }}
@@ -70,7 +71,7 @@ jobs:
           # (seen 2026-11-11): three tries, a minute apart.
           for try in 1 2 3; do
             if sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev; then break; fi
-            [ "$try" = 3 ] && { echo "::error title=control rig::apt could not install the build's packages in three tries; this is not a verdict on the binding"; exit 2; }
+            [ "$try" = 3 ] && { echo "::error title=control rig::apt could not install the build's packages in three tries (if the log says a name could not be resolved, the package mirrors are out); this is not a verdict on the binding"; exit 2; }
             sleep 60
           done
           rustup update stable

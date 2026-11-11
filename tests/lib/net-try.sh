@@ -15,3 +15,19 @@ net_try() {
     done
     return $rc
 }
+
+# net_why LOG...: why a network step failed, in one line, from its
+# log. A name that does not resolve is said in plain words first: that
+# is an outage of the mirrors' names (2026-11-11: Canonical's DNS, for
+# hours), not something a rerun in five minutes or the change under
+# test will mend.
+net_why() {
+    local line
+    line=$(grep -h -m 1 -E 'Temporary failure resolving|Temporary failure in name resolution|Could not resolve' "$@" 2>/dev/null | head -n 1)
+    if [ -n "$line" ]; then
+        echo "could not resolve the package mirrors or the source's host (${line#*: }): a network outage, not the rig or the change"
+        return
+    fi
+    line=$(grep -h -m 1 -E '^E: |^fatal: |^error: ' "$@" 2>/dev/null | head -n 1)
+    echo "${line:-no reason found in $(basename "$1")}"
+}

@@ -342,7 +342,7 @@ SETUP_OK=1; SETUP_WHY=""
 # puts first.
 # shellcheck disable=SC2317,SC2329  # run through net_try
 setup_packages() { apt-get update && apt-get install -y --no-install-recommends zfsutils-linux python3 util-linux; }
-net_try setup_packages > "$OUT/apt.log" 2>&1 || { SETUP_OK=""; SETUP_WHY+="apt could not install zfsutils-linux in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|^E: ' "$OUT/apt.log"); "; }
+net_try setup_packages > "$OUT/apt.log" 2>&1 || { SETUP_OK=""; SETUP_WHY+="zfsutils-linux was not installed in three tries: $(net_why "$OUT/apt.log"); "; }
 [ -e /dev/ublk-control ] || modprobe ublk_drv 2>> "$OUT/apt.log" || {
     net_try apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/apt.log" 2>&1
     modprobe ublk_drv 2>> "$OUT/apt.log" || { SETUP_OK=""; SETUP_WHY+="no ublk driver (modprobe ublk_drv failed); "; }
@@ -360,7 +360,7 @@ if net_try build_reference; then
 else
     rec ublk_server "BUILD FAILED in three tries: $(tail -n 1 "$OUT/ublksrv-build.log")"
     tail -n 60 "$OUT/ublksrv-build.log"
-    SETUP_OK=""; SETUP_WHY+="the reference server was not built in three tries: $(grep -m 1 -E 'Temporary failure|Could not resolve|^E: |fatal:' "$OUT/ublksrv-build.log" || tail -n 1 "$OUT/ublksrv-build.log"); "
+    SETUP_OK=""; SETUP_WHY+="the reference server was not built in three tries: $(net_why "$OUT/ublksrv-build.log"); "
 fi
 zed_state() { local z; z=$(systemctl is-active zfs-zed 2>/dev/null); echo "${z:-unknown}"; }
 rec zed "$(zed_state)"
