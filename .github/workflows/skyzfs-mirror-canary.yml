@@ -1,0 +1,143 @@
+name: skyzfs-mirror-canary
+
+# A canary for M1.T6c: can a runner install our packages from a mirror
+# outside ubuntu.com while the names under ubuntu.com do not resolve?
+# It shows the image's mirror list and sources, puts one independent
+# mirror in the list, runs apt-get update and installs what the
+# project's workflows install, and reports where each package came
+# from and how long each step took. It judges nothing of the product.
+#
+# No key is added and no check is switched off: apt verifies what the
+# mirror serves against the archive keys already on the image.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mirror:
+        description: the fallback mirror, a URL ending in /ubuntu/
+        default: https://mirrors.edge.kernel.org/ubuntu/
+  push:
+    branches: ['skyzfs-testing-m1.t6c']
+    paths:
+      - .github/workflows/skyzfs-mirror-canary.yml
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    name: ${{ matrix.image }}, ${{ matrix.mode }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+        # append: the fallback goes last in the image's list, and apt's
+        #   mirror method is left to fall through to it.
+        # replace: the list holds the fallback alone.
+        mode: [append, replace]
+    env:
+      MIRROR: ${{ inputs.mirror || 'https://mirrors.edge.kernel.org/ubuntu/' }}
+      MODE: ${{ matrix.mode }}
+    steps:
+      - name: The image's mirrors and sources
+        run: |
+          set +e
+          [[ $MIRROR =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9./-]*$ ]] || { echo "::error::not a mirror URL: $MIRROR"; exit 64; }
+          echo "== /etc/apt/apt-mirrors.txt"; cat -A /etc/apt/apt-mirrors.txt || true
+          echo "== sources"
+          for f in /etc/apt/sources.list /etc/apt/sources.list.d/*; do
+            [ -f "$f" ] || continue
+            echo "-- $f"; grep -v '^\s*#' "$f" | grep -v '^\s*$' || true
+          done
+          echo "== apt configuration that names a mirror, a retry or a timeout"
+          apt-config dump | grep -i -E 'mirror|retries|timeout|AllowInsecure|AllowUnauth' || true
+          echo "== which names resolve"
+          {
+            echo "### Names, at $(date -u +%H:%M:%S) UTC"
+            echo
+            echo "| name | resolves |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          hosts=$(grep -o '://[^/]*' /etc/apt/apt-mirrors.txt | sed 's|://||' | sort -u)
+          for h in $hosts archive.ubuntu.com security.ubuntu.com "$(echo "$MIRROR" | sed 's|https://||; s|/.*||')" github.com; do
+            if a=$(getent hosts "$h" | head -n 1); then r="yes (${a%% *})"; else r="NO"; fi
+            echo "$h: $r"
+            echo "| $h | $r |" >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Put the fallback in the list
+        run: |
+          sudo cp /etc/apt/apt-mirrors.txt "$RUNNER_TEMP/apt-mirrors.orig"
+          if [ "$MODE" = replace ]; then
+            printf '%s\tpriority:1\n' "$MIRROR" | sudo tee /etc/apt/apt-mirrors.txt
+          else
+            printf '%s\tpriority:9\n' "$MIRROR" | sudo tee -a /etc/apt/apt-mirrors.txt
+          fi
+          echo "== the list now"; cat -A /etc/apt/apt-mirrors.txt
+      - name: apt-get update
+        id: update
+        run: |
+          t0=$(date +%s)
+          set +e
+          sudo apt-get update 2>&1 | tee "$RUNNER_TEMP/update.log"
+          rc=${PIPESTATUS[0]}
+          t=$(( $(date +%s) - t0 ))
+          warn=$(grep -c -E '^(W|E|Err):?' "$RUNNER_TEMP/update.log" || true)
+          {
+            echo
+            echo "### apt-get update ($MODE): exit $rc in $t s, $warn warning or error lines"
+            echo
+            echo '```'
+            grep -E '^(W|E|Err)' "$RUNNER_TEMP/update.log" | head -n 30 || true
+            echo "-- hosts answered from:"
+            grep -E '^(Get|Hit):' "$RUNNER_TEMP/update.log" | awk '{ print $2 }' | sort | uniq -c
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+      - name: Install what the project's workflows install
+        if: always()
+        run: |
+          set +e
+          export DEBIAN_FRONTEND=noninteractive
+          fails=0
+          {
+            echo
+            echo "### Installs ($MODE)"
+            echo
+            echo "| group | exit | seconds | packages fetched, by host | first error |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          group() { # NAME PACKAGE...
+            local name=$1 t0 rc from err; shift
+            t0=$(date +%s)
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" > "$RUNNER_TEMP/install-$name.log" 2>&1; rc=$?
+            from=$(grep '^Get:' "$RUNNER_TEMP/install-$name.log" | awk '{ print $2 }' | sort | uniq -c | awk '{ printf "%s x %s; ", $1, $2 }')
+            err=$(grep -m 1 -E '^(E|Err)[: ]|Temporary failure' "$RUNNER_TEMP/install-$name.log" | tr '|' '/')
+            echo "| $name | $rc | $(( $(date +%s) - t0 )) | ${from:-nothing fetched} | ${err:-none} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "== $name: exit $rc"; tail -n 15 "$RUNNER_TEMP/install-$name.log"
+            [ $rc = 0 ] || fails=$((fails + 1))
+          }
+          group build libdevmapper-dev libudev-dev libclang-dev build-essential liburing-dev linux-libc-dev \
+            git ca-certificates autoconf automake libtool pkg-config libelf-dev python3-setuptools
+          group zfs zfsutils-linux dmsetup python3-numpy
+          group zfs-test zfs-test
+          group modules-extra "linux-modules-extra-$(uname -r)"
+          group e2e qemu-utils libnbd-bin nbd-client lvm2 thin-provisioning-tools fio psmisc lsof iproute2 blktrace
+          group bench bcache-tools postgresql postgresql-contrib python3 e2fsprogs
+          group dkms "linux-headers-$(uname -r)" zfs-dkms
+          echo "== where the installed packages come from by apt's own account"
+          apt-cache policy zfsutils-linux libclang-dev liburing-dev | grep -E '^[a-z]|\*\*\*|^ +[0-9]+ http' | head -n 40
+          [ "$fails" = 0 ] || { echo "::error::$fails groups did not install"; exit 1; }
+      - name: Does ZFS load
+        if: always()
+        run: |
+          sudo modprobe zfs && r="loads: $(cat /sys/module/zfs/version)" || r="does NOT load"
+          echo "zfs module $r"
+          { echo; echo "ZFS module after the installs: $r. Kernel $(uname -r)."; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: mirror-canary-${{ matrix.image }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/*.log
+          retention-days: 14
