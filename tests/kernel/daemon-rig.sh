@@ -390,11 +390,15 @@ PY
 # impl name kills [environment for the stand-in]: a pool under a writer,
 # the server killed `kills` times with writes in flight and served
 # again. Sets KT_* for the caller to judge.
+KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
     local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
-    vol_up "$impl" "$dir" || { KT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
+    # What each new server found applied and not acknowledged (status
+    # key recovered_unacknowledged): the sum, and how many did not say.
+    KT_RECOVERED=0; KT_RECOVERED_UNSAID=0
+    vol_up "$impl" "$dir" "${KT_SERVE_EXTRA[@]}" || { KT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
     pool_create "$pool" "$BDEV" "$slog" > "$OUT/$name-create.log" 2>&1 || { KT_ERR="zpool create failed"; return 1; }
     inflight=/sys/block/$(basename "$BDEV")/inflight
@@ -444,9 +448,11 @@ kill_test() {
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
-        serve_start "$impl" "$dir"; rc=$?
+        serve_start "$impl" "$dir" "${KT_SERVE_EXTRA[@]}"; rc=$?
         ms=$(( $(now_ms) - t0 ))
         wait "$watcher"
+        i=$(vol_stat "$impl" "$dir" recovered_unacknowledged)
+        if [[ $i =~ ^[0-9]+$ ]]; then KT_RECOVERED=$((KT_RECOVERED + i)); else KT_RECOVERED_UNSAID=$((KT_RECOVERED_UNSAID + 1)); fi
         read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
         KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; last seen LIVE with the dead server at $live ms, first seen otherwise at $gone ms ($saw, $looks looks); "
         KT_QUIESCE+="${live:--1}:${gone:--1} "
@@ -539,6 +545,45 @@ check_b_short() {
     else
         ctl recovered_log_too_short PASS "serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
     fi
+}
+# The kill test with a server that acknowledges a write some
+# milliseconds after applying it: every kill then leaves writes applied
+# and not acknowledged, which the next server is given again. The pool
+# must come through as in the plain test, and the servers must have
+# found such writes, or the test did not happen. The control takes the
+# same delay before the write is applied: nothing is then left applied
+# and unacknowledged, and the count must show it.
+kill_cleanup() { # name [impl]: the pool exported, the server stopped, the device detached
+    [ "$(pool_state "skzd-$1")" = ONLINE ] && lim 120 zpool export "skzd-$1"
+    [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
+    vol_detach "${2:-$SKYZFSD}" "$WORK/vol-$1"
+}
+check_b_delay() {
+    local ms=${RIG_COMMIT_DELAY_MS:-20} kills=10 v why
+    step "b: kill -9 under load, a write acknowledged $ms ms after it is applied, $kills times"
+    KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
+    kill_test "$SKYZFSD" bd "$kills"
+    KT_SERVE_EXTRA=()
+    kill_verdict; v=$KT_VERDICT
+    why="${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}; the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs ($KT_RECOVERED_UNSAID did not say)"
+    if [ "$v" = PASS ] && { [ "$KT_RECOVERED" = 0 ] || [ "$KT_RECOVERED_UNSAID" != 0 ]; }; then v=ERROR; fi
+    pin kill_under_load_applied_unacknowledged "$v" "$why"
+    kill_cleanup bd
+    # Only the stand-in can take the delay before it applies a write.
+    step "b, control: the same delay before the write is applied"
+    KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
+    SKZ_REF_COMMIT_DELAY_BEFORE=1 kill_test "$REF" bd0 5
+    KT_SERVE_EXTRA=()
+    if [ -n "$KT_ERR" ]; then
+        ctl delay_before_apply ERROR "$KT_ERR"
+    elif [ "$KT_RECOVERED_UNSAID" != 0 ]; then
+        ctl delay_before_apply ERROR "$KT_RECOVERED_UNSAID of $KT_DONE take-overs did not say what they found"
+    elif [ "$KT_RECOVERED" = 0 ]; then
+        ctl delay_before_apply FAIL "the servers found 0 requests applied and not acknowledged over $KT_DONE take-overs, with writes in flight just before $KT_INFLIGHT of the kills"
+    else
+        ctl delay_before_apply PASS "the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs although the delay came before the apply"
+    fi
+    kill_cleanup bd0 "$REF"
 }
 check_b() {
     local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i num before after
@@ -645,6 +690,8 @@ check_b() {
     [ "$(pool_state skzd-b0)" = ONLINE ] && lim 120 zpool export skzd-b0
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
     vol_detach "$REF" "$WORK/vol-b0"
+
+    check_b_delay
 }
 
 # =================================================================== d

@@ -82,6 +82,16 @@ EXPECTED = {
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
+    'pin_kill_under_load_applied_unacknowledged': ('b', 'PASS', SERVER,
+                                                   'kills under a pool\'s load of a server that acknowledges a write '
+                                                   'some milliseconds after applying it: the pool comes through as in '
+                                                   'the plain kill test, and the servers that took over found writes '
+                                                   'applied and not acknowledged (status: recovered_unacknowledged), '
+                                                   'more than 0 over the run, or the run is a rig error'),
+    'ctl_delay_before_apply': ('b', 'FAIL', SERVER,
+                               'control: with the same delay taken before the write is applied, the servers that '
+                               'take over find nothing applied and unacknowledged: the count above is not one '
+                               'that is always positive'),
 
     'pin_suspends_on_io_errors': ('d', 'PASS', KERNEL,
                                   'every request fails with a plain I/O error: the pool suspends under '
