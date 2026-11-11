@@ -67,8 +67,10 @@ EXPECTED = {
                                        'a volume that failed while a client held it is refused in this boot, '
                                        'with and without --acknowledge-failure (§4.2)'),
     'pin_clear_resumes_on_returned_device': ('d', 'PASS', KERNEL,
-                                             'zpool clear resumes the pool on a device that came back under the '
-                                             'old name: the reason a failed volume is not served again (§4.2)'),
+                                             'zpool clear resumes the pool when a device that was kept through the '
+                                             'failure answers again: the reason a failed volume is not served '
+                                             'again (§4.2). A device deleted under the pool does not come back: '
+                                             'see tests/kernel/failed-volume-obs.sh'),
     'pin_failure_note_under_run': ('d', 'PASS', WAITING, 'the note of a failure is under /run by default (§4.2)'),
     'pin_failed_unheld_volume_serves_when_acknowledged': ('d', 'PASS', WAITING,
                                                           'a volume that failed with no client attached is served '

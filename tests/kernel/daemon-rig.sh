@@ -560,6 +560,22 @@ fail_stop() { # name: stop the helpers of fail_setup; they may be blocked on a s
     touch "$WORK/$1.stop"
     kill -9 "$FS_READER" "$FS_WRITER" "$FS_SYNCER" 2>/dev/null
 }
+# name dir [image]: the device of a volume that failed and was kept
+# gets a server that answers again, from the volume's image or from
+# `image` put in its place. Done with the reference server directly,
+# past the stand-in's refusal: it is what an operator, or a daemon
+# without the rule of §4.2, would do. BDEV is the device. -> RK_RC.
+return_kept() {
+    local dir=$2 pid i
+    pid=$(vol_stat "$REF" "$dir" pid)
+    [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    for i in $(seq 1 80); do [ "$(ublk_state "$BDEV")" = QUIESCED ] && break; sleep 0.25; done
+    [ -z "$SERVE_PID" ] || serve_wait 30
+    if [ -n "${3:-}" ]; then cp --sparse=always "$3" "$dir/volume.img" || return 1; fi
+    lim 90 ublk recover -n "${BDEV#/dev/ublkb}" > "$OUT/$1-recover.log" 2>&1; RK_RC=$?
+    for i in $(seq 1 40); do [ "$(ublk_state "$BDEV")" = LIVE ] && break; sleep 0.25; done
+    [ "$(ublk_state "$BDEV")" = LIVE ]
+}
 check_d() {
     local mark rc n v dir st0 st1 before after
     # d.1, first form: every request answered with a plain I/O error.
@@ -568,10 +584,45 @@ check_d() {
     if SKZ_REF_FAIL_STYLE=eio fail_setup d1 "$REF" --fail-log-after 8000; then
         if fail_wait d1 300 "$mark"; then pin suspends_on_io_errors PASS "$FS_WHY"; else pin suspends_on_io_errors FAIL "$FS_WHY"; fi
         rec d1_server "$(vol_status "$REF" "$WORK/vol-d1" | tr '\n' ';')"
+        # d.4 and d.2: the device was kept, and a server answers on it
+        # again from the same image. Nobody runs zpool clear for 60 s,
+        # then somebody does. This is the case ZFS can carry on from
+        # its memory, the one §4.2 refuses to serve.
+        step "d: the kept device answers again"
+        if [ "$(pool_state skzd-d1)" != SUSPENDED ]; then
+            obs device_back_without_clear "not run: the pool is $(pool_state skzd-d1)"
+            pin clear_resumes_on_returned_device ERROR "not run: the pool is $(pool_state skzd-d1)"
+        elif ! return_kept d1 "$WORK/vol-d1"; then
+            obs device_back_without_clear "not run: the device did not get a server again (ublk recover rc $RK_RC, state $(ublk_state "$BDEV"))"
+            pin clear_resumes_on_returned_device ERROR "the device did not get a server again (ublk recover rc $RK_RC, state $(ublk_state "$BDEV"))"
+        else
+            st0=$(pool_state skzd-d1)
+            for n in $(seq 1 60); do st1=$(pool_state skzd-d1); [ "$st1" = ONLINE ] && break; sleep 1; done
+            obs device_back_without_clear "zed $(systemctl is-active zfs-zed 2>/dev/null || echo unknown); the kept device answers again: pool $st0, then $st1 after $n s without zpool clear"
+            before=$(grep -c . "$WORK/d1.record" || true)
+            lim 120 zpool clear skzd-d1 > "$OUT/d1-clear.log" 2>&1; rc=$?
+            for n in $(seq 1 30); do st1=$(pool_state skzd-d1); [ "$st1" = ONLINE ] && break; sleep 1; done
+            v=""; lim 120 "$DD" if=/dev/zero of="$WORK/mnt/skzd-d1/after-clear" bs=1M count=4 conv=fsync status=none 2>/dev/null && v=1
+            sleep 5
+            after=$(grep -c . "$WORK/d1.record" || true)
+            if [ "$st1" = ONLINE ] && [ -n "$v" ]; then
+                pin clear_resumes_on_returned_device PASS "zpool clear rc $rc; pool $st1; a new write with fsync completed; the writer went from $before to $after acknowledged files; $(pool_errors skzd-d1)"
+            else
+                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d1-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)"
+            fi
+        fi
     else
         pin suspends_on_io_errors ERROR "$FS_ERR"
+        obs device_back_without_clear "not run: $FS_ERR"
+        pin clear_resumes_on_returned_device ERROR "$FS_ERR"
     fi
     fail_stop d1
+    # If the pool came back, it and its device can go.
+    if [ "$(pool_state skzd-d1)" = ONLINE ]; then
+        sleep 2
+        lim 120 zpool export -f skzd-d1
+        lim 60 ublk del --async -n "${BDEV#/dev/ublkb}" > /dev/null 2>&1
+    fi
 
     # The control: the same wait on a volume that does not fail.
     step "d, control: a volume that does not fail"
@@ -609,34 +660,8 @@ check_d() {
         else
             pin failed_held_volume_refused FAIL "serve exited $rc, and $n with --acknowledge-failure; wanted $EXIT_REFUSED_FAILED twice"
         fi
-        # d.5: a scrub is not running here; see d5 below.
-        # d.4: the device comes back under the old name with the same
-        # content, and nobody runs zpool clear. This is done with the
-        # reference server directly: it is what an operator, or a
-        # daemon without the rule of §4.2, would do.
-        if [ "$IMPL" = reference ] && [ "$(pool_state skzd-d2)" = SUSPENDED ]; then
-            step "d: the device comes back under the old name"
-            st0=$(pool_state skzd-d2)
-            lim 60 ublk add -t loop -n "${BDEV#/dev/ublkb}" -f "$dir/volume.img" -q 1 -d 64 --max_io_buf_bytes 1048576 > "$OUT/d2-readd.log" 2>&1; rc=$?
-            for n in $(seq 1 60); do st1=$(pool_state skzd-d2); [ "$st1" = ONLINE ] && break; sleep 1; done
-            obs device_back_without_clear "zed $(systemctl is-active zfs-zed 2>/dev/null || echo unknown); ublk add rc $rc; pool $st0, then $st1 after 60 s without zpool clear"
-            # d.2: zpool clear.
-            before=$(grep -c . "$WORK/d2.record" || true)
-            lim 120 zpool clear skzd-d2 > "$OUT/d2-clear.log" 2>&1; rc=$?
-            for n in $(seq 1 30); do st1=$(pool_state skzd-d2); [ "$st1" = ONLINE ] && break; sleep 1; done
-            v=""; lim 120 "$DD" if=/dev/zero of="$WORK/mnt/skzd-d2/after-clear" bs=1M count=4 conv=fsync status=none 2>/dev/null && v=1
-            after=$(grep -c . "$WORK/d2.record" || true)
-            if [ "$st1" = ONLINE ] && [ -n "$v" ]; then
-                pin clear_resumes_on_returned_device PASS "zpool clear rc $rc; pool $st1; a new write with fsync completed; the writer went from $before to $after acknowledged files; $(pool_errors skzd-d2)"
-            else
-                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d2-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)"
-            fi
-        else
-            obs device_back_without_clear "not run: $([ "$IMPL" = reference ] && echo "the pool is $(pool_state skzd-d2)" || echo 'needs the flat image of the reference server')"
-            pin clear_resumes_on_returned_device ERROR "not run: $([ "$IMPL" = reference ] && echo "the pool is $(pool_state skzd-d2)" || echo 'needs the flat image of the reference server')"
-        fi
     else
-        for v in suspends_on_deleted_device failed_exit_status failed_held_volume_refused clear_resumes_on_returned_device; do
+        for v in suspends_on_deleted_device failed_exit_status failed_held_volume_refused; do
             pin "$v" ERROR "$FS_ERR"
         done
     fi
@@ -652,7 +677,7 @@ check_d_shorter() {
     [ "$IMPL" = reference ] || { obs returned_device_with_older_content "not run: needs the flat image of the reference server"; return; }
     step "d: the device comes back with older content"
     mark=$(dmesg_mark)
-    if ! fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
+    if ! SKZ_REF_FAIL_STYLE=eio fail_setup d3 "$REF" --fail-log-after 16000; then obs returned_device_with_older_content "not run: $FS_ERR"; fail_stop d3; return; fi
     # The older content: a copy of the image now. Everything the writer
     # is told from here on is missing from it.
     lim 120 zpool sync skzd-d3
@@ -662,8 +687,10 @@ check_d_shorter() {
     v=$(grep -c . "$WORK/d3.record" || true)
     fail_stop d3
     if [ $st != 0 ]; then obs returned_device_with_older_content "not run: the pool did not suspend cleanly: $FS_WHY"; return; fi
-    serve_wait 30
-    lim 60 ublk add -t loop -n "${BDEV#/dev/ublkb}" -f "$WORK/d3-older.img" -q 1 -d 64 --max_io_buf_bytes 1048576 > "$OUT/d3-readd.log" 2>&1
+    # The kept device answers again, from the older copy.
+    if ! return_kept d3 "$dir" "$WORK/d3-older.img"; then
+        obs returned_device_with_older_content "not run: the device did not get a server again (ublk recover rc ${RK_RC:-none}, state $(ublk_state "$BDEV"))"; return
+    fi
     lim 120 zpool clear skzd-d3 > "$OUT/d3-clear.log" 2>&1; rc=$?
     sleep 10
     st=$(pool_state skzd-d3)
