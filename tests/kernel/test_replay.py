@@ -1,0 +1,422 @@
+#!/usr/bin/env python3
+"""Unit tests for the replay rig's log reader and its planning. No kernel needed.
+
+    python3 tests/kernel/test_replay.py
+"""
+import os
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import logwrites  # noqa: E402
+import replay_check  # noqa: E402
+
+SS = 4096
+DEV = 8 << 20
+UB = b'\x0c\xb1\xba\x00\x00\x00\x00\x00'.ljust(SS, b'\1')
+
+
+def blk(byte, n=1):
+    return bytes([byte]) * (SS * n)
+
+
+def txg(k):
+    """One transaction group as ZFS writes it: data, flush, uberblocks in all four labels, flush."""
+    labels = logwrites.label_offsets(DEV)
+    out = [('write', (1 << 20) + k * 8 * SS, blk(0x10 + k, 2)),
+           ('write', (2 << 20) + k * 8 * SS, blk(0x40 + k)),
+           ('write', (3 << 20) + k * 8 * SS, blk(0x70 + k, 3)),
+           ('flush',)]
+    out += [('write', lo + (128 << 10) + (k % 32) * SS, UB) for lo in labels]
+    out += [('flush',), ('mark', f'sync-{k}-{k * 3}')]
+    return out
+
+
+class Log(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.log = os.path.join(self.dir.name, 'log')
+        self.img = os.path.join(self.dir.name, 'img')
+        self.entries = [e for k in range(1, 7) for e in txg(k)]
+        logwrites.write_log(self.log, SS, self.entries)
+        with open(self.img, 'wb') as f:
+            f.truncate(DEV)
+        self.idx = logwrites.index(self.log, DEV)
+
+    def tearDown(self):
+        self.dir.cleanup()
+
+    def model(self, order):
+        """What the device holds after the entries in `order`, by a model that shares no code with advance()."""
+        dev = bytearray(DEV)
+        for i in order:
+            e = self.entries[i]
+            if e[0] == 'write':
+                dev[e[1]:e[1] + len(e[2])] = e[2]
+        return bytes(dev)
+
+    def image(self):
+        with open(self.img, 'rb') as f:
+            return f.read()
+
+    def test_index_describes_every_record(self):
+        recs = self.idx['records']
+        self.assertEqual(len(recs), len(self.entries))
+        self.assertEqual(self.idx['sectorsize'], SS)
+        for r, e in zip(recs, self.entries):
+            if e[0] == 'write':
+                self.assertEqual((r['offset'], r['bytes'], r['flags']), (e[1], len(e[2]), []))
+            elif e[0] == 'flush':
+                self.assertEqual((r['flags'], r['bytes']), (['flush'], 0))
+                self.assertNotIn('pos', r)
+            else:
+                self.assertEqual((r['flags'], r['mark']), (['mark'], e[1]))
+
+    def test_uberblock_and_label_writes_are_recognised(self):
+        recs = self.idx['records']
+        for r, e in zip(recs, self.entries):
+            is_ub = e[0] == 'write' and e[2] == UB
+            self.assertEqual(bool(r.get('ub')), is_ub, r)
+            self.assertEqual(bool(r.get('label')), is_ub, r)
+        self.assertEqual(sum(1 for r in recs if r.get('ub')), 6 * 4)
+
+    def test_a_data_write_that_looks_like_an_uberblock_is_not_one(self):
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, UB), ('flush',)])
+        self.assertFalse(logwrites.index(self.log, DEV)['records'][0].get('ub'))
+
+    def test_every_prefix_matches_the_model(self):
+        for n in range(len(self.entries) + 1):
+            logwrites.advance(self.log, self.idx, self.img, max(0, n - 1), n)
+            self.assertEqual(self.image(), self.model(range(n)), f'prefix {n}')
+
+    def test_advance_in_steps_equals_advance_at_once(self):
+        logwrites.advance(self.log, self.idx, self.img, 0, 17)
+        logwrites.advance(self.log, self.idx, self.img, 17, len(self.entries))
+        self.assertEqual(self.image(), self.model(range(len(self.entries))))
+
+    def test_schedule_replaces_the_order(self):
+        sched = [i for i in range(len(self.entries)) if i != 1]
+        logwrites.advance(self.log, self.idx, self.img, 0, len(sched), sched)
+        self.assertEqual(self.image(), self.model(sched))
+        self.assertNotEqual(self.image(), self.model(range(len(self.entries))))
+
+    def test_discard_is_skipped_and_counted(self):
+        logwrites.write_log(self.log, SS, [('write', 1 << 20, blk(7)), ('discard', 1 << 20, SS), ('flush',)])
+        idx = logwrites.index(self.log, DEV)
+        self.assertEqual(idx['records'][1]['flags'], ['discard'])
+        self.assertEqual(logwrites.advance(self.log, idx, self.img, 0, 3), (1, SS, 1))
+        self.assertEqual(self.image()[1 << 20:(1 << 20) + SS], blk(7))
+
+    def test_damaged_logs_are_refused(self):
+        with open(self.log, 'r+b') as f:
+            f.truncate(os.path.getsize(self.log) - SS * 4)
+        with self.assertRaises(ValueError):
+            logwrites.index(self.log, DEV)
+        with open(self.log, 'r+b') as f:
+            f.write(b'\0' * 8)
+        with self.assertRaises(ValueError):
+            logwrites.index(self.log, DEV)
+
+    def test_range_outside_the_log_is_refused(self):
+        with self.assertRaises(ValueError):
+            logwrites.advance(self.log, self.idx, self.img, 0, len(self.entries) + 1)
+
+    # ------------------------------------------------------- planning
+    def test_marks_and_files_due(self):
+        marks = replay_check.parse_marks(self.idx['records'])
+        self.assertEqual([(k, c) for _, k, c in marks], [(k, k * 3) for k in range(1, 7)])
+        first = marks[0][0]
+        self.assertEqual(replay_check.files_at(marks, first - 1), 0)
+        self.assertEqual(replay_check.files_at(marks, first), 3)
+        self.assertEqual(replay_check.files_at(marks, len(self.entries)), 18)
+
+    def test_plan_takes_every_flush_boundary_first(self):
+        recs = self.idx['records']
+        flush = set(replay_check.flush_points(recs))
+        kind, deep, avail = replay_check.plan(recs, 20, 5, window=2)
+        self.assertEqual(avail['flush'], 12)
+        self.assertTrue(flush <= set(kind))
+        self.assertTrue({0, len(recs)} <= set(kind))
+        self.assertLessEqual(len(kind), 20)
+        self.assertTrue(deep <= flush)
+        self.assertEqual(len(deep), 5)
+
+    def test_plan_with_room_covers_everything(self):
+        recs = self.idx['records']
+        kind, _, avail = replay_check.plan(recs, 10000, 100, window=2)
+        self.assertEqual(set(kind), set(range(len(recs) + 1)))
+        counts = {k: sum(1 for v in kind.values() if v == k) for k in ('flush', 'ub_window', 'random', 'end')}
+        self.assertEqual(counts['flush'], avail['flush'])
+        self.assertEqual(counts['ub_window'], avail['ub_window'])
+        self.assertEqual(counts['random'], avail['other'])
+
+    def test_windows_that_merge_are_still_counted_as_windows(self):
+        # Uberblock writes closer together than the window: one window
+        # over the whole log, too large to take whole.
+        recs = self.idx['records']
+        kind, _, avail = replay_check.plan(recs, 10000, 100, window=50)
+        counts = {k: sum(1 for v in kind.values() if v == k) for k in ('ub_window', 'random')}
+        self.assertEqual(avail['other'], 0)
+        self.assertEqual(counts, {'ub_window': avail['ub_window'], 'random': 0})
+        kind, _, _ = replay_check.plan(recs, 30, 3, window=50)
+        self.assertGreater(sum(1 for v in kind.values() if v == 'ub_window'), 0)
+        self.assertEqual(sum(1 for v in kind.values() if v == 'random'), 0)
+
+    def test_victim_facts(self):
+        a, b = blk(0xA1), blk(0xB2)
+        logwrites.write_log(self.log, SS, [
+            ('write', 1 << 20, b),              # 0
+            ('write', 2 << 20, a),              # 1  the victim
+            ('write', 3 << 20, blk(1) + a),     # 2  the same block inside a larger write
+            ('flush',),
+            ('write', 2 << 20, b),              # 4  overwrites the victim's place
+            ('write', 1 << 20, b),              # 5  changes nothing
+            ('write', 4 << 20, blk(0)),         # 6  zeros over an empty device
+        ])
+        recs = logwrites.index(self.log, DEV)['records']
+        f = replay_check.victim_facts(self.log, recs, 1, self.img)
+        self.assertEqual(f['copies'], [{'record': 2, 'offset': (3 << 20) + SS}])
+        self.assertEqual((f['earlier'], f['later'], f['zeros'], f['same_as_before']), (None, 4, False, False))
+        f = replay_check.victim_facts(self.log, recs, 5, self.img)
+        self.assertEqual((f['earlier'], f['later'], f['same_as_before']), (0, None, True))
+        self.assertEqual([c['record'] for c in f['copies']], [0, 4])
+        f = replay_check.victim_facts(self.log, recs, 6, self.img)
+        self.assertEqual((f['zeros'], f['same_as_before'], f['copies']), (True, True, []))
+        self.assertIn('record 2 at byte', replay_check.facts_text(replay_check.victim_facts(self.log, recs, 1)))
+
+    def test_plan_is_repeatable(self):
+        recs = self.idx['records']
+        self.assertEqual(replay_check.plan(recs, 25, 3, seed=7, window=2), replay_check.plan(recs, 25, 3, seed=7, window=2))
+
+    def test_uberblock_windows(self):
+        recs = self.idx['records']
+        clusters = replay_check.ub_clusters(recs, window=1)
+        self.assertEqual(len(clusters), 6)
+        for lo, hi in clusters:
+            # four uberblock writes, one prefix either side
+            self.assertEqual(hi - lo, 5)
+
+    def test_controls_are_wrong_only_where_they_should_be(self):
+        recs = self.idx['records']
+        marks = replay_check.parse_marks(recs)
+        ctl = {c['name']: c for c in replay_check.controls(recs, marks)}
+        self.assertEqual(set(ctl), {'drop', 'reorder'})
+        total = len(recs)
+
+        drop = ctl['drop']
+        self.assertEqual(sorted(drop['schedule']), [i for i in range(total) if i != drop['victim']])
+        self.assertIn('pos', recs[drop['victim']])
+        self.assertFalse(recs[drop['victim']].get('label'))
+        self.assertTrue(all(drop['victim'] <= n <= len(drop['schedule']) for n in drop['points']))
+
+        re = ctl['reorder']
+        self.assertEqual(sorted(re['schedule']), list(range(total)))
+        m = len(marks) // 2
+        mark_rec = marks[m][0] - 1
+        pos = re['schedule'].index(re['victim'])
+        # held back to just before the mark, after the group's uberblocks
+        self.assertEqual(re['schedule'][pos + 1], mark_rec)
+        ubs = [i for i in range(marks[m - 1][0], mark_rec) if recs[i].get('ub')]
+        self.assertTrue(all(re['schedule'].index(u) < pos for u in ubs))
+        self.assertLess(re['victim'], ubs[0])
+        # the image differs from the true one exactly while the victim is held back
+        wrong = []
+        for n in range(total + 1):
+            if self.model(re['schedule'][:n]) != self.model(range(n)):
+                wrong.append(n)
+        self.assertEqual(wrong, list(range(re['victim'] + 1, pos + 1)))
+        self.assertTrue(set(wrong) & set(re['points']))
+        # and some checked prefix has the new uberblocks without the victim
+        self.assertTrue(any(all(u in re['schedule'][:n] for u in ubs) and re['victim'] not in re['schedule'][:n]
+                            for n in re['points']))
+
+    def test_no_controls_without_enough_marks(self):
+        logwrites.write_log(self.log, SS, txg(1) + txg(2))
+        idx = logwrites.index(self.log, DEV)
+        self.assertEqual(replay_check.controls(idx['records'], replay_check.parse_marks(idx['records'])), [])
+
+    def test_controls_are_judged_against_the_table_in_both_directions(self):
+        drop = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 2}}
+        reorder = {'name': 'reorder', 'caught': False, 'failed_by': {}}
+        rows, gaps, ok = replay_check.judge_controls([drop, reorder])
+        self.assertTrue(ok)
+        self.assertEqual([g['name'] for g in gaps], ['reorder'])
+        # a control that is no longer caught
+        self.assertFalse(replay_check.judge_controls([dict(drop, caught=False, failed_by={}), reorder])[2])
+        # drop caught by the light check, with or without the deep check: the rig did better, not worse
+        for by in ({'deep': 1, 'verify': 3}, {'verify': 3}, {'import': 1}):
+            rows, _, ok = replay_check.judge_controls([dict(drop, failed_by=by), reorder])
+            self.assertTrue(ok, by)
+            self.assertIn(sorted(by)[-1], rows[0]['observed'])
+        # the gap closing is also a difference: the table has to be changed on purpose
+        rows, gaps, ok = replay_check.judge_controls([drop, dict(reorder, caught=True, failed_by={'deep': 1})])
+        self.assertFalse(ok)
+        self.assertEqual(gaps, [])
+        # a control that did not run, and one the table does not know
+        self.assertFalse(replay_check.judge_controls([drop])[2])
+        self.assertFalse(replay_check.judge_controls([drop, reorder, dict(drop, name='new')])[2])
+
+    def test_run_survives_a_command_that_prints_and_then_hangs(self):
+        rc, out, t = replay_check.run(['sh', '-c', 'echo before the hang; exec sleep 30'], timeout=1)
+        self.assertEqual(rc, 124)
+        self.assertIn('before the hang', out)
+        self.assertIn('TIMEOUT after 1s', out)
+        self.assertLess(t, 10)
+        rc, out, _ = replay_check.run(['sleep', '30'], timeout=1)       # nothing captured
+        self.assertEqual((rc, out), (124, '\nTIMEOUT after 1s'))
+
+    def test_run_reports_other_trouble_as_a_result(self):
+        self.assertEqual(replay_check.run(['/nonexistent/skz-command'])[0], 127)
+        rc, out, _ = replay_check.run(['printf', '\\377\\376 ok'])       # output that is not UTF-8
+        self.assertEqual(rc, 0)
+        self.assertIn('ok', out)
+        self.assertEqual(replay_check.run(['sh', '-c', 'echo no; exit 3'])[:2], (3, 'no\n'))
+
+    # ------------------------------------------- what may count as a result
+    def test_only_stages_that_judge_the_image_catch_a_control(self):
+        def pt(n, failed=None):
+            return {'n': n, 'ok': failed is None, **({'failed': failed, 'detail': 'd'} if failed else {})}
+        by, rig, first = replay_check.tally_control(
+            [pt(1), pt(2, 'verify'), pt(3, 'deep: scrub'), pt(4, 'deep: import (writable)'), pt(5, 'import'), pt(6, 'mount')])
+        self.assertEqual((by, rig, first['n']), ({'verify': 1, 'deep': 2, 'import': 1, 'mount': 1}, [], 2))
+        # the rig failing is not the image being judged
+        for failed in ('losetup', 'export', 'deep: losetup', 'deep: dm-snapshot', 'deep: status',
+                       replay_check.stage('import', 124), replay_check.stage('mount', 127),
+                       'deep: ' + replay_check.stage('scrub', 124), 'deep: ' + replay_check.stage('import (writable)', 127)):
+            by, rig, first = replay_check.tally_control([pt(1), pt(2, failed)])
+            self.assertEqual((by, first, len(rig)), ({}, None, 1), failed)
+            # and a control with a rig error is neither "caught" nor "as expected", whatever the table says
+            for name in ('drop', 'reorder'):
+                c = {'name': name, 'caught': False, 'failed_by': {}, 'rig_errors': rig}
+                rows = replay_check.judge_controls([c], {name: replay_check.EXPECTED[name]})
+                self.assertFalse(rows[2], (name, failed))
+                self.assertIn('the rig failed', rows[0][0]['observed'])
+            c = {'name': 'drop', 'caught': True, 'failed_by': {'deep': 1}, 'rig_errors': rig}
+            self.assertFalse(replay_check.judge_controls([c], {'drop': replay_check.EXPECTED['drop']})[2])
+        self.assertEqual(replay_check.stage('import', 1), 'import')
+        self.assertNotIn(replay_check.stage('import', 124), replay_check.JUDGING)
+
+    def test_coverage_has_a_floor(self):
+        recs = self.idx['records']
+        flush = replay_check.flush_points(recs)
+        self.assertEqual(len(flush), 12)
+        full = [{'n': n, 't_deep': 0.1} for n in flush] + [{'n': 0}, {'n': len(recs)}]
+        cov = replay_check.coverage(recs, full)
+        self.assertEqual((cov['errors'], cov['warnings'], cov['deep'], cov['deep_floor']), ([], [], 12, 6))
+        # a flush boundary that was not checked fails the job
+        cov = replay_check.coverage(recs, full[1:])
+        self.assertEqual(cov['flush_unchecked'], [flush[0]])
+        self.assertEqual(len(cov['errors']), 1)
+        # the deep check at half of them: allowed, with a warning
+        half = [{'n': n, **({'t_deep': 0.1} if i % 2 == 0 else {})} for i, n in enumerate(flush)]
+        cov = replay_check.coverage(recs, half)
+        self.assertEqual((cov['errors'], len(cov['warnings']), cov['deep']), ([], 1, 6))
+        # below half: a failure
+        fewer = [{'n': n, **({'t_deep': 0.1} if i % 3 == 0 else {})} for i, n in enumerate(flush)]
+        cov = replay_check.coverage(recs, fewer)
+        self.assertEqual((len(cov['errors']), cov['deep']), (1, 4))
+        # a plan squeezed by a slow check drops flush boundaries, and that is caught here
+        kind, deep, _ = replay_check.plan(recs, 6, 1, window=2)
+        cov = replay_check.coverage(recs, [{'n': n, **({'t_deep': 1} if n in deep else {})} for n in kind])
+        self.assertEqual(len(cov['errors']), 2)
+
+    def test_an_absent_witness_does_not_pass_when_required(self):
+        self.assertEqual(replay_check.witness_verdict([], True), (False, 'witness not run although it is required'))
+        self.assertEqual(replay_check.witness_verdict([], False), (True, 'witness not run'))
+        self.assertTrue(replay_check.witness_verdict([{'same': True}, {'same': True}], True)[0])
+        self.assertFalse(replay_check.witness_verdict([{'same': True}, {'same': False}], False)[0])
+
+    def test_marks_must_fit_the_manifest(self):
+        marks = replay_check.parse_marks(self.idx['records'])          # promise up to 18 files
+        self.assertIsNone(replay_check.manifest_trouble(marks, 18))
+        self.assertIsNone(replay_check.manifest_trouble(marks, 40))
+        self.assertIn('promises 18 files but the manifest lists 17', replay_check.manifest_trouble(marks, 17))
+        self.assertIn('no sync marks', replay_check.manifest_trouble([], 5))
+        self.assertIn('promises no files', replay_check.manifest_trouble([(3, 1, 0), (9, 2, 0)], 5))
+
+    def test_a_pool_left_imported_is_a_rig_error_not_a_verdict(self):
+        # A machine without a kernel: commands are answered by a model in
+        # which the export after the deep check's scrub always fails.
+        import argparse
+        work = os.path.join(self.dir.name, 'work')
+        os.makedirs(work)
+        manifest = os.path.join(self.dir.name, 'manifest')
+        open(manifest, 'w').close()
+        rig = replay_check.Rig(argparse.Namespace(provider='', work=work, manifest=manifest, pool='p', mountpoint='/p'))
+        with open(rig.image, 'wb') as f:
+            f.truncate(DEV)
+        state = {'imported': False, 'fail': {'export'}, 'calls': []}
+        clean = ' scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\n\tp ONLINE 0 0 0\nerrors: No known data errors\n'
+
+        def fake(cmd, timeout=300):
+            state['calls'].append(cmd[:2])
+            if cmd[:2] == ['zpool', 'list']:
+                return (0 if state['imported'] else 1), 'p\n', 0.0
+            if cmd[:2] == ['zpool', 'import']:
+                if state['imported']:
+                    return 1, "cannot import 'p': a pool with that name already exists", 0.0
+                state['imported'] = True
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'export']:
+                if 'export' in state['fail']:
+                    return 1, 'pool is busy', 0.0
+                state['imported'] = False
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'status']:
+                return 0, clean, 0.0
+            if cmd[0] == 'losetup' and '--find' in cmd:
+                return 0, '/dev/loop9\n', 0.0
+            if cmd[:2] == ['dmsetup', 'remove'] and 'dmremove' in state['fail']:
+                return 1, 'device busy', 0.0
+            if cmd[:2] == ['losetup', '-d'] and 'detach' in state['fail']:
+                return 1, 'busy', 0.0
+            return 0, '', 0.0
+
+        real, real_sleep = replay_check.run, replay_check.time.sleep
+        replay_check.run, replay_check.time.sleep = fake, lambda s: None
+        try:
+            # the deep check itself passes, the export does not: a rig error for that point
+            failed, _, _ = rig.deep()
+            self.assertEqual(failed, 'export')
+            self.assertNotIn('deep: ' + failed, replay_check.JUDGING)
+            # the pool is still there; no later check may read that as a verdict, and none tries to import
+            for _ in range(3):
+                n = len(state['calls'])
+                r = rig.point(0, 0, True)
+                self.assertFalse(r['ok'])
+                self.assertNotIn(r['failed'], replay_check.JUDGING)
+                self.assertIn('still imported', r['failed'])
+                self.assertNotIn(['zpool', 'import'], state['calls'][n:])
+            self.assertIn('still imported', rig.deep()[0])
+            # in a control pass that is a rig error, never "caught"
+            by, rig_errors, first = replay_check.tally_control([rig.point(0, 0, True) for _ in range(2)])
+            self.assertEqual((by, first, len(rig_errors)), ({}, None, 2))
+            # other cleanup that fails is reported too, and never as a judging stage
+            state.update(imported=False, fail={'dmremove'})
+            self.assertEqual(rig.deep()[0], 'dm-snapshot remove')
+            state.update(imported=False, fail={'detach'})
+            self.assertEqual(rig.deep()[0], 'losetup -d')
+            self.assertEqual(rig.light(0)[0], 'losetup -d')
+            for st in ('export', 'dm-snapshot remove', 'losetup -d'):
+                self.assertFalse({st, 'deep: ' + st} & replay_check.JUDGING)
+            # and with nothing failing, both checks pass
+            state.update(imported=False, fail=set())
+            self.assertTrue(rig.point(0, 0, True)['ok'])
+            self.assertFalse(state['imported'])
+        finally:
+            replay_check.run, replay_check.time.sleep = real, real_sleep
+
+    def test_scrub_verdict(self):
+        clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
+                 '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')
+        self.assertIsNone(replay_check.scrub_verdict(clean))
+        self.assertIsNotNone(replay_check.scrub_verdict(clean.replace('loop1  ONLINE  0 0 0', 'loop1  ONLINE  0 0 2')))
+        self.assertIsNotNone(replay_check.scrub_verdict(clean.replace('repaired 0B', 'repaired 8K')))
+        self.assertIsNotNone(replay_check.scrub_verdict(clean.replace('with 0 errors', 'with 1 errors')))
+        self.assertIsNotNone(replay_check.scrub_verdict(clean.replace('No known data errors', '1 data errors, use -v')))
+        self.assertIsNotNone(replay_check.scrub_verdict(''))
+
+
+if __name__ == '__main__':
+    unittest.main()
