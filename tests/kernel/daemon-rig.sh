@@ -114,6 +114,9 @@ serve_start() {
         fi
         sleep 0.25
     done
+    # Neither ready nor gone: write down what it is doing.
+    { echo "== serve $dir: not ready after 120 s"; ps -eo pid,ppid,stat,etime,args --forest | awk '$5 !~ /^\[/' | tail -n 60
+      tail -n 20 "$dir.serve.log"; lim 20 ublk list; } >> "$OUT/serve-stuck.log" 2>&1
     return 2
 }
 serve_wait() { # seconds: wait for the `serve` started last to exit; its status in SERVE_RC
@@ -392,17 +395,17 @@ kill_test() {
     [ -z "$KT_ERR" ]
 }
 # The four judgments of a kill test, as pins or as one control line.
-kill_verdict() { # -> PASS | FAIL | ERROR on stdout, the reason in KT_WHY
-    KT_WHY=""
-    if [ -n "$KT_ERR" ]; then KT_WHY=$KT_ERR; echo ERROR; return; fi
+kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
+    KT_WHY=""; KT_VERDICT=""
+    if [ -n "$KT_ERR" ]; then KT_WHY=$KT_ERR; KT_VERDICT=ERROR; return; fi
     if [ "$KT_INFLIGHT" -lt $((KT_DONE / 2)) ]; then
-        KT_WHY="only $KT_INFLIGHT of $KT_DONE kills landed with writes in flight"; echo ERROR; return
+        KT_WHY="only $KT_INFLIGHT of $KT_DONE kills landed with writes in flight"; KT_VERDICT=ERROR; return
     fi
     [ "$KT_FAILED_WRITES" = 0 ] || KT_WHY+="application writes failed: $KT_FAILED_WRITES; "
     case "$KT_STATE/$KT_VDEV" in "ONLINE/vdev errors 0 "*) ;; *) KT_WHY+="after the kills: pool $KT_STATE, $KT_VDEV; " ;; esac
     case "$KT_SCRUB" in "vdev errors 0 "*"with 0 errors"*) ;; *) KT_WHY+="scrub: $KT_SCRUB; " ;; esac
     case "$KT_FILES" in ok*) ;; *) KT_WHY+="files: $KT_FILES; " ;; esac
-    if [ -z "$KT_WHY" ]; then echo PASS; else echo FAIL; fi
+    if [ -z "$KT_WHY" ]; then KT_VERDICT=PASS; else KT_VERDICT=FAIL; fi
 }
 # With the daemon: after a kill, a recovery that drops the last record
 # must be refused, and the pool must suspend.
@@ -432,7 +435,7 @@ check_b() {
     local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i
     step "b: kill -9 under load, $KILLS times"
     kill_test "$SKYZFSD" b "$KILLS"
-    v=$(kill_verdict)
+    kill_verdict; v=$KT_VERDICT
     pin kill_under_load "$v" "${KT_WHY:-$KT_DONE kills, $KT_INFLIGHT with writes in flight: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
     # The check of what was acknowledged (§4.2) must not refuse a log
     # that a kill left whole. Kills around a change of log segment and
@@ -496,7 +499,7 @@ check_b() {
 
     step "b, control: recovery without reissue"
     SKZ_REF_REISSUE=0 kill_test "$REF" b0 5
-    v=$(kill_verdict)
+    kill_verdict; v=$KT_VERDICT
     ctl kill_without_reissue "$v" "${KT_WHY:-nothing went wrong in $KT_DONE kills}"
     [ "$(pool_state skzd-b0)" = ONLINE ] && lim 120 zpool export skzd-b0
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
@@ -779,5 +782,6 @@ case $CHECKS in *" e "*) check_e ;; esac
 case $CHECKS in *" d "*) check_d ;; esac
 
 step "done"
+for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"
 exit 0
