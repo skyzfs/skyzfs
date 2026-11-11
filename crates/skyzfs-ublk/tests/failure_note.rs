@@ -13,17 +13,20 @@ use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::store::{OpenOptions, Store, StoreConfig};
 use skyzfs_ublk::lifecycle::{
-    fail_serving, start, AddError, Control, DeviceInfo, DeviceState, Reason, Shape, Stop, Wanted,
+    fail_serving, start, AddError, Control, DeviceInfo, DeviceState, Held, Reason, Shape, Stop,
+    Wanted,
 };
 use skyzfs_ublk::records::{read_failure, Files};
 use skyzfs_ublk::volume::StoreVolume;
 
 const BOOT: [u8; 16] = [7; 16];
 
-/// A kernel that keeps what it is told and has no client.
+/// A kernel that keeps what it is told. A device in `held` has a
+/// client that the kernel cannot report: deleted, it keeps its number.
 #[derive(Default)]
 struct Kernel {
     devices: BTreeMap<u32, DeviceInfo>,
+    held: Vec<u32>,
 }
 
 impl Control for Kernel {
@@ -49,7 +52,13 @@ impl Control for Kernel {
     }
     fn disown(&mut self, _number: u32) {}
     fn delete(&mut self, number: u32) -> io::Result<()> {
-        self.devices.remove(&number);
+        if self.held.contains(&number) {
+            if let Some(device) = self.devices.get_mut(&number) {
+                device.state = DeviceState::Dead;
+            }
+        } else {
+            self.devices.remove(&number);
+        }
         Ok(())
     }
     fn begin_recovery(&mut self, _number: u32) -> io::Result<()> {
@@ -132,21 +141,27 @@ fn a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boo
         device.state = DeviceState::Live;
     }
 
-    // The log fails while the volume is served, and the kernel cannot
-    // say that no client holds the device.
+    // The log fails while the volume is served. A client holds the
+    // device, and the kernel cannot say so: the note says unknown, and
+    // the deleted device keeps its number.
+    kernel.held.push(number);
     let served = ready.store.serve().expect("serve");
     served.fail_now();
     let (failure, written) = fail_serving(&mut kernel, &mut records, number, identity);
-    assert!(failure.held && written);
+    assert!(failure.held == Held::Unknown && written);
     drop(served);
-    assert!(kernel.devices.is_empty());
+    assert_eq!(
+        kernel.devices.get(&number).map(|d| d.state),
+        Some(DeviceState::Dead)
+    );
     let on_file = read_failure(&records.failure_path())
         .expect("read")
         .expect("a note");
     assert_eq!((on_file.boot, on_file.failure), (BOOT, failure));
 
-    // Not served again in this boot, whatever the operator says, and
-    // the note stays.
+    // The next start finds the dead device still under its number:
+    // held. Not served again in this boot, whatever the operator says,
+    // and the note on the file now says held.
     for acknowledge in [false, true] {
         let why = refused(start(
             &mut kernel,
@@ -155,11 +170,16 @@ fn a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boo
             &wanted(acknowledge),
         ));
         assert!(why.contains("not served again in this boot"), "{why}");
-        assert!(kernel.devices.is_empty());
+        let on_file = read_failure(&records.failure_path())
+            .expect("read")
+            .expect("a note");
+        assert_eq!(on_file.failure.held, Held::Yes);
     }
-    assert!(read_failure(&records.failure_path())
-        .expect("read")
-        .is_some());
+    // Even after the client lets go: held stays held.
+    kernel.held.clear();
+    kernel.devices.clear();
+    let why = refused(start(&mut kernel, &mut records, &mut volume, &wanted(true)));
+    assert!(why.contains("not served again in this boot"), "{why}");
 
     // After a reboot the note and the record mean nothing: the marker
     // is what is left, and it is acknowledged.

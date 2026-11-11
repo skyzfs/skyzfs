@@ -70,7 +70,7 @@
 //! | 0 | 8 | magic `SKYZFAI1` |
 //! | 8 | 16 | the boot it was written in |
 //! | 24 | 16 | the store's identity, or zeros where it was not known |
-//! | 40 | 1 | 1 if a client held the device or that could not be told, 0 if none did |
+//! | 40 | 1 | whether a client held the device: 0 none did, 1 one did, 2 not known when the note was written |
 //! | 41 | 1 | the reason: 1 the log failed while serving, 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read |
 //! | 42 | 6 | zero |
 //! | 48 | 8 | when it was written: milliseconds since boot |
@@ -99,7 +99,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::ack;
-use crate::lifecycle::{Attachment, Failure, MustReach, Reason, Records, Shape};
+use crate::lifecycle::{Attachment, Failure, Held, MustReach, Reason, Records, Shape};
 
 /// The attachment record's name in the volume's directory.
 pub const ATTACHMENT: &str = "attachment";
@@ -213,7 +213,11 @@ fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {
     bytes[..8].copy_from_slice(FAILED_MAGIC);
     bytes[8..24].copy_from_slice(&stored.boot);
     bytes[24..40].copy_from_slice(&stored.failure.identity);
-    bytes[40] = u8::from(stored.failure.held);
+    bytes[40] = match stored.failure.held {
+        Held::No => 0,
+        Held::Yes => 1,
+        Held::Unknown => 2,
+    };
     let code = REASONS.iter().find(|(_, r)| *r == stored.failure.reason);
     bytes[41] = code.map_or(0, |(code, _)| *code);
     bytes[48..56].copy_from_slice(&stored.written_ms.to_le_bytes());
@@ -223,7 +227,7 @@ fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {
 fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
     let whole = bytes.len() == FAILED_LEN
         && &bytes[..8] == FAILED_MAGIC
-        && bytes[40] <= 1
+        && bytes[40] <= 2
         && bytes[42..48] == [0; 6]
         && bytes[56..] == [0; 8];
     if !whole {
@@ -233,7 +237,11 @@ fn decode_failure(bytes: &[u8]) -> Option<StoredFailure> {
     Some(StoredFailure {
         boot: array(&bytes[8..]),
         failure: Failure {
-            held: bytes[40] == 1,
+            held: match bytes[40] {
+                0 => Held::No,
+                1 => Held::Yes,
+                _ => Held::Unknown,
+            },
             reason: *reason,
             identity: array(&bytes[24..]),
         },

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use skyzfs_local::log::SUPER_NAME;
 use skyzfs_local::store::OpenOptions;
-use skyzfs_ublk::lifecycle::{self, Control, Detached, Whose};
+use skyzfs_ublk::lifecycle::{self, Control, Detached, Held, Whose};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Noted};
 use skyzfs_ublk::volume::StoreVolume;
@@ -239,12 +239,15 @@ pub fn create_warning(dir: &Path, run_dir: &Path, boot: &[u8; 16]) -> Option<Str
         Ok(None) => return None,
         Ok(Some(stored)) if stored.boot != *boot => return None,
         Ok(Some(stored)) => stored.failure.held,
-        Err(_) => true,
+        Err(_) => Held::Yes,
     };
-    let what = if held {
-        "while a client held its device: the new volume is not served before a reboot"
-    } else {
-        "the new volume is served only with --acknowledge-failure"
+    let what = match held {
+        Held::Yes => "while a client held its device: the new volume is not served before a reboot",
+        Held::No => "the new volume is served only with --acknowledge-failure",
+        Held::Unknown => {
+            "and it is not known whether a client holds its device: the next serve finds out, \
+             and the new volume is served only with --acknowledge-failure, if at all"
+        }
     };
     Some(format!(
         "warning: a volume in {} failed in this boot, {what} ({} is left as it is)",

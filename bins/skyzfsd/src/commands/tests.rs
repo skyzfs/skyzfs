@@ -9,7 +9,7 @@ use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::store::{Store, StoreConfig};
 use skyzfs_ublk::lifecycle::{
-    AddError, Attachment, DeviceInfo, DeviceState, Failure, Reason, Records, Shape,
+    AddError, Attachment, DeviceInfo, DeviceState, Failure, Held, Reason, Records, Shape,
 };
 use skyzfs_ublk::pump::Counters;
 use skyzfs_ublk::status::Status;
@@ -247,7 +247,7 @@ fn status_shows_a_failure_of_this_boot_and_says_when_its_file_cannot_be_read() {
     setup
         .records()
         .write_failure(&Failure {
-            held: true,
+            held: Held::Yes,
             reason: Reason::LogFailed,
             identity: [3; 16],
         })
@@ -395,7 +395,7 @@ fn detach_leaves_the_failure_note_and_create_warns_of_one_of_this_boot() {
         setup
             .records()
             .write_failure(&Failure {
-                held,
+                held: held.into(),
                 reason: Reason::Short,
                 identity: [0; 16],
             })
@@ -409,7 +409,11 @@ fn detach_leaves_the_failure_note_and_create_warns_of_one_of_this_boot() {
     let output = setup.detach();
     assert_eq!(output.out, "deleted /dev/ublkb4\n");
     let note = setup.records().failure().expect("read");
-    assert_eq!(note.map(|f| f.held), Some(true), "detach touched the note");
+    assert_eq!(
+        note.map(|f| f.held),
+        Some(Held::Yes),
+        "detach touched the note"
+    );
 
     // A note that is not whole warns as a held one does.
     std::fs::write(setup.records().failure_path(), b"half").expect("write");
