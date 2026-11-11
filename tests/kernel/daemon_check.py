@@ -140,7 +140,9 @@ EXPECTED = {
                                    'device and inode numbers of the volume\'s directory in hex (§4.2)'),
     'pin_failed_unheld_volume_serves_when_acknowledged': ('d', 'PASS', WAITING,
                                                           'a volume that failed with no client attached is served '
-                                                          'again only when the operator acknowledges (§4.2)'),
+                                                          'again only when the operator acknowledges, and a write to the '
+                                                          'device then reaches the server: its own count of writes goes '
+                                                          'up (§4.2)'),
 
     'pin_held_request_completes': ('e', 'PASS', SERVER,
                                    'a request held for minutes completes, by the reader\'s own clock and by the '
@@ -339,6 +341,12 @@ def main(argv=None):
     impl = 'reference' if results.get('impl', '').startswith('reference') else 'daemon'
     rows, differs, errors = judge(results, checks, impl)
     errors = asked_wrong + twice + errors
+    # A regular file under a ublk device's name in /dev: the rig (or a
+    # tool it ran) created a device's path, and writes "to the device"
+    # after that went to the file. Whatever the pins say, the run is not
+    # to be trusted. The line must be there, and say none.
+    if results.get('setup') == 'ok' and results.get('dev_strays') != 'none':
+        errors.append(f"dev_strays: {results.get('dev_strays', 'no result')}")
     if results.get('setup') != 'ok':
         errors.insert(0, f"setup: {results.get('setup', 'did not finish')}")
     print(render(results, rows, differs, errors, checks))

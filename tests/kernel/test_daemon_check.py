@@ -26,7 +26,7 @@ def cases(impl='reference'):
 def as_expected(impl='reference'):
     r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
-    r.update(impl='reference: x', setup='ok')
+    r.update(impl='reference: x', setup='ok', dev_strays='none')
     r.update(c_run='ok: 26 cases', c_declared=dc.C_DECLARED[impl])
     r.update({f'case_{k}': v for k, v in cases(impl).items()})
     if impl == 'daemon':
@@ -281,6 +281,22 @@ class Main(unittest.TestCase):
                 self.assertIn('pin_discard', out.getvalue())
         with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(dc.main([d]), 2)
+
+    def test_a_file_at_a_device_path_is_a_rig_error(self):
+        # A regular file under a device's name in /dev, or no word on
+        # it, makes the run a rig error whatever the pins say.
+        good = as_expected()
+        for change, want in ((None, 0), ('ERROR: at the end of the run: -rw-r--r-- 1 root root 4096 /dev/ublkb3', 2),
+                             ('', 2), ('missing', 2)):
+            r = dict(good)
+            if change == 'missing':
+                del r['dev_strays']
+            elif change is not None:
+                r['dev_strays'] = change
+            status, text = self.run_main([f'{k}\t{v}\n' for k, v in r.items()])
+            self.assertEqual(status, want, change)
+            if want:
+                self.assertIn('dev_strays', text)
 
     def run_main(self, lines, *args):
         import contextlib

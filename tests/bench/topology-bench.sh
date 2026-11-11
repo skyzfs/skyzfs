@@ -648,7 +648,7 @@ zero_head() { # device: zero the first 4 KiB, BYPASSING the bdev page cache.
     # that writeback lands later — on top of the superblock dm-thin or
     # dm-cache has meanwhile written with direct bios (seen as
     # "cache metadata: sb_check failed: magic 0" mid-run).
-    "$DD" if=/dev/zero of="$1" bs=4096 count=1 conv=notrunc,fsync oflag=direct status=none
+    "$DD" if=/dev/zero of="$1" bs=4096 count=1 conv=notrunc,nocreat,fsync oflag=direct status=none
 }
 wait_gone() { # path, seconds
     local i=0
@@ -898,7 +898,7 @@ hydrate_thin() { # dm name: map every chunk locally, without reading the origin 
         start=$(( i * per ))
         [ "$start" -ge "$total" ] && break
         "$DD" if="$dev" of="$dev" bs=1M skip="$start" seek="$start" count="$per" \
-           iflag=direct oflag=direct conv=notrunc status=none &
+           iflag=direct oflag=direct conv=notrunc,nocreat status=none &
     done
     wait
     sync
