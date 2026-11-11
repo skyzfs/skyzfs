@@ -352,7 +352,9 @@ class Log(unittest.TestCase):
         def fake(cmd, timeout=300):
             state['calls'].append(cmd[:2])
             if cmd[:2] == ['zpool', 'list']:
-                return (0 if state['imported'] else 1), 'p\n', 0.0
+                if 'list' in state['fail']:
+                    return state['list_rc'], state.get('list_out', ''), 0.0
+                return (0, 'p\n', 0.0) if state['imported'] else (1, "cannot open 'p': no such pool\n", 0.0)
             if cmd[:2] == ['zpool', 'import']:
                 if state['imported']:
                     return 1, "cannot import 'p': a pool with that name already exists", 0.0
@@ -400,6 +402,14 @@ class Log(unittest.TestCase):
             self.assertEqual(rig.light(0)[0], 'losetup -d')
             for st in ('export', 'dm-snapshot remove', 'losetup -d'):
                 self.assertFalse({st, 'deep: ' + st} & replay_check.JUDGING)
+            # only "no such pool" means there is none: any other answer from zpool list is a rig error
+            for rc, out in ((1, 'cannot open: I/O error'), (2, 'usage'), (124, 'TIMEOUT'), (127, 'zpool: not found'),
+                            (1, '')):
+                state.update(imported=False, fail={'list'}, list_rc=rc, list_out=out)
+                n = len(state['calls'])
+                for failed in (rig.light(0)[0], rig.deep()[0]):
+                    self.assertTrue(failed.startswith('rig: '), (rc, out, failed))
+                self.assertNotIn(['zpool', 'import'], state['calls'][n:])
             # and with nothing failing, both checks pass
             state.update(imported=False, fail=set())
             self.assertTrue(rig.point(0, 0, True)['ok'])

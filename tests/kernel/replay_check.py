@@ -500,14 +500,21 @@ class Rig:
         A pool of this name that is still imported, after an export that
         failed, makes the next import fail whatever the image holds. That
         must read as the rig failing, never as a verdict on the image.
+        Only "no such pool" with exit code 1 means there is none.
         """
         rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', self.a.pool], 60)
         if rc == 0:
             return f'rig: a pool named {self.a.pool} is still imported'
+        if rc == 1 and 'no such pool' in out:
+            return None
         if rc in RIG_RC:
             return stage('zpool list', rc)
-        return None
+        return f'rig: zpool list failed with code {rc}'
 
+    # Each check below is layered: a step that sets something up, the
+    # steps inside it, and its cleanup. Cleanup that fails replaces the
+    # result of what ran inside, because the pool, snapshot or loop
+    # device it left behind makes everything after it untrustworthy.
     def light(self, files):
         """Read-only import, mount, verify -> (stage that failed or None, detail, seconds by stage)."""
         t = {}
@@ -519,98 +526,122 @@ class Rig:
             return 'losetup', out.strip(), t
         loop = out.strip()
         try:
-            rc, out, t['import'] = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none',
-                                        '-N', '-m', '-f', '-R', self.alt, self.a.pool], 180)
-            if rc:
-                return stage('import', rc), out.strip()[-400:], t
+            res = self.light_on(loop, files, t)
+        except BaseException:
+            run(['losetup', '-d', loop])
+            raise
+        rc, out, _ = run(['losetup', '-d', loop])
+        if rc:
+            res = ('losetup -d', out.strip()[-400:])
+        return res[0], res[1], t
+
+    def light_on(self, loop, files, t):
+        rc, out, t['import'] = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none',
+                                    '-N', '-m', '-f', '-R', self.alt, self.a.pool], 180)
+        if rc:
+            return stage('import', rc), out.strip()[-400:]
+        try:
+            res = self.light_imported(files, t)
+        except BaseException:
+            self.export()
+            raise
+        rc, out = self.export()
+        if rc:
+            res = ('export', out.strip()[-400:])
+        return res
+
+    def light_imported(self, files, t):
+        rc, out, t['mount'] = run(['zfs', 'mount', self.a.pool], 60)
+        if rc:
+            return stage('mount', rc), out.strip()[-400:]
+        t0 = time.monotonic()
+        root = self.alt + self.a.mountpoint
+        for want, name in self.manifest[:files]:
             try:
-                rc, out, t['mount'] = run(['zfs', 'mount', self.a.pool], 60)
-                if rc:
-                    return stage('mount', rc), out.strip()[-400:], t
-                t0 = time.monotonic()
-                root = self.alt + self.a.mountpoint
-                for want, name in self.manifest[:files]:
-                    try:
-                        h = hashlib.sha256()
-                        with open(os.path.join(root, name), 'rb') as f:
-                            for chunk in iter(lambda: f.read(1 << 20), b''):
-                                h.update(chunk)
-                    except OSError as e:
-                        return 'verify', f'{name}: {e}', t
-                    if h.hexdigest() != want:
-                        return 'verify', f'{name}: checksum differs', t
-                t['verify'] = time.monotonic() - t0
-            finally:
-                rc, out = self.export()
-                if rc:
-                    return 'export', out.strip()[-400:], t
-        finally:
-            # As with the export above: a cleanup that fails replaces the
-            # result, because nothing after it can be trusted.
-            rc, out, _ = run(['losetup', '-d', loop])
-            if rc:
-                return 'losetup -d', out.strip()[-400:], t
-        return None, '', t
+                h = hashlib.sha256()
+                with open(os.path.join(root, name), 'rb') as f:
+                    for chunk in iter(lambda: f.read(1 << 20), b''):
+                        h.update(chunk)
+            except OSError as e:
+                return 'verify', f'{name}: {e}'
+            if h.hexdigest() != want:
+                return 'verify', f'{name}: checksum differs'
+        t['verify'] = time.monotonic() - t0
+        return None, ''
+
+    SNAP = 'skz-replay-snap'
 
     def deep(self):
         """Writable import of a throwaway snapshot, and a scrub -> (failure or None, detail, seconds)."""
         t0 = time.monotonic()
-        cow = os.path.join(self.a.work, 'cow.img')
-        name = 'skz-replay-snap'
-        loops = []
         left = self.leftover()
         if left:
             return left, '', time.monotonic() - t0
+        cow = os.path.join(self.a.work, 'cow.img')
+        with open(cow, 'wb') as f:
+            f.truncate(2 << 30)
+        loops = []
         try:
-            with open(cow, 'wb') as f:
-                f.truncate(2 << 30)
-            for cmd in (['losetup', '-r', '--find', '--show', self.image], ['losetup', '--find', '--show', cow]):
-                rc, out, _ = run(cmd)
-                if rc:
-                    return 'losetup', out.strip(), time.monotonic() - t0
-                loops.append(out.strip())
-            sectors = os.path.getsize(self.image) // 512
-            rc, out, _ = run(['dmsetup', 'create', name, '--table', f'0 {sectors} snapshot {loops[0]} {loops[1]} N 8'])
-            if rc:
-                return 'dm-snapshot', out.strip(), time.monotonic() - t0
-            try:
-                rc, out, _ = run(['zpool', 'import', '-d', f'/dev/mapper/{name}', '-o', 'cachefile=none', '-N', '-m', '-f',
-                                  '-R', self.alt, self.a.pool], 180)
-                if rc:
-                    return stage('import (writable)', rc), out.strip()[-400:], time.monotonic() - t0
-                try:
-                    rc, out, _ = run(['zpool', 'scrub', '-w', self.a.pool], 600)
-                    if rc:
-                        return stage('scrub', rc), out.strip()[-400:], time.monotonic() - t0
-                    rc, out, _ = run(['zpool', 'status', '-p', self.a.pool], 60)
-                    if rc:
-                        return 'status', out.strip()[-400:], time.monotonic() - t0
-                    bad = scrub_verdict(out)
-                    if bad:
-                        return 'scrub', bad, time.monotonic() - t0
-                finally:
-                    # Cleanup that fails replaces the result, here and
-                    # below: the pool or the snapshot is still there, and
-                    # the checks that follow would trip over it.
-                    rc, out = self.export()
-                    if rc:
-                        return 'export', out.strip()[-400:], time.monotonic() - t0
-            finally:
-                for _ in range(20):
-                    rc, out, _ = run(['dmsetup', 'remove', name])
-                    if rc == 0:
-                        break
-                    time.sleep(0.25)
-                if rc:
-                    return 'dm-snapshot remove', out.strip()[-400:], time.monotonic() - t0
+            res = self.deep_loops(cow, loops)
         finally:
+            failed = [(lo, run(['losetup', '-d', lo])) for lo in loops]
             if os.path.exists(cow):
                 os.unlink(cow)
-            for lo in loops:
-                rc, out, _ = run(['losetup', '-d', lo])
-                if rc:
-                    return 'losetup -d', out.strip()[-400:], time.monotonic() - t0
-        return None, '', time.monotonic() - t0
+        for lo, (rc, out, _) in failed:
+            if rc:
+                res = ('losetup -d', out.strip()[-400:])
+        return res[0], res[1], time.monotonic() - t0
+
+    def deep_loops(self, cow, loops):
+        for cmd in (['losetup', '-r', '--find', '--show', self.image], ['losetup', '--find', '--show', cow]):
+            rc, out, _ = run(cmd)
+            if rc:
+                return 'losetup', out.strip()
+            loops.append(out.strip())
+        sectors = os.path.getsize(self.image) // 512
+        rc, out, _ = run(['dmsetup', 'create', self.SNAP, '--table', f'0 {sectors} snapshot {loops[0]} {loops[1]} N 8'])
+        if rc:
+            return 'dm-snapshot', out.strip()
+        try:
+            res = self.deep_snapshot()
+        except BaseException:
+            run(['dmsetup', 'remove', self.SNAP])
+            raise
+        for _ in range(20):
+            rc, out, _ = run(['dmsetup', 'remove', self.SNAP])
+            if rc == 0:
+                break
+            time.sleep(0.25)
+        if rc:
+            res = ('dm-snapshot remove', out.strip()[-400:])
+        return res
+
+    def deep_snapshot(self):
+        rc, out, _ = run(['zpool', 'import', '-d', f'/dev/mapper/{self.SNAP}', '-o', 'cachefile=none', '-N', '-m', '-f',
+                          '-R', self.alt, self.a.pool], 180)
+        if rc:
+            return stage('import (writable)', rc), out.strip()[-400:]
+        try:
+            res = self.deep_imported()
+        except BaseException:
+            self.export()
+            raise
+        rc, out = self.export()
+        if rc:
+            res = ('export', out.strip()[-400:])
+        return res
+
+    def deep_imported(self):
+        rc, out, _ = run(['zpool', 'scrub', '-w', self.a.pool], 600)
+        if rc:
+            return stage('scrub', rc), out.strip()[-400:]
+        rc, out, _ = run(['zpool', 'status', '-p', self.a.pool], 60)
+        if rc:
+            return 'status', out.strip()[-400:]
+        bad = scrub_verdict(out)
+        if bad:
+            return 'scrub', bad
+        return None, ''
 
     def point(self, n, files, deep):
         res = {'n': n, 'files': files, 't_advance': self.advance(n)}
