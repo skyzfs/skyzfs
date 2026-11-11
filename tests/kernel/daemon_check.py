@@ -46,6 +46,10 @@ EXPECTED = {
                                            'every block of the range is from one of them, in every round of a '
                                            'minute of rounds, with and without the commit delay (§4.1)'),
 
+    'ctl_torn_overlapping_writes': ('a', 'FAIL', KERNEL,
+                                    'control: a server that applies only the first half of a write that follows '
+                                    'another of the same range is caught by the same load, in every run'),
+
     'pin_c_max_request': ('c', 'PASS', SERVER,
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
                           'cases about a 1 MiB request and a discard across the device test only the block layer'),
@@ -98,6 +102,11 @@ EXPECTED = {
                                                    'the plain kill test, and the servers that took over found writes '
                                                    'applied and not acknowledged (status: recovered_unacknowledged), '
                                                    'more than 0 over the run, or the run is a rig error'),
+    'pin_device_waits_for_a_server': ('b', 'PASS', KERNEL,
+                                      'a killed server\'s device with no server for 300 s under a pool: it reads '
+                                      'as waiting at every look, the kernel log has no I/O error, request timed '
+                                      'out or abort, and the take-over afterwards is as clean as after any kill '
+                                      '(§4.2, the states of a device: waiting, no server comes)'),
     'ctl_delay_before_apply': ('b', 'FAIL', SERVER,
                                'control: with the same delay taken before the write is applied, the servers that '
                                'take over find nothing applied and unacknowledged: the count above is not one '

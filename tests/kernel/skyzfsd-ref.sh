@@ -42,7 +42,9 @@
 #     before the write is applied, so nothing is left applied and
 #     unacknowledged), SKZ_REF_UNORDERED=1 (overlapping writes in
 #     flight are issued to the file together, as upstream does, and can
-#     each win some of the blocks).
+#     each win some of the blocks), SKZ_REF_TEAR=1 (a write that
+#     follows another of the same range within 2 ms is applied in its
+#     first half only: overlapping writes torn every time).
 set -uo pipefail
 
 usage() { echo "usage: skyzfsd-ref.sh create|serve|detach|status --dir DIR ..." >&2; exit 2; }
@@ -196,6 +198,7 @@ serve)
     [ -z "$DELAY" ] || export SKZ_COMMIT_DELAY_MS=$DELAY
     [ -z "${SKZ_REF_COMMIT_DELAY_BEFORE:-}" ] || export SKZ_COMMIT_DELAY_BEFORE=$SKZ_REF_COMMIT_DELAY_BEFORE
     [ -z "${SKZ_REF_UNORDERED:-}" ] || export SKZ_UNORDERED=$SKZ_REF_UNORDERED
+    [ -z "${SKZ_REF_TEAR:-}" ] || export SKZ_TEAR=$SKZ_REF_TEAR
     echo 0 > "$TAKEOVER"
     if [ -n "$n" ] && [ "$(dev_state "$n")" = QUIESCED ]; then
         # The dead server's count, before the new one sets it to zero.

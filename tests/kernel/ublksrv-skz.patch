@@ -1,8 +1,8 @@
 diff --git a/targets/ublk.loop.cpp b/targets/ublk.loop.cpp
-index 2208ec7..d27aad0 100644
+index 2208ec7..1ecac24 100644
 --- a/targets/ublk.loop.cpp
 +++ b/targets/ublk.loop.cpp
-@@ -6,8 +6,184 @@
+@@ -6,8 +6,215 @@
  #include <sys/epoll.h>
  #include <linux/falloc.h>
  
@@ -49,6 +49,11 @@ index 2208ec7..d27aad0 100644
 + * the blocks (seen in run 43010288006). The SkyZFS contract has
 + * overlapping operations in flight apply whole, in some order.
 + *   SKZ_UNORDERED=1       not so: as upstream, a deliberately wrong server
++ *   SKZ_TEAR=1            a write of the range another write had less
++ *                         than 2 ms before is applied in its first half
++ *                         only, after that one, and acknowledged whole:
++ *                         a server that tears overlapping writes every
++ *                         time, whatever the storage under it does
 + *
 + * One queue only: the counters are not atomic.
 + */
@@ -73,6 +78,30 @@ index 2208ec7..d27aad0 100644
 +static struct __kernel_timespec skz_retry_ts = { 0, 1000000 };	/* 1 ms */
 +
 +static bool skz_unordered;
++static bool skz_tear;
++static __u64 skz_last_start, skz_last_end, skz_last_ns;
++
++static __u64 skz_now_ns(void)
++{
++	struct timespec ts;
++
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return (__u64)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
++}
++
++/* True if this write follows one of the same range closely (SKZ_TEAR). */
++static bool skz_follows_same_range(const struct ublksrv_io_desc *iod)
++{
++	__u64 start = iod->start_sector, end = start + iod->nr_sectors;
++	__u64 now = skz_now_ns();
++	bool follows = start == skz_last_start && end == skz_last_end &&
++		now - skz_last_ns < 2000000ULL;
++
++	skz_last_start = start;
++	skz_last_end = end;
++	skz_last_ns = now;
++	return follows;
++}
 +
 +static bool skz_overlaps_one_applying(const struct ublksrv_io_desc *iod)
 +{
@@ -127,6 +156,8 @@ index 2208ec7..d27aad0 100644
 +	}
 +	v = getenv("SKZ_UNORDERED");
 +	skz_unordered = v != NULL && !strcmp(v, "1");
++	v = getenv("SKZ_TEAR");
++	skz_tear = v != NULL && !strcmp(v, "1");
 +	if ((v = getenv("SKZ_FAIL_AFTER")) != NULL)
 +		skz_fail_after = strtol(v, NULL, 10);
 +	skz_fail_file = getenv("SKZ_FAIL_FILE");
@@ -187,7 +218,7 @@ index 2208ec7..d27aad0 100644
  struct loop_tgt_data {
  	bool user_copy;
  	bool auto_zc;
-@@ -54,6 +230,8 @@ static int loop_setup_tgt(struct ublksrv_dev *dev, int type)
+@@ -54,6 +261,8 @@ static int loop_setup_tgt(struct ublksrv_dev *dev, int type)
  	struct loop_tgt_data *tgt_data = (struct loop_tgt_data*)dev->tgt.tgt_data;
  	struct stat sb;
  
@@ -196,7 +227,7 @@ index 2208ec7..d27aad0 100644
  	ret = ublk_json_read_target_str_info(cdev, "backing_file", file);
  	if (ret < 0) {
  		ublk_err( "%s: backing file can't be retrieved from jbuf %d\n",
-@@ -147,7 +325,8 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
+@@ -147,7 +356,8 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
  		.types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DISCARD |
  			UBLK_PARAM_TYPE_DMA_ALIGN,
  		.basic = {
@@ -206,7 +237,7 @@ index 2208ec7..d27aad0 100644
  			.logical_bs_shift	= 9,
  			.physical_bs_shift	= 12,
  			.io_opt_shift	= 12,
-@@ -157,6 +336,9 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
+@@ -157,6 +367,9 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
  
  		.discard = {
  			.max_discard_sectors	= UINT_MAX >> 9,
@@ -216,10 +247,15 @@ index 2208ec7..d27aad0 100644
  			.max_discard_segments	= 1,
  		},
  		.dma = {
-@@ -515,6 +697,46 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -513,8 +726,63 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+ 		const struct ublk_io_data *data, int tag)
+ {
  	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
++	bool tear = false;
  	int ret;
  
++	if (skz_tear && ublksrv_get_op(data->iod) == UBLK_IO_OP_WRITE && data->iod->addr)
++		tear = skz_follows_same_range(data->iod);
 +	if ((int)ublksrv_get_op(data->iod) == skz_hold_op && !skz[SKZ_HELD] &&
 +			(skz_hold_op == UBLK_IO_OP_FLUSH ||
 +			 (data->iod->start_sector <= skz_hold_sector &&
@@ -259,11 +295,23 @@ index 2208ec7..d27aad0 100644
 +		skz_applying[tag].end = data->iod->start_sector + data->iod->nr_sectors;
 +		skz_applying[tag].busy = true;
 +	}
++	if (tear) {
++		/* skz: the first half only, after the write before it */
++		size_t half = (size_t)((data->iod->nr_sectors / 2) & ~7U) << 9;
++		ssize_t n = half ? pwrite(q->dev->tgt.fds[1], (void *)data->iod->addr,
++				half, (off_t)data->iod->start_sector << 9) : 0;
++
++		if (tag < SKZ_MAX_TAGS)
++			skz_applying[tag].busy = false;
++		ublksrv_complete_io(q, tag, n < 0 ? -EIO :
++				(int)(data->iod->nr_sectors << 9));
++		co_return;
++	}
 +
   again:
  	ret = loop_queue_tgt_io(q, data, tag);
  	if (ret > 0) {
-@@ -529,10 +751,29 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -529,10 +797,29 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
  		}
  		if (io_res == -EAGAIN)
  			goto again;
@@ -293,7 +341,7 @@ index 2208ec7..d27aad0 100644
  		ublk_err( "no sqe %d\n", tag);
  	}
  }
-@@ -543,6 +784,16 @@ static int loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -543,6 +830,16 @@ static int loop_handle_io_async(const struct ublksrv_queue *q,
  	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
  	const struct loop_tgt_data *tgt_data = (struct loop_tgt_data*) q->dev->tgt.tgt_data;
  

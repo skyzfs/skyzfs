@@ -358,6 +358,19 @@ check_a_overlap() {
     else
         pin overlapping_writes_apply_whole ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao-overlap.err" 2>/dev/null)"
     fi
+    # The control: a server that tears on purpose, whatever the storage
+    # under it does. FAIL means torn rounds were seen, which shows in
+    # every run that the pin above can fail.
+    step "a, control: a server that tears overlapping writes"
+    if SKZ_REF_TEAR=1 overlap_test ao1 "$REF" 20; then
+        if [ "$OV_TORN" -gt 0 ]; then
+            ctl torn_overlapping_writes FAIL "$OV_TORN of $OV_ROUNDS rounds torn; $OV_SAID"
+        else
+            ctl torn_overlapping_writes PASS "no round of $OV_ROUNDS torn; $OV_SAID"
+        fi
+    else
+        ctl torn_overlapping_writes ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao1-overlap.err" 2>/dev/null)"
+    fi
     # The same load on the reference server as upstream has it, every
     # request issued to the file as it arrives. An observation and not
     # a control: how often that server tears depends on the runner
@@ -479,7 +492,7 @@ PY
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
     local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw
-    KT_WAITED=""
+    KT_WAITED=""; KT_WAIT_LOOKS=0; KT_WAIT_OTHER=0; KT_WAIT_BAD=0
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
@@ -542,6 +555,8 @@ kill_test() {
                 sleep 10
             done
             dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
+            KT_WAIT_LOOKS=$(echo "$states" | wc -w); KT_WAIT_OTHER=$(echo "$states" | tr ' ' '\n' | grep . | grep -vcx QUIESCED)
+            KT_WAIT_BAD=$(klog_bad "$OUT/$name-wait-dmesg.log")
             KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(klog_bad "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")(the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
@@ -799,8 +814,18 @@ check_b() {
     kill_verdict
     if [ -z "$KT_WAITED" ]; then
         obs b_device_waits_for_a_server "not run: ${KT_ERR:-the kill test did not reach the wait}"
+        pin device_waits_for_a_server ERROR "${KT_ERR:-the kill test did not reach the wait}"
     else
         obs b_device_waits_for_a_server "$KT_WAITED. Then served again: $KT_VERDICT, ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+        # Waiting at every look, nothing in the kernel log about the
+        # device, and the take-over as clean as after any kill. The
+        # reports of blocked tasks are the observation's.
+        if [ "$KT_VERDICT" = ERROR ]; then
+            pin device_waits_for_a_server ERROR "$KT_WHY"
+        else
+            if [ "$KT_VERDICT" = PASS ] && [ "$KT_WAIT_LOOKS" -ge 10 ] && [ "$KT_WAIT_OTHER" = 0 ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
+            pin device_waits_for_a_server "$v" "$KT_WAIT_LOOKS looks in ${RIG_WAIT_S:-300} s with no server, $KT_WAIT_OTHER of them not QUIESCED; kernel log lines with an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+        fi
     fi
     kill_cleanup bw
 }
