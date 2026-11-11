@@ -1598,8 +1598,9 @@ impl<D: Dir> Store<D> {
 
     /// Let the store checkpoint by itself, by `marks`, or not at all.
     /// Not at all is how a store is opened. A served store applies the
-    /// rule on its worker; a store that is not served applies it when
-    /// [`Store::tend`] is called.
+    /// rule on its worker, after every request and when it has none; a
+    /// store that is not served applies it after every request it
+    /// executes and when [`Store::tend`] is called.
     pub fn set_marks(&mut self, marks: Option<Marks>) {
         self.core.marks = marks;
         self.core.working = false;
@@ -1730,6 +1731,11 @@ impl<D: Dir> Store<D> {
                     }
                     out.push(Completion { id, result, buf });
                     done += 1;
+                    // The rule of the marks, as the worker of a served
+                    // store applies it: one step after every request.
+                    // A step that fails has failed the volume, which
+                    // the next request is told.
+                    let _ = self.core.tend(&mut || {});
                 }
                 Err(op) => {
                     self.queue.push_front(Request { id, op });

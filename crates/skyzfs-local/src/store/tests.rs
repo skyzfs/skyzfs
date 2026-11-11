@@ -1632,11 +1632,56 @@ fn harnesses(mutants: u32) -> Vec<SimHarness> {
                     segments: Some(3),
                     mutants,
                     threaded: false,
+                    marks: None,
                 });
             }
         }
     }
     out
+}
+
+/// The contract holds while the store checkpoints by itself: the suite
+/// passes in every environment with marks so low that steps fall
+/// between its operations, at its kills and at its power cuts, with
+/// the store called directly and behind its worker. Steps of two
+/// records begin at 24 KiB of log and end below 12 KiB; a new log
+/// holds 8 KiB.
+#[test]
+fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
+    let config = Config {
+        cases: 16,
+        ..Config::default()
+    };
+    let marks = Marks {
+        high: 24 << 10,
+        low: 12 << 10,
+        step: StepBound {
+            payload: 16 << 10,
+            records: 2,
+        },
+    };
+    for threaded in [false, true] {
+        for mut harness in harnesses(0) {
+            harness.marks = Some(marks);
+            harness.threaded = threaded;
+            let report = run_all(&mut harness, &config);
+            assert!(report.passed(), "in {harness:?}:\n{report}");
+            if !threaded {
+                // One case can find nothing to do: it cuts the power
+                // between records that are not durable, and with marks
+                // this low the store's own sync has made them durable
+                // before the cut. That is the rule's effect, which the
+                // contract allows, and no other case may be idle.
+                let idle: Vec<_> = report
+                    .not_exercised()
+                    .into_iter()
+                    .filter(|case| *case != "power_cut_at_every_point_leaves_a_prefix")
+                    .collect();
+                assert!(idle.is_empty(), "in {harness:?} not exercised: {idle:?}");
+                assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");
+            }
+        }
+    }
 }
 
 /// The contract, rules R1 to R12: the conformance suite of `skyzfs-blk`
@@ -2639,60 +2684,76 @@ const MARKS: Marks = Marks {
     },
 };
 
-/// What one request of 16 blocks adds to the log at most: its data, its
-/// header, and the padding to the next write unit and segment.
-const ONE_REQUEST: u64 = (64 << 10) + (32 << 10);
+/// How far one request of 16 blocks moves the log's end at most: its
+/// record (the data, the header, the padding to the write unit), and,
+/// where the record does not fit into what is left of a segment, the
+/// padding to the next segment, which is less than one more record.
+const ONE_REQUEST: u64 = 2 * ((64 << 10) + (32 << 10));
 
-/// Under a write load that lasts and never flushes, with the rule
-/// asked once after every request, the log's live size stays below
-/// the high mark and one request: the log stops growing, whatever
-/// the load. No step is taken while the log is below the low mark,
-/// steps are taken, the store syncs the log itself to have something
-/// durable to take, and every block reads as written at the end and
-/// after a restart.
+/// Under a write load that lasts and never flushes, the store taking
+/// its step after every request, the log's live size stays below the
+/// high mark and one request: the log stops growing, whatever the
+/// load. Steps begin only at the high mark and end below the low one,
+/// the store syncs the log itself to have something durable to take,
+/// and every block reads as written at the end and after a kill.
 #[test]
 fn under_a_lasting_write_load_the_log_stays_at_the_high_mark() {
     fn scenario(env: &Env) -> Outcome {
         let (disk, mut store) = env.fresh()?;
         store.set_marks(Some(MARKS));
         let mut newest = [0u8; 64];
-        let (mut largest, mut below_low, mut was_high) = (0, 0u64, false);
+        // The rule as the test follows it: working from the first step
+        // until the log is below the low mark.
+        let (mut largest, mut rests, mut working) = (0, 0u64, false);
         for n in 0..300u64 {
             let slot = (n * 7) % 64;
             let byte = (n % 250) as u8 + 1;
+            let before = store.log_state();
             write(&mut store, slot * 16, 16, byte)?;
             newest[slot as usize] = byte;
-            let before = store.log_state();
-            let stepped = store.tend().map_err(|e| format!("tend: {e}"))?;
             let after = store.log_state();
-            largest = largest.max(before.live());
-            was_high |= before.live() >= MARKS.high;
-            if before.live() > MARKS.high + ONE_REQUEST {
+            largest = largest.max(after.live());
+            if after.live() > MARKS.high + ONE_REQUEST {
                 return Err(format!(
                     "after write {n} the log holds {} bytes",
+                    after.live()
+                ));
+            }
+            let stepped = after.steps - before.steps;
+            if stepped > 1 {
+                return Err(format!("write {n} was followed by {stepped} steps"));
+            }
+            if stepped == 1 && after.start <= before.start {
+                return Err(format!(
+                    "write {n}: a step that took nothing, {before:?} to {after:?}"
+                ));
+            }
+            // A step while the rule rested: the write must have taken
+            // the log to the high mark.
+            if stepped == 1 && !working && before.live() + ONE_REQUEST < MARKS.high {
+                return Err(format!(
+                    "a step at write {n} with {} bytes of log before it",
                     before.live()
                 ));
             }
-            if stepped && !was_high {
+            if stepped == 0 && working {
                 return Err(format!(
-                    "a step at write {n}, before the high mark was reached"
+                    "no step at write {n}, above the low mark: {after:?}"
                 ));
             }
-            if stepped != (after.steps > before.steps) || (stepped && after.start <= before.start) {
-                return Err(format!(
-                    "write {n}: stepped {stepped}, {before:?} to {after:?}"
-                ));
-            }
+            working = stepped == 1 || working;
             if after.live() < MARKS.low {
-                below_low += 1;
-                // Below the low mark the rule rests until the high one.
-                was_high = false;
+                if working {
+                    rests += 1;
+                }
+                working = false;
             }
         }
         let state = store.log_state();
-        if state.steps < 20 || largest < MARKS.high || below_low == 0 {
+        // `largest` is seen after a step: one step below the high mark.
+        if state.steps < 20 || largest + MARKS.step.payload < MARKS.high || rests < 2 {
             return Err(format!(
-                "the load did not exercise the rule: {state:?}, largest {largest}, below the low mark {below_low} times"
+                "the load did not exercise the rule: {state:?}, largest {largest}, it came to rest {rests} times"
             ));
         }
         let check = |store: &mut SimStore, when: &str| -> Outcome {
@@ -2702,8 +2763,8 @@ fn under_a_lasting_write_load_the_log_stays_at_the_high_mark() {
             Ok(())
         };
         check(&mut store, "under the load")?;
-        // Nothing the client was never promised durable is needed
-        // after a kill, and what the steps took is in the home image.
+        // What the steps took is in the home image, the rest in the
+        // log: a kill loses nothing.
         drop(store);
         disk.kill();
         let mut store = env.reopen_ack(&disk)?;
@@ -2740,10 +2801,11 @@ fn the_rule_rests_without_marks_and_behind_a_hold() {
 fn a_step_that_fails_fails_the_volume() {
     let env = environments(0).remove(0);
     let (disk, mut store) = env.fresh().expect("a store");
-    store.set_marks(Some(MARKS));
     for n in 0..12u64 {
         write(&mut store, n * 16, 16, 1).expect("write");
     }
+    // The marks only now, so that the first step is the one that fails.
+    store.set_marks(Some(MARKS));
     disk.fail_sync_of(HOME_NAME);
     assert_eq!(store.tend(), Err(BlkError::Failed));
     assert!(store.is_failed());
