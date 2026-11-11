@@ -179,3 +179,10 @@ pub fn end_recovery(number: u32) -> io::Result<()> {
     )
     .map(|_| ())
 }
+
+/// Begin the recovery of the device under `number`, which waits for a
+/// server. An error is the driver's own: `EBUSY` while the server
+/// before is not yet wholly gone, `ENODEV` when the device is.
+pub fn begin_recovery(number: u32) -> io::Result<()> {
+    command::<u8>(sys::UBLK_U_CMD_START_USER_RECOVERY, number, 0, None).map(|_| ())
+}
