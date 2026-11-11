@@ -50,8 +50,7 @@
 //!    |---|---|---|---|
 //!    | waits for a server | taken over; if its values are not the recorded ones, the daemon stops and leaves it | left; attach afresh under another number | the daemon stops and leaves it |
 //!    | is live | waited for, for a stated time (below); if it stays live: refused, nothing added | left; attach afresh under another number | the daemon stops and leaves it |
-//!    | was added and never started | deleted; attach afresh | left; attach afresh under another number | left; attach afresh under another number |
-//!    | is deleted and still held | attach afresh | attach afresh | attach afresh |
+//!    | has no server and waits for none: never started, stopped, or deleted and still held | deleted (again, if it was); attach afresh, passing its number by while it is held | left; attach afresh under another number | left; attach afresh under another number |
 //!
 //!    - The device is gone, or the record is of another boot or absent:
 //!      attach afresh.
@@ -133,6 +132,14 @@
 //! still held keeps its number ([`DeviceState::Dead`]): it is never
 //! taken over, and an add passes its number by.
 //!
+//! The driver has one state for a device without a server that does
+//! not wait for one: added and never started, stopped, or deleted and
+//! still held (seen in the kernel spike, `docs/skyzfs-ublk-spike.md`).
+//! The lifecycle does not tell them apart either. Such a device with
+//! this volume's note is deleted, which does no harm if it was deleted
+//! before, and the daemon attaches afresh, passing over numbers that
+//! are taken. Without this volume's note it is left.
+//!
 //! # Whose device it is
 //!
 //! A record alone does not tell: another server's device can appear
@@ -203,15 +210,14 @@ pub struct Shape {
 /// What the kernel says a device is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceState {
-    /// Added, and never started.
-    Added,
     /// Served by a live server.
     Live,
     /// Its server is gone and it waits for another.
     Waiting,
-    /// Deleted, and still held by whoever has it open: it has no disk
-    /// and no server, and keeps its number until the last opener closes
-    /// it.
+    /// It has no server and waits for none: added and never started,
+    /// stopped, or deleted and still held by whoever has it open (it
+    /// then keeps its number until the last opener closes it). The
+    /// driver reports one state for all of them.
     Dead,
 }
 
@@ -908,7 +914,7 @@ fn give_up_device<C: Control, R: Records>(
     let Ok(Some(info)) = info else {
         return String::new();
     };
-    if !matches!(info.state, DeviceState::Waiting | DeviceState::Added) {
+    if info.state == DeviceState::Live {
         return String::new();
     }
     if !noted {
@@ -1016,9 +1022,6 @@ fn find<C: Control, R: Records>(
                 left: Some((number, why)),
             })
         };
-        if info.state == DeviceState::Dead {
-            return Ok(afresh);
-        }
         if note.is_some() {
             if info.state == DeviceState::Waiting && mutants.has(Mutants::ANY_NONCE) {
                 return Ok(Found::TakeOver(number, info.shape));
@@ -1033,10 +1036,11 @@ fn find<C: Control, R: Records>(
             return left("it has no note and its values are not the recorded ones");
         }
         return match info.state {
-            // This volume's, from a kill between the add and the note,
-            // or another's twin that is being set up: it never had a
-            // client.
-            DeviceState::Added => left("it was added and never started, and has no note"),
+            // This volume's, from a kill between the add and the note
+            // or between the note's removal and the delete of a device
+            // that is still held, or another's twin: no server can be
+            // given to it.
+            DeviceState::Dead => left("it has no server and no note"),
             _ => Err(Stop::Error(format!(
                 "device {number} has this volume's size, queues, depth and flags and no note: \
                  it is this volume's device whose note was lost with the run directory, or \
@@ -1064,16 +1068,15 @@ fn find<C: Control, R: Records>(
             "device {number} is this volume's, and its values are not the recorded ones: it is \
              left as it is"
         ))),
-        DeviceState::Added => Ok(Found::Afresh {
-            stale: Some(number),
-            left: None,
-        }),
         DeviceState::Dead if mutants.has(Mutants::TAKE_DEAD) => {
             Ok(Found::TakeOver(number, info.shape))
         }
-        // Deleted, and still held by whoever had it open: gone, as far
-        // as a server is concerned.
-        DeviceState::Dead => Ok(afresh),
+        // Never started, or deleted and still held: it is deleted
+        // (again), and never taken over.
+        DeviceState::Dead => Ok(Found::Afresh {
+            stale: Some(number),
+            left: None,
+        }),
     }
 }
 
@@ -1255,9 +1258,7 @@ pub enum Detached {
     /// The device was deleted and something still holds it open: it
     /// keeps its number until that closes it.
     DeletedHeld(u32),
-    /// The device had been deleted before and is still held. Nothing
-    /// was done.
-    Held(u32),
+
     /// The device is live under a server. Nothing was done.
     Live(u32),
     /// The device under the recorded number is not known to be this
@@ -1326,8 +1327,7 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
     }
     match located.state {
         DeviceState::Live => Ok(Detached::Live(number)),
-        DeviceState::Dead => Ok(Detached::Held(number)),
-        DeviceState::Waiting | DeviceState::Added => {
+        DeviceState::Waiting | DeviceState::Dead => {
             delete(control, records, number, mutants)?;
             let after = control.info(number)?;
             records.remove_attachment()?;

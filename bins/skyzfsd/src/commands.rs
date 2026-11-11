@@ -160,7 +160,6 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// | no device of this boot is the volume's | 0 | standard output |
 /// | the device was deleted | 0 | standard output |
 /// | it was deleted and something still holds it open | 0 | standard error |
-/// | it had been deleted before and is still held | 0 | standard error |
 /// | the device under the recorded number is not known to be the volume's | 1 | standard error |
 /// | a server is live on it | 5 | standard error |
 /// | a daemon holds the volume's lock, after 2 s of trying | 5 | standard error |
@@ -190,14 +189,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
                  until that lets go (a pool that was not exported stays suspended)"
             ),
         ),
-        Detached::Held(n) => Output::said(
-            Exit::Done,
-            "",
-            &format!(
-                "/dev/ublkb{n} was deleted before and is still held open: there is nothing to \
-                 do until what holds it lets go"
-            ),
-        ),
+
         Detached::NotOurs(located) => {
             let why = match located.whose {
                 Whose::Unsure => "has this volume's values and no note",
