@@ -81,7 +81,12 @@
 //!   this volume that still waits (the daemon died before it deleted
 //!   it) is deleted now.
 //! - **Failed, and no client held it:** without the acknowledgement
-//!   the start refuses and touches nothing. With it, a waiting device
+//!   the start refuses and touches nothing the decision rests on: the
+//!   note, the stored position and the marker stay. A waiting device
+//!   of this volume is deleted all the same and the refusal says so
+//!   (since M1.3d; one rule for every finder: whoever holds the lock
+//!   and finds the failed volume's device waiting deletes it). With
+//!   the acknowledgement, a waiting device
 //!   of this volume is deleted and never taken over, the store is
 //!   opened **without** a position to reach (the acknowledgement is
 //!   the operator saying that what was acknowledged to nobody may be
@@ -608,6 +613,9 @@ impl Mutants {
     /// the delete failed, is left without a word; and a delete is not
     /// said either.
     pub(crate) const LEFT_UNSAID: u32 = 1 << 26;
+    /// A start that refuses a failure nobody held, for want of the
+    /// flag, changes the failure note.
+    pub(crate) const REFUSAL_TOUCHES_NOTE: u32 = 1 << 27;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -849,13 +857,37 @@ fn noted_failure<C: Control, R: Records>(
         )));
     }
     if !acknowledges {
-        // Nothing is touched (design: a failure nobody held, asked
-        // without the flag). That includes a device of this volume
-        // that a daemon killed between the failure note and the delete
-        // left waiting: it stays until a start with the flag or a
-        // detach deletes it.
+        // Refused, and nothing the decision rests on is touched: the
+        // note, the acknowledged position and the marker stay, so the
+        // next start without the flag refuses again and one with it
+        // serves afresh. The volume's waiting device goes all the
+        // same, by the one rule for every finder: whoever holds the
+        // volume's lock and finds the failed volume's device waiting
+        // deletes it. The daemon that failed was on its way to delete
+        // it and was killed first; left there, it holds whatever is
+        // sent to it, without limit and without a word. (Until M1.3d
+        // this start touched nothing at all.)
+        //
+        // The delete does not wait for a holder (it is the driver's
+        // delete without waiting, of a device that is not live). It
+        // can wait behind another device's delete that the driver is
+        // still carrying out; nothing here bounds that, as nothing
+        // does in `fail_serving`.
+        let left = give_up_device(control, records, wanted, mutants);
+        if mutants.has(Mutants::REFUSAL_TOUCHES_NOTE) {
+            let _ = records.write_failure(&Failure {
+                held: Held::Unknown,
+                ..failure
+            });
+        }
+        let device = if left.is_empty() {
+            "; no device of this volume was there"
+        } else {
+            left.as_str()
+        };
         return Err(Stop::Failed(format!(
-            "{reason}; no client held its device. It is served again with --acknowledge-failure"
+            "{reason}; no client held its device, and the failure is not acknowledged: a start \
+             with --acknowledge-failure serves the volume afresh{device}"
         )));
     }
     // Whoever opened a device of this volume after the failure was
@@ -1105,12 +1137,9 @@ fn failed<C: Control, R: Records>(
 /// or a number under which nothing stands. So an answer without a
 /// device in it means that this start knows of none.
 ///
-/// **What becomes of a device that was left.** A start that finds the
-/// failure note comes through here again when the note says a client
-/// held the device or cannot be read (it then refuses) and when the
-/// failure is acknowledged (it then serves), but not when it refuses
-/// a failure nobody held for want of the flag: that start touches
-/// nothing. `skyzfsd detach` deletes a device that carries this
+/// **What becomes of a device that was left.** Every start that finds
+/// the failure note comes through here again, whether it then refuses
+/// or serves, and `skyzfsd detach` deletes a device that carries this
 /// volume's note and is not live. So a device left because it was
 /// still live, could not be asked about or could not be deleted goes
 /// at the next start or detach that finds it otherwise. A device left
