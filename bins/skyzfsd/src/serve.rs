@@ -10,8 +10,10 @@
 //! 3. The lifecycle's start ([`lifecycle::start`]): the lock, the
 //!    failure note, the acknowledged position, the store, the device.
 //! 4. The store goes behind its worker, the queue's thread is started
-//!    and gives the driver its fetches, and the device is started (or
-//!    its recovery ended). Then one line on standard output, flushed:
+//!    and queues its fetch commands (they reach the driver at the
+//!    queue's first wait), and the device is started (or its recovery
+//!    ended). Then, once this instance's status file was written or
+//!    the write was tried, one line on standard output, flushed:
 //!    `ready /dev/ublkbN`.
 //! 5. The main thread waits: for `SIGTERM` or `SIGINT`, for the store's
 //!    word that the volume failed, or for the queue's thread to end.
@@ -28,19 +30,28 @@
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted, the device's
 //! note is removed and the device is deleted ([`lifecycle::fail_serving`]),
-//! while the store still holds the volume's lock.
+//! while the store still holds the volume's lock: the queue's thread
+//! gives the store back to the main thread, which keeps it until it
+//! returns.
+//!
+//! A start that settles a failure of unknown holding deletes the
+//! failed volume's device and then looks for up to 5 s whether it goes
+//! (the driver's delete does not wait): a start on a volume whose
+//! device a client still holds takes that much longer to refuse.
 //!
 //! # Readings where the design says no more
 //!
 //! - "Its own files off any pool it serves" is checked as: the volume's
 //!   directory and the run directory are not on a file system of type
-//!   `zfs`, by `/proc/self/mountinfo`. That refuses more than the rule
-//!   asks (a pool the daemon does not serve) and nothing it allows.
+//!   ZFS, by `statfs` ([`off_zfs`]). That refuses more than the rule
+//!   asks (a pool the daemon does not serve). It does not see a file
+//!   system of another type that itself lies on ZFS (on a zvol, or in
+//!   a loop file on a dataset).
 //! - A start that fails after the lifecycle has added or begun to
 //!   recover a device leaves that device as it is: the next start
 //!   finds it by its record and its note.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -60,7 +71,7 @@ use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
-use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
+use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
@@ -71,62 +82,84 @@ pub const LIVE_RETRIES: u32 = 50;
 /// How often the status file is written at most: every 100 ms.
 pub const STATUS_INTERVAL_MS: u64 = 100;
 
+/// How long `ready` waits at most for the status thread's first write
+/// of this instance.
+const READY_WAITS_FOR_STATUS: Duration = Duration::from_secs(5);
+
 /// How long the main thread sleeps between two looks at the queue's
 /// thread and the failure flag when no signal arrives.
 const LOOK: Duration = Duration::from_millis(50);
 
+/// A line on standard error. A write that fails is ignored: nothing
+/// the daemon says may end it or change its exit status.
 fn say(text: impl std::fmt::Display) {
-    eprintln!("skyzfsd: {text}");
+    crate::to_stderr(&format!("skyzfsd: {text}\n"));
 }
 
-/// The type of the file system `path` is on, by the mount table in
-/// `mounts` (the text of `/proc/self/mountinfo`): the mount whose
-/// mount point is the longest prefix of `path`.
-pub fn filesystem_of(mounts: &str, path: &Path) -> Option<String> {
-    let mut best: Option<(usize, String)> = None;
-    for line in mounts.lines() {
-        // "36 35 98:0 /root /mount/point options... - type source ..."
-        let (before, after) = line.split_once(" - ")?;
-        let point = before.split(' ').nth(4)?;
-        let kind = after.split(' ').next()?;
-        // The table escapes a space as \040.
-        let point = point.replace("\\040", " ");
-        if path.starts_with(&point) {
-            let len = Path::new(&point).components().count();
-            if best.as_ref().is_none_or(|(most, _)| len >= *most) {
-                best = Some((len, kind.to_string()));
-            }
-        }
-    }
-    best.map(|(_, kind)| kind)
-}
+/// The magic number of a ZFS file system in `statfs`.
+pub const ZFS_SUPER_MAGIC: u64 = 0x2fc1_2fc1;
 
-fn off_zfs(dir: &Path, what: &str) -> Result<(), String> {
-    // A run directory that does not exist yet is made under its
-    // nearest existing parent.
-    let mut existing = dir;
-    let real = loop {
+/// The nearest directory that exists at or above `dir`, resolved to
+/// its real path: where a directory that does not exist yet (the run
+/// directory) will be made. A relative `dir` is taken under `cwd`, so
+/// that `run`, or `a/b` with no `a`, ends at the current directory and
+/// not at an empty path.
+pub fn nearest_existing(dir: &Path, cwd: &Path) -> io::Result<std::path::PathBuf> {
+    let absolute = cwd.join(dir);
+    let mut existing: &Path = &absolute;
+    loop {
         match existing.canonicalize() {
-            Ok(real) => break real,
+            Ok(real) => return Ok(real),
             Err(e) => match existing.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => existing = parent,
-                _ => return Err(format!("{what} {}: {e}", dir.display())),
+                Some(parent) => existing = parent,
+                None => return Err(e),
             },
         }
-    };
-    let mounts = std::fs::read_to_string("/proc/self/mountinfo")
-        .map_err(|e| format!("/proc/self/mountinfo: {e}"))?;
-    match filesystem_of(&mounts, &real).as_deref() {
-        Some("zfs") => Err(format!(
+    }
+}
+
+/// The rule that the daemon keeps its files off any pool (design
+/// §4.1): refuse `dir` if the file system it is on, or will be made
+/// on, is ZFS. `kind` is `statfs`'s file system type for a path.
+///
+/// The kernel is asked (`statfs` of the real path) and the mount table
+/// is not parsed: the kernel cannot be wrong about which mount a path
+/// is on (bind mounts, mount namespaces, a mount over a mount, a mount
+/// point with a tab, a newline or a backslash in its name, which the
+/// table escapes). An answer that cannot be had is a refusal.
+///
+/// What the check sees and what it does not: a directory on any file
+/// system of type ZFS is refused, whatever pool it is. A file system
+/// of another type that itself lies on ZFS (ext4 on a zvol, or in a
+/// loop file on a dataset) is not seen, and neither is ZFS under a
+/// network or stacked file system.
+pub fn off_zfs(
+    dir: &Path,
+    what: &str,
+    cwd: &Path,
+    kind: impl Fn(&Path) -> io::Result<u64>,
+) -> Result<(), String> {
+    let real = nearest_existing(dir, cwd).map_err(|e| format!("{what} {}: {e}", dir.display()))?;
+    match kind(&real) {
+        Ok(ZFS_SUPER_MAGIC) => Err(format!(
             "{what} {} is on ZFS: the daemon keeps its files off any pool",
             dir.display()
         )),
-        Some(_) => Ok(()),
-        None => Err(format!(
-            "the file system of {what} {} cannot be told",
-            dir.display()
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!(
+            "the file system of {what} {} cannot be told ({}: {e})",
+            dir.display(),
+            real.display()
         )),
     }
+}
+
+/// `statfs`'s file system type of `path`.
+fn statfs_kind(path: &Path) -> io::Result<u64> {
+    let stat = rustix::fs::statfs(path)?;
+    // A signed word on most architectures; the magic numbers are below
+    // 2^32, so its low 32 bits are the whole of it.
+    Ok(u64::from(stat.f_type as u32))
 }
 
 fn boot(serve: &Serve) -> io::Result<[u8; 16]> {
@@ -135,6 +168,42 @@ fn boot(serve: &Serve) -> io::Result<[u8; 16]> {
             .ok_or_else(|| io::Error::other(format!("{}: not a boot id", path.display()))),
         None => records::boot_id(),
     }
+}
+
+/// Run `pump` until it stops, calling `each` after every turn (with
+/// `false`) and once after the last (with `true`), and give the pump's
+/// target back with how it stopped: `None` if the pump panicked.
+///
+/// The target is the store, which holds the volume's lock. It is not
+/// dropped on the queue's thread, where its end would free the lock
+/// while the main thread still has the failure's cleanup to do: it
+/// goes back as the thread's result, and the lock is held until the
+/// main thread drops it. That holds when the pump panics too: the
+/// panic is caught here, the pump is still whole enough to give its
+/// target up (a panic is no reason to trust what it did, but the
+/// target is moved, not used), and the main thread gets the store and
+/// reports the panic.
+pub fn pumped<Q, T, A>(
+    mut pump: Pump<Q, T, A>,
+    mut each: impl FnMut(&mut Pump<Q, T, A>, bool),
+) -> (Option<Stopped>, T)
+where
+    Q: skyzfs_ublk::pump::Queue,
+    T: skyzfs_ublk::pump::Positions,
+    A: skyzfs_ublk::pump::AckRecord,
+{
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let stopped = loop {
+            if let Some(stopped) = pump.turn() {
+                break stopped;
+            }
+            each(&mut pump, false);
+        };
+        each(&mut pump, true);
+        stopped
+    }))
+    .ok();
+    (stopped, pump.into_target())
 }
 
 /// What the main thread and the queue's thread share.
@@ -215,7 +284,10 @@ pub fn serve(serve: &Serve) -> Exit {
             (&serve.dir, "the volume's directory"),
             (&serve.run_dir, "the run directory"),
         ] {
-            if let Err(why) = off_zfs(dir, what) {
+            let checked = std::env::current_dir()
+                .map_err(|e| format!("the current directory: {e}"))
+                .and_then(|cwd| off_zfs(dir, what, &cwd, statfs_kind));
+            if let Err(why) = checked {
                 say(why);
                 return Exit::Error;
             }
@@ -262,6 +334,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         flags: FLAGS,
         lock_retries: LOCK_RETRIES,
         live_retries: LIVE_RETRIES,
+        gone_retries: GONE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
     };
     let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
@@ -325,18 +398,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             move |queue| {
                 let (queue, ack) =
                     Delayed::new(queue, SharedAck::new(ack), delay, hold, move || wake.wake());
-                let mut pump = Pump::new(queue, served, ack);
-                let stopped = loop {
-                    if let Some(stopped) = pump.turn() {
-                        break stopped;
+                // The store goes back to the main thread with the
+                // outcome: the volume's lock is held until the main
+                // thread lets go of it.
+                pumped(Pump::new(queue, served, ack), |pump, ended| {
+                    post(&board, pump);
+                    if !ended {
+                        faults(pump, &flags, &mut fail_after);
                     }
-                    post(&board, &mut pump);
-                    faults(&mut pump, &flags, &mut fail_after);
-                };
-                post(&board, &mut pump);
-                // The pump is dropped here, and with it the store: the
-                // volume's lock is held until then.
-                stopped
+                })
             }
         })
         .map_err(|e| format!("the queue of device {number}: {e}"))?;
@@ -387,8 +457,30 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         return Err(format!("starting device {number}: {e}"));
     }
     let started = std::time::Instant::now();
-    println!("ready {}", block_device(number));
-    let _ = io::stdout().flush();
+    // The order of a start: the status thread starts and writes the
+    // file at once with what the board holds (zeros, or what the
+    // queue's thread has posted by then); the device starts; the
+    // queue's thread posts its counters after every turn, and each
+    // post replaces the board's with newer ones of its own; `ready`
+    // follows the first write. Only the queue's thread posts.
+    //
+    // `ready` only after this instance's first status write was tried,
+    // done or failed: until then the status file is the one the
+    // instance before left, and `status` would name that instance's
+    // pid and counters as the serving daemon's. The device is live
+    // already and its clients are served meanwhile. The wait is
+    // bounded, so that a status thread that never writes holds `ready`
+    // for a stated time and not for good.
+    if !board.first_write_tried(READY_WAITS_FOR_STATUS) {
+        say(format_args!(
+            "warning: the status file was not written within {} s of the start: `status` \
+             may show the instance before",
+            READY_WAITS_FOR_STATUS.as_secs()
+        ));
+    }
+    // A `ready` that cannot be written (the starter is gone) does not
+    // stop the serve: the device is live and its clients are served.
+    crate::to_stdout(&format!("ready {}\n", block_device(number)));
     // Where the start's time went. `devices` is everything between the
     // store's open and the device being this instance's: the records,
     // the notes, the waiting while the device was still shown as live
@@ -415,7 +507,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         ms(queue_began.elapsed().saturating_sub(start_began.elapsed())),
         ms(start_began.elapsed().saturating_sub(started.elapsed())),
     ));
-    board.post(Default::default());
+    // Nothing is posted from here: the queue's thread is running and
+    // the board holds its counters. (The publishing thread writes the
+    // file once when it starts, whatever is posted then, and after
+    // that whenever the queue's thread posts a change.)
 
     #[derive(PartialEq)]
     enum Why {
@@ -440,8 +535,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     };
     if why == Why::Failed {
-        // The store still holds the volume's lock: the queue's thread
-        // has not ended, or has only just.
+        // The store still holds the volume's lock: it is in the pump on
+        // the queue's thread, or in that thread's result, which nobody
+        // has taken yet. It is let go of when this function returns.
         let (failure, written) =
             lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
         say(format_args!(
@@ -457,14 +553,26 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // The delete takes the queue down. A stop as well, for a
         // device whose delete did not.
         stopper.stop();
-        let _ = serving.join();
+        let _store = serving.join();
         finish(&board);
         return Ok(Exit::Failed);
     }
     if why == Why::Stop {
         stopper.stop();
     }
-    let stopped = serving.join().map_err(|e| e.to_string());
+    // `_store` holds the volume's lock until this function returns:
+    // past the failure's cleanup below, which writes the failure note
+    // and deletes the device under its number. Without the lock a
+    // detach or another serve could act on the attachment in between,
+    // and this process would delete a device it no longer owns.
+    let (stopped, _store) = match serving.join() {
+        Ok((Some(stopped), store)) => (Ok(stopped), Some(store)),
+        Ok((None, store)) => (
+            Err(format!("the queue's thread of device {number} panicked")),
+            Some(store),
+        ),
+        Err(e) => (Err(e.to_string()), None),
+    };
     finish(&board);
     // A failure can arrive with the queue's end.
     if flags.failed.load(Ordering::SeqCst) {
@@ -510,25 +618,172 @@ mod tests {
         assert_eq!(appended(&counters), 6);
     }
 
-    /// The mount that holds a path is the one with the longest mount
-    /// point that is a prefix of it, by whole components.
+    /// A directory on ZFS is refused, one on anything else passes, and
+    /// an answer that cannot be had is a refusal. The name of the
+    /// directory plays no part: the kernel is asked about the real
+    /// path, also for a name with the characters a mount table escapes.
     #[test]
-    fn the_file_system_of_a_path_is_its_longest_mount() {
-        let mounts = "\
-22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw
-30 22 0:25 / /run rw,nosuid shared:5 - tmpfs tmpfs rw
-41 22 0:40 / /tank rw shared:9 - zfs tank rw
-42 41 0:41 / /tank/with\\040space rw shared:9 - zfs tank/x rw
-43 22 8:2 / /tank2 rw - xfs /dev/sdb rw
-";
-        let kind = |path: &str| filesystem_of(mounts, Path::new(path));
-        assert_eq!(kind("/var/lib/v").as_deref(), Some("ext4"));
-        assert_eq!(kind("/run/skyzfsd").as_deref(), Some("tmpfs"));
-        assert_eq!(kind("/tank/v").as_deref(), Some("zfs"));
-        assert_eq!(kind("/tank/with space/v").as_deref(), Some("zfs"));
-        // A prefix of the name is not a prefix of the path.
-        assert_eq!(kind("/tank2/v").as_deref(), Some("xfs"));
-        assert_eq!(kind("/tankard").as_deref(), Some("ext4"));
-        assert_eq!(filesystem_of("", Path::new("/x")), None);
+    fn a_directory_on_zfs_is_refused_by_what_the_kernel_says() {
+        let keep = tempfile::tempdir().expect("a directory");
+        for name in [
+            "plain",
+            "with space",
+            "tab\there",
+            "new\nline",
+            "back\\slash",
+        ] {
+            let dir = keep.path().join(name);
+            std::fs::create_dir(&dir).expect("the directory");
+            let real = dir.canonicalize().expect("real");
+            let asked = std::cell::RefCell::new(Vec::new());
+            let says = |magic: u64| {
+                let asked = &asked;
+                move |path: &Path| {
+                    asked.borrow_mut().push(path.to_path_buf());
+                    Ok(magic)
+                }
+            };
+            let refused = off_zfs(
+                &dir,
+                "the volume's directory",
+                keep.path(),
+                says(ZFS_SUPER_MAGIC),
+            )
+            .expect_err("on ZFS");
+            assert!(refused.contains("is on ZFS"), "{refused}");
+            // ext4's magic.
+            assert_eq!(off_zfs(&dir, "x", keep.path(), says(0xef53)), Ok(()));
+            assert!(asked.borrow().iter().all(|path| *path == real), "{name}");
+            let unknown = off_zfs(&dir, "x", keep.path(), |_| {
+                Err(io::Error::other("no answer"))
+            })
+            .expect_err("no answer");
+            assert!(unknown.contains("cannot be told"), "{unknown}");
+        }
+        // The real call answers for a real directory, and this one is
+        // on some file system.
+        assert!(statfs_kind(keep.path()).is_ok());
+    }
+
+    /// A directory that does not exist yet is judged by the nearest
+    /// directory above it that does. A relative one is taken under the
+    /// current directory: `run`, and `a/b` with no `a`, end there and
+    /// are not refused for having no parent.
+    #[test]
+    fn a_missing_directory_is_judged_by_where_it_will_be_made_also_when_relative() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let cwd = keep.path().canonicalize().expect("real");
+        std::fs::create_dir(cwd.join("there")).expect("dir");
+        for (dir, lands) in [
+            ("run", cwd.clone()),
+            ("a/b", cwd.clone()),
+            ("there", cwd.join("there")),
+            ("there/run/deeper", cwd.join("there")),
+            (".", cwd.clone()),
+        ] {
+            assert_eq!(
+                nearest_existing(Path::new(dir), &cwd).expect(dir),
+                lands,
+                "{dir}"
+            );
+            let asked = std::cell::Cell::new(None);
+            let checked = off_zfs(Path::new(dir), "the run directory", &cwd, |path| {
+                asked.set(Some(path.to_path_buf()));
+                Ok(0xef53)
+            });
+            assert_eq!(checked, Ok(()), "{dir}");
+            assert_eq!(asked.take(), Some(lands), "{dir}");
+        }
+        // An absolute one is not moved under the current directory.
+        let absolute = cwd.join("there").join("missing");
+        assert_eq!(
+            nearest_existing(&absolute, Path::new("/nowhere")).expect("absolute"),
+            cwd.join("there")
+        );
+    }
+
+    /// A queue that says stop at its first wait, or panics there.
+    struct Ending {
+        panics: bool,
+    }
+
+    impl skyzfs_ublk::pump::Queue for Ending {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            _fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            assert!(!self.panics, "the queue panics, as the test asks");
+            Ok(skyzfs_ublk::pump::Wake::Stop)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, _tag: u16, _result: i32, _buf: Option<skyzfs_blk::Buf>) {}
+        fn pause(&mut self) {}
+        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    struct NoRecord;
+
+    impl skyzfs_ublk::pump::AckRecord for NoRecord {
+        fn advance(&mut self, _position: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The volume's lock is still held when the queue's thread has
+    /// ended, by a stop and by a panic alike: the store comes back to
+    /// the thread that joins, which is where the failure's cleanup
+    /// runs, and the lock is free only when that thread drops it.
+    #[test]
+    fn the_volumes_lock_outlives_the_queues_thread_until_the_joiner_lets_go() {
+        use skyzfs_local::fs::FsDir;
+        use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+        for panics in [false, true] {
+            let keep = tempfile::tempdir().expect("a directory");
+            let dir = || FsDir::new(keep.path()).expect("the directory");
+            let config = StoreConfig {
+                volume: *b"a volume on disk",
+                size_mib: 8,
+                base: skyzfs_blk::Base::Empty,
+                align: 4096,
+                segment_size: 8 << 20,
+                write_unit: skyzfs_local::format::Identity::system_write_unit(),
+            };
+            let served = Store::create(dir(), &config, OpenOptions::default())
+                .expect("create")
+                .serve_with(None)
+                .expect("the worker");
+            let turns = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let thread = std::thread::spawn({
+                let turns = turns.clone();
+                move || {
+                    pumped(
+                        Pump::new(Ending { panics }, served, NoRecord),
+                        |_, ended| {
+                            if ended {
+                                turns.fetch_add(1, Ordering::SeqCst);
+                            }
+                        },
+                    )
+                }
+            });
+            let (stopped, store) = thread.join().expect("the panic is caught on the thread");
+            assert_eq!(stopped.is_none(), panics, "{stopped:?}");
+            assert_eq!(turns.load(Ordering::SeqCst), u32::from(!panics));
+            // The queue's thread is gone. This is the moment of the
+            // failure's cleanup: nobody else gets the lock.
+            assert!(
+                matches!(Store::lock_volume(&dir()), Err(StoreError::Locked)),
+                "panics: {panics}: the lock was free after the queue's thread ended"
+            );
+            drop(store);
+            assert!(Store::lock_volume(&dir()).is_ok(), "panics: {panics}");
+        }
     }
 }

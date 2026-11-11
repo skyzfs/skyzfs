@@ -127,6 +127,18 @@ impl Setup {
         self
     }
 
+    /// A status file's content for this volume: [`sample`] with the
+    /// store's identity.
+    fn sample(&self) -> Status {
+        let dir = FsDir::new(&self.volume.dir).expect("the directory");
+        Status {
+            identity: Store::identity_of(&dir)
+                .expect("read")
+                .expect("a superblock"),
+            ..sample()
+        }
+    }
+
     fn status_path(&self) -> PathBuf {
         self.records().volume_run_dir().join(status::STATUS)
     }
@@ -212,7 +224,7 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
     // Served: the rig's keys, each a line of its own, with the value
     // behind one blank.
     let mut setup = Setup::new().attached(DeviceState::Live);
-    status::write(&setup.status_path(), &sample()).expect("the status file");
+    status::write(&setup.status_path(), &setup.sample()).expect("the status file");
     let output = setup.status();
     assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
     for (key, wanted) in [
@@ -238,7 +250,7 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
     // The server is gone: no pid to kill, and the counters are said to
     // be left behind.
     let mut setup = Setup::new().attached(DeviceState::Waiting);
-    status::write(&setup.status_path(), &sample()).expect("the status file");
+    status::write(&setup.status_path(), &setup.sample()).expect("the status file");
     let output = setup.status();
     assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
     assert_eq!(value(&output.out, "pid"), None);
@@ -306,11 +318,13 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
         assert!(setup.detach().out.starts_with("nothing to detach"));
     }
 
-    // Deleted and still held: 0, and said on standard error.
+    // Deleted and still held: 6, and said on standard error. A script
+    // can tell it from "nothing of this volume is left attached".
     let mut setup = Setup::new().attached(DeviceState::Waiting);
     setup.kernel.held.push(4);
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::DeletedHeld);
+    assert_eq!(output.exit.status(), 6);
     assert!(output.out.is_empty());
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
@@ -320,16 +334,17 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
     let mut setup = Setup::new().attached(DeviceState::Dead);
     setup.kernel.held.push(4);
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::DeletedHeld);
     assert!(output.err.contains("still holds it open"), "{}", output.err);
     assert_eq!(setup.kernel.deleted, [4]);
 
     // No server, no note, the recorded values: deleted before and
-    // still held, or another's. 0, said, nothing done, the record stays.
+    // still held, or another's. Whose it is cannot be told: 1, said in
+    // its own words, nothing done, the record stays.
     let mut setup = Setup::new().attached(DeviceState::Dead);
     setup.records().remove_note(4).expect("the note");
     let output = setup.detach();
-    assert_eq!(output.exit, Exit::Done);
+    assert_eq!(output.exit, Exit::Error);
     assert!(output.out.is_empty());
     assert!(
         output.err.contains("has no server and no note"),
@@ -667,4 +682,228 @@ fn a_failed_create_leaves_no_directory_it_made() {
     let fine = keep.path().join("fine");
     assert_eq!(in_directory(&fine, |_| Ok(7)).ok(), Some(7));
     assert!(fine.is_dir());
+}
+
+/// A real create that fails after it has made the directory, the lock
+/// file and the home image's first file (a size the file system cannot
+/// hold) leaves nothing: not the files, not the directory. In a
+/// directory that was there before, the directory stays, and the next
+/// create works in it.
+#[test]
+fn a_create_that_fails_half_way_removes_what_it_made() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let run_dir = keep.path().join("run");
+    // Beyond what ext4, XFS and btrfs hold in one file. A file system
+    // that takes it (a sparse file on tmpfs) cannot show the failure.
+    let too_large = 1u64 << 62;
+
+    let made = keep.path().join("made");
+    let output = create(
+        &creating(&made, &run_dir, too_large, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    if output.exit == Exit::Done {
+        eprintln!(
+            "{} holds a file of {too_large} bytes: not exercised",
+            keep.path().display()
+        );
+        return;
+    }
+    assert_eq!((output.exit, output.out.as_str()), (Exit::Error, ""));
+    assert!(output.err.contains("creating a volume"), "{}", output.err);
+    assert!(!made.exists(), "the directory it made is gone");
+
+    let there = keep.path().join("there");
+    std::fs::create_dir(&there).expect("dir");
+    let output = create(
+        &creating(&there, &run_dir, too_large, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert!(there.is_dir(), "a directory it did not make stays");
+    let output = create(
+        &creating(&there, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+}
+
+/// `create` in a directory that holds files of somebody else, also
+/// ones whose names begin like the store's own: refused with status 1,
+/// the file named, and the directory exactly as it was, with no lock
+/// file added. Once they are gone the same command makes the volume.
+#[test]
+fn create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothing() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let run_dir = keep.path().join("run");
+    let listing = |dir: &Path| {
+        let mut names: Vec<(String, Vec<u8>)> = std::fs::read_dir(dir)
+            .expect("list")
+            .map(|entry| {
+                let entry = entry.expect("entry");
+                let name = entry.file_name().into_string().expect("a name");
+                (name, std::fs::read(entry.path()).expect("read"))
+            })
+            .collect();
+        names.sort();
+        names
+    };
+    for strangers in [
+        &["home.tar", "log.txt"][..],
+        &["home.pre"],
+        &["log.000001"],
+        &["log.failed"],
+        &["notes"],
+        &["home.img.bak", "home.new", "log.000000"],
+    ] {
+        let dir = keep.path().join("volume");
+        std::fs::create_dir(&dir).expect("the directory");
+        for name in strangers {
+            std::fs::write(dir.join(name), name.as_bytes()).expect("write");
+        }
+        let before = listing(&dir);
+        let output = create(
+            &creating(&dir, &run_dir, 1 << 20, None),
+            [1; 16],
+            Some(BOOT),
+        );
+        assert_eq!(
+            (output.exit, output.out.as_str()),
+            (Exit::Error, ""),
+            "{strangers:?}"
+        );
+        assert!(
+            output.err.contains("Nothing was done"),
+            "{strangers:?}: {}",
+            output.err
+        );
+        assert!(
+            strangers
+                .iter()
+                .any(|name| output.err.contains(&format!("`{name}`"))),
+            "{strangers:?}: {}",
+            output.err
+        );
+        assert_eq!(listing(&dir), before, "{strangers:?}");
+        std::fs::remove_dir_all(&dir).expect("remove");
+    }
+
+    // What an interrupted create leaves, under its exact names, is
+    // create's own: removed and made again.
+    let dir = keep.path().join("volume");
+    std::fs::create_dir(&dir).expect("the directory");
+    for name in skyzfs_local::store::CREATE_LEFTOVERS {
+        std::fs::write(dir.join(name), b"left").expect("write");
+    }
+    let output = create(
+        &creating(&dir, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    assert!(Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).is_ok());
+}
+
+/// `status` and `detach` open the driver only when they have something
+/// to ask it. A volume with no record, or with a record of an earlier
+/// boot, is detached whatever the driver is: after a reboot and before
+/// the driver is loaded both answer, with status 0, and the driver was
+/// not opened. With a record of this boot the driver is asked, and its
+/// absence is the error it is.
+#[test]
+fn status_and_detach_do_not_open_the_driver_when_nothing_is_attached_in_this_boot() {
+    use std::cell::Cell;
+    let now = Now {
+        boot: BOOT,
+        uptime_ms: 10_250,
+    };
+    let earlier_boot = [0xEE; 16];
+    for record_of_earlier_boot in [false, true] {
+        let setup = Setup::new();
+        if record_of_earlier_boot {
+            let mut records = setup.records();
+            records.create_run_dirs().expect("the run directories");
+            records
+                .write_attachment(&Attachment {
+                    number: 4,
+                    nonce: NONCE,
+                    boot: earlier_boot,
+                    shape: SHAPE,
+                })
+                .expect("the record");
+        }
+        let opened = Cell::new(0);
+        let mut absent = Lazy::new(|| -> io::Result<Box<dyn Control>> {
+            opened.set(opened.get() + 1);
+            Err(io::Error::other("no ublk driver"))
+        });
+        let output = status(&setup.volume, &mut absent, &now);
+        assert_eq!(output.exit, Exit::Done, "{}", output.err);
+        assert_eq!(value(&output.out, "state"), Some("detached"));
+        let output = detach(&setup.volume, &mut absent, BOOT);
+        assert_eq!(output.exit, Exit::Done, "{}", output.err);
+        assert!(
+            output.out.starts_with("nothing to detach"),
+            "{}",
+            output.out
+        );
+        assert_eq!(opened.get(), 0, "the driver was opened");
+    }
+
+    let setup = Setup::new().attached(DeviceState::Waiting);
+    let opened = Cell::new(0);
+    let mut absent = Lazy::new(|| -> io::Result<Box<dyn Control>> {
+        opened.set(opened.get() + 1);
+        Err(io::Error::other("no ublk driver"))
+    });
+    let output = status(&setup.volume, &mut absent, &now);
+    assert_eq!(output.exit, Exit::Error);
+    assert!(output.err.contains("no ublk driver"), "{}", output.err);
+    assert_eq!(opened.get(), 1);
+
+    // And through it a driver that is there answers as itself.
+    let mut setup = Setup::new().attached(DeviceState::Waiting);
+    let devices = std::mem::take(&mut setup.kernel.devices);
+    let mut there = Lazy::new(move || -> io::Result<Box<dyn Control>> {
+        Ok(Box::new(Kernel {
+            devices: devices.clone(),
+            ..Kernel::default()
+        }))
+    });
+    let output = status(&setup.volume, &mut there, &now);
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
+}
+
+/// A status file left in the run directory by a volume that was in the
+/// same directory before (made again since) is not this volume's: its
+/// counters are not shown, and nothing is wrong. The file of this
+/// volume is shown.
+#[test]
+fn status_does_not_show_the_status_file_of_another_volume_in_the_same_directory() {
+    let mut setup = Setup::new().attached(DeviceState::Waiting);
+    let own = setup.sample();
+    assert_ne!(own.identity, sample().identity);
+    // The store's identity is what an open store says it is.
+    let (store, _) = Store::open(
+        FsDir::new(&setup.volume.dir).expect("dir"),
+        OpenOptions::default(),
+    )
+    .expect("open");
+    assert_eq!(store.identity(), own.identity);
+    drop(store);
+
+    status::write(&setup.status_path(), &sample()).expect("the status file");
+    let output = setup.status();
+    assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
+    assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
+    assert_eq!(value(&output.out, "reads"), None, "{}", output.out);
+    assert_eq!(value(&output.out, "writes"), None);
+
+    status::write(&setup.status_path(), &own).expect("the status file");
+    let output = setup.status();
+    assert_eq!(value(&output.out, "reads"), Some("5"));
 }

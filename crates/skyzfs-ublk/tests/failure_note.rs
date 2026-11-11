@@ -76,6 +76,7 @@ fn wanted(acknowledge_failure: bool) -> Wanted {
         flags: 0,
         lock_retries: 0,
         live_retries: 0,
+        gone_retries: 0,
         acknowledge_failure,
     }
 }

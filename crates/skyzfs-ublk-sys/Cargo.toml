@@ -6,6 +6,17 @@ edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
+[features]
+# Builds `skyzfs-ublk-control`, the control test program the kernel rig
+# drives, and the kernel test of it. Not in an ordinary build: the
+# program adds, serves and deletes whatever device number it is given.
+control-test-program = []
+
+[[bin]]
+name = "skyzfs-ublk-control"
+path = "src/bin/skyzfs-ublk-control.rs"
+required-features = ["control-test-program"]
+
 [dependencies]
 skyzfs-blk = { workspace = true }
 skyzfs-ublk = { workspace = true }
