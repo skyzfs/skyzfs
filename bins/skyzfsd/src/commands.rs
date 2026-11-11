@@ -119,6 +119,66 @@ impl Now {
     }
 }
 
+/// A control interface that is opened when it is first asked
+/// something, and not before. `status` and `detach` ask the driver
+/// only when the volume has a record of this boot to ask about; after
+/// a reboot, before the driver is loaded, there is none, the answer is
+/// "detached", and the driver's absence must not turn it into an
+/// error. If the opening fails, every question fails with its error
+/// (it is tried again at the next question), and whether a client
+/// holds a device cannot be told.
+pub struct Lazy<F> {
+    open: F,
+    control: Option<Box<dyn Control>>,
+}
+
+impl<F: FnMut() -> io::Result<Box<dyn Control>>> Lazy<F> {
+    /// A control interface that `open` makes at the first question.
+    pub fn new(open: F) -> Self {
+        Self {
+            open,
+            control: None,
+        }
+    }
+
+    fn control(&mut self) -> io::Result<&mut Box<dyn Control>> {
+        if self.control.is_none() {
+            self.control = Some((self.open)()?);
+        }
+        self.control
+            .as_mut()
+            .ok_or_else(|| io::Error::other("no control interface"))
+    }
+}
+
+impl<F: FnMut() -> io::Result<Box<dyn Control>>> Control for Lazy<F> {
+    fn can_reissue(&mut self) -> io::Result<bool> {
+        self.control()?.can_reissue()
+    }
+    fn info(&mut self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
+        self.control()?.info(number)
+    }
+    fn add(&mut self, number: u32, shape: &lifecycle::Shape) -> Result<(), lifecycle::AddError> {
+        self.control()
+            .map_err(lifecycle::AddError::Other)?
+            .add(number, shape)
+    }
+    fn disown(&mut self, number: u32) {
+        if let Ok(control) = self.control() {
+            control.disown(number);
+        }
+    }
+    fn delete(&mut self, number: u32) -> io::Result<()> {
+        self.control()?.delete(number)
+    }
+    fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
+        self.control()?.begin_recovery(number)
+    }
+    fn client_holds(&mut self, number: u32) -> Option<bool> {
+        self.control().ok()?.client_holds(number)
+    }
+}
+
 /// The records of the volume in `dir`, if `dir` holds a volume.
 fn files(volume: &Volume, boot: [u8; 16]) -> Result<Files, Output> {
     let dir: &Path = &volume.dir;

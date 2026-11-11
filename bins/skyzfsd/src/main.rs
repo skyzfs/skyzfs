@@ -8,16 +8,20 @@ use skyzfs_ublk::lifecycle::Control;
 use skyzfsd::cli::{self, Command, Exit};
 use skyzfsd::commands::{self, Now, Output};
 
-/// The kernel's control interface.
-fn kernel() -> Result<Box<dyn Control>, String> {
-    #[cfg(target_os = "linux")]
-    {
-        skyzfs_ublk_sys::control::Kernel::new()
-            .map(|kernel| Box::new(kernel) as Box<dyn Control>)
-            .map_err(|e| e.to_string())
-    }
-    #[cfg(not(target_os = "linux"))]
-    Err("ublk is a Linux driver: nothing to ask on this system".into())
+/// The kernel's control interface, opened when it is first asked
+/// something: `status` and `detach` of a volume with nothing attached
+/// in this boot do not need the driver, and work before it is loaded.
+fn kernel() -> impl Control {
+    commands::Lazy::new(|| -> std::io::Result<Box<dyn Control>> {
+        #[cfg(target_os = "linux")]
+        {
+            Ok(Box::new(skyzfs_ublk_sys::control::Kernel::new()?))
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(std::io::Error::other(
+            "ublk is a Linux driver: nothing to ask on this system",
+        ))
+    })
 }
 
 fn run(command: &Command) -> Output {
@@ -32,26 +36,14 @@ fn run(command: &Command) -> Output {
             out: format!("{}\n", cli::HELP),
             err: String::new(),
         },
-        Command::Status(volume) => {
-            let mut control = match kernel() {
-                Ok(control) => control,
-                Err(why) => return failed(why),
-            };
-            match Now::read() {
-                Ok(now) => commands::status(volume, control.as_mut(), &now),
-                Err(e) => failed(format!("reading the boot id and the uptime: {e}")),
-            }
-        }
-        Command::Detach(volume) => {
-            let mut control = match kernel() {
-                Ok(control) => control,
-                Err(why) => return failed(why),
-            };
-            match Now::read() {
-                Ok(now) => commands::detach(volume, control.as_mut(), now.boot),
-                Err(e) => failed(format!("reading the boot id: {e}")),
-            }
-        }
+        Command::Status(volume) => match Now::read() {
+            Ok(now) => commands::status(volume, &mut kernel(), &now),
+            Err(e) => failed(format!("reading the boot id and the uptime: {e}")),
+        },
+        Command::Detach(volume) => match Now::read() {
+            Ok(now) => commands::detach(volume, &mut kernel(), now.boot),
+            Err(e) => failed(format!("reading the boot id: {e}")),
+        },
         Command::Create(create) => {
             let mut id = [0u8; 16];
             let random = std::fs::File::open("/dev/urandom")

@@ -791,3 +791,74 @@ fn create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothin
     assert_eq!(output.exit, Exit::Done, "{}", output.err);
     assert!(Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).is_ok());
 }
+
+/// `status` and `detach` open the driver only when they have something
+/// to ask it. A volume with no record, or with a record of an earlier
+/// boot, is detached whatever the driver is: after a reboot and before
+/// the driver is loaded both answer, with status 0, and the driver was
+/// not opened. With a record of this boot the driver is asked, and its
+/// absence is the error it is.
+#[test]
+fn status_and_detach_do_not_open_the_driver_when_nothing_is_attached_in_this_boot() {
+    use std::cell::Cell;
+    let now = Now {
+        boot: BOOT,
+        uptime_ms: 10_250,
+    };
+    let earlier_boot = [0xEE; 16];
+    for record_of_earlier_boot in [false, true] {
+        let setup = Setup::new();
+        if record_of_earlier_boot {
+            let mut records = setup.records();
+            records.create_run_dirs().expect("the run directories");
+            records
+                .write_attachment(&Attachment {
+                    number: 4,
+                    nonce: NONCE,
+                    boot: earlier_boot,
+                    shape: SHAPE,
+                })
+                .expect("the record");
+        }
+        let opened = Cell::new(0);
+        let mut absent = Lazy::new(|| -> io::Result<Box<dyn Control>> {
+            opened.set(opened.get() + 1);
+            Err(io::Error::other("no ublk driver"))
+        });
+        let output = status(&setup.volume, &mut absent, &now);
+        assert_eq!(output.exit, Exit::Done, "{}", output.err);
+        assert_eq!(value(&output.out, "state"), Some("detached"));
+        let output = detach(&setup.volume, &mut absent, BOOT);
+        assert_eq!(output.exit, Exit::Done, "{}", output.err);
+        assert!(
+            output.out.starts_with("nothing to detach"),
+            "{}",
+            output.out
+        );
+        assert_eq!(opened.get(), 0, "the driver was opened");
+    }
+
+    let setup = Setup::new().attached(DeviceState::Waiting);
+    let opened = Cell::new(0);
+    let mut absent = Lazy::new(|| -> io::Result<Box<dyn Control>> {
+        opened.set(opened.get() + 1);
+        Err(io::Error::other("no ublk driver"))
+    });
+    let output = status(&setup.volume, &mut absent, &now);
+    assert_eq!(output.exit, Exit::Error);
+    assert!(output.err.contains("no ublk driver"), "{}", output.err);
+    assert_eq!(opened.get(), 1);
+
+    // And through it a driver that is there answers as itself.
+    let mut setup = Setup::new().attached(DeviceState::Waiting);
+    let devices = std::mem::take(&mut setup.kernel.devices);
+    let mut there = Lazy::new(move || -> io::Result<Box<dyn Control>> {
+        Ok(Box::new(Kernel {
+            devices: devices.clone(),
+            ..Kernel::default()
+        }))
+    });
+    let output = status(&setup.volume, &mut there, &now);
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    assert_eq!(value(&output.out, "state"), Some("waiting for a server"));
+}
