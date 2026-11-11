@@ -162,6 +162,15 @@
 //!   nothing, and says so. Deleting the device by hand, or a reboot,
 //!   resolves it.
 //!
+//!   The same has a second cost. A note is removed before its device
+//!   is deleted, so a daemon killed between the two leaves this
+//!   volume's device that waits for a server with no note. The kernel
+//!   keeps no identity for a device, so nothing written before the
+//!   delete would let a later start tell that device from a twin that
+//!   got the freed number: the device stays until an operator deletes
+//!   it or the machine reboots, and until then a start that would
+//!   serve stops as above. (See also "the failure note".)
+//!
 //! Whenever a device is left and another number taken, [`Ready::left`]
 //! says which and why, for the daemon's log.
 //!

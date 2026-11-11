@@ -2,8 +2,8 @@ name: skyzfs-ublk-spike
 
 # The libublk spike of work package M1.3b (docs/skyzfs-ublk-spike.md):
 # builds `skyzfs-ublk-spike` and runs `tests/kernel/ublk-spike.sh`
-# against the runner's kernel. It prints observations and judges
-# nothing: the job fails only if the program does not build or a served
+# against the runner's kernel. It runs nothing but the spike. It prints
+# observations and judges nothing: the job fails only if the program does not build or a served
 # device never comes up. It is temporary: it goes when the spike's
 # answers are recorded and the binding is tested by the daemon rig.
 on:
@@ -14,8 +14,6 @@ on:
     branches: ['skyzfs-coding*']
     paths:
       - .github/workflows/skyzfs-ublk-spike.yml
-      - tests/kernel/ublk-spike.sh
-      - crates/skyzfs-ublk/src/bin/skyzfs-ublk-spike.rs
 
 concurrency:
   group: ublk-spike-${{ github.ref }}
@@ -30,7 +28,7 @@ jobs:
   spike:
     name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

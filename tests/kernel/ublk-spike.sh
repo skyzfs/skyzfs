@@ -16,7 +16,10 @@ OUT=$2
 mkdir -p "$OUT"
 exec > >(tee "$OUT/spike.log") 2>&1
 
-lim() { timeout --kill-after=5 "$@"; }
+HERE=$(cd "$(dirname "$0")" && pwd)
+# A limit that holds even when the command cannot be killed.
+# shellcheck source=tests/lib/lim.sh
+. "$HERE/../lib/lim.sh"
 step() { echo; echo "== $*"; }
 img() { echo "/dev/shm/skz-spike-$1.img"; }
 # nodes N what: which of the device's nodes exist, to tell states apart
