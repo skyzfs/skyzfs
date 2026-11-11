@@ -1614,10 +1614,13 @@ where
                             // that was held gets its answer now.
                             core.fail();
                             held = false;
-                            let _ = reply.send(());
+                            // The owner is woken before the caller is
+                            // answered: when `fail_now` returns, the
+                            // owner has been told.
                             if let Some(Waker(wake)) = &waker {
                                 wake();
                             }
+                            let _ = reply.send(());
                             continue;
                         }
                         None => {}
