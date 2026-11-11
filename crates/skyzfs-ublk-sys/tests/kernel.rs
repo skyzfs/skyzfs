@@ -549,3 +549,153 @@ fn a_take_over_works_beside_a_stale_file_of_another_server_and_leaves_it() {
     clean(n);
     property("take_over_beside_stale_file", || result);
 }
+
+/// One step of the control test program: its answer, without the step
+/// and the number.
+fn step(n: u32, line: &str) -> Result<String, String> {
+    let mut words = line.split_whitespace();
+    let name = words.next().unwrap_or_default();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_skyzfs-ublk-control"))
+        .arg(name)
+        .arg(n.to_string())
+        .args(words)
+        .output()
+        .map_err(|e| format!("{line}: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        return Err(format!("{line}: {:?}, said {text:?}", out.status));
+    }
+    text.strip_prefix(&format!("{name}\t{n}\t"))
+        .and_then(|answer| answer.strip_suffix('\n'))
+        .filter(|answer| !answer.contains('\n'))
+        .map(str::to_string)
+        .ok_or_else(|| format!("{line}: said {text:?}, which is not one line of the step"))
+}
+
+/// A server of the control test program: started, its first line read,
+/// then ended by `SIGTERM` and its second line read.
+fn served(n: u32, line: &str) -> Result<(String, String), String> {
+    use std::io::{BufRead, BufReader};
+    let mut words = line.split_whitespace();
+    let name = words.next().unwrap_or_default();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_skyzfs-ublk-control"))
+        .arg(name)
+        .arg(n.to_string())
+        .args(words)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{line}: {e}"))?;
+    let mut lines = BufReader::new(child.stdout.take().ok_or("no pipe")?).lines();
+    let mut next = |what: &str| match lines.next() {
+        Some(Ok(text)) => Ok(text),
+        other => Err(format!("{line}: no {what} line: {other:?}")),
+    };
+    let first = next("first")?;
+    if !first.contains("\tlive after ") {
+        let _ = child.wait();
+        return Err(format!("{line}: {first}"));
+    }
+    // Something for the server to count: a write and a read through
+    // the block device.
+    let data = pattern(4096, 9);
+    let io = direct(n).and_then(|file| {
+        file.write_all_at(&data, 4096)
+            .map_err(|e| format!("a write: {e}"))?;
+        written_reads_back(&file, 4096, &data, "4 KiB through the test program")
+    });
+    let killed = std::process::Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .map_err(|e| format!("kill: {e}"))?;
+    let second = next("second");
+    let status = child.wait().map_err(|e| e.to_string())?;
+    io?;
+    if !killed.success() || !status.success() {
+        return Err(format!("{line}: kill {killed:?}, exit {status:?}"));
+    }
+    Ok((first, second?))
+}
+
+/// The control test program, step by step over one device: each step
+/// prints one line with the binding's answer and exits 0, also when
+/// the driver refuses; its server serves a file, counts what it was
+/// handed, ends on a signal and leaves the device waiting; its
+/// take-over waits as told between the queue and the end of the
+/// recovery and is handed nothing in that time.
+#[test]
+#[ignore = "needs root and the ublk driver"]
+fn the_control_test_program_answers_each_step_in_one_line() {
+    let n = number(5);
+    clean(n);
+    let file = std::env::temp_dir().join(format!("skyzfs-ublk-control-{n}.img"));
+    let _ = std::fs::remove_file(&file);
+    let path = file.display().to_string();
+    let result = (|| {
+        let expect = |line: &str, want: &dyn Fn(&str) -> bool| {
+            let answer = step(n, line)?;
+            if want(&answer) {
+                Ok(answer)
+            } else {
+                Err(format!("{line}: answered {answer:?}"))
+            }
+        };
+        expect("info", &|a| a == "nothing")?;
+        expect("delete", &|a| a == "nothing")?;
+        expect("begin-recovery", &|a| a == "nothing")?;
+        expect("client-holds", &|a| a == "unknown")?;
+        expect("add --depth 8", &|a| a == "added")?;
+        expect("add --depth 8", &|a| a == "taken")?;
+        expect("info", &|a| {
+            a.starts_with("state=dead size=0 queues=1 depth=8 flags=0x18 raw_state=")
+        })?;
+        // Not waiting for a server: the driver's own refusal, exit 0.
+        expect("begin-recovery", &|a| a.starts_with("refused: errno "))?;
+        let (first, second) = served(n, &format!("serve --file {path} --size {SIZE}"))?;
+        if !first.contains("handed before the start: 0;") {
+            return Err(format!("serve: {first}"));
+        }
+        if !second.starts_with(&format!("served\t{n}\tended by a signal; handed "))
+            || second.contains(" writes 0 ")
+        {
+            return Err(format!("serve: {second}"));
+        }
+        // The driver reports the device as waiting a moment after its
+        // server has gone.
+        let mut kernel = kernel()?;
+        until(&mut kernel, n, "waiting", |i| {
+            i.is_some_and(|i| i.state == DeviceState::Waiting)
+        })?;
+        expect("info", &|a| {
+            a.starts_with(&format!(
+                "state=waiting size={SIZE} queues=1 depth=8 flags=0x18 "
+            ))
+        })?;
+        let from = Instant::now();
+        let (first, second) = served(
+            n,
+            &format!("take-over --file {path} --recovery-wait-ms 1500"),
+        )?;
+        if !first.contains("handed before the start: 0;")
+            || from.elapsed() < Duration::from_millis(1500)
+        {
+            return Err(format!("take-over: {first}"));
+        }
+        if !second.contains("ended by a signal") {
+            return Err(format!("take-over: {second}"));
+        }
+        expect("begin-recovery --retry", &|a| {
+            a.starts_with("begun; busy answers: ")
+        })?;
+        let (_, second) = served(n, &format!("serve --file {path} --recovery-begun"))?;
+        if !second.contains("ended by a signal") {
+            return Err(format!("serve --recovery-begun: {second}"));
+        }
+        expect("delete", &|a| a.starts_with("returned after "))?;
+        until(&mut kernel, n, "gone", Option::is_none)?;
+        expect("info", &|a| a == "nothing")?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&file);
+    clean(n);
+    property("test_program_steps", || result);
+}
