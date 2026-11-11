@@ -80,6 +80,10 @@ EXPECTED = {
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4 and the pool suspends', 'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
+    'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
+                                          'the daemon causes no file under /run/ublksrvd, the reference server\'s '
+                                          'directory: after each of its serves there is no entry for the device\'s '
+                                          'number newer than that serve (§4.2, Library)', 'WAITING'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
     'pin_kill_under_load_applied_unacknowledged': ('b', 'PASS', SERVER,

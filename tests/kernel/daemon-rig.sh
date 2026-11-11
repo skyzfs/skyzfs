@@ -54,8 +54,14 @@ R=$OUT/results.tsv
 export DEBIAN_FRONTEND=noninteractive
 
 REF=$HERE/skyzfsd-ref.sh
+# shellcheck source=tests/kernel/ublksrvd-look.sh
+. "$HERE/ublksrvd-look.sh"
 SKYZFSD=${RIG_SKYZFSD:-$REF}
 IMPL=daemon; [ "$SKYZFSD" = "$REF" ] && IMPL=reference
+UBLKSRVD_SEEN=$OUT/ublksrvd-seen.log; : > "$UBLKSRVD_SEEN"
+# For check c's helper: it looks only when the server is the daemon.
+BLK_UBLKSRVD_SEEN=""; [ "$IMPL" = reference ] || BLK_UBLKSRVD_SEEN=$UBLKSRVD_SEEN
+export BLK_UBLKSRVD_SEEN
 CHECKS=" ${RIG_CHECKS:-a b c d e} "
 # Every word is a check and there is at least one: a run that checks
 # nothing must not look like a run.
@@ -115,13 +121,17 @@ vol_up() { # impl dir [serve arguments]: create a volume and serve it
 # for its "ready" line. 0 with BDEV and SERVE_PID set; 1 if it exited
 # first, with SERVE_RC; 2 if neither happened in time.
 serve_start() {
-    local impl=$1 dir=$2 i; shift 2
+    local impl=$1 dir=$2 i t0; shift 2
     : > "$dir.ready"
+    t0=$(( $(date +%s) - 1 ))
     "$impl" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" "$@" > "$dir.ready" 2>> "$dir.serve.log" &
     SERVE_PID=$!; BDEV=""; SERVE_RC=""
     for i in $(seq 1 480); do
         BDEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$dir.ready" | head -n 1)
-        [ -n "$BDEV" ] && [ -b "$BDEV" ] && return 0
+        if [ -n "$BDEV" ] && [ -b "$BDEV" ]; then
+            [ "$impl" = "$REF" ] || ublksrvd_look "${BDEV#/dev/ublkb}" "$t0" "$UBLKSRVD_SEEN"
+            return 0
+        fi
         if ! kill -0 "$SERVE_PID" 2>/dev/null; then
             wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""
             return 1
@@ -1150,6 +1160,21 @@ step "done"
 # What the reference server's tool leaves under its own run directory:
 # the daemon's library writes files of the same kind there, and the two
 # servers follow each other on one machine under reused numbers.
+# The daemon ends a recovery itself so that its library writes nothing
+# there: no entry for a device's number may be newer than the start of
+# the daemon's serve that made the device ready. Looked at after every
+# such serve (ublksrvd_look), here and in check c's helper.
+n_serves=$(grep -c '^serve ' "$UBLKSRVD_SEEN" 2>/dev/null)
+n_entries=$(grep -c '^entry ' "$UBLKSRVD_SEEN" 2>/dev/null)
+if [ "$IMPL" = reference ]; then
+    pin no_ublksrvd_entry_from_daemon WAITING "the stand-in is the reference server, whose directory this is"
+elif [ "${n_serves:-0}" = 0 ]; then
+    pin no_ublksrvd_entry_from_daemon ERROR "no serve of the daemon was looked at"
+elif [ "${n_entries:-0}" = 0 ]; then
+    pin no_ublksrvd_entry_from_daemon PASS "after each of $n_serves serves of the daemon, /run/ublksrvd had no entry for the device's number newer than that serve's start"
+else
+    pin no_ublksrvd_entry_from_daemon FAIL "$n_entries entries newer than the daemon's serve, over $n_serves serves: $(grep '^entry ' "$UBLKSRVD_SEEN" | head -n 5 | cut -d' ' -f2- | tr '\n' ' ')"
+fi
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')($(find /run/ublksrvd -mindepth 1 2>/dev/null | wc -l) entries at the end of the run)"
 for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"

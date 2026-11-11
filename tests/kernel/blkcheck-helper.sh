@@ -28,6 +28,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
+# shellcheck source=tests/kernel/ublksrvd-look.sh
+. "$HERE/ublksrvd-look.sh"
 { [ $# = 2 ] && [[ $2 =~ ^[0-9]+$ ]]; } || { echo "usage: blkcheck-helper.sh create|pid|kill|fail|reopen|destroy N" >&2; exit 2; }
 VERB=$1; N=$2
 WORK=${BLK_WORK:?}
@@ -45,7 +47,8 @@ status_of() { lim 30 "$SKYZFSD" status --dir "$DIR" --run-dir "$RUN" 2>/dev/null
 server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>/dev/null)}"; }
 # [serve options]: serve in the background, wait for "ready", print the device.
 serve() {
-    local dev pid
+    local dev pid t0
+    t0=$(( $(date +%s) - 1 ))
     : > "$DIR.ready"; : > "$DIR.serve.pid"
     # Detached from this script's stdout, which the caller reads to its end.
     # A later call of this script must learn the exit status of serve,
@@ -62,7 +65,11 @@ serve() {
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
         dev=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$DIR.ready" | head -n 1)
-        if [ -n "$dev" ] && [ -b "$dev" ]; then echo "$dev" > "$DIR.device"; echo "$dev"; return 0; fi
+        if [ -n "$dev" ] && [ -b "$dev" ]; then
+            # BLK_UBLKSRVD_SEEN: set by the rig when the server is the daemon.
+            ublksrvd_look "${dev#/dev/ublkb}" "$t0" "${BLK_UBLKSRVD_SEEN:-}"
+            echo "$dev" > "$DIR.device"; echo "$dev"; return 0
+        fi
         kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
