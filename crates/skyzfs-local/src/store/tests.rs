@@ -536,6 +536,425 @@ fn a_checkpoint_puts_only_its_own_blocks_at_risk() {
 }
 
 // ---------------------------------------------------------------------
+// The operations.
+
+/// The blocks hold what `want` gives for each.
+fn expect_blocks(store: &mut SimStore, block: u64, want: &[Vec<u8>], what: &str) -> Outcome {
+    let got = read(store, block, want.len())?;
+    for (i, (got, want)) in got.chunks(BLOCK as usize).zip(want).enumerate() {
+        if got != want.as_slice() {
+            return Err(format!(
+                "{what}: block {} starts with {:#04x}, not {:#04x}",
+                block + i as u64,
+                got[0],
+                want[0]
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Discard and write-zeroes, on an empty volume and on one with a base.
+/// A discard leaves every block as it was: written blocks keep their
+/// data and unwritten ones the base, and a write after the discard is
+/// not touched by it. A write-zeroes reads as zeros and hides the base.
+/// Both stay so through a checkpoint, a reopen and a power cut after a
+/// flush.
+#[test]
+fn a_discard_leaves_the_blocks_and_write_zeroes_zeroes_them() {
+    fn scenario(env: &Env) -> Outcome {
+        for base in [Base::Empty, Base::Pattern(0xBA5E)] {
+            let env = Env { base, ..*env };
+            let (disk, mut store) = env.fresh()?;
+            let zeros = vec![0u8; BLOCK as usize];
+            let ones = vec![1u8; BLOCK as usize];
+            let twos = vec![2u8; BLOCK as usize];
+            write(&mut store, 2, 2, 1)?;
+            ok(
+                &mut store,
+                Op::Discard {
+                    offset: 2 * BLOCK,
+                    len: 4 * BLOCK,
+                },
+            )?;
+            write(&mut store, 5, 1, 2)?;
+            ok(
+                &mut store,
+                Op::WriteZeroes {
+                    offset: 3 * BLOCK,
+                    len: 2 * BLOCK,
+                },
+            )?;
+            // Blocks 1 to 6: base, written, zeroed, zeroed, written
+            // after the discard, base.
+            let want = [
+                env.base_block(1),
+                ones.clone(),
+                zeros.clone(),
+                zeros.clone(),
+                twos.clone(),
+                env.base_block(6),
+            ];
+            expect_blocks(&mut store, 1, &want, "at once")?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            expect_blocks(&mut store, 1, &want, "after a checkpoint")?;
+            drop(store);
+            let mut store = env.reopen(&disk)?;
+            expect_blocks(&mut store, 1, &want, "after a reopen")?;
+            // A discard of what only the home image holds.
+            ok(
+                &mut store,
+                Op::Discard {
+                    offset: 0,
+                    len: 8 * BLOCK,
+                },
+            )?;
+            flush(&mut store)?;
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            let mut store = env.reopen(&disk)?;
+            expect_blocks(&mut store, 1, &want, "after a discard and a power cut")?;
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A read-only volume: reads are served and a flush succeeds; a write,
+/// a write-zeroes and a discard are refused and change nothing.
+#[test]
+fn a_read_only_volume_refuses_changes() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 1, 1, 1)?;
+        drop(store);
+        disk.kill();
+        let options = OpenOptions {
+            read_only: true,
+            ..env.options()
+        };
+        let (mut store, _) = Store::open(disk.clone(), options).map_err(|e| e.to_string())?;
+        if !store.geometry().read_only() {
+            return Err("the geometry does not say read-only".into());
+        }
+        let refused = [
+            Op::Write {
+                offset: BLOCK,
+                data: Buf::filled(1, 2),
+            },
+            Op::WriteZeroes {
+                offset: BLOCK,
+                len: BLOCK,
+            },
+            Op::Discard {
+                offset: BLOCK,
+                len: BLOCK,
+            },
+        ];
+        for op in refused {
+            let name = op.name();
+            if run(&mut store, op)?.result != Err(BlkError::ReadOnly) {
+                return Err(format!("a {name} was not refused"));
+            }
+        }
+        flush(&mut store)?;
+        expect(&mut store, 1, 1, 1, "on the read-only volume")
+    }
+    holds(scenario);
+}
+
+/// A volume above 4 GiB: offsets beyond the 32-bit boundary are written
+/// and read where they belong, in the log, in the home image after a
+/// checkpoint, and after a reopen; the blocks at the same offsets
+/// modulo 4 GiB are untouched.
+#[test]
+fn a_volume_above_four_gib() {
+    fn scenario(env: &Env) -> Outcome {
+        let disk = SimDisk::new(1);
+        disk.set_write_unit(u64::from(env.unit));
+        let config = StoreConfig {
+            size_mib: 5 * 1024,
+            ..env.config()
+        };
+        let key = Key(*b"a key for tests!");
+        let mut store = Store::create_keyed(disk.clone(), &config, key, env.options())
+            .map_err(|e| e.to_string())?;
+        let four_gib = (4u64 << 30) / BLOCK;
+        let last = store.geometry().blocks() - 1;
+        if last < four_gib {
+            return Err("the volume is not above 4 GiB".into());
+        }
+        write(&mut store, four_gib + 3, 2, 1)?;
+        write(&mut store, last, 1, 2)?;
+        ok(
+            &mut store,
+            Op::WriteZeroes {
+                offset: (four_gib - 1) * BLOCK,
+                len: 2 * BLOCK,
+            },
+        )?;
+        for round in ["at once", "after a checkpoint", "after a reopen"] {
+            expect(&mut store, four_gib + 3, 2, 1, round)?;
+            expect(&mut store, last, 1, 2, round)?;
+            expect(&mut store, 3, 2, 0, round)?;
+            expect(&mut store, last - four_gib, 1, 0, round)?;
+            match round {
+                "at once" => {
+                    flush(&mut store)?;
+                    checkpoint(&mut store)?;
+                }
+                "after a checkpoint" => {
+                    drop(store);
+                    store = env.reopen(&disk)?;
+                }
+                _ => {}
+            }
+        }
+        let beyond = Op::Write {
+            offset: (last + 1) * BLOCK,
+            data: Buf::filled(1, 3),
+        };
+        match run(&mut store, beyond)?.result {
+            Err(BlkError::OutOfBounds { .. }) => Ok(()),
+            other => Err(format!("a write beyond the end gave {other:?}")),
+        }
+    }
+    holds(scenario);
+}
+
+/// A megabyte, the largest write: `count` of them at megabyte `at`.
+fn megabyte(store: &mut SimStore, at: u64, byte: u8) -> Outcome {
+    write(store, at * 256, 256, byte)
+}
+
+/// A full log. With a limit on the log's segment files, a write that
+/// finds the log full makes the store checkpoint and carry on: nothing
+/// is refused and the log gets no more files. While a hold keeps the
+/// log from being given up, such a write is held, and so is everything
+/// submitted behind it, a read included; when the hold is released they
+/// complete, in order, once each.
+#[test]
+fn a_full_log_holds_writes_behind_a_hold_and_goes_on_without_one() {
+    fn scenario(env: &Env) -> Outcome {
+        let env = Env {
+            segments: Some(2),
+            ..*env
+        };
+        let (disk, mut store) = env.fresh()?;
+        // No hold: megabyte after megabyte, more than two segments take.
+        for round in 0..6u8 {
+            megabyte(&mut store, u64::from(round % 3), round + 1)?;
+        }
+        if store.core.log.segment_files() != 2 {
+            return Err(format!(
+                "the log has {} segment files",
+                store.core.log.segment_files()
+            ));
+        }
+        expect(&mut store, 0, 256, 4, "megabyte 0")?;
+        expect(&mut store, 256, 256, 5, "megabyte 1")?;
+        expect(&mut store, 512, 256, 6, "megabyte 2")?;
+        // A hold where the log ends now.
+        store.set_hold(Some(store.position()));
+        let mut done = Vec::new();
+        let mut submitted = 0;
+        let mut held = None;
+        for round in 0..4u64 {
+            let op = Op::Write {
+                offset: round % 3 * (1 << 20),
+                data: Buf::filled(256, 10 + round as u8),
+            };
+            store
+                .submit(Request {
+                    id: RequestId(round),
+                    op,
+                })
+                .map_err(|e| e.to_string())?;
+            submitted += 1;
+            if store.poll(&mut done) == 0 {
+                held = Some(round);
+                break;
+            }
+        }
+        let Some(held) = held else {
+            return Err("no write was held behind the hold".into());
+        };
+        // A read behind the held write waits its turn.
+        let read_id = RequestId(100);
+        store
+            .submit(Request {
+                id: read_id,
+                op: Op::Read {
+                    offset: held % 3 * (1 << 20),
+                    buf: Buf::zeroed(1),
+                },
+            })
+            .map_err(|e| e.to_string())?;
+        if store.poll(&mut done) != 0 || store.wait(&mut done, Duration::ZERO) != 0 {
+            return Err("a request completed behind a held write".into());
+        }
+        if store.is_failed() {
+            return Err("a full log failed the volume".into());
+        }
+        store.set_hold(None);
+        if store.poll(&mut done) != 2 || store.poll(&mut done) != 0 {
+            return Err("the held requests did not complete once each".into());
+        }
+        let ids: Vec<u64> = done.iter().map(|c| c.id.0).collect();
+        let mut want: Vec<u64> = (0..submitted).collect();
+        want.push(read_id.0);
+        if ids != want || done.iter().any(|c| c.result.is_err()) {
+            return Err(format!(
+                "completions {ids:?}, expected {want:?} and no errors"
+            ));
+        }
+        let seen = done.last().and_then(|c| c.buf.as_ref()).map(|b| b[0]);
+        if seen != Some(10 + held as u8) {
+            return Err(format!("the read behind the held write saw {seen:?}"));
+        }
+        flush(&mut store)?;
+        drop(store);
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let mut store = env.reopen(&disk)?;
+        expect(
+            &mut store,
+            held % 3 * 256,
+            256,
+            10 + held as u8,
+            "after a power cut",
+        )
+    }
+    holds(scenario);
+}
+
+/// Creation, interrupted. A power cut during creation leaves no store,
+/// and creating again works; or a whole, empty one. Never one that
+/// opens with something missing.
+#[test]
+fn an_interrupted_creation_leaves_no_store_or_a_whole_one() {
+    let env = Env {
+        base: Base::Pattern(5),
+        ..environments(0)[0]
+    };
+    let (mut none, mut whole) = (0, 0);
+    for seed in 0..48u64 {
+        let disk = SimDisk::new(seed);
+        disk.fail_sync(seed % 6, false);
+        let key = Key(*b"a key for tests!");
+        let created = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+        assert!(created.is_err(), "seed {seed}");
+        disk.power_cut(crate::sim::SeededCut::with_garbage(seed));
+        let mut store = match Store::open(disk.clone(), env.options()) {
+            Ok((store, _)) => {
+                whole += 1;
+                store
+            }
+            Err(StoreError::Log(LogError::NotFound)) => {
+                none += 1;
+                Store::create_keyed(disk.clone(), &env.config(), key, env.options()).unwrap()
+            }
+            Err(other) => panic!("seed {seed}: half a store: {other}"),
+        };
+        let want = [env.base_block(0), env.base_block(1)];
+        expect_blocks(&mut store, 0, &want, "the base").unwrap();
+        write(&mut store, 1, 1, 9).unwrap();
+        expect(&mut store, 1, 1, 9, "a write").unwrap();
+    }
+    assert!(none > 0 && whole > 0, "none {none}, whole {whole}");
+}
+
+/// A checkpoint that cannot make its preimages durable has not touched
+/// the home image: after a power cut that garbles everything unsynced,
+/// every flushed block is there.
+#[test]
+fn a_checkpoint_writes_the_home_image_only_behind_durable_preimages() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 4, 4, 1)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        write(&mut store, 6, 1, 2)?;
+        flush(&mut store)?;
+        disk.fail_sync_of(PREIMAGE_NAME);
+        let failed = store.checkpoint().is_err();
+        if failed != (env.unit > 4096) {
+            return Err(format!("the checkpoint failed: {failed}"));
+        }
+        drop(store);
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        let mut store = env.reopen_ack(&disk)?;
+        expect(&mut store, 4, 2, 1, "in front")?;
+        expect(&mut store, 6, 1, 2, "the block written last")?;
+        expect(&mut store, 7, 1, 1, "behind")
+    }
+    holds(scenario);
+}
+
+/// The preimage file's bytes, version 1, for two blocks: the layout the
+/// documentation gives, field by field, and back.
+#[test]
+fn the_preimage_file_golden_bytes() {
+    let volume = *b"0123456789abcdef";
+    let mut blocks = vec![0xAAu8; BLOCK as usize];
+    blocks.extend(vec![0xBBu8; BLOCK as usize]);
+    let bytes = Preimages::encode(&volume, &[7, 1 << 33], &blocks);
+    assert_eq!(bytes.len(), 4 * 4096);
+    assert_eq!(&bytes[..8], b"SKYZPRE\0");
+    assert_eq!(bytes[8..16], [1, 0, 0, 0, 2, 0, 0, 0]);
+    assert_eq!(&bytes[16..32], &volume);
+    assert!(bytes[36..508].iter().all(|b| *b == 0));
+    assert_eq!(bytes[4096..4104], 7u64.to_le_bytes());
+    assert_eq!(
+        bytes[4104..4108],
+        crc32c::crc32c(&blocks[..4096]).to_le_bytes()
+    );
+    assert_eq!(bytes[4112..4120], (1u64 << 33).to_le_bytes());
+    assert!(bytes[4128..8192].iter().all(|b| *b == 0));
+    assert_eq!(&bytes[8192..], &blocks[..]);
+    assert_eq!(
+        bytes[32..36],
+        crc32c::crc32c(&bytes[4096..8192]).to_le_bytes()
+    );
+    assert_eq!(bytes[508..512], crc32c::crc32c(&bytes[..508]).to_le_bytes());
+
+    // Whole: decoded. Damaged anywhere, for another volume, or with a
+    // block beyond the device: nothing.
+    let disk = SimDisk::new(0);
+    let mut file = disk.create("p").unwrap();
+    file.write_at(0, &bytes).unwrap();
+    let decoded = Preimages::decode(&file, &volume, 1 << 34).unwrap().unwrap();
+    assert_eq!(decoded.len(), 2);
+    assert_eq!((decoded[0].0, decoded[1].0), (7, 1 << 33));
+    assert_eq!(decoded[1].1, vec![0xBB; 4096]);
+    assert!(Preimages::decode(&file, &volume, 1 << 33)
+        .unwrap()
+        .is_none());
+    assert!(Preimages::decode(&file, b"another volume!!", 1 << 34)
+        .unwrap()
+        .is_none());
+    for at in [0, 9, 13, 20, 33, 40, 509, 4096, 4105, 8192, 16383] {
+        let mut damaged = bytes.clone();
+        damaged[at] ^= 1;
+        file.write_at(0, &damaged).unwrap();
+        assert!(
+            Preimages::decode(&file, &volume, 1 << 34)
+                .unwrap()
+                .is_none(),
+            "byte {at}"
+        );
+    }
+    file.write_at(0, &bytes).unwrap();
+    Preimages::invalidate(&mut file).unwrap();
+    assert!(Preimages::decode(&file, &volume, 1 << 34)
+        .unwrap()
+        .is_none());
+}
+
+// ---------------------------------------------------------------------
 // The conformance suite.
 
 use super::harness::SimHarness;
