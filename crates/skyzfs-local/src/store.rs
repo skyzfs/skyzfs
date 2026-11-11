@@ -1448,6 +1448,9 @@ enum Command {
     /// For tests: the worker panics.
     #[cfg(test)]
     Panic,
+    /// For test rigs: fail the log now.
+    #[cfg(any(test, feature = "test-hooks"))]
+    Fail(mpsc::Sender<()>),
 }
 
 /// The store behind a worker thread.
@@ -1570,6 +1573,19 @@ where
                         }
                         #[cfg(test)]
                         Some(Command::Panic) => panic!("a test asked the worker to panic"),
+                        #[cfg(any(test, feature = "test-hooks"))]
+                        Some(Command::Fail(reply)) => {
+                            // As a failed sync does: the volume has
+                            // failed and the log is marked. A request
+                            // that was held gets its answer now.
+                            core.fail();
+                            held = false;
+                            let _ = reply.send(());
+                            if let Some(Waker(wake)) = &waker {
+                                wake();
+                            }
+                            continue;
+                        }
                         None => {}
                     }
                     let Some(Request { id, op }) = queue.pop_front() else {
@@ -1664,6 +1680,21 @@ impl Served {
     /// "busy" from then on. The owner is told through the [`Waker`].
     pub fn gone(&self) -> bool {
         self.ended.load(Ordering::SeqCst)
+    }
+
+    /// For test rigs, under the cargo feature `test-hooks`: fail the
+    /// log now, as if its next sync had returned an error. It takes
+    /// effect behind the request the worker is executing, and this
+    /// waits for that; then the owner's waker is called. Every later
+    /// request fails, and a later open finds the volume marked as
+    /// failed. Requests completed before stay completed. With the
+    /// worker gone there is nothing to fail.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn fail_now(&self) {
+        let (reply, done) = mpsc::channel();
+        if self.send(Command::Fail(reply)) {
+            let _ = done.recv();
+        }
     }
 
     /// For tests: make the worker panic, and wait until it has.
