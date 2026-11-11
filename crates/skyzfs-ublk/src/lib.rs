@@ -26,7 +26,8 @@
 //!   as a step of its own, the open under it, and how the store's
 //!   errors are read.
 //!
-//! The binding to the kernel is built on these.
+//! The binding to the kernel is built on these, in the crate
+//! `skyzfs-ublk-sys`: the only one that may hold `unsafe`.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

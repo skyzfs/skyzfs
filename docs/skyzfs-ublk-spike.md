@@ -6,8 +6,32 @@ reading of its source. This is the record of the run that replaced the
 reading. It is not the binding, and nothing of `skyzfsd` is built on the
 spike's program.
 
-**Status: sent to the lead for a decision. No binding code is written
-until the lead answers the recommendation at the end.**
+**Status: decided.** The lead's decisions, as built in
+`crates/skyzfs-ublk-sys`:
+
+- The queue is `libublk` `=0.4.8`. The binding sends the add, the
+  lookup (info and parameters), the asynchronous delete, and the begin
+  and the end of a recovery itself, with the opcodes and structures of
+  the bindings the library ships. The library's control object is made
+  with no flag, only for a device that exists; it sets the parameters
+  and starts a device this instance added, and is the handle the queue
+  needs. So the library writes no file of its own
+  (`/run/ublksrvd/NNNN.json`); it reads one once if it is there and
+  acts on nothing in it.
+- The driver's one state for a device without a server that waits for
+  none is one state in the lifecycle too. Device nodes are not probed.
+- Flags are reported under the mask of the bits the daemon asks for.
+- One copy per request: the queue owns a locked buffer per tag and
+  tells the driver its address at each commit. The first write of each
+  tag after a start arrives in the library's buffer and is copied once
+  more; those copies are counted and shown by `status`.
+- Whether a client holds a device: an exclusive open refused with
+  `EBUSY` means held; anything else is "unknown", which the next start
+  settles by what the driver says about the number.
+
+The program, its cargo feature and its script are gone from the tree
+(they are in the history, last at commit ab0a965). The file names
+under "What ran" are as they were then.
 
 ## What ran
 
@@ -160,10 +184,3 @@ anything rests on it: that a control object made without the add flag
 for a device the binding added itself can set parameters and start it
 (the source says so: `prep_start_dev` does both for any device that is
 not QUIESCED).
-
-## The workflow
-
-`.github/workflows/skyzfs-ublk-spike.yml` is temporary. It is to be
-removed before M1.3b's pull request, together with the feature `spike`,
-the program and the script, unless the testing session wants the script
-as a start for a check of the binding's control commands.
