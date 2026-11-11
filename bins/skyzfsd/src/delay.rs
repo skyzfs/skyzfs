@@ -6,11 +6,21 @@
 //!
 //! For every request, the result is given to the kernel N ms after the
 //! pump committed it. Nothing else waits: the store has completed the
-//! request and the acknowledged position is stored before the pump
-//! commits, and the queue goes on fetching, so that many requests are
+//! request and the queue goes on fetching, so that many requests are
 //! applied and uncommitted at once. A `kill -9` then finds requests
 //! the daemon has applied and not answered: the case of "applied a
 //! second time, as a new operation in the order" (design §4.1).
+//!
+//! The acknowledged position waits with the result: it is stored when
+//! the result is given to the kernel, not when the pump commits. The
+//! pump is given a record ([`LateAck`]) that only remembers the
+//! position, and the queue stores it in the real record just before it
+//! gives a result on. Otherwise the record would already cover what a
+//! kill leaves unanswered, and the next start could not count it
+//! (`recovered_unacknowledged`): the first run of the rig's kill test
+//! with the delay counted nothing for that reason. If the position
+//! cannot be stored the result stays back and is tried again at the
+//! next wait, as the pump does without a delay.
 //!
 //! # One request, for seconds
 //!
@@ -34,7 +44,9 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use skyzfs_blk::Buf;
-use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Wake};
+use std::sync::Mutex;
+
+use skyzfs_ublk::pump::{AckRecord, Fetched, Queue, QueueDown, Wake};
 use skyzfs_ublk::translate::{op, Desc, SECTOR};
 
 use crate::cli::{Held, Hold};
@@ -53,9 +65,52 @@ fn is_held(what: Held, desc: &Desc) -> bool {
     }
 }
 
+/// What the queue and the pump's record share: the newest position the
+/// pump has asked to store, and whether positions go straight to the
+/// real record (no delay, or a stop was asked).
+#[derive(Debug)]
+struct Late {
+    newest: Option<u64>,
+    direct: bool,
+}
+
+fn late(shared: &Mutex<Late>) -> std::sync::MutexGuard<'_, Late> {
+    // Two plain values: whole whoever panicked while holding it.
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The record of what was acknowledged as the pump of a [`Delayed`]
+/// queue sees it. Without a delay it is the real record. With one it
+/// remembers the position, and the queue stores it when it gives the
+/// result on.
+pub struct LateAck<A: AckRecord> {
+    real: A,
+    late: Arc<Mutex<Late>>,
+}
+
+impl<A: AckRecord> AckRecord for LateAck<A> {
+    fn advance(&mut self, position: u64) -> std::io::Result<()> {
+        let mut late = late(&self.late);
+        if late.direct {
+            return self.real.advance(position);
+        }
+        late.newest = late.newest.max(Some(position));
+        Ok(())
+    }
+}
+
+/// A commit that waits: when it is due, the position to store before
+/// it is given on, and the commit's tag, result and buffer.
+type Waiting = (Instant, Option<u64>, u16, i32, Option<Buf>);
+
 /// A queue whose commits reach the queue inside after a delay.
-pub struct Delayed<Q: Queue> {
+pub struct Delayed<Q: Queue, A: AckRecord> {
     inner: Q,
+    /// The real record, for the positions that waited.
+    ack: A,
+    late: Arc<Mutex<Late>>,
     delay: Option<Duration>,
     /// The one request to hold, until it has been fetched.
     hold: Option<Hold>,
@@ -64,23 +119,35 @@ pub struct Delayed<Q: Queue> {
     held: Option<(u16, Duration)>,
     /// Committed by the pump and not yet given on, in the order the
     /// pump committed them.
-    waiting: Vec<(Instant, u16, i32, Option<Buf>)>,
+    /// With each, the position to store before it is given on.
+    waiting: Vec<Waiting>,
     /// Tells the timer when the queue's wait has to be woken.
     timer: Option<mpsc::Sender<Instant>>,
     wake: Arc<dyn Fn() + Send + Sync>,
     stopping: bool,
 }
 
-impl<Q: Queue> Delayed<Q> {
+impl<Q: Queue, A: AckRecord + Clone> Delayed<Q, A> {
     /// `inner`, with every commit delayed by `delay` if there is one,
     /// and one request held as `hold` says if there is one. `wake`
-    /// wakes `inner`'s wait from another thread.
+    /// wakes `inner`'s wait from another thread. `ack` is the real
+    /// record of what was acknowledged; the pump gets the record that
+    /// is returned.
     pub fn new(
         inner: Q,
+        ack: A,
         delay: Option<Duration>,
         hold: Option<Hold>,
         wake: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
+    ) -> (Self, LateAck<A>) {
+        let late = Arc::new(Mutex::new(Late {
+            newest: None,
+            direct: delay.is_none(),
+        }));
+        let pumps = LateAck {
+            real: ack.clone(),
+            late: late.clone(),
+        };
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(wake);
         let timer = delay.map(|_| {
             let (dues, due) = mpsc::channel::<Instant>();
@@ -96,8 +163,10 @@ impl<Q: Queue> Delayed<Q> {
             });
             dues
         });
-        Self {
+        let queue = Self {
             inner,
+            ack,
+            late,
             delay,
             hold,
             held: None,
@@ -105,18 +174,29 @@ impl<Q: Queue> Delayed<Q> {
             timer,
             wake,
             stopping: false,
-        }
+        };
+        (queue, pumps)
     }
 
     /// Give on what is due, or everything.
     fn release(&mut self, all: bool) {
         let now = Instant::now();
         let mut kept = Vec::new();
-        for (due, tag, result, buf) in std::mem::take(&mut self.waiting) {
-            if all || due <= now {
+        // Once a position could not be stored, nothing after it is
+        // given on in this round.
+        let mut unstored = false;
+        for (due, position, tag, result, buf) in std::mem::take(&mut self.waiting) {
+            if !unstored && (all || due <= now) {
+                if let Some(position) = position {
+                    if self.ack.advance(position).is_err() {
+                        unstored = true;
+                        kept.push((due, Some(position), tag, result, buf));
+                        continue;
+                    }
+                }
                 self.inner.commit(tag, result, buf);
             } else {
-                kept.push((due, tag, result, buf));
+                kept.push((due, position, tag, result, buf));
             }
         }
         self.waiting = kept;
@@ -128,7 +208,7 @@ impl<Q: Queue> Delayed<Q> {
     }
 }
 
-impl<Q: Queue> Queue for Delayed<Q> {
+impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
     fn depth(&self) -> u16 {
         self.inner.depth()
     }
@@ -147,6 +227,8 @@ impl<Q: Queue> Queue for Delayed<Q> {
         }
         if woken == Wake::Stop {
             self.stopping = true;
+            // From here the pump's positions go straight to the record.
+            late(&self.late).direct = true;
         }
         self.release(self.stopping);
         Ok(woken)
@@ -160,9 +242,16 @@ impl<Q: Queue> Queue for Delayed<Q> {
         if self.stopping {
             return self.inner.commit(tag, result, buf);
         }
+        // The position the pump asked to store with this commit, if it
+        // was kept back.
+        let position = {
+            let late = late(&self.late);
+            late.newest.filter(|_| !late.direct)
+        };
         if let Some((_, long)) = self.held.filter(|(held, _)| *held == tag) {
             self.held = None;
-            self.waiting.push((Instant::now() + long, tag, result, buf));
+            self.waiting
+                .push((Instant::now() + long, position, tag, result, buf));
             // One thread for the one held request: it wakes the
             // queue's wait when the time is over.
             let wake = self.wake.clone();
@@ -175,7 +264,7 @@ impl<Q: Queue> Queue for Delayed<Q> {
         match (self.delay, &self.timer) {
             (Some(delay), Some(timer)) => {
                 let due = Instant::now() + delay;
-                self.waiting.push((due, tag, result, buf));
+                self.waiting.push((due, position, tag, result, buf));
                 let _ = timer.send(due);
             }
             _ => self.inner.commit(tag, result, buf),
@@ -197,6 +286,30 @@ mod tests {
 
     /// A queue that notes its commits and answers its waits from a
     /// script.
+    /// A record that notes what it was asked to store, and can refuse.
+    #[derive(Default, Clone)]
+    struct Stored(Arc<Mutex<(Vec<u64>, bool)>>);
+
+    impl Stored {
+        fn positions(&self) -> Vec<u64> {
+            self.0.lock().expect("lock").0.clone()
+        }
+        fn refuse(&self, refuse: bool) {
+            self.0.lock().expect("lock").1 = refuse;
+        }
+    }
+
+    impl AckRecord for Stored {
+        fn advance(&mut self, position: u64) -> std::io::Result<()> {
+            let mut stored = self.0.lock().expect("lock");
+            if stored.1 {
+                return Err(std::io::Error::other("refused"));
+            }
+            stored.0.push(position);
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct Noting {
         committed: Vec<u16>,
@@ -225,7 +338,8 @@ mod tests {
     /// timer exists.
     #[test]
     fn without_a_delay_a_commit_passes_through() {
-        let mut queue = Delayed::new(Noting::default(), None, None, || {});
+        let (mut queue, _ack) =
+            Delayed::new(Noting::default(), Stored::default(), None, None, || {});
         queue.commit(1, 0, None);
         queue.commit(2, 0, Some(Buf::zeroed(1)));
         assert_eq!(queue.inner.committed, [1, 2]);
@@ -239,12 +353,13 @@ mod tests {
     fn a_delayed_commit_is_given_on_when_it_is_due_and_the_wait_is_woken() {
         let woken = Arc::new(AtomicU32::new(0));
         let delay = Duration::from_millis(40);
-        let mut queue = Delayed::new(Noting::default(), Some(delay), None, {
-            let woken = woken.clone();
-            move || {
-                woken.fetch_add(1, Ordering::SeqCst);
-            }
-        });
+        let (mut queue, _ack) =
+            Delayed::new(Noting::default(), Stored::default(), Some(delay), None, {
+                let woken = woken.clone();
+                move || {
+                    woken.fetch_add(1, Ordering::SeqCst);
+                }
+            });
         let began = Instant::now();
         queue.commit(1, 0, None);
         queue.commit(2, 0, None);
@@ -273,7 +388,13 @@ mod tests {
             wakes: VecDeque::from([Wake::Stop]),
             ..Noting::default()
         };
-        let mut queue = Delayed::new(inner, Some(Duration::from_secs(3600)), None, || {});
+        let (mut queue, _ack) = Delayed::new(
+            inner,
+            Stored::default(),
+            Some(Duration::from_secs(3600)),
+            None,
+            || {},
+        );
         queue.commit(3, 0, None);
         assert_eq!(queue.waiting(), 1);
         let mut fetched = Vec::new();
@@ -282,6 +403,79 @@ mod tests {
         queue.commit(0, 0, None);
         assert_eq!(queue.inner.committed, [3, 0]);
         assert_eq!(queue.waiting(), 0);
+    }
+
+    /// With a delay the pump's position is stored in the real record
+    /// when the result is given on, not when the pump commits: what a
+    /// kill leaves unanswered is then beyond the record. A stop stores
+    /// and gives on at once, and afterwards the pump's record is the
+    /// real one.
+    #[test]
+    fn with_a_delay_the_position_is_stored_when_the_result_is_given_on() {
+        let stored = Stored::default();
+        let inner = Noting {
+            wakes: VecDeque::from([Wake::Work, Wake::Stop]),
+            ..Noting::default()
+        };
+        let (mut queue, mut ack) = Delayed::new(
+            inner,
+            stored.clone(),
+            Some(Duration::from_secs(3600)),
+            None,
+            || {},
+        );
+        ack.advance(7).expect("remembered");
+        queue.commit(1, 0, None);
+        ack.advance(9).expect("remembered");
+        queue.commit(2, 0, None);
+        let mut fetched = Vec::new();
+        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Work));
+        assert!(stored.positions().is_empty());
+        assert!(queue.inner.committed.is_empty());
+        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert_eq!(stored.positions(), [7, 9]);
+        assert_eq!(queue.inner.committed, [1, 2]);
+        ack.advance(11).expect("stored");
+        assert_eq!(stored.positions(), [7, 9, 11]);
+    }
+
+    /// A position that cannot be stored keeps its result back, and
+    /// every result after it, until it can.
+    #[test]
+    fn a_result_whose_position_cannot_be_stored_stays_back() {
+        let stored = Stored::default();
+        let inner = Noting {
+            wakes: VecDeque::from([Wake::Stop]),
+            ..Noting::default()
+        };
+        let (mut queue, mut ack) = Delayed::new(
+            inner,
+            stored.clone(),
+            Some(Duration::from_secs(3600)),
+            None,
+            || {},
+        );
+        ack.advance(7).expect("remembered");
+        queue.commit(1, 0, None);
+        queue.commit(2, 0, None);
+        stored.refuse(true);
+        let mut fetched = Vec::new();
+        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert!(queue.inner.committed.is_empty());
+        assert_eq!(queue.waiting(), 2);
+        stored.refuse(false);
+        queue.wait(&mut fetched).expect("wait");
+        assert_eq!(queue.inner.committed, [1, 2]);
+        assert_eq!(stored.positions(), [7, 7]);
+    }
+
+    /// Without a delay the pump's record is the real one.
+    #[test]
+    fn without_a_delay_the_position_is_stored_at_once() {
+        let stored = Stored::default();
+        let (_queue, mut ack) = Delayed::new(Noting::default(), stored.clone(), None, None, || {});
+        ack.advance(5).expect("stored");
+        assert_eq!(stored.positions(), [5]);
     }
 
     fn request(tag: u16, op: u8, sector: u64, sectors: u32) -> Fetched {
@@ -332,7 +526,7 @@ mod tests {
             seconds: 1,
             what: Held::Read(4096),
         };
-        let mut queue = Delayed::new(inner, None, Some(hold), {
+        let (mut queue, _ack) = Delayed::new(inner, Stored::default(), None, Some(hold), {
             let woken = woken.clone();
             move || {
                 woken.fetch_add(1, Ordering::SeqCst);
@@ -378,7 +572,7 @@ mod tests {
             seconds: 3600,
             what: Held::Flush,
         };
-        let mut queue = Delayed::new(inner, None, Some(hold), || {});
+        let (mut queue, _ack) = Delayed::new(inner, Stored::default(), None, Some(hold), || {});
         let mut fetched = Vec::new();
         queue.wait(&mut fetched).expect("wait");
         queue.commit(5, 0, None);

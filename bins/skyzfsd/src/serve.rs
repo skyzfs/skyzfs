@@ -61,7 +61,7 @@ use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
 use crate::commands::{LOCK_PAUSE, LOCK_RETRIES};
-use crate::delay::Delayed;
+use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
 /// How often a start asks again about a device of its own that is
@@ -151,7 +151,7 @@ struct Flags {
 /// are refused by the command line.
 #[cfg(feature = "test-hooks")]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    pump: &mut Pump<Q, skyzfs_local::store::Served, SharedAck>,
+    pump: &mut Pump<Q, skyzfs_local::store::Served, LateAck<SharedAck>>,
     flags: &Flags,
     fail_after: &mut Option<u64>,
 ) {
@@ -168,7 +168,7 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 
 #[cfg(not(feature = "test-hooks"))]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    _pump: &mut Pump<Q, skyzfs_local::store::Served, SharedAck>,
+    _pump: &mut Pump<Q, skyzfs_local::store::Served, LateAck<SharedAck>>,
     _flags: &Flags,
     _fail_after: &mut Option<u64>,
 ) {
@@ -179,7 +179,7 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 /// as in flight.
 fn post<Q: skyzfs_ublk::pump::Queue>(
     board: &Board,
-    pump: &mut Pump<Delayed<Q>, skyzfs_local::store::Served, SharedAck>,
+    pump: &mut Pump<Delayed<Q, SharedAck>, skyzfs_local::store::Served, LateAck<SharedAck>>,
 ) {
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
@@ -316,8 +316,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         .serve(&wake, !serve.allow_unlocked_memory, {
             let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
-                let queue = Delayed::new(queue, delay, hold, move || wake.wake());
-                let mut pump = Pump::new(queue, served, SharedAck::new(ack));
+                let (queue, ack) =
+                    Delayed::new(queue, SharedAck::new(ack), delay, hold, move || wake.wake());
+                let mut pump = Pump::new(queue, served, ack);
                 let stopped = loop {
                     if let Some(stopped) = pump.turn() {
                         break stopped;
