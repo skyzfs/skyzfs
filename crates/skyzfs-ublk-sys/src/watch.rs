@@ -1,8 +1,13 @@
 //! For tests: an allocator that counts the deallocations of memory it
 //! was told to watch, and a look at whether a range is still mapped.
 //!
-//! The queue's buffers are never freed (see [`queue`](crate::queue),
-//! "The buffers are never freed"). Whether freed memory is handed out
+//! **In test builds only.** This file is compiled into the crate's
+//! unit tests (`#[cfg(test)]` in `lib.rs`) and included by the kernel
+//! tests for their own binary (`tests/kernel.rs`). It is not part of
+//! the library, and no daemon contains it.
+//!
+//! The queue's buffers are never freed (see the queue's
+//! documentation, "The buffers are never freed"). Whether freed memory is handed out
 //! again, and whether the driver then writes into it, depends on the
 //! allocator and on a request arriving at the right moment; a test
 //! that waits for that damage can pass with the defect in place. What
@@ -10,9 +15,6 @@
 //! installs [`Watching`] as its global allocator, tells it the ranges
 //! the driver was told ([`watch`]), and asserts that none of them was
 //! given back ([`freed`]).
-//!
-//! Nothing of this is in a daemon: no binary but a test installs the
-//! allocator.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -23,7 +25,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 pub struct Watching;
 
 /// How many ranges can be watched at once.
-pub const ROOM: usize = 1024;
+const ROOM: usize = 1024;
 
 /// The watched ranges: start and end, both 0 for a free slot. A slot's
 /// end is written before its start and read after it, so a reader that

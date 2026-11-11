@@ -32,10 +32,14 @@ use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
+/// The test allocator, from the crate's sources: in test builds only.
+#[path = "../src/watch.rs"]
+mod watch;
+
 /// The allocator of this binary counts the deallocations of memory it
-/// is told to watch: see `skyzfs_ublk_sys::watch`.
+/// is told to watch.
 #[global_allocator]
-static WATCHING: skyzfs_ublk_sys::watch::Watching = skyzfs_ublk_sys::watch::Watching;
+static WATCHING: watch::Watching = watch::Watching;
 
 const SIZE: u64 = 64 << 20;
 const DEPTH: u16 = 8;
@@ -898,6 +902,9 @@ struct Stop {
     in_flight: u64,
     /// The lowest told address and the lowest taken one.
     lowest: (usize, usize),
+    /// Whether the writers were held until the memory was taken, so
+    /// that their next writes arrived after it.
+    held: bool,
 }
 
 /// The writes in flight at the device, from the block layer.
@@ -917,11 +924,22 @@ fn in_flight_writes(n: u32) -> u64 {
 /// kernel many times while the writers' requests keep arriving at the
 /// device, and counts the bytes that changed under it and the blocks
 /// that lie where a told buffer was.
-fn after_the_stop(queue: skyzfs_ublk_sys::queue::KernelQueue<'_>, n: u32) -> Stop {
-    use skyzfs_ublk_sys::watch;
+///
+/// `hold` is the writers' gate. If it is set, the writers were parked
+/// before the stop with nothing in flight, and they are let go here,
+/// once the memory is taken and filled: their next writes then arrive
+/// at fetch commands that name the old addresses while that memory is
+/// in other hands. (Without it the writers' next writes arrive within
+/// microseconds of the stop, before anything is taken, and block
+/// there: nothing more arrives however long the thread lingers.)
+fn after_the_stop(
+    queue: skyzfs_ublk_sys::queue::KernelQueue<'_>,
+    n: u32,
+    hold: &std::sync::atomic::AtomicBool,
+) -> Stop {
     const FILL: u8 = 0x5a;
     const LINGER: Duration = Duration::from_millis(150);
-    let told = queue.told_ranges();
+    let told = queue.ranges_told_for_tests();
     let watched = told
         .iter()
         .filter(|&&(start, len)| watch::watch(start, len))
@@ -958,6 +976,7 @@ fn after_the_stop(queue: skyzfs_ublk_sys::queue::KernelQueue<'_>, n: u32) -> Sto
         told.iter().map(|r| r.0).min().unwrap_or(0),
         held.iter().map(|b| b.as_ptr() as usize).min().unwrap_or(0),
     );
+    stop.held = hold.swap(false, std::sync::atomic::Ordering::SeqCst);
     let began = Instant::now();
     while began.elapsed() < LINGER {
         // Each return from the kernel is a moment at which the driver
@@ -986,15 +1005,23 @@ fn after_the_stop(queue: skyzfs_ublk_sys::queue::KernelQueue<'_>, n: u32) -> Sto
 /// queue's drop, whatever the allocator then does with the memory and
 /// whether or not a request arrives.
 ///
-/// **What is only observed**: the thread then takes memory of the
-/// buffers' size and counts the bytes the kernel changed in it. With
-/// the buffers kept this is zero. With the buffers freed it shows
-/// damage only if the allocator hands the freed memory out again and
-/// a write arrives for it in that time; the line printed for each stop
-/// says whether the told ranges were still mapped, whether any block
-/// taken afterwards lay where one was, and whether writes were in
-/// flight at the device. A zero here is not evidence that the buffers
-/// were kept.
+/// **What shows the consequence**: the thread then takes memory of the
+/// buffers' size, fills it, and counts the bytes the kernel changed in
+/// it. At every second stop the writers are held first, so that
+/// nothing is in flight, and let go only when that memory is taken:
+/// their next writes are then issued to tags whose fetch commands name
+/// the old addresses, and the test fails if none was issued in such a
+/// stop. With the buffers kept, the count is zero. With the buffers
+/// freed it is not zero when the allocator has handed the freed memory
+/// out again, which it does from the second stop on with glibc (the
+/// first free of blocks this large unmaps them); the line printed for
+/// each stop says whether the told ranges were still mapped, how many
+/// blocks taken afterwards lay where one was, and how many writes were
+/// in flight at the device. This part is as certain as the allocator's
+/// reuse: it shows the damage, the allocator check proves the property.
+/// At the other stops the writers' next writes arrive within
+/// microseconds of the stop, before any memory is taken, and block:
+/// those stops are for the commits of a stop, below.
 ///
 /// Every write the writers were acknowledged reads back, and the next
 /// life takes over.
@@ -1022,6 +1049,9 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         kernel.add(n, &shape()).map_err(|e| format!("add: {e:?}"))?;
         let content = Arc::new(Mutex::new(vec![0u8; SIZE as usize]));
         let seen = Arc::new(Seen::default());
+        // The writers' gate, and how many of them wait at it.
+        let hold = Arc::new(AtomicBool::new(false));
+        let parked = Arc::new(AtomicU64::new(0));
         let serve = |take_over: bool| -> Result<_, String> {
             let device = Device::open(&Open {
                 number: n,
@@ -1030,11 +1060,11 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             })
             .map_err(|e| format!("open: {e}"))?;
             let wake = Wake::new().map_err(|e| e.to_string())?;
-            let (content, seen) = (content.clone(), seen.clone());
+            let (content, seen, hold) = (content.clone(), seen.clone(), hold.clone());
             let serving = device
                 .serve(&wake, false, move |mut queue| {
                     memory_gathering(&mut queue, content, &seen, 0);
-                    after_the_stop(queue, n)
+                    after_the_stop(queue, n, &hold)
                 })
                 .map_err(|e| format!("serve: {e}"))?;
             if let Err(e) = device.start() {
@@ -1054,6 +1084,7 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         let writers: Vec<_> = (0..WRITERS)
             .map(|w| {
                 let (done, finished) = (done.clone(), finished.clone());
+                let (hold, parked) = (hold.clone(), parked.clone());
                 std::thread::spawn(move || -> Result<Vec<u8>, String> {
                     let file = direct(n)?;
                     let places = 4u64;
@@ -1061,6 +1092,14 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
                     let mut buf = Buf::zeroed((MIB / BLOCK_SIZE) as usize);
                     let mut round = 0u64;
                     while !done.load(Ordering::SeqCst) {
+                        if hold.load(Ordering::SeqCst) {
+                            parked.fetch_add(1, Ordering::SeqCst);
+                            while hold.load(Ordering::SeqCst) && !done.load(Ordering::SeqCst) {
+                                std::thread::sleep(Duration::from_micros(200));
+                            }
+                            parked.fetch_sub(1, Ordering::SeqCst);
+                            continue;
+                        }
                         round += 1;
                         let place = round % places;
                         let fill = (round % 251) as u8 + 1;
@@ -1082,6 +1121,20 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
             std::thread::sleep(Duration::from_millis(20 + u64::from(round % 5) * 7));
             if finished.load(Ordering::SeqCst) == before {
                 idle_rounds += 1;
+            }
+            // Every second stop holds the writers first: nothing is in
+            // flight at the stop, and their next writes arrive after
+            // the queue's thread has taken its memory. The other stops
+            // come under writes in flight, for the commits of a stop.
+            if round % 2 == 1 {
+                hold.store(true, Ordering::SeqCst);
+                let from = Instant::now();
+                while parked.load(Ordering::SeqCst) < WRITERS {
+                    if from.elapsed() > Duration::from_secs(20) {
+                        return Err(format!("round {round}: the writers did not come to rest"));
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                }
             }
             let (serving, device) = life;
             serving.stopper().stop();
@@ -1136,10 +1189,15 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         // not show.
         for (round, stop) in stops.iter().enumerate() {
             println!(
-                "control_stop_under_writers_stop\t{round}: {} ranges told (lowest {:#x}), {} \
+                "control_stop_under_writers_stop\t{round} ({}): {} ranges told (lowest {:#x}), {} \
                  deallocations gave told memory back, {} of the ranges no longer mapped; of \
                  the blocks taken afterwards (lowest {:#x}) {} lie where a told buffer was; \
                  up to {} writes in flight at the device meanwhile; {} bytes changed",
+                if stop.held {
+                    "writers held until the memory was taken"
+                } else {
+                    "under writes"
+                },
                 stop.told,
                 stop.lowest.0,
                 stop.freed,
@@ -1154,13 +1212,18 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         let freed: u64 = stops.iter().map(|s| s.freed).sum();
         let stops_freed = stops.iter().filter(|s| s.freed > 0).count();
         let with_arrivals = stops.iter().filter(|s| s.in_flight > 0).count();
+        let held = stops.iter().filter(|s| s.held).count();
+        let held_arrived = stops.iter().filter(|s| s.held && s.in_flight > 0).count();
+        let held_changed: u64 = stops.iter().filter(|s| s.held).map(|s| s.changed).sum();
         println!(
             "control_stop_under_writers_detail\t{ROUNDS} stops under {WRITERS} writers of 1 MiB, \
              {total} writes finished, {handed} write requests handed to the servers, \
              {idle_rounds} rounds in which none finished before the stop, \
              {changed} bytes changed in memory taken after a stop, \
              {freed} deallocations of memory the driver had been told, \
-             writes in flight at the device after {with_arrivals} of the {} stops",
+             writes in flight at the device after {with_arrivals} of the {} stops; \
+             of the {held} stops with the writers held until the memory was taken, writes \
+             were issued afterwards in {held_arrived}, and {held_changed} bytes changed in them",
             stops.len()
         );
         if freed != 0 {
@@ -1180,6 +1243,13 @@ fn a_stop_under_writers_leaves_the_memory_taken_afterwards_alone() {
         if changed != 0 {
             return Err(format!(
                 "{changed} bytes of memory taken after a stop were written by the kernel"
+            ));
+        }
+        if held_arrived < held || held == 0 {
+            return Err(format!(
+                "in {} of {held} stops with the writers held, no write was issued after the \
+                 memory was taken: those stops showed nothing",
+                held - held_arrived
             ));
         }
         if total < u64::from(ROUNDS) {
