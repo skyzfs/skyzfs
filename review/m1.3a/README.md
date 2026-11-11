@@ -29,3 +29,15 @@ Held against `docs/skyzfs-design.md` §4.2 at zfs-topology 2551937.
   attachment record (no test with real files can show them); a completion
   nobody waits for; a tag taken twice; and one that is equivalent (an
   orderly stop and a flush waiting for room).
+
+## Second look, at b2deffa
+
+`planted-defects-second-look.py`: nine defects in what the fix changed
+(the lock in `open_locked`, `detach` and the failing start; the size and
+values checks; the stopping pump). Seven are noticed. Not noticed: the
+lock let go before `failed()` on the path of an unreadable acknowledged
+record (the test of the lock through `failed()` uses the sync failure
+only), and a refusal by a target that went in that very moment counted
+as a broken contract (a window no test here can open).
+The probes in `probes.diff` are against 5716df5 and no longer apply: the
+pull request's own tests now make the same interleavings at every step.
