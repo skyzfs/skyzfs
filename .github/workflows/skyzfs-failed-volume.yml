@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       scenarios:
-        description: "which scenarios: sync gone zed routes older scrub"
+        description: "which scenarios: sync gone untouched zed routes older scrub"
         default: "sync gone zed routes older scrub"
 
 permissions:

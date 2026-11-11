@@ -5,7 +5,11 @@
 # skyzfs-blk runs through the kernel's block layer.
 #
 #   blkcheck-helper.sh create N    a new empty volume, served; prints its device
-#   blkcheck-helper.sh kill N      SIGKILL to its server, then serve again; prints the device.
+#   blkcheck-helper.sh pid N       prints the pid of its server, for a caller that sends the
+#                                  SIGKILL itself and then calls kill.
+#   blkcheck-helper.sh kill N      SIGKILL to its server; when it is gone, print "dead R W"
+#                                  (the kernel's reads and writes in flight at the device);
+#                                  then serve again; prints the device on the last line.
 #                                  After `fail` there is no server left: nothing is done
 #   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good. Returns
 #                                  when serve has exited with status 3; the device is
@@ -24,7 +28,7 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
-{ [ $# = 2 ] && [[ $2 =~ ^[0-9]+$ ]]; } || { echo "usage: blkcheck-helper.sh create|kill|fail|reopen|destroy N" >&2; exit 2; }
+{ [ $# = 2 ] && [[ $2 =~ ^[0-9]+$ ]]; } || { echo "usage: blkcheck-helper.sh create|pid|kill|fail|reopen|destroy N" >&2; exit 2; }
 VERB=$1; N=$2
 WORK=${BLK_WORK:?}
 SKYZFSD=${BLK_SKYZFSD:-$HERE/skyzfsd-ref.sh}
@@ -88,12 +92,30 @@ kill)
         cat "$DIR.device"
         exit 0
     fi
-    pid=$(server_pid); [ -n "$pid" ] || die "no server pid"
-    kill -9 "$pid" 2>/dev/null || die "the server ($pid) was not there to kill"
+    # The caller may have sent the SIGKILL itself already, to have it
+    # land while its requests are in flight (see `pid`): then the pid is
+    # the one it was given, and the server is dying or gone.
+    pid=$(cat "$DIR.server.pid" 2>/dev/null); [ -n "$pid" ] || pid=$(server_pid)
+    [ -n "$pid" ] || die "no server pid"
+    kill -9 "$pid" 2>/dev/null
     # With the stand-in the server is a child of the serve script,
     # which notices and exits; with the daemon they are one process.
     serve_pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 120); do kill -0 "$serve_pid" 2>/dev/null || break; sleep 0.1; done
+    for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || break; sleep 0.02; done
+    kill -0 "$pid" 2>/dev/null && die "the server ($pid) was still there 2 s after SIGKILL"
+    # No server runs now, so no request completes until the next one
+    # serves. A call of the caller's that has returned by now was
+    # completed by the old server; one still outstanding was in flight
+    # when it died, and the kernel will issue it again. The caller sorts
+    # its calls on this line (skyzfs-blkcheck, `kill`), after a moment
+    # for the returns to reach it, and gets the kernel's own count of
+    # reads and writes in flight at the device to check itself against.
+    sleep 0.2
+    read -r in_r in_w < "/sys/block/$(basename "$(cat "$DIR.device")")/inflight" 2>/dev/null || { in_r=""; in_w=""; }
+    echo "dead $in_r $in_w"
+    echo "kill $N: sorted with the kernel counting ${in_r:-?} reads and ${in_w:-?} writes in flight" >> "$WORK/helper.log"
+    sleep 0.3
     DEV=$(serve) || exit 1
     ;;
 fail)
@@ -126,13 +148,22 @@ reopen)
     find "$RUN" -mindepth 1 -delete 2>/dev/null
     DEV=$(serve --acknowledge-failure) || exit 1
     ;;
+pid)
+    # The process to send SIGKILL to. Asked for once after create, kill
+    # and reopen, and remembered, so that `kill` knows it without asking
+    # a server that may be dead.
+    pid=$(server_pid); [ -n "$pid" ] || die "no server pid"
+    echo "$pid" > "$DIR.server.pid"
+    echo "$pid"
+    exit 0
+    ;;
 destroy)
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null
     DEV=""
     ;;
-*) echo "usage: blkcheck-helper.sh create|kill|fail|reopen|destroy N" >&2; exit 2 ;;
+*) echo "usage: blkcheck-helper.sh create|pid|kill|fail|reopen|destroy N" >&2; exit 2 ;;
 esac
 # The largest request the device takes, for the rig: the suite's cases
 # about a 1 MiB request exercise the server only if this is 1024.

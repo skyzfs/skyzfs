@@ -1,0 +1,179 @@
+//! Replays a trace of the tool (`BLKCHECK_TRACE`) through the suite's
+//! model: the same submits, deliveries and kills, in the same order,
+//! with contents rebuilt from the digests. It says which event the
+//! model objects to, and so lets a failure of a kernel run be studied
+//! on any machine.
+//!
+//! ```text
+//! skyzfs-blkcheck --replay TRACE VOLUME [SIZE_MIB]
+//! ```
+
+use std::collections::BTreeMap;
+use std::process::ExitCode;
+
+use skyzfs_blk::model::Model;
+use skyzfs_blk::{BlkError, Buf, Completion, Geometry, Op, Request, RequestId};
+
+const BLOCK: usize = 4096;
+
+/// Content for a digest: the same digest gives the same block, and
+/// "zero" gives zeros, which is all the model compares.
+fn content(digests: &str) -> Option<Buf> {
+    let mut bytes = Vec::new();
+    for digest in digests.split(',').filter(|d| !d.is_empty()) {
+        if digest == "zero" {
+            bytes.extend(std::iter::repeat_n(0u8, BLOCK));
+        } else {
+            bytes.extend(digest.as_bytes().iter().cycle().take(BLOCK));
+        }
+    }
+    Buf::from_blocks(&bytes)
+}
+
+struct Done {
+    result: Result<(), BlkError>,
+    seen: String,
+}
+
+fn result_of(text: &str) -> Result<(), BlkError> {
+    if text.starts_with("Ok") {
+        Ok(())
+    } else if text.contains("Failed") {
+        Err(BlkError::Failed)
+    } else {
+        Err(BlkError::Io(std::io::ErrorKind::Other))
+    }
+}
+
+/// Replay volume `volume` of the trace at `path`. Prints one line per
+/// event the model is given and what the model said.
+pub fn replay(path: &str, volume: &str, size_mib: u64) -> ExitCode {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("{path}: {e}");
+            return ExitCode::from(2);
+        }
+    };
+    let Ok(geometry) = Geometry::new(size_mib, 64, false) else {
+        eprintln!("not a device size: {size_mib} MiB");
+        return ExitCode::from(2);
+    };
+    let mut model = Model::new(geometry);
+    let mut ops: BTreeMap<u64, String> = BTreeMap::new();
+    let mut done: BTreeMap<u64, Done> = BTreeMap::new();
+    let mut violations = 0;
+    // Ids the model has been given and whose result it has not.
+    let mut outstanding = std::collections::BTreeSet::new();
+    // Between "kill" and "settled" the tool collects the results of the
+    // calls that were outstanding; the suite has not seen them yet.
+    let mut settling = false;
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 3 || f[1] != volume {
+            continue;
+        }
+        let (ms, event) = (f[0], f[2]);
+        let id = f.get(3).and_then(|s| s.parse::<u64>().ok());
+        let said = match (event, id) {
+            ("submit", Some(id)) if f.len() >= 7 => {
+                let first: u64 = f[5].parse().unwrap_or(0);
+                let blocks: usize = f[6].parse().unwrap_or(0);
+                let offset = first * BLOCK as u64;
+                let len = (blocks * BLOCK) as u64;
+                let op = match f[4] {
+                    "read" => Some(Op::Read {
+                        offset,
+                        buf: Buf::zeroed(blocks),
+                    }),
+                    "write" => content(f.get(7).copied().unwrap_or(""))
+                        .map(|data| Op::Write { offset, data }),
+                    "flush" => Some(Op::Flush),
+                    "discard" => Some(Op::Discard { offset, len }),
+                    "write_zeroes" => Some(Op::WriteZeroes { offset, len }),
+                    _ => None,
+                };
+                let Some(op) = op else {
+                    eprintln!("{ms}: cannot rebuild request {id}: {line}");
+                    return ExitCode::from(2);
+                };
+                ops.insert(id, format!("{} {first}+{blocks}", f[4]));
+                if !outstanding.insert(id) {
+                    // The suite's reissue after a kill, which the tool
+                    // issued: the model is not told of it a second time.
+                    println!(
+                        "{ms}\tsubmit\t#{id} {} {first}+{blocks}\tissued again\tworlds {}",
+                        f[4],
+                        model.worlds()
+                    );
+                    continue;
+                }
+                format!(
+                    "{:?}",
+                    model.submit(&Request {
+                        id: RequestId(id),
+                        op
+                    })
+                )
+            }
+            ("done", Some(id)) => {
+                done.insert(
+                    id,
+                    Done {
+                        result: result_of(f.get(4).copied().unwrap_or("")),
+                        seen: f.get(5).copied().unwrap_or("").to_string(),
+                    },
+                );
+                continue;
+            }
+            ("kill", _) => {
+                settling = true;
+                continue;
+            }
+            ("delivered", _) if settling => continue,
+            ("delivered", Some(id)) => {
+                let Some(d) = done.remove(&id) else {
+                    eprintln!("{ms}: {id} delivered before it was done");
+                    return ExitCode::from(2);
+                };
+                outstanding.remove(&id);
+                let buf = if d.seen.is_empty() {
+                    None
+                } else {
+                    content(&d.seen)
+                };
+                let completion = Completion {
+                    id: RequestId(id),
+                    result: d.result,
+                    buf,
+                };
+                format!("{:?}", model.complete(&completion))
+            }
+            ("settled", _) => {
+                settling = false;
+                model.kill();
+                "the model is told of the kill".to_string()
+            }
+            ("fail", _) => {
+                model.log_failed();
+                "the model is told the log failed".to_string()
+            }
+            ("reopen", _) => {
+                model.reopened();
+                "the model is told of the reopen".to_string()
+            }
+            _ => continue,
+        };
+        let what = id.and_then(|id| ops.get(&id)).cloned().unwrap_or_default();
+        let id = id.map_or_else(String::new, |id| format!("#{id} "));
+        println!(
+            "{ms}\t{event}\t{id}{what}\t{said}\tworlds {}",
+            model.worlds()
+        );
+        if said.starts_with("Err") {
+            violations += 1;
+        }
+    }
+    println!("{violations} violations");
+    ExitCode::from(u8::from(violations > 0))
+}

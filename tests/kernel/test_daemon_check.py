@@ -11,16 +11,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daemon_check as dc  # noqa: E402
 
 ALL = {'a', 'b', 'c', 'd', 'e'}
-CASES = {'one': 'PASS: declared PASS: ', 'two': 'WEAKER: declared WEAKER: without a power cut: x',
-         'three': 'NOT_EXERCISED: declared NOT_EXERCISED: the harness cannot cut the power'}
+
+
+def cases(impl='reference'):
+    """As many cases of each kind as the suite declares for this server."""
+    out = {}
+    for part in dc.C_DECLARED[impl].split(', '):
+        word, count = part.split()
+        for i in range(int(count)):
+            out[f'{word.lower()}_{i}'] = f'{word}: declared {word}: x'
+    return out
 
 
 def as_expected(impl='reference'):
     r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
     r.update(impl='reference: x', setup='ok')
-    r.update(c_run='ok: 3 cases', c_declared=dc.C_DECLARED[impl])
-    r.update({f'case_{k}': v for k, v in CASES.items()})
+    r.update(c_run='ok: 26 cases', c_declared=dc.C_DECLARED[impl])
+    r.update({f'case_{k}': v for k, v in cases(impl).items()})
     return r
 
 
@@ -39,23 +47,24 @@ class Cases(unittest.TestCase):
         self.assertEqual((differs, errors), ([], []))
 
     def test_a_failed_case_differs(self):
-        _, differs, errors = dc.judge(with_cases(two='FAIL: declared WEAKER: #3 failed'), self.C)
+        _, differs, errors = dc.judge(with_cases(weaker_0='FAIL: declared WEAKER: #3 failed'), self.C)
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
 
     def test_a_case_that_did_more_or_less_than_declared_differs(self):
         for got in ('PASS', 'NOT_EXERCISED'):
-            _, differs, errors = dc.judge(with_cases(two=f'{got}: declared WEAKER: '), self.C)
+            _, differs, errors = dc.judge(with_cases(weaker_0=f'{got}: declared WEAKER: '), self.C)
             self.assertEqual(len(differs), 1, got)
             self.assertEqual(errors, [])
 
     def test_what_the_harness_said_it_cannot_do_is_a_rig_error(self):
-        _, differs, errors = dc.judge(with_cases(two='UNSUPPORTED: declared WEAKER: a power cut'), self.C)
+        _, differs, errors = dc.judge(with_cases(weaker_0='UNSUPPORTED: declared WEAKER: a power cut'), self.C)
         self.assertEqual(differs, [])
         self.assertEqual(len(errors), 1)
 
     def test_a_suite_that_declares_otherwise_differs(self):
-        r = with_cases()
+        # the suite now declares one more case passed in full, and it does
+        r = with_cases(weaker_0='PASS: declared PASS: x')
         r['c_declared'] = 'PASS 2, WEAKER 14, NOT_EXERCISED 10'
         _, differs, errors = dc.judge(r, self.C)
         self.assertEqual(len(differs), 1)
@@ -72,13 +81,23 @@ class Cases(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_the_daemon_is_held_to_its_own_counts(self):
-        r = with_cases()
-        r['impl'] = 'daemon: x'
-        _, differs, _ = dc.judge(r, self.C, impl='daemon')
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        self.assertEqual(dc.judge(r, self.C, impl='daemon')[1:], ([], []))
+        # the stand-in's counts, from a suite that was told it can reopen a failed volume
+        r = as_expected('reference')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
-        r['c_declared'] = dc.C_DECLARED['daemon']
-        _, differs, _ = dc.judge(r, self.C, impl='daemon')
+        self.assertEqual(errors, [])
+
+    def test_fewer_cases_than_the_suite_declared_is_a_rig_error(self):
+        r = with_cases()
+        del r['case_weaker_3']
+        _, differs, errors = dc.judge(r, self.C)
         self.assertEqual(differs, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn('25 cases', errors[0])
 
     def test_check_c_is_asked_for_only_when_it_ran(self):
         r = {k: v for k, v in as_expected().items() if not k.startswith(('c_', 'case_', 'pin_c_'))}
@@ -167,6 +186,29 @@ class Judge(unittest.TestCase):
         r['ctl_recovered_log_too_short'] = 'PASS: served'
         self.assertEqual(len(dc.judge(r, ALL, impl='daemon')[1]), 1)
 
+    def test_an_observation_that_did_not_run_is_a_rig_error(self):
+        for name in dc.OBSERVED:
+            r = as_expected()
+            r[name] = 'not run: the serve did not start'
+            _, differs, errors = dc.judge(r, ALL)
+            self.assertEqual((differs, len(errors)), ([], 1), name)
+
+    def test_a_pin_the_table_does_not_know_is_a_rig_error(self):
+        for name, value in (('pin_new_thing', 'PASS: fine'), ('ctl_new_thing', 'FAIL: caught'), ('pin_new_thing', 'FAIL: x')):
+            r = as_expected()
+            r[name] = value
+            _, differs, errors = dc.judge(r, ALL)
+            self.assertEqual((differs, len(errors)), ([], 1), name)
+        # a line that is neither a pin nor a control is context, as before
+        r = as_expected()
+        r['b_rounds'] = 'kill 1: ...'
+        self.assertEqual(dc.judge(r, ALL)[1:], ([], []))
+
+    def test_a_run_with_nothing_to_judge_is_a_rig_error(self):
+        _, differs, errors = dc.judge({'impl': 'reference: x', 'setup': 'ok'}, set())
+        self.assertEqual(differs, [])
+        self.assertEqual(len(errors), 1)
+
     def test_every_pin_says_what_it_rests_on(self):
         for name, (check, want, basis, claim, *_) in dc.EXPECTED.items():
             self.assertIn(check, ALL, name)
@@ -192,6 +234,36 @@ class Main(unittest.TestCase):
                 self.assertIn('pin_discard', out.getvalue())
         with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(dc.main([d]), 2)
+
+    def run_main(self, lines, *args):
+        import contextlib
+        import io
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, 'results.tsv'), 'w', encoding='utf-8') as f:
+                f.writelines(lines)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                return dc.main([d, *args]), out.getvalue()
+
+    def test_checks_that_name_nothing_are_refused(self):
+        lines = [f'{k}\t{v}\n' for k, v in as_expected().items()]
+        self.assertEqual(self.run_main(lines)[0], 0)
+        self.assertEqual(self.run_main(lines, '--checks', 'a b c d e')[0], 0)
+        for asked in (' ', '', 'abcde', 'a b x', 'a,b'):
+            status, text = self.run_main(lines, '--checks', asked)
+            self.assertEqual(status, 2, repr(asked))
+            self.assertIn('checks:', text)
+        # the rig's own view of the same input: it ran nothing and wrote only context
+        status, _ = self.run_main(['impl\treference: x\n', 'setup\tok\n'], '--checks', ' ')
+        self.assertEqual(status, 2)
+
+    def test_a_pin_written_twice_with_two_results_is_a_rig_error(self):
+        lines = [f'{k}\t{v}\n' for k, v in as_expected().items()]
+        status, text = self.run_main(['pin_discard\tFAIL: 0\n'] + lines)
+        self.assertEqual(status, 2)
+        self.assertIn('written twice', text)
+        # the same result twice is the same result
+        self.assertEqual(self.run_main(lines + ['pin_discard\tPASS: again\n'])[0], 0)
 
 
 if __name__ == '__main__':
