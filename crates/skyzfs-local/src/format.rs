@@ -523,6 +523,17 @@ impl RecordHeader {
         Ok((header, stored))
     }
 
+    /// The kind and payload length of what looks like a record header
+    /// at `position`, without the key: magic, version, position, a known
+    /// kind. For reading the payload of a record the caller knows to be
+    /// valid; it proves nothing by itself.
+    pub fn peek(bytes: &[u8; RECORD_HEADER], position: Lsn) -> Option<(Kind, u32)> {
+        if !Self::looks_like(bytes, position) || u32::from(bytes[4]) != VERSION {
+            return None;
+        }
+        Some((Kind::from_code(bytes[5])?, u32_at(bytes, 40)))
+    }
+
     /// Whether `bytes` look like a record header that says it is at
     /// `position`, without the key. For reports only: nothing is ever
     /// replayed on the strength of this.

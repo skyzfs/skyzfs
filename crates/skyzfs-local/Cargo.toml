@@ -10,9 +10,11 @@ repository.workspace = true
 thiserror = { workspace = true }
 crc32c = { workspace = true }
 getrandom = { workspace = true }
+skyzfs-blk = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+skyzfs-blk = { workspace = true, features = ["conformance"] }
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

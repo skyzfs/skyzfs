@@ -372,6 +372,15 @@ impl Harness for H {
         t.failed = true;
         Ok(())
     }
+    // Added with the hook itself (M1.2b): the volume comes back with
+    // its whole log, as after a daemon loss, and serves again.
+    fn reopen_failed(&mut self, mut t: T) -> Result<Result<T, T>, HarnessError> {
+        t.land();
+        t.rebuild();
+        t.durable = t.log.len();
+        t.failed = false;
+        Ok(Ok(t))
+    }
 }
 
 fn run(mode: Mode) -> skyzfs_blk::conformance::Report {

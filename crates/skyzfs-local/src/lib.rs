@@ -1,5 +1,6 @@
-//! The SkyZFS local store (design §5.1). So far: the write log, and the
-//! disk it is tested on.
+//! The SkyZFS local store (design §5.1). So far: the write log, the
+//! disk it is tested on, and a block target on the log and a home
+//! image.
 //!
 //! - [`io`]: the few file and directory operations the store uses, as
 //!   traits, so that the same code runs on real files and on a disk that
@@ -8,11 +9,12 @@
 //!   seed;
 //! - [`fs`]: the same operations on real files;
 //! - [`mod@format`]: the log's bytes;
-//! - [`log`]: the log: append, sync, recover, replay, reclaim.
+//! - [`log`]: the log: append, sync, recover, replay, reclaim;
+//! - [`store`]: the block target ([`skyzfs_blk::BlockTarget`]) on the
+//!   log and a home image: see [The store](#the-store).
 //!
-//! No block target sits on the log yet, and the log knows nothing of
-//! blocks: a record is a kind, a range of the volume, and for a write
-//! its data.
+//! The log knows nothing of blocks: a record is a kind, a range of the
+//! volume, and for a write its data.
 //!
 //! # What the log promises
 //!
@@ -377,9 +379,356 @@
 //! such an instance does not serve a client that was told more is the
 //! transport's duty (design §4.1: it gives up the attachment).
 //!
+//! # What the log's caller is held to
+//!
+//! Three things the log refuses, because a caller that got them wrong
+//! would break the promises above without the log noticing:
+//!
+//! - [`Log::replay`](log::Log::replay) ends at the durable position at
+//!   the latest. What a replay returns can be acted on for good (the
+//!   store writes it into the home image), and a record that no sync
+//!   covers can still be lost.
+//! - [`Log::reclaim`](log::Log::reclaim) takes only the start or the
+//!   end of a record, as a replay does.
+//! - With [`Log::set_segment_limit`](log::Log::set_segment_limit) an
+//!   append that would need one segment file more than the limit
+//!   returns [`LogError::Full`](log::LogError::Full). That is not a
+//!   failure: nothing was written, the log goes on, and the append
+//!   succeeds after a reclaim. The limit lives in memory, like the
+//!   hold, and is not part of the format.
+//!
+//! [`Log::read_payload`](log::Log::read_payload) reads a part of one
+//! record's payload by the position the append returned, synced or
+//! not. It does not check the record's tag or checksum again: the
+//! position comes from an append or a replay of this instance, which
+//! did.
+//!
+//! # The store
+//!
+//! [`store::Store`] is a volume: the contract of `skyzfs-blk` (design
+//! §4.1, rules R1 to R12 there) on three things.
+//!
+//! - **The log.** A write, a write-zeroes and a discard are each one
+//!   record, appended in the order the requests were submitted.
+//! - **The home image**, `home.img`: one file of the volume's size. It
+//!   holds the volume as it was at the log's start, give or take
+//!   blocks that a record still in the log writes again.
+//! - **The index**, in memory: for every block that a write or a
+//!   write-zeroes record of the log covers, the newest such record. A
+//!   read takes a block from that record if there is one, and from the
+//!   home image otherwise.
+//!
+//! A **checkpoint** moves the log's start forward: it writes the
+//! records from the start up to the durable position, or up to the
+//! hold if that is lower, into the home image; syncs the home image;
+//! reclaims that part of the log; and only then drops those records
+//! from the index. The store runs one when the log is full, and the
+//! caller may at any time ([`store::Store::checkpoint`]).
+//!
+//! **One instance per volume** (design §4.2). Opening a store is a
+//! recovery that writes: an epoch, a seal. Before it reads or writes
+//! anything the store takes an exclusive lock on its directory
+//! ([`io::Dir::try_lock`]) and holds it until it is dropped. A second
+//! open, or a creation over a live store, fails at once with
+//! [`store::StoreError::Locked`] and changes nothing. On real files the
+//! lock is an advisory lock on the file `lock`, which the operating
+//! system releases when the process ends, however it ends.
+//!
+//! ## One request at a time
+//!
+//! Requests are executed one at a time in the order of submission, and
+//! each is completed before the next starts. That order is the
+//! "single order" of rule R8, and it is the log's order.
+//!
+//! - [`store::Store`] does the work in the caller's thread: `submit`
+//!   validates the id and the queue depth and queues the request;
+//!   `wait` executes what is queued and returns the completions, so it
+//!   does file I/O and never sleeps. Its `poll` does nothing and
+//!   returns 0: the contract says `poll` never blocks, executing a
+//!   request is I/O, and `wait` hands out every completion it makes,
+//!   so none is ever waiting. A caller of this driver has to call
+//!   `wait`. It is what the tests drive, because every step is then
+//!   reproducible.
+//! - [`store::Served`] ([`store::Store::serve`]) gives the store to one
+//!   worker thread. `submit` sends the request to it, `poll` takes what
+//!   has completed without blocking, `wait` blocks up to its timeout.
+//!   A checkpoint and the hold go through the same queue, so they fall
+//!   between two requests.
+//!
+//! For M1.3, each ublk queue is another caller of `submit`. What that
+//! needs and is not here: completions routed back to the queue that
+//! submitted (one channel carries them all today); reads that do not
+//! wait behind a sync (the worker does everything, so a flush stalls
+//! every read behind it, and group commit of several queues' writes
+//! under one sync is not there either); and a bound on the worker's
+//! queue per ublk queue, which today is the single `queue_depth`.
+//!
+//! ## Why the volume keeps the contract
+//!
+//! Call *the order* the order of the log's records. The volume's
+//! content at any moment is: the home image, overlaid with the log's
+//! records from its start to its end, in order. Reads return that
+//! content (R3, R4) if two things hold, and the steps below keep them:
+//!
+//! - **(I) the index is the overlay**: it names, for each block, the
+//!   last record in the log that writes it;
+//! - **(H) below the log's start the home image is right**: a block
+//!   that no record in the log writes has, in the home image, the
+//!   content the order gave it before the log's start.
+//!
+//! *A request.* A write is acknowledged after
+//! [`Log::append`](log::Log::append) has returned, and the index is
+//! pointed at the new record before the next request runs. (I) holds;
+//! (H) is untouched. A write-zeroes is a record of its own and reads
+//! as zeros whatever the base is (R5). A discard is recorded, for
+//! whoever uploads later, and changes nothing a read can see: the
+//! blocks keep their content, which R6 allows and which is the one
+//! choice that needs no reasoning about what "discarded" survives.
+//! Nothing is written or erased locally, so **a discard is not a way
+//! to make data unreadable on the local disk**. A
+//! request that the geometry refuses is answered before anything else
+//! happens (R2), and on a read-only volume nothing is appended (R12).
+//!
+//! *A flush* returns after [`Log::sync`](log::Log::sync) has. Every
+//! request acknowledged before the flush was submitted was appended
+//! before it, since requests run in submission order, so the sync
+//! covers it (R7).
+//!
+//! *A checkpoint* works in batches of records, each from the log's
+//! start. Where the write unit is one block there is one batch. Step
+//! by step, with what a crash leaves after each:
+//!
+//! 1. Where the write unit is larger than a block: the blocks that
+//!    share a write unit with a block about to be written, are not
+//!    themselves written, and are not written by a durable record
+//!    still in the log, are copied into `home.pre`, tagged for the
+//!    log's current start, and the file is synced. (See [the preimage
+//!    file](#the-preimage-file).) A crash here has changed nothing in
+//!    the home image.
+//! 2. The batch's records are written into the home image. Every
+//!    block written is one that a record in the log writes, so (H)
+//!    says nothing about it, and the index sends reads of it to the
+//!    log. A block may now hold an older record's data than the
+//!    newest; the index still names the newest. A crash here leaves
+//!    the home image with any mixture in those blocks, and the log,
+//!    which is durable up to the batch's end and beyond, with all of
+//!    the records: the next open rebuilds the index from them and no
+//!    read sees the mixture. Only records up to the durable position
+//!    are written, because a record beyond it can be lost with the
+//!    power, and then nothing would cover what the home image got from
+//!    it. (This also holds for the hold: records above it stay in the
+//!    log, and reads of them stay with the log.)
+//! 3. The home image is synced. Now every block that only records of
+//!    the batch write has its final content durably.
+//! 4. The log is reclaimed up to the batch's end. This is the step
+//!    that makes (H) apply to those blocks, and step 3 has made it
+//!    true first. It is also what retires the preimage file, which
+//!    counts only while the log starts where it did when the file was
+//!    written. A crash between 3 and 4 leaves the records in the log
+//!    and the file valid: the open writes the preimages back, which
+//!    changes nothing, and the next checkpoint applies the records
+//!    again, which writes the same bytes.
+//! 5. The index drops the entries whose record is below the new start.
+//!    Before the reclaim returned they still pointed into the log,
+//!    which could still serve them; after it, the home image does.
+//!    An entry whose record is above the new start stays, also for a
+//!    block that the batch wrote.
+//!
+//! *The process is lost* (R9). Promise 1 of the log: every record whose
+//! append returned is there, with everything before it. An open
+//! recovers the log, restores preimages if a checkpoint was cut off,
+//! and rebuilds the index by replaying the log from its start, which
+//! establishes (I). (H) held before the loss or the log still has the
+//! records, by the checkpoint's order. Requests that were in flight
+//! were appended or not, each whole.
+//!
+//! *The power is cut* (R10). Promise 2: the log comes back as a prefix
+//! of the order, each record whole, with every record a sync covered.
+//! Promise 3: that prefix is durable before the open returns and what
+//! was left out does not come back, so what is read after recovery is
+//! stable. The home image is right for the same reason as above, plus
+//! the preimages, which cover the one thing a power cut does that a
+//! lost process does not: sectors of a write unit that were being
+//! rewritten come back as anything. So the volume is the home image
+//! overlaid with a prefix of the order.
+//!
+//! *Something fails* (R11). A failed append, sync, or write or sync of
+//! the home image or the preimage file, and a failed read of any of
+//! them, fails the volume: the store completes the request with an
+//! error, writes the log's failure marker, and answers every later
+//! request, reads included, with an error. **The failure is announced
+//! before the marker is attempted**: the marker needs the disk that
+//! has just failed, and a sync on a sick disk can take minutes or
+//! never return, while a transport must give up its attachment at
+//! once (design §4.2). So the store calls an observer
+//! ([`store::OpenOptions::on_failure`]) once, when it decides, from
+//! the thread that executes requests; the observer is to return
+//! quickly. A flush that finds nothing to make durable does not touch
+//! the disk and succeeds: it promises nothing new, and a disk that
+//! would refuse the next sync and has not been asked has not failed
+//! yet (design §4.1). The next write or sync that has work to do is
+//! what finds a dead disk.
+//! A full log is not a failure. The next open refuses the volume
+//! unless it is told that the client knows
+//! ([`store::OpenOptions::acknowledge_failure`]); then promise 4 gives
+//! every record that a successful sync covered, so every completed
+//! flush, and (H) holds by the checkpoint's order, since a checkpoint
+//! that failed part way is a checkpoint cut off part way.
+//!
+//! *The log is full.* With a limit on the log's segment files
+//! ([`store::OpenOptions::log_segments`]), a write that does not fit
+//! makes the store sync the log and checkpoint, and try once more. If
+//! a hold keeps the checkpoint from freeing a segment, the request is
+//! neither completed nor failed: it stays first in the queue, and with
+//! it everything behind it, until the hold moves
+//! ([`store::Store::set_hold`]).
+//!
+//! ## The preimage file
+//!
+//! Writing one block of the home image rewrites the whole write unit
+//! around it (see the rule about write units above), and a power cut
+//! during that write can leave any sector of the unit as garbage. The
+//! blocks a batch itself writes are covered by the log, and so is any
+//! block that a durable record still in the log writes. The other
+//! blocks of the unit may be in the home image alone. So where the
+//! write unit is larger than a block, a batch first saves those in
+//! `home.pre` and syncs it, and an open that finds the file whole and
+//! current writes them back into the home image, and syncs it, before
+//! anything is read from the home image. Where the write unit is one
+//! block (4 KiB pages) there is no file and no extra sync.
+//!
+//! All integers little-endian. A tag is SipHash-2-4 under the volume's
+//! key, the one the log's headers are tagged with.
+//!
+//! | Offset | Bytes | Field |
+//! |---|---|---|
+//! | 0 | 8 | magic `SKYZPRE\0` |
+//! | 8 | 4 | version, 1 |
+//! | 12 | 4 | number of blocks saved |
+//! | 16 | 16 | the volume |
+//! | 32 | 8 | the log's start when the batch began |
+//! | 40 | 8 | tag of: that start, then the table |
+//! | 48 | 456 | zero |
+//! | 504 | 8 | tag of bytes 0 to 503 |
+//! | 4096 | 16 each | the table: block number (8), tag of: the start, the block number, the block's content (8) |
+//! | after the table, rounded up to 4096 | 4096 each | the blocks, in the table's order |
+//!
+//! - **Whole.** The file is whole if the header's tag, the table's tag
+//!   and every block's tag match. The blocks are data a client wrote,
+//!   going back to places in the home image, so nothing here is a
+//!   plain checksum: content a client chose cannot make a torn file,
+//!   or a file with a block moved to another place, look whole.
+//! - **Current.** The file counts only if its start is where the log
+//!   starts now. A batch ends by moving the log's start, durably, and
+//!   the start never goes back, so a file of an earlier batch is never
+//!   taken for the current one. That is why the file is not erased
+//!   after a batch: nothing depends on it being gone. While the log's
+//!   start has not moved, writing the file back is always right: a
+//!   block in it either is in the home image alone, and then the file
+//!   has its content as of that start, or a record in the log writes
+//!   it, and then the home image's copy is not read.
+//! - **A cut while writing back** leaves the file as it was, and the
+//!   next open writes it back again.
+//! - **Every point a batch can be cut at.** Let the log start at F
+//!   when the batch begins, and at G when it has ended.
+//!   1. *While the file is written, before its sync.* The home image
+//!      is untouched. The file may be torn, or whole for F by chance
+//!      of what survived; neither harms.
+//!   2. *After the file's sync, while the home image is written.* The
+//!      blocks the batch writes are in the log; the other blocks of
+//!      their units are in the file or in a durable record. The open
+//!      finds the file whole and bound to F, the log starts at F, and
+//!      it writes them back.
+//!   3. *After the home image's sync, before the reclaim.* As 2, and
+//!      the writing back changes nothing.
+//!   4. *During the reclaim.* The reclaim writes one copy of the
+//!      superblock and syncs it. After a cut the log starts at F, and
+//!      this is point 3, or at G, and this is point 5. It cannot start
+//!      anywhere else, and once G is durable it never shows F again:
+//!      every superblock that is written starts a new epoch, and a
+//!      copy that is behind is known to be behind (see "Why recovery
+//!      yields a prefix").
+//!   5. *After the reclaim.* The log starts at G, the file is bound to
+//!      F and counts for nothing. The home image was synced before the
+//!      reclaim began, so everything below G is durably in it.
+//!   6. *The next batch.* It writes its own file, bound to G, and syncs
+//!      it before it touches the home image; if it has nothing to
+//!      save it writes no file, and the old one, bound to F, stays
+//!      dead. **The reclaim is durable before the next batch writes the
+//!      home image**: `Log::reclaim` returns only after the superblock
+//!      is synced. If it were not, a cut could bring back F beside a
+//!      file bound to G, the file would not be written back, and that
+//!      batch's neighbours would be unprotected. A test runs the
+//!      batches on a log whose reclaim is not durable and sees exactly
+//!      that.
+//! - **Bounded.** A batch saves at most 256 blocks, so the file is at
+//!   most 1 MiB and two blocks. A batch is as many records as fit that
+//!   bound, counting for each record the rest of its first and last
+//!   write unit, and at most 1024 records.
+//! - **Cost**, where the write unit is larger than a block, for each
+//!   batch: a read of each block saved, one write and one sync of
+//!   `home.pre`, on top of the sync of the home image and the reclaim
+//!   (a write and a sync of the superblock, and one epoch of the log)
+//!   that a batch costs anywhere. In the worst case, single-block writes scattered one to
+//!   a 16 KiB unit, that is a batch for every 85 records, and so three
+//!   syncs and about 1 MiB of preimages for every 340 KiB applied.
+//!   Writes of whole units cost no preimages. None of this is
+//!   measured: not the preimages, and not the superblock write, the
+//!   sync and the epoch that every batch pays for its reclaim.
+//!
 //! # Limits
 //!
-//! Not modelled, and not defended against:
+//! Of the store:
+//!
+//! - **One worker.** Everything is serial, a flush included: see above
+//!   for what M1.3's queues need.
+//! - **Preimages cost a checkpoint** on machines whose pages are larger
+//!   than a block (16 KiB on Apple silicon and some arm64 kernels):
+//!   see [the preimage file](#the-preimage-file). Direct I/O on the
+//!   home image, whose write unit is then the device's block, would
+//!   remove the need.
+//! - **The log's files are created on demand**, up to the limit, and
+//!   not when the volume is made: a full local disk is found on the
+//!   commit path, as a failed volume, and not at creation as the
+//!   design intends. The log's limit is in memory and its files are
+//!   made by the append that needs one; creating them ahead belongs
+//!   with making the limit a property of the volume.
+//! - **The lock keeps out stores, not everything.** It is advisory: a
+//!   program that writes the files without asking is not stopped.
+//!   And it belongs to the open file, of which a child process holds
+//!   a copy from its fork to its exec. Dropping the store unlocks, so
+//!   a store that is closed and opened again while another thread
+//!   starts a child is not found locked. A process that dies without
+//!   dropping the store, at the moment a child of its own is between
+//!   fork and exec, leaves the lock to that child until the exec, and
+//!   the next instance may see `Locked` for that moment.
+//! - **Write-zeroes is written out as zeros** by a checkpoint, and a
+//!   discard frees nothing: no hole is punched in the home image.
+//! - **The home image is written through the page cache**, so a
+//!   checkpoint's data is in memory twice until it is synced.
+//! - **The index is rebuilt at every open** by reading the whole log,
+//!   and holds one entry for each run of blocks, in memory.
+//! - **A read error fails the volume**, also where another copy could
+//!   have served the read. Nothing is repaired here.
+//! - **A read from the log does not check the record again.** A
+//!   payload corrupted in the log after it was validated is served to
+//!   a read as it is, and fails the volume at the next checkpoint,
+//!   which checks every record before anything is made permanent.
+//! - **A full file system fails the volume for good.** The home image
+//!   is sparse, so a checkpoint's write into it can run out of space,
+//!   and that is a failed write like any other. Design §4.1 holds a
+//!   condition that can recover and does not fail on it, and a full
+//!   file system is one: a known gap, for the package that accounts
+//!   for space.
+//! - **A hold is checked only inside the log.** A position at or below
+//!   the log's start is taken as it is and holds the whole log.
+//! - **No upload, no cuts, no eviction**: the home image is always
+//!   complete (cache policy `complete`), and the hold is whatever the
+//!   caller sets.
+//! - **The file system's type is not checked** yet (see below: ext4
+//!   and XFS).
+//!
+//! Of the log, not modelled and not defended against:
 //!
 //! - **A disk that lies about a sync.** If a sync returns before the
 //!   data is persistent, a power cut can lose synced records. On macOS
@@ -470,3 +819,4 @@ pub mod fs;
 pub mod io;
 pub mod log;
 pub mod sim;
+pub mod store;

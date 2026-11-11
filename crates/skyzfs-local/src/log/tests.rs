@@ -145,7 +145,7 @@ fn put_small(log: &mut SimLog, tag: u8) -> Result<Appended, String> {
 /// one `put` or `put_small` wrote, whole, shows as 0xFF.
 fn tags_between(log: &SimLog, from: Lsn, to: Lsn) -> Result<Vec<u8>, LogError> {
     let mut tags = Vec::new();
-    log.replay(from, to, &mut |record| {
+    log.replay_unsynced(from, to, &mut |record| {
         let tag = match record.kind {
             Kind::Discard => (record.offset / 4096) as u8,
             _ => record.data.first().copied().unwrap_or(0xFF),
@@ -216,7 +216,7 @@ fn fill_to_roll(log: &mut SimLog, env: &Env, tag: &mut u8) -> Result<Vec<(u8, Ap
     }
 }
 
-fn environments(mutants: u32) -> Vec<Env> {
+fn environments(mutants: u64) -> Vec<Env> {
     let mut out = Vec::new();
     for align in [64, 4096] {
         for garbage in [false, true] {
@@ -242,7 +242,7 @@ fn holds(scenario: fn(&Env) -> Outcome) {
 
 /// The scenario holds for the log as it is, and fails for the log with
 /// `mutants` in every environment that `where_` selects.
-fn caught(scenario: fn(&Env) -> Outcome, mutants: u32, where_: fn(&Env) -> bool) {
+fn caught(scenario: fn(&Env) -> Outcome, mutants: u64, where_: fn(&Env) -> bool) {
     holds(scenario);
     let mut ran = 0;
     for env in environments(mutants).into_iter().filter(where_) {
@@ -255,7 +255,7 @@ fn caught(scenario: fn(&Env) -> Outcome, mutants: u32, where_: fn(&Env) -> bool)
 }
 
 /// The scenario still holds with `mutants`: another defence covers.
-fn covered(scenario: fn(&Env) -> Outcome, mutants: u32) {
+fn covered(scenario: fn(&Env) -> Outcome, mutants: u64) {
     for env in environments(mutants) {
         if let Err(why) = scenario(&env) {
             panic!("the defect {mutants:#x} alone already breaks {env:?}: {why}");
@@ -305,7 +305,7 @@ fn records_round_trip() {
             return Err("the tail is not the end of the last record".into());
         }
         let mut seen = Vec::new();
-        s(log.replay(start, d.end, &mut |r| {
+        s(log.replay_unsynced(start, d.end, &mut |r| {
             seen.push((r.start, r.end, r.kind, r.offset, r.length, r.data.to_vec()));
         }))?;
         let want = vec![
@@ -325,19 +325,19 @@ fn records_round_trip() {
             return Err(format!("replayed {seen:?}"));
         }
         let mut kinds = Vec::new();
-        s(log.replay(b.start, c.end, &mut |r| kinds.push(r.kind)))?;
+        s(log.replay_unsynced(b.start, c.end, &mut |r| kinds.push(r.kind)))?;
         if kinds != [Kind::WriteZeroes, Kind::Discard] {
             return Err(format!("a sub-range replayed {kinds:?}"));
         }
-        s(log.replay(d.end, d.end, &mut |_| kinds.push(Kind::Pad)))?;
+        s(log.replay_unsynced(d.end, d.end, &mut |_| kinds.push(Kind::Pad)))?;
         if kinds.len() != 2 {
             return Err("an empty range replayed something".into());
         }
         let refused = [
-            log.replay(Lsn(start.0 + 8), d.end, &mut |_| {}),
-            log.replay(start, Lsn(d.end.0 - 8), &mut |_| {}),
-            log.replay(start, Lsn(d.end.0 + 64), &mut |_| {}),
-            log.replay(c.start, b.start, &mut |_| {}),
+            log.replay_unsynced(Lsn(start.0 + 8), d.end, &mut |_| {}),
+            log.replay_unsynced(start, Lsn(d.end.0 - 8), &mut |_| {}),
+            log.replay_unsynced(start, Lsn(d.end.0 + 64), &mut |_| {}),
+            log.replay_unsynced(c.start, b.start, &mut |_| {}),
         ];
         if !refused
             .iter()
@@ -428,7 +428,7 @@ fn replay_takes_record_starts_and_ends_also_behind_a_gap() {
         if a.end != b.start {
             let gap = Lsn(a.end.0 + u64::from(env.align));
             for (from, to) in [(floor, gap), (gap, b.end), (gap, gap)] {
-                match log.replay(from, to, &mut |_| {}) {
+                match log.replay_unsynced(from, to, &mut |_| {}) {
                     Err(LogError::BadPosition(at)) if at == gap => {}
                     other => return Err(format!("a position in a gap gave {other:?}")),
                 }
@@ -476,6 +476,204 @@ fn replay_takes_record_starts_and_ends_also_behind_a_gap() {
         env.align == 64
     }
     caught(scenario, Mutants::REPLAY_PAST_START, with_gaps);
+}
+
+/// A replay hands out only what is durable. A record that is appended
+/// and not synced survives the loss of the process but not a power cut,
+/// and whoever applied it to a place that outlives the log would keep
+/// what the log can lose. So a replay beyond the durable position is
+/// refused and visits nothing; up to it, and after a sync or an open
+/// up to the tail, it works. Mutant: a replay up to the tail.
+#[test]
+fn a_replay_ends_at_the_durable_position() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let a = put(&mut log, env, 1)?;
+        s(log.sync())?;
+        let b = put(&mut log, env, 2)?;
+        if log.durable() != a.end {
+            return Err("the durable position is not the synced record's end".into());
+        }
+        let mut seen = Vec::new();
+        match log.replay(log.floor(), log.tail(), &mut |r| seen.push(r.start)) {
+            Err(LogError::BadPosition(at)) if at == b.end && seen.is_empty() => {}
+            other => return Err(format!("beyond the durable position: {other:?}, {seen:?}")),
+        }
+        s(log.replay(log.floor(), log.durable(), &mut |r| seen.push(r.start)))?;
+        if seen != [a.start] {
+            return Err(format!("up to the durable position: {seen:?}"));
+        }
+        s(log.sync())?;
+        seen.clear();
+        s(log.replay(log.floor(), log.tail(), &mut |r| seen.push(r.start)))?;
+        put(&mut log, env, 3)?;
+        drop(log);
+        // After an open the whole log is durable.
+        let (log, _) = env.reopen(&disk)?;
+        let mut count = 0;
+        s(log.replay(log.floor(), log.tail(), &mut |_| count += 1))?;
+        if seen != [a.start, b.start] || count != 3 {
+            return Err(format!(
+                "after a sync {seen:?}, after an open {count} records"
+            ));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::REPLAY_UNSYNCED, everywhere);
+}
+
+/// The start of the log is a record boundary. It is durable state: a
+/// start inside a record, or in the gap in front of one, would outlive
+/// the process and leave a log that cannot be read from its start. So a
+/// reclaim to such a position is refused, the start stays where it was,
+/// and the log reads the same after a reopen; a reclaim to the record's
+/// start or end works. Mutant: a reclaim that takes any position.
+#[test]
+fn a_reclaim_takes_only_a_record_boundary() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let a = put(&mut log, env, 1)?;
+        s(log.sync())?;
+        let b = put(&mut log, env, 2)?;
+        let c = put(&mut log, env, 3)?;
+        s(log.sync())?;
+        let floor = log.floor();
+        let mut bad = vec![Lsn(b.start.0 + 8), Lsn(b.start.0 + u64::from(env.align))];
+        if a.end != b.start {
+            // In the gap behind the sync.
+            bad.push(Lsn(a.end.0 + u64::from(env.align)));
+        }
+        for at in bad {
+            match log.reclaim(at) {
+                Err(LogError::BadPosition(refused)) if refused == at => {}
+                other => return Err(format!("a reclaim to {at} gave {other:?}")),
+            }
+            if log.floor() != floor || log.is_failed() {
+                return Err("a refused reclaim changed the log".into());
+            }
+        }
+        expect(&log, &[1, 2, 3], "after the refused reclaims")?;
+        if s(log.reclaim(b.start))? != b.start {
+            return Err("a reclaim to a record's start did not take it".into());
+        }
+        if s(log.reclaim(b.end))? != b.end || b.end != c.start {
+            return Err("a reclaim to a record's end did not take it".into());
+        }
+        drop(log);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &[3], "after a reopen")
+    }
+    caught(scenario, Mutants::RECLAIM_UNCHECKED, everywhere);
+}
+
+/// A record's payload can be read back as soon as it is appended,
+/// before any sync: whole or in part, by the position the append
+/// returned. A position that is not the start of a write record, a
+/// range beyond the payload, a record below the start of the log and a
+/// failed log are refused.
+#[test]
+fn a_payload_is_read_back_before_it_is_synced() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        let first = put(&mut log, env, 1)?;
+        let small = put_small(&mut log, 2)?;
+        let a = s(log.append(Kind::Write, 8192, data.len() as u64, &data))?;
+        if log.durable() >= a.end {
+            return Err("the record is durable already".into());
+        }
+        for (skip, len) in [(0, data.len()), (0, 1), (4096, 4096), (9_999, 1)] {
+            let mut buf = vec![0xEE; len];
+            s(log.read_payload(a.start, skip as u64, &mut buf))?;
+            if buf != data[skip..skip + len] {
+                return Err(format!("{len} bytes from {skip} read back wrong"));
+            }
+        }
+        let mut buf = vec![0u8; 16];
+        let refused = [
+            log.read_payload(Lsn(a.start.0 + 64), 0, &mut buf),
+            log.read_payload(a.start, 9_990, &mut buf),
+            log.read_payload(a.start, u64::MAX, &mut buf),
+            log.read_payload(small.start, 0, &mut buf),
+            log.read_payload(a.end, 0, &mut buf),
+            log.read_payload(Lsn(0), 0, &mut buf),
+        ];
+        if !refused
+            .iter()
+            .all(|r| matches!(r, Err(LogError::BadPosition(_))))
+        {
+            return Err(format!("bad reads gave {refused:?}"));
+        }
+        s(log.sync())?;
+        s(log.reclaim(small.start))?;
+        match log.read_payload(first.start, 0, &mut buf) {
+            Err(LogError::BadPosition(_)) => {}
+            other => return Err(format!("a read below the start gave {other:?}")),
+        }
+        disk.fail_write(0, false);
+        if put_small(&mut log, 9).is_ok() {
+            return Err("the failing append succeeded".into());
+        }
+        match log.read_payload(a.start, 0, &mut buf) {
+            Err(LogError::Failed) => Ok(()),
+            other => Err(format!("a read on a failed log gave {other:?}")),
+        }
+    }
+    holds(scenario);
+}
+
+/// A log with a limit on its segment files is full when a record needs
+/// one more. The append says so and has written nothing; the log has not
+/// failed. After a reclaim has freed a file the same append works, in
+/// the freed file, and the log goes on through a power cut.
+#[test]
+fn a_full_log_says_so_and_goes_on_after_a_reclaim() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        log.set_segment_limit(Some(2));
+        let mut tag = 1;
+        let first = fill_to_roll(&mut log, env, &mut tag)?;
+        let mut want: Vec<u8> = first.iter().map(|(t, _)| *t).collect();
+        // Fill the second file to the point where a record needs a third.
+        let (tail, writes) = loop {
+            let before = (log.tail(), disk.stats().writes);
+            let data = vec![tag; env.payload()];
+            match log.append(Kind::Write, u64::from(tag) * 4096, data.len() as u64, &data) {
+                Ok(_) => {
+                    want.push(tag);
+                    tag += 1;
+                }
+                Err(LogError::Full) => break before,
+                Err(other) => return Err(other.to_string()),
+            }
+        };
+        if log.tail() != tail || disk.stats().writes != writes || log.is_failed() {
+            return Err("the refused append changed the log".into());
+        }
+        if log.segment_files() != 2 {
+            return Err(format!("{} segment files", log.segment_files()));
+        }
+        expect(&log, &want, "when full")?;
+        // Full again, as often as it is tried.
+        if put(&mut log, env, tag).is_ok() || log.is_failed() {
+            return Err("a full log took a record or failed".into());
+        }
+        s(log.sync())?;
+        let (_, kept) = first[first.len() - 1];
+        s(log.reclaim(kept.start))?;
+        want.drain(..first.len() - 1);
+        put(&mut log, env, tag)?;
+        want.push(tag);
+        if log.segment_files() != 2 {
+            return Err("room was made by a new file".into());
+        }
+        s(log.sync())?;
+        drop(log);
+        disk.power_cut(LoseAll);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &want, "after going on")
+    }
+    holds(scenario);
 }
 
 /// Create, interrupted: a power cut during creation leaves either no
@@ -948,7 +1146,7 @@ fn a_payload_that_looks_like_a_record_is_not_taken_for_one() {
         drop(log);
         let (log, _) = env.reopen(&disk)?;
         let mut seen = Vec::new();
-        s(log.replay(log.floor(), log.tail(), &mut |r| {
+        s(log.replay_unsynced(log.floor(), log.tail(), &mut |r| {
             seen.push((r.kind, r.offset, r.data.to_vec()));
         }))?;
         let want = vec![
@@ -1360,7 +1558,7 @@ fn a_failed_log_replays_nothing() {
             return Err("a failing sync reported success".into());
         }
         let mut seen = 0;
-        match log.replay(log.floor(), log.tail(), &mut |_| seen += 1) {
+        match log.replay_unsynced(log.floor(), log.tail(), &mut |_| seen += 1) {
             Err(LogError::Failed) if seen == 0 => {}
             other => return Err(format!("replay gave {other:?} and {seen} records")),
         }
@@ -1689,7 +1887,7 @@ fn reclaim_stops_at_the_hold_and_at_the_durable_position() {
         want.push(100);
         expect(&log, &want, "after reclaiming up to the hold")?;
         if !matches!(
-            log.replay(start, log.tail(), &mut |_| {}),
+            log.replay_unsynced(start, log.tail(), &mut |_| {}),
             Err(LogError::BadPosition(_))
         ) {
             return Err("a reclaimed position was served".into());
@@ -1923,7 +2121,7 @@ fn a_replay_never_returns_bad_data() {
         disk.corrupt(&slot_name(0), inside, 0x10)
             .map_err(|e| e.to_string())?;
         let mut seen = Vec::new();
-        let result = log.replay(log.floor(), log.tail(), &mut |r| seen.push(r.data[0]));
+        let result = log.replay_unsynced(log.floor(), log.tail(), &mut |r| seen.push(r.data[0]));
         let want = Err(LogError::Corrupt(Corruption::Record {
             position: b.start,
             stopped: Stop::Data,
@@ -2260,4 +2458,188 @@ fn a_lost_superblock_copy_is_noticed() {
         }
     }
     holds(scenario);
+}
+
+/// Failure is announced first (design §4.2): the observer is called
+/// once, when the log decides it has failed and before the marker is
+/// attempted, whether the marker can then be written or not, and also
+/// when the owner fails the log.
+#[test]
+fn the_observer_is_told_before_the_marker_is_attempted() {
+    use std::sync::{Arc, Mutex};
+    fn scenario(env: &Env) -> Outcome {
+        // The log's own failure, the marker writable and not; and the
+        // owner's.
+        for (halt, own) in [(false, true), (true, true), (false, false)] {
+            let (disk, mut log) = env.fresh()?;
+            // What the observer saw: whether the marker was there.
+            let seen: Arc<Mutex<Vec<bool>>> = Arc::default();
+            let (watch, record) = (disk.clone(), seen.clone());
+            log.set_observer(Observer::new(move || {
+                let there = watch
+                    .list()
+                    .is_ok_and(|names| names.iter().any(|n| n == MARKER_NAME));
+                record.lock().unwrap().push(there);
+            }));
+            s(put_raw(&mut log, env, 1))?;
+            if !seen.lock().unwrap().is_empty() {
+                return Err("the observer was called on a healthy log".into());
+            }
+            if !own {
+                log.mark_failed();
+            } else if halt {
+                disk.halt_after(0);
+                if log.sync().is_ok() {
+                    return Err("a sync succeeded on a halted disk".into());
+                }
+            } else {
+                disk.fail_sync(0, false);
+                if log.sync().is_ok() {
+                    return Err("the failing sync succeeded".into());
+                }
+            }
+            // Nothing more is announced.
+            let _ = log.sync();
+            log.mark_failed();
+            let seen = seen.lock().unwrap().clone();
+            if seen != [false] {
+                return Err(format!(
+                    "the observer saw the marker there: {seen:?} (halted {halt}, own failure {own})"
+                ));
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::OBSERVE_AFTER_MARKER, everywhere);
+}
+
+/// The cursor a reclaim keeps at the log's start changes what a replay
+/// costs and nothing else: after every reclaim, to each record's start
+/// in turn and across segments, a replay of what is left gives the
+/// records that are left, and so does a new instance, which has no
+/// cursor. Mutant: a reclaim that keeps the cursor it had and calls it
+/// current; a replay from it does not validate, and says so.
+#[test]
+fn a_replay_from_the_kept_cursor_gives_the_same_records() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log) = env.fresh()?;
+        let mut starts = Vec::new();
+        for tag in 1..=40u8 {
+            starts.push(put(&mut log, env, tag)?.start);
+            if tag % 3 == 0 {
+                s(log.sync())?;
+            }
+        }
+        s(log.sync())?;
+        if log.segment_files() < 3 {
+            return Err("the records fit in fewer than three segments".into());
+        }
+        for (i, start) in starts.iter().enumerate().skip(1) {
+            s(log.reclaim(*start))?;
+            let want: Vec<u8> = (i as u8 + 1..=40).collect();
+            expect(&log, &want, "after a reclaim, from the kept cursor")?;
+            // A part of what is left, beginning behind the start.
+            if let Some(later) = starts.get(i + 2) {
+                let got = s(tags_between(&log, *later, log.tail()))?;
+                if got != want[2..] {
+                    return Err(format!("from a later record: {got:?}"));
+                }
+            }
+            if i % 7 == 0 {
+                drop(log);
+                log = env.reopen(&disk)?.0;
+                expect(&log, &want, "in a new instance, without a cursor")?;
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::STALE_CURSOR, everywhere);
+}
+
+/// What a checkpoint in batches costs the log is linear in the records:
+/// 700 records in one segment, taken in turn by a replay of the next
+/// one and a reclaim behind it, validate a few records each time and
+/// not the segment's prefix again. Without the kept cursor this is
+/// about 490,000 validations (measured); with it, under 3,500.
+#[test]
+fn replays_from_the_start_do_not_walk_the_segment_again() {
+    let env = environments(0)
+        .into_iter()
+        .find(|env| env.align == 64)
+        .unwrap();
+    let (_disk, mut log) = env.fresh().unwrap();
+    let mut records = Vec::new();
+    for n in 0..700u64 {
+        records.push(log.append(Kind::Discard, n * 4096, 4096, &[]).unwrap());
+    }
+    log.sync().unwrap();
+    assert_eq!(log.segment_files(), 1, "the records are in one segment");
+    let before = log.walked();
+    for record in &records {
+        let mut seen = 0;
+        log.replay(record.start, record.end, &mut |_| seen += 1)
+            .unwrap();
+        assert_eq!(seen, 1);
+        log.reclaim(record.end).unwrap();
+    }
+    let walked = log.walked() - before;
+    assert!(walked < 5 * 700, "{walked} records validated");
+}
+
+/// A segment's header holds no boundary: a position in the first unit
+/// of a segment, its first byte included, is refused by a reclaim and
+/// by a replay like any position where no record starts or ends, and so
+/// is one in the span of the pad that closes the segment before. The
+/// first record of the segment is a boundary. Mutant: positions in a
+/// header are not looked at, and a reclaim takes one.
+#[test]
+fn a_position_in_a_segment_header_is_no_boundary() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut log) = env.fresh()?;
+        let mut tag = 0u8;
+        let mut last_in_first = Lsn(0);
+        while log.segment_files() < 2 {
+            tag += 1;
+            let record = put(&mut log, env, tag)?;
+            if record.start.0 < SEG {
+                last_in_first = record.end;
+            }
+        }
+        tag += 1;
+        put(&mut log, env, tag)?;
+        s(log.sync())?;
+        let floor = log.floor();
+        let first = Lsn(SEG + BLOCK);
+        let mut bad = vec![Lsn(SEG), Lsn(SEG + 1), Lsn(SEG + 64), Lsn(SEG + BLOCK - 64)];
+        // Behind the closing pad's start, in the segment before.
+        if last_in_first.0 + 128 < SEG {
+            bad.push(Lsn(SEG - 64));
+            bad.push(Lsn(last_in_first.0 + 64));
+        }
+        for at in bad {
+            match log.reclaim(at) {
+                Err(LogError::BadPosition(refused)) if refused == at => {}
+                other => return Err(format!("a reclaim to {at} gave {other:?}")),
+            }
+            if log.floor() != floor || log.is_failed() {
+                return Err(format!("the refused reclaim to {at} changed the log"));
+            }
+            for (from, to) in [(at, log.tail()), (floor, at)] {
+                match log.replay(from, to, &mut |_| {}) {
+                    Err(LogError::BadPosition(refused)) if refused == at => {}
+                    other => return Err(format!("a replay {from}..{to} gave {other:?}")),
+                }
+            }
+        }
+        if s(log.reclaim(first))? != first {
+            return Err("the first record of a segment was not taken".into());
+        }
+        let want: Vec<u8> = (1..=tag).rev().take(2).rev().collect();
+        let got = tags(&log)?;
+        if !got.ends_with(&want) || got.len() > want.len() + 1 {
+            return Err(format!("after the reclaim the log holds {got:?}"));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::HEADER_IS_BOUNDARY, everywhere);
 }

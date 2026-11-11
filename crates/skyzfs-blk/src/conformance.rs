@@ -62,21 +62,22 @@
 //!   order is still open.
 //! - One queue. Ordering across several queues of one target is not
 //!   tested.
-//! - A failed volume is tested only for what it answers. What a completed
-//!   flush covered must still be there after a later power cut, but a
-//!   failed volume fails every read, so the suite cannot look: it does
-//!   not cut power on one, and so it cannot tell whether a flush that was
+//! - A failed volume fails every read, so what it holds can be looked at
+//!   only once it is opened again ([`Harness::reopen_failed`]). Where a
+//!   rig cannot do that, the suite cannot tell whether a flush that was
 //!   in flight when the log failed, and succeeded, had made anything
-//!   durable. That needs a rig that can inspect the store, which comes
-//!   with the store (M1.2).
+//!   durable. Where it can, the suite asks what rule R11 promises:
+//!   a prefix of the daemon's order, as after a power cut (see
+//!   [`Model::reopened`](crate::model::Model::reopened)). The suite does
+//!   not cut the power on a failed volume before it is reopened.
 //! - Above 4 MiB the read-back is a sample: the windows the suite works
 //!   in, the start and the end of the device, and two blocks at each of
 //!   63 evenly spaced places. Damage to a block that no request named and
 //!   that the sample misses is not seen.
-//! - [`Harness::power_cut`] can only keep a prefix of whole units. A rig
-//!   cannot yet ask for the device states a real log must turn into a
-//!   prefix: a torn last record, or a lost record followed by a surviving
-//!   one. Hooks for those come with the store (M1.2).
+//! - [`Harness::power_cut`] names a number of whole units to keep. The
+//!   device states a real log must turn into a prefix (a torn record, a
+//!   lost record followed by a surviving one) are the harness's to
+//!   produce: the store's harness in `skyzfs-local` does.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -178,6 +179,32 @@ pub trait Harness {
     /// fail.
     fn fail_log(&mut self, target: &mut Self::Target) -> Result<(), HarnessError>;
 
+    /// A failed volume is repaired and opened again for a new client
+    /// (rule R11): the fault that [`Harness::fail_log`] injected is gone,
+    /// and whatever the daemon needs to be told to open a volume that
+    /// failed, it is told. `Ok(Ok(target))` is the volume as it comes
+    /// back, with nothing in flight; the suite then requires that it
+    /// holds at least what every completed flush covered. `Ok(Err(target))`
+    /// hands the target back: this rig cannot do it, which is the
+    /// default, and the cases that need it are reported as not
+    /// exercised.
+    fn reopen_failed(
+        &mut self,
+        target: Self::Target,
+    ) -> Result<Result<Self::Target, Self::Target>, HarnessError> {
+        Ok(Err(target))
+    }
+
+    /// Let the target do, now, whatever it does on its own between
+    /// requests: a checkpoint, a compaction, an eviction. `seed` chooses
+    /// among them. Nothing a client can observe may change. The random
+    /// programs call this at arbitrary points, between requests in
+    /// flight, daemon losses and power cuts. The default does nothing.
+    fn maintenance(&mut self, target: &mut Self::Target, seed: u64) -> Result<(), HarnessError> {
+        let _ = (target, seed);
+        Ok(())
+    }
+
     /// Block numbers at which the implementation changes something inside:
     /// the edge of a segment, a shard, an extent or a cache unit. The
     /// random programs also run in windows that straddle each of them. The
@@ -257,6 +284,8 @@ pub enum Needs {
     Concurrency,
     /// A harness that can cut inside the unflushed part of the log.
     CutPoints,
+    /// A harness that can open a failed volume again.
+    Reopen,
 }
 
 /// One case of the suite.
@@ -289,6 +318,11 @@ impl<H: Harness> Case<H> {
                 d.write(1, 1)?;
                 (d.cut_points()? == 0)
                     .then_some("the harness offers no cut point inside the unflushed log")
+            }
+            Needs::Reopen => {
+                let mut d = Driver::new(harness, config, &Spec::EMPTY)?;
+                d.fail_log()?;
+                (!d.reopen_failed()?).then_some("the harness cannot open a failed volume again")
             }
         };
         Ok(missing.map_or(Status::Passed, Status::NotExercised))
@@ -545,6 +579,20 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
                    request does, reads included, also after a daemon restart",
             needs: Needs::Nothing,
             run: failed_volume_fails_every_request::<H>,
+        },
+        Case {
+            name: "reopened_failed_volume_holds_what_was_flushed",
+            rule: "R11: a completed flush stays a promise on a failed volume: opened again \
+                   after a repair, it holds at least what every completed flush covered, \
+                   and serves as a healthy volume does",
+            needs: Needs::Reopen,
+            run: reopened_failed_volume_holds_what_was_flushed::<H>,
+        },
+        Case {
+            name: "restart_after_the_log_failed_recovers_nothing",
+            rule: "R11 over R9: the log fails, no request completes, the daemon restarts:                    opened again, the volume holds a prefix with everything flushed, and an                    acknowledged operation that no flush covered may be gone",
+            needs: Needs::Reopen,
+            run: restart_after_the_log_failed_recovers_nothing::<H>,
         },
         Case {
             name: "read_only_target_refuses_mutations",
@@ -881,6 +929,42 @@ impl<'a, H: Harness> Driver<'a, H> {
         self.model.power_cut();
         self.inflight.clear();
         self.check_geometry()?;
+        self.read_back()
+    }
+
+    /// Open the failed volume again, if the harness can, and read back
+    /// every block whose content the failure left open. Returns whether
+    /// it was opened.
+    fn reopen_failed(&mut self) -> Result<bool, Failure> {
+        let Some(target) = self.target.take() else {
+            return fail("no target: an earlier harness call failed");
+        };
+        match self.harness.reopen_failed(target)? {
+            Ok(reopened) => self.target = Some(reopened),
+            Err(same) => {
+                self.target = Some(same);
+                return Ok(false);
+            }
+        }
+        self.model.reopened();
+        self.inflight.clear();
+        self.check_geometry()?;
+        self.read_back()?;
+        Ok(true)
+    }
+
+    /// Let the target do its own work between requests.
+    fn maintain(&mut self, seed: u64) -> Outcome {
+        let Some(target) = self.target.as_mut() else {
+            return fail("no target: an earlier harness call failed");
+        };
+        self.harness.maintenance(target, seed)?;
+        Ok(())
+    }
+
+    /// After a power cut or a reopen: read what the model needs to learn
+    /// which prefix the device holds.
+    fn read_back(&mut self) -> Outcome {
         let blocks = self.model.readback();
         let mut i = 0;
         while i < blocks.len() {
@@ -992,6 +1076,44 @@ fn ranged_ops(offset: u64, len: u64) -> Vec<Op> {
         });
     }
     ops
+}
+
+/// A request that the geometry rejects, one of several kinds by `pick`,
+/// in or near the window at `origin`.
+fn invalid_op(geometry: Geometry, origin: u64, pick: u64) -> Op {
+    let at = (origin + pick / 8 % 8) * BLOCK_SIZE;
+    let end = geometry.size_bytes();
+    match pick % 8 {
+        0 => Op::Write {
+            offset: at + 512,
+            data: Buf::filled(1, 0x5A),
+        },
+        1 => Op::Discard { offset: at, len: 0 },
+        2 => Op::WriteZeroes {
+            offset: at,
+            len: BLOCK_SIZE + 1,
+        },
+        3 => Op::Read {
+            offset: end,
+            buf: Buf::zeroed(1),
+        },
+        4 => Op::Write {
+            offset: end - BLOCK_SIZE,
+            data: Buf::filled(2, 0x5A),
+        },
+        5 => Op::Discard {
+            offset: at,
+            len: (u64::MAX - at) / BLOCK_SIZE * BLOCK_SIZE,
+        },
+        6 => Op::WriteZeroes {
+            offset: at + 1,
+            len: BLOCK_SIZE,
+        },
+        _ => Op::Read {
+            offset: at,
+            buf: Buf::zeroed((MAX_IO_BYTES / BLOCK_SIZE) as usize + 1),
+        },
+    }
 }
 
 fn is_misaligned(e: &BlkError) -> bool {
@@ -1564,6 +1686,11 @@ fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcom
     d.submit_with_room(read_op(0, 8))?;
     d.fail_log()?;
     d.drain()?;
+    // A flush with nothing to make durable need not notice. A write
+    // makes the target meet its log: it fails, or it is acknowledged
+    // and then the flush has something to make durable and must fail.
+    let meet = d.write_op(5, 1);
+    d.run(meet)?;
     let every_request = |d: &mut Driver<'_, H>| -> Outcome {
         d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
         let write = d.write_op(4, 1);
@@ -1595,6 +1722,110 @@ fn failed_volume_round<H: Harness>(h: &mut H, cfg: &Config, seed: u64) -> Outcom
     // told more.
     d.kill(1)?;
     every_request(&mut d)
+}
+
+fn reopened_failed_volume_holds_what_was_flushed<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    // What is in flight at the failure completes either way, in an order
+    // the target chooses: try several.
+    for seed in 0..16 {
+        let spec = Spec {
+            seed,
+            ..if seed % 2 == 0 {
+                Spec::EMPTY
+            } else {
+                Spec::CLONE
+            }
+        };
+        let mut d = Driver::new(h, cfg, &spec)?;
+        // Flushed before the failure.
+        let flushed = d.write(0, 4)?;
+        d.zeroes(6, 1)?;
+        d.flush()?;
+        // Acknowledged and not flushed: may or may not be there.
+        d.write(2, 4)?;
+        // In flight at the failure, a flush among them. If that flush
+        // succeeds, the model holds the target to what it covered.
+        let depth = d.depth();
+        if depth >= 3 {
+            let write = d.write_op(8, 2);
+            d.submit_with_room(write)?;
+            d.submit_with_room(Op::Flush)?;
+        }
+        d.fail_log()?;
+        d.drain()?;
+        // A write makes the target meet its failed log; the flush
+        // behind it must fail whichever way the write went.
+        let meet = d.write_op(12, 1);
+        d.run(meet)?;
+        d.expect_error(Op::Flush, BlkError::Failed, "R11")?;
+        if seed % 4 >= 2 {
+            // The daemon restarts in between, and still serves nothing.
+            d.kill(seed)?;
+            d.expect_error(read_op(0, 1), BlkError::Failed, "R11")?;
+        }
+        if !d.reopen_failed()? {
+            return Ok(());
+        }
+        // The model has read back what the failure left open and found a
+        // state that includes everything flushed. Blocks nothing touched
+        // after the flush are as they were flushed.
+        d.expect_read(
+            0,
+            &flushed[..2 * BLOCK_USIZE],
+            "R11: flushed before the failure",
+        )?;
+        d.verify()?;
+        // And it is a healthy volume again.
+        let again = d.write(1, 3)?;
+        d.flush()?;
+        d.power_cut(0)?;
+        d.expect_read(1, &again, "R11: a write after the reopen, flushed")?;
+        d.verify()?;
+    }
+    Ok(())
+}
+
+fn restart_after_the_log_failed_recovers_nothing<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+    for seed in 0..8 {
+        let spec = Spec {
+            seed,
+            ..if seed % 2 == 0 {
+                Spec::EMPTY
+            } else {
+                Spec::CLONE
+            }
+        };
+        let mut d = Driver::new(h, cfg, &spec)?;
+        let flushed = d.write(0, 4)?;
+        d.flush()?;
+        // Acknowledged, and no flush covers it.
+        d.write(2, 4)?;
+        // The log fails and the daemon is lost before any request
+        // completes, so before any failure is reported. The new
+        // instance's recovery cannot make its prefix durable.
+        d.fail_log()?;
+        d.kill(seed)?;
+        if seed % 4 >= 2 {
+            d.kill(seed + 1)?;
+        }
+        if !d.reopen_failed()? {
+            return Ok(());
+        }
+        // The model has read back blocks 2 to 5 and takes either
+        // content; what was flushed and not touched since is there.
+        d.expect_read(
+            0,
+            &flushed[..2 * BLOCK_USIZE],
+            "R11: flushed before the failure",
+        )?;
+        d.verify()?;
+        let again = d.write(1, 3)?;
+        d.flush()?;
+        d.power_cut(0)?;
+        d.expect_read(1, &again, "R11: a write after the reopen, flushed")?;
+        d.verify()?;
+    }
+    Ok(())
 }
 
 fn read_only_target_refuses_mutations<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
@@ -1651,6 +1882,12 @@ enum Step {
     PowerCut(u64),
     /// Make the write log fail for good.
     FailLog,
+    /// Open the volume again, if it has failed and the harness can.
+    Reopen,
+    /// Let the target do its own work between requests.
+    Maintain(u64),
+    /// Submit a request that must be rejected, chosen by the number.
+    Invalid(u64),
 }
 
 fn step_strategy(window: u64, failures: bool) -> impl Strategy<Value = Step> {
@@ -1664,11 +1901,14 @@ fn step_strategy(window: u64, failures: bool) -> impl Strategy<Value = Step> {
         (8, Just(Step::Reap).boxed()),
         (4, Just(Step::Poll).boxed()),
         (2, Just(Step::Drain).boxed()),
+        (3, any::<u64>().prop_map(Step::Maintain).boxed()),
+        (2, any::<u64>().prop_map(Step::Invalid).boxed()),
     ];
     if failures {
         choices.push((4, any::<u64>().prop_map(Step::Kill).boxed()));
         choices.push((4, (0..12u64).prop_map(Step::PowerCut).boxed()));
         choices.push((1, Just(Step::FailLog).boxed()));
+        choices.push((2, Just(Step::Reopen).boxed()));
     }
     Union::new_weighted(choices)
 }
@@ -1762,12 +2002,25 @@ fn run_program<H: Harness>(h: &mut H, cfg: &Config, place: &Place, program: &[St
                 d.fail_log()?;
                 failed = true;
             }
+            Step::Reopen if failed => {
+                // What was in flight across the failure is gone with it.
+                if d.reopen_failed()? {
+                    failed = false;
+                    d.verify()?;
+                }
+            }
+            Step::Reopen => {}
+            Step::Maintain(seed) => d.maintain(seed)?,
+            Step::Invalid(pick) => {
+                let op = invalid_op(d.geometry, origin, pick);
+                d.submit_with_room(op)?;
+            }
         }
         d.settle()?;
     }
     d.drain()?;
     d.verify()?;
-    if failed {
+    if failed && !d.reopen_failed()? {
         return Ok(());
     }
     // Whatever the program did: the device reads as the model allows now,
