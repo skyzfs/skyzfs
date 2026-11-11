@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft. Decisions of 2026-11-10 recorded in §10.1. M1 is in progress: the contract of §4.1 is merged as an executable model with a conformance suite (`crates/skyzfs-blk`), and so is the power-cut replay rig that M1's exit criterion rests on, so far run against the ublk project's reference server (`tests/kernel/replay-rig.sh`) |
+| Status | Draft. Decisions of 2026-11-10 recorded in §10.1. M1 is in progress: the contract of §4.1 is merged as an executable model with a conformance suite (`crates/skyzfs-blk`), so is the write log of the local store, tested on a simulated disk (`crates/skyzfs-local`, §5.1), and so is the power-cut replay rig that M1's exit criterion rests on, so far run against the ublk project's reference server (`tests/kernel/replay-rig.sh`). The store on top of the log, the ublk transport and `skyzfsd` are not built yet |
 | Date | 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
