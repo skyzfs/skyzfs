@@ -194,7 +194,7 @@ pub mod conformance;
 pub mod mem;
 pub mod model;
 
-pub use buf::Buf;
+pub use buf::{Buf, TooLong};
 
 /// The block size of the contract: 4 KiB (rule R1). Pools are created with
 /// `ashift=12`.
