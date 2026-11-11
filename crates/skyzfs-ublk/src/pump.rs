@@ -237,6 +237,9 @@ impl Mutants {
     pub(crate) const TAG_REUSED: u32 = 1 << 12;
     /// A completion nobody waits for is ignored.
     pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
+    /// A refusal with room is a fault, also when the target went in
+    /// that moment.
+    pub(crate) const REFUSAL_IS_FAULT: u32 = 1 << 14;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -428,7 +431,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// The target refused a request it had room for: because its worker
     /// ended in that moment, or against the contract.
     fn refused(&self) -> Stopped {
-        if self.is_gone() && !self.mutants.has(Mutants::GONE_AFTER_SUBMIT) {
+        let fault = self.mutants.has(Mutants::GONE_AFTER_SUBMIT)
+            || self.mutants.has(Mutants::REFUSAL_IS_FAULT);
+        if self.is_gone() && !fault {
             Stopped::TargetGone
         } else {
             Stopped::TargetFault

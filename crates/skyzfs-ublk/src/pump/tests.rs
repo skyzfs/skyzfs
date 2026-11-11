@@ -100,6 +100,8 @@ struct FakeTarget {
     ready: Vec<(Completion, Option<u64>)>,
     acknowledged: Option<u64>,
     gone: bool,
+    /// Its worker ends in the moment of the next submit.
+    goes_at_submit: bool,
     /// The most requests it ever held.
     most: usize,
 }
@@ -144,6 +146,9 @@ impl BlockTarget for FakeTarget {
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
         let held = self.pending.len() + self.ready.len();
         self.most = self.most.max(held + 1);
+        if self.goes_at_submit {
+            self.gone = true;
+        }
         // As the served store does: once its worker has ended it
         // refuses everything as busy.
         if self.gone || held >= self.geometry.queue_depth() as usize {
@@ -228,6 +233,7 @@ impl Rig {
             ready: Vec::new(),
             acknowledged: None,
             gone: false,
+            goes_at_submit: false,
             most: 0,
         };
         let ack = FakeAck {
@@ -814,6 +820,24 @@ fn a_target_that_is_gone_is_gone_also_when_a_request_waits() {
         expect(rig.committed(), vec![], "nothing is committed")
     }
     caught(scenario, Mutants::GONE_AFTER_SUBMIT);
+}
+
+/// The window between the pump's look and its submit: the worker ends
+/// in that moment, and the refusal is that of a target that is gone.
+/// Mutant: a refusal with room is always a fault.
+#[test]
+fn a_target_that_goes_in_the_moment_of_a_submit_is_gone() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        rig.pump.target().goes_at_submit = true;
+        expect(
+            rig.fetch(&[write(0, 0)]),
+            Some(Stopped::TargetGone),
+            "the worker ended as the request was submitted",
+        )?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(scenario, Mutants::REFUSAL_IS_FAULT);
 }
 
 /// Two guards against the other side. A queue that hands over a tag
