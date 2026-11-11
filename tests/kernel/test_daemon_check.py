@@ -91,6 +91,7 @@ class Cases(unittest.TestCase):
         # the stand-in's counts, from a suite that was told it can reopen a failed volume
         r = as_expected('reference')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: none'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
