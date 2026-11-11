@@ -442,7 +442,8 @@ class Rig:
         self.imgdir = os.path.join(args.work, 'img')
         self.image = os.path.join(self.imgdir, 'replay.img')
         self.alt = os.path.join(args.work, 'alt')
-        self.manifest = [line.split()[:2] for line in open(args.manifest) if line.strip()]
+        with open(args.manifest) as f:
+            self.manifest = [line.split()[:2] for line in f if line.strip()]
         self.at = 0
         self.sched_path = None
         os.makedirs(self.imgdir, exist_ok=True)
@@ -493,9 +494,26 @@ class Rig:
             rc, out, _ = run(['zpool', 'export', '-f', self.a.pool], 120)
         return rc, out
 
+    def leftover(self):
+        """Why an import now could not be judged, or None.
+
+        A pool of this name that is still imported, after an export that
+        failed, makes the next import fail whatever the image holds. That
+        must read as the rig failing, never as a verdict on the image.
+        """
+        rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', self.a.pool], 60)
+        if rc == 0:
+            return f'rig: a pool named {self.a.pool} is still imported'
+        if rc in RIG_RC:
+            return stage('zpool list', rc)
+        return None
+
     def light(self, files):
         """Read-only import, mount, verify -> (stage that failed or None, detail, seconds by stage)."""
         t = {}
+        left = self.leftover()
+        if left:
+            return left, '', t
         rc, out, _ = run(['losetup', '-r', '--find', '--show', self.image])
         if rc:
             return 'losetup', out.strip(), t
@@ -527,7 +545,11 @@ class Rig:
                 if rc:
                     return 'export', out.strip()[-400:], t
         finally:
-            run(['losetup', '-d', loop])
+            # As with the export above: a cleanup that fails replaces the
+            # result, because nothing after it can be trusted.
+            rc, out, _ = run(['losetup', '-d', loop])
+            if rc:
+                return 'losetup -d', out.strip()[-400:], t
         return None, '', t
 
     def deep(self):
@@ -536,6 +558,9 @@ class Rig:
         cow = os.path.join(self.a.work, 'cow.img')
         name = 'skz-replay-snap'
         loops = []
+        left = self.leftover()
+        if left:
+            return left, '', time.monotonic() - t0
         try:
             with open(cow, 'wb') as f:
                 f.truncate(2 << 30)
@@ -564,17 +589,27 @@ class Rig:
                     if bad:
                         return 'scrub', bad, time.monotonic() - t0
                 finally:
-                    self.export()
+                    # Cleanup that fails replaces the result, here and
+                    # below: the pool or the snapshot is still there, and
+                    # the checks that follow would trip over it.
+                    rc, out = self.export()
+                    if rc:
+                        return 'export', out.strip()[-400:], time.monotonic() - t0
             finally:
                 for _ in range(20):
-                    if run(['dmsetup', 'remove', name])[0] == 0:
+                    rc, out, _ = run(['dmsetup', 'remove', name])
+                    if rc == 0:
                         break
                     time.sleep(0.25)
+                if rc:
+                    return 'dm-snapshot remove', out.strip()[-400:], time.monotonic() - t0
         finally:
-            for lo in loops:
-                run(['losetup', '-d', lo])
             if os.path.exists(cow):
                 os.unlink(cow)
+            for lo in loops:
+                rc, out, _ = run(['losetup', '-d', lo])
+                if rc:
+                    return 'losetup -d', out.strip()[-400:], time.monotonic() - t0
         return None, '', time.monotonic() - t0
 
     def point(self, n, files, deep):

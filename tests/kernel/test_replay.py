@@ -335,6 +335,78 @@ class Log(unittest.TestCase):
         self.assertIn('no sync marks', replay_check.manifest_trouble([], 5))
         self.assertIn('promises no files', replay_check.manifest_trouble([(3, 1, 0), (9, 2, 0)], 5))
 
+    def test_a_pool_left_imported_is_a_rig_error_not_a_verdict(self):
+        # A machine without a kernel: commands are answered by a model in
+        # which the export after the deep check's scrub always fails.
+        import argparse
+        work = os.path.join(self.dir.name, 'work')
+        os.makedirs(work)
+        manifest = os.path.join(self.dir.name, 'manifest')
+        open(manifest, 'w').close()
+        rig = replay_check.Rig(argparse.Namespace(provider='', work=work, manifest=manifest, pool='p', mountpoint='/p'))
+        with open(rig.image, 'wb') as f:
+            f.truncate(DEV)
+        state = {'imported': False, 'fail': {'export'}, 'calls': []}
+        clean = ' scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\n\tp ONLINE 0 0 0\nerrors: No known data errors\n'
+
+        def fake(cmd, timeout=300):
+            state['calls'].append(cmd[:2])
+            if cmd[:2] == ['zpool', 'list']:
+                return (0 if state['imported'] else 1), 'p\n', 0.0
+            if cmd[:2] == ['zpool', 'import']:
+                if state['imported']:
+                    return 1, "cannot import 'p': a pool with that name already exists", 0.0
+                state['imported'] = True
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'export']:
+                if 'export' in state['fail']:
+                    return 1, 'pool is busy', 0.0
+                state['imported'] = False
+                return 0, '', 0.0
+            if cmd[:2] == ['zpool', 'status']:
+                return 0, clean, 0.0
+            if cmd[0] == 'losetup' and '--find' in cmd:
+                return 0, '/dev/loop9\n', 0.0
+            if cmd[:2] == ['dmsetup', 'remove'] and 'dmremove' in state['fail']:
+                return 1, 'device busy', 0.0
+            if cmd[:2] == ['losetup', '-d'] and 'detach' in state['fail']:
+                return 1, 'busy', 0.0
+            return 0, '', 0.0
+
+        real, real_sleep = replay_check.run, replay_check.time.sleep
+        replay_check.run, replay_check.time.sleep = fake, lambda s: None
+        try:
+            # the deep check itself passes, the export does not: a rig error for that point
+            failed, _, _ = rig.deep()
+            self.assertEqual(failed, 'export')
+            self.assertNotIn('deep: ' + failed, replay_check.JUDGING)
+            # the pool is still there; no later check may read that as a verdict, and none tries to import
+            for _ in range(3):
+                n = len(state['calls'])
+                r = rig.point(0, 0, True)
+                self.assertFalse(r['ok'])
+                self.assertNotIn(r['failed'], replay_check.JUDGING)
+                self.assertIn('still imported', r['failed'])
+                self.assertNotIn(['zpool', 'import'], state['calls'][n:])
+            self.assertIn('still imported', rig.deep()[0])
+            # in a control pass that is a rig error, never "caught"
+            by, rig_errors, first = replay_check.tally_control([rig.point(0, 0, True) for _ in range(2)])
+            self.assertEqual((by, first, len(rig_errors)), ({}, None, 2))
+            # other cleanup that fails is reported too, and never as a judging stage
+            state.update(imported=False, fail={'dmremove'})
+            self.assertEqual(rig.deep()[0], 'dm-snapshot remove')
+            state.update(imported=False, fail={'detach'})
+            self.assertEqual(rig.deep()[0], 'losetup -d')
+            self.assertEqual(rig.light(0)[0], 'losetup -d')
+            for st in ('export', 'dm-snapshot remove', 'losetup -d'):
+                self.assertFalse({st, 'deep: ' + st} & replay_check.JUDGING)
+            # and with nothing failing, both checks pass
+            state.update(imported=False, fail=set())
+            self.assertTrue(rig.point(0, 0, True)['ok'])
+            self.assertFalse(state['imported'])
+        finally:
+            replay_check.run, replay_check.time.sleep = real, real_sleep
+
     def test_scrub_verdict(self):
         clean = ('  pool: p\n state: ONLINE\n  scan: scrub repaired 0B in 00:00:01 with 0 errors on Tue\nconfig:\n\n'
                  '\tNAME  STATE  READ WRITE CKSUM\n\tp  ONLINE  0 0 0\n\t  loop1  ONLINE  0 0 0\n\nerrors: No known data errors\n')
