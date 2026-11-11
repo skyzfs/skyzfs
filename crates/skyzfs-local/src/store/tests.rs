@@ -3025,6 +3025,16 @@ fn at_the_point(gate: &std::path::Path, what: &str) {
 /// mark. Requests are answered between the steps, the owner is woken
 /// when a step begins and ends, and the log's state can be read while
 /// the worker works.
+///
+/// Nothing asserted here rests on how the worker's steps fall between
+/// the test's requests. Where the 200 writes end the rule may be at
+/// work or at rest (at rest the log is anywhere below the high mark),
+/// so the idle part first makes the phase certain: a hold at the log's
+/// start, writes behind it until the log is above the high mark, and
+/// the hold released with no request. From there the worker steps to
+/// below the low mark by itself, and there it rests for certain. The
+/// same from a worker brought to rest first is
+/// `a_hold_that_goes_or_moves_lets_the_idle_worker_checkpoint`.
 #[test]
 fn a_served_store_steps_between_requests_and_when_idle() {
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -3056,35 +3066,83 @@ fn a_served_store_steps_between_requests_and_when_idle() {
         assert_eq!(done[0].result, Ok(()), "write {n}");
         largest = largest.max(served.log_state().live());
     }
-    // The state is published a moment after the completion, so one
-    // request more than the bound may be seen.
+    // With a step after every request the log is never seen more than
+    // one request above the mark; steps that fall between the requests
+    // as well only make it shorter.
     assert!(
         largest <= MARKS.high + 2 * ONE_REQUEST,
         "the log reached {largest} bytes"
     );
-    // No request any more: the worker goes on until the low mark.
+    // 200 requests of 64 KiB against a high mark of 512 KiB and steps
+    // of at most 128 KiB: whatever the interleaving, many steps.
+    let after_load = served.log_state();
+    assert!(after_load.steps >= 10, "{after_load:?}");
+
+    // The phase made certain. A hold at the log's start: a step may
+    // move the start between the look and the hold, then the hold is
+    // refused and tried again.
     let began = std::time::Instant::now();
     loop {
+        let start = Lsn(served.log_state().start);
+        if served.set_hold(Some(start)).is_ok() {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "no hold at the log's start"
+        );
+    }
+    // Twelve writes behind the hold are more than the high mark by
+    // themselves. Each rewrites what its slot holds already.
+    let newest_of = |slot: u64| (slot + if slot < 8 { 192 } else { 128 }) % 250 + 1;
+    for slot in 0..12u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(500 + slot),
+                op: Op::Write {
+                    offset: slot * 16 * BLOCK,
+                    data: Buf::filled(16, newest_of(slot) as u8),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()), "write {slot} behind the hold");
+    }
+    let held = served.log_state();
+    assert!(held.live() >= MARKS.high, "{held:?}");
+    served.set_hold(None).expect("released");
+    // No request any more: from above the high mark the worker goes
+    // on until the low mark.
+    let began = std::time::Instant::now();
+    let state = loop {
         let state = served.log_state();
         if state.live() < MARKS.low && !state.stepping {
-            break;
+            break state;
         }
         assert!(
             began.elapsed() < Duration::from_secs(20),
             "idle, the log stayed at {state:?}"
         );
         std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(state.steps > held.steps, "{state:?} after {held:?}");
+    // 212 completions, and two wake-ups a step. The count of steps is
+    // shown a moment before the wake-up for its end, so the wake-ups
+    // are waited for.
+    let began = std::time::Instant::now();
+    while u64::from(calls.load(Ordering::SeqCst)) < 212 + 2 * state.steps {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{} wake-ups for 212 requests and {} steps",
+            calls.load(Ordering::SeqCst),
+            state.steps
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
-    let state = served.log_state();
-    assert!(state.steps >= 10, "{state:?}");
-    // 200 completions, and two wake-ups a step.
-    assert!(
-        u64::from(calls.load(Ordering::SeqCst)) >= 200 + 2 * state.steps,
-        "{} wake-ups for 200 requests and {} steps",
-        calls.load(Ordering::SeqCst),
-        state.steps
-    );
-    // It rests there: no step without a reason.
+    // It rests there, for certain: below the low mark, with no step
+    // under way and no request, the rule takes nothing until the high
+    // mark. No step without a reason.
     std::thread::sleep(Duration::from_millis(50));
     assert_eq!(served.log_state().steps, state.steps);
     for slot in 0..64u64 {
@@ -3100,7 +3158,7 @@ fn a_served_store_steps_between_requests_and_when_idle() {
             .unwrap();
         assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
         // The last write to the slot: of 200, number slot + 192 or + 128.
-        let newest = (slot + if slot < 8 { 192 } else { 128 }) % 250 + 1;
+        let newest = newest_of(slot);
         let buf = done[0].buf.as_ref().expect("the read's buffer");
         assert!(
             buf.iter().all(|b| u64::from(*b) == newest),
@@ -3140,6 +3198,31 @@ fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
     let mut ids = 0u64;
     // Writes until the worker is inside its first step. It answers
     // the request that reached the mark and then waits in the step.
+    //
+    // Whether a step follows an answer is read from the log, not
+    // waited for: the state shown when a request is answered has that
+    // request, and the rule takes its first step exactly when the
+    // log's live size is at the high mark. So after each answer the
+    // test knows whether to wait for the step to show or to go on,
+    // however the worker is scheduled. (A sleep in its place would,
+    // when too short, send one more request behind a step that waits
+    // at its point for the test, and that request is never answered.)
+    let step_follows = |served: &Served| {
+        let state = served.log_state();
+        if state.live() < MARKS.high && !state.stepping {
+            return false;
+        }
+        let began = std::time::Instant::now();
+        while !served.log_state().stepping {
+            assert!(
+                began.elapsed() < Duration::from_secs(20),
+                "{what}: at the high mark and no step: {:?}",
+                served.log_state()
+            );
+            std::thread::yield_now();
+        }
+        true
+    };
     while !served.log_state().stepping {
         assert!(n < 64, "no step after {n} writes: {:?}", served.log_state());
         let (slot, byte) = (n % 64, n as u8 + 1);
@@ -3161,9 +3244,7 @@ fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
             ids += 1;
             assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
             assert_eq!(done[0].result, Ok(()), "{what}");
-            // The worker decides about a step right after the answer.
-            std::thread::sleep(Duration::from_millis(3));
-            if served.log_state().stepping {
+            if step_follows(&served) {
                 break;
             }
         }
