@@ -1675,11 +1675,56 @@ fn harnesses(mutants: u32) -> Vec<SimHarness> {
                     segments: Some(3),
                     mutants,
                     threaded: false,
+                    marks: None,
                 });
             }
         }
     }
     out
+}
+
+/// The contract holds while the store checkpoints by itself: the suite
+/// passes in every environment with marks so low that steps fall
+/// between its operations, at its kills and at its power cuts, with
+/// the store called directly and behind its worker. Steps of two
+/// records begin at 24 KiB of log and end below 12 KiB; a new log
+/// holds 8 KiB.
+#[test]
+fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
+    let config = Config {
+        cases: 16,
+        ..Config::default()
+    };
+    let marks = Marks {
+        high: 24 << 10,
+        low: 12 << 10,
+        step: StepBound {
+            payload: 16 << 10,
+            records: 2,
+        },
+    };
+    for threaded in [false, true] {
+        for mut harness in harnesses(0) {
+            harness.marks = Some(marks);
+            harness.threaded = threaded;
+            let report = run_all(&mut harness, &config);
+            assert!(report.passed(), "in {harness:?}:\n{report}");
+            if !threaded {
+                // One case can find nothing to do: it cuts the power
+                // between records that are not durable, and with marks
+                // this low the store's own sync has made them durable
+                // before the cut. That is the rule's effect, which the
+                // contract allows, and no other case may be idle.
+                let idle: Vec<_> = report
+                    .not_exercised()
+                    .into_iter()
+                    .filter(|case| *case != "power_cut_at_every_point_leaves_a_prefix")
+                    .collect();
+                assert!(idle.is_empty(), "in {harness:?} not exercised: {idle:?}");
+                assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");
+            }
+        }
+    }
 }
 
 /// The contract, rules R1 to R12: the conformance suite of `skyzfs-blk`
@@ -2421,4 +2466,1256 @@ fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
         Ok(())
     }
     holds(scenario);
+}
+
+// ---------------------------------------------------------------------
+// The bounded step of a checkpoint.
+
+fn step(store: &mut SimStore, bound: StepBound) -> Result<Step, String> {
+    store
+        .checkpoint_step(bound)
+        .map_err(|e| format!("checkpoint step: {e}"))
+}
+
+/// A step takes at most its bound of records and of bytes, at least
+/// one record when there is one, a record that alone exceeds the bound
+/// alone, and says whether more is left. With nothing to take it does
+/// nothing and leaves the log's start where it was. After every step
+/// every block reads as it was written.
+#[test]
+fn a_checkpoint_step_keeps_to_its_bound() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        // Ten records of one block, then three of four blocks, then
+        // one of eight.
+        for n in 0..10u64 {
+            write(&mut store, n * 3, 1, n as u8 + 1)?;
+        }
+        for n in 0..3u64 {
+            write(&mut store, 100 + n * 8, 4, n as u8 + 20)?;
+        }
+        write(&mut store, 200, 8, 30)?;
+        flush(&mut store)?;
+        let check = |store: &mut SimStore, what: &str| -> Outcome {
+            for n in 0..10u64 {
+                expect(store, n * 3, 1, n as u8 + 1, what)?;
+                expect(store, n * 3 + 1, 2, 0, what)?;
+            }
+            for n in 0..3u64 {
+                expect(store, 100 + n * 8, 4, n as u8 + 20, what)?;
+            }
+            expect(store, 200, 8, 30, what)
+        };
+        // By records: 3, 3, 3, then the tenth and two of four blocks.
+        let by_records = StepBound {
+            payload: u64::MAX,
+            records: 3,
+        };
+        let mut start = store.log_start();
+        for round in 0..3 {
+            let done = step(&mut store, by_records)?;
+            if (done.records, done.payload, done.more) != (3, 3 * BLOCK, true)
+                || done.start <= start
+            {
+                return Err(format!("round {round} by records: {done:?} from {start:?}"));
+            }
+            if done.start != store.log_start() {
+                return Err(format!(
+                    "the step says {done:?}, the log {:?}",
+                    store.log_start()
+                ));
+            }
+            start = done.start;
+            check(&mut store, "after a step by records")?;
+        }
+        // By bytes: the tenth block and one record of four blocks fit
+        // in 20 KiB, a second of four does not.
+        let by_bytes = StepBound {
+            payload: 5 * BLOCK,
+            records: u64::MAX,
+        };
+        let done = step(&mut store, by_bytes)?;
+        if (done.records, done.payload, done.more) != (2, 5 * BLOCK, true) {
+            return Err(format!("by bytes: {done:?}"));
+        }
+        check(&mut store, "after a step by bytes")?;
+        // A bound smaller than any record: one record a step, the
+        // eight blocks alone and last.
+        let tiny = StepBound {
+            payload: 1,
+            records: u64::MAX,
+        };
+        for (blocks, more) in [(4, true), (4, true), (8, false)] {
+            let done = step(&mut store, tiny)?;
+            if (done.records, done.payload, done.more) != (1, blocks * BLOCK, more) {
+                return Err(format!("a record beyond the bound: {done:?}"));
+            }
+            check(&mut store, "after a step of one record")?;
+        }
+        let end = store.log_start();
+        let done = step(&mut store, by_records)?;
+        if (done.records, done.more, done.start) != (0, false, end) {
+            return Err(format!("with nothing to take: {done:?}"));
+        }
+        drop(store);
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A step takes only what is durable and never makes anything durable
+/// itself: records since the last flush stay until the log is synced,
+/// which `sync_log` does without being a request. And it stops at the
+/// hold.
+#[test]
+fn a_checkpoint_step_takes_only_durable_records_below_the_hold() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        write(&mut store, 8, 1, 2)?;
+        flush(&mut store)?;
+        let durable = store.log_durable();
+        write(&mut store, 16, 1, 3)?;
+        let all = StepBound {
+            payload: u64::MAX,
+            records: u64::MAX,
+        };
+        let done = step(&mut store, all)?;
+        if (done.records, done.more) != (2, false) || done.start > durable {
+            return Err(format!("with one record not durable: {done:?}"));
+        }
+        let syncs = disk.stats().syncs;
+        if step(&mut store, all)?.records != 0 || disk.stats().syncs != syncs {
+            return Err("a step with nothing durable to take did something".into());
+        }
+        store.sync_log().map_err(|e| e.to_string())?;
+        if store.log_durable() != store.position() {
+            return Err("sync_log did not make the log durable".into());
+        }
+        // The hold in front of the record: nothing to take.
+        let held = store.log_start();
+        store.set_hold(Some(held)).map_err(|e| format!("{e:?}"))?;
+        if step(&mut store, all)?.records != 0 {
+            return Err("a step went past the hold".into());
+        }
+        store.set_hold(None).map_err(|e| format!("{e:?}"))?;
+        let done = step(&mut store, all)?;
+        if (done.records, done.more) != (1, false) {
+            return Err(format!("after the sync: {done:?}"));
+        }
+        expect(&mut store, 0, 1, 1, "first")?;
+        expect(&mut store, 8, 1, 2, "second")?;
+        expect(&mut store, 16, 1, 3, "third")
+    }
+    holds(scenario);
+}
+
+/// A step reads the log as far as it takes and no further: its work
+/// does not grow with the log behind it.
+#[test]
+fn a_checkpoint_step_reads_only_what_it_takes() {
+    let env = environments(0).remove(0);
+    let (_disk, mut store) = env.fresh().expect("a store");
+    for n in 0..400u64 {
+        write(&mut store, n % 64, 1, n as u8).expect("write");
+    }
+    flush(&mut store).expect("flush");
+    let bound = StepBound {
+        payload: u64::MAX,
+        records: 4,
+    };
+    let before = store.core.log.walked();
+    let done = step(&mut store, bound).expect("step");
+    assert_eq!(done.records, 4);
+    let walked = store.core.log.walked() - before;
+    // The step's own records and the one it stopped at, once to choose
+    // them and again to save neighbours, to apply them and to move the
+    // start: a few times five, never the 400 of the log.
+    assert!(walked <= 40, "a step of 4 records walked {walked}");
+}
+
+/// A discard is a record of the bound like any other: after one write
+/// and 5000 discards a step of one record takes one record, the log
+/// still ends where it did, and the step walks a few records and not
+/// the log. Steps of the daemon's bound work the log off in about five
+/// steps and never take more than the bound's records. A discard
+/// counts no bytes: a step writes nothing for it.
+#[test]
+fn discards_count_as_records_of_a_steps_bound() {
+    const DISCARDS: u64 = 5000;
+    let env = environments(0).remove(0);
+    let (_disk, mut store) = env.fresh().expect("a store");
+    write(&mut store, 3, 1, 7).expect("write");
+    for n in 0..DISCARDS {
+        ok(
+            &mut store,
+            Op::Discard {
+                offset: (8 + n % 32) * BLOCK,
+                len: BLOCK,
+            },
+        )
+        .expect("discard");
+    }
+    flush(&mut store).expect("flush");
+    let one = StepBound {
+        payload: u64::MAX,
+        records: 1,
+    };
+    let end = store.log_state().end;
+    let before = store.core.log.walked();
+    let done = step(&mut store, one).expect("step");
+    let walked = store.core.log.walked() - before;
+    assert_eq!((done.records, done.payload), (1, BLOCK), "the write");
+    assert!(done.more);
+    assert!(done.start.0 < end, "a step of one record took the log");
+    assert!(walked <= 10, "a step of one record walked {walked}");
+    // The next one is a discard: a record, and no bytes.
+    let before = store.core.log.walked();
+    let done = step(&mut store, one).expect("step");
+    let walked = store.core.log.walked() - before;
+    assert_eq!((done.records, done.payload), (1, 0), "a discard");
+    assert!(walked <= 10, "a step of one discard walked {walked}");
+    // A bound of no bytes at all still takes discards, up to its
+    // records.
+    let none = StepBound {
+        payload: 0,
+        records: 100,
+    };
+    let done = step(&mut store, none).expect("step");
+    assert_eq!((done.records, done.payload), (100, 0));
+    let mut steps = 0;
+    loop {
+        let before = store.core.log.walked();
+        let done = step(&mut store, StepBound::DAEMON).expect("step");
+        let walked = store.core.log.walked() - before;
+        assert!(done.records <= StepBound::DAEMON.records, "{done:?}");
+        assert!(
+            walked <= 5 * (StepBound::DAEMON.records + 1),
+            "a step of {} records walked {walked}",
+            done.records
+        );
+        steps += 1;
+        if !done.more {
+            break;
+        }
+    }
+    assert_eq!(steps, (DISCARDS - 101).div_ceil(StepBound::DAEMON.records));
+    let state = store.log_state();
+    assert_eq!(state.live(), 0, "{state:?}");
+    expect(&mut store, 3, 1, 7, "after the steps").expect("the write");
+}
+
+/// What the worker shows of the log is of one moment: a reader never
+/// sees a start beyond the end, also when each state published starts
+/// beyond the end of the one before, as after a step that took a log
+/// which was longer than the one last shown. And the live size of a
+/// state that no store shows, with its start beyond its end, is zero
+/// and no overflow.
+#[test]
+fn the_log_shown_never_starts_beyond_its_end() {
+    const STATES: u64 = 200_000;
+    let shown = Shown::default();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for n in 1..=STATES {
+                shown.set(LogState {
+                    start: 10 * n,
+                    end: 10 * n + 5,
+                    ..LogState::default()
+                });
+            }
+        });
+        loop {
+            let state = shown.state();
+            assert!(state.start <= state.end, "{state:?}");
+            assert!(state.live() <= 5, "{state:?}");
+            if state.start == 10 * STATES {
+                break;
+            }
+        }
+    });
+    let torn = LogState {
+        start: 20,
+        end: 15,
+        ..LogState::default()
+    };
+    assert_eq!(torn.live(), 0);
+}
+
+/// A checkpoint done in steps can be cut anywhere, as one done in one
+/// call: the volume is filled and checkpointed, one block in each of
+/// its 256 write units is written again, and the steps that apply them
+/// are stopped after a number of writes and syncs with a power cut;
+/// the open that follows is stopped and cut as well. After the next
+/// open every block reads as what was flushed, and steps taken after
+/// that finish the work.
+#[test]
+fn a_checkpoint_in_steps_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let bound = StepBound {
+            payload: 16 * BLOCK,
+            records: 16,
+        };
+        for stop in (0..30).chain([44, 61, 90, 150, 300, 700]) {
+            let (disk, mut store) = env.fresh()?;
+            for mib in 0..4 {
+                write(&mut store, mib * 256, 256, 9)?;
+            }
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for unit in 0..256u64 {
+                write(&mut store, unit * 4 + 1, 1, (unit % 200) as u8 + 10)?;
+            }
+            flush(&mut store)?;
+            disk.halt_after(stop);
+            let mut steps = 0;
+            let cut_off = loop {
+                match store.checkpoint_step(bound) {
+                    Err(_) => break true,
+                    Ok(done) if !done.more => break false,
+                    Ok(done) if done.records > 16 => {
+                        return Err(format!("a step took {done:?}"));
+                    }
+                    Ok(_) => steps += 1,
+                }
+            };
+            if !cut_off && steps < 15 {
+                return Err(format!("256 records were taken in {steps} steps of 16"));
+            }
+            if !cut_off && stop < 3 {
+                return Err(format!("the steps were not stopped at {stop}"));
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            disk.halt_after(stop % 7);
+            drop(Store::open(disk.clone(), env.options()));
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                for unit in 0..256u64 {
+                    let what = format!("unit {unit} {when} a cut at {stop}");
+                    expect(store, unit * 4, 1, 9, &what)?;
+                    expect(store, unit * 4 + 1, 1, (unit % 200) as u8 + 10, &what)?;
+                    expect(store, unit * 4 + 2, 2, 9, &what)?;
+                }
+                Ok(())
+            };
+            check(&mut store, "after")?;
+            // The steps go on where the cut left the log.
+            while step(&mut store, bound)?.more {}
+            if store.log_start() < store.log_durable() {
+                return Err("steps after the restart left durable records".into());
+            }
+            check(&mut store, "and the remaining steps after")?;
+        }
+        Ok(())
+    }
+    // The step keeps the checkpoint's order. Two of its defects show
+    // here as they do for the checkpoint in one call: the log given up
+    // before the home image is durable, and neighbours not saved.
+    caught(scenario, Mutants::RECLAIM_BEFORE_HOME_SYNC);
+    caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
+}
+
+// ---------------------------------------------------------------------
+// The rule of the marks.
+
+/// Marks for a volume of the tests' size: steps begin at 512 KiB of
+/// log and end below 256 KiB; a step takes at most 128 KiB or 8
+/// records, twice what the test's request adds.
+const MARKS: Marks = Marks {
+    high: 512 << 10,
+    low: 256 << 10,
+    step: StepBound {
+        payload: 128 << 10,
+        records: 8,
+    },
+};
+
+/// How far one request of 16 blocks moves the log's end at most: its
+/// record (the data, the header, the padding to the write unit), and,
+/// where the record does not fit into what is left of a segment, the
+/// padding to the next segment, which is less than one more record.
+const ONE_REQUEST: u64 = 2 * ((64 << 10) + (32 << 10));
+
+/// Under a write load that lasts and never flushes, the store taking
+/// its step after every request, the log's live size stays below the
+/// high mark and one request: the log stops growing, whatever the
+/// load. Steps begin only at the high mark and end below the low one,
+/// the store syncs the log itself to have something durable to take,
+/// and every block reads as written at the end and after a kill.
+#[test]
+fn under_a_lasting_write_load_the_log_stays_at_the_high_mark() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        store.set_marks(Some(MARKS));
+        let mut newest = [0u8; 64];
+        // The rule as the test follows it: working from the first step
+        // until the log is below the low mark.
+        let (mut largest, mut rests, mut working) = (0, 0u64, false);
+        for n in 0..300u64 {
+            let slot = (n * 7) % 64;
+            let byte = (n % 250) as u8 + 1;
+            let before = store.log_state();
+            write(&mut store, slot * 16, 16, byte)?;
+            newest[slot as usize] = byte;
+            let after = store.log_state();
+            largest = largest.max(after.live());
+            if after.live() > MARKS.high + ONE_REQUEST {
+                return Err(format!(
+                    "after write {n} the log holds {} bytes",
+                    after.live()
+                ));
+            }
+            let stepped = after.steps - before.steps;
+            if stepped > 1 {
+                return Err(format!("write {n} was followed by {stepped} steps"));
+            }
+            if stepped == 1 && after.start <= before.start {
+                return Err(format!(
+                    "write {n}: a step that took nothing, {before:?} to {after:?}"
+                ));
+            }
+            // A step while the rule rested: the write must have taken
+            // the log to the high mark.
+            if stepped == 1 && !working && before.live() + ONE_REQUEST < MARKS.high {
+                return Err(format!(
+                    "a step at write {n} with {} bytes of log before it",
+                    before.live()
+                ));
+            }
+            if stepped == 0 && working {
+                return Err(format!(
+                    "no step at write {n}, above the low mark: {after:?}"
+                ));
+            }
+            working = stepped == 1 || working;
+            if after.live() < MARKS.low {
+                if working {
+                    rests += 1;
+                }
+                working = false;
+            }
+        }
+        let state = store.log_state();
+        // `largest` is seen after a step: one step below the high mark.
+        if state.steps < 20 || largest + MARKS.step.payload < MARKS.high || rests < 2 {
+            return Err(format!(
+                "the load did not exercise the rule: {state:?}, largest {largest}, it came to rest {rests} times"
+            ));
+        }
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            for (slot, byte) in newest.iter().enumerate() {
+                expect(store, slot as u64 * 16, 16, *byte, when)?;
+            }
+            Ok(())
+        };
+        check(&mut store, "under the load")?;
+        // What the steps took is in the home image, the rest in the
+        // log: a kill loses nothing.
+        drop(store);
+        disk.kill();
+        let mut store = env.reopen_ack(&disk)?;
+        check(&mut store, "after a kill")
+    }
+    holds(scenario);
+}
+
+/// Without marks the store never checkpoints by itself, and a hold in
+/// front of the log stops the rule without a sync or a spin.
+#[test]
+fn the_rule_rests_without_marks_and_behind_a_hold() {
+    let env = environments(0).remove(0);
+    let (disk, mut store) = env.fresh().expect("a store");
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, 1).expect("write");
+    }
+    assert!(store.log_state().live() > MARKS.high);
+    assert_eq!(store.tend(), Ok(false), "no marks, no step");
+    let start = store.log_start();
+    store.set_hold(Some(start)).expect("a hold at the start");
+    store.set_marks(Some(MARKS));
+    let syncs = disk.stats().syncs;
+    assert_eq!(store.tend(), Ok(false), "nothing below the hold");
+    assert_eq!(disk.stats().syncs, syncs, "and no sync that could not help");
+    store.set_hold(None).expect("released");
+    assert_eq!(store.tend(), Ok(true));
+    assert_eq!(store.log_state().steps, 1);
+}
+
+/// A step that fails fails the volume: the rule returns the failure,
+/// the store serves nothing more, and the next open finds it marked.
+#[test]
+fn a_step_that_fails_fails_the_volume() {
+    let env = environments(0).remove(0);
+    let (disk, mut store) = env.fresh().expect("a store");
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, 1).expect("write");
+    }
+    // The marks only now, so that the first step is the one that fails.
+    store.set_marks(Some(MARKS));
+    disk.fail_sync_of(HOME_NAME);
+    assert_eq!(store.tend(), Err(BlkError::Failed));
+    assert!(store.is_failed());
+    assert_eq!(store.tend(), Ok(false), "a failed volume is left alone");
+    let done = run(&mut store, Op::Flush).expect("answered");
+    assert_eq!(done.result, Err(BlkError::Failed));
+    drop(store);
+    disk.clear_faults();
+    assert!(Store::open(disk.clone(), env.options()).is_err());
+}
+
+/// What the worker shows of its steps is of one moment: a reader that
+/// looks while steps begin and end never sees a step that has ended
+/// as under way, nor the count go back. Seen as one number (twice the
+/// steps, plus one while a step is under way) the state only grows.
+#[test]
+fn the_steps_shown_never_go_back() {
+    const STEPS: u64 = 200_000;
+    let shown = Shown::default();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for step in 0..STEPS {
+                shown.begin();
+                shown.set(LogState {
+                    steps: step + 1,
+                    ..LogState::default()
+                });
+            }
+        });
+        let mut last = 0;
+        loop {
+            let state = shown.state();
+            let now = state.steps * 2 + u64::from(state.stepping);
+            assert!(
+                now >= last,
+                "after {last}: {} steps, under way {}",
+                state.steps,
+                state.stepping
+            );
+            last = now;
+            if now == STEPS * 2 {
+                break;
+            }
+        }
+    });
+    let state = shown.state();
+    assert_eq!((state.steps, state.stepping), (STEPS, false));
+}
+
+/// Wait until a step is at the point of its pause: the hook has made
+/// the file that says so. "Under way" alone is earlier than that.
+fn at_the_point(gate: &std::path::Path, what: &str) {
+    let reached = StepPause::reached(gate);
+    let began = std::time::Instant::now();
+    while !reached.exists() {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{what}: the step did not reach its point"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The served store applies the rule on its worker: after every
+/// request, and with no request at all until the log is below the low
+/// mark. Requests are answered between the steps, the owner is woken
+/// when a step begins and ends, and the log's state can be read while
+/// the worker works.
+///
+/// Nothing asserted here rests on how the worker's steps fall between
+/// the test's requests. Where the 200 writes end the rule may be at
+/// work or at rest (at rest the log is anywhere below the high mark),
+/// so the idle part first makes the phase certain: a hold at the log's
+/// start, writes behind it until the log is above the high mark, and
+/// the hold released with no request. From there the worker steps to
+/// below the low mark by itself, and there it rests for certain. The
+/// same from a worker brought to rest first is
+/// `a_hold_that_goes_or_moves_lets_the_idle_worker_checkpoint`.
+#[test]
+fn a_served_store_steps_between_requests_and_when_idle() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let mut served = store
+        .serve_with(Some(Waker::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })))
+        .unwrap();
+    assert_eq!(served.log_state().steps, 0);
+    let mut done = Vec::new();
+    let mut largest = 0;
+    for n in 0..200u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(n),
+                op: Op::Write {
+                    offset: (n % 64) * 16 * BLOCK,
+                    data: Buf::filled(16, (n % 250) as u8 + 1),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()), "write {n}");
+        largest = largest.max(served.log_state().live());
+    }
+    // With a step after every request the log is never seen more than
+    // one request above the mark; steps that fall between the requests
+    // as well only make it shorter.
+    assert!(
+        largest <= MARKS.high + 2 * ONE_REQUEST,
+        "the log reached {largest} bytes"
+    );
+    // 200 requests of 64 KiB against a high mark of 512 KiB and steps
+    // of at most 128 KiB: whatever the interleaving, many steps.
+    let after_load = served.log_state();
+    assert!(after_load.steps >= 10, "{after_load:?}");
+
+    // The phase made certain. A hold at the log's start: a step may
+    // move the start between the look and the hold, then the hold is
+    // refused and tried again.
+    let began = std::time::Instant::now();
+    loop {
+        let start = Lsn(served.log_state().start);
+        if served.set_hold(Some(start)).is_ok() {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "no hold at the log's start"
+        );
+    }
+    // Twelve writes behind the hold are more than the high mark by
+    // themselves. Each rewrites what its slot holds already.
+    let newest_of = |slot: u64| (slot + if slot < 8 { 192 } else { 128 }) % 250 + 1;
+    for slot in 0..12u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(500 + slot),
+                op: Op::Write {
+                    offset: slot * 16 * BLOCK,
+                    data: Buf::filled(16, newest_of(slot) as u8),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()), "write {slot} behind the hold");
+    }
+    let held = served.log_state();
+    assert!(held.live() >= MARKS.high, "{held:?}");
+    served.set_hold(None).expect("released");
+    // No request any more: from above the high mark the worker goes
+    // on until the low mark.
+    let began = std::time::Instant::now();
+    let state = loop {
+        let state = served.log_state();
+        if state.live() < MARKS.low && !state.stepping {
+            break state;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "idle, the log stayed at {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    assert!(state.steps > held.steps, "{state:?} after {held:?}");
+    // 212 completions, and two wake-ups a step. The count of steps is
+    // shown a moment before the wake-up for its end, so the wake-ups
+    // are waited for.
+    let began = std::time::Instant::now();
+    while u64::from(calls.load(Ordering::SeqCst)) < 212 + 2 * state.steps {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "{} wake-ups for 212 requests and {} steps",
+            calls.load(Ordering::SeqCst),
+            state.steps
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // It rests there, for certain: below the low mark, with no step
+    // under way and no request, the rule takes nothing until the high
+    // mark. No step without a reason.
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(served.log_state().steps, state.steps);
+    for slot in 0..64u64 {
+        done.clear();
+        served
+            .submit(Request {
+                id: RequestId(1000 + slot),
+                op: Op::Read {
+                    offset: slot * 16 * BLOCK,
+                    buf: Buf::zeroed(16),
+                },
+            })
+            .unwrap();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        // The last write to the slot: of 200, number slot + 192 or + 128.
+        let newest = newest_of(slot);
+        let buf = done[0].buf.as_ref().expect("the read's buffer");
+        assert!(
+            buf.iter().all(|b| u64::from(*b) == newest),
+            "slot {slot} does not hold its newest write"
+        );
+    }
+    drop(served);
+    disk.kill();
+    env.reopen_ack(&disk).expect("opens after a kill");
+}
+
+/// A kill, or a power cut, inside a step of the served store, through
+/// the worker's own rule and at each of the step's points: the step
+/// waits there (the test hook), the store shows that a step is under
+/// way and has not counted it, and the process is lost there. The
+/// next open finds every write it must (every acknowledged one after a
+/// kill; every flushed one after a power cut, where each write was
+/// flushed), the rule goes on where the log was left, and the content
+/// stays right.
+fn lost_inside_a_step(env: &Env, point: StepPoint, power_cut: bool) {
+    static NUMBER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let what = format!("{point:?}, power cut {power_cut}, in {env:?}");
+    let gate = std::env::temp_dir().join(format!(
+        "skyzfs-step-gate-{}-{}",
+        std::process::id(),
+        NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    let (disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), point);
+    let mut served = store.serve().unwrap();
+    let mut done = Vec::new();
+    let mut newest = [0u8; 64];
+    let mut n = 0u64;
+    let mut ids = 0u64;
+    // Writes until the worker is inside its first step. It answers
+    // the request that reached the mark and then waits in the step.
+    //
+    // Whether a step follows an answer is read from the log, not
+    // waited for: the state shown when a request is answered has that
+    // request, and the rule takes its first step exactly when the
+    // log's live size is at the high mark. So after each answer the
+    // test knows whether to wait for the step to show or to go on,
+    // however the worker is scheduled. (A sleep in its place would,
+    // when too short, send one more request behind a step that waits
+    // at its point for the test, and that request is never answered.)
+    let step_follows = |served: &Served| {
+        let state = served.log_state();
+        if state.live() < MARKS.high && !state.stepping {
+            return false;
+        }
+        let began = std::time::Instant::now();
+        while !served.log_state().stepping {
+            assert!(
+                began.elapsed() < Duration::from_secs(20),
+                "{what}: at the high mark and no step: {:?}",
+                served.log_state()
+            );
+            std::thread::yield_now();
+        }
+        true
+    };
+    while !served.log_state().stepping {
+        assert!(n < 64, "no step after {n} writes: {:?}", served.log_state());
+        let (slot, byte) = (n % 64, n as u8 + 1);
+        let mut ops = vec![Op::Write {
+            offset: slot * 16 * BLOCK,
+            data: Buf::filled(16, byte),
+        }];
+        if power_cut {
+            ops.push(Op::Flush);
+        }
+        for op in ops {
+            done.clear();
+            served
+                .submit(Request {
+                    id: RequestId(ids),
+                    op,
+                })
+                .unwrap();
+            ids += 1;
+            assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+            assert_eq!(done[0].result, Ok(()), "{what}");
+            if step_follows(&served) {
+                break;
+            }
+        }
+        // Counted only if its flush was answered too, where there is
+        // one: a write whose flush the step overtook is not promised
+        // across a power cut, and reads as it was or as it is.
+        if !power_cut || !served.log_state().stepping || done[0].buf.is_none() {
+            newest[slot as usize] = byte;
+        }
+        n += 1;
+    }
+    // The step is under way; the loss comes when it is at the point.
+    at_the_point(&gate, &what);
+    let state = served.log_state();
+    assert!(state.stepping, "{what}");
+    assert_eq!(state.steps, 0, "{what}: the step has not ended");
+    if power_cut {
+        let lost = env.lost();
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        disk.set_write_unit(u64::from(env.unit));
+    } else {
+        disk.kill();
+    }
+    std::fs::write(&gate, b"").unwrap();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    let mut store = env
+        .reopen_ack(&disk)
+        .unwrap_or_else(|why| panic!("{what}: {why}"));
+    let check = |store: &mut SimStore, when: &str| {
+        for (slot, byte) in newest.iter().enumerate() {
+            let slot = slot as u64;
+            // The last write before the loss may be the one whose
+            // flush was not answered: its slot holds it or what was
+            // there before.
+            if power_cut && slot == (n - 1) % 64 {
+                let got = read(store, slot * 16, 16).unwrap();
+                let (old, new) = (*byte, (n - 1) as u8 + 1);
+                assert!(
+                    got.iter().all(|b| *b == old) || got.iter().all(|b| *b == new),
+                    "{what}: slot {slot} {when} is neither {old} nor {new}"
+                );
+                continue;
+            }
+            expect(store, slot * 16, 16, *byte, when).unwrap_or_else(|why| panic!("{what}: {why}"));
+        }
+    };
+    check(&mut store, "after the loss inside a step");
+    store.set_marks(Some(MARKS));
+    let found = store.log_state();
+    let above = found.live() >= MARKS.high;
+    let mut steps = 0;
+    while store.tend().unwrap() {
+        steps += 1;
+    }
+    // The rule goes on exactly when the log that survived is still
+    // at the high mark. It is not after a loss behind the log's new
+    // start being durable (the step is done), nor after a power cut
+    // that took the unflushed record which had reached the mark.
+    assert_eq!(
+        steps > 0,
+        above,
+        "{what}: the rule after the restart, with the log at {found:?}"
+    );
+    if !power_cut
+        && matches!(
+            point,
+            StepPoint::Saved | StepPoint::Written | StepPoint::Synced
+        )
+    {
+        assert!(
+            above,
+            "{what}: a kill before the new start kept the log at {found:?}"
+        );
+    }
+    check(&mut store, "after the steps that followed");
+}
+
+#[test]
+fn a_kill_inside_a_step_of_the_worker_loses_nothing() {
+    for env in environments(0) {
+        for point in [
+            StepPoint::Saved,
+            StepPoint::Written,
+            StepPoint::Synced,
+            StepPoint::StartWritten,
+            StepPoint::StartDurable,
+        ] {
+            lost_inside_a_step(&env, point, false);
+        }
+    }
+}
+
+#[test]
+fn a_power_cut_inside_a_step_of_the_worker_loses_nothing_that_was_flushed() {
+    for env in environments(0) {
+        for point in [
+            StepPoint::Saved,
+            StepPoint::Written,
+            StepPoint::Synced,
+            StepPoint::StartWritten,
+            StepPoint::StartDurable,
+        ] {
+            lost_inside_a_step(&env, point, true);
+        }
+    }
+}
+
+/// A record that alone exceeds the daemon's bound is a step of its
+/// own: a write-zeroes of 12 MiB between two small writes, under the
+/// bound of 8 MiB. The step before it ends in front of it, it is taken
+/// alone, and the zeros are in the home image afterwards, over what
+/// was there, also after a restart.
+#[test]
+fn a_write_zeroes_beyond_the_daemons_bound_is_a_step_of_its_own() {
+    const ZEROED: u64 = 12 << 20;
+    for env in environments(0) {
+        let config = StoreConfig {
+            size_mib: 32,
+            ..env.config()
+        };
+        let disk = SimDisk::new(7);
+        disk.set_write_unit(u64::from(env.unit));
+        let key = Key(*b"a key for tests!");
+        let mut store = Store::create_keyed(disk.clone(), &config, key, env.options()).unwrap();
+        // Something for the zeros to replace, in the home image.
+        let (first, last) = (1000u64, 1000 + ZEROED / BLOCK - 16);
+        write(&mut store, first, 16, 5).unwrap();
+        write(&mut store, last, 16, 6).unwrap();
+        write(&mut store, 300, 4, 7).unwrap();
+        flush(&mut store).unwrap();
+        checkpoint(&mut store).unwrap();
+
+        write(&mut store, 10, 1, 1).unwrap();
+        ok(
+            &mut store,
+            Op::WriteZeroes {
+                offset: first * BLOCK,
+                len: ZEROED,
+            },
+        )
+        .unwrap();
+        write(&mut store, 20, 1, 2).unwrap();
+        flush(&mut store).unwrap();
+        for (records, payload, more) in [(1, BLOCK, true), (1, ZEROED, true), (1, BLOCK, false)] {
+            let done = step(&mut store, StepBound::DAEMON).unwrap();
+            assert_eq!(
+                (done.records, done.payload, done.more),
+                (records, payload, more),
+                "{env:?}"
+            );
+        }
+        let check = |store: &mut SimStore, when: &str| {
+            for (block, count, byte) in [
+                (first, 16, 0),
+                (last, 16, 0),
+                (300, 4, 7),
+                (10, 1, 1),
+                (20, 1, 2),
+            ] {
+                expect(store, block, count, byte, when)
+                    .unwrap_or_else(|why| panic!("{env:?}: {why}"));
+            }
+        };
+        check(&mut store, "after the steps");
+        drop(store);
+        disk.kill();
+        let mut store = Store::open(disk.clone(), env.options()).unwrap().0;
+        check(&mut store, "after a restart");
+    }
+}
+
+/// A loss between a step's sync of the home image and the log's new
+/// start, with a newer record for the same block further on in the
+/// log, beyond the step's batch: the home image then holds the block's
+/// older content, durably, and the log starts where it did. The next
+/// open reads the newer content, and still does after the step is
+/// applied again and after the steps that follow.
+///
+/// The loss is made in two ways, and each half asserts that the log
+/// starts where it did before the step, which is what makes the step
+/// be applied again:
+///
+/// - a kill: the store's worker takes the step and is held by the hook
+///   after the home image is synced, before the new start is written,
+///   and the process is lost there;
+/// - a power cut: the step runs to the sync of the log's superblock,
+///   which fails, and the power cut takes the new start that was
+///   written and not synced.
+#[test]
+fn a_newer_record_beyond_a_steps_batch_wins_after_a_loss_between_its_sync_and_its_new_start() {
+    static NUMBER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn scenario(env: &Env) -> Outcome {
+        let one = StepBound {
+            payload: u64::MAX,
+            records: 1,
+        };
+        for power_cut in [false, true] {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 5, 1, 1)?;
+            write(&mut store, 9, 1, 3)?;
+            write(&mut store, 5, 1, 2)?;
+            flush(&mut store)?;
+            let before = store.log_state();
+            if power_cut {
+                // The step takes the first record alone, writes block
+                // 5 as 1 into the home image and syncs it; the log's
+                // new start cannot be made durable.
+                disk.fail_sync_of(crate::log::SUPER_NAME);
+                if store.checkpoint_step(one).is_ok() {
+                    return Err("the step ended although its new start was not durable".into());
+                }
+                drop(store);
+                // The fault stood for the loss; the restart has none.
+                disk.clear_faults();
+                let lost = env.lost();
+                disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+                disk.set_write_unit(u64::from(env.unit));
+            } else {
+                // The worker finds the log at the high mark and takes
+                // its first step, of one record, before any request.
+                let gate = std::env::temp_dir().join(format!(
+                    "skyzfs-newer-gate-{}-{}",
+                    std::process::id(),
+                    NUMBER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                ));
+                let _ = std::fs::remove_file(&gate);
+                let _ = std::fs::remove_file(StepPause::reached(&gate));
+                store.set_marks(Some(Marks {
+                    high: before.live(),
+                    low: 1,
+                    step: one,
+                }));
+                store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Synced);
+                let served = store.serve().map_err(|e| e.to_string())?;
+                at_the_point(&gate, "the newer record, the kill");
+                if served.log_state().steps != 0 {
+                    return Err("the step ended before the kill".into());
+                }
+                // Held behind the sync of the home image: lost there.
+                disk.kill();
+                std::fs::write(&gate, b"").map_err(|e| e.to_string())?;
+                drop(served);
+                let _ = std::fs::remove_file(&gate);
+                let _ = std::fs::remove_file(StepPause::reached(&gate));
+            }
+            let mut store = env.reopen_ack(&disk)?;
+            let found = store.log_state();
+            if found.start != before.start {
+                return Err(format!(
+                    "power cut {power_cut}: the log started at {} and starts at {} after \
+                     the loss: the step is not applied again",
+                    before.start, found.start
+                ));
+            }
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                let when = format!("{when} (power cut {power_cut})");
+                expect(store, 5, 1, 2, &when)?;
+                expect(store, 9, 1, 3, &when)?;
+                expect(store, 6, 3, 0, &when)
+            };
+            check(&mut store, "after the loss")?;
+            let again = step(&mut store, one)?;
+            if again.records != 1 || again.start.0 <= before.start {
+                return Err(format!("the step applied again took {again:?}"));
+            }
+            check(&mut store, "after the step applied again")?;
+            while step(&mut store, one)?.more {}
+            check(&mut store, "after the steps that followed")?;
+            drop(store);
+            let mut store = env.reopen(&disk)?;
+            check(&mut store, "after another restart")?;
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A long log that a start found is worked off once the store is
+/// served, with no request at all: the worker asks the rule before it
+/// waits for its first command.
+#[test]
+fn a_long_log_found_at_the_start_is_worked_off_without_a_request() {
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    drop(store);
+    disk.kill();
+    let mut store = env.reopen_ack(&disk).unwrap();
+    assert!(store.log_state().live() > MARKS.high);
+    store.set_marks(Some(MARKS));
+    let served = store.serve().unwrap();
+    let began = std::time::Instant::now();
+    loop {
+        let state = served.log_state();
+        if state.live() < MARKS.low && !state.stepping {
+            assert!(state.steps > 0);
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "with no request the log stayed at {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// The owner is woken for a completion only after the log state that
+/// has the completion's record is shown: a waker that looks at the
+/// shown state at each wake, on the worker's own thread, finds the
+/// log's end beyond where it was before the write, at the first wake
+/// after the write. And the caller of a checkpoint finds the log as
+/// the checkpoint left it when the call returns. What is asserted does
+/// not rest on timing: the state is read by the waker, on the worker's
+/// thread, between the worker's send and its next look at its queue,
+/// and the test waits for that wake before it reads what was seen.
+#[test]
+fn the_log_shown_has_a_completion_when_the_owner_is_woken_for_it() {
+    use std::sync::Mutex;
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let shown: Arc<Mutex<Option<Arc<Shown>>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<LogState>>> = Arc::default();
+    let waker = Waker::new({
+        let (shown, seen) = (shown.clone(), seen.clone());
+        move || {
+            if let Some(shown) = shown.lock().unwrap().as_ref() {
+                seen.lock().unwrap().push(shown.state());
+            }
+        }
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    *shown.lock().unwrap() = Some(served.log.clone());
+    let before = served.log_state();
+    for (id, block) in [(1, 0), (2, 5)] {
+        let end = served.log_state().end;
+        let wakes = seen.lock().unwrap().len();
+        served
+            .submit(Request {
+                id: RequestId(id),
+                op: Op::Write {
+                    offset: block * BLOCK,
+                    data: Buf::filled(1, 9),
+                },
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        // The completion can be taken before the worker has run the
+        // waker: wait for this request's wake, whatever the scheduling.
+        let asked = std::time::Instant::now();
+        while seen.lock().unwrap().len() <= wakes {
+            assert!(
+                asked.elapsed() < Duration::from_secs(10),
+                "write {id}: the owner was never woken for it"
+            );
+            std::thread::yield_now();
+        }
+        let at_the_wake = seen.lock().unwrap()[wakes];
+        assert!(
+            at_the_wake.end > end,
+            "write {id}: woken with the log shown ending at {}, as before the write ({end})",
+            at_the_wake.end
+        );
+    }
+    assert!(served.log_state().end > before.end);
+    served
+        .submit(Request {
+            id: RequestId(3),
+            op: Op::Flush,
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+    served.checkpoint().unwrap();
+    let after = served.log_state();
+    assert!(
+        after.start > before.start,
+        "a checkpoint that has returned is shown: {after:?}, before {before:?}"
+    );
+}
+
+/// A served store with marks and a hold, twelve writes of 16 blocks
+/// and a flush behind it, and the worker at rest: the rule has been
+/// asked after the flush and found nothing below the hold.
+fn served_at_rest_behind_a_hold(first: u64) -> (Served, Lsn) {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    store.set_marks(Some(MARKS));
+    let start = store.log_start();
+    store.set_hold(Some(start)).expect("a hold at the start");
+    let mut served = store.serve().unwrap();
+    let mut middle = start;
+    let run = |served: &mut Served, id: u64, op: Op| {
+        served
+            .submit(Request {
+                id: RequestId(id),
+                op,
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        assert_eq!(served.wait(&mut done, Duration::from_secs(10)), 1);
+        assert_eq!(done[0].result, Ok(()));
+    };
+    for n in 0..12u64 {
+        if n == first {
+            middle = served.position().unwrap();
+        }
+        let op = Op::Write {
+            offset: n * 16 * BLOCK,
+            data: Buf::filled(16, 1),
+        };
+        run(&mut served, n, op);
+    }
+    run(&mut served, 99, Op::Flush);
+    // Answered behind the rule's look after the flush: the worker is
+    // at rest when this returns.
+    served.position().unwrap();
+    let state = served.log_state();
+    assert!(state.live() > MARKS.high, "{state:?}");
+    assert_eq!((state.steps, state.stepping), (0, false), "{state:?}");
+    (served, middle)
+}
+
+/// The log comes to what `there` asks by itself, with no request.
+fn comes_by_itself(served: &Served, what: &str, there: impl Fn(&LogState) -> bool) -> LogState {
+    let asked = std::time::Instant::now();
+    loop {
+        let state = served.log_state();
+        if there(&state) && !state.stepping {
+            return state;
+        }
+        assert!(
+            asked.elapsed() < Duration::from_secs(10),
+            "{what}: not within 10 s with no request: {state:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// The worker asks the rule of the marks again when a hold changes,
+/// with no request to follow: a hold released above the high mark lets
+/// the log come below the low mark by itself, and a hold moved forward
+/// lets it come up to the new hold, where the worker rests again.
+/// Without that the worker slept on its queue with a long log until
+/// the next request.
+#[test]
+fn a_hold_that_goes_or_moves_lets_the_idle_worker_checkpoint() {
+    let (served, _) = served_at_rest_behind_a_hold(0);
+    served.set_hold(None).expect("released");
+    let state = comes_by_itself(&served, "after the hold was released", |s| {
+        s.live() < MARKS.low
+    });
+    assert!(state.steps > 0, "{state:?}");
+
+    let (served, middle) = served_at_rest_behind_a_hold(6);
+    served.set_hold(Some(middle)).expect("moved forward");
+    let state = comes_by_itself(&served, "after the hold moved", |s| s.start == middle.0);
+    assert!(state.steps > 0, "{state:?}");
+    // It rests there: what is left is above the low mark and behind
+    // the hold.
+    served.position().unwrap();
+    let rests = served.log_state();
+    assert_eq!(
+        (rests.start, rests.stepping),
+        (middle.0, false),
+        "{rests:?}"
+    );
+    assert!(rests.live() >= MARKS.low, "{rests:?}");
+    assert_eq!(rests.steps, state.steps, "no step beyond the hold");
 }

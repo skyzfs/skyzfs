@@ -44,6 +44,8 @@ pub(crate) struct SimHarness {
     /// then cannot choose how far a request in flight got, or which
     /// records a power cut keeps: the thread and a seed do.
     pub(crate) threaded: bool,
+    /// The marks by which the store checkpoints by itself, if it does.
+    pub(crate) marks: Option<Marks>,
 }
 
 impl SimHarness {
@@ -73,7 +75,12 @@ impl SimHarness {
     }
 
     fn open(&self, disk: SimDisk, read_only: bool) -> Result<OnSim, HarnessError> {
-        let inner = match Store::open(disk.clone(), self.options(read_only)) {
+        let opened =
+            Store::open(disk.clone(), self.options(read_only)).map(|(mut store, found)| {
+                store.set_marks(self.marks);
+                (store, found)
+            });
+        let inner = match opened {
             Ok((store, _)) if self.threaded => {
                 let geometry = store.geometry();
                 let served = store
@@ -284,6 +291,7 @@ impl Harness for SimHarness {
         let key = Key(*b"a key for tests!");
         let mut store = Store::create_keyed(disk.clone(), &config, key, self.options(false))
             .map_err(|e| HarnessError(format!("create: {e}")))?;
+        store.set_marks(self.marks);
         // Age the log, so that the suite's programs meet the end of a
         // segment: write a megabyte of what the volume holds anyway,
         // and a number of single blocks that the seed decides.
@@ -427,8 +435,9 @@ impl Harness for SimHarness {
         drop(inner);
         disk.clear_faults();
         disk.kill();
-        let (store, _) = Store::open(disk.clone(), self.options_with(read_only, true))
+        let (mut store, _) = Store::open(disk.clone(), self.options_with(read_only, true))
             .map_err(|e| HarnessError(format!("open after a failure: {e}")))?;
+        store.set_marks(self.marks);
         Ok(OnSim {
             inner: Inner::Live(Box::new(store)),
             disk,
