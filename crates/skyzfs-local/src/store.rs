@@ -1360,6 +1360,18 @@ pub struct Store<D: Dir> {
     ids: BTreeSet<RequestId>,
 }
 
+impl Store<crate::fs::FsDir> {
+    /// Another hold on the volume's lock this store has
+    /// ([`FsLock::share`](crate::fs::FsLock::share)): the directory
+    /// stays locked until the store and every such hold are gone. For
+    /// an owner that has work to do under the lock after the store has
+    /// ended, on whatever thread it ended. `None` if the store was
+    /// opened without the lock, which only a test's defect does.
+    pub fn share_lock(&self) -> Option<crate::fs::FsLock> {
+        self.core._lock.as_ref().map(crate::fs::FsLock::share)
+    }
+}
+
 impl<D: Dir> Store<D> {
     /// Make a new store in `dir` and open it.
     pub fn create(dir: D, config: &StoreConfig, options: OpenOptions) -> Result<Self, StoreError> {
