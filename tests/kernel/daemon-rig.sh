@@ -745,7 +745,7 @@ kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
 # pool has work when its device is refused. If the server never came
 # to rest, the control is the rig's error and not a verdict.
 check_b_short() {
-    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" arm="" fails mark zios
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" arm="" fails mark zios n0 n1 live="" end io
     if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
     slog=$(new_slog bs)
     if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
@@ -771,37 +771,63 @@ check_b_short() {
     writer "$WORK/mnt/$pool" "$WORK/bs.record" "$OUT/bs-writer.log" "$WORK/bs.stop" &
     num=${BDEV#/dev/ublkb}
     serve_start "$SKYZFSD" "$dir" --recover-short 1; rc=$?
-    # What the pool and the device do after the refusal, looked at every
-    # second: the only requests waiting at the device are the writer's
-    # writes, and a pool whose writes alone failed did not suspend in
-    # 118 s (run 43086281904, both images), where every pool that had a
-    # read or a flush fail suspended within 17 ms. First arm: writes
-    # only, 300 s. Second arm, if the pool is still not suspended: a
-    # read that must reach the device (a scrub), 60 s more.
+    # The control's property is the daemon's answer: exit 4, nothing
+    # served (no ready line, the device not live at any look, no write
+    # of the writer completed after it). What the pool then does is
+    # ZFS's reaction to what it had in flight and is reported, not
+    # judged: with a read or a flush failed it suspends at once; with
+    # only writes waiting it did not in 118 s (run 43086281904, both
+    # images).
+    if [ $rc = 2 ]; then
+        touch "$WORK/bs.stop"
+        ctl recovered_log_too_short ERROR "serve --recover-short 1 neither became ready nor exited"
+        obs b_refused_start_under_writes "not run: the serve neither became ready nor exited"
+        return
+    elif [ $rc = 0 ]; then
+        touch "$WORK/bs.stop"
+        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 served ($BDEV)"
+        obs b_refused_start_under_writes "not run: the start was not refused"
+        return
+    fi
+    # The course after the refusal, looked at every second for 300 s or
+    # until the pool suspends. For the first 120 s the only requests
+    # waiting are those of the writer started before the refusal. Then
+    # a reader (a file read past the cache) and a second writer begin,
+    # each under a limit: an operator would meet either, and whether
+    # they FAIL or HANG over a pool that reads ONLINE is the case to
+    # name.
+    n0=$(grep -c . "$WORK/bs.record")
     t0=$(now_ms); was=""
-    for i in $(seq 1 360); do
+    for i in $(seq 1 300); do
         st=$(pool_state "$pool")
-        if [ -e "/dev/ublkb$num" ]; then dev="node there, $(ublk_state "/dev/ublkb$num")"; else dev="no node"; fi
+        if [ -e "/dev/ublkb$num" ]; then dev="node there, state '$(ublk_state "/dev/ublkb$num")'"; else dev="no node"; fi
         lim 20 ublk list -n "$num" 2>/dev/null | grep -q '^dev id' || dev+=", unknown to the driver"
+        case $dev in *LIVE*) live=yes ;; esac
         if [ "$st; $dev" != "$was" ]; then was="$st; $dev"; line+="at $(( ($(now_ms) - t0) / 1000 )) s: pool $st, device $num: $dev. "; fi
         [ "$st" = SUSPENDED ] && break
-        if [ "$i" = 300 ]; then
-            arm="a scrub was started at 300 s to bring a read to the device (rc $(lim 30 zpool scrub "$pool" > "$OUT/bs-scrub.log" 2>&1; echo $?)). "
-            line+="$arm"
+        if [ "$i" = 120 ]; then
+            arm=$(( ($(now_ms) - t0) / 1000 ))
+            ( t=$(now_ms); lim 170 "$DD" if="$WORK/mnt/$pool/r.0" of=/dev/null bs=1M iflag=direct status=none 2> "$OUT/bs-reader.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/bs.reader" ) &
+            ( t=$(now_ms); lim 170 "$DD" if=/dev/zero of="$WORK/mnt/$pool/second-writer" bs=1M count=4 conv=fsync status=none 2> "$OUT/bs-writer2.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/bs.writer2" ) &
         fi
         sleep 1
     done
+    end=$(( ($(now_ms) - t0) / 1000 ))
     touch "$WORK/bs.stop"
+    n1=$(grep -c . "$WORK/bs.record")
     fails=$(grep -c . "$OUT/bs-writer.log")
     klog_since "$mark" > "$OUT/bs-klog.txt" 2>/dev/null
     zios=$(grep "$pool" "$OUT/bs-klog.txt" | grep -o 'type=[0-9]*' | sort | uniq -c | tr -s ' \n' ' ')
-    obs b_refused_start_under_writes "after the refusal (serve rc $rc, exit ${SERVE_RC:-none}) with only the writer's writes waiting at the device: ${line}At the end, $(( ($(now_ms) - t0) / 1000 )) s: pool $st$([ "$st" = SUSPENDED ] && { [ -n "$arm" ] && echo ' (only after the read)' || echo ' (writes alone)'; }); the writer's failed writes: $fails; failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
-    if [ $rc = 1 ] && [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && [ "$st" = SUSPENDED ]; then
-        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and the pool is $st $([ -n "$arm" ] && echo 'after a read was sent (not by the writes alone; see obs_b_refused_start_under_writes)' || echo 'by the writes alone')"
-    elif [ $rc = 2 ]; then
-        ctl recovered_log_too_short ERROR "serve --recover-short 1 neither became ready nor exited"
+    if [ -n "$arm" ]; then
+        io="a reader and a second writer were started at $arm s: the reader: $(cat "$WORK/bs.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-reader.err" 2>/dev/null | tr '\n' ' '); the second writer: $(cat "$WORK/bs.writer2" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/bs-writer2.err" 2>/dev/null | tr '\n' ' ')"
     else
-        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
+        io="no reader or second writer was started: the pool suspended before 120 s"
+    fi
+    obs b_refused_start_under_writes "after the refusal (exit $SERVE_RC), with the writes of a writer waiting at the device: ${line}At the end, $end s: pool $st$([ "$st" = ONLINE ] && echo ' OVER A DEVICE THAT NEITHER SERVES NOR FAILS, if the device lines above say it is there'). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. $io. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
+    if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q '^ready' "$dir.ready" && [ -z "$live" ] && [ "$n0" = "$n1" ]; then
+        ctl recovered_log_too_short FAIL "killed at rest ($quiet); serve --recover-short 1 exited $SERVE_RC and served nothing: no ready line, the device was live at no look in $end s, no write of the writer completed after the refusal; the pool at the end: $st (reported, not judged; see obs_b_refused_start_under_writes)"
+    else
+        ctl recovered_log_too_short PASS "killed at rest ($quiet); serve --recover-short 1 exited ${SERVE_RC:-?}; ready line: $(grep -c '^ready' "$dir.ready"); the device live at a look: ${live:-no}; the writer's acknowledged files $n0 at the refusal, $n1 at the end; pool $st"
     fi
 }
 # b: the daemon keeps its files off any pool. A volume directory or a
