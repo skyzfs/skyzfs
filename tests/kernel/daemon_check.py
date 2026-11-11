@@ -108,7 +108,8 @@ EXPECTED = {
                                                    'more than 0 over the run, or the run is a rig error'),
     'pin_device_waits_for_a_server': ('b', 'PASS', KERNEL,
                                       'a killed server\'s device with no server for 300 s under a pool: it reads '
-                                      'as waiting at every look, the kernel log of that time has no request of '
+                                      'as waiting at every look (a look every 10 s; a look that names no state, '
+                                      'or fewer looks than one per 12 s, is a rig error), the kernel log of that time has no request of '
                                       'the device ended in an error of any status, no I/O error, request timed '
                                       'out or abort (no kernel log of that time is a rig error), and the '
                                       'take-over afterwards is as clean as after any kill '

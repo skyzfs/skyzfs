@@ -103,6 +103,9 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
 # shellcheck source=tests/kernel/klog.sh
 . "$HERE/klog.sh"
+# The looks at a device over a wait: look_word, looks_judge.
+# shellcheck source=tests/kernel/looks.sh
+. "$HERE/looks.sh"
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -496,7 +499,7 @@ PY
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
     local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
-    KT_WAITED=""; KT_WAIT_LOOKS=0; KT_WAIT_OTHER=0; KT_WAIT_BAD=0
+    KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
@@ -555,16 +558,18 @@ kill_test() {
             mark=$(klog_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
             hw=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
             while [ $(( $(now_ms) - t0 )) -lt $((KT_WAIT_S * 1000)) ]; do
-                states+="$(ublk_state "$BDEV") "
+                # Every look is an attempt: one that names no state is
+                # written down as "none", not left out.
+                states+="$(look_word "$(ublk_state "$BDEV")") "
                 sleep 10
             done
             # No marker in the kernel log is no log of the wait: "lost",
             # which the pin reports as the rig's error and not as 0 lines.
             KT_WAIT_BAD=$(klog_bad_since "$mark" "$OUT/$name-wait-dmesg.log")
-            KT_WAIT_LOOKS=$(echo "$states" | wc -w); KT_WAIT_OTHER=$(echo "$states" | tr ' ' '\n' | grep . | grep -vcx QUIESCED)
+            looks_judge "$states" QUIESCED "$KT_WAIT_S"
             if [ "$KT_WAIT_BAD" = lost ]; then klog="lost: the rig's marker was not found in it at the end of the wait"
             else klog="$(wc -l < "$OUT/$name-wait-dmesg.log") lines, $KT_WAIT_BAD with an I/O error, a request timed out or an abort; tasks reported blocked: $(klog_hung "$OUT/$name-wait-dmesg.log")"; fi
-            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $klog (the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $LK_SAID; the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $klog (the kernel had $hw reports left to make before the wait, -1 is no limit); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
@@ -829,10 +834,10 @@ check_b() {
     KT_WAIT_S=${RIG_WAIT_S:-300} kill_test "$SKYZFSD" bw 1
     kill_verdict
     if [ "${RIG_WAIT_S:-300}" -lt 100 ]; then
-        # The pin wants ten looks, ten seconds apart: a shorter wait
-        # was asked for and cannot give them. Not a verdict.
+        # A shorter wait was asked for than the pin is about. Not a
+        # verdict.
         obs b_device_waits_for_a_server "${KT_WAITED:-not run: ${KT_ERR:-the kill test did not reach the wait}}"
-        pin device_waits_for_a_server ERROR "RIG_WAIT_S is ${RIG_WAIT_S} s; the pin needs at least 100 s (ten looks)"
+        pin device_waits_for_a_server ERROR "RIG_WAIT_S is ${RIG_WAIT_S} s; the pin needs at least 100 s"
     elif [ -z "$KT_WAITED" ]; then
         obs b_device_waits_for_a_server "not run: ${KT_ERR:-the kill test did not reach the wait}"
         pin device_waits_for_a_server ERROR "${KT_ERR:-the kill test did not reach the wait}"
@@ -845,9 +850,12 @@ check_b() {
             pin device_waits_for_a_server ERROR "$KT_WHY"
         elif [ "$KT_WAIT_BAD" = lost ]; then
             pin device_waits_for_a_server ERROR "the rig's marker was not found in the kernel log at the end of the wait (the log wrapped, or dmesg failed), so there is no kernel log of the ${RIG_WAIT_S:-300} s to judge"
+        elif [ "$LK_VERDICT" = ERROR ]; then
+            # The rig did not see the device the whole time.
+            pin device_waits_for_a_server ERROR "$LK_WHY; $LK_SAID"
         else
-            if [ "$KT_VERDICT" = PASS ] && [ "$KT_WAIT_LOOKS" -ge 10 ] && [ "$KT_WAIT_OTHER" = 0 ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
-            pin device_waits_for_a_server "$v" "$KT_WAIT_LOOKS looks in ${RIG_WAIT_S:-300} s with no server, $KT_WAIT_OTHER of them not QUIESCED; kernel log lines with an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+            if [ "$KT_VERDICT" = PASS ] && [ "$LK_VERDICT" = PASS ] && [ "$KT_WAIT_BAD" = 0 ]; then v=PASS; else v=FAIL; fi
+            pin device_waits_for_a_server "$v" "with no server, $LK_SAID ($LK_OTHER not QUIESCED; at least $LK_FLOOR looks are needed, each naming a state); kernel log lines with a failed request, an I/O error, a request timed out or an abort: $KT_WAIT_BAD; the take-over: ${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
         fi
     fi
     kill_cleanup bw
