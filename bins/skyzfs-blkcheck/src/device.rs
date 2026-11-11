@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +31,13 @@ struct DeviceTarget {
     file: Arc<File>,
     /// The path, if it is a block device and not a plain file.
     device: Option<Arc<str>>,
+    /// Set when the harness has made the volume's log fail. The server
+    /// then deletes its device and exits, and what answers a request is
+    /// the kernel, for a deleted device this target still holds open:
+    /// an I/O error of one kind or another. From here on any such error
+    /// is reported as the failure of the volume, which is what it is to
+    /// a client; a request that succeeds is still reported as a success.
+    failed: Arc<AtomicBool>,
     geometry: Geometry,
     done_tx: Sender<Completion>,
     done_rx: Receiver<Completion>,
@@ -135,6 +143,7 @@ impl DeviceTarget {
             number,
             file: Arc::new(file),
             device: is_device.then(|| Arc::from(path)),
+            failed: Arc::new(AtomicBool::new(false)),
             geometry,
             done_tx,
             done_rx,
@@ -208,10 +217,14 @@ impl BlockTarget for DeviceTarget {
         }
         let file = Arc::clone(&self.file);
         let device = self.device.clone();
+        let failed = Arc::clone(&self.failed);
         let tx = self.done_tx.clone();
         std::thread::spawn(move || {
             let Request { id, op } = request;
-            let (result, buf) = perform(&file, device.as_deref(), op);
+            let (mut result, buf) = perform(&file, device.as_deref(), op);
+            if matches!(result, Err(BlkError::Io(_))) && failed.load(Ordering::SeqCst) {
+                result = Err(BlkError::Failed);
+            }
             // The receiver is gone only when the target was dropped.
             let _ = tx.send(Completion { id, result, buf });
         });
@@ -320,7 +333,9 @@ impl Harness for DeviceHarness {
     }
 
     fn fail_log(&mut self, target: &mut DeviceTarget) -> Result<(), HarnessError> {
-        self.helper("fail", target.number).map(|_| ())
+        self.helper("fail", target.number)?;
+        target.failed.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     fn reopen_failed(&mut self, target: DeviceTarget) -> Result<DeviceTarget, HarnessError> {

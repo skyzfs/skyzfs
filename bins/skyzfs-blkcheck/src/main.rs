@@ -42,6 +42,13 @@
 //!
 //! What a block device changes, and this tool does not hide:
 //!
+//! - A volume whose log has failed has no server: the server deleted
+//!   its device and exited. The answers a failed volume gives are the
+//!   kernel's, for a deleted device this tool still holds open. After
+//!   `CMD fail N` returned, an I/O error of any kind is reported to the
+//!   suite as "the volume has failed"; a request that succeeds is
+//!   reported as a success, which the suite then judges.
+//!
 //! - A request reaches the server only after the kernel has had it. The
 //!   kernel answers a misaligned or out-of-range request itself and
 //!   splits a long one, so the suite's rejection cases test the kernel.

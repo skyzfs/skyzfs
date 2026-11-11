@@ -5,7 +5,8 @@
 # skyzfs-blk runs through the kernel's block layer.
 #
 #   blkcheck-helper.sh create N    a new empty volume, served; prints its device
-#   blkcheck-helper.sh kill N      SIGKILL to its server, then serve again; prints the device
+#   blkcheck-helper.sh kill N      SIGKILL to its server, then serve again; prints the device.
+#                                  After `fail` there is no server left: nothing is done
 #   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good. Returns
 #                                  when serve has exited with status 3; the device is
 #                                  then a deleted one that the caller still holds
@@ -57,7 +58,7 @@ serve() {
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
         dev=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$DIR.ready" | head -n 1)
-        if [ -n "$dev" ] && [ -b "$dev" ]; then echo "$dev"; return 0; fi
+        if [ -n "$dev" ] && [ -b "$dev" ]; then echo "$dev" > "$DIR.device"; echo "$dev"; return 0; fi
         kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
@@ -78,6 +79,15 @@ create)
     DEV=$(serve) || exit 1
     ;;
 kill)
+    serve_pid=$(cat "$DIR.serve.pid" 2>/dev/null)
+    if [ -n "$serve_pid" ] && ! kill -0 "$serve_pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+        # The log failed and the server exited by itself: there is no
+        # daemon to lose, and a failed volume is not served again
+        # without `reopen`. The device stays the deleted one.
+        echo "kill $N: nothing to kill, the server exited when its log failed" >> "$WORK/helper.log"
+        cat "$DIR.device"
+        exit 0
+    fi
     pid=$(server_pid); [ -n "$pid" ] || die "no server pid"
     kill -9 "$pid" 2>/dev/null || die "the server ($pid) was not there to kill"
     # With the stand-in the server is a child of the serve script,

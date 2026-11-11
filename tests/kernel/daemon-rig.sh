@@ -871,7 +871,7 @@ check_c() {
     if [ $rc != 0 ]; then
         rec c_run "ERROR: skyzfs-blkcheck exit $rc after $n cases: $(tail -n 1 "$OUT/c-blkcheck.err")"
     else
-        rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}; the harness: ${can[*]}. After the log is made to fail the server deletes its device and exits, so what a failed volume answers is the kernel's answer for a deleted device that the suite still holds open"
+        rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}; the harness: ${can[*]}. After the log is made to fail the server deletes its device and exits, so what a failed volume answers is the kernel's answer for a deleted device that the suite still holds open, and a kill after it finds no server ($(grep -c 'nothing to kill' "$OUT/c-helper.log" 2>/dev/null) such kills)"
     fi
     # The cases about a request of exactly 1 MiB and a discard across the
     # device test what the block layer forwards: they exercise the
