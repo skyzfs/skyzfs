@@ -14,7 +14,7 @@ ALL = {'a', 'b', 'd', 'e'}
 
 
 def as_expected():
-    r = {name: f'{want}: seen' for name, (_, want, _, _) in dc.EXPECTED.items()}
+    r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
     r.update(impl='reference: x', setup='ok')
     return r
@@ -74,13 +74,34 @@ class Judge(unittest.TestCase):
     def test_with_the_daemon_the_reference_only_pin_is_not_asked_for(self):
         r = as_expected()
         r['pin_clear_resumes_on_returned_device'] = 'ERROR: not run: needs the flat image of the reference server'
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
         _, differs, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual((differs, errors), ([], []))
+        r['ctl_recovered_log_too_short'] = 'WAITING: no log'
         _, _, errors = dc.judge(r, ALL, impl='reference')
         self.assertEqual(len(errors), 1)
 
+    def test_waiting_is_accepted_only_where_the_table_says_so(self):
+        r = as_expected()
+        self.assertEqual(r['ctl_recovered_log_too_short'], 'WAITING: seen')
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual((differs, errors), ([], []))
+        # a pin the stand-in can carry may not be left waiting
+        r['pin_kill_under_load'] = 'WAITING: not run'
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual((differs, len(errors)), ([], 1))
+        # with the daemon, waiting is over: the control must have run and failed
+        r = as_expected()
+        r['pin_clear_resumes_on_returned_device'] = 'ERROR: needs the reference server'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon')
+        self.assertEqual((differs, len(errors)), ([], 1))
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused with status 4, pool suspended'
+        self.assertEqual(dc.judge(r, ALL, impl='daemon')[1:], ([], []))
+        r['ctl_recovered_log_too_short'] = 'PASS: served'
+        self.assertEqual(len(dc.judge(r, ALL, impl='daemon')[1]), 1)
+
     def test_every_pin_says_what_it_rests_on(self):
-        for name, (check, want, basis, claim) in dc.EXPECTED.items():
+        for name, (check, want, basis, claim, *_) in dc.EXPECTED.items():
             self.assertIn(check, ALL, name)
             self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)

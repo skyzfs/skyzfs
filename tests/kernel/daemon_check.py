@@ -21,7 +21,9 @@ KERNEL = 'measured: a property of the kernel and of ZFS, whichever server is beh
 SERVER = 'measured on the reference server; to be measured again on the daemon'
 WAITING = 'waiting for the daemon: on the stand-in this checks the stand-in, and shows only that the check works'
 
-# name -> (check, expected result, what it rests on with the stand-in, what the design says)
+# name -> (check, expected result, what it rests on with the stand-in, what the design says[, expected on the
+# stand-in]). The last is WAITING for a check the stand-in cannot carry at all: the rig then writes WAITING
+# with the reason, and with the daemon behind the device the expected result applies.
 EXPECTED = {
     'pin_block_size': ('a', 'PASS', SERVER, 'logical and physical block size 4096 (§4.1)'),
     'pin_max_request': ('a', 'PASS', SERVER, 'the largest request is 1 MiB (§4.1)'),
@@ -39,6 +41,12 @@ EXPECTED = {
     'pin_orderly_stop_keeps_device': ('b', 'PASS', WAITING,
                                       'after SIGTERM the device waits for a server and the pool carries on (§4.2); '
                                       'the stand-in stops by being killed'),
+    'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
+                                         'no serve after a kill is refused by the check of what was acknowledged '
+                                         '(§4.2): a false alarm would suspend a healthy pool'),
+    'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
+                                    'control: a recovery that drops the last record (serve --recover-short 1) is '
+                                    'refused with status 4 and the pool suspends', 'WAITING'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
 
@@ -91,9 +99,11 @@ def read_results(path):
 def judge(results, checks, impl='reference'):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
-    for name, (check, want, basis, claim) in EXPECTED.items():
+    for name, (check, want, basis, claim, *on_stand_in) in EXPECTED.items():
         if check not in checks:
             continue
+        if impl == 'reference' and on_stand_in:
+            want = on_stand_in[0]
         if impl != 'reference':
             if name in REFERENCE_ONLY:
                 rows.append((name, want, 'not run', 'needs the reference server', KERNEL, claim))
@@ -105,7 +115,7 @@ def judge(results, checks, impl='reference'):
             rows.append((name, want, 'missing', '', basis, claim))
             continue
         got, _, detail = value.partition(': ')
-        if got == 'ERROR' or got not in ('PASS', 'FAIL'):
+        if got == 'ERROR' or got not in ('PASS', 'FAIL', 'WAITING') or (got == 'WAITING' and want != 'WAITING'):
             errors.append(f'{name}: {value}')
         elif got != want:
             differs.append(f'{name}: expected {want}, got {got}: {detail}')

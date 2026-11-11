@@ -316,7 +316,7 @@ PY
 kill_test() {
     local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0
     mnt=$WORK/mnt/$pool
-    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""
+    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""
     vol_up "$impl" "$dir" || { KT_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
     pool_create "$pool" "$BDEV" "$slog" > "$OUT/$name-create.log" 2>&1 || { KT_ERR="zpool create failed"; return 1; }
@@ -348,6 +348,7 @@ kill_test() {
         serve_start "$impl" "$dir"; rc=$?
         ms=$(( $(now_ms) - t0 ))
         KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; "
+        [ "${SERVE_RC:-}" != "$EXIT_REFUSED_FAILED" ] || KT_REFUSED=$((KT_REFUSED + 1))
         [ $rc = 0 ] || { KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"; break; }
         KT_DONE=$n
         sleep 2
@@ -385,12 +386,47 @@ kill_verdict() { # -> PASS | FAIL | ERROR on stdout, the reason in KT_WHY
     case "$KT_FILES" in ok*) ;; *) KT_WHY+="files: $KT_FILES; " ;; esac
     if [ -z "$KT_WHY" ]; then echo PASS; else echo FAIL; fi
 }
+# With the daemon: after a kill, a recovery that drops the last record
+# must be refused, and the pool must suspend.
+check_b_short() {
+    local dir=$WORK/vol-bs pool=skzd-bs slog pid rc i st
+    if ! vol_up "$SKYZFSD" "$dir"; then ctl recovered_log_too_short ERROR "not created or served"; return; fi
+    slog=$(new_slog bs)
+    if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bs-create.log" 2>&1; then ctl recovered_log_too_short ERROR "zpool create failed"; return; fi
+    : > "$WORK/bs.record"; : > "$OUT/bs-writer.log"
+    writer "$WORK/mnt/$pool" "$WORK/bs.record" "$OUT/bs-writer.log" "$WORK/bs.stop" &
+    sleep 5
+    pid=$(server_pid "$SKYZFSD" "$dir")
+    kill -9 "$pid" 2>/dev/null
+    [ -z "$SERVE_PID" ] || serve_wait 30
+    serve_start "$SKYZFSD" "$dir" --recover-short 1; rc=$?
+    for i in $(seq 1 120); do st=$(pool_state "$pool"); [ "$st" = SUSPENDED ] && break; sleep 1; done
+    touch "$WORK/bs.stop"
+    if [ $rc = 1 ] && [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && [ "$st" = SUSPENDED ]; then
+        ctl recovered_log_too_short FAIL "serve --recover-short 1 exited $SERVE_RC and the pool is $st"
+    elif [ $rc = 2 ]; then
+        ctl recovered_log_too_short ERROR "serve --recover-short 1 neither became ready nor exited"
+    else
+        ctl recovered_log_too_short PASS "serve --recover-short 1: $([ $rc = 0 ] && echo 'served' || echo "exited ${SERVE_RC:-?}"); pool $st"
+    fi
+}
 check_b() {
     local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i
     step "b: kill -9 under load, $KILLS times"
     kill_test "$SKYZFSD" b "$KILLS"
     v=$(kill_verdict)
     pin kill_under_load "$v" "${KT_WHY:-$KT_DONE kills, $KT_INFLIGHT with writes in flight: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
+    # The check of what was acknowledged (§4.2) must not refuse a log
+    # that a kill left whole. Kills around a change of log segment and
+    # right after a checkpoint are the daemon's to arrange; here every
+    # kill is at a random moment under load.
+    if [ "$KT_REFUSED" -gt 0 ]; then
+        pin serve_after_kill_accepts_log FAIL "$KT_REFUSED serve(s) after a kill exited $EXIT_REFUSED_FAILED: the volume was refused as failed"
+    elif [ "$KT_DONE" -ge 1 ]; then
+        pin serve_after_kill_accepts_log PASS "none of $KT_DONE serves after a kill was refused"
+    else
+        pin serve_after_kill_accepts_log ERROR "no kill was followed by a serve: $KT_ERR"
+    fi
     if [ -n "$KT_ERR" ] || [ -z "$BDEV" ]; then
         pin second_serve_refused ERROR "the kill test did not leave a served pool"
         pin orderly_stop_keeps_device ERROR "the kill test did not leave a served pool"
@@ -429,6 +465,13 @@ check_b() {
     [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool"
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
     vol_detach "$SKYZFSD" "$dir"
+
+    step "b, control: a recovered log that is too short"
+    if [ "$IMPL" = reference ]; then
+        ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
+    else
+        check_b_short
+    fi
 
     step "b, control: recovery without reissue"
     SKZ_REF_REISSUE=0 kill_test "$REF" b0 5
