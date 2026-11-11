@@ -606,6 +606,12 @@ class Log(unittest.TestCase):
                 f.seek(off + at)
                 f.write(b'\x01')
         self.assertIsNone(replay_check.every_copy_verdict(0, self.zdb_text(), self.img)[0])
+        # an intent-log block on the log device (vdev 1) is not judged either, and is not a rig error
+        on_log = ('objset 54 object 0 level -2 offset 0x1 DVA[0]=<1:0:1000> [L0 ZIL intent log] zilog2 uncompressed unencrypted '
+                  'LE contiguous unique single size=1000L/1000P birth=28L/28P fill=0 cksum=1:2:3:4\n')
+        failed, detail, counts = replay_check.every_copy_verdict(0, self.zdb_text(on_log, 6), self.img)
+        self.assertIsNone(failed, detail)
+        self.assertEqual(counts['intent_log'], 2)
 
     def test_every_copy_takes_zdbs_exit_code_as_a_verdict(self):
         self.good_image()

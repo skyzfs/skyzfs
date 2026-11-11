@@ -440,9 +440,11 @@ def every_copy_verdict(rc, text, image):
     if b['ganged'] or b['ganged_count']:
         return 'rig: ganged blocks, whose copies this check cannot read', f"{b['ganged_count']} ganged", counts
     for bp in b['bps']:
+        if bp['type'] == 'ZIL intent log':
+            continue                    # not judged, and where there is a log device they live on it
         if any(v != 0 for v, _, _ in bp['dvas']):
             return 'rig: a block on a device other than the image', bp['line'], counts
-        if bp['type'] != 'ZIL intent log' and (bp['checksum'] != 'fletcher4' or not bp['little_endian']):
+        if bp['checksum'] != 'fletcher4' or not bp['little_endian']:
             return 'rig: a block whose checksum the rig cannot compute', bp['line'], counts
     c, bad = bad_copies(image, b['bps'])
     counts.update(c)
