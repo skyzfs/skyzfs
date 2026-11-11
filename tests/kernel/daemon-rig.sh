@@ -1041,6 +1041,10 @@ case $CHECKS in *" e "*) check_e ;; esac
 case $CHECKS in *" d "*) check_d ;; esac
 
 step "done"
+# What the reference server's tool leaves under its own run directory:
+# the daemon's library writes files of the same kind there, and the two
+# servers follow each other on one machine under reused numbers.
+rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')($(find /run/ublksrvd -mindepth 1 2>/dev/null | wc -l) entries at the end of the run)"
 for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"
 exit 0
