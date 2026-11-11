@@ -14,6 +14,7 @@
 //! both and shows that each alone is enough.
 
 use super::*;
+use crate::format::BLOCK;
 use crate::io::SECTOR;
 use crate::sim::{BySector, Cut, Fate, LoseAll, SeededCut, SimDisk};
 
@@ -121,16 +122,29 @@ fn put(log: &mut SimLog, env: &Env, tag: u8) -> Result<Appended, String> {
     ))
 }
 
+/// Append the smallest record there is: a discard, tagged by its offset.
+fn put_small(log: &mut SimLog, tag: u8) -> Result<Appended, String> {
+    s(log.append(Kind::Discard, u64::from(tag) * 4096, 4096, &[]))
+}
+
 /// The tags of the records between two positions. A record that is not
-/// one `put` wrote, whole, shows as 0xFF.
+/// one `put` or `put_small` wrote, whole, shows as 0xFF.
 fn tags_between(log: &SimLog, from: Lsn, to: Lsn) -> Result<Vec<u8>, LogError> {
     let mut tags = Vec::new();
     log.replay(from, to, &mut |record| {
-        let tag = record.data.first().copied().unwrap_or(0xFF);
-        let whole = record.kind == Kind::Write
-            && record.offset == u64::from(tag) * 4096
-            && record.length == record.data.len() as u64
-            && record.data.iter().all(|b| *b == tag);
+        let tag = match record.kind {
+            Kind::Discard => (record.offset / 4096) as u8,
+            _ => record.data.first().copied().unwrap_or(0xFF),
+        };
+        let whole = match record.kind {
+            Kind::Discard => record.length == 4096 && record.data.is_empty(),
+            _ => {
+                record.kind == Kind::Write
+                    && record.offset == u64::from(tag) * 4096
+                    && record.length == record.data.len() as u64
+                    && record.data.iter().all(|b| *b == tag)
+            }
+        };
         tags.push(if whole { tag } else { 0xFF });
     })?;
     Ok(tags)
@@ -474,50 +488,59 @@ fn a_record_after_a_gap_is_refused() {
     caught(scenario, Mutants::ACCEPT_AFTER_GAP, everywhere);
 }
 
-/// The history every stale-record test starts with: records 1, 2, 3; a
-/// power cut loses the payload of 2 and keeps 3; recovery ends the log
-/// after 1.
-fn lose_the_middle(env: &Env) -> Result<(SimDisk, SimLog), String> {
+/// The history the stale-record tests start with: records 1, 2, 3, 4;
+/// a power cut loses the payload of 2 and keeps 3 and 4; recovery ends
+/// the log after 1.
+fn lose_the_second(env: &Env) -> Result<(SimDisk, SimLog, [Appended; 4]), String> {
     let (disk, mut log) = env.fresh()?;
-    put(&mut log, env, 1)?;
+    let a = put(&mut log, env, 1)?;
     let b = put(&mut log, env, 2)?;
-    put(&mut log, env, 3)?;
+    let c = put(&mut log, env, 3)?;
+    let d = put(&mut log, env, 4)?;
     drop(log);
     env.cut(&disk, &body_sectors(b));
     let (log, _) = env.reopen(&disk)?;
     expect(&log, &[1], "after the first power cut")?;
-    Ok((disk, log))
+    Ok((disk, log, [a, b, c, d]))
 }
 
-/// Stale tail, the classic case: record 2 is lost and 3 survives;
-/// after recovery the very same record 2 is written again. Record 3
-/// must not come back behind it. Only the new epoch tells the two
-/// histories apart. Mutant: a recovery that does not bump the epoch.
-#[test]
-fn a_stale_record_stays_dead_behind_an_identical_rewrite() {
-    fn scenario(env: &Env) -> Outcome {
-        let (disk, mut log) = lose_the_middle(env)?;
-        put(&mut log, env, 2)?;
-        drop(log);
-        let (log, _) = env.reopen(&disk)?;
-        expect(&log, &[1, 2], "after the rewrite")
-    }
-    caught(scenario, Mutants::NO_EPOCH_BUMP, everywhere);
-}
-
-/// Stale tail, two defences: behind a *different* record of the same
-/// length, the stale record is refused by the chain (its header follows
-/// a header that is no longer there) and by the epoch rule (it is older
-/// than the record before it). Each alone is enough; without both it
+/// Stale tail, the classic case: a record is lost and the ones after it
+/// survive; after recovery new records are written, and the last of
+/// them ends exactly where a survivor starts. The survivor must not
+/// come back behind it. It is refused twice: its header does not follow
+/// the header that is there now (the chain), and it is older than the
+/// record before it (the epoch). Each alone is enough; without both it
 /// comes back.
 #[test]
 fn the_chain_and_the_epoch_each_refuse_a_stale_record() {
     fn scenario(env: &Env) -> Outcome {
-        let (disk, mut log) = lose_the_middle(env)?;
-        put(&mut log, env, 9)?;
+        let (disk, mut log, [_, _, c, d]) = lose_the_second(env)?;
+        // Recovery sealed the end of the log, so new records start a
+        // block later than the old ones did. Write until one ends where
+        // an old record starts.
+        let mut want = vec![1];
+        let mut tag = 9;
+        let landed = loop {
+            let new = if env.align == 64 {
+                put(&mut log, env, tag)?
+            } else {
+                put_small(&mut log, tag)?
+            };
+            want.push(tag);
+            tag += 1;
+            if new.end == c.start || new.end == d.start {
+                break true;
+            }
+            if new.end > d.start {
+                break false;
+            }
+        };
+        if !landed {
+            return Err("no new record ends where a stale one starts".into());
+        }
         drop(log);
         let (log, _) = env.reopen(&disk)?;
-        expect(&log, &[1, 9], "after a different record")
+        expect(&log, &want, "after new records")
     }
     covered(scenario, Mutants::NO_CHAIN);
     covered(scenario, Mutants::NO_EPOCH_CHECK);
@@ -528,17 +551,44 @@ fn the_chain_and_the_epoch_each_refuse_a_stale_record() {
     );
 }
 
-/// Stale tail, the erased header. Power cut 1 loses the payload of A
-/// and keeps A's header and the record R after it; recovery ends the
-/// log before A. The client writes N, with A's payload, where A was.
-/// Power cut 2 loses N's header sector, which then reads as it did
-/// before, and keeps N's payload. If the old header were still there it
-/// would be valid again, over a payload that matches it, and R would
-/// follow it: a write the client never issued in this history. So
-/// recovery erases the header at the end of the prefix before it
-/// returns. Mutant: a recovery that does not.
+/// Stale tail, the identical rewrite: record 2 is lost and 3 survives;
+/// after recovery the very same record 2 is written again. Record 3
+/// must not come back behind it. Two things prevent it. Recovery seals
+/// the end of the log, so the rewrite does not land where the lost
+/// record was. And recovery starts a new epoch, so that even there the
+/// rewrite would be a different record, which the survivor does not
+/// follow. Each alone is enough; a recovery that does neither brings
+/// record 3 back.
 #[test]
-fn the_header_at_the_end_of_the_prefix_is_erased() {
+fn a_stale_record_stays_dead_behind_an_identical_rewrite() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut log, _) = lose_the_second(env)?;
+        put(&mut log, env, 2)?;
+        drop(log);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &[1, 2], "after the rewrite")
+    }
+    covered(scenario, Mutants::NO_EPOCH_BUMP);
+    covered(scenario, Mutants::NO_TAIL_ERASE);
+    caught(
+        scenario,
+        Mutants::NO_EPOCH_BUMP | Mutants::NO_TAIL_ERASE,
+        everywhere,
+    );
+}
+
+/// Stale tail, the sealed end. Power cut 1 loses the payload of A and
+/// keeps A's header and the record R after it; recovery ends the log
+/// before A. The client writes N, with A's payload. Power cut 2 loses
+/// N's header sector, which then reads as it did before, and keeps N's
+/// payload. Had N been written where A was, with A's header still
+/// underneath, that header would be valid again, over a payload that
+/// matches it, and R would follow it: a write the client never issued
+/// in this history. So recovery seals the end of the prefix before it
+/// returns: it writes a record of its own over what is there, durably.
+/// Mutant: a recovery that does not.
+#[test]
+fn the_end_of_the_prefix_is_sealed() {
     fn scenario(env: &Env) -> Outcome {
         let (disk, mut log) = env.fresh()?;
         put(&mut log, env, 1)?;
@@ -549,8 +599,8 @@ fn the_header_at_the_end_of_the_prefix_is_erased() {
         let (mut log, _) = env.reopen(&disk)?;
         expect(&log, &[1], "after the first power cut")?;
         let n = put(&mut log, env, 2)?;
-        if n != a {
-            return Err("the rewrite is not where the lost record was".into());
+        if n.start <= a.start {
+            return Err("the rewrite is over the seal".into());
         }
         drop(log);
         env.cut(&disk, &[header_sector(n)]);
@@ -564,9 +614,9 @@ fn the_header_at_the_end_of_the_prefix_is_erased() {
 /// records in the next, none synced; a power cut loses the payload of
 /// the last record of the first segment and keeps the second segment
 /// whole; recovery ends the log in the first segment. Then that record
-/// is written again, differently, and the log rolls into the second
-/// segment and writes one record there. Returns the tags that must be
-/// in the log before that last record, and the record.
+/// log goes on, rolls into the second segment and writes one record
+/// there. Returns the tags that must be in the log before that record,
+/// and the record.
 fn stale_second_segment(env: &Env) -> Result<(SimDisk, SimLog, Vec<u8>, Appended), String> {
     let (disk, mut log) = env.fresh()?;
     let mut tag = 1;
@@ -578,9 +628,12 @@ fn stale_second_segment(env: &Env) -> Result<(SimDisk, SimLog, Vec<u8>, Appended
     let (mut log, _) = env.reopen(&disk)?;
     let mut want: Vec<u8> = first[..first.len() - 2].iter().map(|(t, _)| *t).collect();
     expect(&log, &want, "after the first power cut")?;
-    put(&mut log, env, 60)?;
-    want.push(60);
-    let w = put(&mut log, env, 61)?;
+    let mut tag = 60;
+    let mut more = fill_to_roll(&mut log, env, &mut tag)?;
+    let Some((_, w)) = more.pop() else {
+        return Err("nothing was appended".into());
+    };
+    want.extend(more.iter().map(|(t, _)| *t));
     if w.start != Lsn(SEG + SEGMENT_HEADER) {
         return Err("the log did not roll where the test expects".into());
     }
@@ -593,7 +646,8 @@ fn stale_second_segment(env: &Env) -> Result<(SimDisk, SimLog, Vec<u8>, Appended
 /// as a new one would. Here the new first record is lost at a second
 /// power cut and the old one reads back in its place, under the
 /// segment's new header. Only its epoch, older than the header's,
-/// refuses it. Mutant: a log that does not check a record's epoch.
+/// refuses it. Mutants: a log that does not check a record's epoch, and
+/// a recovery that does not start a new one.
 #[test]
 fn a_stale_first_record_of_a_segment_is_refused() {
     fn scenario(env: &Env) -> Outcome {
@@ -604,6 +658,7 @@ fn a_stale_first_record_of_a_segment_is_refused() {
         expect(&log, &want, "after the second power cut")
     }
     caught(scenario, Mutants::NO_EPOCH_CHECK, old_content);
+    caught(scenario, Mutants::NO_EPOCH_BUMP, old_content);
 }
 
 /// Stale segment. After a recovery that ends in one segment, the file
@@ -770,6 +825,54 @@ fn a_sync_covers_every_record_before_it() {
         expect(&log, &[1, 2], "after a power cut")
     }
     caught(scenario, Mutants::SYNC_EARLY, everywhere);
+}
+
+/// A block that holds durable records is not written again. Small
+/// records share a block, and a block that is being written when the
+/// power fails can come back as garbage. So after a sync, and after a
+/// recovery, the next record starts a new block: here a power cut turns
+/// every sector the later record touched into garbage, and what was
+/// durable before it is still there. Mutant: a log that goes on in the
+/// same block.
+#[test]
+fn a_block_with_durable_records_is_not_written_again() {
+    fn scenario(env: &Env) -> Outcome {
+        let garbage_all = |disk: &SimDisk| {
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        };
+        let (disk, mut log) = env.fresh()?;
+        put_small(&mut log, 1)?;
+        let synced = s(log.sync())?;
+        let after = put_small(&mut log, 2)?;
+        if after.start.0 / BLOCK == (synced.0 - 1) / BLOCK && env.mutants == Mutants::default() {
+            return Err("a record went into a block that holds durable records".into());
+        }
+        drop(log);
+        garbage_all(&disk);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &[1], "after a power cut behind a sync")?;
+        drop(log);
+        // The same after a recovery: a kill, then a record, then the cut.
+        let (mut log, _) = env.reopen(&disk)?;
+        put_small(&mut log, 3)?;
+        drop(log);
+        let (mut log, _) = env.reopen(&disk)?;
+        expect(&log, &[1, 3], "after a kill")?;
+        put_small(&mut log, 4)?;
+        drop(log);
+        garbage_all(&disk);
+        let (log, _) = env.reopen(&disk)?;
+        expect(&log, &[1, 3], "after a power cut behind a recovery")
+    }
+    fn small_records_and_garbage(env: &Env) -> bool {
+        env.align == 64 && env.garbage
+    }
+    caught(
+        scenario,
+        Mutants::REWRITE_DURABLE_BLOCK,
+        small_records_and_garbage,
+    );
 }
 
 /// Group commit: one sync covers every append before it, with one
@@ -970,7 +1073,7 @@ fn recovery_validates_what_the_device_holds() {
             drop(log);
             disk.power_cut(LoseAll);
             let (log, second) = env.reopen(&disk)?;
-            if second.end != first.end || tags(&log)? != held {
+            if second.end < first.end || tags(&log)? != held {
                 return Err(format!(
                     "seed {seed}: recovery returned {held:?} up to {}, and a power cut \
                      left {:?} up to {}",
@@ -1003,7 +1106,7 @@ fn recovery_makes_the_prefix_durable() {
         drop(log);
         disk.power_cut(LoseAll);
         let (log, second) = env.reopen(&disk)?;
-        if second.end != first.end {
+        if second.end < first.end {
             return Err(format!(
                 "recovery returned {}, a power cut left {}",
                 first.end, second.end
@@ -1063,7 +1166,7 @@ fn recovering_twice_gives_the_same_prefix() {
             drop(log);
             disk.power_cut(LoseAll);
             let (log, second) = env.reopen(&disk)?;
-            if second.end != first.end || tags(&log)? != held {
+            if second.end < first.end || tags(&log)? != held {
                 return Err(format!("seed {seed}: the second recovery differs"));
             }
         }

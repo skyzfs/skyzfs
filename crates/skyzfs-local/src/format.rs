@@ -23,6 +23,17 @@ pub const SUPER_COPY_STRIDE: u64 = 4096;
 /// start here.
 pub const SEGMENT_HEADER: u64 = 4096;
 
+/// The unit the log never rewrites once it holds a durable record: a
+/// record appended after a sync or a recovery starts at the next
+/// multiple of this. It is the page a kernel writes back as a whole and
+/// the physical sector of current disks.
+pub const BLOCK: u64 = 4096;
+
+/// `x` rounded up to a multiple of [`BLOCK`].
+pub fn block_up(x: u64) -> u64 {
+    x.div_ceil(BLOCK) * BLOCK
+}
+
 /// The bytes of a record header.
 pub const RECORD_HEADER: usize = 64;
 
@@ -100,7 +111,7 @@ impl Identity {
     pub fn valid(&self) -> bool {
         (self.align == 64 || self.align == 4096)
             && self.segment_size.is_multiple_of(SEGMENT_HEADER)
-            && self.segment_size >= SEGMENT_HEADER + 4 * u64::from(self.align).max(512)
+            && self.segment_size >= 4 * BLOCK
             && self.block_size > 0
     }
 
@@ -110,12 +121,19 @@ impl Identity {
         align + u64::from(data_len).div_ceil(align) * align
     }
 
-    /// The largest payload a record of this log can carry: a segment
-    /// must hold its header, the record, and the header of the marker
-    /// that closes it.
+    /// Whether a record with `data_len` bytes of payload may start at
+    /// byte `at` of a segment: behind it, at the next block boundary,
+    /// there must still be room for the marker that closes the segment.
+    pub fn fits(&self, at: u64, data_len: u32) -> bool {
+        block_up(at + self.record_size(data_len)) + u64::from(self.align) <= self.segment_size
+    }
+
+    /// The largest payload a record of this log can carry: the segment's
+    /// first block is its header and its last is kept for the marker that
+    /// closes it.
     pub fn max_data(&self) -> u32 {
         let align = u64::from(self.align);
-        let room = (self.segment_size - SEGMENT_HEADER).saturating_sub(2 * align);
+        let room = (self.segment_size - 2 * BLOCK).saturating_sub(align);
         (room / align * align).min(u64::from(MAX_DATA)) as u32
     }
 
@@ -266,6 +284,10 @@ pub enum Kind {
     /// The rest of the segment is unused; the log continues in the next.
     /// Written by the log itself and never returned by a replay.
     Pad,
+    /// Nothing: a record a recovery writes at the end of the log it
+    /// found, to take the place of whatever was there. Never returned by
+    /// a replay.
+    Mark,
 }
 
 impl Kind {
@@ -275,6 +297,7 @@ impl Kind {
             Kind::WriteZeroes => 2,
             Kind::Discard => 3,
             Kind::Pad => 4,
+            Kind::Mark => 5,
         }
     }
 
@@ -284,6 +307,7 @@ impl Kind {
             2 => Kind::WriteZeroes,
             3 => Kind::Discard,
             4 => Kind::Pad,
+            5 => Kind::Mark,
             _ => return None,
         })
     }
@@ -564,8 +588,18 @@ mod tests {
         assert_eq!(direct.record_size(0), 4096);
         assert_eq!(direct.record_size(4096), 8192);
         assert_eq!(direct.record_size(4097), 3 * 4096);
-        assert_eq!(small.max_data(), (1 << 16) - 4096 - 128);
+        assert_eq!(small.max_data(), (1 << 16) - 2 * 4096 - 64);
         assert_eq!(direct.max_data(), (1 << 16) - 3 * 4096);
+        // The largest record fits at the start of a segment and nowhere
+        // later; the last block stays free for the closing marker.
+        assert!(small.fits(4096, small.max_data()));
+        assert!(!small.fits(4160, small.max_data()));
+        assert!(direct.fits(4096, direct.max_data()));
+        assert!(!direct.fits(8192, direct.max_data()));
+        assert!(small.fits((1 << 16) - 8192, 4032));
+        assert!(!small.fits((1 << 16) - 8192, 4033));
+        assert_eq!(block_up(4096), 4096);
+        assert_eq!(block_up(4097), 8192);
         let big = Identity {
             segment_size: 64 << 20,
             ..small
@@ -584,7 +618,7 @@ mod tests {
         }
         .valid());
         assert!(!Identity {
-            segment_size: 4096,
+            segment_size: 3 * 4096,
             ..small
         }
         .valid());
