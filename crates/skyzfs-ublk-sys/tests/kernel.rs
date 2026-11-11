@@ -298,6 +298,10 @@ struct Seen {
     /// The tags whose first request of this life was a write: what the
     /// queue's count of first-write copies must equal.
     first_writes: std::sync::atomic::AtomicU64,
+    /// The most writes a gathering server held at once before it
+    /// answered them: the number it was asked to gather, if the test
+    /// did send that many together.
+    gathered: std::sync::atomic::AtomicU64,
 }
 
 /// A server that keeps the device's content in memory, shared between
@@ -309,8 +313,9 @@ struct Seen {
 /// else may read a device that appears, and a tag whose first request
 /// was such a read has no first write). If a wait brings nothing while
 /// it gathers (the queue's idle time-out, 20 s), it answers what it
-/// has, so that a test that did not send enough fails and does not
-/// hang.
+/// has, so that a test that did not send enough does not hang; how
+/// many it held is in `seen.gathered`, and it is for the test to fail
+/// on fewer than it asked for.
 fn memory_gathering(
     mut queue: impl Queue,
     content: Arc<Mutex<Vec<u8>>>,
@@ -334,6 +339,8 @@ fn memory_gathering(
                 fetched.drain(..).partition(|f| f.desc.op() == op::WRITE);
             gathered.extend(writes);
             fetched.extend(others);
+            seen.gathered
+                .fetch_max(gathered.len() as u64, Ordering::SeqCst);
             if gathered.len() >= gather || !brought || woken == Woken::Stop {
                 gathering = false;
                 fetched.append(&mut gathered);
@@ -431,6 +438,11 @@ fn life_gathering(
 }
 
 impl Life {
+    /// The most writes the server held at once while it gathered.
+    fn gathered(&self) -> u64 {
+        self.seen.gathered.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// End the life in order; the longest write, and the first-write
     /// copies. The queue's count of copies must be the number of tags
     /// whose first request the server saw to be a write, exactly.
@@ -616,6 +628,16 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
             }
             round += 1;
             write_and_read_back(&file, MIB, 16 << 20, round, "1 MiB after the take-over")?;
+        }
+        // The server did hold `depth` writes at once: without that the
+        // rest of this life shows nothing about first writes sent
+        // together.
+        let gathered = second.gathered();
+        if gathered != u64::from(DEPTH) {
+            return Err(format!(
+                "the server held {gathered} writes at once after the take-over, not the \
+                 {DEPTH} that were sent together"
+            ));
         }
         // `end` has compared the copies with the tags the server saw
         // begin with a write. All of them did, unless something else
