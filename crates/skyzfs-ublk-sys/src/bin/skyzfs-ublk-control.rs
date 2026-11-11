@@ -10,6 +10,7 @@
 //! skyzfs-ublk-control delete N
 //! skyzfs-ublk-control begin-recovery N [--retry]
 //! skyzfs-ublk-control client-holds N
+//! skyzfs-ublk-control set-params N --size BYTES
 //! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC]
 //! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC]
 //! ```
@@ -37,6 +38,11 @@
 //!   the daemon's begin, which asks again while the driver is busy, and
 //!   the answer ends with `; busy answers: K`.
 //! - `client-holds`: `held` or `unknown`.
+//! - `set-params`: `set`, `nothing`, or `refused: ...`: the driver's
+//!   answer to the parameters the daemon gives a device of that size,
+//!   sent by this program as one command (the daemon's own are sent by
+//!   the library just before a start, which hides the driver's answer).
+//!   `server_pid=` in `info` is the driver's value, unchanged.
 //! - `serve` and `take-over` print two lines. When the device is live:
 //!   `live after T ms; handed before the start: K; busy answers: B`,
 //!   where K counts the requests the server was handed before the
@@ -109,6 +115,7 @@ enum Step {
     Delete,
     BeginRecovery { retry: bool },
     ClientHolds,
+    SetParams { size: u64 },
     Serve(Serve),
 }
 
@@ -152,6 +159,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
         let allowed: &[&str] = match step.as_str() {
             "add" => &["--size", "--depth"],
             "begin-recovery" => &["--retry"],
+            "set-params" => &["--size"],
             "serve" => &[
                 "--file",
                 "--size",
@@ -194,6 +202,9 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
         "delete" => Ok(("delete", Step::Delete)),
         "begin-recovery" => Ok(("begin-recovery", Step::BeginRecovery { retry })),
         "client-holds" => Ok(("client-holds", Step::ClientHolds)),
+        "set-params" => size
+            .map(|size| ("set-params", Step::SetParams { size }))
+            .ok_or_else(|| "set-params needs --size".to_string()),
         "serve" => serve(begun, false).map(|s| ("serve", s)),
         "take-over" => serve(true, true).map(|s| ("take-over", s)),
         other => Err(format!("'{other}' is not a step")),
@@ -544,6 +555,13 @@ mod run {
                 Some(true) => "held".into(),
                 _ => "unknown".into(),
             },
+            Step::SetParams { size } => {
+                match raw::set_params(n, skyzfs_ublk_sys::queue::parameters(*size)) {
+                    Ok(()) => "set".into(),
+                    Err(e) if is(&e, libc::ENODEV) => "nothing".into(),
+                    Err(e) => format!("refused: {}", errno(&e)),
+                }
+            }
             Step::Serve(s) => return serve(name, n, s, &mut kernel),
         };
         say(name, n, &answer)
@@ -616,6 +634,10 @@ mod tests {
         assert_eq!(
             parse(&args("begin-recovery 3 --retry")),
             Ok(("begin-recovery", 3, Step::BeginRecovery { retry: true }))
+        );
+        assert_eq!(
+            parse(&args("set-params 9 --size 4096")),
+            Ok(("set-params", 9, Step::SetParams { size: 4096 }))
         );
         assert_eq!(
             parse(&args("client-holds 9")),
@@ -711,6 +733,8 @@ mod tests {
             "add 1 --size",
             "add 1 --depth 70000",
             "serve 1",
+            "set-params 1",
+            "set-params 1 --depth 4",
             "take-over 1",
             "take-over 1 --file f --recovery-begun",
             "take-over 1 --file f --size 4096",

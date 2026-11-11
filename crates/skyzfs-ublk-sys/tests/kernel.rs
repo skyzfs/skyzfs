@@ -670,6 +670,13 @@ fn the_control_test_program_answers_each_step_in_one_line() {
                 "state=waiting size={SIZE} queues=1 depth=8 flags=0x18 "
             ))
         })?;
+        // A device that was started takes no parameters: whatever the
+        // driver answers, it is one line and the device is as it was.
+        let answer = expect(&format!("set-params --size {}", SIZE / 2), &|a| a != "set")?;
+        println!("control_set_params_on_a_started_device\t{answer}");
+        expect("info", &|a| {
+            a.starts_with(&format!("state=waiting size={SIZE} "))
+        })?;
         let from = Instant::now();
         let (first, second) = served(
             n,

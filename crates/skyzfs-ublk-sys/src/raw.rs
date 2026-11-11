@@ -154,6 +154,20 @@ pub fn params(number: u32) -> io::Result<sys::ublk_params> {
     filled(command(sys::UBLK_U_CMD_GET_PARAMS, number, 0, Some(params))?.1)
 }
 
+/// Give the device under `number` these parameters. The answer is the
+/// driver's own: it takes parameters only for a device that was never
+/// started.
+///
+/// The daemon does not call this: the parameters of a device it added
+/// are set, with the same command and structure, by the library's
+/// control object just before its start ([`crate::queue::Device::start`]).
+/// It is here for the test program, which shows what the driver
+/// answers for a device that is live or waits.
+pub fn set_params(number: u32, mut params: sys::ublk_params) -> io::Result<()> {
+    params.len = std::mem::size_of::<sys::ublk_params>() as u32;
+    command(sys::UBLK_U_CMD_SET_PARAMS, number, 0, Some(params)).map(|_| ())
+}
+
 /// Delete the device under `number` without waiting for whoever holds
 /// it: the driver's asynchronous delete. A device that is held keeps
 /// its number until the holder lets go.

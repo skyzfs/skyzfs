@@ -213,7 +213,9 @@ impl Device {
     }
 }
 
-fn parameters(size: u64) -> sys::ublk_params {
+/// The parameters every device of ours gets, for `size` bytes: see
+/// [`Device::open`].
+pub fn parameters(size: u64) -> sys::ublk_params {
     const SHIFT: u8 = 12;
     sys::ublk_params {
         types: sys::UBLK_PARAM_TYPE_BASIC | sys::UBLK_PARAM_TYPE_DISCARD,
