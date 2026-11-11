@@ -2379,3 +2379,247 @@ fn an_open_counts_the_operations_beyond_the_acknowledged_position() {
     }
     holds(scenario);
 }
+
+// ---------------------------------------------------------------------
+// The bounded step of a checkpoint.
+
+fn step(store: &mut SimStore, bound: StepBound) -> Result<Step, String> {
+    store
+        .checkpoint_step(bound)
+        .map_err(|e| format!("checkpoint step: {e}"))
+}
+
+/// A step takes at most its bound of records and of bytes, at least
+/// one record when there is one, a record that alone exceeds the bound
+/// alone, and says whether more is left. With nothing to take it does
+/// nothing and leaves the log's start where it was. After every step
+/// every block reads as it was written.
+#[test]
+fn a_checkpoint_step_keeps_to_its_bound() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        // Ten records of one block, then three of four blocks, then
+        // one of eight.
+        for n in 0..10u64 {
+            write(&mut store, n * 3, 1, n as u8 + 1)?;
+        }
+        for n in 0..3u64 {
+            write(&mut store, 100 + n * 8, 4, n as u8 + 20)?;
+        }
+        write(&mut store, 200, 8, 30)?;
+        flush(&mut store)?;
+        let check = |store: &mut SimStore, what: &str| -> Outcome {
+            for n in 0..10u64 {
+                expect(store, n * 3, 1, n as u8 + 1, what)?;
+                expect(store, n * 3 + 1, 2, 0, what)?;
+            }
+            for n in 0..3u64 {
+                expect(store, 100 + n * 8, 4, n as u8 + 20, what)?;
+            }
+            expect(store, 200, 8, 30, what)
+        };
+        // By records: 3, 3, 3, then the tenth and two of four blocks.
+        let by_records = StepBound {
+            payload: u64::MAX,
+            records: 3,
+        };
+        let mut start = store.log_start();
+        for round in 0..3 {
+            let done = step(&mut store, by_records)?;
+            if (done.records, done.payload, done.more) != (3, 3 * BLOCK, true)
+                || done.start <= start
+            {
+                return Err(format!("round {round} by records: {done:?} from {start:?}"));
+            }
+            if done.start != store.log_start() {
+                return Err(format!(
+                    "the step says {done:?}, the log {:?}",
+                    store.log_start()
+                ));
+            }
+            start = done.start;
+            check(&mut store, "after a step by records")?;
+        }
+        // By bytes: the tenth block and one record of four blocks fit
+        // in 20 KiB, a second of four does not.
+        let by_bytes = StepBound {
+            payload: 5 * BLOCK,
+            records: u64::MAX,
+        };
+        let done = step(&mut store, by_bytes)?;
+        if (done.records, done.payload, done.more) != (2, 5 * BLOCK, true) {
+            return Err(format!("by bytes: {done:?}"));
+        }
+        check(&mut store, "after a step by bytes")?;
+        // A bound smaller than any record: one record a step, the
+        // eight blocks alone and last.
+        let tiny = StepBound {
+            payload: 1,
+            records: u64::MAX,
+        };
+        for (blocks, more) in [(4, true), (4, true), (8, false)] {
+            let done = step(&mut store, tiny)?;
+            if (done.records, done.payload, done.more) != (1, blocks * BLOCK, more) {
+                return Err(format!("a record beyond the bound: {done:?}"));
+            }
+            check(&mut store, "after a step of one record")?;
+        }
+        let end = store.log_start();
+        let done = step(&mut store, by_records)?;
+        if (done.records, done.more, done.start) != (0, false, end) {
+            return Err(format!("with nothing to take: {done:?}"));
+        }
+        drop(store);
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A step takes only what is durable and never makes anything durable
+/// itself: records since the last flush stay until the log is synced,
+/// which `sync_log` does without being a request. And it stops at the
+/// hold.
+#[test]
+fn a_checkpoint_step_takes_only_durable_records_below_the_hold() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        write(&mut store, 8, 1, 2)?;
+        flush(&mut store)?;
+        let durable = store.log_durable();
+        write(&mut store, 16, 1, 3)?;
+        let all = StepBound {
+            payload: u64::MAX,
+            records: u64::MAX,
+        };
+        let done = step(&mut store, all)?;
+        if (done.records, done.more) != (2, false) || done.start > durable {
+            return Err(format!("with one record not durable: {done:?}"));
+        }
+        let syncs = disk.stats().syncs;
+        if step(&mut store, all)?.records != 0 || disk.stats().syncs != syncs {
+            return Err("a step with nothing durable to take did something".into());
+        }
+        store.sync_log().map_err(|e| e.to_string())?;
+        if store.log_durable() != store.position() {
+            return Err("sync_log did not make the log durable".into());
+        }
+        // The hold in front of the record: nothing to take.
+        let held = store.log_start();
+        store.set_hold(Some(held)).map_err(|e| format!("{e:?}"))?;
+        if step(&mut store, all)?.records != 0 {
+            return Err("a step went past the hold".into());
+        }
+        store.set_hold(None).map_err(|e| format!("{e:?}"))?;
+        let done = step(&mut store, all)?;
+        if (done.records, done.more) != (1, false) {
+            return Err(format!("after the sync: {done:?}"));
+        }
+        expect(&mut store, 0, 1, 1, "first")?;
+        expect(&mut store, 8, 1, 2, "second")?;
+        expect(&mut store, 16, 1, 3, "third")
+    }
+    holds(scenario);
+}
+
+/// A step reads the log as far as it takes and no further: its work
+/// does not grow with the log behind it.
+#[test]
+fn a_checkpoint_step_reads_only_what_it_takes() {
+    let env = environments(0).remove(0);
+    let (_disk, mut store) = env.fresh().expect("a store");
+    for n in 0..400u64 {
+        write(&mut store, n % 64, 1, n as u8).expect("write");
+    }
+    flush(&mut store).expect("flush");
+    let bound = StepBound {
+        payload: u64::MAX,
+        records: 4,
+    };
+    let before = store.core.log.walked();
+    let done = step(&mut store, bound).expect("step");
+    assert_eq!(done.records, 4);
+    let walked = store.core.log.walked() - before;
+    // The step's own records and the one it stopped at, once to choose
+    // them and again to save neighbours, to apply them and to move the
+    // start: a few times five, never the 400 of the log.
+    assert!(walked <= 40, "a step of 4 records walked {walked}");
+}
+
+/// A checkpoint done in steps can be cut anywhere, as one done in one
+/// call: the volume is filled and checkpointed, one block in each of
+/// its 256 write units is written again, and the steps that apply them
+/// are stopped after a number of writes and syncs with a power cut;
+/// the open that follows is stopped and cut as well. After the next
+/// open every block reads as what was flushed, and steps taken after
+/// that finish the work.
+#[test]
+fn a_checkpoint_in_steps_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let bound = StepBound {
+            payload: 16 * BLOCK,
+            records: 16,
+        };
+        for stop in (0..30).chain([44, 61, 90, 150, 300, 700]) {
+            let (disk, mut store) = env.fresh()?;
+            for mib in 0..4 {
+                write(&mut store, mib * 256, 256, 9)?;
+            }
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for unit in 0..256u64 {
+                write(&mut store, unit * 4 + 1, 1, (unit % 200) as u8 + 10)?;
+            }
+            flush(&mut store)?;
+            disk.halt_after(stop);
+            let mut steps = 0;
+            let cut_off = loop {
+                match store.checkpoint_step(bound) {
+                    Err(_) => break true,
+                    Ok(done) if !done.more => break false,
+                    Ok(done) if done.records > 16 => {
+                        return Err(format!("a step took {done:?}"));
+                    }
+                    Ok(_) => steps += 1,
+                }
+            };
+            if !cut_off && steps < 15 {
+                return Err(format!("256 records were taken in {steps} steps of 16"));
+            }
+            if !cut_off && stop < 3 {
+                return Err(format!("the steps were not stopped at {stop}"));
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            disk.halt_after(stop % 7);
+            drop(Store::open(disk.clone(), env.options()));
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                for unit in 0..256u64 {
+                    let what = format!("unit {unit} {when} a cut at {stop}");
+                    expect(store, unit * 4, 1, 9, &what)?;
+                    expect(store, unit * 4 + 1, 1, (unit % 200) as u8 + 10, &what)?;
+                    expect(store, unit * 4 + 2, 2, 9, &what)?;
+                }
+                Ok(())
+            };
+            check(&mut store, "after")?;
+            // The steps go on where the cut left the log.
+            while step(&mut store, bound)?.more {}
+            if store.log_start() < store.log_durable() {
+                return Err("steps after the restart left durable records".into());
+            }
+            check(&mut store, "and the remaining steps after")?;
+        }
+        Ok(())
+    }
+    // The step keeps the checkpoint's order. Two of its defects show
+    // here as they do for the checkpoint in one call: the log given up
+    // before the home image is durable, and neighbours not saved.
+    caught(scenario, Mutants::RECLAIM_BEFORE_HOME_SYNC);
+    caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
+}

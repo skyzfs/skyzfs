@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::ops::ControlFlow;
 
 use crate::format::{
     chain_seed, Bad, Identity, Key, Kind, Lsn, RecordHeader, SegmentHeader, Superblock,
@@ -1583,6 +1584,25 @@ impl<D: Dir> Log<D> {
         limit: Lsn,
         visit: &mut dyn FnMut(&Record<'_>),
     ) -> Result<(), LogError> {
+        self.walk(from, to, limit, &mut |record| {
+            visit(record);
+            ControlFlow::Continue(())
+        })
+        .map(|_| ())
+    }
+
+    /// [`Log::replay`] that the visitor can end: the walk stops behind
+    /// the record at which `visit` breaks, and reads nothing beyond
+    /// it. For a reader that wants the first records of a long
+    /// stretch, as a checkpoint step does, without paying for the
+    /// whole stretch.
+    pub(crate) fn replay_until(
+        &self,
+        from: Lsn,
+        to: Lsn,
+        limit: Lsn,
+        visit: &mut dyn FnMut(&Record<'_>) -> ControlFlow<()>,
+    ) -> Result<(), LogError> {
         self.walk(from, to, limit, visit).map(|_| ())
     }
 
@@ -1608,7 +1628,7 @@ impl<D: Dir> Log<D> {
         from: Lsn,
         to: Lsn,
         limit: Lsn,
-        visit: &mut dyn FnMut(&Record<'_>),
+        visit: &mut dyn FnMut(&Record<'_>) -> ControlFlow<()>,
     ) -> Result<(u64, Cursor), LogError> {
         if self.failed && !self.mutants.has(Mutants::REPLAY_WHEN_FAILED) {
             return Err(LogError::Failed);
@@ -1711,7 +1731,7 @@ impl<D: Dir> Log<D> {
                         size,
                     )
                     .map_err(|e| read_error("reading the log", &e))?;
-                visit(&Record {
+                let flow = visit(&Record {
                     start,
                     end,
                     kind: header.kind,
@@ -1719,6 +1739,9 @@ impl<D: Dir> Log<D> {
                     length: header.length,
                     data,
                 });
+                if flow.is_break() {
+                    break;
+                }
             }
             cursor = Cursor {
                 position: end,
@@ -1810,7 +1833,12 @@ impl<D: Dir> Log<D> {
         let walked = if self.mutants.has(Mutants::RECLAIM_UNCHECKED) {
             None
         } else {
-            Some(self.walk(target, target, self.tail, &mut |_| {})?)
+            Some(self.walk(
+                target,
+                target,
+                self.tail,
+                &mut |_| ControlFlow::Continue(()),
+            )?)
         };
         // A new epoch, as with every superblock that is written: what
         // is written from now on, a record or the header of a segment

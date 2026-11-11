@@ -17,6 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -673,6 +674,68 @@ impl<D: Dir> Core<D> {
         Ok(start)
     }
 
+    /// One step of a checkpoint: the first records of what a checkpoint
+    /// would take, as many as stay within `bound` and within one batch
+    /// of preimages, and at least one. They are applied to the home
+    /// image and that part of the log is given up, in the order of
+    /// [`Core::checkpoint`]: a step is one of its batches, cut shorter.
+    ///
+    /// The step reads the log only as far as it takes, so its cost does
+    /// not grow with the log behind it.
+    fn checkpoint_step(&mut self, bound: StepBound) -> Result<Step, BlkError> {
+        let floor = self.log.floor();
+        let limit = self.log.durable();
+        let hold = self.log.hold();
+        let target = hold.map_or(limit, |hold| limit.min(hold));
+        let nothing = Step {
+            start: floor,
+            records: 0,
+            payload: 0,
+            more: false,
+        };
+        if target <= floor {
+            return Ok(nothing);
+        }
+        let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        let mut end = target;
+        let (mut saved, mut records, mut payload) = (0u64, 0u64, 0u64);
+        let scanned = self.log.replay_until(floor, target, limit, &mut |record| {
+            if !matches!(record.kind, Kind::Write | Kind::WriteZeroes) {
+                return ControlFlow::Continue(());
+            }
+            // The blocks to save beside it: at most the rest of its
+            // first and of its last unit.
+            let first = record.offset / BLOCK_SIZE;
+            let last = first + record.length / BLOCK_SIZE;
+            let own = if per_unit <= 1 {
+                0
+            } else {
+                first % per_unit + (last.div_ceil(per_unit) * per_unit - last)
+            };
+            let full = payload + record.length > bound.payload
+                || records >= bound.records
+                || saved + own > PREIMAGE_BATCH as u64;
+            if records > 0 && full {
+                end = record.start;
+                return ControlFlow::Break(());
+            }
+            saved += own;
+            records += 1;
+            payload += record.length;
+            ControlFlow::Continue(())
+        });
+        if scanned.is_err() {
+            return Err(self.fail());
+        }
+        let start = self.apply(floor, end, limit, hold)?;
+        Ok(Step {
+            start,
+            records,
+            payload,
+            more: end < target,
+        })
+    }
+
     /// Where the batches of a checkpoint from `floor` to `target` end.
     /// A batch is as many records as keep the blocks to save in the
     /// preimage file within [`PREIMAGE_BATCH`], and at least one.
@@ -897,6 +960,40 @@ fn add_run(runs: &mut BTreeMap<u64, u64>, mut start: u64, mut end: u64) {
 /// starts now. Anything else is a file that was being written, or one
 /// whose batch is finished, and is ignored.
 struct Preimages;
+
+/// How much one step of a checkpoint may take ([`Store::checkpoint_step`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StepBound {
+    /// The most bytes of writes and write-zeroes, by the length each
+    /// covers on the volume: what the step writes into the home image.
+    pub payload: u64,
+    /// The most such records.
+    pub records: u64,
+}
+
+impl StepBound {
+    /// The daemon's step (design §5.1): 8 MiB or 1024 records,
+    /// whichever comes first. More than the largest request adds to
+    /// the log, so a step after every request shortens the log.
+    pub const DAEMON: Self = Self {
+        payload: 8 << 20,
+        records: 1024,
+    };
+}
+
+/// What one step of a checkpoint did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Step {
+    /// Where the log starts now.
+    pub start: Lsn,
+    /// The writes and write-zeroes it applied to the home image.
+    pub records: u64,
+    /// The bytes of the volume they cover.
+    pub payload: u64,
+    /// Whether a step right after this one would find something to
+    /// take: durable records below the hold are left.
+    pub more: bool,
+}
 
 const PREIMAGE_MAGIC: &[u8; 8] = b"SKYZPRE\0";
 const PREIMAGE_VERSION: u32 = 1;
@@ -1324,6 +1421,41 @@ impl<D: Dir> Store<D> {
             return Err(BlkError::Failed);
         }
         self.core.checkpoint()
+    }
+
+    /// One bounded step of a checkpoint: the first of the log's durable
+    /// records below the hold, at most `bound` of them and at least one
+    /// if there is any, are applied to the home image, which is synced,
+    /// and that part of the log is given up. A record that alone
+    /// exceeds the bound is taken alone. With nothing to take it does
+    /// nothing and touches no file. On a failed volume, and if it fails
+    /// the volume, an error.
+    ///
+    /// It never makes anything durable itself: records appended since
+    /// the last flush stay in the log until a flush or a
+    /// [`Store::sync_log`].
+    pub fn checkpoint_step(&mut self, bound: StepBound) -> Result<Step, BlkError> {
+        if self.core.failed {
+            return Err(BlkError::Failed);
+        }
+        self.core.checkpoint_step(bound)
+    }
+
+    /// Make every record appended so far durable, as a flush does, but
+    /// not as an operation of the client: it has no place in the
+    /// volume's order and answers nobody. For whoever checkpoints
+    /// under a client that does not flush.
+    pub fn sync_log(&mut self) -> Result<(), BlkError> {
+        if self.core.failed {
+            return Err(BlkError::Failed);
+        }
+        self.core.flush()
+    }
+
+    /// Up to where the log is durable: what a checkpoint can take, as
+    /// far as the hold allows.
+    pub fn log_durable(&self) -> Lsn {
+        self.core.log.durable()
     }
 
     /// The end of the log: the position of the next operation in the
