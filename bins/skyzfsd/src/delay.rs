@@ -101,6 +101,10 @@ impl<A: AckRecord> AckRecord for LateAck<A> {
     }
 }
 
+/// How often the end of a stop tries again to give on what waits
+/// behind a position that could not be stored: the pump's own figure.
+const STOP_TRIES: u32 = 20;
+
 /// A commit that waits: when it is due, the position to store before
 /// it is given on, and the commit's tag, result and buffer.
 type Waiting = (Instant, Option<u64>, u16, i32, Option<Buf>);
@@ -234,7 +238,7 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
         Ok(woken)
     }
 
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
         self.inner.take_buf(tag, blocks)
     }
 
@@ -268,6 +272,31 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
                 let _ = timer.send(due);
             }
             _ => self.inner.commit(tag, result, buf),
+        }
+    }
+
+    /// The end of a stop. What still waits here waits behind a
+    /// position that could not be stored when the stop arrived: it is
+    /// tried again 20 times, paced by the queue's pause, as
+    /// the pump does for its own completions. If something is left
+    /// then, the stop is not orderly: the answer is `Err`, the pump
+    /// ends with [`Stopped::QueueDown`](skyzfs_ublk::pump::Stopped) and
+    /// the daemon with status 1, and the requests left are issued
+    /// again to the next instance.
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        self.release(true);
+        for _ in 0..STOP_TRIES {
+            if self.waiting.is_empty() {
+                break;
+            }
+            self.inner.pause();
+            self.release(true);
+        }
+        let sent = self.inner.flush();
+        if self.waiting.is_empty() {
+            sent
+        } else {
+            Err(QueueDown)
         }
     }
 
@@ -313,6 +342,10 @@ mod tests {
     #[derive(Default)]
     struct Noting {
         committed: Vec<u16>,
+        flushes: u32,
+        pauses: u32,
+        /// The record takes positions again after this many pauses.
+        heals: Option<(u32, Stored)>,
         wakes: VecDeque<Wake>,
         fetches: VecDeque<Fetched>,
     }
@@ -325,13 +358,24 @@ mod tests {
             fetched.extend(self.fetches.drain(..));
             Ok(self.wakes.pop_front().unwrap_or(Wake::Work))
         }
-        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Buf {
-            Buf::zeroed(blocks)
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
+            Some(Buf::zeroed(blocks))
         }
         fn commit(&mut self, tag: u16, _result: i32, _buf: Option<Buf>) {
             self.committed.push(tag);
         }
-        fn pause(&mut self) {}
+        fn flush(&mut self) -> Result<(), QueueDown> {
+            self.flushes += 1;
+            Ok(())
+        }
+        fn pause(&mut self) {
+            self.pauses += 1;
+            if let Some((after, record)) = &self.heals {
+                if self.pauses >= *after {
+                    record.refuse(false);
+                }
+            }
+        }
     }
 
     /// Without a delay every commit passes straight through, and no
@@ -403,6 +447,51 @@ mod tests {
         queue.commit(0, 0, None);
         assert_eq!(queue.inner.committed, [3, 0]);
         assert_eq!(queue.waiting(), 0);
+    }
+
+    /// A stop while the position of a delayed commit cannot be stored:
+    /// the commit stays here, and the end of the stop tries again. If
+    /// the record heals in that time everything is given on and the
+    /// end is in order; if it never does, the end says so (the pump
+    /// then does not call the stop orderly) and the commit was never
+    /// given on, so its request is issued again.
+    #[test]
+    fn a_stop_with_an_unstored_delayed_commit_is_tried_again_and_is_not_orderly_if_it_stays() {
+        for heals in [true, false] {
+            let stored = Stored::default();
+            let inner = Noting {
+                wakes: VecDeque::from([Wake::Stop]),
+                heals: heals.then(|| (3, stored.clone())),
+                ..Noting::default()
+            };
+            let (mut queue, mut pumps) = Delayed::new(
+                inner,
+                stored.clone(),
+                Some(Duration::from_secs(3600)),
+                None,
+                || {},
+            );
+            pumps.advance(100).expect("kept back");
+            queue.commit(1, 0, None);
+            stored.refuse(true);
+            let mut fetched = Vec::new();
+            assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+            assert_eq!(queue.waiting(), 1, "behind a position that is not stored");
+            assert!(queue.inner.committed.is_empty());
+            let ended = queue.flush();
+            assert_eq!(queue.inner.flushes, 1, "the queue inside is flushed");
+            if heals {
+                assert_eq!(ended, Ok(()));
+                assert_eq!(queue.inner.committed, [1]);
+                assert_eq!(stored.positions(), [100]);
+                assert_eq!(queue.inner.pauses, 3);
+            } else {
+                assert_eq!(ended, Err(QueueDown));
+                assert!(queue.inner.committed.is_empty());
+                assert!(stored.positions().is_empty());
+                assert_eq!(queue.inner.pauses, STOP_TRIES);
+            }
+        }
     }
 
     /// With a delay the pump's position is stored in the real record

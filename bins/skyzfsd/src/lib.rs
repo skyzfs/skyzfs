@@ -13,6 +13,22 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Write `text` to standard output and flush it. A write that fails
+/// (the reader is gone) is ignored: `println!` panics on it, and a
+/// panic would replace the command's exit status with 101.
+pub fn to_stdout(text: &str) {
+    use std::io::Write as _;
+    let mut out = std::io::stdout().lock();
+    let _ = out.write_all(text.as_bytes()).and_then(|()| out.flush());
+}
+
+/// Write `text` to standard error. A write that fails is ignored, as
+/// in [`to_stdout`].
+pub fn to_stderr(text: &str) {
+    use std::io::Write as _;
+    let _ = std::io::stderr().lock().write_all(text.as_bytes());
+}
+
 pub mod cli;
 pub mod commands;
 pub mod delay;

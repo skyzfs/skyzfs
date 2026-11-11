@@ -2,8 +2,8 @@
 //!
 //! # The buffers: one copy per request
 //!
-//! The queue owns one [`Buf`] per tag, of the largest request's size,
-//! locked in memory (and unlocked again when the queue is dropped).
+//! The queue has one [`Buf`] per tag, of the largest request's size,
+//! locked in memory.
 //! [`Queue::take_buf`] lends the tag's buffer out at the request's
 //! length, the request carries it through the target, the completion
 //! brings it back, and [`Queue::commit`] puts it in its place before it
@@ -20,6 +20,42 @@
 //! borrowed. That is what makes it sound to give its address away, and
 //! it needs no `unsafe` here: the library's commit takes a slice and
 //! uses only its address.
+//!
+//! # The buffers are never freed
+//!
+//! A fetch command names a buffer's address, and the kernel copies a
+//! write's data to that address when a request arrives for the tag: on
+//! the queue's thread, whenever that thread next returns from the
+//! kernel, for as long as the command is with the driver. Nothing the
+//! library offers takes a fetch command back. Its ring is a
+//! thread-local of the queue's thread, and dropping its queue object
+//! unregisters files and unmaps the descriptors and cancels no
+//! command: the commands end only when the thread itself does. So when
+//! the queue is dropped (a stop, an error, a queue that could not be
+//! made whole) while the device is live, each tag's fetch still names
+//! its buffer, and a request that arrives while the thread goes on to
+//! other work (whatever the caller's body does before it returns) is
+//! copied to that address. (Read in the driver's source, `ublk_drv.c`: a request
+//! reaches the server through task work on the queue's task, where a
+//! write's data is copied to the address of the tag's fetch command.)
+//!
+//! Therefore **the tag buffers and the library's first buffers are
+//! never freed and never unlocked**: when the queue is dropped they are
+//! forgotten, and their memory stays mapped, locked and unused until
+//! the process ends. The argument for soundness is that short: an
+//! address the driver was ever told stays valid memory that nothing
+//! else in the process uses, so it does not matter when the kernel
+//! stops writing there. A buffer that is with the target when the
+//! queue is dropped is not in that set and is freed by whoever holds
+//! it: its tag's request was fetched and not committed, so no command
+//! of that tag is with the driver, and the driver copies nothing for a
+//! tag without one.
+//!
+//! The cost is `depth` buffers of each kind per life of a queue in one
+//! process: nothing for the daemon, which serves one device once and
+//! ends, also when its serve fails after the queue started; and
+//! 2 x `depth` x 1 MiB per served life for a process that serves
+//! several times (the kernel tests and the control test program).
 //!
 //! # The first request of each tag
 //!
@@ -54,7 +90,7 @@ use skyzfs_blk::{Buf, BLOCK_SIZE};
 use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Wake as Woken};
 use skyzfs_ublk::translate::Desc;
 
-use crate::mem::{self, Locked};
+use crate::mem;
 use crate::{io_error, Wake, FLAGS, MAX_IO};
 
 /// The user data of the wake descriptor's poll on the queue's ring:
@@ -63,6 +99,10 @@ const WAKE: u64 = (1 << 63) | 1;
 
 /// How long [`Queue::pause`] sleeps.
 pub const PAUSE: Duration = Duration::from_millis(100);
+
+/// How often [`Queue::flush`] submits again when a signal interrupted
+/// the call.
+const FLUSH_TRIES: u32 = 8;
 
 /// The name the library is given for the target. It appears in the
 /// library's own file of a take-over and nowhere else.
@@ -103,11 +143,16 @@ impl Device {
     /// here: 4096-byte blocks, a volatile write cache (so that flushes
     /// arrive), requests of at most [`MAX_IO`], and
     /// discard and write-zeroes of at most that, one segment each.
+    ///
+    /// A device whose largest request is above [`MAX_IO`] is refused
+    /// (`InvalidInput`) and left as it is: the driver would copy a
+    /// request of that size past a buffer's end.
     pub fn open(open: &Open) -> io::Result<Self> {
         let Ok(id) = i32::try_from(open.number) else {
             return Err(io::Error::other("no such device number"));
         };
         let current = crate::raw::info(open.number)?;
+        fits(open.number, current.max_io_buf_bytes)?;
         let control = UblkCtrlBuilder::default()
             .name(NAME)
             .id(id)
@@ -152,8 +197,9 @@ impl Device {
     }
 
     /// Start the queue's thread and run `body` on it with the queue.
-    /// Returns when the queue has given the driver its fetches, so that
-    /// [`Device::start`] can follow.
+    /// Returns when the queue's thread has queued its fetch commands on
+    /// its ring and is about to run `body`; the commands reach the
+    /// driver at the queue's first wait. [`Device::start`] can follow.
     ///
     /// `wake` wakes the queue's wait from other threads: give the same
     /// one to the target's waker. With `require_locked`, a buffer that
@@ -211,6 +257,25 @@ impl Device {
             _ => Ok(()),
         }
     }
+}
+
+/// Whether a device whose largest request is `largest` bytes can be
+/// served: the tag buffers hold [`MAX_IO`] bytes, the driver copies a
+/// request of the device's largest size to the address it is told, and
+/// a larger one would be written past the buffer's end. Every device
+/// this daemon adds has [`MAX_IO`]; one that does not was added by
+/// something else, or by a build with another figure.
+fn fits(number: u32, largest: u32) -> io::Result<()> {
+    if largest > MAX_IO {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "device {number} takes requests of up to {largest} bytes and this server's \
+                 buffers hold {MAX_IO}: it is not served"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The parameters every device of ours gets, for `size` bytes: see
@@ -292,33 +357,63 @@ impl Stopper {
 
 /// The queue, on its thread. See the [module documentation](self).
 pub struct KernelQueue<'q> {
-    // Declared first, so dropped first: the ring's commands are gone
-    // before the buffers they name.
     queue: UblkQueue<'q>,
-    /// The library's buffers: where each tag's first request arrives.
-    first: Vec<IoBuf<u8>>,
-    /// Each tag's own buffer; `None` while it is lent out.
-    own: Vec<Option<Buf>>,
+    bufs: Buffers,
     /// Whether the driver has been told the address of the tag's own
     /// buffer: after the tag's first commit.
     ours: Vec<bool>,
-    /// What was locked: unlocked when the queue is dropped.
-    _locked: Vec<Locked>,
     stopper: Stopper,
     /// Tags of the last wait, kept to spare an allocation.
     tags: Vec<u16>,
 }
 
+/// The memory whose addresses the driver is told: never freed. See
+/// "The buffers are never freed" in the [module documentation](self).
+struct Buffers {
+    /// The library's buffers: where each tag's first request arrives.
+    first: Vec<IoBuf<u8>>,
+    /// Each tag's own buffer; `None` while it is lent out.
+    own: Vec<Option<Buf>>,
+}
+
+impl Buffers {
+    /// Put `buf` in the tag's place. What was there, if anything, may
+    /// be named by nothing or by the tag's last commit: it is forgotten
+    /// like every buffer that was ever in a place, and not freed.
+    fn put(place: &mut Option<Buf>, buf: Buf) {
+        if let Some(old) = place.replace(buf) {
+            std::mem::forget(old);
+        }
+    }
+}
+
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        // Forgotten, not freed: commands that name these addresses may
+        // still be with the driver, and nothing takes them back.
+        for buf in self.first.drain(..) {
+            std::mem::forget(buf);
+        }
+        for buf in self.own.drain(..).flatten() {
+            std::mem::forget(buf);
+        }
+    }
+}
+
 impl<'q> KernelQueue<'q> {
     fn new(dev: &'q UblkDev, stopper: Stopper, require_locked: bool) -> io::Result<Self> {
-        let first = dev.alloc_queue_io_bufs();
-        let depth = first.len();
-        let mut own = Vec::with_capacity(depth);
-        let mut locked = Vec::with_capacity(depth);
+        // Made before the queue and its commands, and from here on
+        // forgotten whatever fails below.
+        let mut bufs = Buffers {
+            first: dev.alloc_queue_io_bufs(),
+            own: Vec::new(),
+        };
+        let depth = bufs.first.len();
+        bufs.own.reserve_exact(depth);
         for _ in 0..depth {
             let buf = Buf::with_capacity(MAX_BLOCKS);
             match mem::lock(&buf) {
-                Ok(lock) => locked.push(lock),
+                Ok(()) => {}
                 Err(e) if require_locked => {
                     return Err(io::Error::new(
                         e.kind(),
@@ -327,18 +422,16 @@ impl<'q> KernelQueue<'q> {
                 }
                 Err(_) => {}
             }
-            own.push(Some(buf));
+            bufs.own.push(Some(buf));
         }
         let queue = UblkQueue::new(0, dev)
             .map_err(io_error)?
-            .submit_fetch_commands_unified(BufDescList::Slices(Some(&first)))
+            .submit_fetch_commands_unified(BufDescList::Slices(Some(&bufs.first)))
             .map_err(io_error)?;
         let this = Self {
             queue,
-            first,
-            own,
+            bufs,
             ours: vec![false; depth],
-            _locked: locked,
             stopper,
             tags: Vec::with_capacity(depth),
         };
@@ -362,7 +455,7 @@ impl<'q> KernelQueue<'q> {
 
 impl Queue for KernelQueue<'_> {
     fn depth(&self) -> u16 {
-        self.own.len() as u16
+        self.bufs.own.len() as u16
     }
 
     fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Woken, QueueDown> {
@@ -418,42 +511,44 @@ impl Queue for KernelQueue<'_> {
         }
     }
 
-    fn take_buf(&mut self, tag: u16, blocks: usize) -> Buf {
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
         let slot = usize::from(tag);
-        // The pump takes a tag's buffer once per request, and the
-        // driver was told the largest request: neither fallback below
-        // is reached while both keep their word. Each still gives a
-        // buffer of the right length with the right data, at the cost
-        // of an allocation and, at the commit, a new address.
-        let mut buf = match self.own.get_mut(slot).and_then(Option::take) {
-            Some(buf) => buf,
-            None => Buf::with_capacity(MAX_BLOCKS.max(blocks)),
-        };
+        // The tag's own buffer, at the request's length, or nothing.
+        // It is not in its place only if it was taken for this request
+        // already, which the pump does not do; and it is too short only
+        // for a request beyond the largest the driver was told, which
+        // the driver does not issue and [`Device::open`] refuses a
+        // device for. Neither is answered with another buffer: for a
+        // write on a tag whose address the driver knows, the data is
+        // in this buffer and nowhere else.
+        let place = self.bufs.own.get_mut(slot)?;
+        let mut buf = place.take()?;
         if buf.set_blocks(blocks).is_err() {
-            buf = Buf::with_capacity(blocks);
+            *place = Some(buf);
+            return None;
         }
         let ours = self.ours.get(slot).copied().unwrap_or(false);
         if !ours && self.is_write(tag) {
             // The tag's first request since the start: the driver put
             // the data into the library's buffer. No fetch of this tag
             // is outstanding, so the kernel does not write there now.
-            if let Some(first) = self.first.get(slot) {
+            if let Some(first) = self.bufs.first.get(slot) {
                 let from = first.as_slice();
                 let len = buf.len().min(from.len());
                 buf[..len].copy_from_slice(&from[..len]);
                 self.stopper.copies.fetch_add(1, Ordering::Relaxed);
             }
         }
-        buf
+        Some(buf)
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
         let slot = usize::from(tag);
-        let Some(place) = self.own.get_mut(slot) else {
+        let Some(place) = self.bufs.own.get_mut(slot) else {
             return;
         };
         if let Some(buf) = buf {
-            *place = Some(buf);
+            Buffers::put(place, buf);
         }
         // A request whose buffer never came back (the pump commits a
         // failed one without it) gets a new one: unlocked, and never
@@ -463,8 +558,9 @@ impl Queue for KernelQueue<'_> {
         // gives the driver the address of a slice that has a length,
         // and none otherwise.
         if own.set_blocks(own.capacity_blocks()).is_err() || own.is_empty() {
-            *own = Buf::with_capacity(MAX_BLOCKS);
+            Buffers::put(place, Buf::with_capacity(MAX_BLOCKS));
         }
+        let own = place.get_or_insert_with(|| Buf::with_capacity(MAX_BLOCKS));
         // The borrow ends with this call. After it the kernel may write
         // to the buffer at any time until the tag's next fetch
         // completes, and nothing here touches it until then: see the
@@ -481,7 +577,43 @@ impl Queue for KernelQueue<'_> {
         }
     }
 
+    /// One submit of what the ring holds, with no wait. A fetch that
+    /// completes in it belongs to a request nobody serves any more: it
+    /// stays with the kernel and is issued again to the next instance.
+    fn flush(&mut self) -> Result<(), QueueDown> {
+        for _ in 0..FLUSH_TRIES {
+            match self.queue.flush_and_wake_io_tasks(|_, _, _| {}, 0) {
+                Ok(_) => return Ok(()),
+                Err(UblkError::IOError(e)) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(UblkError::UringIOError(n)) if n.abs() == libc::EINTR => {}
+                Err(_) => return Err(QueueDown),
+            }
+        }
+        Err(QueueDown)
+    }
+
     fn pause(&mut self) {
         std::thread::sleep(PAUSE);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device is served only if its largest request fits the tag
+    /// buffers.
+    #[test]
+    fn a_device_with_larger_requests_than_the_buffers_is_refused() {
+        assert!(fits(3, MAX_IO).is_ok());
+        assert!(fits(3, MAX_IO / 2).is_ok());
+        let refused = fits(3, MAX_IO + 4096).expect_err("too large");
+        assert_eq!(refused.kind(), io::ErrorKind::InvalidInput);
+        let said = refused.to_string();
+        assert!(
+            said.contains("device 3") && said.contains("not served"),
+            "{said}"
+        );
+        assert_eq!(MAX_BLOCKS as u64 * BLOCK_SIZE, u64::from(MAX_IO));
     }
 }

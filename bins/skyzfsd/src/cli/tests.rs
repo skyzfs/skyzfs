@@ -36,6 +36,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::Failed, 3),
         (Exit::RefusedFailed, 4),
         (Exit::RefusedHeld, 5),
+        (Exit::DeletedHeld, 6),
     ];
     for (exit, status) in all {
         assert_eq!(exit.status(), status);

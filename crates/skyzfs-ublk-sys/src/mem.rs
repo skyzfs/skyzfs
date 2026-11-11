@@ -1,22 +1,22 @@
-//! Locking a buffer's memory, and unlocking exactly what was locked.
+//! Locking memory so that it is never paged out. Nothing here unlocks:
+//! see [`lock`].
 
 use std::io;
 
 use skyzfs_blk::Buf;
 
-/// A locked range of memory: unlocked when this is dropped.
-#[derive(Debug)]
-pub(crate) struct Locked {
-    addr: usize,
-    len: usize,
-}
-
 /// Lock the whole of `buf`'s memory (its capacity must be its length)
 /// so that it is never paged out.
-pub(crate) fn lock(buf: &Buf) -> io::Result<Locked> {
-    let (addr, len) = (buf.as_ptr() as usize, buf.len());
+///
+/// The range is never unlocked. The queue's buffers are never freed
+/// (see the queue's documentation), so there is no moment for it; and
+/// an `munlock` of a range takes the lock away from that range also
+/// when the whole process was locked with [`lock_all`], which would
+/// leave pages of the daemon free to be paged out.
+pub(crate) fn lock(buf: &Buf) -> io::Result<()> {
+    let len = buf.len();
     if len == 0 {
-        return Ok(Locked { addr, len });
+        return Ok(());
     }
     // SAFETY: `mlock` reads and writes nothing through the pointer: it
     // changes how the kernel keeps the pages. The range is the live
@@ -25,22 +25,7 @@ pub(crate) fn lock(buf: &Buf) -> io::Result<Locked> {
     if result != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(Locked { addr, len })
-}
-
-impl Drop for Locked {
-    fn drop(&mut self) {
-        if self.len == 0 {
-            return;
-        }
-        // SAFETY: `munlock` reads and writes nothing through the
-        // pointer and frees nothing. If the buffer has been freed since
-        // (it went to a target that never gave it back), the call
-        // either fails on a range that is no longer mapped or unlocks
-        // pages that nothing of ours has locked: this crate locks
-        // nothing else. The result is not needed either way.
-        unsafe { libc::munlock(self.addr as *const libc::c_void, self.len) };
-    }
+    Ok(())
 }
 
 /// Lock all of the process's memory, what it has now and what it maps

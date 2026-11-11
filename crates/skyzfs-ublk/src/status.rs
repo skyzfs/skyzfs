@@ -11,6 +11,13 @@
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
+//! The file has no checksum. It is replaced whole by a rename, lives
+//! on a memory file system for one boot, and is read only if its
+//! length and its magic are exactly a version's: a torn or foreign
+//! file is read as no status, and a damaged counter would mislead a
+//! reader of `status` and nothing else. The failure note
+//! ([`records`](crate::records)) is kept the same way.
+//!
 //! This is the file's third version. The second (`SKYZSTA2`, 144
 //! bytes) ended before the log's fields, from offset 144 on; a file
 //! of that version is still read, without them. The first
@@ -390,6 +397,9 @@ struct Posted {
     /// interval.
     at_once: bool,
     stop: bool,
+    /// How often [`Board::publish`] has tried to write the file, done
+    /// or failed.
+    attempts: u64,
 }
 
 /// Where the queue thread puts its counters for the thread that writes
@@ -437,6 +447,38 @@ impl Board {
         }
     }
 
+    /// Wait until [`Board::publish`] has tried to write the file at
+    /// least once, done or failed, for at most `limit`; whether it
+    /// has. The daemon says `ready` after this: until the new
+    /// instance's first write the file is the one the instance before
+    /// left, and `status` would show that instance's pid and counters
+    /// as the serving daemon's. A write that failed counts: writing the
+    /// status holds nothing up.
+    pub fn first_write_tried(&self, limit: Duration) -> bool {
+        let until = Instant::now() + limit;
+        let mut posted = self.lock();
+        while posted.attempts == 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            posted = self
+                .changed
+                .wait_timeout(posted, left)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        true
+    }
+
+    /// Have [`Board::publish`] write the file once more, at once, with
+    /// what is posted: for a value the writer reads elsewhere and that
+    /// has changed. Nothing posted is replaced.
+    pub fn write_again(&self) {
+        self.lock().at_once = true;
+        self.changed.notify_all();
+    }
+
     /// Tell [`Board::publish`] to write what is posted and return.
     pub fn stop(&self) {
         self.lock().stop = true;
@@ -479,7 +521,11 @@ impl Board {
                 let (counters, log) = (posted.counters, posted.log);
                 posted.at_once = false;
                 drop(posted);
-                match write(&counters, &log, failures) {
+                let written = write(&counters, &log, failures);
+                posted = self.lock();
+                posted.attempts += 1;
+                self.changed.notify_all();
+                match written {
                     Ok(()) => {
                         written_log = log;
                         pace.wrote(counters, now());
@@ -492,7 +538,6 @@ impl Board {
                         }
                     }
                 }
-                posted = self.lock();
                 continue;
             }
             if last {

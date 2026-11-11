@@ -93,8 +93,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
       Make a new, empty volume in DIR. DIR is made if it is missing
-      (its parent must exist) and must hold no volume; a create that
-      fails removes a DIR it made. BYTES is a multiple of 1 MiB. One
+      (its parent must exist) and must hold no volume and no file but
+      what an interrupted create leaves (lock, home.new, home.img,
+      log.000000, log.super.new: files under exactly these names are
+      removed, whoever put them there); a create that fails removes a
+      DIR it made. BYTES is a multiple of 1 MiB. One
       line is printed: the size, the volume's id and the store's
       identity.
       If a volume in DIR failed in this boot, create warns: the note
@@ -128,7 +131,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       a daemon: stop the daemon first (SIGTERM).
       Export the pool first. A pool whose device is deleted under it
       stays suspended, and the device keeps its number for as long as
-      the pool holds it.
+      the pool holds it: detach then waits up to 5 s for the number to
+      come free before it says so, with exit status 6.
 
   skyzfsd status --dir DIR [--run-dir DIR]
       Print the volume's state and the serving daemon's counters, one
@@ -137,7 +141,9 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served; 4 refused, the volume failed
 in this boot; 5 refused, another instance or a live server holds the
-volume.";
+volume; 6 detach deleted the device and a client still holds it open.
+After a detach only 0 says that nothing of the volume is left attached
+on this node.";
 
 /// The exit statuses. The kernel rig depends on each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +160,9 @@ pub enum Exit {
     RefusedFailed,
     /// 5: refused: another instance holds the volume.
     RefusedHeld,
+    /// 6: `detach` deleted the volume's device and a client still holds
+    /// it open: the device keeps its number until the client lets go.
+    DeletedHeld,
 }
 
 impl Exit {
@@ -166,6 +175,7 @@ impl Exit {
             Exit::Failed => 3,
             Exit::RefusedFailed => 4,
             Exit::RefusedHeld => 5,
+            Exit::DeletedHeld => 6,
         }
     }
 

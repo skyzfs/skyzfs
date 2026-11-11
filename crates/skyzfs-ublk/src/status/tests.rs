@@ -617,3 +617,117 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
     assert_eq!(value(&lines, "state"), Some("detached"));
     assert_eq!(value(&lines, "failure"), None);
 }
+
+/// The order of a start: the publishing thread's first write is tried
+/// before whoever waits for it goes on (the daemon then says `ready`),
+/// also when that write fails; and nobody is told it was tried before
+/// it was.
+#[test]
+fn the_first_write_is_tried_before_the_waiter_goes_on_also_when_it_fails() {
+    for fails in [false, true] {
+        let board = Arc::new(Board::new());
+        assert!(
+            !board.first_write_tried(Duration::from_millis(20)),
+            "nothing publishes yet"
+        );
+        let tried = Arc::new(AtomicU64::new(0));
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let thread = {
+            let (board, tried, gate) = (board.clone(), tried.clone(), gate.clone());
+            std::thread::spawn(move || {
+                board.publish(Pace::new(50), |_, _| {
+                    if tried.load(Ordering::SeqCst) == 0 {
+                        // The first write is held until the test lets
+                        // it go.
+                        gate.wait();
+                    }
+                    tried.fetch_add(1, Ordering::SeqCst);
+                    if fails {
+                        Err(std::io::Error::other("no"))
+                    } else {
+                        Ok(())
+                    }
+                })
+            })
+        };
+        // The write is under way and not finished: not tried yet.
+        assert!(!board.first_write_tried(Duration::from_millis(50)));
+        assert_eq!(tried.load(Ordering::SeqCst), 0);
+        gate.wait();
+        assert!(board.first_write_tried(Duration::from_secs(20)));
+        assert!(tried.load(Ordering::SeqCst) >= 1, "fails: {fails}");
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        assert_eq!(failures > 0, fails);
+    }
+}
+
+/// Waiting for the first write posts nothing: counters the queue's
+/// thread has put up before the start is over are the ones that are
+/// written, then and at the end, and are not replaced by zeros.
+#[test]
+fn waiting_for_the_first_write_leaves_the_posted_counters_as_they_are() {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, seen) = (board.clone(), seen.clone());
+        std::thread::spawn(move || {
+            board.publish(Pace::new(10), |counters, _| {
+                seen.lock().expect("lock").push(*counters);
+                Ok(())
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    // No request follows: the queue's thread posts nothing more.
+    std::thread::sleep(Duration::from_millis(100));
+    board.stop();
+    thread.join().expect("the publishing thread");
+    let seen = seen.lock().expect("lock");
+    assert!(!seen.is_empty());
+    assert!(
+        seen.iter().all(|written| *written == counters(7, 2)),
+        "{seen:?}"
+    );
+}
+
+/// `write_again` has the file written once more with what is posted,
+/// at once and whatever the interval, and replaces nothing: for a
+/// value the writer reads elsewhere (the start's time) that changed
+/// after the first write.
+#[test]
+fn write_again_writes_what_is_posted_once_more_and_replaces_nothing() {
+    let board = Arc::new(Board::new());
+    board.post(counters(7, 2));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let thread = {
+        let (board, seen) = (board.clone(), seen.clone());
+        std::thread::spawn(move || {
+            // An interval far beyond the test: only `write_again`
+            // explains a second write.
+            board.publish(Pace::new(3_600_000), |counters, _| {
+                seen.lock().expect("lock").push(*counters);
+                Ok(())
+            })
+        })
+    };
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    assert_eq!(seen.lock().expect("lock").len(), 1);
+    board.write_again();
+    let began = Instant::now();
+    while seen.lock().expect("lock").len() < 2 {
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "not written again"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    board.stop();
+    thread.join().expect("the publishing thread");
+    let seen = seen.lock().expect("lock");
+    assert!(
+        seen.iter().all(|written| *written == counters(7, 2)),
+        "{seen:?}"
+    );
+}
