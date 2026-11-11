@@ -649,7 +649,10 @@ fn the_control_test_program_answers_each_step_in_one_line() {
             a.starts_with("state=dead size=0 queues=1 depth=8 flags=0x18 raw_state=")
         })?;
         // Not waiting for a server: the driver's own refusal, exit 0.
-        expect("begin-recovery", &|a| a.starts_with("refused: errno "))?;
+        // On the kernels this ran on the driver answers a device that
+        // was never started with `EBUSY`, the same as for one whose
+        // server is still being torn down.
+        expect("begin-recovery", &|a| a == "busy")?;
         let (first, second) = served(n, &format!("serve --file {path} --size {SIZE}"))?;
         if !first.contains("handed before the start: 0;") {
             return Err(format!("serve: {first}"));

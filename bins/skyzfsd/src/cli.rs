@@ -36,8 +36,8 @@
 //! - `serve --recover-short N`: this instance's recovery counts the log
 //!   as N records shorter than it found it;
 //! - `serve --commit-delay-ms N`: every request's result is given to
-//!   the kernel N ms after the store completed it and the acknowledged
-//!   position was stored. Nothing else waits.
+//!   the kernel N ms after the store completed it, and the acknowledged
+//!   position is stored then and not before. Nothing else waits.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
