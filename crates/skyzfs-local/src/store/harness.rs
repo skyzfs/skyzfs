@@ -85,6 +85,7 @@ impl SimHarness {
             disk,
             geometry,
             read_only,
+            mark: None,
         })
     }
 }
@@ -95,6 +96,9 @@ pub(crate) struct OnSim {
     pub(crate) disk: SimDisk,
     geometry: Geometry,
     read_only: bool,
+    /// Where the log ended at the last call of `maintenance` on this
+    /// instance of the store.
+    mark: Option<Lsn>,
 }
 
 enum Inner {
@@ -306,6 +310,7 @@ impl Harness for SimHarness {
                 disk,
                 geometry,
                 read_only,
+                mark: None,
             },
         };
         reopened.geometry = geometry;
@@ -357,6 +362,7 @@ impl Harness for SimHarness {
             disk,
             read_only,
             geometry,
+            ..
         } = target;
         drop(inner);
         disk.power_cut(RecordCut {
@@ -384,6 +390,7 @@ impl Harness for SimHarness {
             disk,
             read_only,
             geometry,
+            ..
         } = target;
         drop(inner);
         disk.clear_faults();
@@ -395,14 +402,17 @@ impl Harness for SimHarness {
             disk,
             geometry,
             read_only,
+            mark: None,
         }))
     }
 
     fn maintenance(&mut self, target: &mut OnSim, seed: u64) -> Result<(), HarnessError> {
         let bounded = self.segments.is_some();
+        let mark = target.mark;
         let Some(store) = target.store() else {
             return Ok(());
         };
+        let here = store.position();
         // A checkpoint that fails has failed the volume, which the
         // suite then sees for itself.
         match seed % 4 {
@@ -413,16 +423,19 @@ impl Harness for SimHarness {
                 let _ = store.core.flush();
                 let _ = store.checkpoint();
             }
-            // A hold where the log now ends. With a bounded log it is
-            // released at once: a write that waits for a hold would
-            // wait for a later call of this hook, which the suite does
-            // not promise.
+            // A hold where the log now ends, for later calls to stop
+            // at. With a bounded log the hold is where the log ended at
+            // the call before this one, and is released at once: a
+            // write that waits for a hold would wait for a later call
+            // of this hook, which the suite does not promise.
             2 => {
                 let _ = store.core.flush();
-                store.set_hold(Some(store.position()));
                 if bounded {
+                    store.set_hold(mark.filter(|mark| *mark >= store.log_start()));
                     let _ = store.checkpoint();
                     store.set_hold(None);
+                } else {
+                    store.set_hold(Some(store.position()));
                 }
             }
             _ => {
@@ -430,6 +443,7 @@ impl Harness for SimHarness {
                 store.set_hold(None);
             }
         }
+        target.mark = Some(here);
         Ok(())
     }
 }
