@@ -31,6 +31,8 @@ set -uo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gnu-dd.sh"
+# shellcheck source=tests/lib/net-try.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/net-try.sh"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 OUT=${1:?usage: ublk-probe.sh OUT [WORK]}
@@ -59,6 +61,22 @@ rec() { # key value: one finding. Tabs and newlines in the value are flattened.
     printf '== %s: %s\n' "$1" "$v"
 }
 step() { printf '\n######## %s\n' "$*"; }
+# net LOG COMMAND...: a step that needs the network, tried three times,
+# its output appended to LOG. When it still fails and the log shows a
+# name that did not resolve, the probe ends here with exit 2: the
+# mirrors were out of reach, the runner's kernel was not looked at, and
+# pins that say "not checked" would read as a verdict on it. Any other
+# failure is returned and is a finding, as before.
+net() {
+    local log=$1 rc; shift
+    net_try "$@" >> "$log" 2>&1; rc=$?
+    [ $rc = 0 ] && return 0
+    net_down "$log" || return $rc
+    rec setup_error "$(net_why "$log") (in three tries; ${log##*/})"
+    step "the probe's own error: nothing above or below is a verdict on this kernel"
+    cat "$R"
+    exit 2
+}
 # Every command that touches the device or the pool runs under a limit:
 # a ublk device whose server is gone blocks its callers.
 lim() { local s=$1; shift; timeout -k 5 "$s" "$@"; }
@@ -113,8 +131,8 @@ if [ -e /dev/ublk-control ]; then
 elif modprobe ublk_drv 2>"$OUT/modprobe-ublk.log"; then
     how="modprobe ublk_drv"
 else
-    apt-get update >/dev/null 2>&1
-    apt-get install -y --no-install-recommends "linux-modules-extra-$KREL" > "$OUT/modules-extra.log" 2>&1
+    net "$OUT/modules-extra.log" apt-get update
+    net "$OUT/modules-extra.log" apt-get install -y --no-install-recommends "linux-modules-extra-$KREL"
     if modprobe ublk_drv 2>>"$OUT/modprobe-ublk.log"; then
         how="modprobe ublk_drv, after installing linux-modules-extra-$KREL"
     fi
@@ -128,8 +146,8 @@ rec ublk_module_file "$(modinfo -n ublk_drv 2>&1 | sed "s|/lib/modules/$KREL/||"
 rec ublk_params "$(grep -H . /sys/module/ublk_drv/parameters/* 2>/dev/null | sed 's|.*/||' | tr '\n' ' ')"
 
 step "feature mask from the kernel"
-apt-get update >/dev/null 2>&1
-apt-get install -y --no-install-recommends build-essential liburing-dev linux-libc-dev > "$OUT/apt-build.log" 2>&1
+net "$OUT/apt-build.log" apt-get update
+net "$OUT/apt-build.log" apt-get install -y --no-install-recommends build-essential liburing-dev linux-libc-dev
 rec liburing "$(dpkg-query -W -f '${Version}' liburing-dev 2>/dev/null)"
 cp /usr/include/linux/ublk_cmd.h "$OUT/ublk_cmd.distro.h" 2>/dev/null
 FEATURES=""
@@ -142,7 +160,7 @@ fi
 
 # --------------------------------------------------------------- 2. ZFS
 step "ZFS from packages"
-if apt-get install -y --no-install-recommends zfsutils-linux > "$OUT/apt-zfs.log" 2>&1; then
+if net "$OUT/apt-zfs.log" apt-get install -y --no-install-recommends zfsutils-linux; then
     rec zfs_userland "$(dpkg-query -W -f '${Version}' zfsutils-linux)"
 else
     rec zfs_userland "INSTALL FAILED: $(tail -n 1 "$OUT/apt-zfs.log")"
@@ -152,7 +170,7 @@ if modprobe zfs 2>"$OUT/modprobe-zfs.log"; then
     rec zfs_module "loads, prebuilt for $KREL: $(cat /sys/module/zfs/version 2>/dev/null)"
 else
     # No module for this kernel flavour in the distribution: DKMS.
-    apt-get install -y --no-install-recommends "linux-headers-$KREL" zfs-dkms > "$OUT/apt-zfs-dkms.log" 2>&1
+    net "$OUT/apt-zfs-dkms.log" apt-get install -y --no-install-recommends "linux-headers-$KREL" zfs-dkms
     if modprobe zfs 2>>"$OUT/modprobe-zfs.log"; then
         rec zfs_module "loads only after a zfs-dkms build: $(cat /sys/module/zfs/version 2>/dev/null)"
     else
@@ -172,7 +190,9 @@ step "a ublk server"
 pkgs=$(apt-cache search --names-only 'ublk|ubdsrv' 2>/dev/null | tr '\n' ';')
 rec ublk_packages "${pkgs:-none}"
 SRV=""
-if "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver" 2> "$OUT/ublksrv-build.log"; then
+# shellcheck disable=SC2317,SC2329  # run through net
+build_server() { "$HERE/build-ublksrv.sh" "${UBLKSRV_REF:-6d0d922614ec18e6f2b5d476af8d540a1d9c1de8}" > "$OUT/ublksrv.ver"; }
+if net "$OUT/ublksrv-build.log" build_server; then
     SRV=$(tail -n 1 "$OUT/ublksrv.ver")
     rec ublk_server "built from source: $SRV"
 else
@@ -357,7 +377,7 @@ PY
             rec zinject_from "$(dpkg -S "$(command -v zinject)" 2>/dev/null | cut -d: -f1)"
         else
             # Not in zfsutils-linux on every release; the test package has it.
-            apt-get install -y --no-install-recommends zfs-test > "$OUT/apt-zfs-test.log" 2>&1
+            net "$OUT/apt-zfs-test.log" apt-get install -y --no-install-recommends zfs-test
             hash -r
             ZINJECT=$(command -v zinject || find /usr/sbin /usr/libexec /usr/lib/zfs-linux /usr/share/zfs -name zinject -type f 2>/dev/null | head -n 1)
             if [ -n "$ZINJECT" ]; then

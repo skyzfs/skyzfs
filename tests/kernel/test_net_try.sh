@@ -28,6 +28,8 @@ case $(net_why "$T/git.log") in "could not resolve"*) v=named ;; *) v=other ;; e
 is "for a clone as well" "$v" named
 printf 'Reading package lists...\nE: Unable to locate package nosuch\n' > "$T/other.log"
 is "another failure is given as it is" "$(net_why "$T/other.log")" "E: Unable to locate package nosuch"
+net_down "$T/apt.log" "$T/other.log"; is "net_down: a log with an unresolved name" "$?" 0
+net_down "$T/other.log" "$T/nosuch.log"; is "net_down: not for another failure or a missing log" "$?" 1
 : > "$T/empty.log"
 is "a log with no reason says so" "$(net_why "$T/empty.log")" "no reason found in empty.log"
 
