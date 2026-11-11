@@ -515,7 +515,7 @@ kill_test() {
                 sleep 10
             done
             dmesg_since "$mark" > "$OUT/$name-wait-dmesg.log" 2>/dev/null || echo "the marker was not found in the kernel log" >> "$OUT/$name-wait-dmesg.log"
-            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(grep -ciE 'I/O error|timeout|timed out|abort|blocked for more than' "$OUT/$name-wait-dmesg.log") with an I/O error, a timeout, an abort or a hung task; pool $(pool_state "$pool") at the end of the wait"
+            KT_WAITED="no server for $(( ($(now_ms) - t0) / 1000 )) s after the first kill; the device's state every 10 s: $(echo "$states" | tr ' ' '\n' | grep . | sort | uniq -c | tr -s ' \n' ' '); the writer finished $(( $(wc -l < "$WORK/$name.record") - i )) files in that time (an fsync is served by the log device, so it runs until the pool's dirty data is full); kernel log: $(wc -l < "$OUT/$name-wait-dmesg.log") lines, $(grep -ciE 'I/O error|timed out|abort' "$OUT/$name-wait-dmesg.log") with an I/O error, a request timed out or an abort, and hung-task warnings for: $(sed -n 's/.*INFO: task \([^:]*\):[0-9]* blocked for more than.*/\1/p' "$OUT/$name-wait-dmesg.log" | sort | uniq -c | tr -s ' \n' ' '); pool $(pool_state "$pool") at the end of the wait"
         fi
         st=$(ublk_state "$BDEV")
         t0=$(now_ms)
