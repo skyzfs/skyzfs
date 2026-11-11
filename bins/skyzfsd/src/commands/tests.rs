@@ -420,3 +420,202 @@ fn detach_leaves_the_failure_note_and_create_warns_of_one_of_this_boot() {
     let warning = create_warning(&dir, &run_dir, &BOOT).expect("a warning");
     assert!(warning.contains("not served before a reboot"));
 }
+
+fn creating(dir: &Path, run_dir: &Path, size: u64, base_pattern: Option<u64>) -> Create {
+    Create {
+        dir: dir.into(),
+        size,
+        run_dir: run_dir.into(),
+        base_pattern,
+    }
+}
+
+/// `create` makes a volume of the size asked for that the store opens,
+/// says its size, its id and its identity in one line, and fixes the
+/// alignment, the segment size and the write unit.
+#[test]
+fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    std::fs::create_dir(&dir).expect("the volume's directory");
+    let id = *b"0123456789abcdef";
+
+    let output = create(&creating(&dir, &run_dir, 8 << 20, None), id, Some(BOOT));
+    assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
+
+    let (store, _) = Store::open(
+        FsDir::new(&dir).expect("the directory"),
+        OpenOptions::default(),
+    )
+    .expect("the store opens what create made");
+    let identity = store.identity();
+    assert_eq!(
+        skyzfs_blk::BlockTarget::geometry(&store).size_bytes(),
+        8 << 20
+    );
+    drop(store);
+    assert_eq!(
+        output.out,
+        format!(
+            "created {}: 8388608 bytes, volume 30313233343536373839616263646566, identity {}\n",
+            dir.display(),
+            hex(&identity)
+        )
+    );
+    // Nothing of the run directory was made.
+    assert!(!run_dir.exists());
+    // An empty base: the home image is a hole.
+    let home = std::fs::read(dir.join(skyzfs_local::store::HOME_NAME)).expect("the home image");
+    assert_eq!(home.len(), 8 << 20);
+    assert!(home.iter().all(|b| *b == 0));
+    // The segment size is the constant.
+    assert_eq!((SEGMENT_SIZE, ALIGN), (64 << 20, 4096));
+
+    // And status and detach take it for a volume.
+    let volume = Volume {
+        dir: dir.clone(),
+        run_dir: run_dir.clone(),
+    };
+    let mut kernel = Kernel::default();
+    let now = Now {
+        boot: BOOT,
+        uptime_ms: 1,
+    };
+    assert_eq!(status(&volume, &mut kernel, &now).exit, Exit::Done);
+}
+
+/// `create` makes no directory and replaces no volume: both are an
+/// error, status 1, and nothing changes.
+#[test]
+fn create_refuses_a_missing_directory_and_a_directory_that_holds_a_volume() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+
+    let output = create(
+        &creating(&dir, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!((output.exit, output.out.as_str()), (Exit::Error, ""));
+    assert!(
+        output.err.contains("create makes no directory"),
+        "{}",
+        output.err
+    );
+    assert!(!dir.exists());
+
+    // A file is no directory either.
+    std::fs::write(&dir, b"a file").expect("write");
+    let output = create(
+        &creating(&dir, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert_eq!(std::fs::read(&dir).expect("read"), b"a file");
+    std::fs::remove_file(&dir).expect("remove");
+
+    std::fs::create_dir(&dir).expect("the volume's directory");
+    let first = create(
+        &creating(&dir, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(first.exit, Exit::Done);
+    let before = Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default())
+        .expect("open")
+        .0
+        .identity();
+    let again = create(
+        &creating(&dir, &run_dir, 2 << 20, None),
+        [2; 16],
+        Some(BOOT),
+    );
+    assert_eq!((again.exit, again.out.as_str()), (Exit::Error, ""));
+    assert!(
+        again.err.contains("holds a volume already"),
+        "{}",
+        again.err
+    );
+    let (store, _) =
+        Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).expect("open");
+    assert_eq!(store.identity(), before);
+    assert_eq!(
+        skyzfs_blk::BlockTarget::geometry(&store).size_bytes(),
+        1 << 20
+    );
+}
+
+/// The test build's base: every block of the new volume is the
+/// pattern's.
+#[test]
+fn create_with_a_base_pattern_makes_a_volume_that_holds_the_pattern() {
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    std::fs::create_dir(&dir).expect("the volume's directory");
+    let output = create(
+        &creating(&dir, &run_dir, 1 << 20, Some(47806)),
+        [3; 16],
+        None,
+    );
+    assert_eq!(output.exit, Exit::Done);
+    let home = std::fs::read(dir.join(skyzfs_local::store::HOME_NAME)).expect("the home image");
+    assert_eq!(home.len(), 1 << 20);
+    let mut want = vec![0u8; 4096];
+    for (block, got) in home.chunks(4096).enumerate() {
+        Base::Pattern(47806).fill_block(block as u64, &mut want);
+        assert_eq!(got, &want[..], "block {block}");
+    }
+}
+
+/// A failure note of this boot under the run directory: `create` makes
+/// the volume, warns on standard error, and leaves the note. Without
+/// the boot id it cannot tell and says nothing.
+#[test]
+fn create_warns_of_a_failure_note_of_this_boot_and_leaves_it() {
+    let setup = Setup::new();
+    let (run_dir, old) = (setup.volume.run_dir.clone(), setup.volume.dir.clone());
+    setup
+        .records()
+        .write_failure(&Failure {
+            held: Held::No,
+            reason: Reason::LogFailed,
+            identity: [0; 16],
+        })
+        .expect("the failure note");
+    let note = std::fs::read(setup.records().failure_path()).expect("the note");
+
+    // The volume is made again in the same directory.
+    for entry in std::fs::read_dir(&old).expect("list") {
+        std::fs::remove_file(entry.expect("entry").path()).expect("remove");
+    }
+    let output = create(
+        &creating(&old, &run_dir, 1 << 20, None),
+        [4; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Done);
+    assert!(output.out.starts_with("created "), "{}", output.out);
+    assert!(
+        output.err.starts_with("skyzfsd: warning: "),
+        "{}",
+        output.err
+    );
+    assert!(
+        output.err.contains("--acknowledge-failure"),
+        "{}",
+        output.err
+    );
+    assert_eq!(
+        std::fs::read(setup.records().failure_path()).expect("the note"),
+        note
+    );
+
+    for (boot, entry) in [(None, 5u8), (Some([8; 16]), 6)] {
+        for entry in std::fs::read_dir(&old).expect("list") {
+            std::fs::remove_file(entry.expect("entry").path()).expect("remove");
+        }
+        let output = create(&creating(&old, &run_dir, 1 << 20, None), [entry; 16], boot);
+        assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
+    }
+}

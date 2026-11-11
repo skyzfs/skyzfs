@@ -44,6 +44,17 @@ fn run(command: &Command) -> Output {
                 Err(e) => failed(format!("reading the boot id: {e}")),
             }
         }
+        Command::Create(create) => {
+            let mut id = [0u8; 16];
+            let random = std::fs::File::open("/dev/urandom")
+                .and_then(|mut source| std::io::Read::read_exact(&mut source, &mut id));
+            if let Err(e) = random {
+                return failed(format!("reading /dev/urandom for the volume's id: {e}"));
+            }
+            // Without the boot id there is no warning of a failure
+            // note; the volume is made all the same.
+            commands::create(create, id, Now::read().ok().map(|now| now.boot))
+        }
         // The other commands are built on the transport, which is not
         // here yet.
         other => failed(format!("{} is not built yet", other.name())),

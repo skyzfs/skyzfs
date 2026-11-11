@@ -50,10 +50,17 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     let want = Command::Create(Create {
         dir: "/v/a".into(),
         size: 64 << 20,
+        run_dir: DEFAULT_RUN_DIR.into(),
         base_pattern: None,
     });
     assert_eq!(plain("create --dir /v/a --size 67108864"), Ok(want.clone()));
     assert_eq!(plain("create --size=67108864 --dir=/v/a"), Ok(want));
+    // The run directory is looked at for a failure note.
+    let elsewhere = plain("create --dir /v/a --size 1048576 --run-dir /r");
+    assert!(matches!(
+        elsewhere,
+        Ok(Command::Create(Create { ref run_dir, .. })) if run_dir.as_os_str() == "/r"
+    ));
     assert_eq!(
         plain("create --size 1048576"),
         Err(UsageError::Missing("--dir"))

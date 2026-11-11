@@ -1,7 +1,7 @@
 //! The command line of `skyzfsd`, and its exit statuses.
 //!
 //! ```text
-//! skyzfsd create --dir DIR --size BYTES
+//! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
 //!                [--queues 1] [--depth N]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
@@ -59,7 +59,7 @@ const MIB: u64 = 1 << 20;
 
 /// What is printed with a usage error.
 pub const USAGE: &str = "usage:
-  skyzfsd create --dir DIR --size BYTES
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
@@ -70,8 +70,12 @@ pub const USAGE: &str = "usage:
 /// before using a command.
 pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
 
-  skyzfsd create --dir DIR --size BYTES
-      Make a new, empty volume in DIR. BYTES is a multiple of 1 MiB.
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+      Make a new, empty volume in DIR, which must exist and hold no
+      volume. BYTES is a multiple of 1 MiB. One line is printed: the
+      size, the volume's id and the store's identity.
+      If a volume in DIR failed in this boot, create warns: the note
+      of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
       Serve the volume until SIGTERM. When the device serves, one line
@@ -170,6 +174,9 @@ pub struct Create {
     pub dir: PathBuf,
     /// The size in bytes: a multiple of 1 MiB, not zero.
     pub size: u64,
+    /// The daemon's run directory: looked at for a failure note, and
+    /// not written.
+    pub run_dir: PathBuf,
     /// Test hook: a base that is not zeros, from this seed.
     pub base_pattern: Option<u64>,
 }
@@ -288,6 +295,7 @@ const fn opt(name: &'static str, value: bool, hook: bool) -> Opt {
 const CREATE: &[Opt] = &[
     opt("--dir", true, false),
     opt("--size", true, false),
+    opt("--run-dir", true, false),
     opt("--base-pattern", true, true),
 ];
 
@@ -405,12 +413,16 @@ fn hold(text: &str) -> Result<Hold, UsageError> {
     Ok(Hold { seconds, what })
 }
 
+fn run_dir(given: &Given) -> PathBuf {
+    given
+        .get("--run-dir")
+        .map_or_else(|| PathBuf::from(DEFAULT_RUN_DIR), PathBuf::from)
+}
+
 fn volume(given: &Given) -> Result<Volume, UsageError> {
     Ok(Volume {
         dir: given.path("--dir")?,
-        run_dir: given
-            .get("--run-dir")
-            .map_or_else(|| PathBuf::from(DEFAULT_RUN_DIR), PathBuf::from),
+        run_dir: run_dir(given),
     })
 }
 
@@ -437,6 +449,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             Ok(Command::Create(Create {
                 dir,
                 size,
+                run_dir: run_dir(&given),
                 base_pattern: given.number("--base-pattern")?,
             }))
         }
