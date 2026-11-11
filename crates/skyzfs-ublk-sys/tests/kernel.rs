@@ -583,7 +583,15 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
         if longest != MIB as u64 {
             return Err(format!("the longest write handed over was {longest} bytes"));
         }
-        if copies == 0 || copies > u64::from(DEPTH) {
+        // No floor in this life: its writes go one at a time, so they
+        // can all land on tags whose first request was a read of
+        // something else (udev reads a device that appears), and then
+        // no write of this life is a tag's first request (seen once:
+        // run 43080463343, Ubuntu 24.04, 0 copies). `end` has compared
+        // the count with the tags the server saw begin with a write.
+        // The life after the take-over sends `depth` writes together
+        // and must have first writes: the floor is there.
+        if copies > u64::from(DEPTH) {
             return Err(format!("{copies} first-write copies in the first life"));
         }
         until(&mut kernel, n, "waiting", |i| {
