@@ -273,6 +273,9 @@ cleanup() {
     command -v ublk >/dev/null && lim 60 ublk del -a --async 2>/dev/null
     for p in "${SLOGS[@]}"; do losetup -d "$p" 2>/dev/null; done
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
+    # The limit on reports of blocked tasks is the machine's: put back
+    # what the rig found, however the run ends.
+    [ -z "${HUNG_WARNINGS_WAS:-}" ] || echo "$HUNG_WARNINGS_WAS" > /proc/sys/kernel/hung_task_warnings 2>/dev/null
     chmod -R a+rX "$OUT"
 }
 trap cleanup EXIT
@@ -285,7 +288,8 @@ rec kernel "$(uname -r)"
 # default) and then says nothing more: with the limit spent, a log
 # without such reports means nothing. The rig lifts the limit and
 # writes down what it found.
-rec hung_task_warnings_start "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
+HUNG_WARNINGS_WAS=$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null)
+rec hung_task_warnings_start "${HUNG_WARNINGS_WAS:-unreadable} (timeout $(cat /proc/sys/kernel/hung_task_timeout_secs 2>/dev/null || echo unreadable) s); set to $(echo -1 > /proc/sys/kernel/hung_task_warnings 2>/dev/null; cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable) for the run"
 # shellcheck disable=SC1091
 rec os "$(. /etc/os-release && echo "$PRETTY_NAME")"
 SETUP_OK=1
@@ -321,26 +325,34 @@ rec setup ok
 # name impl seconds [serve arguments] -> OV_ROUNDS OV_TORN OV_SAID, 1 if it did not run.
 overlap_test() {
     local name=$1 impl=$2 secs=$3 dir=$WORK/vol-$1 rc; shift 3
-    OV_ROUNDS=0; OV_TORN=0; OV_SAID=""
+    OV_ROUNDS=0; OV_TORN=0; OV_TOGETHER=0; OV_SAID=""
     if ! vol_up "$impl" "$dir" "$@"; then OV_SAID="not created or served (serve rc ${SERVE_RC:-none})"; return 1; fi
     lim $((secs + 60)) python3 -I "$HERE/overlap-tear.py" "$BDEV" "$secs" > "$OUT/$name-overlap.out" 2> "$OUT/$name-overlap.err"; rc=$?
     OV_SAID=$(tail -n 1 "$OUT/$name-overlap.out")
-    read -r _ OV_ROUNDS _ OV_TORN _ <<< "$OV_SAID"
+    read -r _ OV_ROUNDS _ OV_TORN _ OV_TOGETHER _ <<< "$OV_SAID"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$impl" "$dir"
-    [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]]
+    [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]] && [[ ${OV_TOGETHER:-} =~ ^[0-9]+$ ]]
 }
+# rounds together: whether the load was what it claims. The tool counts
+# the rounds in which both calls began before either ended; a round
+# without that had no two writes in flight and shows nothing on any
+# server. Fewer than half of the rounds, or fewer than 200, is the
+# rig's error. (Measured: see the pull request of this rule.)
+overlap_enough() { [ "$1" -ge 200 ] && [ $(($2 * 2)) -ge "$1" ] && [ "$2" -ge 200 ]; }
 check_a_overlap() {
-    local rounds torn said ms=${RIG_COMMIT_DELAY_MS:-20}
+    local rounds torn together said ms=${RIG_COMMIT_DELAY_MS:-20}
     step "a: overlapping writes in flight apply whole"
     if overlap_test ao "$SKYZFSD" 30; then
-        rounds=$OV_ROUNDS; torn=$OV_TORN; said="plain: $OV_SAID"
-        if overlap_test aod "$SKYZFSD" 30 --commit-delay-ms "$ms"; then
-            rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN)); said+="; acknowledged $ms ms after the apply: $OV_SAID"
-            if [ "$rounds" -lt 200 ]; then
-                pin overlapping_writes_apply_whole ERROR "only $rounds rounds in 60 s: $said"
+        rounds=$OV_ROUNDS; torn=$OV_TORN; together=$OV_TOGETHER; said="plain: $OV_SAID"
+        if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+            pin overlapping_writes_apply_whole ERROR "the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $said"
+        elif overlap_test aod "$SKYZFSD" 30 --commit-delay-ms "$ms"; then
+            rounds=$((rounds + OV_ROUNDS)); torn=$((torn + OV_TORN)); together=$((together + OV_TOGETHER)); said+="; acknowledged $ms ms after the apply: $OV_SAID"
+            if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+                pin overlapping_writes_apply_whole ERROR "with the delay the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $said"
             else
-                pin_is overlapping_writes_apply_whole "$torn of $rounds rounds torn, two writers of 16 blocks at one range at one moment, 30 s each; $said" [ "$torn" = 0 ]
+                pin_is overlapping_writes_apply_whole "$torn of $rounds rounds torn, the two writes in flight together in $together of them; two writers of 16 blocks at one range, 30 s each; $said" [ "$torn" = 0 ]
             fi
         else
             pin overlapping_writes_apply_whole ERROR "with the delay: ${OV_SAID:-no output} $(tail -n 1 "$OUT/aod-overlap.err" 2>/dev/null)"
@@ -353,7 +365,9 @@ check_a_overlap() {
     # every run that the pin above can fail.
     step "a, control: a server that tears overlapping writes"
     if SKZ_REF_TEAR=1 overlap_test ao1 "$REF" 20; then
-        if [ "$OV_TORN" -gt 0 ]; then
+        if ! overlap_enough "$OV_ROUNDS" "$OV_TOGETHER"; then
+            ctl torn_overlapping_writes ERROR "the two writes were in flight together in only $OV_TOGETHER of $OV_ROUNDS rounds (at least half and at least 200 are needed): $OV_SAID"
+        elif [ "$OV_TORN" -gt 0 ]; then
             ctl torn_overlapping_writes FAIL "$OV_TORN of $OV_ROUNDS rounds torn; $OV_SAID"
         else
             ctl torn_overlapping_writes PASS "no round of $OV_ROUNDS torn; $OV_SAID"
@@ -687,12 +701,21 @@ check_b_delay() {
     KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
     SKZ_REF_COMMIT_DELAY_BEFORE=1 kill_test "$REF" bd0 5
     KT_SERVE_EXTRA=()
-    if [ -n "$KT_ERR" ]; then
-        ctl delay_before_apply ERROR "$KT_ERR"
+    # The control's FAIL is "the kills found nothing". It means that
+    # only if the kills happened, all of them, with writes in flight,
+    # as the pin's verdict requires, and left the pool whole: this
+    # server is slow and not wrong. Anything else is the rig's error.
+    kill_verdict
+    if [ "$KT_VERDICT" = ERROR ]; then
+        ctl delay_before_apply ERROR "$KT_WHY"
+    elif [ "$KT_DONE" != 5 ]; then
+        ctl delay_before_apply ERROR "only $KT_DONE of 5 kills were done"
+    elif [ "$KT_VERDICT" != PASS ]; then
+        ctl delay_before_apply ERROR "the pool did not come through the kills of a server that only delays: $KT_WHY"
     elif [ "$KT_RECOVERED_UNSAID" != 0 ]; then
         ctl delay_before_apply ERROR "$KT_RECOVERED_UNSAID of $KT_DONE take-overs did not say what they found"
     elif [ "$KT_RECOVERED" = 0 ]; then
-        ctl delay_before_apply FAIL "the servers found 0 requests applied and not acknowledged over $KT_DONE take-overs, with writes in flight just before $KT_INFLIGHT of the kills"
+        ctl delay_before_apply FAIL "the servers found 0 requests applied and not acknowledged over $KT_DONE take-overs, with writes in flight just before $KT_INFLIGHT of the $KT_DONE kills"
     else
         ctl delay_before_apply PASS "the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs although the delay came before the apply"
     fi
@@ -805,7 +828,12 @@ check_b() {
     step "b, observation: a killed server's device waits ${RIG_WAIT_S:-300} s for the next"
     KT_WAIT_S=${RIG_WAIT_S:-300} kill_test "$SKYZFSD" bw 1
     kill_verdict
-    if [ -z "$KT_WAITED" ]; then
+    if [ "${RIG_WAIT_S:-300}" -lt 100 ]; then
+        # The pin wants ten looks, ten seconds apart: a shorter wait
+        # was asked for and cannot give them. Not a verdict.
+        obs b_device_waits_for_a_server "${KT_WAITED:-not run: ${KT_ERR:-the kill test did not reach the wait}}"
+        pin device_waits_for_a_server ERROR "RIG_WAIT_S is ${RIG_WAIT_S} s; the pin needs at least 100 s (ten looks)"
+    elif [ -z "$KT_WAITED" ]; then
         obs b_device_waits_for_a_server "not run: ${KT_ERR:-the kill test did not reach the wait}"
         pin device_waits_for_a_server ERROR "${KT_ERR:-the kill test did not reach the wait}"
     else
@@ -1327,7 +1355,8 @@ elif [ "${n_entries:-0}" = 0 ]; then
 else
     pin no_ublksrvd_entry_from_daemon FAIL "$n_entries entries newer than the daemon's serve, over $n_serves serves: $(grep '^entry ' "$UBLKSRVD_SEEN" | head -n 5 | cut -d' ' -f2- | tr '\n' ' ')"
 fi
-rec hung_task_warnings_end "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable)"
+# The limit itself is put back by cleanup, at the exit.
+rec hung_task_warnings_end "$(cat /proc/sys/kernel/hung_task_warnings 2>/dev/null || echo unreadable); set back to ${HUNG_WARNINGS_WAS:-nothing, it was unreadable} at the exit"
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')($(find /run/ublksrvd -mindepth 1 2>/dev/null | wc -l) entries at the end of the run)"
 for f in "$WORK"/*.serve.log; do [ -s "$f" ] && cp "$f" "$OUT/"; done
 cat "$R"

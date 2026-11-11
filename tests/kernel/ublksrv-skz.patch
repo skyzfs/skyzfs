@@ -1,8 +1,8 @@
 diff --git a/targets/ublk.loop.cpp b/targets/ublk.loop.cpp
-index 2208ec7..1ecac24 100644
+index 2208ec7..6146ca9 100644
 --- a/targets/ublk.loop.cpp
 +++ b/targets/ublk.loop.cpp
-@@ -6,8 +6,215 @@
+@@ -6,8 +6,220 @@
  #include <sys/epoll.h>
  #include <linux/falloc.h>
  
@@ -40,7 +40,12 @@ index 2208ec7..1ecac24 100644
 + *                         way may be applied and is not counted
 + *   SKZ_COMMIT_DELAY_BEFORE=1  the same wait, before the request is
 + *                         applied: nothing is ever applied and not
-+ *                         acknowledged for longer than the write takes
++ *                         acknowledged for longer than the write takes.
++ *                         SKZ_UNACKED counts in the same place as
++ *                         without this switch, from the completion of
++ *                         the write to the file to the acknowledgement,
++ *                         so that a zero found after a kill comes from
++ *                         the timing and not from not counting
 + *
 + * Always: a write, write-zeroes or discard that overlaps one that is
 + * still being applied waits until that one is applied. Upstream issues
@@ -218,7 +223,7 @@ index 2208ec7..1ecac24 100644
  struct loop_tgt_data {
  	bool user_copy;
  	bool auto_zc;
-@@ -54,6 +261,8 @@ static int loop_setup_tgt(struct ublksrv_dev *dev, int type)
+@@ -54,6 +266,8 @@ static int loop_setup_tgt(struct ublksrv_dev *dev, int type)
  	struct loop_tgt_data *tgt_data = (struct loop_tgt_data*)dev->tgt.tgt_data;
  	struct stat sb;
  
@@ -227,7 +232,7 @@ index 2208ec7..1ecac24 100644
  	ret = ublk_json_read_target_str_info(cdev, "backing_file", file);
  	if (ret < 0) {
  		ublk_err( "%s: backing file can't be retrieved from jbuf %d\n",
-@@ -147,7 +356,8 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
+@@ -147,7 +361,8 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
  		.types = UBLK_PARAM_TYPE_BASIC | UBLK_PARAM_TYPE_DISCARD |
  			UBLK_PARAM_TYPE_DMA_ALIGN,
  		.basic = {
@@ -237,7 +242,7 @@ index 2208ec7..1ecac24 100644
  			.logical_bs_shift	= 9,
  			.physical_bs_shift	= 12,
  			.io_opt_shift	= 12,
-@@ -157,6 +367,9 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
+@@ -157,6 +372,9 @@ static int loop_init_tgt(struct ublksrv_dev *dev, int type, int argc, char
  
  		.discard = {
  			.max_discard_sectors	= UINT_MAX >> 9,
@@ -247,7 +252,7 @@ index 2208ec7..1ecac24 100644
  			.max_discard_segments	= 1,
  		},
  		.dma = {
-@@ -513,8 +726,63 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -513,8 +731,63 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
  		const struct ublk_io_data *data, int tag)
  {
  	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
@@ -311,26 +316,36 @@ index 2208ec7..1ecac24 100644
   again:
  	ret = loop_queue_tgt_io(q, data, tag);
  	if (ret > 0) {
-@@ -529,10 +797,29 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -529,10 +802,38 @@ static co_io_job __loop_handle_io_async(const struct ublksrv_queue *q,
  		}
  		if (io_res == -EAGAIN)
  			goto again;
+-		ublksrv_complete_io(q, tag, io_res);
 +		if (tag < SKZ_MAX_TAGS)
 +			skz_applying[tag].busy = false;
-+		if (skz_delay && !skz_delay_before && io_res >= 0 &&
++		if (skz_delay && io_res >= 0 &&
 +				skz_mutates(ublksrv_get_op(data->iod))) {
-+			struct io_uring_sqe *sqe[1];
-+
-+			/* skz: applied; acknowledged only after the delay */
++			/*
++			 * skz: applied and not yet acknowledged, counted
++			 * wherever the delay is taken. With the delay
++			 * before the apply nothing waits here, and the
++			 * count is above zero only for these few lines.
++			 */
 +			skz[SKZ_UNACKED]++;
-+			ublk_queue_alloc_sqes(q, sqe, 1);
-+			io_uring_prep_timeout(sqe[0], &skz_delay_ts, 0, 0);
-+			sqe[0]->user_data = build_user_data(tag,
-+					ublksrv_get_op(data->iod), 0, 1);
-+			co_await__suspend_always(tag);
++			if (!skz_delay_before) {
++				struct io_uring_sqe *sqe[1];
++
++				ublk_queue_alloc_sqes(q, sqe, 1);
++				io_uring_prep_timeout(sqe[0], &skz_delay_ts, 0, 0);
++				sqe[0]->user_data = build_user_data(tag,
++						ublksrv_get_op(data->iod), 0, 1);
++				co_await__suspend_always(tag);
++			}
++			ublksrv_complete_io(q, tag, io_res);
 +			skz[SKZ_UNACKED]--;
++		} else {
++			ublksrv_complete_io(q, tag, io_res);
 +		}
- 		ublksrv_complete_io(q, tag, io_res);
  	} else if (ret < 0) {
 +		if (tag < SKZ_MAX_TAGS)
 +			skz_applying[tag].busy = false;
@@ -341,7 +356,7 @@ index 2208ec7..1ecac24 100644
  		ublk_err( "no sqe %d\n", tag);
  	}
  }
-@@ -543,6 +830,16 @@ static int loop_handle_io_async(const struct ublksrv_queue *q,
+@@ -543,6 +844,16 @@ static int loop_handle_io_async(const struct ublksrv_queue *q,
  	struct ublk_io_tgt *io = __ublk_get_io_tgt_data(data);
  	const struct loop_tgt_data *tgt_data = (struct loop_tgt_data*) q->dev->tgt.tgt_data;
  

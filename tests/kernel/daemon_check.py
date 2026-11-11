@@ -43,8 +43,10 @@ EXPECTED = {
 
     'pin_overlapping_writes_apply_whole': ('a', 'PASS', SERVER,
                                            'two writes at one range in flight together apply whole: after both, '
-                                           'every block of the range is from one of them, in every round of a '
-                                           'minute of rounds, with and without the commit delay (§4.1)'),
+                                           'the range is exactly what one of them wrote, in every round of a '
+                                           'minute of rounds, with and without the commit delay (§4.1). A run '
+                                           'in which the two calls overlapped in time in fewer than half of the '
+                                           'rounds is a rig error'),
 
     'ctl_torn_overlapping_writes': ('a', 'FAIL', KERNEL,
                                     'control: a server that applies only the first half of a write that follows '
@@ -93,7 +95,9 @@ EXPECTED = {
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
                                           'the daemon causes no file under /run/ublksrvd, the reference server\'s '
                                           'directory: after each of its serves there is no entry for the device\'s '
-                                          'number newer than that serve (§4.2, Library)', 'WAITING'),
+                                          'number newer than that serve, under the reference server\'s names '
+                                          '(N.pid, ublk_N.json) or libublk\'s (the number padded, 0000.json) '
+                                          '(§4.2, Library)', 'WAITING'),
     'ctl_kill_without_reissue': ('b', 'FAIL', KERNEL,
                                  'control: recovery that fails the requests in flight must show in the same check'),
     'pin_kill_under_load_applied_unacknowledged': ('b', 'PASS', SERVER,
@@ -104,13 +108,16 @@ EXPECTED = {
                                                    'more than 0 over the run, or the run is a rig error'),
     'pin_device_waits_for_a_server': ('b', 'PASS', KERNEL,
                                       'a killed server\'s device with no server for 300 s under a pool: it reads '
-                                      'as waiting at every look, the kernel log has no I/O error, request timed '
-                                      'out or abort, and the take-over afterwards is as clean as after any kill '
+                                      'as waiting at every look, the kernel log of that time has no request of '
+                                      'the device ended in an error of any status, no I/O error, request timed '
+                                      'out or abort (no kernel log of that time is a rig error), and the '
+                                      'take-over afterwards is as clean as after any kill '
                                       '(§4.2, the states of a device: waiting, no server comes)'),
     'ctl_delay_before_apply': ('b', 'FAIL', SERVER,
                                'control: with the same delay taken before the write is applied, the servers that '
-                               'take over find nothing applied and unacknowledged: the count above is not one '
-                               'that is always positive'),
+                               'take over find nothing applied and unacknowledged, over five kills that all '
+                               'happened with writes in flight and left the pool whole: the count above, '
+                               'made in the same place in both servers, is not one that is always positive'),
 
     'pin_suspends_on_io_errors': ('d', 'PASS', KERNEL,
                                   'every request fails with a plain I/O error: the pool suspends under '

@@ -15,10 +15,17 @@ klog_mark() { local m; m="skz-rig-mark-$$-$(date +%s%N)"; echo "$m" > /dev/kmsg;
 klog_since() { [ -n "$1" ] || return 3; dmesg 2>/dev/null | awk -v m="$1" 'found { print } index($0, m) { found = 1 } END { exit found ? 0 : 3 }'; }
 
 # What the kernel log says went wrong with a device, in a file cut from
-# it: I/O errors, requests timed out, aborts. Not the bare word
-# "timeout": a hung-task report is full of it (hung_task_timeout_secs,
-# schedule_timeout in its stack) and says only that a task waited.
-klog_bad() { grep -vE '^\[[^]]*\] +(\? )?[A-Za-z0-9_.]+\+0x|hung_task_timeout_secs' "$1" 2>/dev/null | grep -ciE 'I/O error|timed out|abort'; }
+# it: a request that ended in an error, requests timed out, aborts.
+# The block layer reports a failed request as "<status> error, dev
+# ublkbN, sector ...", and the status is not only "I/O": "timeout",
+# "critical space allocation", "device offline", "duration limit
+# exceeded" and others. Every status is counted by "error, dev ublkb";
+# the words "I/O error" stay for reports from other layers (a buffer,
+# a filesystem). Not the bare word "timeout": a hung-task report is
+# full of it (hung_task_timeout_secs, schedule_timeout in its stack)
+# and says only that a task waited.
+KLOG_BAD='error, dev ublkb|I/O error|timed out|abort'
+klog_bad() { grep -vE '^\[[^]]*\] +(\? )?[A-Za-z0-9_.]+\+0x|hung_task_timeout_secs' "$1" 2>/dev/null | grep -ciE "$KLOG_BAD"; }
 # The tasks the kernel reported as blocked, "name:pid" each, counted.
 klog_hung() { sed -n 's/.*INFO: task \([^ ]*\) blocked for more than \([0-9]*\) seconds.*/\1/p' "$1" 2>/dev/null | sort | uniq -c | tr -s ' \n' ' '; }
 
