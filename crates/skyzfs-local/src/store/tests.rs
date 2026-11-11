@@ -2641,7 +2641,7 @@ const MARKS: Marks = Marks {
 
 /// What one request of 16 blocks adds to the log at most: its data, its
 /// header, and the padding to the next write unit and segment.
-const ONE_REQUEST: u64 = (64 << 10) + (2 * 16 << 10);
+const ONE_REQUEST: u64 = (64 << 10) + (32 << 10);
 
 /// Under a write load that lasts and never flushes, with the rule
 /// asked once after every request, the log's live size stays below
