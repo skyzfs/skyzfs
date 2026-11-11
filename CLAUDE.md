@@ -124,8 +124,11 @@ when it merges.
   daemon. The summary says for each line whether it rests on the kernel,
   on the server, or only shows that the check works. Exit 2 is an error
   of the rig and not a verdict on the server. Read the summary's table
-  and not the colour: a dispatched run whose `checks` names nothing the
-  rig knows is green having run nothing.
+  and not the colour. When check c fails, download the run's
+  `c-trace.tsv.gz` and run `skyzfs-blkcheck --replay c-trace.tsv VOLUME`:
+  it replays that volume's calls through the model with no kernel and
+  prints the same violation, or shows that the rig's bookkeeping and
+  not the server was at fault.
 - **Failed-volume observations.** `skyzfs-failed-volume.yml` runs by
   dispatch only. It records what a pool does when its device is deleted
   under it and judges nothing.

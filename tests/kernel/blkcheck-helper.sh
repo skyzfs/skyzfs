@@ -9,7 +9,8 @@
 #                                  SIGKILL itself and then calls kill.
 #   blkcheck-helper.sh kill N      SIGKILL to its server; when it is gone, print "dead R W"
 #                                  (the kernel's reads and writes in flight at the device);
-#                                  then serve again; prints the device on the last line.
+#                                  wait for the line "sorted" on stdin; then serve again;
+#                                  prints the device on the last line.
 #                                  After `fail` there is no server left: nothing is done
 #   blkcheck-helper.sh fail N      SIGUSR1 to its server: the log fails for good. Returns
 #                                  when serve has exited with status 3; the device is
@@ -114,8 +115,14 @@ kill)
     sleep 0.2
     read -r in_r in_w < "/sys/block/$(basename "$(cat "$DIR.device")")/inflight" 2>/dev/null || { in_r=""; in_w=""; }
     echo "dead $in_r $in_w"
+    # The next server starts only when the caller has sorted: it says
+    # so with a line on this script's stdin. A new server that started
+    # earlier would complete calls the caller then takes for the old
+    # server's.
+    reply=""
+    read -r -t 60 reply || die "the caller did not answer the 'dead' line within 60 s"
+    [ "$reply" = sorted ] || die "the caller answered '$reply' to the 'dead' line, not 'sorted'"
     echo "kill $N: sorted with the kernel counting ${in_r:-?} reads and ${in_w:-?} writes in flight" >> "$WORK/helper.log"
-    sleep 0.3
     DEV=$(serve) || exit 1
     ;;
 fail)

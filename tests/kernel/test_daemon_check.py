@@ -168,6 +168,45 @@ class Judge(unittest.TestCase):
         _, _, errors = dc.judge(r, ALL, impl='daemon')
         self.assertEqual(len(errors), 1)
 
+    def test_an_observation_not_run_is_a_rig_error_however_it_says_so(self):
+        name = next(iter(dc.OBSERVED))
+        for text in ('not run: no pool', 'Not run', 'the scenario was not run, the pool was gone'):
+            r = as_expected()
+            r[name] = text
+            self.assertEqual(len(dc.judge(r, ALL)[2]), 1, text)
+        r = as_expected()
+        r[name] = 'zed not running; the pool stayed suspended'
+        self.assertEqual(dc.judge(r, ALL)[1:], ([], []))
+
+    def test_a_run_on_the_daemon_with_check_d_has_every_observation(self):
+        # The observations of check d are made on the reference server
+        # whatever the server under test: none is "not run" on the
+        # daemon, and none is excused for saying so.
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        self.assertEqual(dc.judge(r, ALL, impl='daemon')[1:], ([], []))
+        r['obs_returned_device_with_older_content'] = 'not run: needs the flat image of the reference server'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon')
+        self.assertEqual((differs, len(errors)), ([], 1))
+
+    def test_the_rig_skips_no_observation_because_of_the_server(self):
+        # A line that writes "not run" under a condition on the server
+        # would make every run on the daemon a rig error.
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            bad = [line.strip() for line in f if 'not run' in line.lower() and 'IMPL' in line]
+        self.assertEqual(bad, [])
+
+    def test_a_result_of_a_check_that_was_not_asked_for_is_a_rig_error(self):
+        r = {k: v for k, v in as_expected().items() if dc.EXPECTED.get(k, dc.OBSERVED.get(k, ('',)))[0] in ('e', '')}
+        self.assertEqual(dc.judge(r, {'e'})[1:], ([], []))
+        r['pin_block_size'] = 'FAIL: 512'
+        _, differs, errors = dc.judge(r, {'e'})
+        self.assertEqual((differs, len(errors)), ([], 1))
+        self.assertIn('pin_block_size', errors[0])
+        r['pin_block_size'] = 'PASS: 4096'
+        self.assertEqual(len(dc.judge(r, {'e'})[2]), 1)
+
     def test_waiting_is_accepted_only_where_the_table_says_so(self):
         r = as_expected()
         self.assertEqual(r['ctl_recovered_log_too_short'], 'WAITING: seen')
