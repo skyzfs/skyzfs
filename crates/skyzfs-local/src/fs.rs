@@ -471,6 +471,20 @@ impl File for FsFile {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    #[cfg(target_os = "linux")]
+    fn block_size(&self) -> io::Result<u64> {
+        let size = rustix::fs::fstatfs(&self.file)?.f_bsize;
+        u64::try_from(size)
+            .ok()
+            .filter(|size| *size > 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no block size"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn block_size(&self) -> io::Result<u64> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     fn len(&self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len())
     }
@@ -486,6 +500,18 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// A real file says the block size of its file system: a power of
+    /// two of at least 512 bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_file_says_its_file_systems_block_size() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let dir = FsDir::new(keep.path()).expect("the directory");
+        let file = dir.create("image").expect("a file");
+        let size = file.block_size().expect("a block size");
+        assert!(size >= 512 && size.is_power_of_two(), "{size}");
     }
 
     /// On a real file: a deallocated range reads as zeros, the file

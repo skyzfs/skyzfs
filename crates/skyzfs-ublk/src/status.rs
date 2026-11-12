@@ -51,7 +51,7 @@
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
-//! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate. Any other value is read as "not said" |
+//! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
 //!
 //! # The rules
 //!
@@ -181,6 +181,9 @@ pub enum ZeroesShown {
     Deallocated,
     /// Zeros are written: the file system cannot deallocate.
     Written,
+    /// Zeros are written: the file system's blocks are larger than the
+    /// store's write unit, or their size could not be read.
+    WrittenForBlocks,
 }
 
 impl ZeroesShown {
@@ -189,6 +192,7 @@ impl ZeroesShown {
             Self::Untried => 0,
             Self::Deallocated => 1,
             Self::Written => 2,
+            Self::WrittenForBlocks => 3,
             Self::Unsaid => u64::MAX,
         }
     }
@@ -198,6 +202,7 @@ impl ZeroesShown {
             0 => Self::Untried,
             1 => Self::Deallocated,
             2 => Self::Written,
+            3 => Self::WrittenForBlocks,
             _ => Self::Unsaid,
         }
     }
@@ -214,6 +219,12 @@ impl ZeroesShown {
                 "written as zeros: the file system of the volume's directory cannot deallocate, \
                  so a log of write-zeroes is worked off at the pace of that writing, and \
                  requests wait for it",
+            ),
+            Self::WrittenForBlocks => Some(
+                "written as zeros: the blocks of the volume's file system are larger than the \
+                 store's write unit, or their size could not be read, so a range is not \
+                 deallocated there; a log of write-zeroes is worked off at the pace of that \
+                 writing, and requests wait for it",
             ),
         }
     }

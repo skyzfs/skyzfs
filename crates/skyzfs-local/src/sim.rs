@@ -361,6 +361,8 @@ struct State {
     read_fault: Option<Fault>,
     /// The file system has no call that deallocates.
     no_holes: bool,
+    /// The file system's block size, or none if it cannot be asked.
+    block_size: Option<u64>,
     /// The next deallocation fails, having zeroed any part of its range.
     hole_fault: bool,
     /// The machine stops after this many more writes and syncs.
@@ -471,6 +473,7 @@ impl SimDisk {
                 read_fault_of: None,
                 read_fault: None,
                 no_holes: false,
+                block_size: Some(SECTOR),
                 hole_fault: false,
                 halt: None,
                 lock: None,
@@ -700,6 +703,14 @@ impl SimDisk {
     /// power cut does not change it.
     pub fn set_deallocation(&self, supported: bool) {
         self.lock().no_holes = !supported;
+    }
+
+    /// The block size the file system reports ([`File::block_size`]),
+    /// or `None` for one that cannot be asked. One sector unless set.
+    /// A deallocation that ends inside a block rewrites the block's
+    /// other sectors, as it does a write unit's.
+    pub fn set_block_size(&self, bytes: Option<u64>) {
+        self.lock().block_size = bytes;
     }
 
     /// The next deallocation fails with an I/O error, having zeroed any
@@ -1099,9 +1110,10 @@ impl File for SimFile {
     /// zeros, as it does a write's (or as garbage, where the cut makes
     /// garbage of what was being rewritten: more than a hole can do,
     /// and a store that survives it survives a hole). Where the range
-    /// ends inside a write unit, that unit's other sectors are
+    /// ends inside a write unit or inside a block of the file system,
+    /// whichever is larger, that unit's or block's other sectors are
     /// rewritten as they are, as by a write: the file system zeroes a
-    /// part of a unit by writing it. Whole units inside the range take
+    /// part of a block by writing it. Whole ones inside the range take
     /// no neighbour with them. It counts as one operation for
     /// [`SimDisk::halt_after`].
     fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()> {
@@ -1119,7 +1131,7 @@ impl File for SimFile {
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         let failing = std::mem::take(&mut state.hole_fault);
         let rng = &mut state.rng;
-        let unit = state.write_unit;
+        let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if !offset.is_multiple_of(SECTOR) || !len.is_multiple_of(SECTOR) || end > inode.len {
             return Err(io::Error::new(
@@ -1159,6 +1171,14 @@ impl File for SimFile {
         } else {
             Ok(())
         }
+    }
+
+    fn block_size(&self) -> io::Result<u64> {
+        let state = self.disk.lock();
+        self.check(&state)?;
+        state
+            .block_size
+            .ok_or_else(|| io::Error::other("the file system does not say"))
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -1638,6 +1658,30 @@ mod tests {
         assert!(!same(0) && !same(1) && !same(10) && !same(11));
         // Unit 3 was not touched.
         assert!((12..16).all(same));
+    }
+
+    /// The same for a block of the file system that is larger than the
+    /// write unit: a hole that ends inside one rewrites the block's
+    /// other sectors. A disk that does not say its block size refuses
+    /// the question.
+    #[test]
+    fn a_hole_that_ends_inside_a_block_rewrites_the_block() {
+        let disk = disk_with(16, 7);
+        disk.set_write_unit(2 * SECTOR);
+        let f = disk.open("f").unwrap();
+        assert_eq!(f.block_size().unwrap(), SECTOR);
+        disk.set_block_size(Some(8 * SECTOR));
+        assert_eq!(f.block_size().unwrap(), 8 * SECTOR);
+        let mut f = f;
+        // Sectors 2 and 3: one whole write unit inside block 0.
+        f.deallocate(2 * SECTOR, 2 * SECTOR).unwrap();
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let now = read(&disk, "f", 0, 16 * S);
+        let same = |sector: usize| now[sector * S..(sector + 1) * S] == [7u8; S];
+        assert!((0..8).all(|sector| !same(sector)));
+        assert!((8..16).all(same));
+        disk.set_block_size(None);
+        assert!(disk.open("f").unwrap().block_size().is_err());
     }
 
     /// A file system that cannot deallocate says so and changes

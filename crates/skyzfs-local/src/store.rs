@@ -132,6 +132,8 @@ impl Mutants {
     /// A write-zeroes record counts no bytes in a step's bound also
     /// where its zeros are written.
     pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
+    /// A range is deallocated whatever the file system's block size.
+    pub(crate) const HOLES_IN_LARGE_BLOCKS: u32 = 1 << 24;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -970,6 +972,8 @@ impl<D: Dir> Core<D> {
             self.mutants.has(Mutants::ZEROES_WRITTEN),
             self.mutants.has(Mutants::NO_HOLES_FAILS),
         );
+        let unit = self.log.identity().unit();
+        let any_block = self.mutants.has(Mutants::HOLES_IN_LARGE_BLOCKS);
         let mut written = Ok(());
         let replayed = self.log.replay_within(floor, target, limit, &mut |record| {
             if written.is_err() {
@@ -977,7 +981,20 @@ impl<D: Dir> Core<D> {
             }
             written = match record.kind {
                 Kind::Write => home.write_at(record.offset, record.data),
-                Kind::WriteZeroes if always_written || *zeroes == Zeroes::Written => {
+                Kind::WriteZeroes if always_written || zeroes.written() => {
+                    write_zeros(home, record.offset, record.length)
+                }
+                // The first one since the open, and the file system's
+                // blocks are larger than the write unit, or it does
+                // not say: a hole that ends inside a block would have
+                // the file system rewrite blocks of the volume that
+                // no preimage covers. Zeros are written.
+                Kind::WriteZeroes
+                    if *zeroes == Zeroes::Untried
+                        && !any_block
+                        && !home.block_size().is_ok_and(|block| block <= unit) =>
+                {
+                    *zeroes = Zeroes::WrittenForBlocks;
                     write_zeros(home, record.offset, record.length)
                 }
                 // The range is deallocated: nothing is written for it.
@@ -1397,8 +1414,9 @@ pub struct LogState {
 /// ([`Marks`], "what it costs a client").
 ///
 /// Which of the two holds for a volume is found out by the first
-/// write-zeroes record that a checkpoint applies after an open, and
-/// holds until the store is closed. Until then such a record counts
+/// write-zeroes record that a checkpoint applies after an open (the
+/// file system's block size is asked first, then the call is tried),
+/// and holds until the store is closed. Until then such a record counts
 /// its length, so that a step keeps to its bound whichever it turns
 /// out to be.
 ///
@@ -1408,7 +1426,10 @@ pub struct LogState {
 ///   So the other blocks of those two units are saved as preimages
 ///   before the range is deallocated, exactly as for a write there. A
 ///   range that covers whole units, and every range where the unit is
-///   one block, has no neighbours and saves nothing.
+///   one block, has no neighbours and saves nothing. This reaches as
+///   far as the write unit and no further, so a range is deallocated
+///   only on a file system whose block is no larger than the write
+///   unit ([`Zeroes::WrittenForBlocks`] otherwise).
 /// - **Durability.** A hole is durable when the home image's sync has
 ///   returned, like a write, and the log keeps the record until then.
 ///   A power cut before that leaves each block of the range as it was
@@ -1432,6 +1453,21 @@ pub enum Zeroes {
     Deallocated,
     /// The file system cannot deallocate: zeros are written.
     Written,
+    /// The file system's blocks are larger than the store's write
+    /// unit, or it does not say how large they are: zeros are written.
+    /// A range deallocated there could end inside a block of the file
+    /// system, which then rewrites that block; the store saves the
+    /// neighbours of a range only as far as its write unit reaches,
+    /// so blocks the volume never asked to change would be at a power
+    /// cut's mercy.
+    WrittenForBlocks,
+}
+
+impl Zeroes {
+    /// Whether zeros are written for a write-zeroes record.
+    pub fn written(self) -> bool {
+        matches!(self, Self::Written | Self::WrittenForBlocks)
+    }
 }
 
 impl LogState {

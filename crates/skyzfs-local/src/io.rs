@@ -105,9 +105,10 @@ pub trait File {
     /// then a power cut leaves each block of the range as it was or
     /// as zeros. Where the range does not cover a whole block of the
     /// file system (or write unit of the device), the file system
-    /// zeroes that part by a write, which rewrites the unit around it
+    /// zeroes that part by a write, which rewrites the block around it
     /// as any write does: a caller that protects the neighbours of a
-    /// write protects them here in the same way.
+    /// write protects them here in the same way, and must know how far
+    /// they reach ([`File::block_size`]).
     ///
     /// Fails with [`io::ErrorKind::Unsupported`] where the file system
     /// or the platform has no such call, and has then changed nothing:
@@ -120,6 +121,11 @@ pub trait File {
     /// `FSCTL_SET_ZERO_DATA` on a file marked sparse: not built, and
     /// until they are those platforms answer "unsupported".
     fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()>;
+
+    /// The block size of the file system the file is on, in bytes:
+    /// the least the file system allocates, deallocates and rewrites
+    /// at once. Linux: `f_bsize` of `fstatfs`.
+    fn block_size(&self) -> io::Result<u64>;
 
     /// The file's length in bytes.
     fn len(&self) -> io::Result<u64>;

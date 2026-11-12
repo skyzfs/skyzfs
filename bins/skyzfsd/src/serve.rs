@@ -461,6 +461,7 @@ fn log_shown(log: &skyzfs_local::store::LogState) -> LogShown {
             Zeroes::Untried => ZeroesShown::Untried,
             Zeroes::Deallocated => ZeroesShown::Deallocated,
             Zeroes::Written => ZeroesShown::Written,
+            Zeroes::WrittenForBlocks => ZeroesShown::WrittenForBlocks,
         },
     }
 }

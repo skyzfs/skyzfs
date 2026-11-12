@@ -4192,6 +4192,108 @@ fn a_file_system_without_holes_has_the_zeros_written() {
     caught(scenario, Mutants::WRITTEN_ZEROES_FREE);
 }
 
+/// A range is deallocated only on a file system whose block is no
+/// larger than the store's write unit. On one with larger blocks, and
+/// on one that does not say how large its blocks are, zeros are
+/// written and the store says why: a hole that ends inside a block has
+/// the file system rewrite that block, and the store saves a range's
+/// neighbours only as far as its write unit reaches. Mutant: the block
+/// size is not asked.
+#[test]
+fn a_range_is_deallocated_only_where_blocks_are_no_larger_than_the_write_unit() {
+    fn scenario(env: &Env) -> Outcome {
+        let unit = u64::from(env.unit);
+        let cases = [
+            (Some(4 * unit), Zeroes::WrittenForBlocks),
+            (Some(2 * unit), Zeroes::WrittenForBlocks),
+            (None, Zeroes::WrittenForBlocks),
+            (Some(unit), Zeroes::Deallocated),
+            (Some(512), Zeroes::Deallocated),
+        ];
+        for (block, want) in cases {
+            let (disk, mut store) = env.fresh()?;
+            disk.set_block_size(block);
+            write(&mut store, 0, 256, 9)?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for n in 0..4 {
+                zeroes(&mut store, 16 + n * 32, 16)?;
+            }
+            flush(&mut store)?;
+            let before = disk.stats();
+            checkpoint(&mut store)?;
+            let after = disk.stats();
+            let said = store.log_state().zeroes;
+            if said != want {
+                return Err(format!("blocks of {block:?}: the store says {said:?}"));
+            }
+            let holes = after.deallocated - before.deallocated;
+            let written = after.written - before.written;
+            match want {
+                Zeroes::Deallocated if holes != 4 * 16 * BLOCK => {
+                    return Err(format!("blocks of {block:?}: {holes} bytes deallocated"));
+                }
+                Zeroes::WrittenForBlocks if holes != 0 || written < 4 * 16 * BLOCK => {
+                    return Err(format!(
+                        "blocks of {block:?}: {holes} bytes deallocated, {written} written"
+                    ));
+                }
+                _ => {}
+            }
+            if store.is_failed() {
+                return Err("the volume failed".into());
+            }
+            for n in 0..4 {
+                expect(&mut store, n * 32, 16, 9, "between the ranges")?;
+                expect(&mut store, 16 + n * 32, 16, 0, "the ranges")?;
+            }
+            expect(&mut store, 128, 128, 9, "after the ranges")?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::HOLES_IN_LARGE_BLOCKS);
+}
+
+/// What the rule above is for. The file system's block is four write
+/// units, and a write-zeroes covers one unit in the middle of a block.
+/// The steps are stopped anywhere and the power is cut, with what was
+/// not synced reading as garbage. The rest of the block holds what it
+/// held: zeros were written into the one unit, and the file system
+/// had no reason to rewrite the block. Mutant: the block size is not
+/// asked, the range is deallocated, the file system rewrites the
+/// block, and the units beside the range, which no preimage covers,
+/// are lost.
+#[test]
+fn a_write_zeroes_inside_a_larger_block_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let unit = u64::from(env.unit);
+        let per_unit = unit / BLOCK;
+        let all = Fate::Garbage;
+        for stop in 0..12 {
+            let (disk, mut store) = env.fresh()?;
+            disk.set_block_size(Some(4 * unit));
+            write(&mut store, 0, 256, 9)?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            zeroes(&mut store, 16 + per_unit, per_unit)?;
+            flush(&mut store)?;
+            disk.halt_after(stop);
+            let _ = store.checkpoint();
+            drop(store);
+            disk.power_cut(BySector(move |_: Option<&str>, _| all));
+            disk.set_write_unit(unit);
+            disk.set_block_size(Some(4 * unit));
+            let mut store = env.reopen_ack(&disk)?;
+            let what = format!("a cut at {stop}");
+            expect(&mut store, 0, 16 + per_unit as usize, 9, &what)?;
+            expect(&mut store, 16 + per_unit, per_unit as usize, 0, &what)?;
+            expect(&mut store, 16 + 2 * per_unit, 64, 9, &what)?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::HOLES_IN_LARGE_BLOCKS);
+}
+
 /// An I/O error from the deallocation is a failed write into the home
 /// image: the volume fails, as for any other, and nothing is lost,
 /// because the log keeps the record: the next open applies it again.

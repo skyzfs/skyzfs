@@ -136,6 +136,10 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
         (ZeroesShown::Untried, "not yet"),
         (ZeroesShown::Deallocated, "deallocated in the home image"),
         (ZeroesShown::Written, "written as zeros: the file system"),
+        (
+            ZeroesShown::WrittenForBlocks,
+            "written as zeros: the blocks of the volume's file system",
+        ),
     ] {
         let mut status = sample();
         if let Some(log) = status.log.as_mut() {
