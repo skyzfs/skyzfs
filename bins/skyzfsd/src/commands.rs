@@ -160,8 +160,11 @@ impl<F: FnMut() -> io::Result<Box<dyn Control>>> Lazy<F> {
 }
 
 impl<F: FnMut() -> io::Result<Box<dyn Control>>> Control for Lazy<F> {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        self.control()?.can_reissue()
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        self.control()?.features()
+    }
+    fn release(&mut self) -> io::Result<String> {
+        self.control()?.release()
     }
     fn info(&mut self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
         self.control()?.info(number)
@@ -284,6 +287,7 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// | the device under the recorded number is not known to be the volume's | 1 | standard error |
 /// | a server is live on it | 5 | standard error |
 /// | a daemon holds the volume's lock, after 2 s of trying | 5 | standard error |
+/// | the kernel lacks what the daemon needs (`skyzfs_ublk::features`), with a record of this boot: nothing was done | 1 | standard error |
 ///
 /// **Only 0 says that nothing of this volume is left attached on this
 /// node**, so that the volume may be served elsewhere on it. With 6
@@ -295,7 +299,12 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
 /// a device that is still there 5 s after the delete
 /// ([`GONE_RETRIES`]): a detach of a held device takes that much
 /// longer.
-pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Output {
+pub fn detach(
+    volume: &Volume,
+    async_delete_asserted: bool,
+    control: &mut dyn Control,
+    boot: [u8; 16],
+) -> Output {
     let mut records = match files(volume, boot) {
         Ok(records) => records,
         Err(output) => return output,
@@ -308,6 +317,7 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
         &mut store,
         LOCK_RETRIES,
         GONE_RETRIES,
+        async_delete_asserted,
     ) {
         Ok(detached) => detached,
         Err(e) => return Output::error(format!("detach: {e}")),
@@ -360,6 +370,11 @@ pub fn detach(volume: &Volume, control: &mut dyn Control, boot: [u8; 16]) -> Out
             Exit::RefusedHeld,
             "",
             "a daemon holds this volume: stop it first. Nothing was done",
+        ),
+        Detached::Unsupported(why) => Output::said(
+            Exit::Error,
+            "",
+            &format!("not detached: {why}. Nothing was done"),
         ),
     }
 }

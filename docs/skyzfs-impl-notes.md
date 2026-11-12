@@ -60,6 +60,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.3m | skyzfs/skyzfs#33 | The home image's sync leaves the worker | The local store: M1.3m; the criterion |
 | M1.3n | skyzfs/skyzfs#34 | Several readers, and a status thread that sleeps | The local store: M1.3n; the criterion |
 | M1.3p | skyzfs/skyzfs#37 | The readers' queue wakes one thread per read | The local store: M1.3p |
+| M1.3q | skyzfs/skyzfs#38 | The ublk features the daemon needs, and the kernels that have them | The ublk transport: the features and the kernels |
 | M1.T1 | skyzfs/skyzfs#3 | CI for the working branches, the kernel probe, `zfs-ublk` benchmark rows | The ublk transport: evidence |
 | M1.T2, M1.T3 | skyzfs/skyzfs#5, skyzfs/skyzfs#8 | The power-cut replay rig; it reads every copy and checks what `fsync` promised | The ublk transport: evidence |
 | M1.T4 to M1.T6b | skyzfs/skyzfs#11, skyzfs/skyzfs#12, skyzfs/skyzfs#13, skyzfs/skyzfs#14 | The daemon rig, first on a stand-in and then on the daemon; what a failed volume does to a pool | The ublk transport: a failed volume, evidence |
@@ -189,6 +190,26 @@ What the device must do (recovery that reissues, flushes that reach the daemon, 
   - `ready` is printed only after the first write of the status file by this instance has been tried, for at most 5 s. `status` shows counters only from a status file that carries this store's identity.
   - "Gone to a lookup" comes before "free for an add" in the driver. After a delete, a lookup found no device and an add under the same number was answered "taken" in 5 of some 250 adds that followed a server's end, on both images (kernels 7.0.0-1017 and 7.0.0-1019), and in none of those that followed a device never started; the next add succeeded at most 31 ms after the delete. By the driver's source that is the time between the last reference going and its release having run, so nobody holds the device then, which is all the daemon takes from a lookup that finds nothing. The daemon's add treats "taken" as an answer and takes the next number.
   - Setting parameters on a started device is refused by the driver with a permission error, as the source said.
+
+#### The ublk features the daemon needs, and the kernels that have them (M1.3q)
+
+`crates/skyzfs-ublk/src/features.rs` is the one place that names them. They were read, on 2026-11-12, in `include/uapi/linux/ublk_cmd.h` at every release tag from v6.0 to v7.0 and in `drivers/block/ublk_drv.c` at ten of them, in the kernel's tree as mirrored on GitHub.
+
+| What | First kernel | Why the daemon needs it |
+|---|---|---|
+| `UBLK_F_USER_RECOVERY` | 6.1 | A device waits for a server when its server ends |
+| `UBLK_F_USER_RECOVERY_REISSUE` | 6.1 | Requests in flight at a server's end go to the next server |
+| `UBLK_F_CMD_IOCTL_ENCODE` | 6.4 | The daemon's control commands are ioctl-encoded and are not tried again in the legacy encoding |
+| `UBLK_U_CMD_GET_FEATURES` | 6.5 | How the start learns the three flags above before it adds a device |
+| `UBLK_U_CMD_DEL_DEV_ASYNC` | 6.11 (named in the header from 6.9) | How a failed volume gives up its device while a client still holds it: the plain delete waits for the last holder, and a suspended pool never lets go |
+
+**The oldest kernel is Linux 6.11.**
+
+- **The header and the driver differ for the asynchronous delete.** The header names the command from v6.9. The drivers of v6.9 and v6.10 match control commands by the command's number and label this one's case with the whole ioctl code, which the number never equals, so the command falls to the default and is answered `ENOTSUPP` (errno 524). v6.11 defines the number and matches it. The lead's first decision was 6.9, from the header alone; the review read the driver, and the lead confirmed it in the source at the three tags.
+- **What the start checks.** It sends the features command for a device number that is never a device's. A driver before 6.5 answers `ENODEV`, which is read as "the command is missing". The delete has no feature bit, and no command tells a driver that has it from one that lacks it without adding a device, so the start also reads the kernel's release and refuses one below 6.11 or one it cannot parse. `detach` checks the same. A refusal names each thing that is missing and the oldest kernel that has it.
+- **The override.** `--kernel-has-async-delete`, given to `serve` and to `detach`, says that the driver executes the delete although the release is older: a distribution kernel with the driver backported, or a 6.9.y or 6.10.y that carries the fix. It skips the release check only; the features are still checked. A refused start offers it only when the release is all that is missing. A delete that the driver then answers `ENOTSUPP` is told to the operator as a command the driver does not know.
+- **No fallback and no probe.** There is no fallback to the synchronous delete: it is the one that hangs under a suspended pool, which is the case the asynchronous one exists for. The review suggested probing instead of reading the release: add a device, delete it asynchronously, and see. Not taken: it adds and removes a device at every start, and a daemon killed between the two leaves a device nobody owns. It stays the alternative if release numbers prove a poor guide on distribution kernels.
+- **Evidence.** The rigs run on kernel 7.0 on both images, so the refusals are shown by unit tests on the driver's answers as read in the source (features word, `ENODEV`, `ENOTSUPP`, releases with suffixes), not on an old kernel. No kernel between 6.11 and 7.0 has run the daemon.
 
 #### Evidence from the rigs
 
@@ -425,12 +446,50 @@ Two thirds of the daemon's CPU is in the kernel, and the pump waits for a CPU fo
 
 The model rows of the 24.04 job ran about 25% below those of the M1.3n round's 24.04 job (3553 to 4150 against 5055 to 5556). It is another machine, and postgres has run in a cgroup of its own since M1.T12, so the two are not compared.
 
+#### Where the daemon's system time goes (M1.T15)
+
+Two jobs on Ubuntu 24.04 on 2026-11-12, each row once, both on slow-sync machines[^t15runs]. One traced the daemon's system calls on a daemon from before M1.3p; the other took a `perf record` profile with call graphs of the merged daemon, with M1.3p, and ran the daemons before and after M1.3p side by side. A traced or recorded row counts for no ratio.
+
+**System calls per transaction** (the trace; times are elapsed, waits included, not CPU):
+
+- the pump makes about two: `io_uring_enter` 0.92, a `read` of its eventfd 0.52, a `futex` 0.51 that wakes a reader, `pwrite64` 0.034;
+- the four readers together about 1.1: 0.57 `pread64` of 21 to 28 µs, and as many `write`s of 8 µs, the eventfd that wakes the pump;
+- the worker: `pread64` 0.108, `pwrite64` 0.081 at 112 µs.
+
+So a read costs two wakes, the pump's of a reader and the reader's of the pump.
+
+**Where the CPU went** (the profile, 3461 samples in 20 s; "kernel" is the share of a thread's samples in the kernel, the kinds are shares of those):
+
+| Thread | Samples | Kernel | Kernel samples by kind, % |
+|---|---|---|---|
+| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4, other 4, page cache 1 |
+| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 |
+| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24, wake and switch 6 |
+
+- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers'. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
+- "ZFS's completion" is `zio_interrupt` and its dispatch to a ZFS task queue: the kernel runs ZFS's completion of each request in the thread that ends it, which is the pump, and wakes a ZFS thread from there. That part is any ublk server's.
+- The runner has no hardware counters, so perf samples by a timer, and a sample taken with interrupts off is charged where they come back on. The kinds are from the whole call chain and are the better guide than the leaf symbols.
+
+**M1.3p before and after, on one machine**, one row each, so an indication and not a median:
+
+| | With M1.3p | Before it (dd4fcf8) |
+|---|---|---|
+| tps | 4715 | 4715 |
+| Ratio bracketed by model rows of 5337 and 5276 (1.2% apart) | 0.889 | 0.889 |
+| Readers' system time | 3.7 s | 5.4 s |
+| Readers' user time | 1.6 s | 2.5 s |
+| Readers' run delay | 8478 ms | 11209 ms |
+| Pump's system time | 7.0 s | 7.0 s |
+
+M1.3p took a third off the readers' CPU and their wait for a CPU, and the throughput did not move. Per transaction the pump now spends about 12 µs in the kernel and the readers 6.5 µs (9.5 before). What a transaction lacks against the model is about 190 µs at eight clients, so the daemon's own CPU is a tenth of the gap at most, and a read served by the pump itself where the data is in memory, which would save both wakes, is worth about 20 µs of it. No such package is planned on this evidence.
+
+**The runners' work disk is mounted without barriers.** The disk declares a volatile write cache, and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
+
 #### Open at this writing (2026-11-12)
 
-- M1.3p is merged and not yet measured on a runner: the benchmark rows above are all of daemons before it.
+- M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
+- A benchmark row on a disk with barriers on, so that a sync costs a device flush: not built.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
-- The ublk feature flags and their kernel versions (design §4.2, "Kernels"): to be pinned against the kernel's documentation and source, with a clear refusal by the daemon on a kernel that lacks one. Not yet a package.
-- Where the daemon's system time goes (the pump's and the readers' system calls and wakes): not measured yet. A profile or a count of system calls on one benchmark row would say.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -491,6 +550,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The benchmark's bracketed verdict and its new measurements (M1.T12, skyzfs/skyzfs#36); one look by the review session and two findings by Codex | Can merge; no blocking finding. Fixed before the merge: per-name metrics dropped a daemon thread beyond the twenty largest names or at a delta of 0; pressure was divided by the nominal duration although the second look came after a sync and 2 s; a model row with other clients, duration or memory limit was taken as a bracket; a failed move into postgres's cgroup showed 0.0; an unreadable pressure file failed the row. Stated and not changed: postgres in a cgroup of its own changes how CPU is shared, so earlier rows are not compared with later ones. |
 | 2026-11-12 | The whole design after the split, at the owner's request, by the review session, with its ZFS claims checked against OpenZFS 2.4.1 (skyzfs/skyzfs#2) | The architecture, the contract and the cut rule hold; no counterexample to the cut rule. Ten findings, all taken up in the design. M1's status said more than was run: the power-cut replay has not run on `skyzfsd` (§9; a testing package follows). M2's exit criterion asked for a scrub that ZFS refuses on a read-only pool, and would have passed a cut one group early. New rules in §6.2: no pool checkpoint, `zfs_nocacheflush` off. Stated more exactly: what encryption leaves in clear, frees under 32 KiB are never trimmed, the daemon's I/O path does allocate. Recorded as open: the bound on the local store when upload lags (M2), which `libzpool` the offline session links and its licence (M3). Document defects corrected: a paragraph rendered as a table row, gate G1's wording, M1's deliverables, a repeated paragraph and row in §4.1, what the study's 2.4 times is measured against. |
 | 2026-11-12 | §5.1, the readers' queue as built (M1.3p, skyzfs/skyzfs#37); three looks by the review session and one finding by Codex | The queue and its wake logic were right from the first look. Blocking, found by both: an early return from a start left the readers already started waiting for ever, which the channel's dropped sender had prevented; fixed with a guard. Blocking at the second look: the fix's test passed with the fix taken out; it now counts the readers that ended, and the missing guard is a mutant. Taken from the review: a push wakes only when a reader waits. Left as stated: the one test that rests on a window of time. |
+| 2026-11-12 | §4.2, the ublk features and the oldest kernel (M1.3q, skyzfs/skyzfs#38); three looks by the review session, Codex with nothing at the last head | Blocking at the first look: the floor was 6.9, where the header names the asynchronous delete, but the drivers of 6.9 and 6.10 answer it `ENOTSUPP`; the floor is 6.11, and the lead's decision of 6.9 was wrong. Fixed. Not blocking, fixed: a refused start offered the override when a feature was missing as well, and the delete's `ENOTSUPP` was read by untested code. Suggested and not taken: a probe that adds and deletes a device in place of reading the release. |
 
 ## References
 
@@ -531,3 +591,4 @@ Every independent read of the design and every review of a work package, with wh
 [^zfsnozero]: OpenZFS 2.4.1 has no use of `REQ_OP_WRITE_ZEROES` or `blkdev_issue_zeroout` under `module/` or `include/`. Its disk vdev trims with `__blkdev_issue_discard` and `blkdev_issue_secure_erase` (`module/os/linux/zfs/vdev_disk.c`).
 [^readerr]: `module/zfs/zio.c`, `zio_done`: a failed read is marked for suspension only when its error is `ENXIO`. Any other error on a zio issued with `ZIO_FLAG_CANFAIL`, which demand reads are (`module/zfs/dbuf.c`), is returned to the caller. `zio_vdev_io_assess` turns a leaf error into `ENXIO` only once the vdev is no longer accessible. Slow I/O is reported after `zfs_deadman_ziotime_ms` (`module/zfs/spa_misc.c`), and with the default `zfs_deadman_failmode=wait` it is only reported. Read in upstream master on 2026-11-10.
 [^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
+[^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.

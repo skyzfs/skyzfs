@@ -32,11 +32,16 @@ struct Kernel {
     devices: BTreeMap<u32, DeviceInfo>,
     held: Vec<u32>,
     deleted: Vec<u32>,
+    /// The kernel's release; 7.0.0 when `None`.
+    release: Option<String>,
 }
 
 impl Control for Kernel {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        Ok(true)
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        Ok(Some(u64::MAX))
+    }
+    fn release(&mut self) -> io::Result<String> {
+        Ok(self.release.clone().unwrap_or_else(|| "7.0.0".to_string()))
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         Ok(self.devices.get(&number).copied())
@@ -152,7 +157,7 @@ impl Setup {
     }
 
     fn detach(&mut self) -> Output {
-        detach(&self.volume, &mut self.kernel, BOOT)
+        detach(&self.volume, false, &mut self.kernel, BOOT)
     }
 }
 
@@ -202,7 +207,7 @@ fn a_directory_that_is_no_volume_is_an_error_and_gets_no_lock_file() {
     };
     for output in [
         status(&volume, &mut kernel, &now),
-        detach(&volume, &mut kernel, BOOT),
+        detach(&volume, false, &mut kernel, BOOT),
     ] {
         assert_eq!(output.exit, Exit::Error);
         assert!(output.out.is_empty());
@@ -295,6 +300,34 @@ fn status_shows_a_failure_of_this_boot_and_says_when_its_file_cannot_be_read() {
         value(&output.out, "state"),
         Some("failed, held by a client: not served again in this boot")
     );
+}
+
+/// On a kernel below 6.11 a detach refuses before it looks at anything,
+/// with status 1 and a message that names the asynchronous delete and
+/// the override; with the override it deletes.
+#[test]
+fn detach_on_a_kernel_without_the_asynchronous_delete_is_refused_unless_asserted() {
+    let mut setup = Setup::new().attached(DeviceState::Waiting);
+    setup.kernel.release = Some("6.8.0-45-generic".to_string());
+    let output = setup.detach();
+    assert_eq!(output.exit, Exit::Error);
+    assert!(output.out.is_empty());
+    for said in [
+        "not detached",
+        "UBLK_U_CMD_DEL_DEV_ASYNC",
+        "Linux 6.11",
+        "--kernel-has-async-delete",
+        "Nothing was done",
+    ] {
+        assert!(output.err.contains(said), "{said}: {}", output.err);
+    }
+    assert!(setup.kernel.deleted.is_empty());
+    assert!(setup.kernel.devices.contains_key(&4));
+    assert!(setup.records().attachment().expect("read").is_some());
+
+    let output = detach(&setup.volume, true, &mut setup.kernel, BOOT);
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    assert_eq!(output.out, "deleted /dev/ublkb4\n");
 }
 
 #[test]
@@ -845,7 +878,7 @@ fn status_and_detach_do_not_open_the_driver_when_nothing_is_attached_in_this_boo
         let output = status(&setup.volume, &mut absent, &now);
         assert_eq!(output.exit, Exit::Done, "{}", output.err);
         assert_eq!(value(&output.out, "state"), Some("detached"));
-        let output = detach(&setup.volume, &mut absent, BOOT);
+        let output = detach(&setup.volume, false, &mut absent, BOOT);
         assert_eq!(output.exit, Exit::Done, "{}", output.err);
         assert!(
             output.out.starts_with("nothing to detach"),

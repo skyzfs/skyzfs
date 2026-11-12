@@ -2,10 +2,10 @@
 //!
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
-//! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
+//! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
 //!                [--writeback-kib KIB] [--home-writeback-kib KIB] [--readers N]
-//! skyzfsd detach --dir DIR [--run-dir DIR]
+//! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
 //! ```
@@ -58,6 +58,8 @@
 //!   write-zeroes record.
 
 use std::path::PathBuf;
+
+use skyzfs_ublk::features::ASYNC_DELETE_OPTION;
 use std::process::ExitCode;
 
 /// Where the daemon keeps its notes and records unless told otherwise.
@@ -105,15 +107,40 @@ pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                 [--home-writeback-kib KIB] [--readers N]
+                 [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
                  (one queue is all this version serves)
-  skyzfsd detach --dir DIR [--run-dir DIR]
+  skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
   skyzfsd help";
 
 /// What `help` prints: the usage, and what an operator has to know
 /// before using a command.
 pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
+
+  It needs Linux 6.11 or later with the ublk driver: the driver's
+  features UBLK_F_USER_RECOVERY, UBLK_F_USER_RECOVERY_REISSUE and
+  UBLK_F_CMD_IOCTL_ENCODE, its command UBLK_U_CMD_GET_FEATURES (6.5),
+  and its asynchronous delete UBLK_U_CMD_DEL_DEV_ASYNC, without which
+  the daemon cannot give up a failed volume's device. The kernel's
+  header names that command from 6.9, but its driver executes it from
+  6.11 (the drivers of 6.9 and 6.10 answer it ENOTSUPP).
+  serve, before it locks the volume, opens its store or adds or takes
+  over a device, and detach, once it has the volume's lock and has
+  found a record of a device of this boot and before it looks at or
+  deletes that device, ask the driver for its features and read the
+  kernel's release (uname -r). They refuse, naming what is missing, on
+  a kernel that lacks a feature or whose release is below 6.11 or
+  does not begin with a major and a minor number. A refused serve
+  leaves a device of the volume that waits for a server as it is.
+  The asynchronous delete has no feature bit. A kernel whose ublk
+  driver executes it under an older release (a distribution kernel
+  with the driver backported, or a 6.9.y or 6.10.y that carries the
+  fix) is served when the operator says so with
+  --kernel-has-async-delete, given to serve and to detach: the release
+  is then not read, and the features are still checked. Say it only of
+  a kernel whose driver is known to execute the command: nothing
+  checks it before a delete needs it, and a delete it does not know
+  fails and leaves the device.
 
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
       Make a new, empty volume in DIR. DIR is made if it is missing
@@ -129,7 +156,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                [--home-writeback-kib KIB] [--readers N]
+                [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -165,7 +192,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       given, 1 to 64), beside the thread that executes the other
       requests and beside each other.
 
-  skyzfsd detach --dir DIR [--run-dir DIR]
+  skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
       a daemon: stop the daemon first (SIGTERM).
       Export the pool first. A pool whose device is deleted under it
@@ -270,6 +297,10 @@ pub struct Serve {
     pub run_dir: PathBuf,
     /// Serve a volume whose failure the operator acknowledges.
     pub acknowledge_failure: bool,
+    /// `--kernel-has-async-delete`: the operator says that the kernel's
+    /// ublk driver has `UBLK_U_CMD_DEL_DEV_ASYNC` whatever its release
+    /// ([`skyzfs_ublk::features::ASYNC_DELETE_OPTION`]).
+    pub async_delete_asserted: bool,
     /// Queues of a device this instance adds: 1, the only number this
     /// milestone serves ([`MAX_QUEUES`]). A device that is taken over
     /// keeps its own.
@@ -393,6 +424,15 @@ pub struct Volume {
     pub run_dir: PathBuf,
 }
 
+/// `detach`: which volume, and what the operator says of the kernel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Detach {
+    /// The volume.
+    pub volume: Volume,
+    /// `--kernel-has-async-delete`, as for [`Serve`].
+    pub async_delete_asserted: bool,
+}
+
 /// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -401,7 +441,7 @@ pub enum Command {
     /// `serve`.
     Serve(Serve),
     /// `detach`.
-    Detach(Volume),
+    Detach(Detach),
     /// `status`.
     Status(Volume),
     /// `help`, `--help` or `-h`: print [`HELP`].
@@ -450,6 +490,7 @@ const SERVE: &[Opt] = &[
     opt("--dir", true, false),
     opt("--run-dir", true, false),
     opt("--acknowledge-failure", false, false),
+    opt(ASYNC_DELETE_OPTION, false, false),
     opt("--queues", true, false),
     opt("--depth", true, false),
     opt("--log-high", true, false),
@@ -471,6 +512,12 @@ const SERVE: &[Opt] = &[
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
+
+const DETACH: &[Opt] = &[
+    opt("--dir", true, false),
+    opt("--run-dir", true, false),
+    opt(ASYNC_DELETE_OPTION, false, false),
+];
 
 /// The options given, by name. A flag's value is empty.
 struct Given(Vec<(&'static str, String)>);
@@ -689,6 +736,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 dir,
                 run_dir,
                 acknowledge_failure: given.flag("--acknowledge-failure"),
+                async_delete_asserted: given.flag(ASYNC_DELETE_OPTION),
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 log_high,
@@ -710,9 +758,13 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 },
             }))
         }
-        "detach" => Ok(Command::Detach(volume(&Given::collect(
-            VOLUME, args, hooks,
-        )?)?)),
+        "detach" => {
+            let given = Given::collect(DETACH, args, hooks)?;
+            Ok(Command::Detach(Detach {
+                volume: volume(&given)?,
+                async_delete_asserted: given.flag(ASYNC_DELETE_OPTION),
+            }))
+        }
         "status" => Ok(Command::Status(volume(&Given::collect(
             VOLUME, args, hooks,
         )?)?)),
