@@ -484,6 +484,36 @@ if drows:
         print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(lat.get('mean_ms'), '.3f')} / {nf(lat.get('stddev_ms'), '.3f')} | "
               f"{nf(wf / txn if wf else None, '.3f')} | {nf(wus / wf if wf else None, '.0f')} | {sw} | {sf} | {ww} | {wfm} | {wkb} | "
               f"{nf(zil / txn if zil is not None else None)} |")
+    # What a transaction writes besides its commit, and whether ZFS made
+    # a writer wait (the write throttle) in the window.
+    print('\nWhat a transaction writes besides its commit: postgres\'s WAL write time per commit, and its relation '
+          'writes per transaction by who wrote them (µs each), from pg_stat_io (checkpointer and background writer '
+          'together in runs before they were told apart); `tx delayed` sums dmu_tx_delay and the dmu_tx_dirty_* '
+          'counters per 1000 transactions; the dirty limit is zfs_dirty_data_max and the delay starts at '
+          'zfs_delay_min_dirty_percent of it:\n')
+    print('| workload | topology | tps | WAL write µs per commit | client backend writes | checkpointer writes | '
+          'background writer writes | other writes | tx delayed per 1000 txn | dirty MB per txg | dirty limit MB; delay from % |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|')
+    for r, d in drows:
+        g = r['pg']; txn = g.get('xact_commit', 0) or 0
+        if not txn:
+            continue
+        ww = pgsum(r, 'wal', 'write_us') or g.get('walstat_write_us', 0)
+        def rel(grp):
+            n = g.get(f'io_relation_{grp}_writes')
+            if n is None:
+                return 'n/a'
+            return f"{n / txn:.3f} ({g.get(f'io_relation_{grp}_write_us', 0) / n:.0f})" if n else '0'
+        old = 'io_relation_bg_writes' in g
+        zd = r.get('zfs', {}).get('delta', {}); za = r.get('zfs', {}).get('after', {})
+        dl = [k for k in zd if k in ('dmutx.dmu_tx_delay', 'dmutx.dmu_tx_dirty_delay', 'dmutx.dmu_tx_dirty_throttle',
+                                     'dmutx.dmu_tx_dirty_over_max')]
+        txd = nf(sum(zd[k] for k in dl) * 1000 / txn) if dl else 'n/a'
+        lim_ = ('n/a' if 'param.zfs_dirty_data_max' not in za else
+                f"{za['param.zfs_dirty_data_max'] / (1 << 20):.0f}; {za.get('param.zfs_delay_min_dirty_percent', 'n/a')}")
+        print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(ww / txn if ww else None, '.1f')} | {rel('backend')} | "
+              f"{rel('bg') + ' (with the background writer)' if old else rel('ckpt')} | {'-' if old else rel('bgw')} | {rel('other')} | "
+              f"{txd} | {nf(r.get('zfs', {}).get('txg', {}).get('dirty_mb_mean'), '.0f')} | {lim_} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
@@ -802,7 +832,8 @@ cat > "$WORK/io-stats.sql" <<'SQL'
 select 'io_' || object || '_' || grp || '_' || k, v::bigint
 from (select replace(object, ' ', '') as object,
              case when backend_type = 'client backend' then 'backend'
-                  when backend_type in ('checkpointer', 'background writer') then 'bg'
+                  when backend_type = 'checkpointer' then 'ckpt'
+                  when backend_type = 'background writer' then 'bgw'
                   else 'other' end as grp,
              sum(reads) as reads, sum(read_time) * 1000 as read_us,
              sum(writes) as writes, sum(write_time) * 1000 as write_us,
@@ -1497,6 +1528,12 @@ zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg k
         /proc/spl/kstat/zfs/arcstats
     # Transactions that were made to wait, and why.
     awk 'NR > 2 { print "zfsc dmutx." $1, $3 }' /proc/spl/kstat/zfs/dmu_tx 2>/dev/null
+    # The write throttle in force: the dirty limit, where the delay
+    # starts and where a txg is pushed out early.
+    local prm
+    for prm in zfs_dirty_data_max zfs_delay_min_dirty_percent zfs_dirty_data_sync_percent zfs_delay_scale zfs_txg_timeout; do
+        [ ! -r "/sys/module/zfs/parameters/$prm" ] || echo "zfsg param.$prm $(cat "/sys/module/zfs/parameters/$prm")"
+    done
     # Per-dataset counters: ZIL bytes by dataset tell WAL commits from
     # the checkpointer's fsync of data files.
     local f
