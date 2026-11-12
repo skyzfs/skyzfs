@@ -23,3 +23,14 @@ Verdict: not a weakening of what the test was for. Nothing blocks.
 - Suggestion: the clock is exact now, so the factor can be 12 and
   catch a pipeline that runs at half its depth; at 3 only a depth of
   1 or 2 fails.
+
+## Second look: 24cc835
+
+Sound. 16 tests pass; the overlap test gives 1.98 s and 1.36 s three
+times of three. The path is the same engine cycle, so the paused clock
+holds. A clock that skipped the waits gives NaN, which fails, and the
+`overlapped` counter is asserted beside the ratio. One suggestion: the
+ratio moves with the cycle's fixed round trips. Five more 20 ms round
+trips outside the backfill (87 ms on both sides) bring it to 0.70 with
+overlap intact. `off - on >= 30 * rtt` says the same thing and does
+not move.
