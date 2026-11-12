@@ -142,7 +142,7 @@ def identities(t):
 
 def render(rows):
     """rows: [{'label', 'workload', 'tps', 'time': delta(), 'steps', 'relation_read_us', 'relation_reads',
-    'duration_s', 'ages': (age_ms before, after)}] -> markdown lines."""
+    'duration_s', 'ages': (age_ms before, after), 'model_relation_read_us'}] -> markdown lines."""
     out = []
     if not rows:
         return out
@@ -172,18 +172,20 @@ def render(rows):
             stages, n = life(r['time']['delta'], kind)
             if heads is None:
                 heads = [s for s, _ in stages]
-                extra = (' all reads in the daemon, s | postgres: relation reads | postgres: s in relation reads | the daemon\'s share of it |'
+                extra = (' all reads in the daemon, s | postgres: relation reads | postgres: µs per relation read | '
+                         'the model row\'s on this machine | postgres: s in relation reads | the daemon\'s share of it |'
                          if kind == 'read' else '')
                 note = ('' if kind != 'read' else
                         ' The last four columns set the daemon\'s account beside postgres\'s own (pg_stat_io, object '
-                        'relation: reads and read time, with track_io_timing), as totals over the window and not per '
+                        'relation: reads and read time, with track_io_timing; and the same mean of the model row, zfs-slog, where one '
+                        'ran on this machine), as totals over the window and not per '
                         'read: a relation read is 8 KiB asked of ZFS, which the ARC may answer without the device, so '
                         'postgres counts more reads than the daemon and the two means are not of the same reads. What '
                         'of postgres\'s read time is not in the daemon\'s account is outside the daemon: the kernel, '
                         'the ring, ZFS, and the reads the ARC answered.')
                 out += ['', f"A {kind}'s life, mean µs per {kind}.{note}", '',
                         f"| workload | daemon row | tps | {kind}s | " + ' | '.join(heads) + f' | sum |{extra}',
-                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (4 if extra else 0))]
+                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (6 if extra else 0))]
             vals = [v for _, v in stages]
             total = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
             line = (f"| {r['workload']} | {r['label']} | {_f(r.get('tps'), '.0f')} | {_f(n, 'd') if n is not None else 'n/a'} | "
@@ -192,7 +194,8 @@ def render(rows):
                 pg, pgn = r.get('relation_read_us'), r.get('relation_reads')
                 ours = None if total is None or not n else total * n / 1e6
                 theirs = None if pg is None or not pgn else pg * pgn / 1e6
-                line += (f" {_f(ours)} | {_f(pgn, '.0f')} | {_f(theirs)} | {_share(ours, theirs)} |")
+                line += (f" {_f(ours)} | {_f(pgn, '.0f')} | {_f(pg)} | {_f(r.get('model_relation_read_us'))} | "
+                         f"{_f(theirs)} | {_share(ours, theirs)} |")
             out.append(line)
         if not usable:
             continue
@@ -231,13 +234,16 @@ def render(rows):
         out += ['', 'Checkpoint steps in the window: ms per step of each part, the sync the step does itself, and the '
                 'gate (turns of the worker in which a request waited and none was taken because the log was at its high '
                 'mark; its time is a share of the parts, not more time), beside all the reads\' wait:', '',
-                '| workload | daemon row | steps | ' + ' | '.join(STEP_PARTS) + ' | own sync | all parts | the walk, of the six parts | gate count | gate, ms in all | all reads\' wait, ms |',
-                '|---|---|---|' + '---|' * (len(STEP_PARTS) + 6)]
+                '| workload | daemon row | steps | steps per second | reads per step | ' + ' | '.join(STEP_PARTS) + ' | own sync | all parts | the walk, of the six parts | gate count | gate, ms in all | all reads\' wait, ms |',
+                '|---|---|---|---|---|' + '---|' * (len(STEP_PARTS) + 6)]
         for r in usable:
             d, steps = r['time']['delta'], r.get('steps')
             parts = [d.get(f'time_step_{p}_ns') for p in STEP_PARTS] + [d.get('time_step_own_sync_ns')]
             whole = sum(v for v in parts if v is not None)
+            w, nr = r['time'].get('window_ns'), d.get('time_read_count')
             out.append(f"| {r['workload']} | {r['label']} | {_f(steps, 'd') if steps is not None else 'n/a'} | "
+                       f"{_f(None if not w or steps is None else steps / (w / 1e9), '.2f')} | "
+                       f"{_f(None if not steps or nr is None else nr / steps, '.0f')} | "
                        + ' | '.join(_f(_per(v, steps, 1e6), '.2f') for v in parts)
                        + f" | {_f(_per(whole, steps, 1e6), '.2f')} | {_share(parts[0], sum(v for v in parts[:6] if v is not None))} | "
                        f"{_f(d.get('time_gate_count'), 'd') if d.get('time_gate_count') is not None else 'n/a'} | "
