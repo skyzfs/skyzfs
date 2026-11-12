@@ -74,7 +74,8 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T12 | skyzfs/skyzfs#36 | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
 | M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
-| M1.T16 | skyzfs/skyzfs#41 (open) | A benchmark job with barriers on the work disk | The criterion: with barriers on |
+| M1.T14 | skyzfs/skyzfs#39 | The power-cut replay rig through `skyzfsd`, the cut below the daemon | The local store: the power-cut replay below the daemon |
+| M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
 
@@ -323,6 +324,34 @@ The rig's first run on a daemon with the reader thread, the pins and the hint ga
 
 A device is not waiting at the moment its server's process ends, and nothing may rely on that (found 2026-11-12, when the control rig failed once on one line). In the driver as tagged v7.0 the release of the server's char device changes no state; it queues a work item, and that item moves the device to quiesced, re-queueing itself while references are held, the last of which the ring's teardown can drop after the process is gone. The rigs read the state once right after an orderly stop and wanted it waiting. They now wait as they did after a kill, up to the 5 s the daemon itself gives a device that still reads live before it takes it over (M1.T13, skyzfs/skyzfs#35); measured so far, the device waits 11 to 136 ms after the process's end.
 
+#### The power-cut replay below the daemon (M1.T14)
+
+The replay rig of M1.T2 records the writes of the pool's own device, which fits a server that keeps the volume in one file. `skyzfsd` keeps a log and a home image, so a power cut has to be taken below it. `tests/kernel/replay_daemon.py` does that (the workflow's "through skyzfsd" jobs, one per image):
+
+- **The stack.** Pool, `/dev/ublkbN`, `skyzfsd serve` built with its test hooks, the volume's directory on xfs, dm-log-writes, a loop file. The workload is the reference rig's: files written and fsynced with a mark in the record at each fsync's return, and pool syncs.
+- **A prefix.** The lower disk as it was after the first *k* records. The rig mounts its xfs, which replays the journal, starts the daemon as after a reboot (an empty run directory, a new boot id), reads the device through it, and runs the reference rig's checks on that image: the pool imports, `zdb -u` gives the transaction group, and at an fsync mark every file whose fsync had returned is there with its content.
+- **The deep checks**, a scrub in a writable import and the every-copy check, run at the first and the last checked prefix of each transaction group. `zdb -e -bcc` runs on the image at the end of the log.
+- **Two budgets.** A pull request checks the marks and every flush boundary and no prefix between two flushes. The full budget, by dispatch, checks every record prefix. The daemon's log is written back before the flush, so a group's first prefix can lie between two flushes, and design §9 says every prefix: the summary says in one line how many of the prefixes were checked, and says "criterion shown" only for a full run with all of them, the ends deep-checked and exit 0. The lead ruled so when the review asked what the criterion means.
+- **Controls.** `withheld` holds the lower disk's writes between two fsync marks back until after the second mark, and must be caught by the fsynced files. The reference rig's other controls pick pool blocks in a record of the pool's own device and cannot be built on a record of the volume's file system. A control with the daemon's hook `--recover-short` was planned and withdrawn: the hook moves only the end that is compared with the acknowledged position, and after a reboot there is none, so it plants nothing. A hook that ends the recovery itself early would be a control; the daemon has none yet.
+- **A read that gets no answer.** Each read of the device has a limit. At the limit the rig kills the daemon and deletes the device before it waits for the reader, because a reader with direct I/O cannot be killed while its read is queued and a device with user recovery queues reads while it has no server. This is shown with stand-in processes, not on a device whose daemon stopped answering. The record phase has no such limit yet.
+- **Exit codes.** 0 passed; 1 a verdict against the daemon; 2 the rig's own error.
+
+What the runs showed[^t14runs]:
+
+| | Ubuntu 24.04 | Ubuntu 26.04 |
+|---|---|---|
+| Pull-request budget at the merged head: record prefixes checked | 143 of 546 | 147 of 557 |
+| fsync marks, sync marks, flush boundaries checked | 22 of 22, 9 of 9, 110 of 110 | 22 of 22, 9 of 9, 114 of 114 |
+| Transaction groups, and prefixes deep-checked | 19, 38 | 22, 44 |
+| The daemon's starts, and what they recovered | 143; logs of 4 to 126 MiB in 35 to 300 ms | 147; 4 to 126 MiB in 31 to 282 ms |
+| Checkpoint steps while recording | 14 | 14 |
+| `withheld` | caught | caught |
+| Result | every checked prefix passed, `zdb -bcc` 0 | the same |
+| An earlier full-budget run, limited to 300 s between flushes: flush boundaries, fsync marks | 152 of 152, 46 of 46 | 150 of 150, 45 of 45 |
+| The same run: prefixes between flushes checked, deep-checked prefixes | 86 of 514, 56 | 126 of 483, 54 |
+
+Every prefix that any run checked has passed. **No run has yet checked every record prefix**, so the criterion is not recorded as met: the full-budget run on the merged daemon is the next step. A prefix costs about 2.5 s, so that run is about 45 minutes a job.
+
 ### The throughput criterion (design §9)
 
 The criterion: tpcb within 10% of the benchmark model on the same machine. What follows is the account in the order it was measured. Each part names the package it led to. The rule the criterion is judged by today is stated after M1.3m, where it was fixed.
@@ -522,7 +551,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 - M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
+- The power-cut replay on `skyzfsd`: the rig is merged (M1.T14) and every prefix checked so far passed; the full-budget run that checks every record prefix on the merged daemon, which is what records the criterion, has not been made.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -585,6 +614,8 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | §5.1, the readers' queue as built (M1.3p, skyzfs/skyzfs#37); three looks by the review session and one finding by Codex | The queue and its wake logic were right from the first look. Blocking, found by both: an early return from a start left the readers already started waiting for ever, which the channel's dropped sender had prevented; fixed with a guard. Blocking at the second look: the fix's test passed with the fix taken out; it now counts the readers that ended, and the missing guard is a mutant. Taken from the review: a push wakes only when a reader waits. Left as stated: the one test that rests on a window of time. |
 | 2026-11-12 | §4.2, the ublk features and the oldest kernel (M1.3q, skyzfs/skyzfs#38); three looks by the review session, Codex with nothing at the last head | Blocking at the first look: the floor was 6.9, where the header names the asynchronous delete, but the drivers of 6.9 and 6.10 answer it `ENOTSUPP`; the floor is 6.11, and the lead's decision of 6.9 was wrong. Fixed. Not blocking, fixed: a refused start offered the override when a feature was missing as well, and the delete's `ENOTSUPP` was read by untested code. Suggested and not taken: a probe that adds and deletes a device in place of reading the release. |
 | 2026-11-12 | The benchmark's system-call trace and profile (M1.T15, skyzfs/skyzfs#40); three looks by the review session and two findings by Codex | Blocking at the first look: `summarize` failed with a syntax error at the head, so no summary rendered; fixed, and a unit test now compiles the script's embedded Python and runs it. The review recounted the profile's raw samples and got the same table; with the checks around a copy counted as copy, copies are 6% of the pump's kernel samples and not 4%, and the conclusion stands on its one row. Codex: stale trace files of an earlier row, and a trace longer than the window; both fixed. |
+| 2026-11-12 | The power-cut replay through `skyzfsd` (M1.T14, skyzfs/skyzfs#39); six looks by the review session and four findings by Codex | Blocking at the first look, both in the split of exit codes: a wrong exit 0, and a verdict that had been reached reported as the rig's error; fixed. A question of what the criterion means, ruled by the lead: every record prefix, so the full budget checks them all and only such a run shows the criterion. Found at the fourth look and fixed, not blocking: a read of the device that gets no answer would have hung the rig to the job's limit with no prefix named. Left for a follow-up: the record phase has no time limit, a fill that does not fit is blamed on the daemon, two test gaps. |
+| 2026-11-12 | The benchmark's barriers input (M1.T16, skyzfs/skyzfs#41); four looks by the review session, nothing from Codex | Blocking: on a disk that declares `write through` a barriers-on job passed while no flush reached the disk and nothing said why; the step now reads the disk's write cache and stops there. The review's count over the day's runs corrected the notes: the runners split by work disk, not by image. Not run on a runner at the merged head. |
 
 ## References
 
@@ -627,3 +658,4 @@ Every independent read of the design and every review of a work package, with wh
 [^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
 [^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.
 [^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.
+[^t14runs]: `skyzfs-replay-rig.yml`: run 43314111709 on the pull request's last head (e9b55ef), pull-request budget, both "through skyzfsd" jobs; and run 43282556301 by dispatch before the review, full budget as it then was. The daemon rig on the same head, run 43314111778, was as its table on the daemon and on the stand-in.
