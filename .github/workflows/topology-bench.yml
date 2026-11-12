@@ -308,9 +308,14 @@ jobs:
           # names the root file system /dev/root on the runners. A
           # partition's queue is its disk's.
           dev=$(mountpoint -d "$mp")
-          src=$(readlink -f "/sys/dev/block/$dev")
-          disk=$(basename "$src"); [ -e "$src/queue" ] || disk=$(basename "$(dirname "$src")")
-          src=/dev/$(basename "$src")
+          if [ -e "/sys/dev/block/$dev" ]; then
+            src=$(readlink -f "/sys/dev/block/$dev")
+            disk=$(basename "$src"); [ -e "$src/queue" ] || disk=$(basename "$(dirname "$src")")
+            src=/dev/$(basename "$src")
+          else
+            # No block device under this number (btrfs, overlay): not read.
+            src="device $dev"; disk="none for $dev"
+          fi
           wc=$(cat "/sys/block/$disk/queue/write_cache" 2>/dev/null || echo "not said")
           echo "disk $disk, queue write_cache: $wc"
           {
