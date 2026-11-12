@@ -1893,10 +1893,12 @@ for p in glob.glob('/proc/[0-9]*'):
     except (OSError, ValueError, IndexError):
         pass
 for k, v in c.most_common():
-    if v: print('thr', k, v)
+    # The daemon's threads and postgres at 0 too, so that 0 is told
+    # from "not recorded".
+    if v or k.startswith('skyzfs') or k == 'postgres': print('thr', k, v)
 for kind, cc in ext.items():
     for k, v in cc.items():
-        if v: print(kind, k, v)
+        if v or k.startswith('skyzfs') or k == 'postgres': print(kind, k, v)
 PY
     pressure_look
     as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
