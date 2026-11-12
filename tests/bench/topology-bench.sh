@@ -354,14 +354,14 @@ if disk:
     print('The work disk, measured at the start of the job (tests/bench/disk-sync.py): 64 MiB written through the page cache '
           'and the fdatasync after it, then 64 MiB with O_DIRECT and its fdatasync. The daemon\'s files are on this disk, '
           'and its syncs wait for what the page cache holds of them; an observation, not judged:\n')
-    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | the rows of this machine |')
-    print('|---|---|---|---|---|---|---|---|')
+    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes | the rows of this machine |')
+    print('|---|---|---|---|---|---|---|---|---|')
     for d in disk:
         m = d.get('machine', '')
         m = m[:36] + ' ' + m[37:] if len(m) > 37 else m
         here = sorted({r.get('label', r['topology']) for r in runs if r.get('machine') == m})
         print(f"| {m} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
-              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {', '.join(here) or 'none'} |")
+              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {d.get('dev', '-')}; {d.get('stable_writes', 'not said')} | {', '.join(here) or 'none'} |")
     print()
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
       '`flash write` = pool + cache (+ ZFS log) device writes; '
@@ -574,18 +574,19 @@ if skz:
             for o in others(topo, r)[0]:
                 print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
-    print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import | nr_dirty MiB mean / max | nr_writeback MiB mean / max |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in skz:
         k = r.get('skyzfsd', {})
         w = k.get('window', {})
         mib = lambda v: 'n/a' if v is None else f'{v / (1 << 20):.0f}'
         nn = lambda v: 'n/a' if v is None else str(v)
+        vm = lambda v: 'n/a' if not v else f"{v['mean'] * 4 / 1024:.1f} / {v['max'] * 4 / 1024:.1f}"
         print(f"| {r['workload']} | {label(r)} | {k.get('build', 'not said')}; {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
               f"{nn(k.get('steps'))} | {nn(k.get('syncs'))} | {nn(k.get('writes'))} | {mib(w.get('log_live_min'))} | {mib(w.get('log_live_max'))} | "
               f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
               f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
-              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} |")
+              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} | {vm(w.get('nr_dirty'))} | {vm(w.get('nr_writeback'))} |")
     # Where a request's time goes, by the daemon's own account.
     def rel_read_us(r):
         io = lambda k: sum(v for n, v in r.get('pg', {}).items() if n.startswith('io_relation_') and n.endswith('_' + k))
@@ -1388,7 +1389,11 @@ skz_sample() { # file: one line a second, "epoch key=value ...", until killed
             pkill -9 -x pgbench 2>/dev/null || true
             return 0
         fi
-        printf '%s %s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" >> "$1"
+        # With the kernel's pages dirty and under writeback (in pages,
+        # /proc/vmstat): what the daemon's hints and syncs leave to the
+        # page cache, machine-wide. An observation.
+        printf '%s %s%s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" \
+            "$(awk '$1 == "nr_dirty" || $1 == "nr_writeback" { printf "%s=%s ", $1, $2 }' /proc/vmstat 2>/dev/null)" >> "$1"
         sleep 1
     done
 }
@@ -1940,6 +1945,9 @@ if skz[base + '.after']:
     k['window'] = {'samples': len(samples), 'step_under_way': sum(1 for x in samples if x.get('checkpoint_step') not in (None, 'none')),
                    'log_live_min': min(live) if live else None, 'log_live_max': max(live) if live else None,
                    'unstored_max': max([int(x['unstored']) for x in samples if x.get('unstored', '').isdigit()] or [0])}
+    for key in ('nr_dirty', 'nr_writeback'):  # pages of 4 KiB, machine-wide
+        v = [int(x[key]) for x in samples if x.get(key, '').isdigit()]
+        k['window'][key] = {'mean': sum(v) / len(v), 'max': max(v), 'n': len(v)} if v else None
     info = os.path.join(os.path.dirname(base), topo + '.skzinfo')
     if os.path.exists(info):
         for line in open(info):
