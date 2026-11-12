@@ -54,3 +54,20 @@ Reviewed: 449a4c4 ... `origin/skyzfs-coding` f67d1d1.
 - Status version 7: 1584 + 32 fields = 1840 bytes, 205 fields; 5, 6
   and 7 read; `status_version` printed.
 - The three barrier tests wait for the barrier's own count.
+
+## Second look (head 2ccc827, one commit)
+
+- 1 dropped. ENOMEM, EINTR and EAGAIN keep their kinds and the
+  tracker takes them as "not this time": counted, the bytes wait, the
+  volume goes on. Refused bytes are not counted as handed. Plants
+  "refused counted as handed" and "refused bytes dropped": caught.
+- A hint that keeps being refused: one call per unit written, each
+  over a range one unit longer, until a sync. No more calls than
+  before, and no range longer than what the sync must write anyway.
+- 2 dropped. Length 0 returns Ok with no call.
+- 3 dropped. My plant "no hand-over at a change of file" now fails
+  `a_roll_hands_over_what_waits_in_the_segment_it_leaves`.
+- 4, 5: the description's lines not read by me; the function's
+  comment says both.
+- fmt, clippy clean; skyzfs-local 221 pass (3 ignored), skyzfs-ublk
+  125, skyzfsd 48; test_skz_time.py passes.
