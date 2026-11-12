@@ -194,6 +194,15 @@ when it merges.
   the ref. A push no longer starts it there. On any other branch but
   `main`, a push that touches `topology-bench.sh`, `tests/lib/gnu-dd.sh`
   or the workflow still starts thirteen runner jobs.
+- **The daemon in the benchmark.** The topology `zfs-skyzfsd` serves
+  the pool's data device with a release build of `skyzfsd`. Its summary
+  judges a daemon row against the model (`zfs-slog`) only when both
+  rows ran on one machine and the model row had no origin delay: use
+  the `sequence` input with every entry on one runner and
+  `origin_delay_ms: 0` (the workflow's default is 10). Anything else
+  ends with NO VERDICT, which is not a failure of the run.
+  `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own. The
+  script records and exits 0 whatever the ratio.
 - **Runner noise.** Two GitHub runner VMs differ by more than most
   effects being measured. Compare configurations only on one runner (the
   workflow's `sequence` input), and say how many runs a number rests on.
