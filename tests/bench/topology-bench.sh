@@ -211,6 +211,10 @@
 #   TB_SKYZFSD=             the skyzfsd binary for zfs-skyzfsd (a release
 #                           build without the test hooks is what the
 #                           workflow builds)
+#   TB_SKYZFSD_REF=         what TB_SKYZFSD was built from (a commit or
+#                           ref; the workflow sets it, and builds that ref
+#                           when a sequence entry names it): written down
+#                           and printed beside the row, nothing else
 #   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
 #                           ("--depth,128,--log-high,8,--log-low,4"; the
 #                           marks are in segments of 64 MiB, default 2 and 1)
@@ -327,7 +331,14 @@ import glob, json, os, sys
 out = sys.argv[1]
 sys.path.insert(0, sys.argv[2])
 import skz_time
-runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
+runs = []
+for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True)):
+    r = json.load(open(p))
+    # A sequence writes its N-th entry under TB_OUT/N: the order the
+    # rows ran in on their machine. None outside a sequence.
+    d = os.path.basename(os.path.dirname(p))
+    r['_seq'] = int(d) if d.isdigit() else None
+    runs.append(r)
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
          'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache',
          'zfs-loop', 'zfs-ublk', 'zfs-skyzfsd']
@@ -337,6 +348,27 @@ def label(r): return r.get('label', r['topology']) + ('' if mode(r) == 'none' el
 runs.sort(key=lambda r: (r['workload'], order.index(r['topology']) if r['topology'] in order else 99,
                          r.get('label', ''), modes.index(mode(r)) if mode(r) in modes else 99))
 print('## topology-bench\n')
+# The work disk's sync, measured at the start of a job (disk-sync.py):
+# which kind of machine the rows of that job ran on.
+disk = []
+for p in sorted(glob.glob(os.path.join(out, '**', 'disk-sync.txt'), recursive=True)):
+    for line in open(p):
+        f = line.split()
+        if f[:1] == ['disk-sync']:
+            disk.append(dict(x.split('=', 1) for x in f[1:] if '=' in x))
+if disk:
+    print('The work disk, measured at the start of the job (tests/bench/disk-sync.py): 64 MiB written through the page cache '
+          'and the fdatasync after it, then 64 MiB with O_DIRECT and its fdatasync. The daemon\'s files are on this disk, '
+          'and its syncs wait for what the page cache holds of them; an observation, not judged:\n')
+    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | the rows of this machine |')
+    print('|---|---|---|---|---|---|---|---|')
+    for d in disk:
+        m = d.get('machine', '')
+        m = m[:36] + ' ' + m[37:] if len(m) > 37 else m
+        here = sorted({r.get('label', r['topology']) for r in runs if r.get('machine') == m})
+        print(f"| {m} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
+              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {', '.join(here) or 'none'} |")
+    print()
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
       '`flash write` = pool + cache (+ ZFS log) device writes; '
       '`amp` = flash write relative to the nocache run of the same workload.\n')
@@ -508,10 +540,12 @@ if skz:
           '(the same boot id and host name); rows of other machines are counted and not compared. '
           'The criterion is a ratio of at least 0.90 to a zfs-slog row with no origin delay (TB_ORIGIN_DELAY_MS=0); '
           'the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
-    print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|')
     for r in skz:
-        lim_ = r.get('skyzfsd', {}).get('info', {}).get('mem_max', 'n/a')
+        k_ = r.get('skyzfsd', {})
+        lim_ = (f"{k_.get('build', 'not said')}; {k_.get('serve_args') or 'defaults'}; "
+                f"{k_.get('info', {}).get('mem_max', 'n/a')}")
         if not r['tps']:
             print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
             continue
@@ -521,8 +555,16 @@ if skz:
         elif not model:
             print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none on this machine | - | "
                   f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
+        # In a sequence the first model row of the machine is the one
+        # judged against; a later one (run to see whether the machine
+        # changed over the job) is reported beside it.
+        first = min((o['_seq'] for o in model if o.get('_seq') is not None), default=None)
         for o in model:
             q = r['tps'] / o['tps']
+            if first is not None and o.get('_seq') is not None and o['_seq'] != first:
+                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} (row {o['_seq']} of the sequence) | {o['tps']:.0f} | {q:.3f} | "
+                      f"not judged: the first model row of the sequence (row {first}) is the one judged against |")
+                continue
             # The daemon's row has no origin under it. A model row with
             # an origin delay was slowed by it at every origin read, and
             # a ratio to it would flatter the daemon: no verdict.
@@ -538,14 +580,14 @@ if skz:
             for o in others(topo, r)[0]:
                 print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
-    print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
+    print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
     print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in skz:
         k = r.get('skyzfsd', {})
         w = k.get('window', {})
         mib = lambda v: 'n/a' if v is None else f'{v / (1 << 20):.0f}'
         nn = lambda v: 'n/a' if v is None else str(v)
-        print(f"| {r['workload']} | {label(r)} | {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
+        print(f"| {r['workload']} | {label(r)} | {k.get('build', 'not said')}; {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
               f"{nn(k.get('steps'))} | {nn(k.get('syncs'))} | {nn(k.get('writes'))} | {mib(w.get('log_live_min'))} | {mib(w.get('log_live_max'))} | "
               f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
               f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
@@ -1399,6 +1441,7 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             log "skyzfsd: the pool image ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated of $(( $(stat -c %s "$WORK/zfs-origin.img") >> 20 )) MiB) was copied onto $dev in $t0 ms, direct I/O, conv=sparse; the daemon counted $(skz_stat writes) writes, checkpoint_steps $(skz_stat checkpoint_steps), log_live $(skz_stat log_live)"
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKYZFSD_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
+            echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
             skz_settle
             ;;
         *) echo "build_zfs_direct: $1?" >&2; return 1 ;;
@@ -1904,6 +1947,7 @@ if skz[base + '.after']:
             key, _, value = line.strip().partition(' ')
             if key: k['info'][key] = value
     k['serve_args'] = k['info'].get('serve_args', '')
+    k['build'] = k['info'].get('build', 'not said')
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k

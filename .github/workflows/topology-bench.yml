@@ -215,7 +215,28 @@ jobs:
           sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           cargo build --release --locked -p skyzfsd
           echo "TB_SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          echo "TB_SKYZFSD_REF=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           git rev-parse HEAD
+          # A sequence entry may name another build with
+          # TB_SKYZFSD_REF=<commit, short commit or branch>: each one
+          # named is built here, from its own worktree, into a binary of
+          # its own, so that one machine runs them all.
+          refs=$(grep -oE 'TB_SKYZFSD_REF=[A-Za-z0-9_.,:=+-]+' <<< "$TB_SEQUENCE" | cut -d= -f2- | sort -u || true)
+          if [ -n "$refs" ]; then
+            git fetch --no-tags --quiet origin '+refs/heads/*:refs/remotes/origin/*'
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --unshallow --no-tags --quiet origin; fi
+          fi
+          for ref in $refs; do
+            sha=$(git rev-parse --verify --quiet "origin/$ref^{commit}" || git rev-parse --verify --quiet "$ref^{commit}") \
+              || { echo "::error::sequence names TB_SKYZFSD_REF=$ref, which is no branch or commit here"; exit 64; }
+            git worktree add --detach "$RUNNER_TEMP/wt-$ref" "$sha"
+            (cd "$RUNNER_TEMP/wt-$ref" && CARGO_TARGET_DIR="$RUNNER_TEMP/target-refs" cargo build --release --locked -p skyzfsd)
+            cp "$RUNNER_TEMP/target-refs/release/skyzfsd" "$RUNNER_TEMP/skyzfsd-$ref"
+            echo "| $ref | $sha |" >> "$RUNNER_TEMP/refs.md"
+          done
+          if [ -s "$RUNNER_TEMP/refs.md" ]; then
+            { echo '| sequence names TB_SKYZFSD_REF= | built from |'; echo '|---|---|'; cat "$RUNNER_TEMP/refs.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
           sudo modprobe ublk_drv
 
       - name: Build Open CAS (casadm with write-invalidate enabled)
@@ -234,6 +255,17 @@ jobs:
           sudo make install CAS_EXT_EXP=1
           sudo modprobe cas_cache
           casadm --version
+
+      - name: Disk sync of the work disk
+        # One observation of the disk the daemon's files sit on, at the
+        # start of the job: 64 MiB written through the page cache and
+        # its fdatasync timed, then the same with O_DIRECT. Some runners
+        # take a sync of 8 MiB in about 40 ms and others in about 4; the
+        # summary sets this line beside the rows of this machine.
+        run: |
+          mkdir -p "$TB_OUT"
+          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 | tee "$TB_OUT/disk-sync.txt"
+          { echo '```'; cat "$TB_OUT/disk-sync.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run benchmark
         # ubuntu-26.04's sudo-rs does not carry the job's environment
@@ -263,6 +295,8 @@ jobs:
             for a in $assigns; do
               [[ $a =~ ^TB_[A-Z0-9_]+=[A-Za-z0-9_.,:=+-]*$ ]] || { echo "::error::bad sequence assignment: $a"; exit 64; }
               args+=("$a")
+              # The build the step "Build skyzfsd" made for this ref.
+              if [[ $a == TB_SKYZFSD_REF=* ]]; then args+=("TB_SKYZFSD=$RUNNER_TEMP/skyzfsd-${a#TB_SKYZFSD_REF=}"); fi
             done
             echo "::group::sequence $i: $label ($assigns)"
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
