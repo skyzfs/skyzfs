@@ -52,3 +52,12 @@ lines of topology-bench.sh, two workflow lines).
   takes up to 8 MiB and a request adds at most 1 MiB, so the one step
   after the request that reached the mark brings the log under it
   before the next turn.
+
+## Second look: db864d3..d8f2abe
+
+All three findings dropped. 19 tests pass. The six plants, adapted to
+the new code, and four more against the new tables (the own sync per
+step and not per sync, the flush mean over the syncs' count, a part's
+longest from the wrong key, the doubtful mark dropped): all ten fail
+a test now. Not done: no summary rendered from a run's artifacts with
+this commit.
