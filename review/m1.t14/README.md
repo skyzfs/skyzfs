@@ -153,3 +153,24 @@ end after SIGKILL is bounded as well.
 - Every read now goes through `read_bounded()`, so this commit is on the path
   a passing run takes. The last finished rig run is at 31b06ad; run
   43307626765 at 3b77bda was under way when this was written.
+
+## Sixth look, at e9b55ef: nothing blocks
+
+- **The rig run at 3b77bda is in** (run 43307626765). Both "through skyzfsd"
+  jobs exit 0: 145 of 555 prefixes checked on 24.04 and 146 of 546 on 26.04,
+  the criterion line as ruled, the withheld control caught, `zdb -bcc` exit 0.
+  The 291 reads went through `read_bounded()` and took 0.39 to 0.66 s.
+- **e9b55ef, a failed `zdb -bcc` survives a later rig error.** 157 tests pass
+  (48 of `test_replay_daemon.py` as a non-root user); `repro.py` ends 1, 1, 2.
+  Plant: the old exit code in the stopped path is caught by the new test.
+  Plant: a timed-out `zdb -bcc` counted as a verdict in the stopped path is
+  not caught by any test.
+- **e9b55ef, a failed fill is a verdict.** `fill-try.sh` (here) runs the
+  step's own lines with the fill file pointed at a full device: dd fails with
+  "No space left on device" and the rig writes "a verdict against the daemon",
+  exit 1. A fill that does not fit is the rig's setting, not the daemon. The
+  workflow fixes `RIG_FILL_MB=160 RIG_VOLUME_MB=1024`, so only a run by hand
+  with other values gets there.
+- Outside the delta: nothing in the record phase has a time limit (the fill's
+  dd, the writer's fsync, `zpool sync`), so a daemon that stops answering
+  while recording would stop the rig until the job's limit. Read, not run.
