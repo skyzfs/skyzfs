@@ -83,3 +83,16 @@
   (`:549`); it now prints for rows without a limit.
 - No test covers the 0.90 threshold exactly (`>=`), or `summarize`'s table
   itself.
+
+## The added commit b4881ca (read, not run)
+
+Head moved to b4881ca: one commit in `topology-bench.sh`, for a finding of
+Codex. Every `skyzfs*` name and `postgres` is now kept in each per-name
+metric, and a missing one prints "not recorded". The verdict stands.
+
+- It does what it says: a kept name seen at the first look stays at 0, and
+  the cut at twenty no longer applies to kept names.
+- One corner left, low: the sampler prints a name only when its value is not
+  0 (`if v: print(kind, k, v)`). A daemon thread whose counter is 0 at both
+  looks (say an idle thread with no user ticks) prints "not recorded" where 0
+  is true. I drop it when the sampler prints kept names at 0 too.
