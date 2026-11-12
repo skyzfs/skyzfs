@@ -56,9 +56,13 @@ class Pure(unittest.TestCase):
         self.assertIsNone(rd.ready_device('starting\n'))
         self.assertIsNone(rd.ready_device('ready /dev/sda\n'))
 
-    def test_status_keys(self):
-        text = 'state serving\nreplayed_bytes 1048576\nlog_live 4096\ncheckpoint_steps 3\nother 9\n'
-        self.assertEqual(rd.status_values(text), {'replayed_bytes': 1048576, 'log_live': 4096, 'checkpoint_steps': 3})
+    def test_the_start_line(self):
+        # As skyzfsd printed it on a runner (run 43276985772).
+        text = ('device reload json failed\nskyzfsd: serving device 0 (added) after 395 ms: lock 0 ms, position 0 ms, '
+                'recovery 325 ms of a log of 65822720 bytes and 668 operations, devices 1 ms (live 0 ms, begin 0 ms '
+                'with 0 busy answers), queue 56 ms, start 5 ms; recovered_unacknowledged 0\n')
+        self.assertEqual(rd.start_values(text), {'recovery_ms': 325, 'log_bytes': 65822720, 'operations': 668})
+        self.assertEqual(rd.start_values('skyzfsd: refused\n'), {})
 
     def test_plan_takes_the_base_every_mark_and_the_end(self):
         kind, rest, counts = rd.prefix_plan(self.records)
@@ -208,7 +212,7 @@ class Pass(unittest.TestCase):
         d = self.dir.name
         a = dict(log=self.log, base=self.base, manifest=self.manifest, pool='p', mountpoint='/p', work=os.path.join(d, 'w'),
                  out=os.path.join(d, 'out'), skyzfsd='skyzfsd', ublk='ublk', dd='dd', volume='vol', serve_arg=None,
-                 dev_bytes=1 << 20, budget_s=1000, budget_name='test', between_budget_s=0, recover_short=1,
+                 dev_bytes=1 << 20, budget_s=1000, budget_name='test', between_budget_s=0, recover_short=8,
                  recover_points=3, steps='4', seed=1, replay_log='', require_witness=False, discard='zero')
         a.update(kw)
         os.makedirs(a['work'], exist_ok=True)

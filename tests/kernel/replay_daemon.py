@@ -57,10 +57,17 @@ mark.
 Negative controls, judged against EXPECTED (and the reference rig's
 four controls, which pick pool blocks in a log of the pool's device,
 are not built here; the summary says so):
-  recover-short   at an even sample of fsync marks, the start runs with
-                  `--recover-short N`: the recovery counts the log N
-                  records shorter than it found it, the fault of a
-                  recovery that loses the log's tail
+  recover-short   at an even sample of the fsync and sync marks, the
+                  start runs with `--recover-short N`: the recovery
+                  counts the log N records shorter than it found it,
+                  the fault of a recovery that loses the log's tail.
+                  N is more than one: at a mark the log's last records
+                  need not be the ones the mark depends on, since the
+                  daemon has the kernel write its log back before it
+                  syncs, and a later write of the pool can already be
+                  on the disk. Each start's line says how many
+                  operations it recovered, beside the start without
+                  the hook at the same prefix
   withheld        the lower disk's writes between two fsync marks are
                   held back until after the second mark: the disk
                   acknowledged the flushes of that fsync over data that
@@ -102,7 +109,7 @@ READY_S = 120
 STOP_S = 60
 READY_RE = re.compile(r'^ready (/dev/ublkb(\d+))$', re.M)
 TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
-STATUS_KEYS = ('replayed_bytes', 'log_live', 'recovered_unacknowledged', 'checkpoint_steps')
+START_RE = re.compile(r'recovery (\d+) ms of a log of (\d+) bytes and (\d+) operations')
 
 # The stages at which a failure is a verdict: the reference rig's, and
 # the provider's own steps that the daemon or the file system under it
@@ -144,14 +151,10 @@ def ready_device(text):
     return (m.group(1), int(m.group(2))) if m else None
 
 
-def status_values(text):
-    """`skyzfsd status` -> the keys of STATUS_KEYS it gave."""
-    out = {}
-    for line in text.splitlines():
-        f = line.split()
-        if len(f) == 2 and f[0] in STATUS_KEYS:
-            out[f[0]] = int(f[1]) if f[1].isdigit() else f[1]
-    return out
+def start_values(text):
+    """The daemon's standard error -> what its start line says it recovered, or {}."""
+    m = START_RE.search(text)
+    return {'recovery_ms': int(m.group(1)), 'log_bytes': int(m.group(2)), 'operations': int(m.group(3))} if m else {}
 
 
 def prefix_plan(records, base_max=BASE_MAX):
@@ -395,8 +398,11 @@ class Daemon:
                 return 'start', f'neither ready nor ended {READY_S} s after it was started: {said(err_path)}'
             info['t_start'] = time.monotonic() - t0
             number = dev[1]
-            rc_, out, _ = run([self.a.skyzfsd, 'status', '--dir', vol, '--run-dir', run_dir], 30)
-            info['status'] = status_values(out) if rc_ == 0 else {}
+            try:
+                with open(err_path, errors='replace') as f:
+                    info['start'] = start_values(f.read())
+            except OSError:
+                info['start'] = {}
             if os.path.exists(image):
                 os.unlink(image)
             t1 = time.monotonic()
@@ -550,8 +556,8 @@ def main():
     ap.add_argument('--budget-name', default='', help='what the budget is called in the summary')
     ap.add_argument('--between-budget-s', type=float, default=0,
                     help='seconds for random prefixes between two flushes (0: none)')
-    ap.add_argument('--recover-short', type=int, default=1, help='N of the recover-short control')
-    ap.add_argument('--recover-points', type=int, default=6, help='fsync marks the recover-short control checks')
+    ap.add_argument('--recover-short', type=int, default=8, help='N of the recover-short control')
+    ap.add_argument('--recover-points', type=int, default=8, help='marks the recover-short control checks')
     ap.add_argument('--steps', default='', help='checkpoint steps the daemon took while recording')
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--replay-log', default='')
@@ -723,13 +729,16 @@ def check(a):
 
     # Negative controls.
     ctl = []
-    pts = spread(sorted(ck.fsync_at), a.recover_points)
+    pts = spread(sorted(ck.fsync_at | {p for p, _, _ in marks}), a.recover_points)
     ck.daemon.reset()
     results = []
     for n in pts:
         ck.held = None
         results.append(ck.point(n, 'control', hooks=('--recover-short', str(a.recover_short))))
-    ctl.append(control_row('recover-short', f'the start at {len(pts)} fsync marks runs with --recover-short '
+    normal = {p['n']: p.get('start', {}).get('operations') for p in points}
+    for x in results:
+        x['operations_without_hook'] = normal.get(x['n'])
+    ctl.append(control_row('recover-short', f'the start at {len(pts)} sync and fsync marks runs with --recover-short '
                            f'{a.recover_short}: its recovery counts the log {a.recover_short} record(s) shorter', results))
     w = withheld_schedule(records)
     absent = dict(ABSENT)
@@ -778,7 +787,8 @@ def control_row(name, what, results):
     return {'name': name, 'what': what, 'points': len(results), 'caught': first is not None, 'first': first,
             'failed_by': by, 'rig_errors': rig_errors,
             'results': [{'n': r['n'], 'ok': r['ok'], 'failed': r.get('failed'), 'detail': r.get('detail', '')[:300],
-                         'status': r.get('status')} for r in results]}
+                         'start': r.get('start'), 'operations_without_hook': r.get('operations_without_hook'),
+                         'said': r.get('said')} for r in results]}
 
 
 KIND_LABELS = (('base', 'before the first flush after recording began'), ('fsync', "ends with a file's fsync mark"),
@@ -824,10 +834,12 @@ def summary(res):
                    f"reading its device {part('t_read'):.2f}, its stop {part('t_stop'):.2f}), then the light check "
                    f"{part('t_light'):.2f} s and `zdb -u` {part('t_txg'):.2f} s; the fsync check {part('t_fsync'):.2f} s "
                    f"where it ran.")
-        rb = [p['status']['replayed_bytes'] for p in main if isinstance(p.get('status', {}).get('replayed_bytes'), int)]
-        if rb:
-            out.append(f"\nThe daemon's starts replayed {min(rb) >> 20} to {max(rb) >> 20} MiB of log "
-                       f"({len(rb)} starts that said).")
+        st = [p['start'] for p in main if p.get('start')]
+        if st:
+            out.append(f"\nThe daemon's starts recovered logs of {min(x['log_bytes'] for x in st) >> 20} to "
+                       f"{max(x['log_bytes'] for x in st) >> 20} MiB, {min(x['operations'] for x in st)} to "
+                       f"{max(x['operations'] for x in st)} operations, in {min(x['recovery_ms'] for x in st)} to "
+                       f"{max(x['recovery_ms'] for x in st)} ms ({len(st)} starts).")
     out.append(f"\nTransaction groups seen: {cov.get('txgs', 0)} (txg {cov.get('txg_first')} to {cov.get('txg_last')}). "
                f"The deep checks (a scrub in a writable import with the fsync check, and the every-copy check) ran at "
                f"{cov.get('deep', 0)} prefixes: the first and the last checked prefix of each group. Their granularity is "
@@ -867,6 +879,12 @@ def summary(res):
         by = ', '.join(f'{k} {v}' for k, v in c['failed_by'].items())
         out.append(f"| {c['name']} | {c['what']} | {c['points']} | {'yes, ' + by if c['caught'] else 'no'} | "
                    f"{first.replace('|', '/')} |")
+    for c in res['controls']:
+        ops = [(x['n'], x.get('operations_without_hook'), (x.get('start') or {}).get('operations'))
+               for x in c.get('results', []) if x.get('operations_without_hook') is not None]
+        if ops:
+            out.append(f"\n`{c['name']}`, operations recovered at each prefix without the hook and with it: "
+                       + ', '.join(f'{n}: {a} and {b}' for n, a, b in ops) + '.')
     out.append('\nAgainst `EXPECTED` in `replay_daemon.py` (a difference fails the job):\n')
     out.append('| control | expected | observed | |')
     out.append('|---|---|---|---|')
