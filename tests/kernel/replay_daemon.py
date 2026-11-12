@@ -228,6 +228,19 @@ def withheld_schedule(records):
                     f'that the disk does not have'}
 
 
+def hook_took(results):
+    """Whether a hooked control's starts recovered less than the starts without the hook at the same prefixes.
+
+    True when at least one did, False when every start that said both
+    recovered the same, None when none said both.
+    """
+    pairs = [(x.get('operations_without_hook'), (x.get('start') or {}).get('operations')) for x in results]
+    pairs = [(a, b) for a, b in pairs if a is not None and b is not None]
+    if not pairs:
+        return None
+    return any(b < a for a, b in pairs)
+
+
 def tally(results):
     """Results of a control's points -> (failures by judging stage, rig errors, first judging failure)."""
     by, rig_errors, first = {}, [], None
@@ -738,8 +751,15 @@ def check(a):
     normal = {p['n']: p.get('start', {}).get('operations') for p in points}
     for x in results:
         x['operations_without_hook'] = normal.get(x['n'])
-    ctl.append(control_row('recover-short', f'the start at {len(pts)} sync and fsync marks runs with --recover-short '
-                           f'{a.recover_short}: its recovery counts the log {a.recover_short} record(s) shorter', results))
+    row = control_row('recover-short', f'the start at {len(pts)} sync and fsync marks runs with --recover-short '
+                      f'{a.recover_short}: its recovery counts the log {a.recover_short} record(s) shorter', results)
+    took = hook_took(results)
+    if took is False:
+        # Not "not caught": the fault was never planted.
+        why = 'with the hook every start recovered as many operations as without it: the fault was not planted'
+        row['rig_errors'].append({'n': results[0]['n'], 'failed': 'rig: the hook had no effect', 'detail': why})
+        cov['errors'].append(f'the recover-short control: {why}')
+    ctl.append(row)
     w = withheld_schedule(records)
     absent = dict(ABSENT)
     if w is None:
@@ -765,7 +785,14 @@ def check(a):
     res['points'] = [{k: v for k, v in p.items() if k != 'dir'} for p in points]
     res['failures'] = [{k: v for k, v in p.items() if k != 'dir'} for p in failures]
     res['rig_errors'] = [{'n': p['n'], 'failed': p['failed'], 'detail': p['detail']} for p in rig_errors]
-    code, against = verdict(failures, rig_errors, controls_ok, cov['errors'], witness_ok, res['zdb_cc']['rc'])
+    # A control the rig could not plant, or whose prefixes the rig failed
+    # at, says nothing about the daemon: it is the rig's error, not a
+    # control that differs from the table.
+    unplanted = {c['name'] for c in ctl if c.get('rig_errors')}
+    controls_ok = all(r['match'] for r in res['control_rows'] if r['name'] not in unplanted)
+    ctl_errors = [dict(e, n=e['n'], failed=f"{c['name']}: {e['failed']}") for c in ctl for e in c.get('rig_errors', [])]
+    code, against = verdict(failures, rig_errors + ctl_errors, controls_ok, cov['errors'], witness_ok,
+                            res['zdb_cc']['rc'])
     res['exit'], res['against'] = code, against
     run(['cp', os.path.join(a.work, 'serve.err'), os.path.join(a.out, 'last-serve.err')])
     with open(os.path.join(a.out, 'replay-results.json'), 'w') as f:

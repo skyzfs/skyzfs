@@ -154,6 +154,14 @@ class Pure(unittest.TestCase):
         self.assertEqual([e['n'] for e in rig_errors], [3])
         self.assertEqual(first['n'], 2)
 
+    def test_a_hook_that_changed_nothing_is_told_apart(self):
+        # Run 43279006013: --recover-short 8 after a reboot recovered what the start without it did.
+        same = [{'operations_without_hook': 1066, 'start': {'operations': 1066}},
+                {'operations_without_hook': 847, 'start': {'operations': 847}}]
+        self.assertIs(rd.hook_took(same), False)
+        self.assertIs(rd.hook_took(same + [{'operations_without_hook': 900, 'start': {'operations': 892}}]), True)
+        self.assertIsNone(rd.hook_took([{'operations_without_hook': None, 'start': {}}]))
+
     def test_exit_codes(self):
         self.assertEqual(rd.verdict([], [], True, [], True, 0), (0, []))
         code, why = rd.verdict([{'n': 1}], [{'n': 2, 'failed': 'rig: losetup'}], True, [], True, 0)
