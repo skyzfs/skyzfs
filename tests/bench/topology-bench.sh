@@ -235,6 +235,13 @@
 #                           reclaims and throttles the daemon's
 #                           write-back. The daemon's resident memory and
 #                           its cgroup's file pages are recorded either way
+#   TB_SYSCALLS=1           zfs-skyzfsd only: trace the daemon's system calls
+#                           for TB_SYSCALLS_S seconds (default 20) in the
+#                           middle of the measured window, by thread
+#                           (`perf trace -s -p`, or `strace -f -T -p` where
+#                           perf cannot trace). The trace slows the
+#                           daemon, so such a row is given no verdict; put
+#                           it after the last model row of a sequence
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -358,14 +365,14 @@ if disk:
     print('The work disk, measured at the start of the job (tests/bench/disk-sync.py): 64 MiB written through the page cache '
           'and the fdatasync after it, then 64 MiB with O_DIRECT and its fdatasync. The daemon\'s files are on this disk, '
           'and its syncs wait for what the page cache holds of them; an observation, not judged:\n')
-    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes | the rows of this machine |')
+    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes; write_cache | the rows of this machine |')
     print('|---|---|---|---|---|---|---|---|---|')
     for d in disk:
         m = d.get('machine', '')
         m = m[:36] + ' ' + m[37:] if len(m) > 37 else m
         here = sorted({r.get('label', r['topology']) for r in runs if r.get('machine') == m})
         print(f"| {m} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
-              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {d.get('dev', '-')}; {d.get('stable_writes', 'not said')} | {', '.join(here) or 'none'} |")
+              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {d.get('dev', '-')}; {d.get('stable_writes', 'not said')}; {d.get('write_cache', 'not said')} | {', '.join(here) or 'none'} |")
     print()
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
       '`flash write` = pool + cache (+ ZFS log) device writes; '
@@ -549,6 +556,26 @@ if drows:
             print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {pp('cpu.some')} | {pp('io.some')} / {pp('io.full')} | "
                   f"{pp('pg.cpu.some')} | {pp('pg.io.some')} | {pcpu} | {pp('skz.cpu.some') if 'skz.cpu.some' in ps else '-'} | "
                   f"{nf(g.get('ctxt', 0) / txn if 'ctxt' in g else None, '.1f')} | {drd} | {dus} |")
+    # The daemon's system calls by thread, where a row traced them
+    # (TB_SYSCALLS): the six that took the most time of each thread
+    # name, per transaction of the row's rate over the trace.
+    sc = [r for r in runs if r.get('syscalls', {}).get('threads') and r.get('tps')]
+    if sc:
+        print('\nThe daemon\'s system calls by thread (TB_SYSCALLS), traced in the middle of the window with the tool '
+              'named, on the daemon\'s pid only. Per thread name (the readers together), the six calls that took the '
+              'most time: calls per transaction (at the row\'s tps over the trace\'s seconds) and µs per call. The trace '
+              'slows the daemon, so the row has no verdict:\n')
+        print('| workload | daemon row | tps | tool, s | thread (threads) | calls per txn, µs per call |')
+        print('|---|---|---|---|---|---|')
+        for r in sc:
+            s_ = r['syscalls']; txn = r['tps'] * s_['seconds']
+            for name, t in sorted(s_['threads'].items(), key=lambda x: -sum(v[1] for v in x[1]['calls'].values())):
+                calls = sorted(t['calls'].items(), key=lambda x: -x[1][1])[:6]
+                if not calls:
+                    continue
+                txt = ', '.join(f"{c} {n / txn:.3f} / {ms * 1000 / n:.1f}" for c, (n, ms) in calls if n)
+                print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {s_['tool']}, {s_['seconds']:.0f} | "
+                      f"{name} ({t['tids']}) | {txt} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres\'s (its memory.max is TB_MEM_LIMIT, or '
@@ -776,6 +803,9 @@ UBLK_ID=${TB_UBLK_ID:-7}
 SKYZFSD=${TB_SKYZFSD:-}
 SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
 SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
+SYSCALLS=${TB_SYSCALLS:-}
+SYSCALLS_S=${TB_SYSCALLS_S:-20}
+[[ $SYSCALLS_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SYSCALLS_S must be a number of seconds: $SYSCALLS_S" >&2; exit 64; }
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
@@ -963,7 +993,7 @@ ORIGIN_DEV=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""; TOPO=""
 WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
-SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""
+SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""; SC_PID=""
 SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
@@ -1749,6 +1779,29 @@ add_slog() {
 }
 
 # ------------------------------------------- snapshots in the window
+# base: the daemon's system calls by thread, TB_SYSCALLS_S seconds in the
+# middle of the window, into base.syscalls (JSON from syscalls.py; not
+# named .json, which summarize would read as a row). perf
+# where it can trace, else strace. Run in the background; it ends by
+# itself, the trace under a time limit.
+syscall_trace() {
+    local base=$1 t tool=""
+    sleep $(( DURATION > SYSCALLS_S ? (DURATION - SYSCALLS_S) / 2 : 0 ))
+    kill -0 "$SKZ_PID" 2>/dev/null || { log "syscall trace: the daemon is gone"; return 0; }
+    for t in /proc/"$SKZ_PID"/task/*; do echo "${t##*/} $(cat "$t/comm" 2>/dev/null)"; done > "$base.threads"
+    if command -v perf >/dev/null && timeout -s INT "$SYSCALLS_S" perf trace -s -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
+        || { [ -s "$base.trace" ] && grep -q 'events' "$base.trace"; }; then
+        tool=perf
+    elif command -v strace >/dev/null; then
+        timeout -s INT "$SYSCALLS_S" strace -f -qq -T -p "$SKZ_PID" -o "$base.trace" 2>> "$base.trace.err" || true
+        tool=strace
+    else
+        log "syscall trace: neither perf nor strace is installed"; return 0
+    fi
+    python3 "$HERE/syscalls.py" "$tool" "$base.trace" "$base.threads" "$SYSCALLS_S" > "$base.syscalls" \
+        || log "syscall trace: the $tool output could not be read: $(tail -n 3 "$base.trace.err" | tr '\n' ';')"
+    log "syscall trace: $tool for ${SYSCALLS_S}s, $(wc -c < "$base.trace") bytes"
+}
 take_snap() { # n mode: one snapshot of the stack. Leaves nothing frozen or suspended.
     local n=$1 mode=$2 rc=0 d
     if [ -n "$ZFS_UP" ]; then
@@ -2013,6 +2066,11 @@ run_workload() { # topology workload [snapshot mode]
         : > "$OUT/$tag.skz"
         skz_sample "$OUT/$tag.skz" &
         SKZ_SAMPLER=$!
+        if [ "$SYSCALLS" = 1 ]; then
+            rm -f "$OUT/$tag.syscalls"
+            syscall_trace "$OUT/$tag" &
+            SC_PID=$!
+        fi
     fi
     log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
@@ -2026,6 +2084,16 @@ run_workload() { # topology workload [snapshot mode]
     if [ -n "$SKZ_SAMPLER" ]; then
         # Before the sync below: the samples are of the window.
         kill "$SKZ_SAMPLER" 2>/dev/null || true; wait "$SKZ_SAMPLER" 2>/dev/null || true; SKZ_SAMPLER=""
+    fi
+    if [ -n "$SC_PID" ]; then
+        # The trace ended inside the window unless pgbench ended early.
+        for _ in $(seq 1 480); do kill -0 "$SC_PID" 2>/dev/null || break; sleep 0.25; done
+        if kill -0 "$SC_PID" 2>/dev/null; then
+            pkill -INT -P "$SC_PID" 2>/dev/null; kill "$SC_PID" 2>/dev/null
+            log "syscall trace: not ended 120 s after the window; stopped"
+        fi
+        wait "$SC_PID" 2>/dev/null || true
+        SC_PID=""
     fi
     sync; sleep 2
     snapshot "$OUT/$tag.after"
@@ -2273,6 +2341,12 @@ for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events
             m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
+# The daemon's system calls, where the row traced them (TB_SYSCALLS).
+if os.path.exists(base + '.syscalls'):
+    try:
+        r['syscalls'] = json.load(open(base + '.syscalls'))
+    except ValueError:
+        r['syscalls'] = {'error': 'the trace could not be read'}
 # pg_test_fsync, first table: one 8 kB write per sync, by wal_sync_method.
 if os.path.exists(fsync_file):
     on, ft = False, {}

@@ -126,6 +126,13 @@ class Bracketed(unittest.TestCase):
         rows[0]['origin_delay_ms'] = None
         self.assertIn('does not say what origin delay', bk.bracketed(rows[1], rows)['verdict'])
 
+    def test_a_traced_row_has_no_verdict(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, syscalls={'tool': 'perf'}),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: its system calls were traced', b['verdict'])
+
 
 if __name__ == '__main__':
     unittest.main()
