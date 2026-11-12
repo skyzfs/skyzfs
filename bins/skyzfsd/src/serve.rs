@@ -609,7 +609,16 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     }));
     let began = std::time::Instant::now();
-    let mut volume = TimedVolume::new(StoreVolume::new(&serve.dir, options));
+    let volume = StoreVolume::new(&serve.dir, options);
+    // With the unit 0 the store never asks, and the call is not even
+    // given: the benchmark's row without the hint is the daemon as it
+    // was before it.
+    let volume = if serve.writeback_kib == 0 {
+        volume
+    } else {
+        volume.with_writeback(skyzfs_ublk_sys::start_writeback)
+    };
+    let mut volume = TimedVolume::new(volume);
     let mut kernel = TimedControl::new(Kernel::new().map_err(|e| e.to_string())?);
     let wanted = Wanted {
         queues: serve.queues,
@@ -771,6 +780,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             move || {
                 board.publish_with_log(Pace::new(STATUS_INTERVAL_MS), |counters, log, failures| {
                     let status = Status {
+                        version: status::VERSION,
                         pid: std::process::id(),
                         queues,
                         depth,

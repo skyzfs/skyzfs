@@ -670,3 +670,54 @@ fn a_share_of_the_stores_lock_outlives_the_store() {
     drop(share);
     assert!(Store::open(dir, OpenOptions::default()).is_ok());
 }
+
+/// The calls the counting hook below was given: their count and bytes.
+static HANDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static HANDED_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A hook in place of the system's call: it counts and starts nothing.
+fn counting(_: &std::fs::File, _: u64, len: u64) -> std::io::Result<()> {
+    HANDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    HANDED_BYTES.fetch_add(len, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
+}
+
+/// On real files the hint reaches the hook the directory was given, for
+/// the log's segment files and the home image; without a hook it is off
+/// and says so, and the volume is the same.
+#[test]
+fn the_hint_reaches_the_directorys_hook_and_is_off_without_one() {
+    for hooked in [true, false] {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let dir = if hooked {
+            dir.with_writeback(counting)
+        } else {
+            dir
+        };
+        let before = HANDED.load(std::sync::atomic::Ordering::SeqCst);
+        let store = Store::create(dir, &config(8, 4096), OpenOptions::default()).unwrap();
+        let mut served = store.serve().unwrap();
+        for block in 0..512 {
+            write(&mut served, block, Buf::filled(1, 3));
+        }
+        assert_eq!(run(&mut served, Op::Flush).result, Ok(()));
+        assert!(served.checkpoint().is_ok());
+        let timing = served.timing();
+        let handed = HANDED.load(std::sync::atomic::Ordering::SeqCst) - before;
+        if hooked {
+            assert!(timing.writeback[0].count >= 2, "{timing:?}");
+            assert!(timing.writeback[1].count >= 1, "{timing:?}");
+            assert!(handed >= timing.writeback[0].count + timing.writeback[1].count);
+            assert!(!timing.writeback[0].off && !timing.writeback[1].off);
+            assert!(HANDED_BYTES.load(std::sync::atomic::Ordering::SeqCst) >= 2 << 20);
+        } else {
+            assert!(
+                timing.writeback[0].off && timing.writeback[1].off,
+                "{timing:?}"
+            );
+            assert_eq!(timing.writeback[0].count + timing.writeback[1].count, 0);
+        }
+        assert_eq!(&read(&mut served, 511, 1)[..], &[3u8; 4096][..]);
+    }
+}

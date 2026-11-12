@@ -48,6 +48,7 @@ fn sample_field(field: usize) -> u64 {
 
 fn sample() -> Status {
     Status {
+        version: VERSION,
         pid: 0x0102_0304,
         queues: 0x1112,
         depth: 0x2122,
@@ -182,6 +183,7 @@ fn a_file_of_the_second_version_is_read_without_the_log() {
     assert_eq!(
         read,
         Status {
+            version: 2,
             log: None,
             ..sample()
         }
@@ -214,7 +216,10 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     third[..8].copy_from_slice(b"SKYZSTA3");
     fs::write(&path, &third).expect("write");
     let read = read(&path).expect("read").expect("a status");
-    let mut unsaid = sample();
+    let mut unsaid = Status {
+        version: 3,
+        ..sample()
+    };
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.zeroes = ZeroesShown::Unsaid;
         log.shown.timing = None;
@@ -262,6 +267,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
         log.shown.timing = Some(sample_timing());
         log.shown.pump = Some(sample_pump());
     }
+    unsaid.version = VERSION;
     assert_eq!(decode(&unknown), Some(unsaid));
 }
 
@@ -277,7 +283,10 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     fourth[..8].copy_from_slice(b"SKYZSTA4");
     fs::write(&path, &fourth).expect("write");
     let read = read(&path).expect("read").expect("a status");
-    let mut untimed = sample();
+    let mut untimed = Status {
+        version: 4,
+        ..sample()
+    };
     if let Some(log) = untimed.log.as_mut() {
         log.shown.timing = None;
         log.shown.pump = None;
@@ -855,6 +864,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "recovered_unacknowledged",
             "status_write_failures",
             "age_ms",
+            "status_version",
             "log_live",
             "checkpoint_steps",
             "checkpoint_syncs",
@@ -1264,4 +1274,33 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
     }
     assert_eq!(scenario(0), Ok(()));
     assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
+}
+
+/// `status` says which version of the file it read (`status_version`),
+/// not a `time_` key: a script that reads the times tells by it the
+/// zeros of fields an older file did not have from counted zeros.
+#[test]
+fn status_prints_the_version_of_the_file_it_read() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    for (len, magic, version) in [
+        (1424, b"SKYZSTA5", "5"),
+        (1584, b"SKYZSTA6", "6"),
+        (1840, b"SKYZSTA7", "7"),
+    ] {
+        let mut bytes = encode(&sample())[..len].to_vec();
+        bytes[..8].copy_from_slice(magic);
+        fs::write(&path, &bytes).expect("write");
+        let read = read(&path).expect("read").expect("a status");
+        let lines = report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        );
+        assert_eq!(value(&lines, "status_version"), Some(version));
+        assert_eq!(read.version.to_string(), version);
+    }
+    assert_eq!(VERSION, 7);
 }

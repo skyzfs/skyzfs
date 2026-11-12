@@ -136,6 +136,8 @@ use skyzfs_local::writeback::Hinted;
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA7";
+/// The version this crate writes.
+pub const VERSION: u32 = 7;
 const LEN: usize = 1840;
 /// The sixth version: nothing from the hint on.
 const SIXTH_MAGIC: &[u8; 8] = b"SKYZSTA6";
@@ -374,6 +376,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Status {
+    /// The version of the file it was read from: 2 to [`VERSION`]. A
+    /// file is always written as [`VERSION`], whatever this says.
+    /// `status` prints it (`status_version`), so that whoever reads
+    /// the times can tell the zeros of a field an older file did not
+    /// have from a zero the daemon counted.
+    pub version: u32,
     /// The daemon's process id.
     pub pid: u32,
     /// Queues.
@@ -819,7 +827,21 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
+    let version = if seventh {
+        7
+    } else if sixth {
+        6
+    } else if fifth {
+        5
+    } else if fourth {
+        4
+    } else if third {
+        3
+    } else {
+        2
+    };
     Some(Status {
+        version,
         pid: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
         queues: u16::from_le_bytes([bytes[12], bytes[13]]),
         depth: u16::from_le_bytes([bytes[14], bytes[15]]),
@@ -1298,6 +1320,7 @@ pub fn report(
             ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
+            ("status_version", u64::from(s.version)),
         ] {
             lines.push((key, value.to_string()));
         }
