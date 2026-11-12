@@ -124,3 +124,20 @@ needed.**
 - Planted: wake only when more than one waits, and never counting a
   waiter. `no_wake_is_lost_between_a_readers_look_and_its_wait` fails for
   the first, it and `a_read_wakes_one_waiting_reader` for the second.
+
+## Third look, at 3cf0a0b (one commit, tests only in effect)
+
+**Verdict: can merge. Finding 1 is dropped; nothing blocks.**
+
+- Each reader counts itself as ended when its thread's closure ends; the
+  test reads the count after `serve` returned its error and wants it equal
+  to the readers started (1 of 1 for the second reader's failed start, 2
+  of 2 for the worker's). A reader that was refused never ran and is not
+  counted, which is right.
+- With my own plant (`if self.handed || true`) the test fails:
+  `thread 1: 0 of 1 readers ended when the serve returned`. The named
+  mutant `STARTED_READERS_LEFT` is the same change and is asserted to fail.
+- Store lib tests: 243 pass, 3 ignored. No clippy or fmt. The answer on
+  the pull request was not read.
+- Left as they were, not blocking: finding 3 (with every reader gone a
+  push still accepts), and the two accepted gaps in the timing test.
