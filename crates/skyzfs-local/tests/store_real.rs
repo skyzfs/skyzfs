@@ -683,11 +683,12 @@ fn counting(_: &std::fs::File, _: u64, len: u64) -> std::io::Result<()> {
 }
 
 /// On real files the hint reaches the hook the directory was given, for
-/// the log's segment files and the home image; without a hook it is off
-/// and says so, and the volume is the same.
+/// the log's segment files and, where its unit is set, the home image;
+/// without a hook it is off and says so, and the volume is the same. By
+/// default the home image has no hint.
 #[test]
 fn the_hint_reaches_the_directorys_hook_and_is_off_without_one() {
-    for hooked in [true, false] {
+    for (hooked, home) in [(true, true), (false, true), (true, false)] {
         let tmp = tempfile::tempdir().unwrap();
         let dir = FsDir::new(tmp.path()).unwrap();
         let dir = if hooked {
@@ -696,7 +697,11 @@ fn the_hint_reaches_the_directorys_hook_and_is_off_without_one() {
             dir
         };
         let before = HANDED.load(std::sync::atomic::Ordering::SeqCst);
-        let store = Store::create(dir, &config(8, 4096), OpenOptions::default()).unwrap();
+        let mut options = OpenOptions::default();
+        if home {
+            options.home_writeback_unit = skyzfs_local::writeback::DEFAULT_UNIT;
+        }
+        let store = Store::create(dir, &config(8, 4096), options).unwrap();
         let mut served = store.serve().unwrap();
         for block in 0..512 {
             write(&mut served, block, Buf::filled(1, 3));
@@ -705,7 +710,11 @@ fn the_hint_reaches_the_directorys_hook_and_is_off_without_one() {
         assert!(served.checkpoint().is_ok());
         let timing = served.timing();
         let handed = HANDED.load(std::sync::atomic::Ordering::SeqCst) - before;
-        if hooked {
+        if !home {
+            assert!(timing.writeback[0].count >= 2, "{timing:?}");
+            assert_eq!(timing.writeback[1].count, 0, "{timing:?}");
+            assert!(!timing.writeback[1].off, "{timing:?}");
+        } else if hooked {
             assert!(timing.writeback[0].count >= 2, "{timing:?}");
             assert!(timing.writeback[1].count >= 1, "{timing:?}");
             assert!(handed >= timing.writeback[0].count + timing.writeback[1].count);
@@ -720,4 +729,41 @@ fn the_hint_reaches_the_directorys_hook_and_is_off_without_one() {
         }
         assert_eq!(&read(&mut served, 511, 1)[..], &[3u8; 4096][..]);
     }
+}
+
+/// On real files a served store's steps hand the home image's sync to
+/// the file's helper thread: the worker serves on, the steps are taken
+/// up when the helper reports, the helper's account counts them, and
+/// the volume reads what was written, also after it is opened again.
+#[test]
+fn a_served_stores_steps_hand_their_sync_to_the_helper() {
+    use skyzfs_local::store::{Marks, StepBound};
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let mut store = Store::create(dir, &config(8, 4096), OpenOptions::default()).unwrap();
+    store.set_marks(Some(Marks {
+        high: 256 << 10,
+        low: 64 << 10,
+        step: StepBound {
+            payload: 64 << 10,
+            records: 4,
+        },
+    }));
+    let mut served = store.serve().unwrap();
+    for round in 0..4u8 {
+        for block in 0..256 {
+            write(&mut served, block, Buf::filled(1, round + 1));
+        }
+        flush(&mut served);
+    }
+    assert!(served.checkpoint().is_ok());
+    let timing = served.timing();
+    assert!(timing.helper.count >= 1, "{timing:?}");
+    // The home image's syncs, the helper's among them.
+    assert!(timing.syncs[3].count >= timing.helper.count, "{timing:?}");
+    assert_eq!(&read(&mut served, 255, 1)[..], &[4u8; 4096][..]);
+    drop(served);
+    let (store, _) = Store::open(FsDir::new(tmp.path()).unwrap(), OpenOptions::default()).unwrap();
+    let mut served = store.serve().unwrap();
+    assert_eq!(&read(&mut served, 0, 1)[..], &[4u8; 4096][..]);
 }

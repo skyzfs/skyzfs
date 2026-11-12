@@ -219,6 +219,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         log_high: 2,
         log_low: 1,
         writeback_kib: 1024,
+        home_writeback_kib: 0,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -263,10 +264,29 @@ fn serve_has_the_agreed_defaults_and_options() {
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
 }
 
-/// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB.
+/// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
+/// `--home-writeback-kib` the same, 0 unless given.
 #[test]
 fn serve_takes_the_writeback_unit() {
     assert_eq!(serve("serve --dir /v/a").writeback_kib, 1024);
+    assert_eq!(serve("serve --dir /v/a").home_writeback_kib, 0);
+    assert_eq!(
+        serve("serve --dir /v/a --home-writeback-kib 1024").home_writeback_kib,
+        1024
+    );
+    assert_eq!(
+        serve("serve --dir /v/a --home-writeback-kib 1048576").home_writeback_kib,
+        1 << 20
+    );
+    for bad in ["1048577", "x", "-1"] {
+        assert!(
+            matches!(
+                plain(&format!("serve --dir /v/a --home-writeback-kib {bad}")),
+                Err(UsageError::Value(..))
+            ),
+            "{bad}"
+        );
+    }
     assert_eq!(serve("serve --dir /v/a --writeback-kib 0").writeback_kib, 0);
     assert_eq!(
         serve("serve --dir /v/a --writeback-kib 1048576").writeback_kib,

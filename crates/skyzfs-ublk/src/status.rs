@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1856
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1960
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,14 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's seventh version. The sixth (`SKYZSTA6`, 1584
+//! This is the file's eighth version. The seventh (`SKYZSTA7`, 1856
+//! bytes) ended before the worker's sixteenth activity (waiting for
+//! the helper's report of a step's home-image sync), the waits by it
+//! and the helper's account, from offset 1856 on; a file of that
+//! version is still read, with those at zero. The worker's first
+//! fifteen activities, and the requests' waits by them, are where
+//! they were: the sixteenth of each comes after the fields of the
+//! seventh version. The sixth (`SKYZSTA6`, 1584
 //! bytes) ended before the hint that starts writeback early and the
 //! syncs' backlogs, from offset 1584 on; a file of that version is
 //! still read, with those at zero. The fifth (`SKYZSTA5`, 1424
@@ -38,7 +45,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA7` |
+//! | 0 | 8 | magic `SKYZSTA8` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -58,13 +65,13 @@
 //! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
 //! | 144 | 8 | `log_live`: the bytes of the log from its start to its end, which the next start replays |
 //! | 152 | 8 | `checkpoint_steps`: the steps the store's checkpoint rule has taken since this daemon started serving |
-//! | 160 | 8 | 1 while such a step is under way, else 0; a step begins with the rule's own sync of the log when it needs one |
+//! | 160 | 8 | 1 while such a step is under way, else 0; a step begins with the rule's own sync of the log when it needs one, and is under way while its home image's sync is with the helper, until the worker has taken it up again |
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
 //! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it (for reads, the store's reader); the longest such wait; the summed time of the store's call for them; the longest such call |
-//! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync; the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
+//! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync (the worker's part in it: the whole sync where the worker makes it, handing it over where a step of the rule gives it to the helper); the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
 //! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
 //! | 536 | 120 | the worker's whole time by what it did, fifteen fields in the order: idle; the call of a read (none since the reads have a reader of their own), a write, a flush (the log's sync), a discard, a write-zeroes; a step's six parts in the order above; the rule's own sync; anything else; a step waiting at one of its two barriers for the readers under way. They follow each other with no gap, so their sum is the time served |
 //! | 656 | 600 | for each kind of request, in the order above: fifteen fields, its summed wait by what was done meanwhile, in the order of the worker's time. A kind's fifteen add up to its summed wait. For reads it is what the reader did: idle (its wake-up), the calls of reads before it, anything else; the other twelve are zero |
@@ -80,9 +87,14 @@
 //! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
 //! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
 //! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
-//! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's fifteen activities sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
+//! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's sixteen activities (the fifteen here and the one at offset 1856) sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
 //! | 1584 | 80 | the hint that hands a file's writes to the device before their sync (`skyzfs_local::writeback`): for the log's segment files, and then for the home image, how many calls handed writes over, the bytes of the writes they handed over, the time of all calls, 1 if the file system answered "unsupported" and the hint was switched off (else 0), and how many calls the system declined this time (short of memory, interrupted, busy) while the volume went on. The time lies inside the activity the hint was made from: the call of a write, a write-zeroes or a discard for the log's, a step's apply for the home image's |
-//! | 1664 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over |
+//! | 1664 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over. A step's sync of the home image that the helper made counts from its hand-over to the worker's taking the report |
+//! | 1856 | 8 | the worker's sixteenth activity: waiting for the helper's report of a step's home-image sync (at the high mark, before an explicit checkpoint, a change of the hold, room in a full log, and the end). With it the worker's sixteen activities follow each other with no gap |
+//! | 1864 | 40 | for each kind of request, in the order above: its summed wait while the worker waited for that report. A kind's sixteen add up to its summed wait |
+//! | 1904 | 24 | the home image's syncs that steps handed to the helper: how many, their summed time from the hand-over to the worker taking the report, the longest. Not the worker's time: it served meanwhile |
+//! | 1928 | 24 | the worker's waits for that report: how many, their summed time, the longest |
+//! | 1952 | 8 | the requests the worker completed while a sync was with the helper |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -135,10 +147,13 @@ use skyzfs_local::writeback::Hinted;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA7";
+const MAGIC: &[u8; 8] = b"SKYZSTA8";
 /// The version this crate writes.
-pub const VERSION: u32 = 7;
-const LEN: usize = 1856;
+pub const VERSION: u32 = 8;
+const LEN: usize = 1960;
+
+const SEVENTH_MAGIC: &[u8; 8] = b"SKYZSTA7";
+const SEVENTH_LEN: usize = 1856;
 /// The sixth version: nothing from the hint on.
 const SIXTH_MAGIC: &[u8; 8] = b"SKYZSTA6";
 const SIXTH_LEN: usize = 1584;
@@ -373,6 +388,19 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_sync_superblock_ns",
     "time_sync_superblock_bytes",
     "time_sync_superblock_handed",
+    "time_worker_step_report_ns",
+    "time_read_wait_by_step_report_ns",
+    "time_write_wait_by_step_report_ns",
+    "time_flush_wait_by_step_report_ns",
+    "time_discard_wait_by_step_report_ns",
+    "time_zeroes_wait_by_step_report_ns",
+    "time_helper_count",
+    "time_helper_ns",
+    "time_helper_max_ns",
+    "time_step_report_count",
+    "time_step_report_ns",
+    "time_step_report_max_ns",
+    "time_helper_requests",
 ];
 
 /// What the file holds.
@@ -559,7 +587,11 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 207;
+const TIME_FIELDS: usize = 220;
+
+/// The activities of the worker whose fields lie where the seventh
+/// version had them; the sixteenth comes after that version's fields.
+const SEVENTH_ACTIVITIES: usize = 15;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
@@ -599,10 +631,14 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
     put(timing.gate.count);
     put(timing.gate.sum_ns);
     put(timing.gate.max_ns);
-    for value in timing.worker {
-        put(value);
+    for value in &timing.worker[..SEVENTH_ACTIVITIES] {
+        put(*value);
     }
-    for value in timing.wait_by.iter().flatten() {
+    for value in timing
+        .wait_by
+        .iter()
+        .flat_map(|kind| &kind[..SEVENTH_ACTIVITIES])
+    {
         put(*value);
     }
     for value in timing.longest_wait_cause {
@@ -649,6 +685,20 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
         put(synced.bytes);
         put(synced.handed);
     }
+    for value in timing.worker[SEVENTH_ACTIVITIES..].iter().chain(
+        timing
+            .wait_by
+            .iter()
+            .flat_map(|kind| &kind[SEVENTH_ACTIVITIES..]),
+    ) {
+        put(*value);
+    }
+    for spent in [timing.helper, timing.step_report] {
+        put(spent.count);
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
+    put(timing.helper_requests);
     fields
 }
 
@@ -693,8 +743,8 @@ fn pump_at(bytes: &[u8], fifth: bool) -> PumpTiming {
 /// zero where none does (how many batches a step's parts were measured
 /// over; in the fifth version, the fifteenth activity and everything
 /// from the barriers on; in the sixth, the hint and the syncs).
-fn timing_at(bytes: &[u8], fifth: bool, seventh: bool) -> Timing {
-    let activities = if fifth { 14 } else { ACTIVITIES.len() };
+fn timing_at(bytes: &[u8], fifth: bool, seventh: bool, eighth: bool) -> Timing {
+    let activities = if fifth { 14 } else { SEVENTH_ACTIVITIES };
     let mut at = 200;
     let mut take = || {
         let value = u64_at(bytes, at);
@@ -796,11 +846,36 @@ fn timing_at(bytes: &[u8], fifth: bool, seventh: bool) -> Timing {
             };
         }
     }
+    if eighth {
+        let mut at = SEVENTH_LEN;
+        let mut take = || {
+            let value = u64_at(bytes, at);
+            at += 8;
+            value
+        };
+        for value in timing.worker[SEVENTH_ACTIVITIES..].iter_mut().chain(
+            timing
+                .wait_by
+                .iter_mut()
+                .flat_map(|kind| &mut kind[SEVENTH_ACTIVITIES..]),
+        ) {
+            *value = take();
+        }
+        for spent in [&mut timing.helper, &mut timing.step_report] {
+            *spent = Spent {
+                count: take(),
+                sum_ns: take(),
+                max_ns: take(),
+            };
+        }
+        timing.helper_requests = take();
+    }
     timing
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let seventh = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let eighth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let seventh = eighth || (bytes.len() == SEVENTH_LEN && &bytes[..8] == SEVENTH_MAGIC);
     let sixth = seventh || (bytes.len() == SIXTH_LEN && &bytes[..8] == SIXTH_MAGIC);
     let only_fifth = bytes.len() == FIFTH_LEN && &bytes[..8] == FIFTH_MAGIC;
     let fifth = sixth || only_fifth;
@@ -821,7 +896,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             } else {
                 ZeroesShown::Unsaid
             },
-            timing: fifth.then(|| timing_at(bytes, only_fifth, seventh)),
+            timing: fifth.then(|| timing_at(bytes, only_fifth, seventh, eighth)),
             pump: fifth.then(|| pump_at(bytes, only_fifth)),
         },
         start_ms: u64_at(bytes, 168),
@@ -831,7 +906,9 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
-    let version = if seventh {
+    let version = if eighth {
+        8
+    } else if seventh {
         7
     } else if sixth {
         6

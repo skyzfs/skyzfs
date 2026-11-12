@@ -48,8 +48,8 @@ def reading(scale, pid='100'):
 
 
 def fifth(r):
-    """The same reading as a daemon of status version 5 would give it: no key of version 6."""
-    old = {k: v for k, v in r.items() if k not in VERSION_6_KEYS}
+    """The same reading as a daemon of status version 5 would give it: no key of a later version."""
+    old = {k: v for k, v in r.items() if k not in VERSION_6_KEYS | VERSION_7_KEYS | VERSION_8_KEYS}
     return old
 
 
@@ -60,11 +60,15 @@ VERSION_6_KEYS = st.KEYS_ADDED[6]
 # syncs by kind.
 VERSION_7_KEYS = st.KEYS_ADDED[7]
 
+# What version 8 added: the helper that syncs the home image for a step,
+# and the worker's sixteenth activity, waiting for its report.
+VERSION_8_KEYS = st.KEYS_ADDED[8]
+
 
 class Delta(unittest.TestCase):
     def test_the_module_knows_the_daemons_keys(self):
         keys = status_keys()
-        self.assertEqual(len(keys), 207)
+        self.assertEqual(len(keys), 220)
         # what version 6 added, all of it known to the module
         self.assertEqual(len(VERSION_6_KEYS), 173 - 153)
         for key in VERSION_6_KEYS:
@@ -73,6 +77,8 @@ class Delta(unittest.TestCase):
         self.assertEqual(len(VERSION_7_KEYS), 207 - 173)
         for key in VERSION_7_KEYS:
             self.assertIn(key, keys)
+        # and what version 8 added, at the end
+        self.assertEqual(set(VERSION_8_KEYS), set(keys[207:]))
         for a in st.READER_ACTIVITIES:
             self.assertIn(a, st.ACTIVITIES)
         for kind in st.KINDS:
@@ -87,15 +93,15 @@ class Delta(unittest.TestCase):
         # every key is either a difference or an end value, and the end
         # values are the longest ones and their causes
         ends = [k for k in keys if st.is_end_value(k)]
-        self.assertEqual(len(ends), 5 * 2 + 7 + 1 + 4 + 2 + 5 * 2 + len(st.BARRIERS))
+        self.assertEqual(len(ends), 5 * 2 + 7 + 1 + 4 + 2 + 5 * 2 + len(st.BARRIERS) + 2)
 
     def test_every_key_is_kept(self):
         b, a = reading(1), reading(3)
         t = st.delta(b, a, 1000, 5000)
         self.assertTrue(t['ok'], t['why'])
-        self.assertEqual(len(t['delta']) + len(t['end']), 207)
-        self.assertEqual(len(t['before']), 207)
-        self.assertEqual(len(t['after']), 207)
+        self.assertEqual(len(t['delta']) + len(t['end']), 220)
+        self.assertEqual(len(t['before']), 220)
+        self.assertEqual(len(t['after']), 220)
         self.assertEqual(t['window_ns'], 4000)
         keys = status_keys()
         i = keys.index('time_read_call_ns')
@@ -172,10 +178,10 @@ class Tables(unittest.TestCase):
         self.assertEqual([a for a, _ in rows], ['read', 'other', 'idle'])
         self.assertEqual((total, wait), (100, 100))
         # a daemon of version 5: a read waited for the worker's fourteen
-        old = {k: v for k, v in d.items() if k not in VERSION_6_KEYS}
+        old = {k: v for k, v in d.items() if k not in VERSION_6_KEYS | VERSION_8_KEYS}
         old.update(time_read_wait_by_step_apply_ns=40, time_read_wait_ns=140)
         rows, total, wait = st.wait_by(old, 'read')
-        self.assertEqual(len(rows), len(st.ACTIVITIES) - 1)
+        self.assertEqual(len(rows), 14)
         self.assertEqual((rows[0], total, wait), (('read', 70), 140, 140))
 
     def test_the_groups_hold_every_activity_once(self):
@@ -243,14 +249,14 @@ class Tables(unittest.TestCase):
         for r in (b, a):
             for kind in st.KINDS:
                 r[f'time_{kind}_wait_ns'] = str(sum(int(r.get(f'time_{kind}_wait_by_{x}_ns', '0')) for x in st.ACTIVITIES))
-            for key in VERSION_6_KEYS | VERSION_7_KEYS:
+            for key in VERSION_6_KEYS | VERSION_7_KEYS | VERSION_8_KEYS:
                 r[key] = '0'
             r['status_version'] = '5'
         worker = sum(int(a[f'time_worker_{x}_ns']) - int(b[f'time_worker_{x}_ns']) for x in st.ACTIVITIES[:14])
         t = st.delta(b, a, 0, worker)
         self.assertTrue(t['ok'], t['why'])
         self.assertEqual(t['version'], 5)
-        self.assertFalse(any(k in t['delta'] for k in VERSION_6_KEYS | VERSION_7_KEYS))
+        self.assertFalse(any(k in t['delta'] for k in VERSION_6_KEYS | VERSION_7_KEYS | VERSION_8_KEYS))
         d = t['delta']
         self.assertFalse(st.has_reader(d))
         # a read's wait is over the worker's activities, as on the worker
@@ -269,6 +275,25 @@ class Tables(unittest.TestCase):
         t = st.delta(b, a, 0, worker)
         self.assertFalse(t['ok'])
         self.assertIn('status version changed', t['why'])
+
+    def test_a_version_7_file_as_the_current_binary_prints_it(self):
+        # Version 8's keys are printed as zeros for an older file and
+        # dropped: the worker has the fifteen activities of version 7,
+        # and its identity holds over them.
+        b, a = reading(1), reading(3)
+        for r in (b, a):
+            for key in VERSION_8_KEYS:
+                r[key] = '0'
+            for kind in st.KINDS:
+                acts = st.READER_ACTIVITIES if kind == 'read' else st.ACTIVITIES
+                r[f'time_{kind}_wait_ns'] = str(sum(int(r[f'time_{kind}_wait_by_{x}_ns']) for x in acts))
+            r['status_version'] = '7'
+        t = st.delta(b, a, 0, 10 ** 12)
+        self.assertTrue(t['ok'], t['why'])
+        self.assertFalse(any(k in t['delta'] for k in VERSION_8_KEYS))
+        self.assertEqual(st.worker_activities(t['delta']), st.ACTIVITIES[:15])
+        for what, left, right, diff in st.identities(t)[:5]:
+            self.assertEqual(diff, 0, what)
 
     def test_render(self):
         b, a = reading(1), reading(3)
@@ -314,7 +339,7 @@ class Tables(unittest.TestCase):
         # the worker's shares add up to 100
         w = lines[lines.index(next(x for x in lines if x.startswith("The worker's time"))) + 4]
         shares = [float(c.strip().rstrip('%')) for c in w.split('|')[3:-1]]
-        # busy first, then the fifteen: they add up to 100, and busy is all but idle
+        # busy first, then the sixteen: they add up to 100, and busy is all but idle
         self.assertAlmostEqual(sum(shares[1:]), 100.0, delta=0.8)
         self.assertAlmostEqual(shares[0] + shares[1], 100.0, delta=0.11)
         self.assertEqual(st.render([]), [])
@@ -377,7 +402,10 @@ class Columns(unittest.TestCase):
             # the hint: 300 calls and 300 MiB for the log in 30 ms, 60 and 60 MiB for the home image in 6 ms
             time_writeback_log_count=300, time_writeback_log_bytes=300 << 20, time_writeback_log_ns=30_000_000,
             time_writeback_home_count=60, time_writeback_home_bytes=60 << 20, time_writeback_home_ns=6_000_000,
-            time_writeback_log_refused=2)
+            time_writeback_log_refused=2,
+            # 10 syncs handed to the helper, 30 ms each; 400 requests meanwhile; 3 waits for its report, 12 ms
+            time_helper_count=10, time_helper_ns=300_000_000, time_helper_requests=400,
+            time_step_report_count=3, time_step_report_ns=12_000_000)
         after = {'time_sync_superblock_count': '10', 'time_sync_superblock_ns': '20000000',
                  'time_sync_superblock_bytes': '40960', 'time_sync_superblock_handed': '0',
                  'time_writeback_log_off': '0', 'time_writeback_home_off': '1'}
@@ -409,6 +437,11 @@ class Columns(unittest.TestCase):
                          ('300', '300.0', '30.0', 'no', '2'))
         self.assertEqual(c['home: refused'], '0')
         self.assertEqual((c['home: calls'], c['home: MiB'], c['home: ms'], c['home: off']), ('60', '60.0', '6.0', 'yes'))
+
+    def test_the_helper_and_the_workers_waits_for_its_report(self):
+        c = cells(self.text, "The home image's syncs that steps handed to the helper", 'row')
+        self.assertEqual((c['handed syncs'], c['ms each'], c['requests meanwhile'], c['waits for the report'],
+                          c['ms waited in all']), ('10', '30.0', '400', '3', '12.0'))
 
     def test_the_step_parts_are_ms_per_step(self):
         c = cells(self.text, 'Checkpoint steps in the window', 'row')
