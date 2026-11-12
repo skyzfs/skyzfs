@@ -7854,3 +7854,224 @@ fn several_readers_hold_their_pins_from_before_their_lookups() {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// The readers' queue wakes one thread per read (M1.3p).
+
+/// Wait, up to 20 s, until `done` holds.
+fn until_true(what: &str, done: impl Fn() -> bool) -> Outcome {
+    let began = std::time::Instant::now();
+    while !done() {
+        if began.elapsed() > Duration::from_secs(20) {
+            return Err(format!("{what}: not within 20 s"));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// Readers of a queue of numbers: each takes reads until the queue is
+/// closed and empty, and records what it took.
+fn queue_readers(
+    queue: &Arc<ReadQueue<u64>>,
+    n: usize,
+) -> (Arc<Mutex<Vec<u64>>>, Vec<std::thread::JoinHandle<()>>) {
+    let taken = Arc::new(Mutex::new(Vec::new()));
+    let threads = (0..n)
+        .map(|_| {
+            let (queue, taken) = (queue.clone(), taken.clone());
+            std::thread::spawn(move || {
+                while let Some(read) = queue.next() {
+                    taken.lock().unwrap().push(read);
+                }
+            })
+        })
+        .collect();
+    (taken, threads)
+}
+
+/// One push wakes exactly one of several waiting readers. Four readers
+/// wait; one read is pushed; it is taken, and the reader that took it
+/// waits again. A reader that wakes and finds no read, with the queue
+/// open, is a wake for nothing: there must be none. That a wake does
+/// not come cannot rest on an event, so this is watched for 100 ms once
+/// all four wait again; a reader woken for nothing wakes within
+/// microseconds. Then the queue is closed, which wakes every reader
+/// once to end it, and when all have ended there were five wakes in
+/// all. Mutant: a push wakes every reader.
+#[test]
+fn a_read_wakes_one_waiting_reader() {
+    fn scenario(mutants: u64) -> Outcome {
+        let queue = Arc::new(ReadQueue::new(Mutants(mutants)));
+        let (taken, threads) = queue_readers(&queue, 4);
+        until_true("four readers waiting", || queue.lock().waiting == 4)?;
+        queue.push(7).map_err(|_| "closed")?;
+        until_true("the read taken and its reader waiting again", || {
+            taken.lock().unwrap().len() == 1 && queue.lock().waiting == 4
+        })?;
+        let watched = std::time::Instant::now();
+        let mut futile = 0;
+        while futile == 0 && watched.elapsed() < Duration::from_millis(100) {
+            futile = queue.lock().futile;
+            std::thread::yield_now();
+        }
+        queue.close();
+        for thread in threads {
+            thread.join().map_err(|_| "a reader panicked")?;
+        }
+        if futile > 0 {
+            return Err(format!("{futile} readers woken for nothing"));
+        }
+        let woke = queue.lock().woke;
+        if woke != 5 {
+            return Err(format!("{woke} wakes, not five"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(
+        scenario(Mutants::READ_WAKES_ALL).is_err(),
+        "every reader woken"
+    );
+}
+
+/// The end with several readers waiting and reads queued: every queued
+/// read is taken, by the readers between them, and then every reader
+/// ends. And a read pushed while every reader is busy is taken by the
+/// first that is free, which looks before it waits: no wake is needed.
+#[test]
+fn at_the_end_the_readers_take_what_is_queued_and_end() {
+    let queue = Arc::new(ReadQueue::new(Mutants(0)));
+    // Pushed before any reader exists: none is waiting, every push's
+    // wake goes to nobody.
+    for read in 0..100 {
+        queue.push(read).unwrap();
+    }
+    queue.close();
+    assert!(queue.push(100).is_err(), "a push after the close");
+    let (taken, threads) = queue_readers(&queue, 3);
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    let mut taken = taken.lock().unwrap().clone();
+    taken.sort_unstable();
+    assert_eq!(taken, (0..100).collect::<Vec<_>>());
+    assert_eq!(queue.lock().woke, 0, "nobody had to wait");
+}
+
+/// No wake is lost between a reader's look and its wait. A reader finds
+/// the queue empty; at that moment (a hook between its look and its
+/// wait) a read is pushed. The reader takes it: its look and its wait
+/// are under one hold of the queue's lock, so the push waits for the
+/// wait and its wake finds the reader. Rests on events: the push is
+/// begun only once the reader is at the hook, and the outcome is either
+/// the read taken, or the reader waiting with the read still queued
+/// after a push that found no reader waiting, which nothing else will
+/// wake.
+/// Mutant: the reader lets go of the lock between its look and its
+/// wait, the push and its wake fall between, and the reader waits with
+/// the read queued.
+#[test]
+fn no_wake_is_lost_between_a_readers_look_and_its_wait() {
+    fn scenario(mutants: u64) -> Outcome {
+        use std::sync::atomic::AtomicU8;
+        let queue = Arc::new(ReadQueue::new(Mutants(mutants)));
+        // 1: the reader is at the hook; 2: the push is begun; 3: the
+        // push has returned.
+        let stage = Arc::new(AtomicU8::new(0));
+        *queue.between.lock().unwrap() = Some(Arc::new({
+            let stage = stage.clone();
+            move |holding: bool| {
+                if stage.load(Ordering::SeqCst) != 0 {
+                    return;
+                }
+                stage.store(1, Ordering::SeqCst);
+                // Holding the lock, the push cannot return before the
+                // wait: wait only until it is begun. Not holding it,
+                // wait until it has returned, so that it falls between.
+                let wanted = if holding { 2 } else { 3 };
+                while stage.load(Ordering::SeqCst) < wanted {
+                    std::thread::yield_now();
+                }
+            }
+        }));
+        let (taken, threads) = queue_readers(&queue, 1);
+        until_true("the reader at its hook", || {
+            stage.load(Ordering::SeqCst) == 1
+        })?;
+        stage.store(2, Ordering::SeqCst);
+        queue.push(9).map_err(|_| "closed")?;
+        stage.store(3, Ordering::SeqCst);
+        // Lost: the push found no reader waiting, and the reader now
+        // waits with the read queued. Nothing more will wake it.
+        let lost = |queue: &ReadQueue<u64>| {
+            let state = queue.lock();
+            state.unheard == 1 && state.waiting == 1 && !state.reads.is_empty()
+        };
+        until_true(
+            "the read taken, or the reader waiting with it queued",
+            || taken.lock().unwrap().len() == 1 || lost(&queue),
+        )?;
+        let outcome = if taken.lock().unwrap().len() == 1 {
+            Ok(())
+        } else {
+            Err("the reader waits with the read queued: its wake was lost".into())
+        };
+        queue.close();
+        for thread in threads {
+            thread.join().map_err(|_| "the reader panicked")?;
+        }
+        outcome
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(scenario(Mutants::READ_WAKE_LOST).is_err(), "the lost wake");
+}
+
+/// A read pushed while every reader of a served store is busy is taken
+/// by the first that becomes free. Two readers are held inside reads
+/// (after their lookups), a third read is submitted, and nothing can
+/// take it; one held reader is released, and the third read completes
+/// before the other is released.
+#[test]
+fn a_read_pushed_while_every_reader_is_busy_is_taken_by_the_first_free() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 9, 1, 0x99)?;
+        flush(&mut store)?;
+        store.core.readers = 2;
+        let gates = [Gate::new("busy-a"), Gate::new("busy-b")];
+        store.set_read_pause_at(0, gates[0].pause());
+        store.set_read_pause_at(5, gates[1].pause());
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&gates[0], &gates[1]]);
+        submit(&mut served, read_request(100, 0, 1))?;
+        submit(&mut served, read_request(101, 5, 1))?;
+        gates[0].wait_reached("the first reader")?;
+        gates[1].wait_reached("the second reader")?;
+        submit(&mut served, read_request(102, 9, 1))?;
+        gates[0].open();
+        let mut done = Vec::new();
+        take(
+            &mut served,
+            &mut done,
+            2,
+            "the first held read and the third",
+        )?;
+        if done.iter().any(|c| c.id == RequestId(101)) {
+            return Err("the read still held completed".into());
+        }
+        let read = completion(&done, 102)?;
+        if read.result.is_err()
+            || read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != 0x99))
+        {
+            return Err("the third read does not return its block".into());
+        }
+        gates[1].open();
+        take(&mut served, &mut done, 3, "the second held read")?;
+        Ok(())
+    }
+    holds(scenario);
+}

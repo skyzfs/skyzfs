@@ -176,6 +176,12 @@ impl Mutants {
     /// A barrier waits until one of the readers that were under way
     /// when it began has left, and not for all of them.
     pub(crate) const BARRIER_WAITS_FOR_ONE: u64 = 1 << 35;
+    /// A read pushed to the readers' queue wakes every waiting reader,
+    /// and not one.
+    pub(crate) const READ_WAKES_ALL: u64 = 1 << 36;
+    /// A reader that finds the readers' queue empty lets go of its lock
+    /// before it waits: a read pushed between the two wakes nobody.
+    pub(crate) const READ_WAKE_LOST: u64 = 1 << 37;
 
     fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -3692,6 +3698,177 @@ enum ToReader {
     Panic,
 }
 
+/// The readers' queue of reads: one queue for all the readers of a
+/// served store, from which an idle reader takes the next read.
+///
+/// A push wakes one waiting reader, and only one: each read costs one
+/// wake. A reader that finds the queue empty waits on the condition
+/// variable with the queue's lock let go only inside the wait, so a
+/// push between its look and its wait cannot happen, and no wake is
+/// lost. A reader that is busy when a read is pushed finds it when it
+/// looks again, without a wake. At the end ([`ReadQueue::close`]) the
+/// readers take what is queued and then end. (Before, the readers
+/// shared a channel's receiver behind a mutex: the idle reader that
+/// held it got the read and, by letting go of the mutex, woke a second
+/// reader, which took the mutex to wait on the channel. Two wakes and
+/// two context switches per read.)
+struct ReadQueue<T> {
+    state: Mutex<Queued<T>>,
+    ready: std::sync::Condvar,
+    mutants: Mutants,
+    /// For tests: called by a reader that found the queue empty, after
+    /// its look and before its wait, with whether it still holds the
+    /// queue's lock (it does unless [`Mutants::READ_WAKE_LOST`]).
+    #[cfg(test)]
+    between: Mutex<Option<Between>>,
+}
+
+/// For tests: what a reader does between its look and its wait.
+#[cfg(test)]
+type Between = Arc<dyn Fn(bool) + Send + Sync>;
+
+struct Queued<T> {
+    reads: VecDeque<T>,
+    closed: bool,
+    /// For tests: the readers in a wait, and how often a reader has
+    /// woken from one.
+    #[cfg(test)]
+    waiting: usize,
+    #[cfg(test)]
+    woke: u64,
+    /// For tests: the pushes that found no reader waiting, whose wake
+    /// went to nobody.
+    #[cfg(test)]
+    unheard: u64,
+    /// For tests: the wakes that found no read and the queue open.
+    #[cfg(test)]
+    futile: u64,
+}
+
+/// What a reader found in the queue without waiting.
+enum Looked<T> {
+    Read(T),
+    Empty,
+    Closed,
+}
+
+impl<T> ReadQueue<T> {
+    fn new(mutants: Mutants) -> Self {
+        Self {
+            state: Mutex::new(Queued {
+                reads: VecDeque::new(),
+                closed: false,
+                #[cfg(test)]
+                waiting: 0,
+                #[cfg(test)]
+                woke: 0,
+                #[cfg(test)]
+                unheard: 0,
+                #[cfg(test)]
+                futile: 0,
+            }),
+            ready: std::sync::Condvar::new(),
+            mutants,
+            #[cfg(test)]
+            between: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Queued<T>> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queue a read and wake one waiting reader; the read back if the
+    /// queue is closed.
+    fn push(&self, read: T) -> Result<(), T> {
+        let mut state = self.lock();
+        if state.closed {
+            return Err(read);
+        }
+        state.reads.push_back(read);
+        #[cfg(test)]
+        if state.waiting == 0 {
+            state.unheard += 1;
+        }
+        drop(state);
+        if self.mutants.has(Mutants::READ_WAKES_ALL) {
+            self.ready.notify_all();
+        } else {
+            self.ready.notify_one();
+        }
+        Ok(())
+    }
+
+    /// No more reads: the readers take what is queued and then end.
+    fn close(&self) {
+        self.lock().closed = true;
+        self.ready.notify_all();
+    }
+
+    /// The next read, if one is queued, without waiting.
+    fn look(&self) -> Looked<T> {
+        let mut state = self.lock();
+        match state.reads.pop_front() {
+            Some(read) => Looked::Read(read),
+            None if state.closed => Looked::Closed,
+            None => Looked::Empty,
+        }
+    }
+
+    /// The next read, waiting for one; `None` once the queue is closed
+    /// and empty.
+    fn next(&self) -> Option<T> {
+        let mut state = self.lock();
+        loop {
+            if let Some(read) = state.reads.pop_front() {
+                return Some(read);
+            }
+            if state.closed {
+                return None;
+            }
+            let lost = self.mutants.has(Mutants::READ_WAKE_LOST);
+            if lost {
+                // The defect: the look and the wait under two holds.
+                drop(state);
+                #[cfg(test)]
+                self.between_look_and_wait(false);
+                state = self.lock();
+            } else {
+                #[cfg(test)]
+                self.between_look_and_wait(true);
+            }
+            #[cfg(test)]
+            {
+                state.waiting += 1;
+            }
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            {
+                state.waiting -= 1;
+                state.woke += 1;
+                if state.reads.is_empty() && !state.closed {
+                    state.futile += 1;
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn between_look_and_wait(&self, holding: bool) {
+        let hook = self
+            .between
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(hook) = hook {
+            hook(holding);
+        }
+    }
+}
+
 /// Where a run of a read's blocks is, as the reader found it under the
 /// lock: resolved as far as a file and a place in it, so that nothing
 /// is asked of the index or of the log again.
@@ -3939,7 +4116,7 @@ pub struct Served {
     identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
     /// To the readers: every read goes there, and nothing else.
-    reads: Option<mpsc::Sender<ToReader>>,
+    reads: Option<Arc<ReadQueue<ToReader>>>,
     completions: mpsc::Receiver<(Completion, Option<Lsn>, Instant)>,
     /// When the worker had each completion of the last
     /// [`BlockTarget::poll`] or [`BlockTarget::wait`] ready.
@@ -4191,10 +4368,9 @@ where
         // The readers: threads of their own for the reads, each with
         // handles of its own on the store's files. Any thread's end is
         // the store's end for its owner.
-        let (reads, read_inbox) = mpsc::channel::<ToReader>();
         // One queue of reads for all the readers: a reader that is idle
         // takes the next read, whichever reader is busy with another.
-        let read_inbox = Arc::new(Mutex::new(read_inbox));
+        let reads = Arc::new(ReadQueue::<ToReader>::new(core.mutants));
         let dir = core.log.dir().clone();
         #[cfg(any(test, feature = "test-hooks"))]
         let (pause, pauses_at) = (
@@ -4225,7 +4401,7 @@ where
         let mut waiting = VecDeque::new();
         for request in queue.drain(..) {
             if matches!(request.op, Op::Read { .. }) {
-                let _ = reads.send(ToReader::Read(request, served_at));
+                let _ = reads.push(ToReader::Read(request, served_at));
             } else {
                 waiting.push_back((request, served_at));
             }
@@ -4239,7 +4415,7 @@ where
             };
             let (outbox, waker, shown) = (outbox.clone(), waker.clone(), shown.clone());
             let failures = commands.clone();
-            let read_inbox = read_inbox.clone();
+            let read_inbox = reads.clone();
             let spawned = thread::Builder::new()
                 .name(format!("skyzfs-reader-{at_index}"))
                 .spawn(move || {
@@ -4264,41 +4440,29 @@ where
                         open,
                     };
                     loop {
-                        // A read that is there already, taken without
-                        // a wait. The queue's lock is held by a reader
-                        // that waits for the next read: then there is
-                        // none, and this reader waits too.
-                        let ready = match read_inbox.try_lock() {
-                            Ok(inbox) => Some(inbox.try_recv()),
-                            Err(std::sync::TryLockError::WouldBlock) => None,
-                            Err(std::sync::TryLockError::Poisoned(inbox)) => {
-                                Some(inbox.into_inner().try_recv())
-                            }
-                        };
-                        let next = match ready {
-                            Some(Ok(next)) => next,
-                            Some(Err(mpsc::TryRecvError::Disconnected)) => return,
-                            Some(Err(mpsc::TryRecvError::Empty)) | None => {
+                        // A read that is there already, taken without a
+                        // wait; else the reader shows itself idle and
+                        // waits for one.
+                        let next = match read_inbox.look() {
+                            Looked::Read(next) => next,
+                            Looked::Closed => return,
+                            Looked::Empty => {
                                 spans.forget(None);
                                 spans.close(Activity::OTHER, Instant::now(), &mut timing);
                                 // Shown as waiting, so that a look counts
-                                // the wait as idle: the wait for the
-                                // queue's lock as well as for a read.
+                                // the wait as idle.
                                 shown.read(
                                     at_index,
                                     show(&timing, reader.unflushed, spans.open(Activity::IDLE)),
                                 );
-                                let next = read_inbox
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .recv();
+                                let next = read_inbox.next();
                                 shown.reader_woke(at_index, |now| {
                                     spans.close(Activity::IDLE, now, &mut timing);
                                     show(&timing, reader.unflushed, spans.open(Activity::OTHER))
                                 });
                                 match next {
-                                    Ok(next) => next,
-                                    Err(_) => return,
+                                    Some(next) => next,
+                                    None => return,
                                 }
                             }
                         };
@@ -4809,7 +4973,7 @@ impl Served {
     #[cfg(test)]
     pub(crate) fn panic_reader(&mut self) {
         if let Some(reads) = &self.reads {
-            let _ = reads.send(ToReader::Panic);
+            let _ = reads.push(ToReader::Panic);
         }
         while !self.ended.load(Ordering::SeqCst) {
             thread::sleep(Duration::from_millis(1));
@@ -4829,14 +4993,17 @@ impl Served {
 
 impl Drop for Served {
     fn drop(&mut self) {
-        // The reader ends when the reads' sender is gone, and the
-        // worker when it is told to stop: it holds a sender of its
-        // commands itself, for the helper's wake.
+        // The readers end when the queue of reads is closed, once they
+        // have taken what is queued, and the worker when it is told to
+        // stop: it holds a sender of its commands itself, for the
+        // helper's wake.
         if let Some(commands) = &self.commands {
             let _ = commands.send(Command::Stop);
         }
         self.commands = None;
-        self.reads = None;
+        if let Some(reads) = self.reads.take() {
+            reads.close();
+        }
         for reader in self.readers.drain(..) {
             let _ = reader.join();
         }
@@ -4874,13 +5041,14 @@ impl BlockTarget for Served {
         // A read goes to the reader and everything else to the worker.
         if matches!(request.op, Op::Read { .. }) {
             return match self.reads.as_ref() {
-                Some(reads) => match reads.send(ToReader::Read(request, Instant::now())) {
+                Some(reads) => match reads.push(ToReader::Read(request, Instant::now())) {
                     Ok(()) => {
                         self.ids.insert(id);
                         Ok(())
                     }
-                    // The reader is gone, which only a panic in it does.
-                    Err(mpsc::SendError(ToReader::Read(request, _))) => Err(SubmitError {
+                    // The queue is closed, which only the store's end
+                    // does: a reader that is gone is found by `gone`.
+                    Err(ToReader::Read(request, _)) => Err(SubmitError {
                         kind: SubmitErrorKind::Busy,
                         request,
                     }),
