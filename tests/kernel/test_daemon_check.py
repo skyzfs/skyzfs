@@ -312,7 +312,7 @@ class Judge(unittest.TestCase):
 
     def test_check_f_is_asked_for_by_name_and_is_the_daemons(self):
         f = [name for name, (check, _) in dc.OBSERVED.items() if check == 'f']
-        self.assertEqual(len(f), 6)
+        self.assertEqual(len(f), 7)
         # one judged line: the courses' control
         self.assertEqual([n for n, (check, *_) in dc.EXPECTED.items() if check == 'f'], ['ctl_f_starts_refused'])
         self.assertEqual(dc.parse_checks('f'), ({'f'}, []))

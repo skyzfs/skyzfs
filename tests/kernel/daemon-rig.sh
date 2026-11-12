@@ -76,7 +76,7 @@ done
 # suspended or hung, and the machine's zpool commands slow down with
 # each such pool (run 43157965159: the sixth course's looks were minutes
 # apart), so a course is best run alone: one job, one course.
-F_ALL="scrub export reopen clear writers zed"
+F_ALL="scrub export reopen clear writers zed zedreopen"
 F_COURSES=${RIG_F_COURSES:-$F_ALL}
 n=0
 for c in $F_COURSES; do
@@ -820,6 +820,7 @@ rs_act() {
     local cmd
     case $course in
         scrub|zed) cmd=(zpool scrub "$pool") ;;
+        zedreopen) cmd=(zpool reopen "$pool") ;;
         export) cmd=(zpool export "$pool") ;;
         reopen) cmd=(zpool reopen "$pool") ;;
         clear) cmd=(zpool clear "$pool") ;;
@@ -914,7 +915,8 @@ SHORT_LOG_SAID="the log is shorter than what was acknowledged"
 #   others are check f's, each on a pool and a volume of its own with
 #   nothing but the first writer until the one thing the course does:
 #   scrub, export, reopen, clear (that zpool command 10 s after the
-#   refusal), zed (the scrub, with zed running), writers (rs_writers).
+#   refusal), zed (the scrub, with zed running), zedreopen (the
+#   reopen, with zed running), writers (rs_writers).
 # The server is killed at rest, so that the log's last mutation is an
 # acknowledged one and `serve --recover-short 1` must refuse. The
 # control judges that answer and nothing of the pool. The rest is
@@ -1109,7 +1111,7 @@ refused_start_arm() {
         RS_OBS="pool with a separate log device, nothing read and nothing scrubbed; a synced writer of 4 MiB to a file of its own every 30 s. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")The writers: ${io:-none was sent}${hung:+Where a hung one waits: $hung. }The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. At the end: $(dirty_say "$OUT/$tag-end-txgs.txt"); $(txg_say "$OUT/$tag-end-txgs.txt"). Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
     elif [ "$course" != long ]; then
         rel=$(rs_release "$num" "$tag")
-        RS_OBS="pool with a separate log device$([ "$course" = zed ] && echo ", zed $(zed_state) with $(pgrep -c -x zed 2>/dev/null || echo 0) process(es)"); only the first writer's synced writes until '$act' at ${acted:-never} s after the refusal (exit $SERVE_RC). The command: $(cat "$WORK/$tag.act" 2>/dev/null || echo "HAD NOT RETURNED at $end s") $(head -c 200 "$OUT/$tag-act.log" 2>/dev/null | tr '\n' ' '). ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s by the rig's clock; by the kernel log, 'has been suspended' came $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended") after the command was sent. " || echo "Never suspended in $end s (the kernel log's 'has been suspended' after the command: $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended")). ")At the end, $end s: pool $st, its file system $(mountpoint -q "$WORK/mnt/$pool" && echo 'still mounted' || echo 'NO LONGER MOUNTED (what the first writer wrote after that went to the directory under it)'). Does the pool let go of the device: the vdev in zpool status: $(vdev_say "$OUT/$tag-end-status.txt" "$num"); $rel. Before the command (8 s): vdev $(vdev_say "$OUT/$tag-8s-status.txt" "$num"), $(txg_say "$OUT/$tag-8s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen"
+        RS_OBS="pool with a separate log device$([[ $course == zed* ]] && echo ", zed $(zed_state) with $(pgrep -c -x zed 2>/dev/null || echo 0) process(es)"); only the first writer's synced writes until '$act' at ${acted:-never} s after the refusal (exit $SERVE_RC). The command: $(cat "$WORK/$tag.act" 2>/dev/null || echo "HAD NOT RETURNED at $end s") $(head -c 200 "$OUT/$tag-act.log" 2>/dev/null | tr '\n' ' '). ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s by the rig's clock; by the kernel log, 'has been suspended' came $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended") after the command was sent. " || echo "Never suspended in $end s (the kernel log's 'has been suspended' after the command: $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended")). ")At the end, $end s: pool $st, its file system $(mountpoint -q "$WORK/mnt/$pool" && echo 'still mounted' || echo 'NO LONGER MOUNTED (what the first writer wrote after that went to the directory under it)'). Does the pool let go of the device: the vdev in zpool status: $(vdev_say "$OUT/$tag-end-status.txt" "$num"); $rel. Before the command (8 s): vdev $(vdev_say "$OUT/$tag-8s-status.txt" "$num"), $(txg_say "$OUT/$tag-8s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen"
     else
     RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. The device's error counters in zpool status at 10 s: $(vdev_say "$OUT/$tag-10s-status.txt" "$num"); 60 s: $(vdev_say "$OUT/$tag-60s-status.txt" "$num"); 110 s: $(vdev_say "$OUT/$tag-110s-status.txt" "$num"); 170 s: $(vdev_say "$OUT/$tag-170s-status.txt" "$num"); 230 s: $(vdev_say "$OUT/$tag-230s-status.txt" "$num"); the end: $(vdev_say "$OUT/$tag-end-status.txt" "$num"). Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end (and just before each of the three probes) are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
     # Exit 4 is every refusal of a failed volume. The control is about
@@ -1326,7 +1328,7 @@ check_f() {
     local c tag zed_was zed_ok="" said="" worst=FAIL
     rec f_courses "$F_COURSES"
     for c in $F_ALL; do
-        tag=f${c:0:1}
+        tag=f${c:0:1}; [ "$c" != zedreopen ] || tag=fy
         # A course that was not asked for has its line, and the line
         # says so: one that is missing is the rig's error.
         if [[ " $F_COURSES " != *" $c "* ]]; then
@@ -1334,7 +1336,7 @@ check_f() {
             continue
         fi
         step "f: after a refused start, the course '$c'"
-        if [ "$c" = zed ]; then
+        if [ "$c" = zed ] || [ "$c" = zedreopen ]; then
             # zed is not among the rig's packages: it is installed for
             # this course, runs during it alone and is stopped after.
             zed_was=$(zed_state)
@@ -1342,7 +1344,7 @@ check_f() {
                 && lim 60 systemctl start zfs-zed > "$OUT/f-zed-start.log" 2>&1 && [ "$(zed_state)" = active ]; then
                 zed_ok=yes
             else
-                obs f_refused_start_zed "not run: zed could not be installed and started (it was '$zed_was' before): $(tail -n 1 "$OUT/f-zed-apt.log" | cut -c1-160); $(tail -n 1 "$OUT/f-zed-start.log" 2>/dev/null | cut -c1-160)"
+                obs "f_refused_start_$c" "not run: zed could not be installed and started (it was '$zed_was' before): $(tail -n 1 "$OUT/f-zed-apt.log" | cut -c1-160); $(tail -n 1 "$OUT/f-zed-start.log" 2>/dev/null | cut -c1-160)"
                 continue
             fi
         fi
@@ -1361,7 +1363,7 @@ check_f() {
         else
             obs "f_refused_start_$c" "not run: the start was not refused as the control wants: $RS_CTL"
         fi
-        if [ -n "$zed_ok" ]; then lim 60 systemctl stop zfs-zed > /dev/null 2>&1; rec f_zed_after "$(zed_state)"; fi
+        if [ -n "$zed_ok" ]; then lim 60 systemctl stop zfs-zed > /dev/null 2>&1; rec "f_zed_after_$c" "$(zed_state)"; zed_ok=""; fi
     done
     ctl f_starts_refused "$worst" "the start before each course (serve --recover-short 1 after a kill at rest), by course: $said"
 }

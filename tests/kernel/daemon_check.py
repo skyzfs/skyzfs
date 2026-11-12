@@ -253,6 +253,8 @@ OBSERVED = {
                                          'synced writers return, by when they were sent and how much the pool held '
                                          'dirty then?'),
     'obs_f_refused_start_zed': ('f', 'the scrub at 10 s again with zed running: does zed change the course?'),
+    'obs_f_refused_start_zedreopen': ('f', 'zpool reopen at 10 s with zed running: where the pool has suspended by '
+                                           'itself and holds the device, does a reopen free it or is it refused?'),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
@@ -287,7 +289,8 @@ REFERENCE_ONLY = set()
 # is the rig's error whatever the server.
 DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
-                        'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed'}
+                        'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',
+                        'obs_f_refused_start_zedreopen'}
 
 
 # f is asked for by name: it is not among the default of a run.
