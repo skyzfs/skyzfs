@@ -19,11 +19,15 @@ A volume is put in one of these classes:
   no_write    the case made no call that adds to the log: nothing takes
               the log over the mark, and no step can fall inside it
   last_write  its first call that adds to the log was its last call
+  failed_first  the volume's log was failed (the trace's "fail") before
+              its first call that adds to the log: the server has
+              exited, the calls go to a deleted device, and no step can
+              come (programs of prop_failures_match_model)
   not_set     the pre-fill did not leave the log just below the mark
   no_step     set, a call after the first write, and no step counted
 
 Printed: one line `c_low counts inside=I no_write=W last_write=L
-not_set=S no_step=N with_gate=G volumes=V verdict=OK|TOO_MANY`, then one
+failed_first=F not_set=S no_step=N with_gate=G volumes=V verdict=OK|TOO_MANY`, then one
 line per volume of the last three classes. TOO_MANY when the volumes
 that could hold a step and did not (not_set + no_step) are more than a
 tenth of those that could (inside + not_set + no_step), or when none
@@ -37,7 +41,7 @@ ADDS_TO_LOG = {'write', 'discard', 'write_zeroes'}
 
 
 def classify(trace_lines, helper_lines):
-    seen, first, after = set(), {}, {}
+    seen, first, after, failed_first = set(), {}, {}, set()
     for line in trace_lines:
         f = line.rstrip('\n').split('\t')
         if len(f) < 3:
@@ -45,6 +49,8 @@ def classify(trace_lines, helper_lines):
         v = f[1]
         if f[2] == 'open':
             seen.add(v)
+        elif f[2] == 'fail' and v not in first:
+            failed_first.add(v)
         elif f[2] == 'submit' and len(f) > 4:
             seen.add(v)
             if v in first:
@@ -68,6 +74,8 @@ def classify(trace_lines, helper_lines):
     for v in seen:
         if v not in first:
             classes[v] = 'no_write'
+        elif v in failed_first:
+            classes[v] = 'failed_first'
         elif not after.get(v):
             classes[v] = 'last_write'
         elif not prefill.get(v, False):
@@ -80,7 +88,7 @@ def classify(trace_lines, helper_lines):
 
 
 def report(classes, steps, gate):
-    count = {k: 0 for k in ('inside', 'no_write', 'last_write', 'not_set', 'no_step')}
+    count = {k: 0 for k in ('inside', 'no_write', 'last_write', 'failed_first', 'not_set', 'no_step')}
     for c in classes.values():
         count[c] += 1
     could = count['inside'] + count['not_set'] + count['no_step']
@@ -90,7 +98,7 @@ def report(classes, steps, gate):
     out = ['c_low counts ' + ' '.join(f'{k}={n}' for k, n in count.items())
            + f' with_gate={with_gate} volumes={len(classes)} steps={sum(steps.get(v, 0) for v in classes)} verdict={verdict}']
     for v in sorted(classes, key=int):
-        if classes[v] in ('not_set', 'no_step', 'no_write', 'last_write'):
+        if classes[v] != 'inside':
             out.append(f'c_low volume {v} {classes[v]}')
     return out
 

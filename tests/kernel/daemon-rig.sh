@@ -2434,8 +2434,9 @@ unflushed_obs() {
 # began: steps were taken in the pass and none inside a case.)
 # c_low_steps.py puts each volume in a class from the call trace and
 # the helper's lines: `inside` (the pre-fill was set, the case made a
-# call after its first write, and its servers took steps), `no_write`
-# and `last_write` (no call could follow a step: counted and shown),
+# call after its first write, and its servers took steps), `no_write`,
+# `last_write` and `failed_first` (no call could follow a step, or the
+# log was failed before the first write: counted and shown),
 # `not_set` and `no_step` (it could, and did not). More of the last two
 # than a tenth of the volumes that could hold a step is the rig's
 # error, not a verdict. The verdict is each case's result beside the
