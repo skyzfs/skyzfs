@@ -75,3 +75,25 @@ The review is posted on the pull request. What stands behind it:
 
 Not done: no job was run. Ubuntu's kernel tree was not read, mainline at the
 tag v7.0 was.
+
+## Second look, at adb32bc
+
+One commit on top: the barrier step finds the work file system's disk by its
+device number, reads `queue/write_cache`, names both in the step summary, and
+on `write through` adds a sentence and a `::warning::`. The input's comment now
+says the result follows the disk.
+
+- `stop-rule.sh` grew stubs for the lookup (`mountpoint`, `readlink` into a
+  fake sysfs tree, `cat` of `/sys/block/...`) and four cases. At adb32bc:
+  - a partition resolves to its whole disk and the cache is read;
+  - a whole disk likewise;
+  - **`write through` with a good remount exits 0** (a warning and the
+    sentence), and exits 1 only when the remount fails as well;
+  - a device number with no sysfs entry gives `not said`, exit 0, and the
+    summary names the disk `block`.
+- The lookup lines run for real in the review container on `/` (a whole disk,
+  `vda`): `write back`. There is no partition in that container, so the
+  partition case rests on the stubs. No job has run at adb32bc.
+- The lead ruled after the push that a barriers-on job stops when the disk
+  declares `write through`. So the read and the sentence are in, and the stop
+  is what is left.
