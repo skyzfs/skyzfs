@@ -58,7 +58,9 @@ class Repro(t.Pass):
 
         def point(ck, n, kind, hooks=(), marks=None, fmarks=None):
             r = clean(ck, n, kind, hooks, marks, fmarks)
-            if hooks:
+            # Only the daemon's own hook: the rig's stop-after-ready hook (the stuck
+            # control, added after this was written) is not an option of the daemon.
+            if any(str(h).startswith('--') for h in hooks):
                 r.pop('start')
                 r.update(ok=False, failed='start', detail="exit 2 before it was ready: error: unexpected argument '--recover-short'")
             return r
