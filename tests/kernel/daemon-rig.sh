@@ -1812,7 +1812,17 @@ check_b() {
         if ! serve_wait 60; then
             pin orderly_stop_keeps_device FAIL "serve did not exit within 60 s of SIGTERM"
         else
-            rc=$SERVE_RC; st=$(ublk_state "$BDEV")
+            # The driver moves the device to QUIESCED in a work item
+            # queued when the server's char device is released, which
+            # can come after the process has gone (the control rig's
+            # orderly stop says more): the device is given up to 5 s,
+            # the daemon's limit for a take-over, and the time is said.
+            rc=$SERVE_RC; t0=$(now_ms)
+            while :; do
+                st=$(ublk_state "$BDEV"); quiesced_ms=$(( $(now_ms) - t0 ))
+                [ "$st" != QUIESCED ] && [ "$quiesced_ms" -lt 5000 ] || break
+                sleep 0.1
+            done
             ( lim 120 "$DD" if=/dev/zero of="$WORK/mnt/$pool/across-stop" bs=1M count=4 conv=fsync status=none; echo $? > "$WORK/b-across.rc" ) &
             across=$!
             sleep 3
@@ -1821,9 +1831,9 @@ check_b() {
             wait "$across"
             if [ "$rc" = 0 ] && [ -b "$BDEV" ] && [ "$st" = QUIESCED ] && [ $i = 0 ] && [ "$(cat "$WORK/b-across.rc")" = 0 ] \
                 && [ "$(pool_state "$pool")" = ONLINE ]; then
-                pin orderly_stop_keeps_device PASS "serve exited 0 on SIGTERM, the device stayed ($st), and a write begun while no server ran completed after serve returned; $(pool_errors "$pool")"
+                pin orderly_stop_keeps_device PASS "serve exited 0 on SIGTERM, the device stayed ($st $quiesced_ms ms after serve returned), and a write begun while no server ran completed after serve returned; $(pool_errors "$pool")"
             else
-                pin orderly_stop_keeps_device FAIL "serve exit $rc on SIGTERM, device state '$st', serve again rc $i, write across the stop rc $(cat "$WORK/b-across.rc"), pool $(pool_state "$pool")"
+                pin orderly_stop_keeps_device FAIL "serve exit $rc on SIGTERM, device state '$st' $quiesced_ms ms after serve returned, serve again rc $i, write across the stop rc $(cat "$WORK/b-across.rc"), pool $(pool_state "$pool")"
             fi
         fi
     fi
