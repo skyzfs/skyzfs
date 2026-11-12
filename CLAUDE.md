@@ -255,7 +255,10 @@ there, and the user decides when it merges.
   one job; `TB_SKZ_TIME_REF=<ref>` reads the job's times with that
   ref's `skz_time.py` (name the newest daemon's). Each job starts with
   a disk-sync line that says whether the machine's syncs are slow or
-  fast.
+  fast, and the work disk's mount options and write cache.
+  `TB_SYSCALLS=1` on an entry traces the daemon's system calls and
+  `TB_PERF_RECORD=1` records a profile of it (M1.T15); a row that was
+  traced or recorded counts for no ratio.
   `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own, and
   postgres runs in a cgroup of its own in every row; rows from before
   M1.T12 are not known to be comparable in tps with rows after it. The
