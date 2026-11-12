@@ -506,8 +506,23 @@ fn post<Q: skyzfs_ublk::pump::Queue>(
         ..log_shown(pump.target())
     };
     let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
+    say_writeback_off(shown, &now);
     board.post_log(now, step_changed);
     *shown = now;
+}
+
+/// One line when the hint that starts writeback early is switched off
+/// for a kind of file: its file system said it has no such call.
+fn say_writeback_off(before: &LogShown, now: &LogShown) {
+    let off = |shown: &LogShown, at: usize| shown.timing.is_some_and(|t| t.writeback[at].off);
+    for (at, files) in [(0, "the log's segment files"), (1, "the home image")] {
+        if off(now, at) && !off(before, at) {
+            say(format_args!(
+                "the file system has no call to start writeback early: \
+                 the hint is off for {files} (the syncs are as they were)"
+            ));
+        }
+    }
 }
 
 /// Run `serve`. Prints for itself: the ready line has to be out when
@@ -585,6 +600,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
 
     let mut options = OpenOptions::default();
     options.pretend_short_by = serve.hooks.recover_short;
+    options.writeback_unit = serve.writeback_kib << 10;
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {

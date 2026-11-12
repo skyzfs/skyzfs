@@ -12,14 +12,15 @@ fn counters(reads: u64, held: u64) -> Counters {
 }
 
 /// Times whose fields in the file are 100, 101, and so on, in the
-/// file's order.
+/// file's order, but for the two that say whether the hint is off,
+/// which are a yes or a no and so 1 ([`OFF_FIELDS`]).
 fn sample_timing() -> skyzfs_local::store::Timing {
     let mut bytes = [0u8; LEN];
     for field in 0..TIME_FIELDS {
         let at = 200 + 8 * field;
-        bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
+        bytes[at..at + 8].copy_from_slice(&sample_field(field).to_le_bytes());
     }
-    timing_at(&bytes, false)
+    timing_at(&bytes, false, true)
 }
 
 /// The pump's times with the same fields: 242 to 258.
@@ -30,6 +31,19 @@ fn sample_pump() -> PumpTiming {
         bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
     }
     pump_at(&bytes, false)
+}
+
+/// The time fields that say whether the hint is off for the log and
+/// for the home image.
+const OFF_FIELDS: [usize; 2] = [176, 180];
+
+/// What the sample has in time field `field`.
+fn sample_field(field: usize) -> u64 {
+    if OFF_FIELDS.contains(&field) {
+        1
+    } else {
+        100 + field as u64
+    }
 }
 
 fn sample() -> Status {
@@ -73,17 +87,22 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA6");
+    expected.extend(b"SKYZSTA7");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 173 fields from offset 200, here 100 to 272.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..273) {
+    // The times are the 205 fields from offset 200, here 100 to 304
+    // but for the two that say the hint is off, 1.
+    for field in (1..=14u64)
+        .chain([1, 16, 17, 18, 2])
+        .chain((0..TIME_FIELDS).map(sample_field))
+    {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1584);
+    assert_eq!(TIME_FIELDS, 205);
+    assert_eq!(bytes.len(), 1840);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -127,6 +146,25 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(timing.reader, [265, 266, 267]);
     assert_eq!(timing.read_unflushed, [268, 269, 270]);
     assert_eq!((timing.worker_as_of_ns, timing.reader_as_of_ns), (271, 272));
+    let hinted = |count, bytes, ns| skyzfs_local::writeback::Hinted {
+        count,
+        bytes,
+        ns,
+        off: true,
+    };
+    assert_eq!(
+        timing.writeback,
+        [hinted(273, 274, 275), hinted(277, 278, 279)]
+    );
+    let synced = |at: u64| skyzfs_local::store::Synced {
+        count: at,
+        sum_ns: at + 1,
+        bytes: at + 2,
+        handed: at + 3,
+    };
+    assert_eq!(timing.syncs[0], synced(281));
+    assert_eq!(timing.syncs[3], synced(293));
+    assert_eq!(timing.syncs[5], synced(301));
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -290,7 +328,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     for (n, (key, value)) in timed.iter().enumerate() {
         assert_eq!(*key, TIME_KEYS[n]);
         // A cause the reader has no name for is printed as its number.
-        assert_eq!(*value, (100 + n).to_string(), "{key}");
+        assert_eq!(*value, sample_field(n).to_string(), "{key}");
     }
     // A cause is said by its name.
     let mut named = sample();
@@ -325,6 +363,12 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_read_unflushed_mismatched", "270"),
         ("time_worker_as_of_ns", "271"),
         ("time_reader_as_of_ns", "272"),
+        ("time_writeback_log_count", "273"),
+        ("time_writeback_log_off", "1"),
+        ("time_writeback_home_bytes", "278"),
+        ("time_sync_flush_count", "281"),
+        ("time_sync_home_bytes", "295"),
+        ("time_sync_superblock_handed", "304"),
     ] {
         assert_eq!(self::value(&lines, key), Some(value), "{key}");
     }
@@ -346,6 +390,32 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), TIME_FIELDS);
+}
+
+/// A file of the sixth version (1584 bytes, `SKYZSTA6`) is still read:
+/// everything where it was, and the hint and the syncs at zero.
+#[test]
+fn a_file_of_the_sixth_version_is_read_without_the_hint_and_the_syncs() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut sixth = encode(&sample())[..1584].to_vec();
+    sixth[..8].copy_from_slice(b"SKYZSTA6");
+    fs::write(&path, &sixth).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let timing = read.log.expect("the log").shown.timing.expect("times");
+    let mut expected = sample_timing();
+    expected.writeback = Default::default();
+    expected.syncs = Default::default();
+    assert_eq!(timing, expected);
+    // The sixth version's magic at the seventh's length is no file,
+    // nor the seventh's at the sixth's.
+    let mut long = encode(&sample()).to_vec();
+    long[..8].copy_from_slice(b"SKYZSTA6");
+    fs::write(&path, &long).expect("write");
+    assert!(super::read(&path).is_err());
+    sixth[..8].copy_from_slice(b"SKYZSTA7");
+    fs::write(&path, &sixth).expect("write");
+    assert!(super::read(&path).is_err());
 }
 
 /// A file of the fifth version (1424 bytes, `SKYZSTA5`) is still read:

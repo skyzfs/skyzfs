@@ -59,13 +59,24 @@ VERSION_6_KEYS = {'time_worker_step_barrier_ns'} | {f'time_{k}_wait_by_step_barr
     f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')} | {'time_worker_as_of_ns', 'time_reader_as_of_ns'}
 
 
+# What version 7 added: the hint that starts writeback early, and the
+# syncs by kind. Read by the lint test only; no table shows them yet.
+VERSION_7_KEYS = {f'time_writeback_{f}_{x}' for f in ('log', 'home') for x in ('count', 'bytes', 'ns', 'off')} | {
+    f'time_sync_{k}_{x}' for k in ('flush', 'own_sync', 'room', 'home', 'preimage', 'superblock')
+    for x in ('count', 'ns', 'bytes', 'handed')}
+
+
 class Delta(unittest.TestCase):
     def test_the_module_knows_the_daemons_keys(self):
         keys = status_keys()
-        self.assertEqual(len(keys), 173)
+        self.assertEqual(len(keys), 205)
         # what version 6 added, all of it known to the module
         self.assertEqual(len(VERSION_6_KEYS), 173 - 153)
         for key in VERSION_6_KEYS:
+            self.assertIn(key, keys)
+        # and what version 7 added
+        self.assertEqual(len(VERSION_7_KEYS), 205 - 173)
+        for key in VERSION_7_KEYS:
             self.assertIn(key, keys)
         for a in st.READER_ACTIVITIES:
             self.assertIn(a, st.ACTIVITIES)
@@ -87,9 +98,9 @@ class Delta(unittest.TestCase):
         b, a = reading(1), reading(3)
         t = st.delta(b, a, 1000, 5000)
         self.assertTrue(t['ok'], t['why'])
-        self.assertEqual(len(t['delta']) + len(t['end']), 173)
-        self.assertEqual(len(t['before']), 173)
-        self.assertEqual(len(t['after']), 173)
+        self.assertEqual(len(t['delta']) + len(t['end']), 205)
+        self.assertEqual(len(t['before']), 205)
+        self.assertEqual(len(t['after']), 205)
         self.assertEqual(t['window_ns'], 4000)
         keys = status_keys()
         i = keys.index('time_read_call_ns')
