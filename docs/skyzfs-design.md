@@ -456,9 +456,11 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 **The throughput criterion is not met.**
 
 - **The rule**, fixed before the data. A daemon row's ratio is its tps over the mean of the two model rows that enclose it in one job, on one machine. The criterion is met when, for each kind of machine and for each row (unbounded, and bounded to 1 GiB), the median ratio is at least 0.90 over at least four rows from at least two jobs on the merged daemon. A row counts only if its two model rows differ by at most 10% of their mean.
-- **On machines whose disk is slow to sync** it is not met: the median is 0.871 unbounded, and lower bounded.
+- **On machines whose disk is slow to sync** it is not met: the median is 0.876 unbounded and 0.839 bounded to 1 GiB, each over five rows from three jobs.
 - **On machines with a fast sync**, which is what node-local flash is like, earlier rows were at 0.92 to 0.98. None has been measured under the rule yet.
-- **What it is not.** The copy per request is not the cause. Reads waiting behind the worker, the worker's own syncs and the status thread were each measured, taken out of the way (M1.3j to M1.3n), and are no longer the cause either. Postgres waits beside the daemon and does not work harder; a third of that wait is a dearer sync of its own write-ahead log on a disk it shares with the daemon's files, and the rest is not placed yet.
+- **What it is not.** The copy per request is not the cause. Reads waiting behind the worker, the worker's own syncs and the status thread were each measured, taken out of the way (M1.3j to M1.3n), and are no longer the cause either. Postgres waits beside the daemon and does not work harder.
+- **What is left** is not one defect. The daemon writes every block twice, to its log and later to the home image (about 6.5 KiB more per transaction on the disk); its threads use 17 to 25 s of CPU in a window of two minutes, two thirds of it in the kernel, on a machine whose CPUs are all busy; and the machine's I/O pressure is twice the model's, which the ublk project's reference server shows as well.
+- **The instrument is at its limit on these machines.** One build of the daemon gave 0.718 and 0.936 in one job, and the reference server, which has no store, ran between the model's own rows and well below them.
 - **Open, and the user's to decide:** whether the criterion should be judged on fast-sync machines, with the slow-sync gap carried as a recorded risk (§10).
 
 The measurements, job by job, and the decisions taken from them are in the notes, M1, "The throughput criterion".

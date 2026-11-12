@@ -344,12 +344,82 @@ Each row also records what the next rounds need to place the rest of a transacti
 
 Postgres now runs in a cgroup of its own in every row; until this package it did so only under `TB_MEM_LIMIT`. Where the cpu controller is on, the kernel shares CPU between top-level groups by weight, so rows from before and after this change are not known to be comparable in tps. A bracketed ratio stays fair, because both model rows of a bracket and the daemon row between them are treated alike.
 
+#### The round on the merged daemon (de83464), with a reference-server row
+
+Two jobs on 2026-11-12, one per image, one run per row, every row of a job on one machine[^roundde]. The sequence was model, d, d bounded to 1 GiB, model, ref, d, model, d bounded, ref, model, where d is the merged daemon with four readers and ref is the topology `zfs-ublk`: the ublk project's reference server over a file, with no store of ours. Both jobs fell on slow-sync machines (the disk-sync line read 195 and 197 MiB/s), so the fast-sync half of the rule still has no row.
+
+| job | row | ratio | bracket | verdict |
+|---|---|---|---|---|
+| 24.04 | d | 0.922 | 2.6% | counts |
+| 24.04 | d-1g | 0.934 | 2.6% | counts |
+| 24.04 | d-b | 0.795 | 12.9% | NO VERDICT, too wide |
+| 24.04 | d-1g-b | 0.837 | 7.4% | counts |
+| 26.04 | d | 0.718 | 3.6% | counts |
+| 26.04 | d-1g | 0.861 | 3.6% | counts |
+| 26.04 | d-b | 0.936 | 5.3% | counts |
+| 26.04 | d-1g-b | 0.809 | 5.1% | counts |
+
+**By the rule, on slow-sync machines the criterion is not met.** Pooled with the M1.3n round's 24.04 job, whose rows with four readers are the same daemon:
+
+- unbounded: 0.718, 0.865, 0.876, 0.922, 0.936. Five rows from three jobs, median 0.876;
+- bounded to 1 GiB: 0.809, 0.837, 0.839, 0.861, 0.934. Five rows from three jobs, median 0.839.
+
+Left out: the M1.3n round's 26.04 job, whose brackets were all over 26%, and its rows of an older daemon or with one reader.
+
+**One row cannot resolve a tenth.** In the 26.04 job the same daemon gave 0.718 and 0.936 under brackets of 3.6% and 5.3%. The 0.718 row has the job's highest latency deviation (11.0 ms against 3.6 to 8.8) and the lowest postgres CPU (156 s against 181 to 193), and no cause was found. The reference server swings as the model does: 3216 and 4087 tps beside model rows of 3553 to 4150 on 24.04, and 4410 and 3964 beside 4126 to 4349 on 26.04. The daemon against the reference server ranges from 0.70 to 1.05, which is not a steady gap.
+
+**What a commit costs** (latency mean / deviation in ms; µs per sync of the write-ahead log; ms per flush of the pool's log device; KiB written to the work disk per transaction):
+
+| kind | 24.04 | 26.04 |
+|---|---|---|
+| model | 1.92-2.25 / 4.5-6.9; 418-507; 0.11-0.14; 14.7-15.1 | 1.84-1.93 / 3.6-3.8; 387-416; 0.10-0.11; 14.8-14.9 |
+| d | 2.41 / 7.2 and 2.58 / 9.9; 553, 600; 0.18, 0.20; 21.5-21.7 | 2.60 / 11.0 and 2.01 / 4.3; 594, 435; 0.18, 0.14; 20.5-21.9 |
+| d-1g | 2.37 / 6.5 and 2.38 / 8.2; 524, 531; 0.15-0.16; 21.5-21.7 | 2.17 / 5.8 and 2.33 / 8.8; 461, 504; 0.14-0.15; 21.3 |
+| ref | 2.48 / 8.0 and 1.95 / 4.2; 568, 428; 0.17, 0.12; 14.7-15.5 | 1.81 / 3.6 and 2.01 / 6.9; 383, 440; 0.10, 0.12; 14.6-14.9 |
+
+- Syncs of the write-ahead log per commit (0.46 to 0.49) and the log device's writes and flushes per transaction are the same on every stack.
+- **The daemon writes about 6.5 KiB more per transaction to the work disk** than the model and the reference server (21 against 15): a block goes to the write log and later to the home image.
+- The work disk received no flush in any row: its counter moved by 26 to 27 over a window in which the pool sent the daemon's device 46 flushes. That is the machine and not the rig. Why the kernel sends this disk none is not recorded; a disk that declares no volatile write cache is a hypothesis.
+
+**Pressure and CPU.** The pressure shares of this round are overstated: they are taken between looks 2 s and a sync further apart than the window (about 123 s against 120 s). M1.T12 corrected that after the round.
+
+| kind | job | pg cpu some % | pg io some % | pg CPU ms/txn user / system | machine cpu some % | machine io some / full % |
+|---|---|---|---|---|---|---|
+| model | 24.04 | 28.7-33.8 | 14.1-16.5 | 0.244-0.258 / 0.205-0.217 | 36-42 | 19.5-26.5 / 6.9-14.3 |
+| model | 26.04 | 31.5-33.6 | 14.8-16.0 | 0.246-0.255 / 0.176-0.178 | 39.5-41.9 | 22.6-27.2 / 9.6-13.6 |
+| d | 24.04 | 28.3-29.3 | 8.0-8.7 | 0.261-0.271 / 0.211-0.216 | 37.0-38.4 | 40.6-40.9 / 19-20 |
+| d | 26.04 | 24.7, 32.4 | 7.9, 8.4 | 0.249-0.252 / 0.170-0.172 | 31.7, 41.2 | 42.2 / 24.6 and 39.5 / 17.3 |
+| d-1g | 24.04 | 27.8-29.9 | 16.9-17.2 | 0.246-0.262 / 0.204-0.215 | 37.0-39.7 | 46.5-47.4 / 19.5-22.1 |
+| d-1g | 26.04 | 26.9-29.4 | 17.5-18.0 | 0.249-0.251 / 0.175 | 35.4-38.5 | 48-50 / 22-26 |
+| ref | 24.04 | 27.9-32.4 | 16.7-16.8 | 0.243-0.266 / 0.201-0.224 | 36-42 | 44-47 / 16-22 |
+| ref | 26.04 | 29.5-33.5 | 17.0-17.5 | 0.244-0.246 / 0.174-0.176 | 37.7-42.6 | 44-47 / 16-21 |
+
+- Postgres's CPU per transaction is the same on every stack, within 0.02 ms: it waits, it does not work harder.
+- Postgres's I/O pressure is halved in the unbounded daemon rows, where the daemon's page cache holds about 4 GB and its reads hit memory.
+- **The machine's I/O pressure is about twice the model's under both ublk servers**, ours and the reference.
+
+**The daemon's threads**, over the window of about 123 s, all rows of both jobs:
+
+| Thread | User s | System s | Runnable and not running, s |
+|---|---|---|---|
+| `skyzfsd-queue`, the pump | 1.9 to 2.5 | 5.3 to 6.9 | 7.9 to 11.3 |
+| `skyzfs-reader`, the four together | 1.8 to 2.4 | 4.4 to 7.8 | 9.2 to 13.8 |
+| `skyzfs-store`, the worker | 1.8 to 2.2 | 2.1 to 3.1 | 2.3 to 3.5 |
+| `skyzfs-sync` and `skyzfsd-status` | under 0.4 each | | |
+
+Two thirds of the daemon's CPU is in the kernel, and the pump waits for a CPU for about 8% of the window on a machine whose CPUs are all busy (the machine's CPU pressure is 32 to 42% on every stack).
+
+**What this round changes.** The hypothesis "a wait inside the daemon" is used up: reads, the worker's syncs and the status thread are out of the way, and the write throttle was ruled out before. Three costs are left that the model does not have, and none of them is one defect: the second write of every block, about 17 to 25 s of CPU per window that mostly goes to system calls and wakes, and a doubled I/O pressure that the reference server shows as well and that therefore belongs to serving a block device from user space on this kind of machine. Against that, the instrument's own spread on these machines is as large as the gap being judged.
+
+The model rows of the 24.04 job ran about 25% below those of the M1.3n round's 24.04 job (3553 to 4150 against 5055 to 5556). It is another machine, and postgres has run in a cgroup of its own since M1.T12, so the two are not compared.
+
 #### Open at this writing (2026-11-12)
 
 - M1.3p (skyzfs/skyzfs#37): the readers' shared queue cost two wakes per read with several readers; it is replaced by one that wakes one thread. Not yet merged or measured on a runner.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
 - The ublk feature flags and their kernel versions (design §4.2, "Kernels"): to be pinned against the kernel's documentation and source, with a clear refusal by the daemon on a kernel that lacks one. Not yet a package.
-- A round on the merged daemon with a row of the ublk project's reference server (`zfs-ublk`), to separate the store's cost from the cost of a userspace server as such.
+- Where the daemon's system time goes (the pump's and the readers' system calls and wakes): not measured yet. A profile or a count of system calls on one benchmark row would say.
+- No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
 ### Risks in detail (design §10)
@@ -447,3 +517,4 @@ Every independent read of the design and every review of a work package, with wh
 [^zerohole]: `skyzfsd` as of skyzfs/skyzfs#21 at 058174f, from a run-only branch with that code, one run per image: <https://github.com/skyzfs/skyzfs/actions/runs/43127606884>. Each arm zeroes the raw device eight times over its 4 GiB before the pool is made, writes five files of 128 MiB with `fsync`, scrubs, stops, starts again, scrubs and compares the files. The second arm serves with the test build's `--refuse-holes`, which makes the store behave as on a file system that cannot deallocate; no file system that itself refuses was run. The times are the script's bounds, as in the note above. The rule on the file system's block size and the end of a step at a refusal were added in review, after this run: they rest on unit tests and on the pull request's rig runs, which zero no device. Read by the lead; the reading is on the pull request.
 [^zfsnozero]: OpenZFS 2.4.1 has no use of `REQ_OP_WRITE_ZEROES` or `blkdev_issue_zeroout` under `module/` or `include/`. Its disk vdev trims with `__blkdev_issue_discard` and `blkdev_issue_secure_erase` (`module/os/linux/zfs/vdev_disk.c`).
 [^readerr]: `module/zfs/zio.c`, `zio_done`: a failed read is marked for suspension only when its error is `ENXIO`. Any other error on a zio issued with `ZIO_FLAG_CANFAIL`, which demand reads are (`module/zfs/dbuf.c`), is returned to the caller. `zio_vdev_io_assess` turns a leaf error into `ENXIO` only once the vdev is no longer accessible. Slow I/O is reported after `zfs_deadman_ziotime_ms` (`module/zfs/spa_misc.c`), and with the default `zfs_deadman_failmode=wait` it is only reported. Read in upstream master on 2026-11-10.
+[^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
