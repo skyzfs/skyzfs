@@ -176,7 +176,7 @@ class Tables(unittest.TestCase):
         self.assertIn('| 4 | 4.00 |', text)      # 4 steps in a window of 1 s
         self.assertIn(' 0.3 |', text)     # 777 relation reads of 345.6 µs: 0.3 s
         for head in ('The window of each reading', 'The same wait in groups', 'Flushes beside reads', '`busy` is all but idle',
-                     'the walk, of the six parts', "all reads' wait, ms"):
+                     'the walk, of the six parts', "all reads' wait, ms", "The checkpoint rule's own sync"):
             self.assertIn(head, text)
         # every table's rows have as many cells as its header
         lines = text.split('\n')
@@ -200,6 +200,114 @@ class Tables(unittest.TestCase):
         # a window with no request of any kind renders, with n/a
         zero = dict(good, label='idle', time=st.delta(b, b, 0, 5))
         self.assertIn('n/a', '\n'.join(st.render([zero])))
+
+
+def cells(text, title, label):
+    """The row of `label` in the table under the paragraph that starts with `title`: {header: cell}."""
+    lines = text.split('\n')
+    i = next(n for n, x in enumerate(lines) if x.startswith(title))
+    j = next(n for n in range(i, len(lines)) if lines[n].startswith('|---'))
+    heads = [c.strip() for c in lines[j - 1].split('|')[1:-1]]
+    for row in lines[j + 1:]:
+        if not row.startswith('|'):
+            break
+        got = [c.strip() for c in row.split('|')[1:-1]]
+        if got[1] == label:
+            return dict(zip(heads, got))
+    raise AssertionError(f'no row {label!r} under {title!r}')
+
+
+class Columns(unittest.TestCase):
+    """Each printed figure against a reading made by hand: the unit, the divisor and what is summed."""
+
+    def setUp(self):
+        d = {k: 0 for k in status_keys() if not st.is_end_value(k)}
+        d.update(
+            time_read_count=2000, time_read_wait_ns=400_000_000, time_read_call_ns=60_000_000,
+            time_pump_submit_count=4000, time_pump_submit_ns=20_000_000,
+            time_pump_commit_read_count=2000, time_pump_commit_read_ns=44_000_000, time_pump_taken_read_ns=40_000_000,
+            time_flush_count=50, time_flush_call_ns=3_500_000_000, time_flush_wait_ns=1_000_000,
+            # a step: 2 + 0 + 4 + 36 + 2 + 0 ms, in 10 steps; 4 own syncs of 300 ms
+            time_step_walk_ns=20_000_000, time_step_save_ns=0, time_step_apply_ns=40_000_000,
+            time_step_home_sync_ns=360_000_000, time_step_log_start_ns=20_000_000, time_step_end_ns=0,
+            time_step_own_sync_ns=1_200_000_000,
+            time_gate_count=3, time_gate_ns=7_500_000,
+            time_pump_store_count=100, time_pump_store_ns=1_300_000, time_pump_store_completions=140)
+        end = {k: 0 for k in status_keys() if st.is_end_value(k)}
+        end.update(time_step_home_sync_max_ns=511_140_000, time_step_own_sync_max_ns=878_370_000, time_step_walk_max_ns=9_000_000,
+                   time_gate_max_ns=2_500_000, time_read_longest_wait_cause='step_home_sync')
+        t = {'ok': True, 'why': '', 'delta': d, 'end': end, 'before': {}, 'after': {}, 'window_ns': 5 * 10 ** 9}
+        self.row = {'label': 'row', 'workload': 'tpcb', 'tps': 4000.0, 'time': t, 'steps': 10, 'syncs': 4,
+                    'relation_read_us': 400.0, 'relation_reads': 5000, 'duration_s': 4, 'ages': ('10', '20'),
+                    'model_relation_read_us': 180.0}
+        self.text = '\n'.join(st.render([self.row]))
+
+    def test_the_step_parts_are_ms_per_step(self):
+        c = cells(self.text, 'Checkpoint steps in the window', 'row')
+        self.assertEqual([c[p] for p in st.STEP_PARTS], ['2.00', '0.00', '4.00', '36.00', '2.00', '0.00'])
+        self.assertEqual((c['steps'], c['steps per second'], c['reads per step']), ('10', '2.00', '200'))
+
+    def test_all_parts_are_the_six_and_the_own_sync_is_not_one(self):
+        c = cells(self.text, 'Checkpoint steps in the window', 'row')
+        self.assertEqual(c['the six parts'], '44.00')
+        self.assertNotIn('own sync', c)
+
+    def test_the_walks_share_is_of_the_six_parts(self):
+        c = cells(self.text, 'Checkpoint steps in the window', 'row')
+        self.assertEqual(c['the walk, of the six parts'], '4.5%')      # 20 of 440 ms, not of 1640
+
+    def test_the_gate_is_a_count_and_ms(self):
+        c = cells(self.text, 'Checkpoint steps in the window', 'row')
+        self.assertEqual((c['gate count'], c['gate, ms in all'], c["all reads' wait, ms"]), ('3', '7.5', '400.0'))
+
+    def test_the_own_sync_is_per_sync_with_its_count(self):
+        c = cells(self.text, "The checkpoint rule's own sync", 'row')
+        self.assertEqual((c['own syncs in the window'], c['ms per own sync'], c['ms in all']), ('4', '300.0', '1200.0'))
+        self.assertEqual((c['flushes'], c['ms per flush call']), ('50', '70.0'))
+        # without the count of syncs there is no mean, and no division by the steps in its place
+        row = dict(self.row, syncs=None)
+        c = cells('\n'.join(st.render([row])), "The checkpoint rule's own sync", 'row')
+        self.assertEqual((c['own syncs in the window'], c['ms per own sync']), ('n/a', 'n/a'))
+
+    def test_the_mean_flush_call_is_over_the_flushes(self):
+        c = cells(self.text, 'Flushes beside reads', 'row')
+        self.assertEqual((c['flushes'], c['flushes per read'], c['mean flush call, µs']), ('50', '0.025', '70000.0'))
+
+    def test_the_daemons_reads_in_total_are_seconds(self):
+        c = cells(self.text, "A read's life", 'row')
+        # per read: 5 + 200 + 30 + 20 + 2 = 257 µs; 2000 reads: 0.514 s; postgres: 5000 x 400 µs = 2 s
+        self.assertEqual(c['sum'], '257.0')
+        self.assertEqual(c['all reads in the daemon, s'], '0.5')
+        self.assertEqual((c['postgres: relation reads'], c['postgres: µs per relation read'], c['postgres: s in relation reads']),
+                         ('5000', '400.0', '2.0'))
+        self.assertEqual(c["the daemon's share of it"], '25.7%')
+        self.assertEqual(c["the model row's on this machine"], '180.0')
+
+    def test_the_longest_of_each_part_is_the_end_reading_and_says_so(self):
+        self.assertIn('SINCE THE DAEMON STARTED SERVING', self.text)
+        c = cells(self.text, 'The longest single one of each part', 'row')
+        self.assertEqual((c['home_sync'], c['own sync'], c['walk'], c['gate']), ('511.14', '878.37', '9.00', '2.50'))
+
+    def test_the_pumps_store(self):
+        c = cells(self.text, "The pump's store", 'row')
+        self.assertEqual((c['stores'], c['ms each'], c['completions behind one store']), ('100', '0.013', '1.40'))
+
+    def test_a_doubtful_row_is_marked_in_every_table(self):
+        t = dict(self.row['time'], ok=False, why='the pid changed (1 then 2): the sums are not of one daemon')
+        text = '\n'.join(st.render([self.row, dict(self.row, label='other', time=t)]))
+        self.assertIn('- tpcb, other: THE READING IS DOUBTFUL: the pid changed', text)
+        lines = text.split('\n')
+        tables = [i for i, x in enumerate(lines) if x.startswith('|---')]
+        self.assertGreaterEqual(len(tables), 14)
+        for i in tables:
+            rows = []
+            j = i + 1
+            while j < len(lines) and lines[j].startswith('|'):
+                rows.append([c.strip() for c in lines[j].split('|')[1:-1]][1])
+                j += 1
+            self.assertIn('other (DOUBTFUL READING)', rows, lines[i - 1])
+            self.assertIn('row', rows, lines[i - 1])
+            self.assertNotIn('other', rows, lines[i - 1])
 
 
 if __name__ == '__main__':

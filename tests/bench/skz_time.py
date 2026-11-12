@@ -142,7 +142,7 @@ def identities(t):
 
 def render(rows):
     """rows: [{'label', 'workload', 'tps', 'time': delta(), 'steps', 'relation_read_us', 'relation_reads',
-    'duration_s', 'ages': (age_ms before, after), 'model_relation_read_us'}] -> markdown lines."""
+    'duration_s', 'ages': (age_ms before, after), 'model_relation_read_us', 'syncs'}] -> markdown lines."""
     out = []
     if not rows:
         return out
@@ -156,9 +156,11 @@ def render(rows):
         if not t.get('delta'):
             out.append(f"- {r['workload']}, {r['label']}: NO TIMES: {t.get('why') or 'the row has no reading'}")
         else:
-            usable.append(r)
             if not t.get('ok'):
                 out.append(f"- {r['workload']}, {r['label']}: THE READING IS DOUBTFUL: {t.get('why')}")
+                # Marked in every table that prints it, not only in this list.
+                r = dict(r, label=r['label'] + ' (DOUBTFUL READING)')
+            usable.append(r)
     if usable:
         out += ['', 'The window of each reading: the two readings are taken after a `sync` and 2 s on each side of '
                 'pgbench, so they are further apart than pgbench ran, and the worker\'s idle time includes the rest:', '',
@@ -231,24 +233,44 @@ def render(rows):
             whole = sum(v for v in w if v is not None)
             busy = None if w[0] is None else whole - w[0]
             out.append(f"| {r['workload']} | {r['label']} | {_share(busy, whole)} | " + ' | '.join(_share(v, whole) for v in w) + ' |')
-        out += ['', 'Checkpoint steps in the window: ms per step of each part, the sync the step does itself, and the '
-                'gate (turns of the worker in which a request waited and none was taken because the log was at its high '
-                'mark; its time is a share of the parts, not more time), beside all the reads\' wait:', '',
-                '| workload | daemon row | steps | steps per second | reads per step | ' + ' | '.join(STEP_PARTS) + ' | own sync | all parts | the walk, of the six parts | gate count | gate, ms in all | all reads\' wait, ms |',
-                '|---|---|---|---|---|' + '---|' * (len(STEP_PARTS) + 6)]
+        out += ['', 'Checkpoint steps in the window: ms per step of each of the six parts, and the gate (turns of the '
+                'worker in which a request waited and none was taken because the log was at its high mark; its time is '
+                'a share of the parts, not more time), beside all the reads\' wait:', '',
+                '| workload | daemon row | steps | steps per second | reads per step | ' + ' | '.join(STEP_PARTS)
+                + ' | the six parts | the walk, of the six parts | gate count | gate, ms in all | all reads\' wait, ms |',
+                '|---|---|---|---|---|' + '---|' * (len(STEP_PARTS) + 5)]
         for r in usable:
             d, steps = r['time']['delta'], r.get('steps')
-            parts = [d.get(f'time_step_{p}_ns') for p in STEP_PARTS] + [d.get('time_step_own_sync_ns')]
+            parts = [d.get(f'time_step_{p}_ns') for p in STEP_PARTS]
             whole = sum(v for v in parts if v is not None)
             w, nr = r['time'].get('window_ns'), d.get('time_read_count')
             out.append(f"| {r['workload']} | {r['label']} | {_f(steps, 'd') if steps is not None else 'n/a'} | "
                        f"{_f(None if not w or steps is None else steps / (w / 1e9), '.2f')} | "
                        f"{_f(None if not steps or nr is None else nr / steps, '.0f')} | "
                        + ' | '.join(_f(_per(v, steps, 1e6), '.2f') for v in parts)
-                       + f" | {_f(_per(whole, steps, 1e6), '.2f')} | {_share(parts[0], sum(v for v in parts[:6] if v is not None))} | "
+                       + f" | {_f(_per(whole, steps, 1e6), '.2f')} | {_share(parts[0], whole)} | "
                        f"{_f(d.get('time_gate_count'), 'd') if d.get('time_gate_count') is not None else 'n/a'} | "
                        f"{_f(None if d.get('time_gate_ns') is None else d['time_gate_ns'] / 1e6, '.1f')} | "
                        f"{_f(None if d.get('time_read_wait_ns') is None else d['time_read_wait_ns'] / 1e6, '.1f')} |")
+        out += ['', "The checkpoint rule's own sync of the log. It runs before some steps only, so it is counted by itself "
+                '(`checkpoint_syncs`) and is not one of a step\'s parts: the worker\'s longest single stall. Beside it, a '
+                "client's flush, which is a sync of the same file:", '',
+                '| workload | daemon row | own syncs in the window | ms per own sync | ms in all | flushes | ms per flush call |',
+                '|---|---|---|---|---|---|---|']
+        for r in usable:
+            d, syncs = r['time']['delta'], r.get('syncs')
+            own, nf_ = d.get('time_step_own_sync_ns'), d.get('time_flush_count')
+            out.append(f"| {r['workload']} | {r['label']} | {_f(syncs, 'd') if syncs is not None else 'n/a'} | "
+                       f"{_f(_per(own, syncs, 1e6), '.1f')} | {_f(None if own is None else own / 1e6, '.1f')} | "
+                       f"{_f(nf_, 'd') if nf_ is not None else 'n/a'} | {_f(_per(d.get('time_flush_call_ns'), nf_, 1e6), '.1f')} |")
+        out += ['', 'The longest single one of each part and of the own sync SINCE THE DAEMON STARTED SERVING (not of the '
+                'window: it includes the copy of the pool\'s image before it), ms:', '',
+                '| workload | daemon row | ' + ' | '.join(STEP_PARTS) + ' | own sync | gate |', '|---|---|' + '---|' * (len(STEP_PARTS) + 2)]
+        for r in usable:
+            e = r['time']['end']
+            keys = [f'time_step_{p}_max_ns' for p in STEP_PARTS] + ['time_step_own_sync_max_ns', 'time_gate_max_ns']
+            out.append(f"| {r['workload']} | {r['label']} | "
+                       + ' | '.join(_f(e[k] / 1e6, '.2f') if isinstance(e.get(k), int) else 'n/a' for k in keys) + ' |')
         out += ['', "The pump's store of what was acknowledged:", '',
                 '| workload | daemon row | stores | ms each | completions behind one store |', '|---|---|---|---|---|']
         for r in usable:

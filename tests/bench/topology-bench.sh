@@ -556,7 +556,8 @@ if skz:
         return (io('read_us') / io('reads') if io('reads') else None), io('reads')
     print('\n'.join(skz_time.render([
         {'label': label(r), 'workload': r['workload'], 'tps': r.get('tps'), 'time': r.get('skyzfsd', {}).get('time'),
-         'steps': r.get('skyzfsd', {}).get('steps'), 'relation_read_us': rel_read_us(r)[0],
+         'steps': r.get('skyzfsd', {}).get('steps'), 'syncs': r.get('skyzfsd', {}).get('syncs'),
+         'relation_read_us': rel_read_us(r)[0],
          'relation_reads': rel_read_us(r)[1], 'duration_s': r.get('duration_s'),
          'ages': (r.get('skyzfsd', {}).get('before', {}).get('age_ms'), r.get('skyzfsd', {}).get('after', {}).get('age_ms')),
          'model_relation_read_us': next((rel_read_us(o)[0] for o in others('zfs-slog', r)[0]), None)}
