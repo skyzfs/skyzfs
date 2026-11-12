@@ -484,14 +484,21 @@ if any(mode(r) != 'none' for r in runs):
               f"{flash / (txn / 1000) if txn else float('nan'):.1f} |")
 # The daemon against the benchmark model (design §9, M1: tpcb within
 # 10% of the benchmark model on the same machine). The model is the
-# zfs-slog row. A ratio is only printed between rows found under this
-# one directory, which is one runner's sequence when the workflow made
-# it; rows of two machines must not be put in one directory.
+# zfs-slog row. A ratio, and with it a verdict, is only formed between
+# two rows of one machine: each row carries the boot id of the machine
+# it ran on, and rows are compared only where it is the same. The
+# workflow's summary job puts the rows of every matrix runner in one
+# directory; those end with NO VERDICT, and so does a row that does not
+# say where it ran.
 skz = [r for r in runs if r['topology'] == 'zfs-skyzfsd' and mode(r) == 'none']
 if skz:
-    def others(topo, wl):
-        return [r for r in runs if r['topology'] == topo and r['workload'] == wl and mode(r) == 'none' and r['tps']]
-    print('\nThe daemon against the benchmark model (`zfs-slog`), rows of this directory only. '
+    def others(topo, r):
+        """-> (rows of `topo` and r's workload from r's machine, how many from elsewhere)."""
+        rows = [o for o in runs if o['topology'] == topo and o['workload'] == r['workload'] and mode(o) == 'none' and o['tps']]
+        here = [o for o in rows if r.get('machine') and o.get('machine') == r['machine']]
+        return here, len(rows) - len(here)
+    print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
+          '(the same boot of the same runner); rows of other machines are counted and not compared. '
           'The criterion is a ratio of at least 0.90 to zfs-slog; the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
     print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|')
@@ -500,15 +507,18 @@ if skz:
         if not r['tps']:
             print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
             continue
-        model = others('zfs-slog', r['workload'])
-        if not model:
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none here | - | NO VERDICT: no zfs-slog row of this workload in this directory |")
+        model, elsewhere = others('zfs-slog', r)
+        if not r.get('machine'):
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | - | - | NO VERDICT: this row does not say what machine it ran on |")
+        elif not model:
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none on this machine | - | "
+                  f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
         for o in model:
             q = r['tps'] / o['tps']
             print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | "
                   f"{'at least 0.90' if q >= 0.90 else 'BELOW 0.90'} |")
         for topo in ('zfs-loop', 'zfs-ublk'):
-            for o in others(topo, r['workload']):
+            for o in others(topo, r)[0]:
                 print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
     print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | before the import |')
@@ -1797,6 +1807,12 @@ MB = 1 << 20
 r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {}}
 if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
+# The machine the row ran on: this boot of this runner. Two rows are
+# compared only where it is the same.
+try:
+    r['machine'] = open('/proc/sys/kernel/random/boot_id').read().strip()
+except OSError:
+    pass
 for name in ad:
     d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
