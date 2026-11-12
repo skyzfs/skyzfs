@@ -3709,7 +3709,8 @@ enum ToReader {
 /// served store, from which an idle reader takes the next read.
 ///
 /// A push wakes one waiting reader, and only one: each read costs one
-/// wake. A reader that finds the queue empty waits on the condition
+/// wake. A push that finds no reader waiting wakes none: every reader is
+/// busy then, and looks before it waits again. A reader that finds the queue empty waits on the condition
 /// variable with the queue's lock let go only inside the wait, so a
 /// push between its look and its wait cannot happen, and no wake is
 /// lost. A reader that is busy when a read is pushed finds it when it
@@ -3737,10 +3738,12 @@ type Between = Arc<dyn Fn(bool) + Send + Sync>;
 struct Queued<T> {
     reads: VecDeque<T>,
     closed: bool,
-    /// For tests: the readers in a wait, and how often a reader has
-    /// woken from one.
-    #[cfg(test)]
+    /// The readers in a wait: counted under the same hold of the lock
+    /// as their look and their wait, so a push that finds none waiting
+    /// can leave out the wake, and one that finds a reader about to
+    /// wait cannot happen.
     waiting: usize,
+    /// For tests: how often a reader has woken from a wait.
     #[cfg(test)]
     woke: u64,
     /// For tests: the pushes that found no reader waiting, whose wake
@@ -3765,7 +3768,6 @@ impl<T> ReadQueue<T> {
             state: Mutex::new(Queued {
                 reads: VecDeque::new(),
                 closed: false,
-                #[cfg(test)]
                 waiting: 0,
                 #[cfg(test)]
                 woke: 0,
@@ -3793,14 +3795,17 @@ impl<T> ReadQueue<T> {
             return Err(read);
         }
         state.reads.push_back(read);
+        // With no reader waiting, every reader is busy and looks before
+        // it waits again: the wake is left out.
+        let wake = state.waiting > 0;
         #[cfg(test)]
-        if state.waiting == 0 {
+        if !wake {
             state.unheard += 1;
         }
         drop(state);
         if self.mutants.has(Mutants::READ_WAKES_ALL) {
             self.ready.notify_all();
-        } else {
+        } else if wake {
             self.ready.notify_one();
         }
         Ok(())
@@ -3844,17 +3849,14 @@ impl<T> ReadQueue<T> {
                 #[cfg(test)]
                 self.between_look_and_wait(true);
             }
-            #[cfg(test)]
-            {
-                state.waiting += 1;
-            }
+            state.waiting += 1;
             state = self
                 .ready
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
+            state.waiting -= 1;
             #[cfg(test)]
             {
-                state.waiting -= 1;
                 state.woke += 1;
                 if state.reads.is_empty() && !state.closed {
                     state.futile += 1;

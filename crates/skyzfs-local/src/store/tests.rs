@@ -7899,6 +7899,19 @@ fn queue_readers(
 /// microseconds. Then the queue is closed, which wakes every reader
 /// once to end it, and when all have ended there were five wakes in
 /// all. Mutant: a push wakes every reader.
+///
+/// If this ever fails once, it may be one of two things that are not
+/// defects, neither seen in 652 runs under load by the review:
+/// - On a right store: std's condition variable lets go of the lock
+///   before the thread is in the kernel's wait, so a reader counted as
+///   waiting but not yet in the kernel returns at once when the push
+///   wakes another. That is two wakes for one push, a wake "for
+///   nothing" and six in all. Counting a wake as for nothing only when
+///   no read was pushed since the reader began to wait would hide this,
+///   but it would hide the mutant too: its readers woken for nothing
+///   all saw the push. So it is not done.
+/// - On the mutant: the three readers woken for nothing may not run
+///   within the 100 ms watched, and the mutant then passes.
 #[test]
 fn a_read_wakes_one_waiting_reader() {
     fn scenario(mutants: u64) -> Outcome {
