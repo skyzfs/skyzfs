@@ -25,14 +25,18 @@
 //!   driver looks the device up before it matches the command. That
 //!   answer is read as "the command is missing" ([`answered`]).
 //!
-//! # What is not checked here
+//! # The asynchronous delete
 //!
 //! The daemon deletes a device with `UBLK_U_CMD_DEL_DEV_ASYNC`, first in
 //! v6.9. It has no feature bit, and a driver that lacks it answers it,
 //! for a device that does not exist, as one that has it does
-//! (`ENODEV`): nothing tells it apart before the daemon needs it. The
-//! features word proves a kernel of at least 6.5; [`OLDEST_KERNEL`] is
-//! 6.9.
+//! (`ENODEV`): no command tells it apart before the daemon needs it.
+//! The features word proves a kernel of at least 6.5, so the start also
+//! reads the kernel's release and refuses one below 6.9, unless the
+//! operator says that the driver has the command
+//! ([`ASYNC_DELETE_OPTION`]): a distribution kernel can carry a newer
+//! driver under an older number. No other flag is taken as a sign of
+//! it, and there is no fallback to the synchronous delete.
 
 use std::fmt;
 
@@ -82,61 +86,133 @@ pub const NEEDED: [Flag; 3] = [
 pub const FEATURES_KERNEL: &str = "6.5";
 
 /// The first Linux release with `UBLK_U_CMD_DEL_DEV_ASYNC`, the command
-/// the daemon deletes a device with. Not checked: see the [module
-/// documentation](self).
-pub const DELETE_KERNEL: &str = "6.9";
+/// the daemon deletes a device with: what a failed volume gives up its
+/// device with while a client still holds it (the plain delete waits
+/// for the last holder, and a suspended pool never lets go). It has no
+/// feature bit, so the start reads the kernel's release instead
+/// ([`check`]); see the [module documentation](self).
+pub const DELETE_KERNEL: (u32, u32) = (6, 9);
 
 /// The oldest Linux release the daemon runs on: the newest of the
 /// releases above.
-pub const OLDEST_KERNEL: &str = DELETE_KERNEL;
+pub const OLDEST_KERNEL: &str = "6.9";
 
-/// Why the daemon does not serve on this kernel.
+/// The option by which an operator says that the kernel's ublk driver
+/// has `UBLK_U_CMD_DEL_DEV_ASYNC` although its release is older (a
+/// distribution kernel with the driver backported). With it the release
+/// is not checked; the features are.
+pub const ASYNC_DELETE_OPTION: &str = "--kernel-has-async-delete";
+
+/// One thing the daemon needs and this kernel lacks.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Unsupported {
+pub enum Lack {
     /// The driver has no command that says its features.
     NoFeatures,
-    /// The driver lacks these flags.
-    Missing(Vec<Flag>),
+    /// The driver lacks this flag.
+    Flag(Flag),
+    /// The kernel's release, as `uname` says it, is below
+    /// [`DELETE_KERNEL`].
+    Release(String),
+    /// The kernel's release does not begin with a major and a minor
+    /// number.
+    UnreadableRelease(String),
 }
 
-impl fmt::Display for Unsupported {
+/// Why the daemon does not serve on this kernel: every lack found, in
+/// the order of the checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unsupported(pub Vec<Lack>);
+
+impl fmt::Display for Lack {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (major, minor) = DELETE_KERNEL;
+        let delete = format!(
+            "UBLK_U_CMD_DEL_DEV_ASYNC came with Linux {major}.{minor}, and without it the \
+             daemon cannot give up a failed volume's device while a client holds it. If this \
+             kernel's ublk driver has it all the same (a distribution kernel with the driver \
+             backported), say so with {ASYNC_DELETE_OPTION}"
+        );
         match self {
             Self::NoFeatures => write!(
                 f,
                 "the kernel's ublk driver cannot say its features \
-                 (UBLK_U_CMD_GET_FEATURES, Linux {FEATURES_KERNEL}): this daemon needs \
-                 Linux {OLDEST_KERNEL} or later"
+                 (UBLK_U_CMD_GET_FEATURES, Linux {FEATURES_KERNEL})"
             ),
-            Self::Missing(flags) => {
-                write!(f, "the kernel's ublk driver lacks ")?;
-                for (n, flag) in flags.iter().enumerate() {
-                    if n > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{} (Linux {}: {})", flag.name, flag.kernel, flag.why)?;
-                }
-                write!(f, ": this daemon needs Linux {OLDEST_KERNEL} or later")
+            Self::Flag(flag) => write!(
+                f,
+                "the kernel's ublk driver lacks {} (Linux {}: {})",
+                flag.name, flag.kernel, flag.why
+            ),
+            Self::Release(release) => {
+                write!(
+                    f,
+                    "the kernel's release {release} is older than Linux {major}.{minor}: {delete}"
+                )
             }
+            Self::UnreadableRelease(release) => write!(
+                f,
+                "the kernel's release {release:?} does not begin with a major and a minor \
+                 number, so it cannot be compared with Linux {major}.{minor}: {delete}"
+            ),
         }
     }
 }
 
-/// Whether the daemon serves with a driver whose features are
-/// `features`: `None` when the driver has no command that says them.
-pub fn check(features: Option<u64>) -> Result<(), Unsupported> {
-    let Some(features) = features else {
-        return Err(Unsupported::NoFeatures);
-    };
-    let missing: Vec<Flag> = NEEDED
-        .iter()
-        .filter(|flag| features & flag.bit == 0)
-        .copied()
-        .collect();
-    if missing.is_empty() {
+impl fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (n, lack) in self.0.iter().enumerate() {
+            if n > 0 {
+                write!(f, "; ")?;
+            }
+            write!(f, "{lack}")?;
+        }
+        write!(f, ". This daemon needs Linux {OLDEST_KERNEL} or later")
+    }
+}
+
+/// The major and minor number at the start of a kernel's release as
+/// `uname -r` says it ("6.8.0-45-generic", "7.0.0",
+/// "5.14.0-570.el9.x86_64"): digits, a dot, digits, and then the end or
+/// anything but a digit. Anything else is `None`.
+pub fn release_number(release: &str) -> Option<(u32, u32)> {
+    let (major, rest) = release.split_once('.')?;
+    let minor_len = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let minor = &rest[..minor_len];
+    let digits = |s: &str| !s.is_empty() && s.len() <= 9 && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(major) || !digits(minor) {
+        return None;
+    }
+    Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// Whether the daemon serves on a kernel whose ublk driver has the
+/// features `features` (`None` when it has no command that says them)
+/// and whose release is `release`. With `asserted` the operator has
+/// said that the driver has `UBLK_U_CMD_DEL_DEV_ASYNC` whatever the
+/// release, and the release is not read; the features are checked all
+/// the same.
+pub fn check(features: Option<u64>, release: &str, asserted: bool) -> Result<(), Unsupported> {
+    let mut lacks = Vec::new();
+    match features {
+        None => lacks.push(Lack::NoFeatures),
+        Some(features) => lacks.extend(
+            NEEDED
+                .iter()
+                .filter(|flag| features & flag.bit == 0)
+                .map(|flag| Lack::Flag(*flag)),
+        ),
+    }
+    if !asserted {
+        match release_number(release) {
+            Some(number) if number >= DELETE_KERNEL => {}
+            Some(_) => lacks.push(Lack::Release(release.to_string())),
+            None => lacks.push(Lack::UnreadableRelease(release.to_string())),
+        }
+    }
+    if lacks.is_empty() {
         Ok(())
     } else {
-        Err(Unsupported::Missing(missing))
+        Err(Unsupported(lacks))
     }
 }
 

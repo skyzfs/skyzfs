@@ -329,6 +329,10 @@ pub trait Control {
     /// The driver's features ([`crate::features`]): `None` when the
     /// driver has no command that says them.
     fn features(&mut self) -> io::Result<Option<u64>>;
+    /// The kernel's release, as `uname -r` says it. Read only when the
+    /// operator has not said that the driver has the asynchronous
+    /// delete ([`crate::features::check`]).
+    fn release(&mut self) -> io::Result<String>;
     /// The device with this number, if there is one.
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>>;
     /// Add a device under this number.
@@ -356,6 +360,9 @@ pub trait Control {
 impl<C: Control + ?Sized> Control for &mut C {
     fn features(&mut self) -> io::Result<Option<u64>> {
         (**self).features()
+    }
+    fn release(&mut self) -> io::Result<String> {
+        (**self).release()
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         (**self).info(number)
@@ -544,6 +551,11 @@ pub struct Wanted {
     /// has no effect when nothing has failed, and none on a volume that
     /// failed while a client held it.
     pub acknowledge_failure: bool,
+    /// Whether the operator says that the kernel's ublk driver has
+    /// `UBLK_U_CMD_DEL_DEV_ASYNC` whatever its release
+    /// ([`crate::features::ASYNC_DELETE_OPTION`]). The release is then
+    /// not read; the features are checked all the same.
+    pub async_delete_asserted: bool,
 }
 
 /// Defects, for the tests that show each rule is tested.
@@ -572,7 +584,8 @@ impl Mutants {
     pub(crate) const NO_MUST_REACH: u32 = 1 << 8;
     /// An error of the recovery's sync is treated as one that may pass.
     pub(crate) const SYNC_ERROR_MAY_PASS: u32 = 1 << 9;
-    /// A kernel that cannot reissue is served all the same.
+    /// A kernel that lacks what the daemon needs is served (or
+    /// detached) all the same.
     pub(crate) const NO_FEATURE_CHECK: u32 = 1 << 10;
     /// The volume's own device, found live, is refused at once.
     pub(crate) const LIVE_REFUSED_AT_ONCE: u32 = 1 << 11;
@@ -634,6 +647,23 @@ impl Mutants {
     }
 }
 
+/// Whether the kernel has what the daemon needs
+/// ([`crate::features::check`]): the driver's features, and its release
+/// unless the operator has said that the driver has the asynchronous
+/// delete. It asks the driver nothing else and touches nothing.
+fn supported<C: Control>(
+    control: &mut C,
+    asserted: bool,
+) -> io::Result<Result<(), crate::features::Unsupported>> {
+    let features = control.features()?;
+    let release = if asserted {
+        String::new()
+    } else {
+        control.release()?
+    };
+    Ok(crate::features::check(features, &release, asserted))
+}
+
 fn error<E: std::fmt::Display>(during: &'static str) -> impl Fn(E) -> Stop {
     move |e| Stop::Error(format!("{during}: {e}"))
 }
@@ -670,10 +700,9 @@ pub(crate) fn start_with<C: Control, R: Records, V: Volume>(
     wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<Ready<V::Open>, Stop> {
-    let features = control
-        .features()
-        .map_err(error("reading the driver's features"))?;
-    if let Err(why) = crate::features::check(features) {
+    if let Err(why) = supported(control, wanted.async_delete_asserted)
+        .map_err(error("reading what the kernel has"))?
+    {
         if !mutants.has(Mutants::NO_FEATURE_CHECK) {
             return Err(Stop::Unsupported(why));
         }
@@ -1715,7 +1744,7 @@ pub fn locate<C: Control, R: Records>(
 }
 
 /// What a detach did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detached {
     /// The volume has no device.
     Nothing,
@@ -1738,6 +1767,10 @@ pub enum Detached {
     /// A daemon holds this volume: its lock could not be taken.
     /// Nothing was done.
     Locked,
+    /// The kernel lacks what the daemon needs, the asynchronous delete
+    /// first of all, which a detach deletes with. The device was not
+    /// looked at, and nothing was done.
+    Unsupported(crate::features::Unsupported),
 }
 
 /// Give up the volume's device: delete it if it is this volume's and
@@ -1772,18 +1805,28 @@ pub enum Detached {
 /// the kernel can say only that an exclusive holder exists
 /// ([`Control::client_holds`]). It deletes, looks again, and says
 /// whether the number is still held.
+///
+/// **Before it asks the driver anything else it checks the kernel as a
+/// start does** ([`crate::features::check`], with
+/// `async_delete_asserted` as [`Wanted::async_delete_asserted`]), since
+/// it deletes with the same command: on a kernel that lacks it, it
+/// answers [`Detached::Unsupported`] and does not find out at its
+/// delete. The check comes after the lock and after the attachment
+/// record is read: a volume with no record of this boot has nothing to
+/// delete, and its detach opens no driver.
 pub fn detach<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
     volume: &mut V,
     lock_retries: u32,
     gone_retries: u32,
+    async_delete_asserted: bool,
 ) -> io::Result<Detached> {
     detach_with(
         control,
         records,
         volume,
-        (lock_retries, gone_retries),
+        (lock_retries, gone_retries, async_delete_asserted),
         Mutants::default(),
     )
 }
@@ -1792,7 +1835,7 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
     volume: &mut V,
-    (lock_retries, gone_retries): (u32, u32),
+    (lock_retries, gone_retries, asserted): (u32, u32, bool),
     mutants: Mutants,
 ) -> io::Result<Detached> {
     let _held = if mutants.has(Mutants::DETACH_WITHOUT_LOCK) {
@@ -1804,6 +1847,20 @@ pub(crate) fn detach_with<C: Control, R: Records, V: Volume>(
             Err(other) => return Err(io::Error::other(format!("{other:?}"))),
         }
     };
+    // With no record of this boot there is nothing to delete, and the
+    // driver is not asked anything (`locate` answers the same).
+    if records
+        .attachment()?
+        .filter(|a| a.boot == records.boot())
+        .is_none()
+    {
+        return Ok(Detached::Nothing);
+    }
+    if let Err(why) = supported(control, asserted)? {
+        if !mutants.has(Mutants::NO_FEATURE_CHECK) {
+            return Ok(Detached::Unsupported(why));
+        }
+    }
     let Some(located) = locate(control, records)? else {
         return Ok(Detached::Nothing);
     };

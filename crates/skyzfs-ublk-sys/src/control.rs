@@ -77,6 +77,13 @@ impl Control for Kernel {
         raw::features()
     }
 
+    /// `/proc/sys/kernel/osrelease`, which is what `uname -r` prints,
+    /// without its line's end.
+    fn release(&mut self) -> io::Result<String> {
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease")?;
+        Ok(release.strip_suffix('\n').unwrap_or(&release).to_string())
+    }
+
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         let info = match raw::info(number) {
             Ok(info) => info,

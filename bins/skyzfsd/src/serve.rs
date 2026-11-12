@@ -630,10 +630,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         live_retries: LIVE_RETRIES,
         gone_retries: GONE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
+        async_delete_asserted: serve.async_delete_asserted,
     };
     let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
-        Err(Stop::Unsupported(why)) => return Err(format!("{why}: not served")),
+        Err(Stop::Unsupported(why)) => return Err(format!("not served: {why}")),
         Err(Stop::Held) => {
             say("another instance or a live server holds the volume");
             return Ok(Exit::RefusedHeld);

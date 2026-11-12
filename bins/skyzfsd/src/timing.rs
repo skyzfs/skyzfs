@@ -96,6 +96,9 @@ impl<C: Control> Control for TimedControl<C> {
     fn features(&mut self) -> io::Result<Option<u64>> {
         self.inner.features()
     }
+    fn release(&mut self) -> io::Result<String> {
+        self.inner.release()
+    }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         let info = self.inner.info(number)?;
         let live = info.is_some_and(|i| i.state == DeviceState::Live);
@@ -138,6 +141,9 @@ mod tests {
     impl Control for Scripted {
         fn features(&mut self) -> io::Result<Option<u64>> {
             Ok(Some(u64::MAX))
+        }
+        fn release(&mut self) -> io::Result<String> {
+            Ok("7.0.0".to_string())
         }
         fn info(&mut self, _number: u32) -> io::Result<Option<DeviceInfo>> {
             let state = if self.0.len() > 1 {

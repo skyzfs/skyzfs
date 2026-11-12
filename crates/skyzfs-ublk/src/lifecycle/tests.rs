@@ -35,6 +35,11 @@ struct World {
     events: Vec<Event>,
     /// The driver's features: `None` when it cannot say them.
     features: Option<u64>,
+    /// The kernel's release.
+    release: String,
+    /// How often the release was read: it is not an event, since it
+    /// asks the driver nothing.
+    release_reads: usize,
     devices: BTreeMap<u32, DeviceInfo>,
     /// Devices that appear between the daemon's look and its add.
     late: Vec<u32>,
@@ -137,6 +142,8 @@ impl World {
         Self {
             events: Vec::new(),
             features: Some(u64::MAX),
+            release: "7.0.0".to_string(),
+            release_reads: 0,
             devices: BTreeMap::new(),
             late: Vec::new(),
             held: Vec::new(),
@@ -247,6 +254,11 @@ impl Control for Fake {
         let mut w = self.0.borrow_mut();
         w.happens(Event::Features)?;
         Ok(w.features)
+    }
+    fn release(&mut self) -> io::Result<String> {
+        let mut w = self.0.borrow_mut();
+        w.release_reads += 1;
+        Ok(w.release.clone())
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         self.intrude();
@@ -537,6 +549,7 @@ const WANTED: Wanted = Wanted {
     live_retries: 5,
     gone_retries: GONE,
     acknowledge_failure: false,
+    async_delete_asserted: false,
 };
 
 /// The same, with `--acknowledge-failure`.
@@ -1110,27 +1123,131 @@ fn a_record_of_another_boot_or_of_a_device_that_is_gone_means_a_fresh_device() {
     );
 }
 
+/// What the kernel is made to lack, one case each: every needed flag,
+/// the features command, a release below 6.9 and one that does not
+/// parse; each of the flags and the command also on a kernel below
+/// 6.9. With the operator's word for the asynchronous delete, the
+/// release is not read and only a lacking feature refuses.
+fn unsupported_kernels() -> Vec<(Option<u64>, &'static str, bool)> {
+    use crate::features::NEEDED;
+    let mut features: Vec<Option<u64>> = NEEDED.iter().map(|f| Some(!f.bit)).collect();
+    features.push(None);
+    let mut cases = Vec::new();
+    for asserted in [false, true] {
+        for release in ["7.0.0", "6.9.0", "6.8.0-45-generic", "linux"] {
+            for &f in &features {
+                cases.push((f, release, asserted));
+            }
+        }
+    }
+    for release in ["6.8.0-45-generic", "5.14.0-570.el9.x86_64", "linux"] {
+        cases.push((Some(u64::MAX), release, false));
+    }
+    cases
+}
+
+/// How often a refusal reads the release: once, unless the operator
+/// vouched for the delete.
+fn release_reads(asserted: bool) -> usize {
+    usize::from(!asserted)
+}
+
 fn lacks_a_feature(mutants: u32) -> Result<(), String> {
-    use crate::features::{Unsupported, NEEDED};
-    // Without each flag the daemon needs, and without the command that
-    // says the features: refused, naming what is missing.
-    let mut cases: Vec<(Option<u64>, Unsupported)> = NEEDED
-        .iter()
-        .map(|flag| (Some(!flag.bit), Unsupported::Missing(vec![*flag])))
-        .collect();
-    cases.push((None, Unsupported::NoFeatures));
-    for (features, why) in cases {
+    for (features, release, asserted) in unsupported_kernels() {
+        let what = format!("{features:x?} on {release} (asserted: {asserted})");
+        let why = crate::features::check(features, release, asserted)
+            .expect_err("each case lacks something");
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.features = features;
-        let outcome = run(world, mutants);
+        world.release = release.to_string();
+        let wanted = Wanted {
+            async_delete_asserted: asserted,
+            ..WANTED
+        };
+        let outcome = run_as(world, &wanted, mutants);
         rules(&outcome)?;
-        check(outcome.result == Err(Stop::Unsupported(why)), "refused")?;
+        check(
+            outcome.result == Err(Stop::Unsupported(why)),
+            &format!("{what}: refused"),
+        )?;
         check(
             outcome.world.events == [Event::Features],
-            "nothing else is done, and the store is not opened",
+            &format!("{what}: nothing else is done, and the store is not opened"),
+        )?;
+        check(
+            outcome.world.release_reads == release_reads(asserted),
+            &format!("{what}: the release is read unless the operator vouched"),
         )?;
     }
     Ok(())
+}
+
+/// The same for a detach: it deletes with the same command.
+fn a_detach_lacks_a_feature(mutants: u32) -> Result<(), String> {
+    for (features, release, asserted) in unsupported_kernels() {
+        let what = format!("{features:x?} on {release} (asserted: {asserted})");
+        let why = crate::features::check(features, release, asserted)
+            .expect_err("each case lacks something");
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.features = features;
+        world.release = release.to_string();
+        let (mut control, mut records, shared) = fakes(world);
+        let detached = detach_with(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            (3, GONE, asserted),
+            Mutants(mutants),
+        )
+        .map_err(|e| e.to_string())?;
+        check(
+            detached == Detached::Unsupported(why),
+            &format!("{what}: refused, not {detached:?}"),
+        )?;
+        let world = shared.borrow();
+        check(
+            world.events == [Event::Features],
+            &format!("{what}: nothing else is looked at or done"),
+        )?;
+        check(
+            world.release_reads == release_reads(asserted),
+            &format!("{what}: the release is read unless the operator vouched"),
+        )?;
+    }
+    Ok(())
+}
+
+/// A kernel with everything, below 6.9 with the operator's word: a
+/// start serves and a detach deletes.
+#[test]
+fn the_operators_word_for_the_delete_lets_an_older_release_serve() {
+    for release in ["6.8.0-45-generic", "5.14.0-570.el9.x86_64", "linux"] {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.release = release.to_string();
+        let wanted = Wanted {
+            async_delete_asserted: true,
+            ..WANTED
+        };
+        let outcome = run_as(world.clone(), &wanted, 0);
+        assert_eq!(rules(&outcome), Ok(()));
+        assert!(
+            outcome.result.is_ok(),
+            "{release}: {:?}",
+            outcome.result.err()
+        );
+        assert_eq!(outcome.world.release_reads, 0, "{release}");
+
+        let (mut control, mut records, shared) = fakes(world);
+        let detached = detach(
+            &mut control,
+            &mut records,
+            &mut Fake(shared.clone()),
+            3,
+            GONE,
+            true,
+        );
+        assert_eq!(detached.expect("detach"), Detached::Deleted(4), "{release}");
+    }
 }
 
 impl PartialEq for Ready<Opened> {
@@ -1141,10 +1258,9 @@ impl PartialEq for Ready<Opened> {
 
 #[test]
 fn a_kernel_that_lacks_a_needed_feature_is_refused_before_anything_is_touched() {
-    holds(
-        lacks_a_feature,
-        &[("no feature check", Mutants::NO_FEATURE_CHECK)],
-    );
+    let defect = [("no feature check", Mutants::NO_FEATURE_CHECK)];
+    holds(lacks_a_feature, &defect);
+    holds(a_detach_lacks_a_feature, &defect);
 }
 
 /// The volume has failed: the waiting device is deleted, never taken
@@ -1448,7 +1564,7 @@ fn a_failed_volumes_number_is_given_to_another(mutants: u32) -> Result<(), Strin
 
 /// A detach is killed after each number of steps.
 fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), String> {
-    for at in 0..=6 {
+    for at in 0..=7 {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
@@ -1456,7 +1572,7 @@ fn a_detached_volumes_number_is_given_to_another(mutants: u32) -> Result<(), Str
             &mut control,
             &mut records,
             &mut Fake(shared.clone()),
-            (3, GONE),
+            (3, GONE, false),
             Mutants(mutants),
         );
         drop((control, records));
@@ -1484,7 +1600,7 @@ fn a_note_does_not_outlive_its_device() {
 #[test]
 fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
     let mut stopped = 0;
-    for at in 0..=6 {
+    for at in 0..=7 {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
         world.dies_at = Some(at);
         let (mut control, mut records, shared) = fakes(world);
@@ -1494,6 +1610,7 @@ fn a_detach_killed_at_any_step_is_followed_by_a_start_that_is_safe() {
             &mut Fake(shared.clone()),
             3,
             GONE,
+            false,
         );
         drop((control, records));
         let mut world = match Rc::try_unwrap(shared) {
@@ -1623,7 +1740,7 @@ fn detach_says_held_only_of_a_device_that_stays(mutants: u32) -> Result<(), Stri
                 &mut control,
                 &mut records,
                 &mut Fake(shared.clone()),
-                (3, GONE),
+                (3, GONE, false),
                 Mutants(mutants),
             )
             .map_err(|e| e.to_string())?;
@@ -1654,8 +1771,10 @@ fn detach_says_held_only_of_a_device_that_stays(mutants: u32) -> Result<(), Stri
             }
             check(world.notes.is_empty(), "the note is gone")?;
             check(world.attachment.is_none(), "the record is gone")?;
-            // The note first, one delete, the looks, the record last.
+            // The kernel's features, then the note, one delete, the looks,
+            // the record last.
             let mut want = vec![
+                Event::Features,
                 Event::Info(4),
                 Event::RemoveNote(4),
                 Event::Delete(4),
@@ -1771,7 +1890,7 @@ fn detach_is_not_held_by_another_volumes_device(mutants: u32) -> Result<(), Stri
             &mut control,
             &mut records,
             &mut Fake(shared.clone()),
-            (3, GONE),
+            (3, GONE, false),
             Mutants(mutants),
         )
         .map_err(|e| e.to_string())?;
@@ -1889,12 +2008,13 @@ fn detach_touches_nothing_it_may_not() {
             &mut records,
             &mut Fake(shared.clone()),
             3,
-            GONE
+            GONE,
+            false
         )
         .expect("detach"),
         Detached::Live(4)
     );
-    assert_eq!(shared.borrow().events, [Event::Info(4)]);
+    assert_eq!(shared.borrow().events, [Event::Features, Event::Info(4)]);
     // Not known to be this volume's, in any state.
     for state in STATES {
         for note in [None, Some([0x5A; 16])] {
@@ -1910,6 +2030,7 @@ fn detach_touches_nothing_it_may_not() {
                 &mut Fake(shared.clone()),
                 3,
                 GONE,
+                false,
             )
             .expect("detach");
             if state == DeviceState::Dead && note.is_none() {
@@ -1920,7 +2041,7 @@ fn detach_touches_nothing_it_may_not() {
             } else {
                 assert!(matches!(detached, Detached::NotOurs(l) if l.number == 4));
             }
-            assert_eq!(shared.borrow().events, [Event::Info(4)]);
+            assert_eq!(shared.borrow().events, [Event::Features, Event::Info(4)]);
             assert_eq!(shared.borrow().notes.get(&4).copied(), note);
         }
     }
@@ -1932,7 +2053,8 @@ fn detach_touches_nothing_it_may_not() {
             &mut records,
             &mut Fake(shared.clone()),
             3,
-            GONE
+            GONE,
+            false
         )
         .expect("detach"),
         Detached::Nothing
@@ -1974,7 +2096,7 @@ fn unwrap(shared: Rc<RefCell<World>>) -> World {
 /// came to serve keeps its device, its record and its note.
 fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
     for state in [DeviceState::Waiting, DeviceState::Dead] {
-        for at in 0..=6 {
+        for at in 0..=7 {
             let mut world = World::new().attached(4, state, EARLIER);
             world.intrude_at = Some(at);
             let (mut control, mut records, shared) = fakes(world);
@@ -1982,7 +2104,7 @@ fn a_daemon_starts_during_a_detach(mutants: u32) -> Result<(), String> {
                 &mut control,
                 &mut records,
                 &mut Fake(shared.clone()),
-                (3, GONE),
+                (3, GONE, false),
                 Mutants(mutants),
             );
             drop((control, records));
@@ -2108,6 +2230,7 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
         &mut Fake(shared.clone()),
         3,
         GONE,
+        false,
     );
     assert_eq!(detached.expect("detach"), Detached::Locked);
     assert_eq!(shared.borrow().events, vec![Event::Pause; 3]);
@@ -2122,6 +2245,7 @@ fn a_detach_of_a_volume_a_daemon_holds_is_refused_and_touches_nothing() {
         &mut Fake(shared.clone()),
         3,
         GONE,
+        false,
     );
     assert_eq!(detached.expect("detach"), Detached::Deleted(4));
     // Every step of it under the lock, which is free again afterwards.
