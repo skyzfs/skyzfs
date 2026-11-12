@@ -453,6 +453,37 @@ if drows:
               f"{nf(ft / 1000 if ft else None, '.3f')} | {nf(rr / txn if txn else None)} | {nf(rus / rr / 1000 if rr else None, '.3f')} | "
               f"{cp.get('user', 0):.0f}/{cp.get('system', 0):.0f}/{cp.get('iowait', 0):.0f}/{cp.get('idle', 0):.0f} | "
               f"{nf(g.get('ctxt', 0) / txn if txn else None, '.1f')} | {top} |")
+    # What a commit costs, beside what the disks under the commit did:
+    # the slog (the model's and the daemon's log device alike) and the
+    # one work disk under every image. A sum of request times can
+    # exceed the window when requests overlap.
+    print('\nWhat a commit costs. `WAL fsync` is postgres\'s own timer (pg_stat_io for object wal where the '
+          'server has it, else pg_stat_wal); latency is over every transaction of pgbench\'s log; the devices\' '
+          'counts and times are /proc/diskstats over the window (`flush ms` is the time the device spent on '
+          'flushes, per flush); ZIL commits from the zil kstat:\n')
+    print('| workload | topology | tps | latency mean / stddev ms | WAL fsyncs per commit | µs per WAL fsync | '
+          'slog writes / flushes per txn | slog flush ms | work disk writes / flushes per txn | work disk flush ms | '
+          'work disk KiB written per txn | ZIL commits per txn |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|')
+    for r, d in drows:
+        txn = r['pg'].get('xact_commit', 0) or 0
+        if not txn:
+            continue
+        wf = pgsum(r, 'wal', 'fsyncs') or r['pg'].get('walstat_sync', 0)
+        wus = pgsum(r, 'wal', 'fsync_us') or r['pg'].get('walstat_sync_us', 0)
+        lat = r.get('latency', {})
+        def io(name):
+            v = r['devices'].get(name)
+            if not v:
+                return 'n/a', 'n/a', 'n/a'
+            fl = v.get('flushes', 0)
+            fms = 'n/a' if 'flush_ms' not in v else nf(v['flush_ms'] / fl if fl else None, '.2f')
+            return f"{v['write_ios'] / txn:.2f} / {fl / txn:.2f}", fms, f"{v['write_mb'] * 1024 / txn:.1f}"
+        sw, sf, _ = io('slog'); ww, wfm, wkb = io('workdisk')
+        zil = r.get('zfs', {}).get('delta', {}).get('zil.zil_commit_count')
+        print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(lat.get('mean_ms'), '.3f')} / {nf(lat.get('stddev_ms'), '.3f')} | "
+              f"{nf(wf / txn if wf else None, '.3f')} | {nf(wus / wf if wf else None, '.0f')} | {sw} | {sf} | {ww} | {wfm} | {wkb} | "
+              f"{nf(zil / txn if zil is not None else None)} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
@@ -1698,8 +1729,10 @@ snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file 
 }
 
 # --------------------------------------------------------- measuring
-diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
-    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
+diskstats_line() { # kernel device name -> "reads rsect writes wsect flush write_ms flush_ms"
+    # Fields 4 to 20 of /proc/diskstats; the flushes and their time are
+    # there since kernel 5.5, 0 where a line is shorter.
+    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; fm = (NF >= 20) ? $20 : 0; print $4, $6, $8, $10, f, $11, fm }' /proc/diskstats
 }
 work_disk() { # -> the kernel name of the block device under $WORK, or nothing
     # By its device number, as disk-sync.py finds it: df names the
@@ -1896,7 +1929,7 @@ def load(p):
     for line in open(p):
         f = line.split()
         if not f: continue
-        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:7]]
+        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:9]]
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
         elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
         elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
@@ -1923,9 +1956,15 @@ try:
 except OSError:
     pass
 for name in ad:
-    d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
+    d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*len(ad[name])))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
                           'write_mb': d[3]*512/MB, 'flushes': d[4]}
+    # Since the times were added: the ms the device spent on writes
+    # and on flushes in the window (a sum over requests, so it can
+    # exceed the window when requests overlap).
+    if len(d) >= 7:
+        r['devices'][name]['write_ms'] = d[5]
+        r['devices'][name]['flush_ms'] = d[6]
 for k in ap:
     r['pg'][k] = ap[k] - bp.get(k, 0)
 r['pg']['wal_mb'] = r['pg'].get('wal_bytes', 0) / MB
@@ -1996,6 +2035,9 @@ if lats:
     r['latency'] = {'p50_ms': q(0.50), 'p99_ms': q(0.99), 'p999_ms': q(0.999), 'max_ms': lats[-1] / 1000,
                     'min_tps_1s': min((per_s.get(x, 0) for x in secs), default=None),
                     'stalled_s': sum(1 for x in secs if per_s.get(x, 0) == 0)}
+    mean = sum(lats) / len(lats)
+    r['latency']['mean_ms'] = mean / 1000
+    r['latency']['stddev_ms'] = (sum((x - mean) ** 2 for x in lats) / len(lats)) ** 0.5 / 1000
 if zc[base + '.after'] or zg[base + '.after']:
     zb, za = zc[base + '.before'], zc[base + '.after']
     r['zfs'] = {'delta': {k: za[k] - zb.get(k, 0) for k in za}, 'after': zg[base + '.after']}
