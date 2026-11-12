@@ -41,7 +41,7 @@ def by_name(per_tid, names):
     """{tid: {call: [n, ms]}} -> {name: {'tids': k, 'calls': {call: [n, ms]}}}; a tid not named keeps its own name."""
     out = {}
     for tid, calls in per_tid.items():
-        name = names.get(tid, f'tid {tid}')
+        name = re.sub(r'-\d+$', '', names[tid]) if tid in names else f'tid {tid}'  # skyzfs-reader-2 -> skyzfs-reader
         t = out.setdefault(name, {'tids': 0, 'calls': {}})
         t['tids'] += 1
         for c, (n, ms) in calls.items():

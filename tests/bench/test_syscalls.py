@@ -18,14 +18,14 @@ PERF = """
    io_uring_enter      1200      0   812.345     0.002     0.677    12.100      3.21%
    futex                 34      2     1.200     0.001     0.035     0.400     20.00%
 
- skyzfs-reader (4102), 600 events, 10.0%
+ skyzfs-reader-0 (4102), 600 events, 10.0%
 
    syscall            calls    total       min       avg       max       stddev
                                (msec)    (msec)    (msec)    (msec)        (%)
    --------------- --------  -------- --------- --------- ---------     ------
    pread64              300    90.000     0.010     0.300     2.000      5.00%
 
- skyzfs-reader (4103), 400 events, 8.0%
+ skyzfs-reader-1 (4103), 400 events, 8.0%
 
    syscall            calls  errors  total       min       avg       max       stddev
                                      (msec)    (msec)    (msec)    (msec)        (%)
@@ -43,7 +43,7 @@ STRACE = """4101  io_uring_enter(3, 1, 1, IORING_ENTER_GETEVENTS, NULL, 8) = 1 <
 4101  +++ exited with 0 +++
 """
 
-NAMES = "4101 skyzfsd-queue\n4102 skyzfs-reader\n4103 skyzfs-reader\n"
+NAMES = "4101 skyzfsd-queue\n4102 skyzfs-reader-0\n4103 skyzfs-reader-1\n"
 
 
 class Parse(unittest.TestCase):
@@ -52,7 +52,7 @@ class Parse(unittest.TestCase):
         self.assertEqual(per[4101]['io_uring_enter'], [1200, 812.345])
         self.assertEqual(per[4101]['futex'], [34, 1.2])
         self.assertEqual(per[4102]['pread64'], [300, 90.0])
-        self.assertEqual(names[4103], 'skyzfs-reader')
+        self.assertEqual(names[4103], 'skyzfs-reader-1')
         t = sc.by_name(per, names)
         self.assertEqual(t['skyzfs-reader']['tids'], 2)
         self.assertEqual(t['skyzfs-reader']['calls']['pread64'], [500, 140.0])
