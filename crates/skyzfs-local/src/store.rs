@@ -688,6 +688,11 @@ impl Lookup {
 /// later read.
 #[derive(Debug, Default)]
 struct Shared {
+    /// With several readers, the worker's insert and drop must not
+    /// wait behind a stream of lookups: this rests on a waiting writer
+    /// being let in before new readers, which the standard library's
+    /// lock does on Linux (its futex lock holds new readers back while
+    /// a writer waits).
     lookup: RwLock<Lookup>,
     pin: Pins,
     failed: AtomicBool,

@@ -1184,6 +1184,14 @@ impl Board {
         (posted.wakes, posted.attempts)
     }
 
+    /// For tests: whether [`Board::publish`] waits for a change and for
+    /// nothing else. Read under the board's lock, so a waiting thread
+    /// has let go of it in its wait.
+    #[cfg(test)]
+    pub(crate) fn awaits_change(&self) -> bool {
+        self.lock().awaits_change
+    }
+
     /// Wait until [`Board::publish`] has tried to write the file at
     /// least once, done or failed, for at most `limit`; whether it
     /// has. The daemon says `ready` after this: until the new

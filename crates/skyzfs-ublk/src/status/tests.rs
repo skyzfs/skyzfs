@@ -1432,3 +1432,58 @@ fn a_post_wakes_the_publisher_only_when_it_waits_for_a_change() {
         "every post"
     );
 }
+
+/// A log posted to be written at once wakes the publishing thread also
+/// while it waits out its interval, and is written then, not at the
+/// interval's end. The interval is an hour, so a write seen within the
+/// test is before its end, and the test rests on events: the thread is
+/// seen waiting for a change; a post of new counters wakes it (a wake
+/// counted under the board's lock, which it lets go only in its next
+/// wait, now one for the interval's end); the log is posted at once;
+/// the write is seen. Before that write the only bound is the test's
+/// limit of 20 s against the hour. Planted by hand: with `post_log`
+/// waking the thread only when it waits for a change, the test fails.
+#[test]
+fn a_log_posted_at_once_is_written_within_an_interval() {
+    fn until(what: &str, done: impl Fn() -> bool) {
+        let began = Instant::now();
+        while !done() {
+            assert!(began.elapsed() < Duration::from_secs(20), "{what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let board = Arc::new(Board::new());
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let thread = std::thread::spawn({
+        let (board, written) = (board.clone(), written.clone());
+        move || {
+            board.publish_with_log(Pace::new(3_600_000), |_, log, _| {
+                written.lock().expect("lock").push(log.live);
+                Ok(())
+            })
+        }
+    });
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    until("waits for a change", || board.awaits_change());
+    let (wakes, _) = board.wakes_and_attempts();
+    board.post(counters(1, 0));
+    until("woken by the change", || {
+        board.wakes_and_attempts().0 > wakes
+    });
+    assert!(!board.awaits_change(), "waits for the interval's end");
+    let log = LogShown {
+        live: 77,
+        ..LogShown::default()
+    };
+    board.post_log(log, true);
+    until("the write asked for at once", || {
+        written.lock().expect("lock").last() == Some(&77)
+    });
+    assert_eq!(
+        board.wakes_and_attempts().1,
+        2,
+        "the first write and this one"
+    );
+    board.stop();
+    assert_eq!(thread.join().expect("the publishing thread"), 0);
+}
