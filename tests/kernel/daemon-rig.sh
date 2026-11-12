@@ -72,6 +72,17 @@ for c in $CHECKS; do
     case $c in a|b|c|d|e|f) n=$((n + 1)) ;; *) echo "RIG_CHECKS: '$c' is not a check; the checks are a b c d e f" >&2; exit 64 ;; esac
 done
 [ $n -gt 0 ] || { echo "RIG_CHECKS names no check" >&2; exit 64; }
+# Check f's courses, all by default. Each leaves a pool that is
+# suspended or hung, and the machine's zpool commands slow down with
+# each such pool (run 43157965159: the sixth course's looks were minutes
+# apart), so a course is best run alone: one job, one course.
+F_ALL="scrub export reopen clear writers zed"
+F_COURSES=${RIG_F_COURSES:-$F_ALL}
+n=0
+for c in $F_COURSES; do
+    case " $F_ALL " in *" $c "*) n=$((n + 1)) ;; *) echo "RIG_F_COURSES: '$c' is not a course; the courses are $F_ALL" >&2; exit 64 ;; esac
+done
+[ $n -gt 0 ] || { echo "RIG_F_COURSES names no course" >&2; exit 64; }
 KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
 # Options for every serve, split at spaces: for the daemon on a runner,
@@ -827,7 +838,7 @@ rs_writers() {
     for k in 1 2 3 4 5 6 7 8 9; do
         if rs_due $((k * 30)) "w$k"; then
             cp "/proc/spl/kstat/zfs/$pool/txgs" "$OUT/$tag-w$k-txgs.txt" 2>/dev/null
-            echo "sent at $EL s, the first writer then at $(grep -c . "$WORK/$tag.record") acknowledged files, $(dirty_say "$OUT/$tag-w$k-txgs.txt")" > "$WORK/$tag.w$k.sent"
+            echo "sent at $EL s, the first writer then at $(grep -c . "$WORK/$tag.record") acknowledged files, $(dirty_say "$OUT/$tag-w$k-txgs.txt"), $(mem_say)" > "$WORK/$tag.w$k.sent"
             ( t=$(now_ms); lim $((330 - k * 30)) "$DD" if=/dev/zero of="$WORK/mnt/$pool/writer-$k" bs=1M count=4 conv=fsync status=none 2> "$OUT/$tag-w$k.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/$tag.w$k" ) &
         fi
     done
@@ -838,6 +849,27 @@ dirty_say() {
     awk -v max="$(cat /sys/module/zfs/parameters/zfs_dirty_data_max 2>/dev/null)" \
         'NR > 1 && $3 != "C" { d += $4; n++; st = st $3 } END { printf "%d MiB dirty in %d groups not committed (states %s; zfs_dirty_data_max %s)", d / 1048576, n, st == "" ? "none" : st, max == "" ? "not read" : int(max / 1048576) " MiB" }' "$1" 2>/dev/null \
         || printf 'transaction groups not read'
+}
+# What ZFS holds that is not yet on disk, machine-wide (the ARC's
+# anonymous buffers are the dirty ones), and how often a transaction
+# was delayed or made to wait so far: the txgs kstat's ndirty read 0 at
+# every look in run 43157965159 and cannot be what says it.
+mem_say() {
+    local anon
+    anon=$(awk '$1 == "anon_size" { print int($3 / 1048576) }' /proc/spl/kstat/zfs/arcstats 2>/dev/null)
+    printf 'ARC anon_size %s MiB, dmu_tx counters above 0: %s' "${anon:-not read}" \
+        "$(awk 'NR > 2 && $3 > 0 && $1 != "dmu_tx_assigned" { printf "%s %s ", $1, $3 }' /proc/spl/kstat/zfs/dmu_tx 2>/dev/null || true)"
+}
+# Where a process waits in the kernel: the first frames of its stack
+# that are ZFS's or the block layer's, in one line; the whole stack
+# goes to the file.
+stack_say() { # pid file
+    cat "/proc/$1/stack" > "$2" 2>/dev/null
+    if [ -s "$2" ]; then
+        sed -n 's/^\[<[^>]*>\] *\([A-Za-z0-9_.]*\)+.*/\1/p' "$2" | head -n 8 | tr '\n' ' '
+    else
+        printf 'stack not read'
+    fi
 }
 # Seconds between two lines of a kernel log file, by its own stamps:
 # from the line that holds MARK to the first line after it that matches
@@ -896,9 +928,9 @@ SHORT_LOG_SAID="the log is shorter than what was acknowledged"
 refused_start_arm() {
     local w tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
     local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay said tw="" tr="" ts="" cold pc
-    local course=${3:-long} limit=300 act="" amark="" acted="" ret="" k rel
+    local course=${3:-long} limit=300 act="" amark="" acted="" ret="" k rel hung=""
     RS_CTL=""; RS_OBS=""
-    case $course in long|writers) ;; *) limit=150 ;; esac
+    case $course in long|writers) ;; *) limit=200 ;; esac
     if ! vol_up "$SKYZFSD" "$dir"; then RS_CTL="ERROR not created or served"; return; fi
     if [ "$logdev" = yes ]; then
         slog=$(new_slog "$tag")
@@ -1017,11 +1049,12 @@ refused_start_arm() {
         if [ "$st; $dev" != "$was" ]; then was="$st; $dev"; line+="at $EL s: pool $st, device $num: $dev. "; fi
         if [ "$st" = SUSPENDED ] && [ -z "$sus" ]; then sus=$EL; fi
         if [ -n "$sus" ] && [ "$course" = long ]; then break; fi
-        # A short course goes on for 20 s after the pool suspended, to
+        # A short course goes on for 120 s after the pool suspended, to
         # see whether its command returns and what becomes of the
-        # device; when the command returned and the pool has not
-        # suspended, for 60 s after the return.
-        if [ -n "$sus" ] && [ "$EL" -ge $((sus + 20)) ]; then break; fi
+        # device (20 s were too few to say that a scrub does not
+        # return, run 43157965159); when the command returned and the
+        # pool has not suspended, for 60 s after the return.
+        if [ -n "$sus" ] && [ "$EL" -ge $((sus + 120)) ]; then break; fi
         if [ -z "$ret" ] && [ -e "$WORK/$tag.act" ]; then ret=$EL; fi
         if [ -n "$ret" ] && [ "$EL" -ge $((ret + 60)) ]; then break; fi
         if [ "$course" = writers ]; then rs_writers; sleep 1; continue; fi
@@ -1067,8 +1100,13 @@ refused_start_arm() {
         for k in 1 2 3 4 5 6 7 8 9; do
             [ -s "$WORK/$tag.w$k.sent" ] || continue
             io+="writer $k $(cat "$WORK/$tag.w$k.sent"): $(cat "$WORK/$tag.w$k" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 100 "$OUT/$tag-w$k.err" 2>/dev/null | tr '\n' ' '); "
+            # Where the first writer that hangs waits, by its dd's stack.
+            if [ ! -e "$WORK/$tag.w$k" ] && [ -z "$hung" ]; then
+                hung=$(pgrep -f "of=$WORK/mnt/$pool/writer-$k " | head -n 1)
+                [ -z "$hung" ] || hung="writer $k's dd (pid $hung) waits in: $(stack_say "$hung" "$OUT/$tag-w$k-stack.txt")"
+            fi
         done
-        RS_OBS="pool with a separate log device, nothing read and nothing scrubbed; a synced writer of 4 MiB to a file of its own every 30 s. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")The writers: ${io:-none was sent}The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. At the end: $(dirty_say "$OUT/$tag-end-txgs.txt"); $(txg_say "$OUT/$tag-end-txgs.txt"). Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
+        RS_OBS="pool with a separate log device, nothing read and nothing scrubbed; a synced writer of 4 MiB to a file of its own every 30 s. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")The writers: ${io:-none was sent}${hung:+Where a hung one waits: $hung. }The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. At the end: $(dirty_say "$OUT/$tag-end-txgs.txt"); $(txg_say "$OUT/$tag-end-txgs.txt"). Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
     elif [ "$course" != long ]; then
         rel=$(rs_release "$num" "$tag")
         RS_OBS="pool with a separate log device$([ "$course" = zed ] && echo ", zed $(zed_state) with $(pgrep -c -x zed 2>/dev/null || echo 0) process(es)"); only the first writer's synced writes until '$act' at ${acted:-never} s after the refusal (exit $SERVE_RC). The command: $(cat "$WORK/$tag.act" 2>/dev/null || echo "HAD NOT RETURNED at $end s") $(head -c 200 "$OUT/$tag-act.log" 2>/dev/null | tr '\n' ' '). ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s by the rig's clock; by the kernel log, 'has been suspended' came $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended") after the command was sent. " || echo "Never suspended in $end s (the kernel log's 'has been suspended' after the command: $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended")). ")At the end, $end s: pool $st, its file system $(mountpoint -q "$WORK/mnt/$pool" && echo 'still mounted' || echo 'NO LONGER MOUNTED (what the first writer wrote after that went to the directory under it)'). Does the pool let go of the device: the vdev in zpool status: $(vdev_say "$OUT/$tag-end-status.txt" "$num"); $rel. Before the command (8 s): vdev $(vdev_say "$OUT/$tag-8s-status.txt" "$num"), $(txg_say "$OUT/$tag-8s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen"
@@ -1286,8 +1324,15 @@ check_b_short() {
 # all the courses, ctl_f_starts_refused.
 check_f() {
     local c tag zed_was zed_ok="" said="" worst=FAIL
-    for c in scrub export reopen clear writers zed; do
+    rec f_courses "$F_COURSES"
+    for c in $F_ALL; do
         tag=f${c:0:1}
+        # A course that was not asked for has its line, and the line
+        # says so: one that is missing is the rig's error.
+        if [[ " $F_COURSES " != *" $c "* ]]; then
+            obs "f_refused_start_$c" "not asked for in this run, whose courses are: $F_COURSES"
+            continue
+        fi
         step "f: after a refused start, the course '$c'"
         if [ "$c" = zed ]; then
             # zed is not among the rig's packages: it is installed for

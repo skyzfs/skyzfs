@@ -27,6 +27,9 @@ on:
       checks:
         description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
         default: "a b c d e"
+      f_courses:
+        description: "check f only: which courses, of scrub export reopen clear writers zed. One course per run gives it a clean machine"
+        default: "scrub export reopen clear writers zed"
       kills:
         description: "kill -9 of the server under load, how many times"
         default: "20"
@@ -147,6 +150,7 @@ jobs:
         # carry the environment through.
         env:
           CHECKS: ${{ inputs.checks || 'a b c d e' }}
+          F_COURSES: ${{ inputs.f_courses || 'scrub export reopen clear writers zed' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
           SERVER: ${{ matrix.server }}
@@ -174,6 +178,7 @@ jobs:
           {
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
+            printf 'export RIG_F_COURSES=%q\n' "$F_COURSES"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
             # On the daemon, with its own defaults: no --unsafe-allow-*
             # override until a run shows that one is needed.
