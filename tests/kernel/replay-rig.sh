@@ -88,10 +88,23 @@ SCRATCH=/dev/shm/skz-replay.$$
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 SLOG_LOOP=""; LOG_LOOP=""; UBLK_UP=""; WRITER=""
+# The writer is told to stop and waited for, 300 s at most: a write to
+# a pool whose device does not answer never returns, and a bare `wait`
+# would then hold the job to its limit with nothing said. 1: it had not
+# ended and was killed (its dd may stay behind; the machine is thrown
+# away).
+writer_end() {
+    local i=0
+    touch "$STOP"
+    while kill -0 "$WRITER" 2>/dev/null && [ "$i" -lt 1200 ]; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$WRITER" 2>/dev/null; then kill -9 "$WRITER" 2>/dev/null || true; WRITER=""; return 1; fi
+    wait "$WRITER" 2>/dev/null || true
+    WRITER=""
+}
 cleanup() {
     rc=$?
     set +e
-    [ -n "$WRITER" ] && { touch "$STOP"; wait "$WRITER" 2>/dev/null; }
+    [ -n "$WRITER" ] && { writer_end || log "the writer had not ended 300 s after it was told to; killed"; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     dmsetup remove "$LW" 2>/dev/null
     [ -n "$UBLK_UP" ] && timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1
@@ -196,7 +209,7 @@ for k in $(seq 1 "$SYNCS"); do
     # One word: the target takes exactly one argument after "mark".
     dmsetup message "$LW" 0 mark "sync-$k-$c"
 done
-touch "$STOP"; wait "$WRITER"; WRITER=""
+writer_end || { echo "the writer had not ended 300 s after it was told to stop (pool $(cat "/proc/spl/kstat/zfs/$POOL/state" 2>/dev/null || echo unknown)): the workload did not finish, nothing is checked" >&2; exit 1; }
 c=$(wc -l < "$MANIFEST")
 zpool sync "$POOL"
 dmsetup message "$LW" 0 mark "sync-$((SYNCS + 1))-$c"
