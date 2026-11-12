@@ -348,6 +348,7 @@ Postgres now runs in a cgroup of its own in every row; until this package it did
 
 - M1.3p (skyzfs/skyzfs#37): the readers' shared queue cost two wakes per read with several readers; it is replaced by one that wakes one thread. Not yet merged or measured on a runner.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
+- The ublk feature flags and their kernel versions (design §4.2, "Kernels"): to be pinned against the kernel's documentation and source, with a clear refusal by the daemon on a kernel that lacks one. Not yet a package.
 - A round on the merged daemon with a row of the ublk project's reference server (`zfs-ublk`), to separate the store's cost from the cost of a userspace server as such.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
