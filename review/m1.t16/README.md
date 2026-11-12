@@ -97,3 +97,20 @@ says the result follows the disk.
 - The lead ruled after the push that a barriers-on job stops when the disk
   declares `write through`. So the read and the sentence are in, and the stop
   is what is left.
+
+## Third look, at 0e81e82: nothing blocks
+
+One commit on top of adb32bc: on `write through` the step writes the sentence
+to the summary, raises `::error::` and exits 1, before the remount check.
+
+- `stop-rule.sh` at 0e81e82, sixteen cases: a partition or a whole disk that is
+  `write through` exits 1 with the sentence and the error; `write back` goes on
+  as before; the twelve older cases are unchanged.
+- The steps after it are as they were: "Work disk mount at the end" and "Upload
+  results" run under `always()`, "Evidence on failure" under `failure()`.
+- The lookup is the one `disk-sync.py` of M1.T15 does (the file system's
+  device number, then sysfs, then the parent when the node has no `queue`),
+  which gave `sda1` / `write_through` and `nvme0n1p1` / `write_back` on
+  runners. The shell form has not run on a runner: no job at this head.
+- Left as it is, not blocking: a device number with no sysfs entry names the
+  disk `block` in the summary.
