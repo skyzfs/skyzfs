@@ -73,6 +73,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T11 | skyzfs/skyzfs#32 | The benchmark runs several builds of the daemon on one machine | The criterion |
 | M1.T12 | skyzfs/skyzfs#36 | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
+| M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
 | M1.T16 | skyzfs/skyzfs#41 (open) | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
@@ -463,11 +464,11 @@ So a read costs two wakes, the pump's of a reader and the reader's of the pump.
 
 | Thread | Samples | Kernel | Kernel samples by kind, % |
 |---|---|---|---|
-| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4, other 4, page cache 1 |
-| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 |
-| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24, wake and switch 6 |
+| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4 (6 with the copy's own checks), other 4, page cache 1 |
+| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 (5 with its checks) |
+| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24 (26 with its checks), wake and switch 6 |
 
-- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers'. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
+- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers', or 6% and 5% when the checks the kernel makes around a copy are counted with it, as the merged classifier does after the review's recount of the raw samples. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
 - "ZFS's completion" is `zio_interrupt` and its dispatch to a ZFS task queue: the kernel runs ZFS's completion of each request in the thread that ends it, which is the pump, and wakes a ZFS thread from there. That part is any ublk server's.
 - The runner has no hardware counters, so perf samples by a timer, and a sample taken with interrupts off is charged where they come back on. The kinds are from the whole call chain and are the better guide than the leaf symbols.
 
@@ -583,6 +584,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The whole design after the split, at the owner's request, by the review session, with its ZFS claims checked against OpenZFS 2.4.1 (skyzfs/skyzfs#2) | The architecture, the contract and the cut rule hold; no counterexample to the cut rule. Ten findings, all taken up in the design. M1's status said more than was run: the power-cut replay has not run on `skyzfsd` (§9; a testing package follows). M2's exit criterion asked for a scrub that ZFS refuses on a read-only pool, and would have passed a cut one group early. New rules in §6.2: no pool checkpoint, `zfs_nocacheflush` off. Stated more exactly: what encryption leaves in clear, frees under 32 KiB are never trimmed, the daemon's I/O path does allocate. Recorded as open: the bound on the local store when upload lags (M2), which `libzpool` the offline session links and its licence (M3). Document defects corrected: a paragraph rendered as a table row, gate G1's wording, M1's deliverables, a repeated paragraph and row in §4.1, what the study's 2.4 times is measured against. |
 | 2026-11-12 | §5.1, the readers' queue as built (M1.3p, skyzfs/skyzfs#37); three looks by the review session and one finding by Codex | The queue and its wake logic were right from the first look. Blocking, found by both: an early return from a start left the readers already started waiting for ever, which the channel's dropped sender had prevented; fixed with a guard. Blocking at the second look: the fix's test passed with the fix taken out; it now counts the readers that ended, and the missing guard is a mutant. Taken from the review: a push wakes only when a reader waits. Left as stated: the one test that rests on a window of time. |
 | 2026-11-12 | §4.2, the ublk features and the oldest kernel (M1.3q, skyzfs/skyzfs#38); three looks by the review session, Codex with nothing at the last head | Blocking at the first look: the floor was 6.9, where the header names the asynchronous delete, but the drivers of 6.9 and 6.10 answer it `ENOTSUPP`; the floor is 6.11, and the lead's decision of 6.9 was wrong. Fixed. Not blocking, fixed: a refused start offered the override when a feature was missing as well, and the delete's `ENOTSUPP` was read by untested code. Suggested and not taken: a probe that adds and deletes a device in place of reading the release. |
+| 2026-11-12 | The benchmark's system-call trace and profile (M1.T15, skyzfs/skyzfs#40); three looks by the review session and two findings by Codex | Blocking at the first look: `summarize` failed with a syntax error at the head, so no summary rendered; fixed, and a unit test now compiles the script's embedded Python and runs it. The review recounted the profile's raw samples and got the same table; with the checks around a copy counted as copy, copies are 6% of the pump's kernel samples and not 4%, and the conclusion stands on its one row. Codex: stale trace files of an earlier row, and a trace longer than the window; both fixed. |
 
 ## References
 
