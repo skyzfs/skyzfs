@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1584
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1856
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,10 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's sixth version. The fifth (`SKYZSTA5`, 1424
+//! This is the file's seventh version. The sixth (`SKYZSTA6`, 1584
+//! bytes) ended before the hint that starts writeback early and the
+//! syncs' backlogs, from offset 1584 on; a file of that version is
+//! still read, with those at zero. The fifth (`SKYZSTA5`, 1424
 //! bytes) had fourteen activities of the store's worker where this
 //! one has fifteen, so the fields from offset 536 on lie elsewhere,
 //! and ended before the barriers', the reader's and the checked
@@ -35,7 +38,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA6` |
+//! | 0 | 8 | magic `SKYZSTA7` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -78,6 +81,8 @@
 //! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
 //! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
 //! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's fifteen activities sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
+//! | 1584 | 80 | the hint that hands a file's writes to the device before their sync (`skyzfs_local::writeback`): for the log's segment files, and then for the home image, how many calls handed writes over, the bytes of the writes they handed over, the time of all calls, 1 if the file system answered "unsupported" and the hint was switched off (else 0), and how many calls the system declined this time (short of memory, interrupted, busy) while the volume went on. The time lies inside the activity the hint was made from: the call of a write, a write-zeroes or a discard for the log's, a step's apply for the home image's |
+//! | 1664 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -124,13 +129,19 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::{Counters, PumpTiming};
 use crate::records::StoredFailure;
-use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
+use skyzfs_local::store::{RequestTiming, Spent, Synced, Timing, ACTIVITIES};
+use skyzfs_local::writeback::Hinted;
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA6";
-const LEN: usize = 1584;
+const MAGIC: &[u8; 8] = b"SKYZSTA7";
+/// The version this crate writes.
+pub const VERSION: u32 = 7;
+const LEN: usize = 1856;
+/// The sixth version: nothing from the hint on.
+const SIXTH_MAGIC: &[u8; 8] = b"SKYZSTA6";
+const SIXTH_LEN: usize = 1584;
 /// The fifth version: fourteen activities, and nothing from the
 /// barriers on.
 const FIFTH_MAGIC: &[u8; 8] = b"SKYZSTA5";
@@ -328,11 +339,51 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_read_unflushed_mismatched",
     "time_worker_as_of_ns",
     "time_reader_as_of_ns",
+    "time_writeback_log_count",
+    "time_writeback_log_bytes",
+    "time_writeback_log_ns",
+    "time_writeback_log_off",
+    "time_writeback_log_refused",
+    "time_writeback_home_count",
+    "time_writeback_home_bytes",
+    "time_writeback_home_ns",
+    "time_writeback_home_off",
+    "time_writeback_home_refused",
+    "time_sync_flush_count",
+    "time_sync_flush_ns",
+    "time_sync_flush_bytes",
+    "time_sync_flush_handed",
+    "time_sync_own_sync_count",
+    "time_sync_own_sync_ns",
+    "time_sync_own_sync_bytes",
+    "time_sync_own_sync_handed",
+    "time_sync_room_count",
+    "time_sync_room_ns",
+    "time_sync_room_bytes",
+    "time_sync_room_handed",
+    "time_sync_home_count",
+    "time_sync_home_ns",
+    "time_sync_home_bytes",
+    "time_sync_home_handed",
+    "time_sync_preimage_count",
+    "time_sync_preimage_ns",
+    "time_sync_preimage_bytes",
+    "time_sync_preimage_handed",
+    "time_sync_superblock_count",
+    "time_sync_superblock_ns",
+    "time_sync_superblock_bytes",
+    "time_sync_superblock_handed",
 ];
 
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Status {
+    /// The version of the file it was read from: 2 to [`VERSION`]. A
+    /// file is always written as [`VERSION`], whatever this says.
+    /// `status` prints it (`status_version`), so that whoever reads
+    /// the times can tell the zeros of a field an older file did not
+    /// have from a zero the daemon counted.
+    pub version: u32,
     /// The daemon's process id.
     pub pid: u32,
     /// Queues.
@@ -508,7 +559,7 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 173;
+const TIME_FIELDS: usize = 207;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
@@ -585,6 +636,19 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
     }
     put(timing.worker_as_of_ns);
     put(timing.reader_as_of_ns);
+    for hinted in timing.writeback {
+        put(hinted.count);
+        put(hinted.bytes);
+        put(hinted.ns);
+        put(u64::from(hinted.off));
+        put(hinted.refused);
+    }
+    for synced in timing.syncs {
+        put(synced.count);
+        put(synced.sum_ns);
+        put(synced.bytes);
+        put(synced.handed);
+    }
     fields
 }
 
@@ -623,13 +687,13 @@ fn pump_at(bytes: &[u8], fifth: bool) -> PumpTiming {
     }
 }
 
-/// The times of a file of the sixth version, or of the fifth. What the
-/// file does not hold is filled in where another field says it (the
-/// count of a request's calls is that of its waits) and left zero
-/// where none does (how many batches a step's parts were measured
+/// The times of a file of the seventh version, the sixth or the fifth.
+/// What the file does not hold is filled in where another field says
+/// it (the count of a request's calls is that of its waits) and left
+/// zero where none does (how many batches a step's parts were measured
 /// over; in the fifth version, the fifteenth activity and everything
-/// from the barriers on).
-fn timing_at(bytes: &[u8], fifth: bool) -> Timing {
+/// from the barriers on; in the sixth, the hint and the syncs).
+fn timing_at(bytes: &[u8], fifth: bool, seventh: bool) -> Timing {
     let activities = if fifth { 14 } else { ACTIVITIES.len() };
     let mut at = 200;
     let mut take = || {
@@ -707,11 +771,37 @@ fn timing_at(bytes: &[u8], fifth: bool) -> Timing {
         timing.worker_as_of_ns = take();
         timing.reader_as_of_ns = take();
     }
+    if seventh {
+        let mut at = 1584;
+        let mut take = || {
+            let value = u64_at(bytes, at);
+            at += 8;
+            value
+        };
+        for hinted in &mut timing.writeback {
+            *hinted = Hinted {
+                count: take(),
+                bytes: take(),
+                ns: take(),
+                off: take() != 0,
+                refused: take(),
+            };
+        }
+        for synced in &mut timing.syncs {
+            *synced = Synced {
+                count: take(),
+                sum_ns: take(),
+                bytes: take(),
+                handed: take(),
+            };
+        }
+    }
     timing
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let sixth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let seventh = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let sixth = seventh || (bytes.len() == SIXTH_LEN && &bytes[..8] == SIXTH_MAGIC);
     let only_fifth = bytes.len() == FIFTH_LEN && &bytes[..8] == FIFTH_MAGIC;
     let fifth = sixth || only_fifth;
     let fourth = fifth || (bytes.len() == FOURTH_LEN && &bytes[..8] == FOURTH_MAGIC);
@@ -731,7 +821,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             } else {
                 ZeroesShown::Unsaid
             },
-            timing: fifth.then(|| timing_at(bytes, only_fifth)),
+            timing: fifth.then(|| timing_at(bytes, only_fifth, seventh)),
             pump: fifth.then(|| pump_at(bytes, only_fifth)),
         },
         start_ms: u64_at(bytes, 168),
@@ -741,7 +831,21 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
+    let version = if seventh {
+        7
+    } else if sixth {
+        6
+    } else if fifth {
+        5
+    } else if fourth {
+        4
+    } else if third {
+        3
+    } else {
+        2
+    };
     Some(Status {
+        version,
         pid: u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]),
         queues: u16::from_le_bytes([bytes[12], bytes[13]]),
         depth: u16::from_le_bytes([bytes[14], bytes[15]]),
@@ -1220,6 +1324,7 @@ pub fn report(
             ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
+            ("status_version", u64::from(s.version)),
         ] {
             lines.push((key, value.to_string()));
         }

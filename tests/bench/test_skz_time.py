@@ -53,19 +53,25 @@ def fifth(r):
     return old
 
 
-VERSION_6_KEYS = {'time_worker_step_barrier_ns'} | {f'time_{k}_wait_by_step_barrier_ns' for k in st.KINDS} | {
-    f'time_barrier_{b}_{f}' for b in st.BARRIERS for f in ('count', 'ns', 'max_ns')} | {
-    f'time_reader_{a}_ns' for a in st.READER_ACTIVITIES} | {
-    f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')} | {'time_worker_as_of_ns', 'time_reader_as_of_ns'}
+VERSION_6_KEYS = st.KEYS_ADDED[6]
+
+
+# What version 7 added: the hint that starts writeback early, and the
+# syncs by kind.
+VERSION_7_KEYS = st.KEYS_ADDED[7]
 
 
 class Delta(unittest.TestCase):
     def test_the_module_knows_the_daemons_keys(self):
         keys = status_keys()
-        self.assertEqual(len(keys), 173)
+        self.assertEqual(len(keys), 207)
         # what version 6 added, all of it known to the module
         self.assertEqual(len(VERSION_6_KEYS), 173 - 153)
         for key in VERSION_6_KEYS:
+            self.assertIn(key, keys)
+        # and what version 7 added
+        self.assertEqual(len(VERSION_7_KEYS), 207 - 173)
+        for key in VERSION_7_KEYS:
             self.assertIn(key, keys)
         for a in st.READER_ACTIVITIES:
             self.assertIn(a, st.ACTIVITIES)
@@ -87,9 +93,9 @@ class Delta(unittest.TestCase):
         b, a = reading(1), reading(3)
         t = st.delta(b, a, 1000, 5000)
         self.assertTrue(t['ok'], t['why'])
-        self.assertEqual(len(t['delta']) + len(t['end']), 173)
-        self.assertEqual(len(t['before']), 173)
-        self.assertEqual(len(t['after']), 173)
+        self.assertEqual(len(t['delta']) + len(t['end']), 207)
+        self.assertEqual(len(t['before']), 207)
+        self.assertEqual(len(t['after']), 207)
         self.assertEqual(t['window_ns'], 4000)
         keys = status_keys()
         i = keys.index('time_read_call_ns')
@@ -229,6 +235,41 @@ class Tables(unittest.TestCase):
         for what, left, right, diff in ids:
             self.assertEqual(diff, 0, what)
 
+    def test_a_version_5_file_as_the_current_binary_prints_it(self):
+        # The current `status` prints every key for an older file, the
+        # newer ones as zeros, and says the file's version: the reading
+        # is then taken as version 5's, not by which keys are there.
+        b, a = fifth(reading(1)), fifth(reading(3))
+        for r in (b, a):
+            for kind in st.KINDS:
+                r[f'time_{kind}_wait_ns'] = str(sum(int(r.get(f'time_{kind}_wait_by_{x}_ns', '0')) for x in st.ACTIVITIES))
+            for key in VERSION_6_KEYS | VERSION_7_KEYS:
+                r[key] = '0'
+            r['status_version'] = '5'
+        worker = sum(int(a[f'time_worker_{x}_ns']) - int(b[f'time_worker_{x}_ns']) for x in st.ACTIVITIES[:14])
+        t = st.delta(b, a, 0, worker)
+        self.assertTrue(t['ok'], t['why'])
+        self.assertEqual(t['version'], 5)
+        self.assertFalse(any(k in t['delta'] for k in VERSION_6_KEYS | VERSION_7_KEYS))
+        d = t['delta']
+        self.assertFalse(st.has_reader(d))
+        # a read's wait is over the worker's activities, as on the worker
+        self.assertEqual(st.waited_for(d, 'read'), st.ACTIVITIES)
+        self.assertEqual(st.worker_activities(d), st.ACTIVITIES[:14])
+        ids = st.identities(t)
+        self.assertEqual(len(ids), 6)
+        for what, left, right, diff in ids:
+            self.assertEqual(diff, 0, what)
+        self.assertIn('the two readings', ids[5][0])
+        # read by presence, the same reading would have a reader and a zero moment
+        b2, a2 = ({k: v for k, v in r.items() if k != 'status_version'} for r in (b, a))
+        self.assertTrue(st.has_reader(st.delta(b2, a2, 0, worker)['delta']))
+        # a version that changed between the readings makes it doubtful
+        a['status_version'] = '7'
+        t = st.delta(b, a, 0, worker)
+        self.assertFalse(t['ok'])
+        self.assertIn('status version changed', t['why'])
+
     def test_render(self):
         b, a = reading(1), reading(3)
         good = {'label': 'zfs-skyzfsd', 'workload': 'tpcb', 'tps': 4321.0, 'time': st.delta(b, a, 0, 10 ** 9), 'steps': 4,
@@ -327,16 +368,47 @@ class Columns(unittest.TestCase):
             time_barrier_reuse_count=10, time_barrier_reuse_ns=500_000,
             # the reader: 1 s idle, 3 s reading, 1 s other; 400 checked reads, 6 blocks beyond each
             time_reader_idle_ns=1_000_000_000, time_reader_read_ns=3_000_000_000, time_reader_other_ns=1_000_000_000,
-            time_read_unflushed_count=400, time_read_unflushed_extra_bytes=400 * 24576, time_read_unflushed_mismatched=0)
+            time_read_unflushed_count=400, time_read_unflushed_extra_bytes=400 * 24576, time_read_unflushed_mismatched=0,
+            # 50 flushes of 16 MiB in 3.5 s, 40 of them handed over; 10 home syncs of 8 MiB in 360 ms, 6 handed
+            time_sync_flush_count=50, time_sync_flush_ns=3_500_000_000, time_sync_flush_bytes=50 * 16 << 20,
+            time_sync_flush_handed=40 * 16 << 20,
+            time_sync_home_count=10, time_sync_home_ns=360_000_000, time_sync_home_bytes=80 << 20,
+            time_sync_home_handed=60 << 20,
+            # the hint: 300 calls and 300 MiB for the log in 30 ms, 60 and 60 MiB for the home image in 6 ms
+            time_writeback_log_count=300, time_writeback_log_bytes=300 << 20, time_writeback_log_ns=30_000_000,
+            time_writeback_home_count=60, time_writeback_home_bytes=60 << 20, time_writeback_home_ns=6_000_000,
+            time_writeback_log_refused=2)
+        after = {'time_sync_superblock_count': '10', 'time_sync_superblock_ns': '20000000',
+                 'time_sync_superblock_bytes': '40960', 'time_sync_superblock_handed': '0',
+                 'time_writeback_log_off': '0', 'time_writeback_home_off': '1'}
         end = {k: 0 for k in status_keys() if st.is_end_value(k)}
         end.update(time_step_home_sync_max_ns=511_140_000, time_step_own_sync_max_ns=878_370_000, time_step_walk_max_ns=9_000_000,
                    time_gate_max_ns=2_500_000, time_read_longest_wait_cause='step_home_sync',
                    time_barrier_home_max_ns=1_250_000)
-        t = {'ok': True, 'why': '', 'delta': d, 'end': end, 'before': {}, 'after': {}, 'window_ns': 5 * 10 ** 9}
+        t = {'ok': True, 'why': '', 'delta': d, 'end': end, 'before': {}, 'after': after, 'window_ns': 5 * 10 ** 9}
         self.row = {'label': 'row', 'workload': 'tpcb', 'tps': 4000.0, 'time': t, 'steps': 10, 'syncs': 4,
                     'relation_read_us': 400.0, 'relation_reads': 5000, 'duration_s': 4, 'ages': ('10', '20'),
                     'model_relation_read_us': 180.0}
         self.text = '\n'.join(st.render([self.row]))
+
+    def test_the_syncs_are_per_kind_with_their_rate_and_the_share_handed(self):
+        c = cells(self.text, 'The syncs in the window, by kind', 'row')
+        self.assertEqual((c['flush: count'], c['flush: MiB each'], c['flush: MiB/s'], c['flush: handed']),
+                         ('50', '16.00', '229', '80.0%'))
+        self.assertEqual((c['home: count'], c['home: MiB each'], c['home: MiB/s'], c['home: handed']),
+                         ('10', '8.00', '222', '75.0%'))
+        # nothing synced: a count of 0 and no rate, not a division by zero
+        self.assertEqual((c['room: count'], c['room: MiB each'], c['room: MiB/s'], c['room: handed']),
+                         ('0', 'n/a', 'n/a', 'n/a'))
+        # the superblock's are the reading's own, since the daemon started
+        self.assertEqual((c['superblock: count'], c['superblock: MiB each']), ('10', '0.00'))
+
+    def test_the_hint_is_per_file(self):
+        c = cells(self.text, 'The hint that hands', 'row')
+        self.assertEqual((c['log: calls'], c['log: MiB'], c['log: ms'], c['log: off'], c['log: refused']),
+                         ('300', '300.0', '30.0', 'no', '2'))
+        self.assertEqual(c['home: refused'], '0')
+        self.assertEqual((c['home: calls'], c['home: MiB'], c['home: ms'], c['home: off']), ('60', '60.0', '6.0', 'yes'))
 
     def test_the_step_parts_are_ms_per_step(self):
         c = cells(self.text, 'Checkpoint steps in the window', 'row')

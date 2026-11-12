@@ -163,6 +163,7 @@ fn value<'a>(out: &'a str, key: &str) -> Option<&'a str> {
 
 fn sample() -> Status {
     Status {
+        version: skyzfs_ublk::status::VERSION,
         pid: 4242,
         queues: 1,
         depth: 64,
