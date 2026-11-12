@@ -4660,6 +4660,20 @@ fn submit(served: &mut Served, request: Request) -> Outcome {
     served.submit(request).map_err(|e| e.to_string())
 }
 
+/// Wait until a barrier more than the `before` that had waited is
+/// waiting for a reader: the worker is then at it, and does nothing
+/// else until the reader lets go.
+fn at_a_barrier(shared: &Shared, before: u64, what: &str) -> Outcome {
+    let began = std::time::Instant::now();
+    while shared.pin.waited() <= before {
+        if began.elapsed() > Duration::from_secs(20) {
+            return Err(format!("{what}: no barrier waited for the reader"));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
 /// The completion of request `id` among `done`.
 fn completion(done: &[Completion], id: u64) -> Result<&Completion, String> {
     done.iter()
@@ -4720,6 +4734,7 @@ fn freed_segment_under_a_reader(env: &Env) -> Outcome {
     let (step, reader) = (Gate::new("reuse-step"), Gate::new("reuse-read"));
     store.set_step_pause_at(step.pause(), StepPoint::Synced);
     store.set_read_pause(reader.pause());
+    let shared = store.core.shared.clone();
     let mut served = store.serve().map_err(|e| e.to_string())?;
     let _opened = Opened(&[&step, &reader]);
     let (reply, checkpointed) = mpsc::channel();
@@ -4727,6 +4742,7 @@ fn freed_segment_under_a_reader(env: &Env) -> Outcome {
         return Err("the worker is gone".into());
     }
     step.wait_reached("the checkpoint")?;
+    let waited = shared.pin.waited();
     submit(&mut served, read_request(100, 0, 1))?;
     reader.wait_reached("the read")?;
     submit(&mut served, write_request(1, 256, 256, 4))?;
@@ -4736,8 +4752,9 @@ fn freed_segment_under_a_reader(env: &Env) -> Outcome {
         // Nothing holds the worker.
         take(&mut served, &mut done, 1, "the write, with no barrier")?;
     } else {
-        // However long this is, nothing can have completed.
-        std::thread::sleep(Duration::from_millis(50));
+        // The worker waits at the barrier, and has one thread: nothing
+        // can complete.
+        at_a_barrier(&shared, waited, "the second barrier")?;
         if served.poll(&mut done) != 0 {
             return Err("a request completed while the reader was held".into());
         }
@@ -4805,6 +4822,7 @@ fn a_step_does_not_write_the_home_image_under_a_reader() {
         let (step, reader) = (Gate::new("home-step"), Gate::new("home-read"));
         store.set_step_pause_at(step.pause(), StepPoint::Written);
         store.set_read_pause(reader.pause());
+        let shared = store.core.shared.clone();
         let mut served = store.serve().map_err(|e| e.to_string())?;
         let _opened = Opened(&[&step, &reader]);
         submit(&mut served, read_request(100, 5, 1))?;
@@ -4829,8 +4847,9 @@ fn a_step_does_not_write_the_home_image_under_a_reader() {
             // found the block there still at it.
             step.wait_reached("the step, with no barrier")?;
         } else {
-            // However long this is, the step cannot have written.
-            std::thread::sleep(Duration::from_millis(50));
+            // The step waits at the barrier before the home image's
+            // writes: it cannot have written.
+            at_a_barrier(&shared, 0, "the first barrier")?;
             if step.reached() {
                 return Err("the step wrote the home image while a reader was held".into());
             }
@@ -5214,6 +5233,7 @@ fn a_reader_reads_a_record_the_log_has_given_up_while_it_held_its_pin() {
     let (step, reader) = (Gate::new("given-up-step"), Gate::new("given-up-read"));
     store.set_step_pause_at(step.pause(), StepPoint::StartDurable);
     store.set_read_pause(reader.pause());
+    let shared = store.core.shared.clone();
     let mut served = store.serve().unwrap();
     let _opened = Opened(&[&step, &reader]);
     let (reply, checkpointed) = mpsc::channel();
@@ -5222,9 +5242,10 @@ fn a_reader_reads_a_record_the_log_has_given_up_while_it_held_its_pin() {
     let start = served.log_state().start;
     submit(&mut served, read_request(100, 5, 2)).unwrap();
     reader.wait_reached("the read").unwrap();
+    let waited = shared.pin.waited();
     step.open();
-    // However long this is, the step cannot pass its second barrier.
-    std::thread::sleep(Duration::from_millis(50));
+    // The step waits at its second barrier: it cannot have passed it.
+    at_a_barrier(&shared, waited, "the second barrier").unwrap();
     assert!(checkpointed.try_recv().is_err());
     reader.open();
     let mut done = Vec::new();

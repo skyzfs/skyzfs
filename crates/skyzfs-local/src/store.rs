@@ -677,6 +677,11 @@ struct PinState {
     generation: u64,
     /// The readers under way, by the generation they entered under.
     under_way: BTreeMap<u64, usize>,
+    /// For tests: how many barriers found a reader to wait for, so
+    /// that a test waits for a step to be at its barrier, not for a
+    /// time.
+    #[cfg(test)]
+    waited: u64,
 }
 
 /// A reader's pin: it leaves when this is dropped.
@@ -706,16 +711,29 @@ impl Pins {
         let mut state = self.state();
         let before = state.generation;
         state.generation += 1;
+        #[cfg(test)]
+        let mut counted = false;
         while state
             .under_way
             .iter()
             .any(|(generation, readers)| *readers > 0 && (all || *generation <= before))
         {
+            #[cfg(test)]
+            if !counted {
+                state.waited += 1;
+                counted = true;
+            }
             state = self
                 .left
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    /// For tests: how many barriers have waited for a reader.
+    #[cfg(test)]
+    fn waited(&self) -> u64 {
+        self.state().waited
     }
 }
 
