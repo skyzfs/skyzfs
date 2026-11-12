@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 192
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 536
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,9 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's fourth version. The third (`SKYZSTA3`, 192
+//! This is the file's fifth version. The fourth (`SKYZSTA4`, 200
+//! bytes) ended before offset 200, where the times begin; a file of
+//! that version is still read, without them. The third (`SKYZSTA3`, 192
 //! bytes) ended before offset 192; a file of that version is still
 //! read, and says nothing of how write-zeroes are applied. The second
 //! (`SKYZSTA2`, 144 bytes) ended before the log's fields, from offset
@@ -27,7 +29,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA4` |
+//! | 0 | 8 | magic `SKYZSTA5` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -52,6 +54,17 @@
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
+//! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it; the longest such wait; the summed time of the store's call for them; the longest such call |
+//! | 400 | 80 | the checkpoint steps' times, a sum and a longest for each part in the order: saving the neighbours of what a step writes; writing and deallocating in the home image; the home image's sync; the log's new start; the rule's own sync of the log before a step (`checkpoint_syncs` counts those) |
+//! | 480 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns; the longest |
+//! | 504 | 16 | the requests that began after a step that ended while they waited: how many, and their summed wait |
+//! | 520 | 16 | the reads among them: how many, and their summed wait |
+//!
+//! All times are nanoseconds of the monotonic clock, since this daemon
+//! started serving. Sums and counts only grow, so a reader takes the
+//! difference of two looks for a window; a longest time is of the whole
+//! time served and has no difference. What each number means exactly
+//! is at [`skyzfs_local::store::Timing`].
 //!
 //! # The rules
 //!
@@ -92,12 +105,16 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::Counters;
 use crate::records::StoredFailure;
+use skyzfs_local::store::{RequestTiming, Spent, Timing};
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA4";
-const LEN: usize = 200;
+const MAGIC: &[u8; 8] = b"SKYZSTA5";
+const LEN: usize = 536;
+/// The fourth version: without the times from offset 200 on.
+const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
+const FOURTH_LEN: usize = 200;
 /// The third version: without the field at offset 192.
 const THIRD_MAGIC: &[u8; 8] = b"SKYZSTA3";
 const THIRD_LEN: usize = 192;
@@ -107,6 +124,55 @@ const SECOND_LEN: usize = 144;
 /// The first version: read as no status.
 const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
 const OLD_LEN: usize = 128;
+
+/// The keys of the times in `status`, in the file's order. All values
+/// are nanoseconds but the counts. A key ending in `_max_ns` is the
+/// longest since the daemon started serving; every other value only
+/// grows, and a script takes the difference of two looks.
+pub const TIME_KEYS: [&str; TIME_FIELDS] = [
+    "time_read_count",
+    "time_read_wait_ns",
+    "time_read_wait_max_ns",
+    "time_read_call_ns",
+    "time_read_call_max_ns",
+    "time_write_count",
+    "time_write_wait_ns",
+    "time_write_wait_max_ns",
+    "time_write_call_ns",
+    "time_write_call_max_ns",
+    "time_flush_count",
+    "time_flush_wait_ns",
+    "time_flush_wait_max_ns",
+    "time_flush_call_ns",
+    "time_flush_call_max_ns",
+    "time_discard_count",
+    "time_discard_wait_ns",
+    "time_discard_wait_max_ns",
+    "time_discard_call_ns",
+    "time_discard_call_max_ns",
+    "time_zeroes_count",
+    "time_zeroes_wait_ns",
+    "time_zeroes_wait_max_ns",
+    "time_zeroes_call_ns",
+    "time_zeroes_call_max_ns",
+    "time_step_save_ns",
+    "time_step_save_max_ns",
+    "time_step_apply_ns",
+    "time_step_apply_max_ns",
+    "time_step_home_sync_ns",
+    "time_step_home_sync_max_ns",
+    "time_step_log_start_ns",
+    "time_step_log_start_max_ns",
+    "time_step_own_sync_ns",
+    "time_step_own_sync_max_ns",
+    "time_gate_count",
+    "time_gate_ns",
+    "time_gate_max_ns",
+    "time_behind_step_count",
+    "time_behind_step_wait_ns",
+    "time_reads_behind_step_count",
+    "time_reads_behind_step_wait_ns",
+];
 
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +231,9 @@ pub struct LogShown {
     pub own_syncs: u64,
     /// How a checkpoint applies write-zeroes to the home image.
     pub zeroes: ZeroesShown,
+    /// Where the store's time went. `None` in a file of a version
+    /// before the fifth.
+    pub timing: Option<Timing>,
 }
 
 /// How a checkpoint applies write-zeroes to the home image, as the
@@ -269,14 +338,113 @@ fn encode(status: &Status) -> [u8; LEN] {
         log.shown.own_syncs,
         log.shown.zeroes.code(),
     ];
-    for (i, field) in fields.iter().enumerate() {
+    let times = time_fields(&log.shown.timing.unwrap_or_default());
+    for (i, field) in fields.iter().chain(&times).enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
     bytes
 }
 
+/// The number of 8-byte fields the times take.
+const TIME_FIELDS: usize = 42;
+
+/// The times in the file's order: see the table at the top.
+fn time_fields(timing: &Timing) -> [u64; TIME_FIELDS] {
+    let mut fields = [0u64; TIME_FIELDS];
+    let mut at = 0;
+    let mut put = |value: u64| {
+        fields[at] = value;
+        at += 1;
+    };
+    for kind in &timing.requests {
+        for value in [
+            kind.wait.count,
+            kind.wait.sum_ns,
+            kind.wait.max_ns,
+            kind.call.sum_ns,
+            kind.call.max_ns,
+        ] {
+            put(value);
+        }
+    }
+    for part in [
+        timing.step_save,
+        timing.step_apply,
+        timing.step_home_sync,
+        timing.step_start,
+        timing.step_own_sync,
+    ] {
+        put(part.sum_ns);
+        put(part.max_ns);
+    }
+    put(timing.gate.count);
+    put(timing.gate.sum_ns);
+    put(timing.gate.max_ns);
+    put(timing.behind_step.count);
+    put(timing.behind_step.sum_ns);
+    put(timing.reads_behind_step.count);
+    put(timing.reads_behind_step.sum_ns);
+    fields
+}
+
+/// The times of a file of the fifth version. What the file does not
+/// hold is filled in where another field says it (the count of a
+/// request's calls is that of its waits) and left zero where none
+/// does (how many batches a step's parts were measured over; the
+/// longest wait behind a step).
+fn timing_at(bytes: &[u8]) -> Timing {
+    let mut at = 200;
+    let mut take = || {
+        let value = u64_at(bytes, at);
+        at += 8;
+        value
+    };
+    let mut timing = Timing::default();
+    for kind in &mut timing.requests {
+        let count = take();
+        let wait = Spent {
+            count,
+            sum_ns: take(),
+            max_ns: take(),
+        };
+        let call = Spent {
+            count,
+            sum_ns: take(),
+            max_ns: take(),
+        };
+        *kind = RequestTiming { wait, call };
+    }
+    let mut part = || Spent {
+        count: 0,
+        sum_ns: take(),
+        max_ns: take(),
+    };
+    timing.step_save = part();
+    timing.step_apply = part();
+    timing.step_home_sync = part();
+    timing.step_start = part();
+    timing.step_own_sync = part();
+    timing.gate = Spent {
+        count: take(),
+        sum_ns: take(),
+        max_ns: take(),
+    };
+    timing.behind_step = Spent {
+        count: take(),
+        sum_ns: take(),
+        max_ns: 0,
+    };
+    timing.reads_behind_step = Spent {
+        count: take(),
+        sum_ns: take(),
+        max_ns: 0,
+    };
+    timing
+}
+
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let fourth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let fifth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let fourth = fifth || (bytes.len() == FOURTH_LEN && &bytes[..8] == FOURTH_MAGIC);
     let third = bytes.len() == THIRD_LEN && &bytes[..8] == THIRD_MAGIC;
     let second = bytes.len() == SECOND_LEN && &bytes[..8] == SECOND_MAGIC;
     if !fourth && !third && !second {
@@ -293,6 +461,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             } else {
                 ZeroesShown::Unsaid
             },
+            timing: fifth.then(|| timing_at(bytes)),
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
@@ -804,6 +973,11 @@ pub fn report(
             }
             if let Some(said) = log.shown.zeroes.said() {
                 lines.push(("zeroes_applied", said.to_string()));
+            }
+            if let Some(timing) = &log.shown.timing {
+                for (key, value) in TIME_KEYS.iter().zip(time_fields(timing)) {
+                    lines.push((key, value.to_string()));
+                }
             }
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);

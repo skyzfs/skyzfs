@@ -11,6 +11,17 @@ fn counters(reads: u64, held: u64) -> Counters {
     }
 }
 
+/// Times whose fields in the file are 100, 101, and so on, in the
+/// file's order.
+fn sample_timing() -> skyzfs_local::store::Timing {
+    let mut bytes = [0u8; LEN];
+    for field in 0..TIME_FIELDS {
+        let at = 200 + 8 * field;
+        bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
+    }
+    timing_at(&bytes)
+}
+
 fn sample() -> Status {
     Status {
         pid: 0x0102_0304,
@@ -39,6 +50,7 @@ fn sample() -> Status {
                 stepping: true,
                 own_syncs: 18,
                 zeroes: ZeroesShown::Written,
+                timing: Some(sample_timing()),
             },
             start_ms: 16,
             replayed_bytes: 17,
@@ -50,16 +62,29 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA4");
+    expected.extend(b"SKYZSTA5");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]) {
+    // The times are the 42 fields from offset 200, here 100 to 141.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..142) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 200);
+    assert_eq!(bytes.len(), 536);
+    // Where the times lie, by what they are.
+    let timing = sample_timing();
+    assert_eq!(timing.requests[0].wait.count, 100);
+    assert_eq!(timing.requests[0].call.max_ns, 104);
+    assert_eq!(timing.requests[1].wait.sum_ns, 106);
+    assert_eq!(timing.requests[4].call.count, 120);
+    assert_eq!(timing.step_save.sum_ns, 125);
+    assert_eq!(timing.step_home_sync.max_ns, 130);
+    assert_eq!(timing.step_own_sync.sum_ns, 133);
+    assert_eq!((timing.gate.count, timing.gate.max_ns), (135, 137));
+    assert_eq!(timing.behind_step.sum_ns, 139);
+    assert_eq!(timing.reads_behind_step.count, 140);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
 }
@@ -113,6 +138,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     let mut unsaid = sample();
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.zeroes = ZeroesShown::Unsaid;
+        log.shown.timing = None;
     }
     assert_eq!(read, unsaid);
     let lines_of = |status: &Status| {
@@ -152,7 +178,86 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     }
     let mut unknown = encode(&sample());
     unknown[192..200].copy_from_slice(&7u64.to_le_bytes());
+    if let Some(log) = unsaid.log.as_mut() {
+        log.shown.timing = Some(sample_timing());
+    }
     assert_eq!(decode(&unknown), Some(unsaid));
+}
+
+/// A file of the fourth version (200 bytes, `SKYZSTA4`) is still read:
+/// everything it has, and no times, of which the report then has no
+/// line. The fifth version has them, one line each under a key of its
+/// own, in the file's order.
+#[test]
+fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut fourth = encode(&sample())[..200].to_vec();
+    fourth[..8].copy_from_slice(b"SKYZSTA4");
+    fs::write(&path, &fourth).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let mut untimed = sample();
+    if let Some(log) = untimed.log.as_mut() {
+        log.shown.timing = None;
+    }
+    assert_eq!(read, untimed);
+    let lines_of = |status: &Status| {
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(status),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(&read);
+    assert_eq!(
+        value(&lines, "zeroes_applied").map(|s| &s[..7]),
+        Some("written")
+    );
+    assert!(lines.iter().all(|(key, _)| !key.starts_with("time_")));
+    // The fifth version's magic at the fourth's length is no file, nor
+    // the fourth's at the fifth's.
+    fourth[..8].copy_from_slice(b"SKYZSTA5");
+    fs::write(&path, &fourth).expect("write");
+    assert!(super::read(&path).is_err());
+    let mut fifth = encode(&sample()).to_vec();
+    fifth[..8].copy_from_slice(b"SKYZSTA4");
+    fs::write(&path, &fifth).expect("write");
+    assert!(super::read(&path).is_err());
+
+    let lines = lines_of(&sample());
+    let timed: Vec<(&str, &str)> = lines
+        .iter()
+        .filter(|(key, _)| key.starts_with("time_"))
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect();
+    assert_eq!(timed.len(), TIME_FIELDS);
+    for (n, (key, value)) in timed.iter().enumerate() {
+        assert_eq!(*key, TIME_KEYS[n]);
+        assert_eq!(*value, (100 + n).to_string(), "{key}");
+    }
+    for (key, value) in [
+        ("time_read_count", "100"),
+        ("time_read_wait_ns", "101"),
+        ("time_write_call_max_ns", "109"),
+        ("time_zeroes_count", "120"),
+        ("time_step_home_sync_ns", "129"),
+        ("time_step_own_sync_max_ns", "134"),
+        ("time_gate_ns", "136"),
+        ("time_behind_step_count", "138"),
+        ("time_reads_behind_step_wait_ns", "141"),
+    ] {
+        assert_eq!(value_of(&timed, key), Some(value), "{key}");
+    }
+    let mut keys: Vec<&str> = TIME_KEYS.to_vec();
+    keys.sort_unstable();
+    keys.dedup();
+    assert_eq!(keys.len(), TIME_FIELDS);
+}
+
+fn value_of<'a>(lines: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
+    lines.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
 }
 
 /// The report shows the log: its live size, the steps taken, whether
@@ -520,6 +625,14 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
         251,
     );
     let keys: Vec<&str> = lines.iter().map(|(k, _)| *k).collect();
+    // The times are between how write-zeroes are applied and the pid,
+    // in the order of `TIME_KEYS`; the other keys are as they were.
+    let at = keys.iter().position(|k| *k == "zeroes_applied").unwrap() + 1;
+    assert_eq!(keys[at..at + TIME_FIELDS], TIME_KEYS);
+    let keys: Vec<&str> = keys
+        .into_iter()
+        .filter(|k| !k.starts_with("time_"))
+        .collect();
     assert_eq!(
         keys,
         [

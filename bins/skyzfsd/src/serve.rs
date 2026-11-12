@@ -450,9 +450,30 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
-/// The store's log state as the status file shows it.
-fn log_shown(log: &skyzfs_local::store::LogState) -> LogShown {
+/// The store's times as the status file holds them: the file keeps no
+/// count of the batches a step's parts were measured over and no
+/// longest wait behind a step, so those are left out here as a reader
+/// of the file finds them.
+fn shown_timing(mut timing: skyzfs_local::store::Timing) -> skyzfs_local::store::Timing {
+    for part in [
+        &mut timing.step_save,
+        &mut timing.step_apply,
+        &mut timing.step_home_sync,
+        &mut timing.step_start,
+        &mut timing.step_own_sync,
+    ] {
+        part.count = 0;
+    }
+    timing.behind_step.max_ns = 0;
+    timing.reads_behind_step.max_ns = 0;
+    timing
+}
+
+/// The store's log state and times as the status file shows them.
+fn log_shown(served: &skyzfs_local::store::Served) -> LogShown {
+    let log = &served.log_state();
     LogShown {
+        timing: Some(shown_timing(served.timing())),
         live: log.live(),
         steps: log.steps,
         stepping: log.stepping,
@@ -479,7 +500,7 @@ fn post<Q: skyzfs_ublk::pump::Queue>(
     // The log, as the store's worker last showed it. The worker wakes
     // this thread when a checkpoint step begins and when it ends; those
     // two are written to the status file at once.
-    let now = log_shown(&pump.target().log_state());
+    let now = log_shown(pump.target());
     let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
     board.post_log(now, step_changed);
     *shown = now;
@@ -684,7 +705,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // until the queue's thread has had its first turn, which on an
     // idle device is the first request (seen on a kernel: `log_live 0`
     // right after a start that had replayed 81 MB).
-    let first_log = log_shown(&served.log_state());
+    let first_log = log_shown(&served);
     board.post_log(first_log, false);
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);

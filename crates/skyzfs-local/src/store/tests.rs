@@ -4008,6 +4008,173 @@ fn the_rules_own_sync_is_shown_as_the_beginning_of_its_step() {
 }
 
 // ---------------------------------------------------------------------
+// Where the time goes (M1.3h).
+
+/// A read that arrives while a step is under way is counted with the
+/// time it waited, which is at least what was left of the step, among
+/// the requests that waited for a step, and among the reads that did.
+/// The step's time is in the part it was spent in, and the numbers fit
+/// each other and the clock of the test. The step is held in its hook
+/// behind its writes, so the time is the home image's sync's part.
+#[test]
+fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step() {
+    const HELD: Duration = Duration::from_millis(300);
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    flush(&mut store).unwrap();
+    assert!(store.log_state().live() > MARKS.high);
+    store.set_marks(Some(MARKS));
+    let gate = std::env::temp_dir().join(format!("skyzfs-timing-gate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Written);
+    let began = std::time::Instant::now();
+    let mut served = store.serve().unwrap();
+    at_the_point(&gate, "the first step");
+    assert!(served.log_state().stepping);
+    let submitted = std::time::Instant::now();
+    served
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(1),
+            },
+        })
+        .unwrap();
+    std::thread::sleep(HELD);
+    std::fs::write(&gate, b"").unwrap();
+    let mut done = Vec::new();
+    while done.is_empty() {
+        served.wait(&mut done, Duration::from_secs(1));
+        assert!(submitted.elapsed() < Duration::from_secs(20), "no answer");
+    }
+    let answered = submitted.elapsed();
+    assert_eq!(done[0].result, Ok(()));
+    // Answered behind the completion's state.
+    served.position().unwrap();
+    let total = began.elapsed();
+    let (timing, state) = (served.timing(), served.log_state());
+    // The worker goes on stepping and looks for the gate at each
+    // step: it is ended before the gate is removed.
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    let ns = |time: Duration| time.as_nanos() as u64;
+
+    let read = timing.requests[0];
+    assert_eq!((read.wait.count, read.call.count), (1, 1), "{timing:?}");
+    assert!(read.wait.sum_ns >= ns(HELD), "{timing:?}");
+    assert!(
+        read.wait.sum_ns + read.call.sum_ns <= ns(answered),
+        "{timing:?}"
+    );
+    assert_eq!(read.wait.max_ns, read.wait.sum_ns);
+    // It waited for a step, and it is the only request.
+    assert_eq!(timing.behind_step, read.wait, "{timing:?}");
+    assert_eq!(timing.reads_behind_step, read.wait, "{timing:?}");
+    for kind in 1..5 {
+        assert_eq!(timing.requests[kind], RequestTiming::default());
+    }
+    // The step that was held: its time is in the part behind the
+    // writes, and nowhere else.
+    assert!(timing.step_home_sync.max_ns >= ns(HELD), "{timing:?}");
+    for part in [timing.step_save, timing.step_apply, timing.step_start] {
+        assert!(part.max_ns < ns(HELD), "{timing:?}");
+        assert_eq!(part.count, timing.step_home_sync.count);
+    }
+    // The log was above the high mark after that step, so the read
+    // waited at the gate as well, and for less than its whole wait.
+    assert!(timing.gate.count >= 1, "{timing:?}");
+    assert!(timing.gate.sum_ns < read.wait.sum_ns, "{timing:?}");
+    // No part is longer than the test.
+    let steps = timing.step_save.sum_ns
+        + timing.step_apply.sum_ns
+        + timing.step_home_sync.sum_ns
+        + timing.step_start.sum_ns
+        + timing.step_own_sync.sum_ns;
+    assert!(steps <= ns(total), "{timing:?}");
+    assert!(timing.step_home_sync.count <= state.steps);
+}
+
+/// Every kind of request is counted under its own kind, once per
+/// request that completed, with a wait and a call each; a request that
+/// waited for no step is not among those that did; and the sums and
+/// the longest fit each other.
+#[test]
+fn every_kind_of_request_is_timed_under_its_kind() {
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let mut served = store.serve().unwrap();
+    let ops = [
+        Op::Write {
+            offset: 0,
+            data: Buf::filled(4, 7),
+        },
+        Op::Write {
+            offset: 8 * BLOCK,
+            data: Buf::filled(4, 8),
+        },
+        Op::Flush,
+        Op::Read {
+            offset: 0,
+            buf: Buf::zeroed(4),
+        },
+        Op::Discard {
+            offset: 16 * BLOCK,
+            len: 4 * BLOCK,
+        },
+        Op::WriteZeroes {
+            offset: 32 * BLOCK,
+            len: 4 * BLOCK,
+        },
+        Op::WriteZeroes {
+            offset: 40 * BLOCK,
+            len: 4 * BLOCK,
+        },
+        Op::WriteZeroes {
+            offset: 48 * BLOCK,
+            len: 4 * BLOCK,
+        },
+    ];
+    let mut done = Vec::new();
+    for (n, op) in ops.into_iter().enumerate() {
+        served
+            .submit(Request {
+                id: RequestId(n as u64),
+                op,
+            })
+            .unwrap();
+        while done.len() <= n {
+            served.wait(&mut done, Duration::from_secs(10));
+        }
+    }
+    served.position().unwrap();
+    let timing = served.timing();
+    let counts: Vec<u64> = timing.requests.iter().map(|k| k.wait.count).collect();
+    // read, write, flush, discard, write-zeroes.
+    assert_eq!(counts, [1, 2, 1, 1, 3], "{timing:?}");
+    assert_eq!(
+        TIMED_KINDS,
+        ["read", "write", "flush", "discard", "write_zeroes"]
+    );
+    for kind in timing.requests {
+        assert_eq!(kind.wait.count, kind.call.count);
+        for spent in [kind.wait, kind.call] {
+            assert!(spent.max_ns <= spent.sum_ns, "{timing:?}");
+            assert!(spent.sum_ns <= spent.max_ns * spent.count, "{timing:?}");
+        }
+    }
+    // No marks: no step, nobody waited for one, no gate.
+    assert_eq!(timing.behind_step, Spent::default());
+    assert_eq!(timing.gate, Spent::default());
+    assert_eq!(timing.step_home_sync, Spent::default());
+}
+
+// ---------------------------------------------------------------------
 // Write-zeroes deallocates (M1.3f).
 
 fn zeroes(store: &mut SimStore, block: u64, count: u64) -> Outcome {
@@ -4818,4 +4985,28 @@ fn behind_deallocated_write_zeroes_a_write_waits_for_one_step() {
             "zeros written and one step a write in {env:?}"
         );
     }
+}
+
+/// Prints what one read of the monotonic clock costs here, and what a
+/// timed request adds: run by hand
+/// (`cargo test -p skyzfs-local --release -- --ignored clock_numbers --nocapture`).
+#[test]
+#[ignore = "prints numbers; run by hand"]
+fn clock_numbers() {
+    const READS: u32 = 5_000_000;
+    let began = std::time::Instant::now();
+    let mut last = began;
+    for _ in 0..READS {
+        last = std::hint::black_box(std::time::Instant::now());
+    }
+    let per_read = (last - began).as_nanos() as f64 / f64::from(READS);
+    let mut spent = Spent::default();
+    let began = std::time::Instant::now();
+    for _ in 0..READS {
+        let at = std::time::Instant::now();
+        spent.add(std::hint::black_box(at.elapsed()));
+    }
+    let per_pair = began.elapsed().as_nanos() as f64 / f64::from(READS);
+    println!("one clock read: {per_read:.1} ns; two reads and an add: {per_pair:.1} ns");
+    assert_eq!(spent.count, u64::from(READS));
 }

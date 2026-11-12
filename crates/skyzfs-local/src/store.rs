@@ -21,7 +21,7 @@ use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skyzfs_blk::{
     Base, BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId, SubmitError,
@@ -598,6 +598,8 @@ struct Core<D: Dir> {
     /// The times the rule made the log durable itself, with no flush
     /// of the client's, to have something to take.
     own_syncs: u64,
+    /// Where the time went: see [`Timing`].
+    timing: Timing,
     /// How a write-zeroes record reaches the home image.
     zeroes: Zeroes,
     /// For test rigs: how and where every batch of a checkpoint waits.
@@ -1039,7 +1041,10 @@ impl<D: Dir> Core<D> {
             // More becomes durable below the hold, so a step follows
             // unless the sync fails the volume.
             before();
-            self.flush()?;
+            let began = Instant::now();
+            let synced = self.flush();
+            self.timing.step_own_sync.add(began.elapsed());
+            synced?;
             self.own_syncs += 1;
         }
         if reach(self.log.durable()) <= floor {
@@ -1100,9 +1105,15 @@ impl<D: Dir> Core<D> {
         limit: Lsn,
         hold: Option<Lsn>,
     ) -> Result<(Lsn, Option<Cut>), BlkError> {
+        // The batch's time, in four parts that follow each other with
+        // no gap: one clock read at each boundary. A batch that fails
+        // leaves its last part uncounted: the volume has failed.
+        let began = Instant::now();
         if self.protect_neighbours(floor, target, limit).is_err() {
             return Err(self.fail());
         }
+        let saved_at = Instant::now();
+        self.timing.step_save.add(saved_at - began);
         // (1) The neighbours are saved and durable; the home image is
         // as it was.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1184,6 +1195,8 @@ impl<D: Dir> Core<D> {
             return Err(self.fail());
         }
         let target = cut.map_or(target, |cut| cut.end);
+        let written_at = Instant::now();
+        self.timing.step_apply.add(written_at - saved_at);
         // (2) The middle of a step: the home image holds the batch and
         // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1192,6 +1205,8 @@ impl<D: Dir> Core<D> {
         if !early && self.home.sync().is_err() {
             return Err(self.fail());
         }
+        let synced_at = Instant::now();
+        self.timing.step_home_sync.add(synced_at - written_at);
         // (3) The home image is durable, and the log starts where it
         // did: a start now applies the batch again from the log.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1221,6 +1236,7 @@ impl<D: Dir> Core<D> {
         if early && self.home.sync().is_err() {
             return Err(self.fail());
         }
+        self.timing.step_start.add(synced_at.elapsed());
         if self.mutants.has(Mutants::INDEX_SWITCH_EARLY) {
             self.index.drop_below(self.log.durable());
         } else {
@@ -1542,6 +1558,92 @@ pub struct Marks {
     pub low: u64,
     /// What one step may take.
     pub step: StepBound,
+}
+
+/// A count of things that took time, their summed time and the
+/// longest of them, in nanoseconds of the monotonic clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spent {
+    /// How many.
+    pub count: u64,
+    /// Their time together.
+    pub sum_ns: u64,
+    /// The longest.
+    pub max_ns: u64,
+}
+
+impl Spent {
+    fn add(&mut self, time: Duration) {
+        let ns = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
+        self.count += 1;
+        self.sum_ns = self.sum_ns.saturating_add(ns);
+        self.max_ns = self.max_ns.max(ns);
+    }
+}
+
+/// The kinds of request the timing tells apart, in the order of
+/// [`Timing::requests`].
+pub const TIMED_KINDS: [&str; 5] = ["read", "write", "flush", "discard", "write_zeroes"];
+
+fn timed_kind(op: &Op) -> usize {
+    match op {
+        Op::Read { .. } => 0,
+        Op::Write { .. } => 1,
+        Op::Flush => 2,
+        Op::Discard { .. } => 3,
+        Op::WriteZeroes { .. } => 4,
+    }
+}
+
+/// What one kind of request waited and took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RequestTiming {
+    /// From the request's submission to the served store until the
+    /// worker began it: the time in the worker's queue, behind other
+    /// requests, behind checkpoint steps and at the high mark's gate.
+    pub wait: Spent,
+    /// The store's call for it: from when the worker began it until
+    /// its completion was ready. The two counts are the same.
+    pub call: Spent,
+}
+
+/// Where a served store's time went since the open: what each kind of
+/// request waited and took, what the checkpoint steps took by part,
+/// and what requests waited for steps. It is measurement only: nothing
+/// in the store reads it.
+///
+/// The cost is one read of the monotonic clock per boundary: three per
+/// request (its submission, its begin, its end), five per batch of a
+/// checkpoint, two per sync of the rule's own, and two per turn of the
+/// worker at the gate. No allocation, and no lock but the one the
+/// worker already takes to show the log's state, held for a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Timing {
+    /// By kind, in the order of [`TIMED_KINDS`]. Requests that
+    /// completed, whatever their result. A served store only.
+    pub requests: [RequestTiming; 5],
+    /// Batches applied by a checkpoint (every step is one; an explicit
+    /// checkpoint's batches count too), first part: saving the
+    /// neighbours of what the batch writes, with that file's sync.
+    pub step_save: Spent,
+    /// Second part: writing and deallocating in the home image.
+    pub step_apply: Spent,
+    /// Third part: the home image's sync.
+    pub step_home_sync: Spent,
+    /// Fourth part: the log's new start, written and made durable.
+    pub step_start: Spent,
+    /// The rule's own syncs of the log, before a step that found too
+    /// little of the log durable. Not part of the four above.
+    pub step_own_sync: Spent,
+    /// Turns of the worker in which a request was waiting and none
+    /// was taken because the log was at the high mark: the time of
+    /// the step taken in that turn (its own sync included).
+    pub gate: Spent,
+    /// Requests that began after a step that ended while they waited:
+    /// their whole wait.
+    pub behind_step: Spent,
+    /// The reads among them.
+    pub reads_behind_step: Spent,
 }
 
 /// The log as a store shows it to its owner.
@@ -2137,6 +2239,7 @@ impl<D: Dir> Store<D> {
                 working: false,
                 steps: 0,
                 own_syncs: 0,
+                timing: Timing::default(),
                 zeroes: Zeroes::Untried,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
@@ -2418,7 +2521,8 @@ impl<D: Dir> BlockTarget for Store<D> {
 
 /// What the owner of a [`Served`] store asks of its worker.
 enum Command {
-    Request(Request),
+    /// A request, and when it was submitted.
+    Request(Request, Instant),
     Hold(Option<Lsn>, mpsc::Sender<Result<(), NotABoundary>>),
     Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
     Position(mpsc::Sender<Lsn>),
@@ -2465,18 +2569,20 @@ pub struct Served {
 /// start beyond the end (a step can move the start past the end that
 /// was published before it), never a step that has ended as under way.
 #[derive(Debug, Default)]
-struct Shown(Mutex<LogState>);
+struct Shown(Mutex<(LogState, Timing)>);
 
 impl Shown {
     fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
-        self.set(LogState {
+        let state = LogState {
             stepping,
             ..core.log_state()
-        });
+        };
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing);
     }
 
+    #[cfg(test)]
     fn set(&self, state: LogState) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = state;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).0 = state;
     }
 
     /// A step begins: everything else stays, and it is under way.
@@ -2484,11 +2590,16 @@ impl Shown {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .0
             .stepping = true;
     }
 
     fn state(&self) -> LogState {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).0
+    }
+
+    fn timing(&self) -> Timing {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).1
     }
 }
 
@@ -2555,6 +2666,12 @@ where
                 // or no request: at the start, for a long log that the
                 // open found, and after every step it took.
                 let mut busy = true;
+                // When each request of the queue was submitted, in the
+                // queue's order. What the open left queued counts from
+                // here.
+                let mut arrived: VecDeque<Instant> = queue.iter().map(|_| Instant::now()).collect();
+                // When the last step ended.
+                let mut step_ended: Option<Instant> = None;
                 loop {
                     shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
@@ -2572,8 +2689,9 @@ where
                         }
                     };
                     match command {
-                        Some(Command::Request(request)) => {
+                        Some(Command::Request(request, at)) => {
                             queue.push_back(request);
+                            arrived.push_back(at);
                             continue;
                         }
                         Some(Command::Hold(hold, reply)) => {
@@ -2647,14 +2765,27 @@ where
                     // a request waiting: the request is executed, and
                     // is held or refused by what it finds.
                     let steps_first = busy && core.at_the_high_mark();
+                    let gated = steps_first && !held && !queue.is_empty();
                     let next = if held || steps_first {
                         None
                     } else {
-                        queue.pop_front()
+                        queue.pop_front().zip(arrived.pop_front())
                     };
-                    if let Some(Request { id, op }) = next {
+                    if let Some((Request { id, op }, at)) = next {
+                        let kind = timed_kind(&op);
+                        let began = Instant::now();
                         match core.execute(op) {
                             Ok((result, buf)) => {
+                                let wait = began.saturating_duration_since(at);
+                                let timing = &mut core.timing;
+                                timing.requests[kind].wait.add(wait);
+                                timing.requests[kind].call.add(began.elapsed());
+                                if step_ended.is_some_and(|ended| ended > at) {
+                                    timing.behind_step.add(wait);
+                                    if kind == 0 {
+                                        timing.reads_behind_step.add(wait);
+                                    }
+                                }
                                 let start = core.appended.take();
                                 let completion = Completion { id, result, buf };
                                 // Shown before the completion can be
@@ -2675,6 +2806,7 @@ where
                             }
                             Err(op) => {
                                 queue.push_front(Request { id, op });
+                                arrived.push_front(at);
                                 held = true;
                             }
                         }
@@ -2692,11 +2824,19 @@ where
                         }
                     };
                     let mut begun = false;
+                    let turn = gated.then(Instant::now);
                     let stepped = core.tend(&mut || {
                         begun = true;
                         shown.begin();
                         wake();
                     });
+                    if stepped != Ok(false) {
+                        let now = Instant::now();
+                        step_ended = Some(now);
+                        if let Some(turn) = turn {
+                            core.timing.gate.add(now - turn);
+                        }
+                    }
                     busy = stepped == Ok(true);
                     // `begun` is a safeguard and cannot decide today: the
                     // rule tells the owner of a step before its own sync
@@ -2749,6 +2889,13 @@ impl Served {
     /// waits in its hook is.
     pub fn log_state(&self) -> LogState {
         self.log.state()
+    }
+
+    /// Where the time went, as the worker last showed it with the
+    /// log's state: see [`Timing`]. Like [`Served::log_state`] it asks
+    /// the worker nothing and returns at once.
+    pub fn timing(&self) -> Timing {
+        self.log.timing()
     }
 
     /// Set or release the hold: see [`Store::set_hold`]. It takes
@@ -2866,13 +3013,13 @@ impl BlockTarget for Served {
         }
         let id = request.id;
         match self.commands.as_ref() {
-            Some(commands) => match commands.send(Command::Request(request)) {
+            Some(commands) => match commands.send(Command::Request(request, Instant::now())) {
                 Ok(()) => {
                     self.ids.insert(id);
                     Ok(())
                 }
                 // The worker is gone, which only a panic in it does.
-                Err(mpsc::SendError(Command::Request(request))) => Err(SubmitError {
+                Err(mpsc::SendError(Command::Request(request, _))) => Err(SubmitError {
                     kind: SubmitErrorKind::Busy,
                     request,
                 }),
