@@ -38,4 +38,5 @@ tempfile = "3"
 skynbd-api = { path = "../skynbd-api" }
 skynbd-nbd = { workspace = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-tokio = { workspace = true, features = ["rt", "macros"] }
+# test-util: the paused clock of the pipeline's timing test.
+tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
