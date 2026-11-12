@@ -161,7 +161,8 @@ there, and the user decides when it merges.
   fails when a property the design depends on does not hold on the
   runner (`pin_*` lines in its summary).
 - **The replay rig.** `skyzfs-replay-rig.yml` runs on a pull request
-  that touches `tests/kernel/`, and by dispatch. It has two kernel jobs,
+  that touches `tests/kernel/`, `tests/lib/`, the workflow or the
+  daemon's code (below), and by dispatch. It has two kernel jobs,
   one per pool layout, of about twenty and twenty-six minutes. It
   records a pool's writes and checks the pool at every record prefix,
   every copy of every reachable block at the first and last prefix of
@@ -181,11 +182,12 @@ there, and the user decides when it merges.
   On a pull request they check the marks and every flush boundary,
   about twenty-five minutes a job. By dispatch, `server` chooses
   `reference` (the default), `daemon` or `both`, and `daemon_budget`
-  `full` (the default: every record prefix, about forty-five minutes)
-  or `pull-request`. The summary's line "Every record prefix: N of N"
-  says whether a run shows design §9's criterion; only a full run
-  does. Exit 1 is a verdict against the daemon, exit 2 the rig's own
-  error.
+  `full` (the default: every record prefix with no time limit; 34
+  and 39 minutes a job in its first run) or `pull-request`. The
+  summary's line "Every record prefix: N of N" says whether a run
+  shows design §9's criterion; only a full run that checked N of N
+  and ended with exit 0 does. Exit 1 is a verdict against the daemon,
+  exit 2 the rig's own error.
 - **The daemon rig.** `skyzfs-daemon-rig.yml` runs on a pull request
   that touches `tests/kernel/`, `tests/lib/`, `bins/skyzfsd/`,
   `bins/skyzfs-blkcheck/`, `crates/skyzfs-ublk/`,

@@ -32,7 +32,7 @@ Deliverables and exit criteria: design §9.
 
 ### Status
 
-M1 is in progress: the contract of §4.1 is merged as an executable model with a conformance suite that reports what a given harness cannot exercise (`crates/skyzfs-blk`), so are the write log and the store on top of it, tested on a simulated disk and, under `kill -9`, on real files (`crates/skyzfs-local`, §5.1), and so is the power-cut replay rig that M1's exit criterion rests on, which reads every copy of every reachable block and checks what `fsync` promised, so far run against the ublk project's reference server (`tests/kernel/replay-rig.sh`). A second kernel rig takes the daemon, and a stand-in for it, through kills, an orderly stop, a held request, a failed volume, the conformance suite and its checkpoints (`tests/kernel/daemon-rig.sh`). The ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04 (`crates/skyzfs-ublk`, `crates/skyzfs-ublk-sys`, §4.2). What M1 still lacks is its throughput criterion (§9), and one thing this sentence left out until the review of 2026-11-12: the replay rig has not been run on `skyzfsd` itself, so the power-cut criterion is shown for the rig and the reference server and not yet for the daemon's log.
+M1 is in progress: the contract of §4.1 is merged as an executable model with a conformance suite that reports what a given harness cannot exercise (`crates/skyzfs-blk`), so are the write log and the store on top of it, tested on a simulated disk and, under `kill -9`, on real files (`crates/skyzfs-local`, §5.1), and so is the power-cut replay rig that M1's exit criterion rests on, which reads every copy of every reachable block and checks what `fsync` promised, first against the ublk project's reference server (`tests/kernel/replay-rig.sh`) and since M1.T14 through `skyzfsd` with the cut below it (`tests/kernel/replay_daemon.py`), where it has shown the criterion. A second kernel rig takes the daemon, and a stand-in for it, through kills, an orderly stop, a held request, a failed volume, the conformance suite and its checkpoints (`tests/kernel/daemon-rig.sh`). The ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04 (`crates/skyzfs-ublk`, `crates/skyzfs-ublk-sys`, §4.2). What M1 still lacks is its throughput criterion (§9), and one thing this sentence left out until the review of 2026-11-12: the replay rig has not been run on `skyzfsd` itself, so the power-cut criterion is shown for the rig and the reference server and not yet for the daemon's log.
 
 Where the throughput criterion stands is at the end of "The throughput criterion" below.
 
@@ -350,7 +350,27 @@ What the runs showed[^t14runs]:
 | An earlier full-budget run, limited to 300 s between flushes: flush boundaries, fsync marks | 152 of 152, 46 of 46 | 150 of 150, 45 of 45 |
 | The same run: prefixes between flushes checked, deep-checked prefixes | 86 of 514, 56 | 126 of 483, 54 |
 
-Every prefix that any run checked has passed. **No run has yet checked every record prefix**, so the criterion is not recorded as met: the full-budget run on the merged daemon is the next step. A prefix costs about 2.5 s, so that run is about 45 minutes a job.
+**The criterion's run**, by dispatch on `zfs-topology` at 51f5972 with the full budget[^t14full]:
+
+| | Ubuntu 24.04 | Ubuntu 26.04 |
+|---|---|---|
+| Records in the lower disk's log | 668 (430 MiB, 156 flushes) | 670 (430 MiB, 154 flushes) |
+| **Record prefixes checked** | **669 of 669** | **671 of 671** |
+| fsync marks, sync marks, flush boundaries | 44 of 44, 17 of 17, 156 of 156 | 45 of 45, 17 of 17, 154 of 154 |
+| Transaction groups, and prefixes deep-checked (the first and last of each) | 31, 62 | 29, 58 |
+| The daemon's starts, and their recovery | 669; logs of 4 to 126 MiB in 36 to 1842 ms | 671; 4 to 126 MiB in 33 to 300 ms |
+| Checkpoint steps while recording | 14 | 14 |
+| `withheld` | caught | caught |
+| `zdb -e -bcc` at the end of the log | 0 | 0 |
+| Failed prefixes | 0 | 0 |
+| Main pass, and the whole job | 2182 s, 39 min | 1891 s, 34 min |
+
+**M1's power-cut criterion is shown on `skyzfsd`:** the pool imports at every record prefix, the deep checks pass at the first and the last prefix of every transaction group, and every file whose fsync had returned is intact at its mark, the intent log being on the device under test. What it rests on and what it does not show:
+
+- One run per image, one workload, the whole-pool layout.
+- The cut is a prefix of the lower disk's recorded writes. A disk that loses or reorders writes it never flushed in another order than it received them is not modelled; the reference rig's `reorder` control has no counterpart here.
+- The lower disk is a loop file behind dm-log-writes on a runner, not a flash device.
+- One start in the 24.04 run took 1842 ms to recover, against 300 ms at most elsewhere; it passed, and nothing was looked into.
 
 ### The throughput criterion (design §9)
 
@@ -551,7 +571,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 - M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- The power-cut replay on `skyzfsd`: the rig is merged (M1.T14) and every prefix checked so far passed; the full-budget run that checks every record prefix on the merged daemon, which is what records the criterion, has not been made.
+- The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42, open): a limit on the record phase and a control that stops the daemon once it is ready.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -659,3 +679,4 @@ Every independent read of the design and every review of a work package, with wh
 [^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.
 [^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.
 [^t14runs]: `skyzfs-replay-rig.yml`: run 43314111709 on the pull request's last head (e9b55ef), pull-request budget, both "through skyzfsd" jobs; and run 43282556301 by dispatch before the review, full budget as it then was. The daemon rig on the same head, run 43314111778, was as its table on the daemon and on the stand-in.
+[^t14full]: `skyzfs-replay-rig.yml`, run 43323450604, dispatched with `server=daemon` and `daemon_budget=full`; both "through skyzfsd" jobs ended with exit 0 and the summary line "criterion: shown by this run".
