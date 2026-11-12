@@ -493,7 +493,16 @@ async fn duplicate_content_in_a_batch_uploads_once() {
 
 /// The measurement gate in miniature: publish time for a fixed delta at
 /// a simulated per-call RTT, depth 1 vs depth 16, and depth 16 must be
-/// at least three times faster (the ideal is ~depth×).
+/// at least twelve times faster (it is 21.4 times: 1.542 s and 72 ms).
+///
+/// Why twelve. The factor used to be three, loose for a noisy runner;
+/// the clock below is exact, so the factor can say what it means. With
+/// the effective depth capped in the engine the same publish at "depth
+/// 16" takes 520 ms at an effective depth of 2 (a factor of 2.97),
+/// 264 ms at 4 (5.8) and 136 ms at 8 (11.3). Three caught a pipeline
+/// that had fallen back to depth 1 or 2 and nothing less; twelve fails
+/// one that works at half its depth. (The capped figures are the
+/// reviewer's, measured for skyzfs/skyzfs#26.)
 ///
 /// The time judged is the runtime's clock, paused: it moves only when
 /// every task waits, and then straight to the next timer. So it counts
@@ -529,8 +538,8 @@ async fn pipelining_compresses_publish_time_at_rtt() {
         at_rtt.push(waited);
     }
     assert!(
-        at_rtt[1] * 3 < at_rtt[0],
-        "depth 16 should be several times faster: {at_rtt:?}"
+        at_rtt[1] * 12 < at_rtt[0],
+        "depth 16 should be at least twelve times faster: {at_rtt:?}"
     );
 }
 
@@ -571,9 +580,17 @@ async fn consecutive_batches_overlap_but_attaches_stay_serial_and_ordered() {
 /// a batch is ensure + uploads (2 RTTs) then attach (1): ~3 RTTs per
 /// batch staged-then-attached, ~2 when batch k+1 stages beside batch k's
 /// attach. Measured as a ratio of the same publish with overlap off, so
-/// per-call scheduling cost and the cycle's non-backfill round trips
-/// weigh on both sides alike: ideal ≈ 0.7 here, asserted < 0.85.
-#[tokio::test(flavor = "multi_thread")]
+/// the cycle's non-backfill round trips weigh on both sides alike.
+///
+/// The time is the runtime's paused clock, as in
+/// `pipelining_compresses_publish_time_at_rtt`: the waits for the
+/// control plane and nothing of the machine. It gives 1.98 s with
+/// overlap off and 1.36 s with it on, the same on every run: 620 ms
+/// saved, one 20 ms round trip at each of the 31 places where a batch
+/// follows another, a ratio of 0.687. Asserted below 0.70, which fails
+/// when two of those 31 are lost (0.707). The threshold used to be 0.85
+/// against two wall clocks.
+#[tokio::test(start_paused = true)]
 async fn overlap_saves_a_round_trip_per_batch() {
     let rtt = Duration::from_millis(20);
     let depth = 8usize;
@@ -583,9 +600,11 @@ async fn overlap_saves_a_round_trip_per_batch() {
         r.eng = r.eng.with_publish_overlap(overlap);
         fill_distinct(&r.stack, 9);
         let img = r.stack.origin_image();
-        let t = Instant::now();
+        let wall = Instant::now();
+        let t = tokio::time::Instant::now();
         let target = r.eng.run_cycle().await.unwrap();
-        let wall = t.elapsed();
+        let waited = t.elapsed();
+        let wall = wall.elapsed();
         assert_eq!(r.cp.read_snapshot(&target, 0, VOL).await.unwrap(), img);
         assert_eq!(
             r.cp.c.overlapped.load(Ordering::SeqCst),
@@ -593,14 +612,14 @@ async fn overlap_saves_a_round_trip_per_batch() {
             "staging under an in-flight attach"
         );
         println!(
-            "depth={depth} batches={} rtt={rtt:?} overlap={overlap} publish_wall={wall:?}",
+            "depth={depth} batches={} rtt={rtt:?} overlap={overlap} publish_time_at_rtt={waited:?} wall={wall:?}",
             CHUNKS / depth as u64
         );
-        walls.push(wall);
+        walls.push(waited);
     }
     let ratio = walls[1].as_secs_f64() / walls[0].as_secs_f64();
     assert!(
-        ratio < 0.85,
+        ratio < 0.70,
         "overlap saved too little: {walls:?} ({ratio:.2})"
     );
 }
