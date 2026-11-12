@@ -514,6 +514,34 @@ if drows:
         print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(ww / txn if ww else None, '.1f')} | {rel('backend')} | "
               f"{rel('bg') + ' (with the background writer)' if old else rel('ckpt')} | {'-' if old else rel('bgw')} | {rel('other')} | "
               f"{txd} | {nf(r.get('zfs', {}).get('txg', {}).get('dirty_mb_mean'), '.0f')} | {lim_} |")
+    # Waiting for a CPU: pressure stall shares of the window, the time
+    # postgres's backends and the daemon's threads were runnable and did
+    # not run, the context switches, and the daemon's threads' user and
+    # system time.
+    cr = [(r, d) for r, d in drows if r['diag'].get('run_delay_ms_by_thread') or r['diag'].get('psi_pct')]
+    if cr:
+        print('\nWaiting for a CPU. Pressure is /proc/pressure as a share of the window (`some`: at least one '
+              'task stalled; `full`: all of them); run delay is the time a thread was runnable and not running '
+              '(schedstat), over the threads alive at both looks; switches are voluntary / involuntary. The daemon\'s '
+              'threads are those named skyzfs*:\n')
+        print('| workload | topology | tps | cpu some % | io some / full % | memory some % | postgres run delay µs per txn | '
+              'postgres switches per txn | all switches per txn | daemon run delay ms by thread | daemon user / system s by thread |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|')
+        for r, d in cr:
+            g = r['diag']; txn = r['pg'].get('xact_commit', 0) or 0
+            if not txn:
+                continue
+            ps = g.get('psi_pct', {})
+            pp = lambda k: nf(ps.get(k), '.1f')
+            rd = g.get('run_delay_ms_by_thread', {}); cv = g.get('voluntary_csw_by_thread', {}); ci = g.get('involuntary_csw_by_thread', {})
+            us, sy = g.get('user_s_by_thread', {}), g.get('system_s_by_thread', {})
+            skz_ = sorted({k for k in list(rd) + list(us) + list(sy) if k.startswith('skyzfs')})
+            drd = ', '.join(f'{k} {rd.get(k, 0):.0f}' for k in skz_) or '-'
+            dus = ', '.join(f'{k} {us.get(k, 0):.1f} / {sy.get(k, 0):.1f}' for k in skz_) or '-'
+            print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {pp('cpu.some')} | {pp('io.some')} / {pp('io.full')} | {pp('memory.some')} | "
+                  f"{nf(rd['postgres'] * 1000 / txn if 'postgres' in rd else None, '.1f')} | "
+                  f"{nf(cv.get('postgres', 0) / txn if 'postgres' in cv else None)} / {nf(ci.get('postgres', 0) / txn if 'postgres' in ci else None)} | "
+                  f"{nf(g.get('ctxt', 0) / txn if 'ctxt' in g else None, '.1f')} | {drd} | {dus} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
@@ -1790,6 +1818,10 @@ diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O 
     python3 - <<'PY' || true
 import collections, glob, re
 c = collections.Counter()
+# By thread name as well: user and system ticks, the time runnable but
+# not running (schedstat's second field, ns), and the voluntary and
+# involuntary context switches of the threads alive at the look.
+ext = {k: collections.Counter() for k in ('thu', 'ths', 'rdl', 'csv', 'csi')}
 def parse(path):
     s = open(path).read()
     return s[s.index('(') + 1:s.rindex(')')], s[s.rindex(')') + 2:].split()
@@ -1799,14 +1831,34 @@ for p in glob.glob('/proc/[0-9]*'):
     try:
         for t in glob.glob(p + '/task/[0-9]*/stat'):
             comm, f = parse(t)
-            c[norm(comm)] += int(f[11]) + int(f[12])
+            n = norm(comm)
+            c[n] += int(f[11]) + int(f[12])
+            ext['thu'][n] += int(f[11]); ext['ths'][n] += int(f[12])
+            d = t[:-len('stat')]
+            try:
+                ext['rdl'][n] += int(open(d + 'schedstat').read().split()[1])
+                for line in open(d + 'status'):
+                    if line.startswith('voluntary_ctxt_switches:'): ext['csv'][n] += int(line.split()[1])
+                    elif line.startswith('nonvoluntary_ctxt_switches:'): ext['csi'][n] += int(line.split()[1])
+            except (OSError, ValueError, IndexError):
+                pass
         comm, f = parse(p + '/stat')
         c[norm(comm) + '(reaped)'] += int(f[13]) + int(f[14])
     except (OSError, ValueError, IndexError):
         pass
 for k, v in c.most_common():
     if v: print('thr', k, v)
+for kind, cc in ext.items():
+    for k, v in cc.items():
+        if v: print(kind, k, v)
 PY
+    # Pressure stall information: the time some (and, for io and
+    # memory, all) runnable tasks waited for the resource, in us.
+    local res
+    for res in cpu io memory; do
+        [ -r "/proc/pressure/$res" ] || continue
+        awk -v r="$res" '{ for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print "psi", r "." $1, $i } }' "/proc/pressure/$res"
+    done
     as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
     # Who holds the memory: the host's page cache (a buffered loop
     # would put the images there, outside the cap), postgres's cgroup
@@ -1957,12 +2009,13 @@ snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 fsync_file, run_label = sys.argv[8], sys.argv[9]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
 skz = {}          # the daemon's status, keyed by file
-cpu, thr, txgs, mem, loops = {}, {}, {}, {}, {}
+cpu, thr, txgs, mem, loops, ext = {}, {}, {}, {}, {}, {}
 def load(p):
     dev, pg, other = {}, {}, {}
     zc[p], zg[p] = {}, {}
     skz[p] = {}
     cpu[p], thr[p], txgs[p], mem[p], loops[p] = {}, {}, {}, {}, {}
+    ext[p] = {k: {} for k in ('thu', 'ths', 'rdl', 'csv', 'csi', 'psi')}
     for line in open(p):
         f = line.split()
         if not f: continue
@@ -1970,6 +2023,7 @@ def load(p):
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
         elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
         elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
+        elif f[0] in ext[p] and len(f) > 2 and f[2].isdigit(): ext[p][f[0]][f[1]] = int(f[2])
         elif f[0] == 'mem' and len(f) > 2 and f[2].isdigit(): mem[p][f[1]] = int(f[2])
         elif f[0] == 'loop' and len(f) > 2: loops[p][f[1]] = {'dio': f[2] == '1', 'ro': len(f) > 3 and f[3] == '1'}
         elif f[0] == 'zfstxg' and len(f) >= 8: txgs[p][int(f[1])] = [int(x) for x in f[2:8]]
@@ -2107,6 +2161,26 @@ for k, v in ta.items():
     if name in ('su', 'bash', 'sh', 'sudo', 'pgbench', 'python', 'runuser', 'awk', 'sed'): name = 'pgbench+harness'
     by[name] += dv / HZ
 diag['cpu_s_by_thread'] = dict(by.most_common(20))
+# By thread name, over the window, of the threads alive at both looks:
+# user and system CPU seconds, the time runnable but not running (ms),
+# and the context switches. A thread that ended inside the window is
+# missing from these, as are its counts.
+eb, ea = ext[base + '.before'], ext[base + '.after']
+def per_name(kind, scale):
+    out = collections.Counter()
+    for k, v in ea.get(kind, {}).items():
+        dv = v - eb.get(kind, {}).get(k, 0)
+        if dv > 0: out[k] += dv * scale
+    return dict(out.most_common(20))
+if ea.get('rdl'):
+    diag['user_s_by_thread'] = per_name('thu', 1 / HZ)
+    diag['system_s_by_thread'] = per_name('ths', 1 / HZ)
+    diag['run_delay_ms_by_thread'] = per_name('rdl', 1e-6)
+    diag['voluntary_csw_by_thread'] = per_name('csv', 1)
+    diag['involuntary_csw_by_thread'] = per_name('csi', 1)
+# Pressure as a share of the window, %.
+if ea.get('psi'):
+    diag['psi_pct'] = {k: 100 * (v - eb.get('psi', {}).get(k, 0)) / (dur * 1e6) for k, v in ea['psi'].items()}
 # Memory at the end of the window, MiB, and how the loops are attached.
 if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
 # The cgroup counts the times it reached its limit since it was made,
