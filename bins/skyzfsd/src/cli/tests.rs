@@ -218,6 +218,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         depth: 64,
         log_high: 2,
         log_low: 1,
+        writeback_kib: 1024,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -260,6 +261,26 @@ fn serve_has_the_agreed_defaults_and_options() {
         );
     }
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
+}
+
+/// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB.
+#[test]
+fn serve_takes_the_writeback_unit() {
+    assert_eq!(serve("serve --dir /v/a").writeback_kib, 1024);
+    assert_eq!(serve("serve --dir /v/a --writeback-kib 0").writeback_kib, 0);
+    assert_eq!(
+        serve("serve --dir /v/a --writeback-kib 1048576").writeback_kib,
+        1 << 20
+    );
+    for bad in ["1048577", "x", "-1"] {
+        assert!(
+            matches!(
+                plain(&format!("serve --dir /v/a --writeback-kib {bad}")),
+                Err(UsageError::Value(..))
+            ),
+            "{bad}"
+        );
+    }
 }
 
 /// The fault hooks of the rig, in a build that has them: the log fails

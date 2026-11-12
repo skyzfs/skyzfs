@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use skyzfs_blk::BlockTarget;
 use skyzfs_local::format::Lsn;
-use skyzfs_local::fs::{FsDir, FsLock};
+use skyzfs_local::fs::{FsDir, FsLock, WritebackCall};
 use skyzfs_local::log::{Corruption, LogError};
 use skyzfs_local::store::{OpenOptions, Store, StoreError};
 
@@ -35,6 +35,7 @@ use crate::lifecycle::{LockError, MustReach, OpenError, Volume};
 pub struct StoreVolume {
     dir: PathBuf,
     options: OpenOptions,
+    writeback: Option<WritebackCall>,
 }
 
 impl StoreVolume {
@@ -46,6 +47,16 @@ impl StoreVolume {
         Self {
             dir: dir.into(),
             options,
+            writeback: None,
+        }
+    }
+
+    /// The same, whose files start writeback early with `call`
+    /// ([`FsDir::with_writeback`]). Without it the store's hint is off.
+    pub fn with_writeback(self, call: WritebackCall) -> Self {
+        Self {
+            writeback: Some(call),
+            ..self
         }
     }
 }
@@ -94,7 +105,10 @@ impl Volume for StoreVolume {
         acknowledge_failure: bool,
     ) -> Result<(Store<FsDir>, u64), (OpenError, FsLock)> {
         let dir = match FsDir::new(&self.dir) {
-            Ok(dir) => dir,
+            Ok(dir) => match self.writeback {
+                Some(call) => dir.with_writeback(call),
+                None => dir,
+            },
             Err(e) => return Err((OpenError::Other(e.to_string()), lock)),
         };
         let mut options = self.options.clone();

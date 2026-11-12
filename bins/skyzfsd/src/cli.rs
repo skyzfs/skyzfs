@@ -4,6 +4,7 @@
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
 //!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
+//!                [--writeback-kib KIB]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -88,11 +89,16 @@ pub const MAX_LOG_SEGMENTS: u32 = 1024;
 /// One mebibyte: a volume's size is a multiple of it.
 const MIB: u64 = 1 << 20;
 
+/// `--writeback-kib` unless given: the store's default unit.
+pub const DEFAULT_WRITEBACK_KIB: u64 = skyzfs_local::writeback::DEFAULT_UNIT >> 10;
+/// The largest `--writeback-kib`: 1 GiB.
+const MAX_WRITEBACK_KIB: u64 = 1 << 20;
+
 /// What is printed with a usage error.
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--log-high SEGMENTS] [--log-low SEGMENTS]
+                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -115,7 +121,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--log-high SEGMENTS] [--log-low SEGMENTS]
+                [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -136,6 +142,13 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       given). The high mark bounds the log, and with it the time the
       next start takes to read it; a write load is slowed at the mark.
       Both are at least 1, and low is below high.
+      The daemon writes the volume's files through the page cache and
+      syncs them when it must. Once --writeback-kib KiB of a file's
+      writes wait (1024 unless given), it asks the kernel to start
+      writing them to the disk, so that the sync that follows has less
+      left to wait for. It is a hint: nothing about what is durable, or
+      when, depends on it. 0 never asks. A file system that has no such
+      call is not asked again, and the status says so.
 
   skyzfsd detach --dir DIR [--run-dir DIR]
       Delete the volume's device if no server serves it. It never stops
@@ -254,6 +267,10 @@ pub struct Serve {
     /// The live size, in segments, below which it stops: below
     /// `log_high`.
     pub log_low: u32,
+    /// Ask the kernel to start writing a file's writes to the disk once
+    /// this many KiB of them wait; 0 never asks
+    /// ([`skyzfs_local::writeback`]).
+    pub writeback_kib: u64,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -416,6 +433,7 @@ const SERVE: &[Opt] = &[
     opt("--depth", true, false),
     opt("--log-high", true, false),
     opt("--log-low", true, false),
+    opt("--writeback-kib", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -643,6 +661,16 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 log_high,
                 log_low,
+                writeback_kib: match given.number("--writeback-kib")? {
+                    None => DEFAULT_WRITEBACK_KIB,
+                    Some(kib) if kib <= MAX_WRITEBACK_KIB => kib,
+                    Some(_) => {
+                        return Err(UsageError::Value(
+                            "--writeback-kib".into(),
+                            "out of range: at most 1048576 (1 GiB)",
+                        ))
+                    }
+                },
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {
