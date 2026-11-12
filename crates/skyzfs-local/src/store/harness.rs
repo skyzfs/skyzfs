@@ -50,6 +50,8 @@ pub(crate) struct SimHarness {
     /// served store's always do), and the simulated disk ends such a
     /// sync after up to this many looks ([`SimDisk::set_sync_delay`]).
     pub(crate) sync_delay: u64,
+    /// The reader threads of a served store.
+    pub(crate) readers: usize,
 }
 
 impl SimHarness {
@@ -67,6 +69,7 @@ impl SimHarness {
             log_segments: self.segments,
             mutants: Mutants(self.mutants),
             hand_over_home_sync: self.sync_delay > 0,
+            readers: self.readers,
             ..OpenOptions::default()
         }
     }

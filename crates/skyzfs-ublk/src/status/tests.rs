@@ -1,7 +1,7 @@
 use super::*;
 use crate::lifecycle::{Failure, Held, Reason, Shape};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 
 fn counters(reads: u64, held: u64) -> Counters {
     Counters {
@@ -1366,4 +1366,124 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(read.version.to_string(), version);
     }
     assert_eq!(VERSION, 8);
+}
+
+/// A post wakes the publishing thread only when it waits for a change.
+/// While it waits for the end of an interval, a post leaves it be, and
+/// the write at that end takes what is posted by then: the file is no
+/// staler than before, and the last posted counters are written. The
+/// queue's thread posts after every turn, tens of thousands of times a
+/// second under load, and the wakes, not the writes, were what the
+/// status thread spent its time on (measured: 95 ms of CPU a second
+/// with a post every 20 µs, of which 9 ms in the writes). Mutant: every
+/// post wakes it.
+#[test]
+fn a_post_wakes_the_publisher_only_when_it_waits_for_a_change() {
+    const POSTS: u64 = 20_000;
+    fn scenario(mutants: u32) -> Result<(), String> {
+        let board = Arc::new(Board::new());
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let thread = std::thread::spawn({
+            let (board, written) = (board.clone(), written.clone());
+            move || {
+                board.publish(Pace::new(50).with(mutants), |counters, _| {
+                    written.lock().expect("lock").push(counters.reads);
+                    Ok(())
+                })
+            }
+        });
+        assert!(board.first_write_tried(Duration::from_secs(20)));
+        // Posts for longer than a few intervals, each of new counters,
+        // with the publishing thread in its waits meanwhile.
+        for reads in 1..=POSTS {
+            board.post(counters(reads, 0));
+            let spin = Instant::now();
+            while spin.elapsed() < Duration::from_micros(10) {
+                std::hint::spin_loop();
+            }
+        }
+        let began = Instant::now();
+        while written.lock().expect("lock").last() != Some(&POSTS) {
+            if began.elapsed() > Duration::from_secs(20) {
+                board.stop();
+                return Err("the last counters were not written".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let (wakes, attempts) = board.wakes_and_attempts();
+        board.stop();
+        let failures = thread.join().expect("the publishing thread");
+        // Each write ends a wait for the end of an interval, which a
+        // wait for a change may come before; a timed wait may also end
+        // a little early and be waited again.
+        if wakes > 3 * attempts + 3 {
+            return Err(format!(
+                "{wakes} wakes for {attempts} writes of {POSTS} posts"
+            ));
+        }
+        if failures != 0 {
+            return Err(format!("{failures} failures"));
+        }
+        Ok(())
+    }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(
+        scenario(Mutants::WOKEN_BY_EVERY_POST).is_err(),
+        "every post"
+    );
+}
+
+/// A log posted to be written at once wakes the publishing thread also
+/// while it waits out its interval, and is written then, not at the
+/// interval's end. The interval is an hour, so a write seen within the
+/// test is before its end, and the test rests on events: the thread is
+/// seen waiting for a change; a post of new counters wakes it (a wake
+/// counted under the board's lock, which it lets go only in its next
+/// wait, now one for the interval's end); the log is posted at once;
+/// the write is seen. Before that write the only bound is the test's
+/// limit of 20 s against the hour. Planted by hand: with `post_log`
+/// waking the thread only when it waits for a change, the test fails.
+#[test]
+fn a_log_posted_at_once_is_written_within_an_interval() {
+    fn until(what: &str, done: impl Fn() -> bool) {
+        let began = Instant::now();
+        while !done() {
+            assert!(began.elapsed() < Duration::from_secs(20), "{what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    let board = Arc::new(Board::new());
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let thread = std::thread::spawn({
+        let (board, written) = (board.clone(), written.clone());
+        move || {
+            board.publish_with_log(Pace::new(3_600_000), |_, log, _| {
+                written.lock().expect("lock").push(log.live);
+                Ok(())
+            })
+        }
+    });
+    assert!(board.first_write_tried(Duration::from_secs(20)));
+    until("waits for a change", || board.awaits_change());
+    let (wakes, _) = board.wakes_and_attempts();
+    board.post(counters(1, 0));
+    until("woken by the change", || {
+        board.wakes_and_attempts().0 > wakes
+    });
+    assert!(!board.awaits_change(), "waits for the interval's end");
+    let log = LogShown {
+        live: 77,
+        ..LogShown::default()
+    };
+    board.post_log(log, true);
+    until("the write asked for at once", || {
+        written.lock().expect("lock").last() == Some(&77)
+    });
+    assert_eq!(
+        board.wakes_and_attempts().1,
+        2,
+        "the first write and this one"
+    );
+    board.stop();
+    assert_eq!(thread.join().expect("the publishing thread"), 0);
 }

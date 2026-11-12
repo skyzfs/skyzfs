@@ -220,6 +220,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         log_low: 1,
         writeback_kib: 1024,
         home_writeback_kib: 0,
+        readers: DEFAULT_READERS,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -262,6 +263,23 @@ fn serve_has_the_agreed_defaults_and_options() {
         );
     }
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
+}
+
+/// `--readers`: 4 unless given, 1 to 64.
+#[test]
+fn serve_takes_the_number_of_readers() {
+    assert_eq!(serve("serve --dir /v/a").readers, 4);
+    assert_eq!(serve("serve --dir /v/a --readers 1").readers, 1);
+    assert_eq!(serve("serve --dir /v/a --readers 64").readers, 64);
+    for bad in ["0", "65", "x", "-1"] {
+        assert!(
+            matches!(
+                plain(&format!("serve --dir /v/a --readers {bad}")),
+                Err(UsageError::Value(..))
+            ),
+            "{bad}"
+        );
+    }
 }
 
 /// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
