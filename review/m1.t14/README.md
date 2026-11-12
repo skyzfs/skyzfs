@@ -85,3 +85,41 @@ the kernel test behind it (`the_driver_can_reissue` in
   `deep_imported` returns `'mount (writable)'` for any exit code. Left for a
   change of its own in `replay_check.py`, which I accept.
 - Run 43296922847 at this head was still queued when I looked.
+
+## Fourth look, at 8e69d35: the delta is right; one older finding
+
+Two commits on top of 31b06ad.
+
+- **The rig run at 31b06ad is in** (run 43296922847). Both "through skyzfsd"
+  jobs exit 0. Their summaries carry the criterion line as ruled: "Every record
+  prefix: 145 of 552 checked" (24.04; 125 of 547 on 26.04), deep checks at the
+  first and last checked prefix of each group, and "Design §9's replay
+  criterion: not shown by this run". The withheld control is caught and the
+  table is as expected. The run's one red job is the unit tests, which could
+  not write `/run` as a non-root user.
+- **5afd80a** (`RUN_PARENT`): `test_replay_daemon.py` as a non-root user gives
+  2 errors at 31b06ad and 45 passes at 8e69d35. The default is still `/run`.
+- **8e69d35**: 154 tests pass. Three plants, each caught: the old condition
+  for the read (`not in rc.RIG_RC`); a timed-out `zdb -bcc` counted against
+  the daemon again; a timed-out `zdb -bcc` not reported at all. `repro.py`
+  still ends 1, 1, 2.
+- **Does a 300 s timeout of the read belong to the daemon?** When it comes
+  back, yes. `tread.py` (here) on both jobs' `replay-results.json`: 270 reads
+  of the 1 GiB device took 0.26 to 0.55 s, so 300 s is about 550 times the
+  slowest. And the daemon's device is made with user recovery and without
+  fail-I/O (`crates/skyzfs-ublk-sys/src/lib.rs:104`), so when the daemon is
+  gone the kernel queues reads and does not fail them (mainline v7.0,
+  `drivers/block/ublk_drv.c:1177-1181, 2506-2508`): a crash after `ready`
+  shows as a read with no answer, not as an error.
+- **But a read with no answer most likely never comes back as a timeout.**
+  Read, not run (no ublk here):
+  - `dd iflag=direct` waits for its read uninterruptibly
+    (`block/fops.c:98, 271-274`), so a kill does not end it while the read is
+    queued;
+  - `run()` uses `subprocess.run(timeout=)`, which kills the child and then
+    waits for it without a limit (CPython 3.13, `subprocess.run`).
+  So the rig would stop inside `run()` until the job's own limit (45 or 120
+  minutes), with no summary and no verdict. The 124 can come back only when dd
+  is between two reads, which is a device that answers slowly. The new test
+  stubs `run()` to return 124, so it shows the label and not this. This is
+  older than the delta: it was so at 31b06ad and I did not see it then.

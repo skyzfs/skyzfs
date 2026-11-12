@@ -59,3 +59,18 @@ decision.
 
 Not done: no benchmark has run at this head, so the changed lines of the
 background jobs and the row's mark have not run on a runner.
+
+## Third look, at 4111c60: nothing blocks
+
+One commit on top of 3cde27c, in `topology-bench.sh` only.
+
+- The refusal lines (764 and 832-841) run by themselves: a trace or recording
+  longer than the window exits 64 with either one asked for; equal lengths
+  pass; with neither asked for nothing is refused. `summarize` returns before
+  these lines and is not affected. The workflow sets neither variable unless a
+  sequence entry asks.
+- The sidecars removed before every window are the five a summary reads
+  (`.syscalls`, `.trace`, `.threads`, `.perfrec`, `.perfscript.gz`).
+  `.trace.err` and `.perf.err` stay; nothing reads them as a row's result.
+- 52 unit tests pass, `bash -n` passes, and `summarize` on the artifact of run
+  43285245364 still renders 352 lines. No benchmark was run.
