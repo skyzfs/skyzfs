@@ -55,3 +55,15 @@ against 13-24 ms and 100-280 ms in the model on the faster runners,
 with 15-28 checkpoint syncs per window. The figures do not separate
 waiting behind a step's write, behind a step's sync, and behind other
 requests on the one worker; the timing should report those three apart.
+
+## Second look: 2e3e936
+
+Finding 1 dropped. Each row carries the boot id; a ratio is formed only
+between rows of the same one. Rendered six made-up directories: two
+machines, one machine, no field, empty field, a model row without the
+field, two machines with a model each. A verdict only where the ids are
+equal and not empty. The JSON of the nine measured runs has no such
+field and now renders NO VERDICT; their ratios stand in the logs.
+Left: a virtual machine resumed from a memory snapshot would share its
+boot id with its siblings; GitHub's runners boot, so this is for other
+hosts only.
