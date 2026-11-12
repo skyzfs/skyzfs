@@ -92,9 +92,8 @@ when it merges.
   `skyzfs-ublk-sys --features control-test-program` has the test
   program `skyzfs-ublk-control`, its parse tests and the binding's
   kernel tests. Run clippy and the tests with each as well as plain.
-  The kernel tests are ignored tests (root and the ublk driver); until
-  M1.T7 brings the control rig's workflow, no workflow of the
-  repository runs them.
+  The kernel tests are ignored tests (root and the ublk driver); the
+  control rig is the workflow that runs them.
 - **Run `rustup update stable` before the local gates.** CI installs the
   current stable toolchain, and a container's can be months older. A
   newer clippy has lints an older one does not, so "clean locally" on
@@ -134,27 +133,55 @@ when it merges.
   pull request cancels the older run. The dispatch input `discard`
   chooses whether a discarded range is zeroed or left as it was.
 - **The daemon rig.** `skyzfs-daemon-rig.yml` runs on a pull request
-  that touches `tests/kernel/`, `bins/skyzfsd/`, `crates/skyzfs-ublk/`,
-  `crates/skyzfs-blk/` or `bins/skyzfs-blkcheck/`, and by dispatch (input
-  `checks`, for example `c` alone). It drives a server through the
-  kernel and ZFS on Ubuntu 24.04 and 26.04, about thirty-three minutes
-  per image: parameters, overlapping writes, `kill -9` under load, a
-  device that waits 300 s for a server, the conformance suite through
-  the block device, a failed volume, a held request. **On a pull
-  request the server is still the stand-in**
-  (`tests/kernel/skyzfsd-ref.sh`), also when the pull request changes
-  the daemon: a green rig job there says nothing about `skyzfsd`. For
-  the daemon, dispatch the workflow with `daemon` set to `true` (it
-  builds `skyzfsd` with its test hooks and points the rig at it through
-  `RIG_SKYZFSD`), and read that run. M1.T7 is to make the daemon the
-  default. The summary says for each line whether it rests on the kernel,
-  on the server, or only shows that the check works. Exit 2 is an error
-  of the rig and not a verdict on the server. Read the summary's table
-  and not the colour. When check c fails, download the run's
-  `c-trace.tsv.gz` and run `skyzfs-blkcheck --replay c-trace.tsv VOLUME`:
-  it replays that volume's calls through the model with no kernel and
-  prints the same violation, or shows that the rig's bookkeeping and
-  not the server was at fault.
+  that touches `tests/kernel/`, `tests/lib/`, `bins/skyzfsd/`,
+  `bins/skyzfs-blkcheck/`, `crates/skyzfs-ublk/`,
+  `crates/skyzfs-ublk-sys/`, `crates/skyzfs-local/`, `crates/skyzfs-blk/`,
+  `Cargo.lock`, `Cargo.toml` or `rust-toolchain.toml`, and by dispatch.
+  It drives a server through the kernel and ZFS on Ubuntu 24.04 and
+  26.04: parameters, overlapping writes, `kill -9` under load, a start
+  that is refused, a device that waits 300 s for a server, the
+  conformance suite through the block device, a failed volume, a held
+  request. **A pull request runs it on `skyzfsd`** (built with its test
+  hooks), about thirty-five minutes per image. One that changes
+  `tests/kernel/`, `tests/lib/` or the workflow also runs it on the
+  stand-in (`tests/kernel/skyzfsd-ref.sh`, about thirty-three minutes),
+  which is what shows that the rig still catches what it caught. A push
+  of the workflow file on a testing branch runs the stand-in. By
+  dispatch the input `server` chooses `daemon` (the default), `stand-in`
+  or `both`, and `checks` the checks (for example `c` alone). The job
+  `which server` says in its summary what was chosen, and artifacts are
+  named `daemon-rig-<image>-<server>`. **The jobs build the pull
+  request merged with its base as the base was when the pull request
+  was last pushed**: after another pull request has merged, the daemon
+  they drove is not the one on `zfs-topology`, and the rig is dispatched
+  there after the merge. A green run on the daemon is not a verdict on
+  its checkpoints or on a failure with a request held: five pins are
+  WAITING until M1.T8 builds them, and the summary says so. The summary
+  says for each line whether it rests on the kernel, on the server, or
+  only shows that the check works. Exit 2 is an error of the rig and
+  not a verdict on the server. Read the summary's table and not the
+  colour. When check c fails, download the run's `c-trace.tsv.gz` and
+  run `skyzfs-blkcheck --replay c-trace.tsv VOLUME`: it replays that
+  volume's calls through the model with no kernel and prints the same
+  violation, or shows that the rig's bookkeeping and not the server was
+  at fault.
+- **The control rig.** `skyzfs-control-rig.yml` runs on a pull request
+  that touches `crates/skyzfs-ublk-sys/`, `crates/skyzfs-ublk/`,
+  `crates/skyzfs-blk/`, `crates/skyzfs-local/`, `Cargo.lock`,
+  `Cargo.toml`, `rust-toolchain.toml`, `tests/lib/` or the rig's own
+  files, and by dispatch; under three minutes per image. It runs the
+  binding's kernel tests and then takes the binding through the
+  driver's states with its test program, beside devices of the
+  reference server. It fails when a line differs from the table
+  `EXPECTED` in `tests/kernel/control_check.py`, in either direction. A
+  kernel test that hangs or panics is a verdict on the binding (exit
+  1), not an error of the rig.
+- **A pool whose device was deleted goes on reading ONLINE while it
+  only writes**, and posts tens of thousands of events a second. A tool
+  that reads `zpool events` from it does not come to an end: cut such a
+  read with `head` and a limit. A writer or reader on a pool whose
+  device has no server does not end when told to: never wait for one
+  without a limit (`job_end` in `tests/kernel/daemon-rig.sh`).
 - **Failed-volume observations.** `skyzfs-failed-volume.yml` runs by
   dispatch only. It records what a pool does when its device is deleted
   under it and judges nothing.

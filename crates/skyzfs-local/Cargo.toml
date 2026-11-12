@@ -25,3 +25,5 @@ tempfile = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 # For the value of O_DIRECT only: no call into libc, no unsafe.
 libc = "0.2"
+# For `fallocate`, to deallocate a range of the home image.
+rustix = { version = "1", features = ["fs"] }

@@ -76,12 +76,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use skyzfs_local::log::SUPER_NAME;
-use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker};
+use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker, Zeroes};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
 use skyzfs_ublk::lifecycle::{self, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
-use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status};
+use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
@@ -457,6 +457,12 @@ fn log_shown(log: &skyzfs_local::store::LogState) -> LogShown {
         steps: log.steps,
         stepping: log.stepping,
         own_syncs: log.own_syncs,
+        zeroes: match log.zeroes {
+            Zeroes::Untried => ZeroesShown::Untried,
+            Zeroes::Deallocated => ZeroesShown::Deallocated,
+            Zeroes::Written => ZeroesShown::Written,
+            Zeroes::WrittenForBlocks => ZeroesShown::WrittenForBlocks,
+        },
     }
 }
 
@@ -627,6 +633,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         low: u64::from(serve.log_low) * SEGMENT_SIZE,
         step: StepBound::DAEMON,
     }));
+    #[cfg(feature = "test-hooks")]
+    if serve.hooks.refuse_holes {
+        ready.store.set_refuse_holes(true);
+    }
     #[cfg(feature = "test-hooks")]
     if let Some(pause) = &serve.hooks.step_pause {
         use crate::cli::StepPoint as At;

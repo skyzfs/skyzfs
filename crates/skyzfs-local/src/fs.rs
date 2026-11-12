@@ -256,6 +256,23 @@ impl Dir for FsDir {
     }
 }
 
+/// Make a system call again for as long as a signal interrupts it
+/// (`EINTR`): an interrupted call has done nothing, and is no failure
+/// of the file. The standard library does this for the reads, writes
+/// and syncs above; this is for the calls made through `rustix`,
+/// which does not.
+#[cfg(target_os = "linux")]
+fn retried<T>(
+    mut call: impl FnMut() -> Result<T, rustix::io::Errno>,
+) -> Result<T, rustix::io::Errno> {
+    loop {
+        match call() {
+            Err(rustix::io::Errno::INTR) => {}
+            other => return other,
+        }
+    }
+}
+
 /// An open real file.
 #[derive(Debug)]
 pub struct FsFile {
@@ -450,6 +467,41 @@ impl File for FsFile {
         self.file.set_len(len)
     }
 
+    #[cfg(target_os = "linux")]
+    fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        use rustix::fs::{fallocate, FallocateFlags};
+        use rustix::io::Errno;
+        if len == 0 {
+            return Ok(());
+        }
+        let flags = FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE;
+        match retried(|| fallocate(&self.file, flags, offset, len)) {
+            Ok(()) => Ok(()),
+            // The file system has no holes, or the kernel no such call.
+            Err(Errno::OPNOTSUPP | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn deallocate(&mut self, _offset: u64, _len: u64) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn block_size(&self) -> io::Result<u64> {
+        let size = retried(|| rustix::fs::fstatfs(&self.file))?.f_bsize;
+        u64::try_from(size)
+            .ok()
+            .filter(|size| *size > 0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no block size"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn block_size(&self) -> io::Result<u64> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     fn len(&self) -> io::Result<u64> {
         Ok(self.file.metadata()?.len())
     }
@@ -465,6 +517,87 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// A call that a signal interrupts is made again, and any other
+    /// answer is passed on as it is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interrupted_call_is_made_again() {
+        use rustix::io::Errno;
+        let mut calls = 0;
+        let done = retried(|| {
+            calls += 1;
+            if calls < 4 {
+                Err(Errno::INTR)
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(done, Ok(4));
+        let mut calls = 0;
+        let refused: Result<(), Errno> = retried(|| {
+            calls += 1;
+            Err(Errno::OPNOTSUPP)
+        });
+        assert_eq!((refused, calls), (Err(Errno::OPNOTSUPP), 1));
+    }
+
+    /// A real file says the block size of its file system: a power of
+    /// two of at least 512 bytes.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_real_file_says_its_file_systems_block_size() {
+        let keep = tempfile::tempdir().expect("a directory");
+        let dir = FsDir::new(keep.path()).expect("the directory");
+        let file = dir.create("image").expect("a file");
+        let size = file.block_size().expect("a block size");
+        assert!(size >= 512 && size.is_power_of_two(), "{size}");
+    }
+
+    /// On a real file: a deallocated range reads as zeros, the file
+    /// keeps its length, what lies beside the range stays, and the
+    /// file holds less space than before. A file system that has no
+    /// such call must say "unsupported" and change nothing; the test
+    /// then says so and checks only that.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_deallocated_range_of_a_real_file_reads_as_zeros_and_frees_its_space() {
+        use std::os::unix::fs::MetadataExt;
+        const MIB: usize = 1 << 20;
+        let keep = tempfile::tempdir().expect("a directory");
+        let dir = FsDir::new(keep.path()).expect("the directory");
+        let mut file = dir.create("image").expect("a file");
+        file.write_at(0, &vec![7u8; 4 * MIB]).expect("write");
+        file.sync().expect("sync");
+        let path = keep.path().join("image");
+        let before = fs::metadata(&path).expect("metadata").blocks();
+        match file.deallocate(MIB as u64, 2 * MIB as u64) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+                eprintln!("this file system cannot deallocate: only the refusal is checked");
+                let mut all = vec![0u8; 4 * MIB];
+                file.read_at(0, &mut all).expect("read");
+                assert!(all.iter().all(|b| *b == 7));
+                return;
+            }
+            Err(e) => panic!("deallocate: {e}"),
+        }
+        file.sync().expect("sync");
+        assert_eq!(file.len().expect("len"), 4 * MIB as u64);
+        let mut all = vec![0xEEu8; 4 * MIB];
+        file.read_at(0, &mut all).expect("read");
+        assert!(all[..MIB].iter().all(|b| *b == 7));
+        assert!(all[MIB..3 * MIB].iter().all(|b| *b == 0));
+        assert!(all[3 * MIB..].iter().all(|b| *b == 7));
+        let after = fs::metadata(&path).expect("metadata").blocks();
+        // In units of 512 bytes: 2 MiB less, give or take metadata.
+        assert!(
+            after + 3 * 1024 <= before,
+            "the file held {before} blocks and holds {after}"
+        );
+        // An empty range is nothing.
+        file.deallocate(0, 0).expect("an empty range");
     }
 
     /// The lock is on the file the name `lock` names. A lock that

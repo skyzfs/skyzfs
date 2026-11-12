@@ -51,7 +51,10 @@
 //!   log's new start is written and not durable) or `start-durable`;
 //! - `serve --commit-delay-ms N`: every request's result is given to
 //!   the kernel N ms after the store completed it, and the acknowledged
-//!   position is stored then and not before. Nothing else waits.
+//!   position is stored then and not before. Nothing else waits;
+//! - `serve --refuse-holes`: the store behaves as on a file system
+//!   that cannot deallocate: a checkpoint writes zeros for a
+//!   write-zeroes record.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -277,6 +280,9 @@ pub struct Hooks {
     pub step_pause_at: StepPoint,
     /// Every commit is delayed by so many milliseconds.
     pub commit_delay_ms: Option<u64>,
+    /// The store writes zeros for a write-zeroes record, as on a file
+    /// system that cannot deallocate.
+    pub refuse_holes: bool,
 }
 
 /// How long a checkpoint step waits in its middle.
@@ -420,6 +426,7 @@ const SERVE: &[Opt] = &[
     opt("--step-pause-ms", true, true),
     opt("--step-pause-until", true, true),
     opt("--step-pause-at", true, true),
+    opt("--refuse-holes", false, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -646,6 +653,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     step_pause,
                     step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
+                    refuse_holes: given.flag("--refuse-holes"),
                 },
             }))
         }

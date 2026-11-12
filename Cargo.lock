@@ -4219,6 +4219,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "proptest",
+ "rustix 1.1.4",
  "skyzfs-blk",
  "tempfile",
  "thiserror 2.0.19",

@@ -623,6 +623,9 @@ impl Mutants {
     /// removed, the note is not put back, and the answer still says
     /// that the next start tries again.
     pub(crate) const DELETE_FAILURE_STRANDS: u32 = 1 << 29;
+    /// After a failed delete the note is put back on a device that is
+    /// dead, too.
+    pub(crate) const PUT_BACK_ON_DEAD: u32 = 1 << 30;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -1086,9 +1089,10 @@ pub enum Undeleted {
     /// was put back: the device is as it was before.
     NotePutBack(io::Error),
     /// The note was removed, the driver's delete failed, and the note
-    /// is not back: it could not be written, or the driver could not
-    /// say whether the device is still there. No start and no detach
-    /// deletes this device.
+    /// is not back: it could not be written, the driver could not say
+    /// whether the device is still there, or the device is dead and
+    /// may be on its way out. No start and no detach deletes this
+    /// device.
     NoNote(io::Error),
 }
 
@@ -1105,7 +1109,7 @@ impl Undeleted {
                 "device {number} could not be deleted ({e}), and its note was put back: {AGAIN}"
             ),
             Self::NoNote(e) => format!(
-                "device {number} could not be deleted ({e}) and is left without its note, which could not be put back: deleting it by hand, or a reboot, resolves it"
+                "device {number} could not be deleted ({e}) and is left without its note, which was not put back: deleting it by hand, or a reboot, resolves it"
             ),
         }
     }
@@ -1137,7 +1141,22 @@ impl From<Undeleted> for io::Error {
 /// the one before the call, and the next start or detach tries again.
 /// If the driver shows none, the delete is done whatever it said. If
 /// the driver cannot say, the note is not put back: a note on a number
-/// that may be free could become a note on another's device. A kill
+/// that may be free could become a note on another's device.
+///
+/// Nor is it put back on a device that is dead. The driver reports
+/// "dead" for a device that is deleted and still held open as well as
+/// for one that was never started or was stopped. If the delete was
+/// done although it answered with an error, the device goes when its
+/// last opener lets go, and a note put back would outlive it and sit
+/// on a free number. No path of the driver is known that fails a
+/// delete and yet deletes, so this is a safeguard. Its price: a device
+/// of this volume that is dead without being deleted (added and never
+/// started, or stopped) and whose delete the driver refuses is left
+/// without its note. The answer at that moment says so ("by hand, or a
+/// reboot"), but a later start finds a dead device with the volume's
+/// values and no note and describes it as already deleted and still
+/// held ([`unnoted`]), which is wrong for that device. It takes a
+/// refused delete of a device that never served. A kill
 /// between the removal and the putting back leaves the device without
 /// a note, which is the state a kill between the removal and the
 /// delete always left.
@@ -1160,9 +1179,13 @@ fn delete<C: Control, R: Records>(
     if mutants.has(Mutants::DELETE_FAILURE_STRANDS) {
         return Err(Undeleted::NotePutBack(e));
     }
+    let on_dead = mutants.has(Mutants::PUT_BACK_ON_DEAD);
     match (control.info(number), nonce) {
         (Ok(None), _) => Ok(()),
-        (Ok(Some(_)), Some(nonce)) if records.write_note(number, &nonce).is_ok() => {
+        (Ok(Some(info)), Some(nonce))
+            if (info.state != DeviceState::Dead || on_dead)
+                && records.write_note(number, &nonce).is_ok() =>
+        {
             Err(Undeleted::NotePutBack(e))
         }
         _ => Err(Undeleted::NoNote(e)),
