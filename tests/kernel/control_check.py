@@ -106,7 +106,8 @@ EXPECTED = {
     # The binding's own device, step by step.
     'pin_orderly_stop_leaves_waiting': (
         'PASS', RIG, 'row: live, its server ends (an orderly stop)',
-        'a server ended by SIGTERM leaves its device waiting, with the block device there'),
+        'a server ended by SIGTERM leaves its device waiting within 5 s of its end, the daemon\'s limit, with the '
+        'block device there'),
     'pin_killed_server_device_waits': (
         'PASS', RIG, 'row: live, its server ends (a kill)',
         'a server killed with SIGKILL leaves its device waiting within 5 s, the daemon\'s limit'),
@@ -202,6 +203,8 @@ for _state in STATES:
 
 OBSERVED = {
     'obs_killed_server_live_ms': 'how long a killed server\'s device still reads live, by the binding\'s lookup',
+    'obs_orderly_stop_live_ms': 'how long the device of a server ended by SIGTERM still reads live after the '
+                                'process has ended, by the binding\'s lookup',
     'obs_flags_beyond_the_mask': 'the flag bits the driver reports beyond those asked for',
     'obs_serve_of_a_device_whose_adder_ended': 'whether another process can still start a device that was '
                                                'added and never started, its adder gone (the design does '

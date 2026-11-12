@@ -129,7 +129,8 @@ EXPECTED = {
                             'is a rig error: a kill with none tests a restart, not the reissue'),
     'pin_second_serve_refused': ('b', 'PASS', WAITING, 'a second serve exits with an error and disturbs nothing (§4.2)'),
     'pin_orderly_stop_keeps_device': ('b', 'PASS', WAITING,
-                                      'after SIGTERM the device waits for a server and the pool carries on (§4.2); '
+                                      'after SIGTERM the device waits for a server within 5 s of serve\'s end, the '
+                                      'daemon\'s limit for a take-over, and the pool carries on (§4.2); '
                                       'the stand-in stops by being killed'),
     'pin_detach_refused_while_served': ('b', 'PASS', WAITING,
                                         'detach while a server holds the volume exits 5 and changes nothing: the '
