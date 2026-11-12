@@ -577,7 +577,7 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
+    local tk impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
     KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_MS=""; KT_QUIESCE=""
@@ -619,6 +619,7 @@ kill_test() {
             sleep 0.01
         done
         kill -9 "$pid" 2>/dev/null || { KT_ERR="kill $n: kill -9 $pid failed"; break; }
+        tk=$(now_ms)
         # How long the kernel reports the device LIVE after its server
         # died: watched beside the serve that follows, which must cope
         # with it. The driver reports pid -1 once the server's task is
@@ -678,6 +679,11 @@ kill_test() {
         # The new server's own account of its start: how long it took
         # and how much log it replayed ("-" from a server that does
         # not say).
+        # kill to the new serve's launch (the old server's exit and the
+        # rig's own steps), the launch to its ready line, and within
+        # that the daemon's own start: what is left is the process
+        # before the daemon's clock and the rig's polling (0.25 s).
+        KT_STARTS+="$(( t0 - tk ))+$ms:"
         i=$(vol_stat "$impl" "$dir" start_ms); KT_STARTS+="${i:--}:"
         i=$(vol_stat "$impl" "$dir" replayed_bytes); KT_STARTS+="${i:--} "
         read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
@@ -772,7 +778,7 @@ log_bound_pin() {
     read -r n max steps under <<< "$(awk '{ n++; if ($2 + 0 > m) m = $2 + 0; if ($3 + 0 > s[$1]) s[$1] = $3 + 0; if ($4 == "under") u++ }
         END { for (p in s) t += s[p]; printf "%d %d %d %d", n, m, t, u }' "$f" 2>/dev/null)"
     for i in $KT_STARTS; do
-        i=${i#*:}
+        i=${i##*:}
         [[ $i =~ ^[0-9]+$ ]] || continue
         rn=$((rn + 1)); [ "$i" -le "$rmax" ] || rmax=$i
     done
@@ -1742,7 +1748,7 @@ check_b() {
     # Each take-over by the new server's own account, beside the
     # rig's clock above: start_ms is the daemon's start until the
     # device served, the rest of a take-over is before and after it.
-    obs b_takeover_starts "the daemon's start_ms:replayed_bytes per take-over, in order: ${KT_STARTS:-none}"
+    obs b_takeover_starts "per take-over, in order, ms from the kill to the new serve's launch + from the launch to its ready line : the daemon's own start_ms : replayed_bytes: ${KT_STARTS:-none}"
     if [ "$IMPL" = daemon ]; then
         takeover_pin "$KT_MS"
         log_bound_pin b

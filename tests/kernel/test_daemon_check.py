@@ -101,7 +101,7 @@ class Cases(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_an_observation_only_the_daemon_makes(self):
-        name = 'obs_b_refused_start_under_writes'
+        name = 'obs_c_low_steps'
         self.assertIn(name, dc.DAEMON_ONLY_OBSERVED)
         # the stand-in writes no line for it and none is asked for
         r = as_expected()
@@ -127,7 +127,6 @@ class Cases(unittest.TestCase):
             r = as_expected('daemon')
             r['ctl_recovered_log_too_short'] = 'FAIL: refused'
             r[name] = value
-            r['obs_b_refused_start_no_log_device'] = 'nothing to report: this arm ended before a refusal'
             return dc.judge(r, self.C, impl='daemon')[1:]
 
         self.assertEqual(daemon_run('FAIL: refused, served nothing'), ([], []))
@@ -244,7 +243,8 @@ class Judge(unittest.TestCase):
         self.assertEqual(len(errors), 1)
 
     def test_an_observation_not_run_is_a_rig_error_however_it_says_so(self):
-        name = next(iter(dc.OBSERVED))
+        # The first observation of a default check (check f's need asking for).
+        name = next(n for n, (check, _) in dc.OBSERVED.items() if check != 'f')
         for text in ('not run: no pool', 'Not run', 'the scenario was not run, the pool was gone'):
             r = as_expected()
             r[name] = text
@@ -318,7 +318,10 @@ class Judge(unittest.TestCase):
 
     def test_check_f_is_asked_for_by_name_and_is_the_daemons(self):
         f = [name for name, (check, _) in dc.OBSERVED.items() if check == 'f']
-        self.assertEqual(len(f), 7)
+        # seven short courses, and check b's two long courses since M1.T8
+        self.assertEqual(len(f), 9)
+        self.assertIn('obs_f_refused_start_long', f)
+        self.assertIn('obs_f_refused_start_longnolog', f)
         # one judged line: the courses' control
         self.assertEqual([n for n, (check, *_) in dc.EXPECTED.items() if check == 'f'], ['ctl_f_starts_refused'])
         self.assertEqual(dc.parse_checks('f'), ({'f'}, []))

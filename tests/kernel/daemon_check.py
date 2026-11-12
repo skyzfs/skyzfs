@@ -160,9 +160,10 @@ EXPECTED = {
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4, with the daemon\'s own reason for it ("the log is '
                                     'shorter than what was acknowledged"), and serves nothing: no ready line, '
-                                    'the device live at no look until the pool suspended or 300 s had passed. '
+                                    'the device live at no look in the 20 s after the refusal, looked at about once a second (until M1.T8 '
+                                    'the looks went on until the pool suspended or 300 s had passed; that course is check f\'s long). '
                                     'What the pool does then is ZFS\'s reaction to what it had in flight '
-                                    'and is reported in obs_b_refused_start_under_writes, not judged (with only '
+                                    'and is reported by check f\'s course long, not judged (with only '
                                     'writes waiting it did not suspend in 118 s, run 43086281904). The server is killed at rest '
                                     '(writer stopped, pool synced, writes and requests in flight still for a '
                                     'second, unstored 0), so that the log\'s last data record is the newest '
@@ -174,9 +175,10 @@ EXPECTED = {
                                     'WAITING'),
     'ctl_recovered_log_too_short_no_log_device': ('b', 'FAIL', WAITING,
                                                   'the same control on a pool without a separate log device, the second '
-                                                  'arm of the course after a refused start: judged by the same rule, so '
+                                                  'arm: judged by the same rule and looked at for the same 20 s, so '
                                                   'that an arm that did not happen (ERROR) or whose start served (PASS) '
-                                                  'does not leave the run green behind an observation',
+                                                  'does not leave the run green (the long course on such a pool is check '
+                                                  'f\'s longnolog)',
                                                   'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
@@ -241,13 +243,13 @@ EXPECTED = {
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
-    'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with a writer\'s '
+    'obs_f_refused_start_long': ('f', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
                                               'by second for 300 s; what waited at the device; the transaction '
                                               'groups; whether the pool goes on acknowledging synced writes; whether '
                                               'a second writer (120 s), a read of an uncached file (180 s) and a '
                                               'scrub (240 s) fail or hang; what an operator would see'),
-    'obs_b_refused_start_no_log_device': ('b', 'the same course on a pool without a separate log device: does a synced '
+    'obs_f_refused_start_longnolog': ('f', 'the same course on a pool without a separate log device: does a synced '
                                                'write then hang, fail, or still return?'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_f_refused_start_scrub': ('f', 'after a refused start, a scrub alone at 10 s: does it suspend the pool, how '
@@ -298,7 +300,7 @@ REFERENCE_ONLY = set()
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
 DAEMON_ONLY_OBSERVED = {'obs_c_low_steps',
-                        'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device',
+                        'obs_f_refused_start_long', 'obs_f_refused_start_longnolog',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
                         'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',
                         'obs_f_refused_start_zedreopen'}
