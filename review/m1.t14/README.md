@@ -67,3 +67,21 @@ the kernel test behind it (`the_driver_can_reissue` in
   7911228 were cancelled by the next push, and the run at 2051d51
   (43296346205) was queued when I looked. So the reshaped `make()` and
   `serve()` have not run on a kernel in front of me.
+
+## Third look, at 31b06ad: nothing open but the run
+
+- `test_replay_daemon.py`: 44 pass. `test_replay.py`: pass.
+- The eight plants that passed the tests at the second look each fail one now
+  (the `serve()` branch, time on the full budget, both conditions of the
+  criterion line, `dd` writing the image, the writable mount, `withheld` by
+  any stage, a stopped run dropping outside failures). One new plant passes:
+  the stopped run's "criterion not shown" sentence removed.
+- `writer-try.sh` (here) runs the rig's `writer()` with its tools replaced:
+  `bash review/m1.t14/writer-try.sh <file with the function>`. Status 0 when
+  all steps work, 90 when the write on the pool fails, 91 when the mark fails
+  or the scratch file cannot be written.
+- The answer on the writable mount says the read-only mount "takes the same
+  course". It does not: `light_imported` returns `stage('mount', rc)`,
+  `deep_imported` returns `'mount (writable)'` for any exit code. Left for a
+  change of its own in `replay_check.py`, which I accept.
+- Run 43296922847 at this head was still queued when I looked.
