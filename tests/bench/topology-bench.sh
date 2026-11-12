@@ -833,6 +833,12 @@ SYSCALLS=${TB_SYSCALLS:-}
 SYSCALLS_S=${TB_SYSCALLS_S:-20}
 PERF_RECORD=${TB_PERF_RECORD:-}
 [[ $SYSCALLS_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SYSCALLS_S must be a number of seconds: $SYSCALLS_S" >&2; exit 64; }
+# A trace or recording longer than the window would take in time after
+# it, and syscalls.py would count its calls over transactions that ran
+# for less.
+if { [ "$SYSCALLS" = 1 ] || [ "$PERF_RECORD" = 1 ]; } && [ "$SYSCALLS_S" -gt "$DURATION" ]; then
+    echo "TB_SYSCALLS_S ($SYSCALLS_S) is longer than the window TB_DURATION ($DURATION)" >&2; exit 64
+fi
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
@@ -2109,6 +2115,9 @@ run_workload() { # topology workload [snapshot mode]
     fi
     snapshot "$OUT/$tag.before"
     rm -f "$OUT/$tag.snaps"
+    # An earlier row's trace or recording in the same directory must not
+    # be read as this row's, whatever this row asks for.
+    rm -f "$OUT/$tag.syscalls" "$OUT/$tag.trace" "$OUT/$tag.threads" "$OUT/$tag.perfrec" "$OUT/$tag.perfscript.gz"
     if [ "$mode" != none ]; then
         SNAP_STOP="$OUT/$tag.snapstop"; rm -f "$SNAP_STOP"
         snap_loop "$OUT/$tag.snaps" "$mode" &
@@ -2120,12 +2129,10 @@ run_workload() { # topology workload [snapshot mode]
         skz_sample "$OUT/$tag.skz" &
         SKZ_SAMPLER=$!
         if [ "$SYSCALLS" = 1 ]; then
-            rm -f "$OUT/$tag.syscalls" "$OUT/$tag.trace" "$OUT/$tag.threads"
             syscall_trace "$OUT/$tag" &
             SC_PID=$!
         fi
         if [ "$PERF_RECORD" = 1 ]; then
-            rm -f "$OUT/$tag.perfrec" "$OUT/$tag.perfscript.gz"
             perf_record "$OUT/$tag" &
             PR_PID=$!
         fi
