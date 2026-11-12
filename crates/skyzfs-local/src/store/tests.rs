@@ -24,7 +24,7 @@ const SEGMENT: u64 = (1 << 20) + (128 << 10);
 
 #[derive(Debug, Clone, Copy)]
 struct Env {
-    mutants: u32,
+    mutants: u64,
     align: u32,
     unit: u32,
     garbage: bool,
@@ -103,7 +103,7 @@ impl Env {
     }
 }
 
-fn environments(mutants: u32) -> Vec<Env> {
+fn environments(mutants: u64) -> Vec<Env> {
     let mut out = Vec::new();
     for align in [64, 4096] {
         for unit in [4096, 16384] {
@@ -134,13 +134,13 @@ fn holds(scenario: fn(&Env) -> Outcome) {
 
 /// The scenario holds for the store as it is, and fails in every
 /// environment for the store with `mutants`.
-fn caught(scenario: fn(&Env) -> Outcome, mutants: u32) {
+fn caught(scenario: fn(&Env) -> Outcome, mutants: u64) {
     caught_where(scenario, mutants, |_| true);
 }
 
 /// The same, where the defect only has something to act on in the
 /// environments that `where_` selects.
-fn caught_where(scenario: fn(&Env) -> Outcome, mutants: u32, where_: fn(&Env) -> bool) {
+fn caught_where(scenario: fn(&Env) -> Outcome, mutants: u64, where_: fn(&Env) -> bool) {
     holds(scenario);
     let mut ran = 0;
     for env in environments(mutants).into_iter().filter(where_) {
@@ -1662,7 +1662,7 @@ const GOLDEN_PREIMAGE_CRC: u32 = 0x71c8_1c1e;
 use super::harness::SimHarness;
 use skyzfs_blk::conformance::{run_all, Config};
 
-fn harnesses(mutants: u32) -> Vec<SimHarness> {
+fn harnesses(mutants: u64) -> Vec<SimHarness> {
     let mut out = Vec::new();
     for align in [64, 4096] {
         for unit in [4096, 16384] {
@@ -2258,7 +2258,7 @@ fn the_identity_belongs_to_the_store_and_is_not_its_key() {
 #[test]
 #[ignore = "a measurement, run by hand"]
 fn what_the_suite_notices_of_each_defect() {
-    let defects: [(&str, u32); 13] = [
+    let defects: [(&str, u64); 13] = [
         ("STALE_PREIMAGES", Mutants::STALE_PREIMAGES),
         ("NO_RESTORE", Mutants::NO_RESTORE),
         ("CHECKPOINT_UNSYNCED", Mutants::CHECKPOINT_UNSYNCED),
@@ -4686,80 +4686,95 @@ fn completion(done: &[Completion], id: u64) -> Result<&Completion, String> {
 /// the read does not return the block.
 #[test]
 fn a_freed_segment_is_not_reused_under_a_reader() {
-    fn scenario(env: &Env) -> Outcome {
-        let env = Env {
-            segments: Some(2),
-            ..*env
-        };
-        let mutant = env.mutants & Mutants::SLOT_REUSED_UNBARRED != 0;
-        let (_disk, mut store) = env.fresh()?;
-        write(&mut store, 0, 1, 0x11)?;
-        megabyte(&mut store, 1, 2)?;
-        megabyte(&mut store, 2, 3)?;
-        flush(&mut store)?;
-        if store.core.log.segment_files() != 2 {
-            return Err("the log is not in two files".into());
-        }
-        let (step, reader) = (Gate::new("reuse-step"), Gate::new("reuse-read"));
-        store.set_step_pause_at(step.pause(), StepPoint::Synced);
-        store.set_read_pause(reader.pause());
-        let mut served = store.serve().map_err(|e| e.to_string())?;
-        let _opened = Opened(&[&step, &reader]);
-        let (reply, checkpointed) = mpsc::channel();
-        if !served.send(Command::Checkpoint(reply)) {
-            return Err("the worker is gone".into());
-        }
-        step.wait_reached("the checkpoint")?;
-        submit(&mut served, read_request(100, 0, 1))?;
-        reader.wait_reached("the read")?;
-        submit(&mut served, write_request(1, 256, 256, 4))?;
-        step.open();
-        let mut done = Vec::new();
-        if mutant {
-            // Nothing holds the worker.
-            take(&mut served, &mut done, 1, "the write, with no barrier")?;
-        } else {
-            // However long this is, nothing can have completed.
-            std::thread::sleep(Duration::from_millis(50));
-            if served.poll(&mut done) != 0 {
-                return Err("a request completed while the reader was held".into());
-            }
-        }
-        reader.open();
-        take(&mut served, &mut done, 2, "both")?;
-        let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
-        if !matches!(checkpointed, Ok(Ok(_))) {
-            return Err(format!("the checkpoint: {checkpointed:?}"));
-        }
-        let read = completion(&done, 100)?;
-        if read.result.is_err()
-            || read
-                .buf
-                .as_ref()
-                .is_none_or(|b| b.iter().any(|b| *b != 0x11))
-        {
-            return Err(format!("the held read came to {:?}", read.result));
-        }
-        if done.iter().any(|c| c.result.is_err()) || served.gone() {
-            return Err("a request failed".into());
-        }
-        // The writes are there, and the block still is.
-        submit(&mut served, read_request(101, 0, 1))?;
-        submit(&mut served, read_request(102, 256, 256))?;
-        take(&mut served, &mut done, 4, "the reads after")?;
-        for (id, byte) in [(101, 0x11), (102, 4)] {
-            let read = completion(&done, id)?;
-            if read
-                .buf
-                .as_ref()
-                .is_none_or(|b| b.iter().any(|b| *b != byte))
-            {
-                return Err(format!("read {id} after the step is not {byte}"));
-            }
-        }
-        Ok(())
+    caught(freed_segment_under_a_reader, Mutants::SLOT_REUSED_UNBARRED);
+}
+
+/// The reader's pin is taken before its lookup (design §5.1), and not
+/// only before it reads a file.
+///
+/// The scenario of [`a_freed_segment_is_not_reused_under_a_reader`]:
+/// the read is held after its lookup, with the lookup's lock released.
+/// Mutant: the pin is taken after the lookup, behind the place where
+/// the read is held. The step drops the index and passes its barrier
+/// while the reader holds no pin, the freed file takes the write, and
+/// the read, released, does not return the block.
+#[test]
+fn a_reader_holds_its_pin_from_before_its_lookup() {
+    caught(freed_segment_under_a_reader, Mutants::PIN_AFTER_LOOKUP);
+}
+
+fn freed_segment_under_a_reader(env: &Env) -> Outcome {
+    let env = Env {
+        segments: Some(2),
+        ..*env
+    };
+    let mutant = env.mutants & (Mutants::SLOT_REUSED_UNBARRED | Mutants::PIN_AFTER_LOOKUP) != 0;
+    let (_disk, mut store) = env.fresh()?;
+    write(&mut store, 0, 1, 0x11)?;
+    megabyte(&mut store, 1, 2)?;
+    megabyte(&mut store, 2, 3)?;
+    flush(&mut store)?;
+    if store.core.log.segment_files() != 2 {
+        return Err("the log is not in two files".into());
     }
-    caught(scenario, Mutants::SLOT_REUSED_UNBARRED);
+    let (step, reader) = (Gate::new("reuse-step"), Gate::new("reuse-read"));
+    store.set_step_pause_at(step.pause(), StepPoint::Synced);
+    store.set_read_pause(reader.pause());
+    let mut served = store.serve().map_err(|e| e.to_string())?;
+    let _opened = Opened(&[&step, &reader]);
+    let (reply, checkpointed) = mpsc::channel();
+    if !served.send(Command::Checkpoint(reply)) {
+        return Err("the worker is gone".into());
+    }
+    step.wait_reached("the checkpoint")?;
+    submit(&mut served, read_request(100, 0, 1))?;
+    reader.wait_reached("the read")?;
+    submit(&mut served, write_request(1, 256, 256, 4))?;
+    step.open();
+    let mut done = Vec::new();
+    if mutant {
+        // Nothing holds the worker.
+        take(&mut served, &mut done, 1, "the write, with no barrier")?;
+    } else {
+        // However long this is, nothing can have completed.
+        std::thread::sleep(Duration::from_millis(50));
+        if served.poll(&mut done) != 0 {
+            return Err("a request completed while the reader was held".into());
+        }
+    }
+    reader.open();
+    take(&mut served, &mut done, 2, "both")?;
+    let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
+    if !matches!(checkpointed, Ok(Ok(_))) {
+        return Err(format!("the checkpoint: {checkpointed:?}"));
+    }
+    let read = completion(&done, 100)?;
+    if read.result.is_err()
+        || read
+            .buf
+            .as_ref()
+            .is_none_or(|b| b.iter().any(|b| *b != 0x11))
+    {
+        return Err(format!("the held read came to {:?}", read.result));
+    }
+    if done.iter().any(|c| c.result.is_err()) || served.gone() {
+        return Err("a request failed".into());
+    }
+    // The writes are there, and the block still is.
+    submit(&mut served, read_request(101, 0, 1))?;
+    submit(&mut served, read_request(102, 256, 256))?;
+    take(&mut served, &mut done, 4, "the reads after")?;
+    for (id, byte) in [(101, 0x11), (102, 4)] {
+        let read = completion(&done, id)?;
+        if read
+            .buf
+            .as_ref()
+            .is_none_or(|b| b.iter().any(|b| *b != byte))
+        {
+            return Err(format!("read {id} after the step is not {byte}"));
+        }
+    }
+    Ok(())
 }
 
 /// The first barrier (design §5.1): a step does not write into the

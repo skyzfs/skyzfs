@@ -71,97 +71,101 @@ pub const PREIMAGE_NAME: &str = "home.pre";
 /// Deliberate defects, for the tests that show each defence is needed.
 /// Production code never sets one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u32);
+pub(crate) struct Mutants(pub(crate) u64);
 
 #[allow(dead_code)]
 impl Mutants {
     /// A checkpoint applies records that are not durable yet.
-    pub(crate) const CHECKPOINT_UNSYNCED: u32 = 1 << 0;
+    pub(crate) const CHECKPOINT_UNSYNCED: u64 = 1 << 0;
     /// A checkpoint goes beyond the hold.
-    pub(crate) const CHECKPOINT_PAST_HOLD: u32 = 1 << 1;
+    pub(crate) const CHECKPOINT_PAST_HOLD: u64 = 1 << 1;
     /// A checkpoint gives up the log before the home image is synced.
-    pub(crate) const RECLAIM_BEFORE_HOME_SYNC: u32 = 1 << 2;
+    pub(crate) const RECLAIM_BEFORE_HOME_SYNC: u64 = 1 << 2;
     /// A checkpoint switches to the home image every block whose record
     /// is durable, applied or not.
-    pub(crate) const INDEX_SWITCH_EARLY: u32 = 1 << 3;
+    pub(crate) const INDEX_SWITCH_EARLY: u64 = 1 << 3;
     /// An open does not rebuild the index from the log.
-    pub(crate) const NO_INDEX_REBUILD: u32 = 1 << 4;
+    pub(crate) const NO_INDEX_REBUILD: u64 = 1 << 4;
     /// A flush is acknowledged without a sync of the log.
-    pub(crate) const FLUSH_NO_SYNC: u32 = 1 << 5;
+    pub(crate) const FLUSH_NO_SYNC: u64 = 1 << 5;
     /// A write is acknowledged before it is appended: the append is
     /// left for the next request.
-    pub(crate) const ACK_BEFORE_APPEND: u32 = 1 << 6;
+    pub(crate) const ACK_BEFORE_APPEND: u64 = 1 << 6;
     /// Requests are served after the volume has failed.
-    pub(crate) const SERVE_AFTER_FAILURE: u32 = 1 << 7;
+    pub(crate) const SERVE_AFTER_FAILURE: u64 = 1 << 7;
     /// A read takes every block from the home image.
-    pub(crate) const READ_HOME_ONLY: u32 = 1 << 8;
+    pub(crate) const READ_HOME_ONLY: u64 = 1 << 8;
     /// A checkpoint keeps no preimages of the blocks it rewrites
     /// without writing them.
-    pub(crate) const NO_PREIMAGES: u32 = 1 << 9;
+    pub(crate) const NO_PREIMAGES: u64 = 1 << 9;
     /// A checkpoint's preimages are not made durable before the home
     /// image is written.
-    pub(crate) const PREIMAGES_UNSYNCED: u32 = 1 << 10;
+    pub(crate) const PREIMAGES_UNSYNCED: u64 = 1 << 10;
     /// An open does not take the directory's lock.
-    pub(crate) const NO_LOCK: u32 = 1 << 11;
+    pub(crate) const NO_LOCK: u64 = 1 << 11;
     /// An open takes a preimage file for the current one whatever
     /// start of the log it was written for.
-    pub(crate) const STALE_PREIMAGES: u32 = 1 << 12;
+    pub(crate) const STALE_PREIMAGES: u64 = 1 << 12;
     /// An open does not write the preimages back.
-    pub(crate) const NO_RESTORE: u32 = 1 << 13;
+    pub(crate) const NO_RESTORE: u64 = 1 << 13;
     /// A checkpoint does not look at the result of its writes into the
     /// home image.
-    pub(crate) const IGNORE_HOME_WRITE: u32 = 1 << 14;
+    pub(crate) const IGNORE_HOME_WRITE: u64 = 1 << 14;
     /// A volume that fails on its own files does not mark the log.
-    pub(crate) const FAIL_UNMARKED: u32 = 1 << 15;
+    pub(crate) const FAIL_UNMARKED: u64 = 1 << 15;
     /// A read that fails on the store's files fails alone: the volume
     /// goes on serving.
-    pub(crate) const READ_ERROR_SERVED: u32 = 1 << 16;
+    pub(crate) const READ_ERROR_SERVED: u64 = 1 << 16;
     /// A hold is taken at any position.
-    pub(crate) const HOLD_UNCHECKED: u32 = 1 << 18;
+    pub(crate) const HOLD_UNCHECKED: u64 = 1 << 18;
     /// A neighbour counts as held by the log when the index names a
     /// record for it, durable or not, and is not saved.
-    pub(crate) const UNSYNCED_COVERS: u32 = 1 << 19;
+    pub(crate) const UNSYNCED_COVERS: u64 = 1 << 19;
     /// The acknowledged position is the end of the record, which is
     /// the log's end, and not where the record starts.
-    pub(crate) const ACKNOWLEDGED_IS_END: u32 = 1 << 20;
+    pub(crate) const ACKNOWLEDGED_IS_END: u64 = 1 << 20;
     /// A write-zeroes record is applied by writing zeros, and counts
     /// its length in a step's bound: the store before M1.3f.
-    pub(crate) const ZEROES_WRITTEN: u32 = 1 << 21;
+    pub(crate) const ZEROES_WRITTEN: u64 = 1 << 21;
     /// A file system that cannot deallocate fails the volume.
-    pub(crate) const NO_HOLES_FAILS: u32 = 1 << 22;
+    pub(crate) const NO_HOLES_FAILS: u64 = 1 << 22;
     /// A write-zeroes record counts no bytes in a step's bound also
     /// where its zeros are written.
-    pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
+    pub(crate) const WRITTEN_ZEROES_FREE: u64 = 1 << 23;
     /// A step goes on past the record at which the file system first
     /// refused to deallocate.
-    pub(crate) const REFUSAL_ENDS_NO_STEP: u32 = 1 << 25;
+    pub(crate) const REFUSAL_ENDS_NO_STEP: u64 = 1 << 25;
     /// A store is created whatever the block size of the directory's
     /// file system.
-    pub(crate) const CREATE_ON_ANY_BLOCKS: u32 = 1 << 26;
+    pub(crate) const CREATE_ON_ANY_BLOCKS: u64 = 1 << 26;
     /// A store is opened whatever the block size of the file systems
     /// its files are on.
-    pub(crate) const OPEN_ON_ANY_BLOCKS: u32 = 1 << 27;
+    pub(crate) const OPEN_ON_ANY_BLOCKS: u64 = 1 << 27;
     /// A store is created and opened whatever the page size of the
     /// system it runs on.
-    pub(crate) const UNDER_ANY_PAGES: u32 = 1 << 28;
+    pub(crate) const UNDER_ANY_PAGES: u64 = 1 << 28;
     /// A step writes into the home image without waiting for the
     /// readers that are under way.
-    pub(crate) const HOME_WRITTEN_UNBARRED: u32 = 1 << 29;
+    pub(crate) const HOME_WRITTEN_UNBARRED: u64 = 1 << 29;
     /// A step's end does not wait for the readers that are under way:
     /// a segment file it freed can be used again while one of them
     /// still reads a record in it.
-    pub(crate) const SLOT_REUSED_UNBARRED: u32 = 1 << 30;
+    pub(crate) const SLOT_REUSED_UNBARRED: u64 = 1 << 30;
     /// The reader answers a read of a record that is not durable yet
     /// without asking whether a sync of the log failed meanwhile.
-    pub(crate) const UNFLUSHED_READ_UNCHECKED: u32 = 1 << 17;
+    pub(crate) const UNFLUSHED_READ_UNCHECKED: u64 = 1 << 17;
     /// A barrier waits for a moment with no reader under way, and not
     /// only for the readers that were under way when it began.
-    pub(crate) const BARRIER_WAITS_FOR_ALL: u32 = 1 << 31;
+    pub(crate) const BARRIER_WAITS_FOR_ALL: u64 = 1 << 31;
     /// The reader is told that the volume has failed before the log's
     /// marker is attempted.
-    pub(crate) const FAILED_SHOWN_BEFORE_MARK: u32 = 1 << 24;
+    pub(crate) const FAILED_SHOWN_BEFORE_MARK: u64 = 1 << 24;
+    /// The reader takes its pin after its lookup, and not before it:
+    /// after the read's pause, where a test can hold it between the
+    /// two.
+    pub(crate) const PIN_AFTER_LOOKUP: u64 = 1 << 32;
 
-    fn has(self, flag: u32) -> bool {
+    fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
 }
@@ -2868,8 +2872,9 @@ impl<D: Dir> Store<D> {
     }
 
     /// For test rigs: make the reader of the served store wait after
-    /// every lookup, before it reads a file. It holds its pin while it
-    /// waits, so a step waits for it at its next barrier.
+    /// every lookup, with the lookup's lock released, before it reads
+    /// a file. It holds its pin while it waits, taken before the
+    /// lookup, so a step waits for it at its next barrier.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_read_pause(&mut self, pause: StepPause) {
         self.core.read_pause = Some(pause);
@@ -3194,8 +3199,12 @@ impl<D: Dir> Reader<D> {
         // The pin, from before the lookup to the end of the last read
         // of a file: a step waits for it before it writes into the
         // home image and before a segment file it freed is used again.
+        // Taken after the lookup, a step could drop the index and pass
+        // its barrier between the two, and the reader would read a
+        // file the step had given up.
         let shared = self.shared.clone();
-        let _pin = shared.pinned();
+        let late = self.mutants.has(Mutants::PIN_AFTER_LOOKUP);
+        let _pin = (!late).then(|| shared.pinned());
         let mut runs = Vec::new();
         if self.mutants.has(Mutants::READ_HOME_ONLY) {
             runs.push((start, blocks, Found::Home));
@@ -3230,6 +3239,7 @@ impl<D: Dir> Reader<D> {
         if let Some(pause) = &self.pause {
             pause.wait();
         }
+        let _late_pin = late.then(|| shared.pinned());
         let mut checked_any = false;
         for (run, len, found) in runs {
             let from = ((run - start) * BLOCK_SIZE) as usize;
