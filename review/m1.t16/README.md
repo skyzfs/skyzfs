@@ -45,9 +45,30 @@ The review is posted on the pull request. What stands behind it:
   So about 160,000 fsyncs per row reached a barrier-mounted ext4 and `sda`
   counted none. `sda`'s count is 0 since boot; the nvme disk of a `nobarrier`
   job (run 43285245364) had 22 before its first row.
-- **Still unread.** No log line and no file of either run states `sda`'s
-  `queue/write_cache`. M1.T15's `write_cache=write_back` was read on
-  `nvme0n1p1` only: both of its runs were on the 24.04 image.
+- **It follows the disk, not the image.** A search of the day's other runs
+  (their artifacts' `disk-sync.txt` and the `dev workdisk` line before row 1,
+  which is the whole disk's count since boot):
+
+  | Run | Image | Work disk | `write_cache` | Mount | Flushes since boot, before row 1 |
+  |---|---|---|---|---|---|
+  | 43259992250 | 24.04 (by machine name) | sda1 | not recorded | nobarrier | 0 |
+  | 43261994666 | 24.04 | sda1 | not recorded | nobarrier | 0 (0 after the last row) |
+  | 43283383394 | 24.04 | sda1 | `write_through` | nobarrier | 0 |
+  | 43292520972 (this package) | 26.04 | sda1 | not recorded | barriers | 0 (0 after the last row) |
+  | 43265803362 | 24.04 (by machine name) | nvme0n1p1 | not recorded | nobarrier | 22 |
+  | 43285245364 | 24.04 | nvme0n1p1 | `write_back` | nobarrier | 22 |
+  | 43265811438 | 26.04 | nvme0n1p1 | not recorded | nobarrier | 25 |
+  | 43292513180 (this package) | 24.04 | nvme0n1p1 | not recorded | barriers | 153,728 |
+
+  Every `sda` machine has counted no flush since boot, on both images, and the
+  one whose `write_cache` was read says `write_through`. Every nvme machine has
+  counted some even under `nobarrier`, and the one read says `write_back`. Of
+  twelve machines seen on 2026-11-12, five had `sda1` (four on 24.04, one on
+  26.04) and seven `nvme0n1p1` (five on 24.04, two on 26.04).
+- **Still unread on the machine in question.** No log line and no file of run
+  43292520972 states its `sda`'s `queue/write_cache`. That machine's disk is
+  not the same kind as the 24.04 `sda` machines' either: its 64 MiB sync ran at
+  176 MiB/s, theirs at 1199 to 4167.
 - **Nothing in an artifact marks a job as run with barriers.** The row JSONs
   and `summary.md` carry no mount option; the step summary is on the run's page
   only.
