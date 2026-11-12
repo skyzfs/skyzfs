@@ -46,3 +46,20 @@ Posted on the pull request. What stands behind it:
 
 Not done: the rig was not run. Run 43324152732 at this head was under way; it
 is the first run of `stuck` on a real device.
+
+## Second look, at e48955e: both findings dropped; the rig run is still owed
+
+One commit on top of 19553d8.
+
+- `shell-try.sh`: through the daemon, a command that cannot be started (127)
+  and a failure of `lim` itself (125) now end with exit 2, "could not be
+  started". The other cases are unchanged. 126 (found, not executable) is
+  still a verdict; nothing in the rig can produce it today.
+- `stuck_guard.py`: a stuck start whose read fails at once now gives exit 2,
+  "the read did not wait for the stopped daemon". A reader not reaped still
+  stops the run with exit 2.
+- 160 tests pass as root, 99 of `test_replay*.py` as a non-root user;
+  `repro.py` ends 1, 1, 2. Plant: with the guard's new branch off, the new
+  test fails.
+- Not run: the rig. Run 43325416233 at this head is the one whose `stuck` row
+  is to be read.
