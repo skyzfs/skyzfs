@@ -63,3 +63,23 @@ One commit on top of 19553d8.
   test fails.
 - Not run: the rig. Run 43325416233 at this head is the one whose `stuck` row
   is to be read.
+
+## Third look, at 72d30df: nothing blocks, it can merge
+
+- **The rig run at e48955e is in** (run 43325416233), and both "through
+  skyzfsd" jobs exit 0: 154 of 537 prefixes on 24.04, 155 of 571 on 26.04,
+  recording under `pool_step` and `lim`.
+- **`stuck` on a real device**, from both jobs' `replay-results.json`: caught
+  by `device read` with no rig error, the detail "TIMEOUT after 20s; the
+  reader ended once the server was killed". On 26.04 dd also printed "error
+  reading '/dev/ublkb0': Input/output error": the kernel failed the queued
+  read when the device was deleted, which is what the reading of
+  `ublk_drv.c` said it would do.
+- **72d30df**: a stuck control whose reader is not reaped raises the rig's
+  error with the control named, in place of `abort_if`. 160 tests pass as
+  root, 99 of `test_replay*.py` as a non-root user; `repro.py` ends 1, 1, 2;
+  `stuck_guard.py` case 2 now reads "the stuck control at prefix 36: dd ...
+  did not end". Plant: without the control's name in the error, the new test
+  fails. The commit is on a path no passing run takes.
+- Kept, not blocking: `zfs get available` and `zpool status -P` without a
+  limit; status 126 in `pool_step`.
