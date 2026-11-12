@@ -123,3 +123,33 @@ Two commits on top of 31b06ad.
   is between two reads, which is a device that answers slowly. The new test
   stubs `run()` to return 124, so it shows the label and not this. This is
   older than the delta: it was so at 31b06ad and I did not see it then.
+
+## Fifth look, at 3b77bda: the fix is right as built; a rig run is owed
+
+One commit on top of 8e69d35: the read of the device runs under
+`read_bounded()`. At the timeout it kills the daemon and deletes the device,
+then kills dd and waits `REAP_S` (60 s) for it; a dd still there sets
+`info['abort']`, which stops the run and keeps the verdict. The daemon's own
+end after SIGKILL is bounded as well.
+
+- 156 tests pass as root, 47 of `test_replay_daemon.py` as a non-root user.
+  `repro.py` still ends 1, 1, 2.
+- Three plants, each caught: no `unstick()` at the timeout; no abort when the
+  reader is left; waiting for the reader before unsticking (the old
+  behaviour).
+- `read_bounded_try.py` (here) runs it with real processes: a reader that
+  ends, one that cannot start, one that hangs and dies when killed, and one
+  whose pipe outlives the kill. Each comes back within the timeout plus
+  `REAP_S`, with exit 0, 127, 124 ("ended once the server was killed") and 124
+  ("not reaped").
+- The kernel side, read at mainline v7.0: stopping a device that queues I/O
+  for recovery sets `force_abort`, unquiesces the queue and kicks the requeue
+  list (`ublk_force_abort_dev`, `drivers/block/ublk_drv.c:2855-2871`, called
+  from `ublk_stop_dev_unlocked` at 2897-2899), and `ublk_queue_rq` then fails
+  queued and new requests with an I/O error (2070-2073). So deleting the
+  device after the daemon is killed ends dd's read.
+- Not shown anywhere: the hang path on a real device. Nothing makes a daemon
+  stop answering after `ready`, so no rig run reaches it.
+- Every read now goes through `read_bounded()`, so this commit is on the path
+  a passing run takes. The last finished rig run is at 31b06ad; run
+  43307626765 at 3b77bda was under way when this was written.
