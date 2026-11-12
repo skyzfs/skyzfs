@@ -14,6 +14,13 @@
 # What it writes to stdout and stderr is passed on when lim returns,
 # stdout first; a command abandoned at the limit passes on what it had
 # written by then.
+#
+# It holds under `set -e` and `set -o pipefail` as well: the look at a
+# process that has just ended fails (its /proc entry is gone), and in a
+# script with errexit that failure used to end the caller with status 2
+# and no message, before the command's output was passed on. Every
+# step that can fail here is therefore allowed to (`|| true`, and the
+# command's status taken with `|| rc=$?`).
 lim() {
     local secs=$1 pid state n=0 out err rc
     shift
@@ -26,16 +33,16 @@ lim() {
     rc=""
     while [ -z "$rc" ]; do
         # Field 3 of /proc/PID/stat, after the command name in brackets.
-        state=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -c1)
+        state=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -c1) || true
         case $state in
-            ''|Z|X) wait "$pid"; rc=$?; break ;;
+            ''|Z|X) rc=0; wait "$pid" || rc=$?; break ;;
         esac
         if [ "$n" -ge $((secs * 10)) ]; then
-            kill -9 "$pid" 2>/dev/null
+            kill -9 "$pid" 2>/dev/null || true
             sleep 0.5
-            state=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -c1)
+            state=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -c1) || true
             case $state in
-                ''|Z|X) wait "$pid" 2>/dev/null ;;
+                ''|Z|X) wait "$pid" 2>/dev/null || true ;;
             esac
             rc=124
             break
@@ -43,9 +50,9 @@ lim() {
         sleep 0.1
         n=$((n + 1))
     done
-    cat "$out"
-    cat "$err" >&2
-    unlink "$out"
-    unlink "$err"
+    cat "$out" || true
+    cat "$err" >&2 || true
+    unlink "$out" || true
+    unlink "$err" || true
     return "$rc"
 }
