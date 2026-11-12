@@ -117,21 +117,30 @@ pub const USAGE: &str = "usage:
 /// before using a command.
 pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
 
-  It needs Linux 6.9 or later with the ublk driver: the driver's
+  It needs Linux 6.11 or later with the ublk driver: the driver's
   features UBLK_F_USER_RECOVERY, UBLK_F_USER_RECOVERY_REISSUE and
   UBLK_F_CMD_IOCTL_ENCODE, its command UBLK_U_CMD_GET_FEATURES (6.5),
-  and its asynchronous delete UBLK_U_CMD_DEL_DEV_ASYNC (6.9), without
-  which the daemon cannot give up a failed volume's device. Before
-  serve or detach touches anything, it asks the driver for its
-  features and reads the kernel's release (uname -r), and refuses,
-  naming what is missing, on a kernel that lacks one or whose release
-  is below 6.9 or does not begin with a major and a minor number.
-  The asynchronous delete has no feature bit. A distribution kernel
-  whose ublk driver has it under an older release is served when the
-  operator says so with --kernel-has-async-delete, given to serve and
-  to detach: the release is then not read, and the features are still
-  checked. Say it only of a kernel whose driver is known to have the
-  command: nothing checks it before a delete needs it.
+  and its asynchronous delete UBLK_U_CMD_DEL_DEV_ASYNC, without which
+  the daemon cannot give up a failed volume's device. The kernel's
+  header names that command from 6.9, but its driver executes it from
+  6.11 (the drivers of 6.9 and 6.10 answer it ENOTSUPP).
+  serve, before it locks the volume, opens its store or adds or takes
+  over a device, and detach, once it has the volume's lock and has
+  found a record of a device of this boot and before it looks at or
+  deletes that device, ask the driver for its features and read the
+  kernel's release (uname -r). They refuse, naming what is missing, on
+  a kernel that lacks a feature or whose release is below 6.11 or
+  does not begin with a major and a minor number. A refused serve
+  leaves a device of the volume that waits for a server as it is.
+  The asynchronous delete has no feature bit. A kernel whose ublk
+  driver executes it under an older release (a distribution kernel
+  with the driver backported, or a 6.9.y or 6.10.y that carries the
+  fix) is served when the operator says so with
+  --kernel-has-async-delete, given to serve and to detach: the release
+  is then not read, and the features are still checked. Say it only of
+  a kernel whose driver is known to execute the command: nothing
+  checks it before a delete needs it, and a delete it does not know
+  fails and leaves the device.
 
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
       Make a new, empty volume in DIR. DIR is made if it is missing

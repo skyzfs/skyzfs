@@ -1126,7 +1126,7 @@ fn a_record_of_another_boot_or_of_a_device_that_is_gone_means_a_fresh_device() {
 /// What the kernel is made to lack, one case each: every needed flag,
 /// the features command, a release below 6.9 and one that does not
 /// parse; each of the flags and the command also on a kernel below
-/// 6.9. With the operator's word for the asynchronous delete, the
+/// 6.11. With the operator's word for the asynchronous delete, the
 /// release is not read and only a lacking feature refuses.
 fn unsupported_kernels() -> Vec<(Option<u64>, &'static str, bool)> {
     use crate::features::NEEDED;
@@ -1134,13 +1134,19 @@ fn unsupported_kernels() -> Vec<(Option<u64>, &'static str, bool)> {
     features.push(None);
     let mut cases = Vec::new();
     for asserted in [false, true] {
-        for release in ["7.0.0", "6.9.0", "6.8.0-45-generic", "linux"] {
+        for release in ["7.0.0", "6.11.0", "6.10.3", "6.8.0-45-generic", "linux"] {
             for &f in &features {
                 cases.push((f, release, asserted));
             }
         }
     }
-    for release in ["6.8.0-45-generic", "5.14.0-570.el9.x86_64", "linux"] {
+    for release in [
+        "6.9.0",
+        "6.10.3",
+        "6.8.0-45-generic",
+        "5.14.0-570.el9.x86_64",
+        "linux",
+    ] {
         cases.push((Some(u64::MAX), release, false));
     }
     cases

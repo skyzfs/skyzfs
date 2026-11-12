@@ -31,7 +31,11 @@ fn command<T: Copy>(
     word: u64,
     data: Option<T>,
 ) -> io::Result<(i32, Option<T>)> {
-    let control = OpenOptions::new().read(true).write(true).open(CONTROL)?;
+    let control = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(CONTROL)
+        .map_err(control_missing)?;
     let mut ring = IoUring::<squeue::Entry128>::builder().build(2)?;
     // The structure is on the heap, so that it can be left there if the
     // command's end cannot be waited for (below).
@@ -107,6 +111,22 @@ fn command<T: Copy>(
         Err(io::Error::from_raw_os_error(-result))
     } else {
         Ok((result, data.map(|data| *data)))
+    }
+}
+
+/// An error of the open of the control device. `ENOENT` (no such file)
+/// and `ENODEV` or `ENXIO` (a node with no driver behind it) say that
+/// the driver is not there, and are told so, with no errno left on the
+/// error: else a caller that reads `ENODEV` as the driver's answer (no
+/// such device, no such command) would take a missing driver for one.
+/// Any other error is passed on as it is.
+fn control_missing(e: io::Error) -> io::Error {
+    match e.raw_os_error() {
+        Some(libc::ENOENT | libc::ENODEV | libc::ENXIO) => io::Error::new(
+            e.kind(),
+            format!("the ublk control device {CONTROL} is not there (is the driver loaded?): {e}"),
+        ),
+        _ => e,
     }
 }
 
@@ -187,8 +207,21 @@ pub fn set_params(number: u32, mut params: sys::ublk_params) -> io::Result<()> {
 /// Delete the device under `number` without waiting for whoever holds
 /// it: the driver's asynchronous delete. A device that is held keeps
 /// its number until the holder lets go.
+///
+/// A driver that does not execute the command (before Linux 6.11, see
+/// [`skyzfs_ublk::features`]) answers `ENOTSUPP`, which libc has no
+/// name for: that is told as what it is
+/// ([`skyzfs_ublk::features::delete_not_executed`]), not as "Unknown
+/// error 524".
 pub fn delete(number: u32) -> io::Result<()> {
-    command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, 0, None).map(|_| ())
+    match command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, 0, None) {
+        Ok(_) => Ok(()),
+        Err(e) if e.raw_os_error() == Some(skyzfs_ublk::features::ENOTSUPP) => Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            skyzfs_ublk::features::delete_not_executed(number),
+        )),
+        Err(e) => Err(e),
+    }
 }
 
 /// End the recovery of the device under `number`, whose queue this
@@ -215,4 +248,28 @@ pub fn end_recovery(number: u32) -> io::Result<()> {
 /// before is not yet wholly gone, `ENODEV` when the device is.
 pub fn begin_recovery(number: u32) -> io::Result<()> {
     command::<u8>(sys::UBLK_U_CMD_START_USER_RECOVERY, number, 0, None).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A control device that is not there is said to be missing, with no
+    /// errno a caller could take for the driver's answer; any other
+    /// error of the open is passed on as it is.
+    #[test]
+    fn a_missing_control_device_is_not_the_drivers_enodev() {
+        for code in [libc::ENOENT, libc::ENODEV, libc::ENXIO] {
+            let told = control_missing(io::Error::from_raw_os_error(code));
+            assert_eq!(told.raw_os_error(), None, "{code}");
+            let said = told.to_string();
+            assert!(
+                said.contains("is not there (is the driver loaded?)"),
+                "{said}"
+            );
+            assert!(said.contains(CONTROL), "{said}");
+        }
+        let other = control_missing(io::Error::from_raw_os_error(libc::EACCES));
+        assert_eq!(other.raw_os_error(), Some(libc::EACCES));
+    }
 }

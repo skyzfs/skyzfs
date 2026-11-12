@@ -3,14 +3,25 @@ use super::*;
 /// Every flag the driver of Linux 6.5 and later reports.
 const ALL: u64 = (1 << 3) | (1 << 4) | (1 << 6) | 0x1 | 0x2 | 0x20 | 0x80;
 
-/// Releases below, at and above 6.9, as `uname -r` gives them.
-const BELOW: [&str; 4] = ["6.8.0-45-generic", "6.5.0", "5.14.0-570.el9.x86_64", "6.08"];
-const AT_OR_ABOVE: [&str; 6] = [
-    "6.9.0",
+/// Releases below, at and above 6.11, as `uname -r` gives them. 6.9
+/// and 6.10 name the asynchronous delete in their header and do not
+/// execute it.
+const BELOW: [&str; 8] = [
+    "6.8.0-45-generic",
+    "6.5.0",
+    "5.14.0-570.el9.x86_64",
+    "6.08",
     "6.9",
-    "6.11.0-29-generic",
-    "7.0.0",
+    "6.9.0",
     "6.10-rc1",
+    "6.10.3",
+];
+const AT_OR_ABOVE: [&str; 6] = [
+    "6.11",
+    "6.11.0-29-generic",
+    "6.12.0",
+    "7.0.0",
+    "6.011",
     "10.0.0",
 ];
 /// Releases that do not begin with a major and a minor number.
@@ -26,7 +37,7 @@ const UNREADABLE: [&str; 9] = [
     "99999999999.1",
 ];
 
-/// A driver with every flag, on a kernel of 6.9 or later: the start
+/// A driver with every flag, on a kernel of 6.11 or later: the start
 /// goes on.
 #[test]
 fn a_driver_with_every_flag_on_a_new_enough_kernel_serves() {
@@ -56,7 +67,7 @@ fn the_release_is_read_from_its_start() {
     }
 }
 
-/// A kernel below 6.9 is refused for the asynchronous delete, naming
+/// A kernel below 6.11 is refused for the asynchronous delete, naming
 /// the command, its kernel, why, and the override; with the override it
 /// serves.
 #[test]
@@ -98,11 +109,15 @@ fn an_unreadable_release_is_refused_unless_asserted() {
     }
 }
 
-/// What a refusal for the delete says: the command, Linux 6.9, why the
+/// What a refusal for the delete says: the command, Linux 6.11 (and that
+/// 6.9 names it without executing it), why the
 /// daemon will not run without it, and the operator's override.
 fn assert_delete_said(said: &str) {
     assert!(said.contains("UBLK_U_CMD_DEL_DEV_ASYNC"), "{said}");
-    assert!(said.contains("Linux 6.9"), "{said}");
+    assert!(said.contains("from Linux 6.11"), "{said}");
+    assert!(said.contains("header names it from 6.9"), "{said}");
+    assert!(said.contains("ENOTSUPP"), "{said}");
+    assert!(said.contains("6.9.y or 6.10.y"), "{said}");
     assert!(
         said.contains("cannot give up a failed volume's device"),
         "{said}"
@@ -117,7 +132,7 @@ fn assert_delete_said(said: &str) {
 
 /// A driver without one flag is refused, naming that flag and the
 /// first kernel that has it, and nothing else; on every release and
-/// with the override, which does not cover flags. Below 6.9 the release
+/// with the override, which does not cover flags. Below 6.11 the release
 /// is named as well.
 #[test]
 fn a_missing_flag_is_named_with_its_kernel() {
@@ -148,7 +163,7 @@ fn a_missing_flag_is_named_with_its_kernel() {
 }
 
 /// A driver without any of the flags names all three, in order, and
-/// then the release when it is below 6.9.
+/// then the release when it is below 6.11.
 #[test]
 fn every_missing_flag_is_named() {
     let refused = check(Some(0), "7.0.0", false).unwrap_err();
@@ -166,7 +181,7 @@ fn every_missing_flag_is_named() {
 
 /// A driver without the features command is refused, naming the
 /// command and its kernel, whatever the release and with the override;
-/// below 6.9 or unreadable, the release is named as well.
+/// below 6.11 or unreadable, the release is named as well.
 #[test]
 fn a_driver_without_the_features_command_is_refused() {
     for release in AT_OR_ABOVE {
@@ -220,4 +235,34 @@ fn the_oldest_kernel_is_the_newest_of_the_needed() {
         .max()
         .unwrap();
     assert_eq!(version(OLDEST_KERNEL), newest);
+}
+
+/// The release is what the operator's option answers, and only it.
+#[test]
+fn a_refusal_says_whether_the_release_refused() {
+    assert!(check(Some(ALL), "6.10.3", false).unwrap_err().by_release());
+    assert!(check(Some(ALL), "v6.11", false).unwrap_err().by_release());
+    assert!(check(Some(0), "6.8.0", false).unwrap_err().by_release());
+    assert!(!check(Some(0), "7.0.0", false).unwrap_err().by_release());
+    assert!(!check(None, "6.8.0", true).unwrap_err().by_release());
+}
+
+/// A delete the driver does not know names the command, ENOTSUPP and
+/// its number, the device, that it was not given up, the release that
+/// executes it and the option.
+#[test]
+fn a_delete_the_driver_does_not_know_is_told_as_such() {
+    let said = delete_not_executed(4);
+    for part in [
+        "UBLK_U_CMD_DEL_DEV_ASYNC",
+        "does not execute",
+        "ENOTSUPP, 524",
+        "device 4 could not be deleted",
+        "not given up",
+        "Linux 6.11",
+        ASYNC_DELETE_OPTION,
+    ] {
+        assert!(said.contains(part), "{part}: {said}");
+    }
+    assert!(!said.contains("Unknown error"), "{said}");
 }

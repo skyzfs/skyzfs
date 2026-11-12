@@ -634,7 +634,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     };
     let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
-        Err(Stop::Unsupported(why)) => return Err(format!("not served: {why}")),
+        Err(Stop::Unsupported(why)) => return Err(not_served(&why)),
         Err(Stop::Held) => {
             say("another instance or a live server holds the volume");
             return Ok(Exit::RefusedHeld);
@@ -1027,9 +1027,47 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }
 }
 
+/// What a start refused for the kernel says. The check comes before
+/// the attachment record is read, so a device of this volume may be
+/// waiting for a server: the message says that it is left so, and,
+/// when the release is what refused, that the operator's option lets a
+/// start go on to it.
+fn not_served(why: &skyzfs_ublk::features::Unsupported) -> String {
+    let goes_on = if why.by_release() {
+        format!(
+            ", and a start with {} goes on to it",
+            skyzfs_ublk::features::ASYNC_DELETE_OPTION
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "not served: {why}. Nothing was touched: a device of this volume that waits for a \
+         server, if there is one, still waits{goes_on}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start refused for the kernel says that a waiting device of the
+    /// volume is left as it is; when the release refused, also that the
+    /// option lets a start go on to it.
+    #[test]
+    fn a_refused_start_says_a_waiting_device_is_left() {
+        use skyzfs_ublk::features::{check, ASYNC_DELETE_OPTION};
+        let by_release = not_served(&check(Some(u64::MAX), "6.10.3", false).unwrap_err());
+        assert!(by_release.starts_with("not served: "), "{by_release}");
+        assert!(by_release.contains("waits for a server, if there is one, still waits"));
+        assert!(
+            by_release.ends_with(&format!("a start with {ASYNC_DELETE_OPTION} goes on to it")),
+            "{by_release}"
+        );
+        let by_flag = not_served(&check(Some(0), "7.0.0", false).unwrap_err());
+        assert!(by_flag.contains("still waits"), "{by_flag}");
+        assert!(!by_flag.contains("goes on to it"), "{by_flag}");
+    }
 
     /// `--fail-log-after` counts what appends to the log: not reads,
     /// not flushes, not what was refused or is in flight.

@@ -11,9 +11,11 @@
 //! mirror at github.com/torvalds/linux, read through
 //! raw.githubusercontent.com; git.kernel.org could not be reached from
 //! the container that did this). The kernel given for a name is the
-//! first release whose header defines it. What the driver answers was
-//! read in `drivers/block/ublk_drv.c` at v6.1, v6.3, v6.4, v6.5, v6.8,
-//! v6.9 and v7.0, and what the flags mean in
+//! first release whose header defines it and whose driver acts on it
+//! (for the asynchronous delete those differ; see below). What the
+//! driver answers was
+//! read in `drivers/block/ublk_drv.c` at v6.1, v6.2, v6.3, v6.4, v6.5,
+//! v6.8, v6.9, v6.10, v6.11 and v7.0, and what the flags mean in
 //! `Documentation/block/ublk.rst` at v7.0. The commits that added each
 //! name were not looked up: the release tags bound them.
 //!
@@ -21,22 +23,37 @@
 //!   looks for any device, with every flag it supports (`UBLK_F_ALL`,
 //!   which holds the three flags in [`NEEDED`]).
 //! - Before v6.5 it has no such command, and the command, sent for a
-//!   device number that is never a device's, answers `ENODEV`: the
-//!   driver looks the device up before it matches the command. That
-//!   answer is read as "the command is missing" ([`answered`]).
+//!   device number that is never a device's, answers `ENODEV`. In v6.3
+//!   and v6.4 that is because the driver looks the device up before it
+//!   matches the command; in v6.1 and v6.2 the answer is preset to
+//!   `ENODEV` before a switch on the whole command, which knows no
+//!   ioctl-encoded command. That answer is read as "the command is
+//!   missing" ([`answered`]).
 //!
 //! # The asynchronous delete
 //!
-//! The daemon deletes a device with `UBLK_U_CMD_DEL_DEV_ASYNC`, first in
-//! v6.9. It has no feature bit, and a driver that lacks it answers it,
-//! for a device that does not exist, as one that has it does
-//! (`ENODEV`): no command tells it apart before the daemon needs it.
-//! The features word proves a kernel of at least 6.5, so the start also
-//! reads the kernel's release and refuses one below 6.9, unless the
-//! operator says that the driver has the command
-//! ([`ASYNC_DELETE_OPTION`]): a distribution kernel can carry a newer
-//! driver under an older number. No other flag is taken as a sign of
-//! it, and there is no fallback to the synchronous delete.
+//! The daemon deletes a device with `UBLK_U_CMD_DEL_DEV_ASYNC`. **The
+//! header names it from v6.9, but the driver executes it from v6.11.**
+//! In `drivers/block/ublk_drv.c` at v6.9 and v6.10 the control
+//! commands are matched in `switch (_IOC_NR(cmd_op))` (line 2890 of
+//! both), while the case for this one is labelled with the whole
+//! `UBLK_U_CMD_DEL_DEV_ASYNC` (line 2907), which `_IOC_NR` never
+//! equals; the command falls to `default: ret = -ENOTSUPP` (line 2926),
+//! errno 524. v6.11 defines `UBLK_CMD_DEL_DEV_ASYNC` as
+//! `_IOC_NR(UBLK_U_CMD_DEL_DEV_ASYNC)` (line 52) and matches that (line
+//! 2911). So the floor is 6.11 ([`DELETE_KERNEL`]); a 6.9.y or 6.10.y
+//! that carries the fix is the override's case, like a backport.
+//!
+//! The command has no feature bit, and a driver that lacks it answers
+//! it, for a device that does not exist, as one that has it does
+//! (`ENODEV` before the switch is reached, or `ENOTSUPP` after): no
+//! command tells it apart without adding a device. The features word
+//! proves a kernel of at least 6.5, so the start also reads the
+//! kernel's release and refuses one below 6.11, unless the operator
+//! says that the driver executes the command ([`ASYNC_DELETE_OPTION`]).
+//! No other flag is taken as a sign of it, and there is no fallback to
+//! the synchronous delete. A delete the driver does not know is told to
+//! the operator as such ([`delete_not_executed`]).
 
 use std::fmt;
 
@@ -85,22 +102,32 @@ pub const NEEDED: [Flag; 3] = [
 /// The first Linux release with `UBLK_U_CMD_GET_FEATURES`.
 pub const FEATURES_KERNEL: &str = "6.5";
 
-/// The first Linux release with `UBLK_U_CMD_DEL_DEV_ASYNC`, the command
-/// the daemon deletes a device with: what a failed volume gives up its
-/// device with while a client still holds it (the plain delete waits
-/// for the last holder, and a suspended pool never lets go). It has no
-/// feature bit, so the start reads the kernel's release instead
-/// ([`check`]); see the [module documentation](self).
-pub const DELETE_KERNEL: (u32, u32) = (6, 9);
+/// The first Linux release whose ublk driver executes
+/// `UBLK_U_CMD_DEL_DEV_ASYNC`, the command the daemon deletes a device
+/// with: what a failed volume gives up its device with while a client
+/// still holds it (the plain delete waits for the last holder, and a
+/// suspended pool never lets go). The header names it from 6.9, but the
+/// drivers of 6.9 and 6.10 answer it `ENOTSUPP` (see the [module
+/// documentation](self)). It has no feature bit, so the start reads the
+/// kernel's release instead ([`check`]).
+pub const DELETE_KERNEL: (u32, u32) = (6, 11);
+
+/// The first Linux release whose header names `UBLK_U_CMD_DEL_DEV_ASYNC`.
+pub const DELETE_NAMED_KERNEL: &str = "6.9";
 
 /// The oldest Linux release the daemon runs on: the newest of the
 /// releases above.
-pub const OLDEST_KERNEL: &str = "6.9";
+pub const OLDEST_KERNEL: &str = "6.11";
+
+/// The errno a ublk driver answers a control command it does not know
+/// with: the kernel's `ENOTSUPP`, which has no name in libc.
+pub const ENOTSUPP: i32 = 524;
 
 /// The option by which an operator says that the kernel's ublk driver
-/// has `UBLK_U_CMD_DEL_DEV_ASYNC` although its release is older (a
-/// distribution kernel with the driver backported). With it the release
-/// is not checked; the features are.
+/// executes `UBLK_U_CMD_DEL_DEV_ASYNC` although its release is older (a
+/// distribution kernel with the driver backported, or a 6.9.y or 6.10.y
+/// that carries the fix). With it the release is not checked; the
+/// features are.
 pub const ASYNC_DELETE_OPTION: &str = "--kernel-has-async-delete";
 
 /// One thing the daemon needs and this kernel lacks.
@@ -123,14 +150,40 @@ pub enum Lack {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Unsupported(pub Vec<Lack>);
 
+impl Unsupported {
+    /// Whether the release is among the lacks: the one the operator's
+    /// option answers.
+    pub fn by_release(&self) -> bool {
+        self.0
+            .iter()
+            .any(|lack| matches!(lack, Lack::Release(_) | Lack::UnreadableRelease(_)))
+    }
+}
+
+/// What a delete says that the driver answered `ENOTSUPP`: it does not
+/// know `UBLK_U_CMD_DEL_DEV_ASYNC`. That is what an operator who gave
+/// [`ASYNC_DELETE_OPTION`] for a kernel without it sees, at the first
+/// delete.
+pub fn delete_not_executed(number: u32) -> String {
+    let (major, minor) = DELETE_KERNEL;
+    format!(
+        "the ublk driver of this kernel does not execute UBLK_U_CMD_DEL_DEV_ASYNC (it \
+         answered ENOTSUPP, {ENOTSUPP}), so device {number} could not be deleted and was \
+         not given up. The driver executes it from Linux {major}.{minor}; if \
+         {ASYNC_DELETE_OPTION} was given, this kernel does not have it"
+    )
+}
+
 impl fmt::Display for Lack {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (major, minor) = DELETE_KERNEL;
         let delete = format!(
-            "UBLK_U_CMD_DEL_DEV_ASYNC came with Linux {major}.{minor}, and without it the \
-             daemon cannot give up a failed volume's device while a client holds it. If this \
-             kernel's ublk driver has it all the same (a distribution kernel with the driver \
-             backported), say so with {ASYNC_DELETE_OPTION}"
+            "the ublk driver executes UBLK_U_CMD_DEL_DEV_ASYNC from Linux {major}.{minor} (its \
+             header names it from {DELETE_NAMED_KERNEL}, but the drivers of 6.9 and 6.10 \
+             answer it ENOTSUPP), and without it the daemon cannot give up a failed volume's \
+             device while a client holds it. If this kernel's ublk driver executes it all the \
+             same (a distribution kernel with the driver backported, or a 6.9.y or 6.10.y \
+             release that carries the fix), say so with {ASYNC_DELETE_OPTION}"
         );
         match self {
             Self::NoFeatures => write!(

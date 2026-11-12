@@ -302,7 +302,7 @@ fn status_shows_a_failure_of_this_boot_and_says_when_its_file_cannot_be_read() {
     );
 }
 
-/// On a kernel below 6.9 a detach refuses before it looks at anything,
+/// On a kernel below 6.11 a detach refuses before it looks at anything,
 /// with status 1 and a message that names the asynchronous delete and
 /// the override; with the override it deletes.
 #[test]
@@ -315,7 +315,7 @@ fn detach_on_a_kernel_without_the_asynchronous_delete_is_refused_unless_asserted
     for said in [
         "not detached",
         "UBLK_U_CMD_DEL_DEV_ASYNC",
-        "Linux 6.9",
+        "Linux 6.11",
         "--kernel-has-async-delete",
         "Nothing was done",
     ] {
