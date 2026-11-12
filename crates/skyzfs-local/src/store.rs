@@ -2348,6 +2348,13 @@ where
                         wake();
                     });
                     busy = stepped == Ok(true);
+                    // `begun` is a safeguard and cannot decide today: the
+                    // rule tells the owner of a step before its own sync
+                    // only when that sync makes more durable below the
+                    // hold, so a step follows (`Ok(true)`) or the sync
+                    // fails the volume (an error). Should the rule ever
+                    // begin and then take nothing, the owner is still
+                    // shown the end of what it was told had begun.
                     if stepped != Ok(false) || begun {
                         // Only a safeguard: a request is held when
                         // the log is full behind a hold, after the log
