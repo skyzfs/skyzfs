@@ -256,6 +256,23 @@ impl Dir for FsDir {
     }
 }
 
+/// Make a system call again for as long as a signal interrupts it
+/// (`EINTR`): an interrupted call has done nothing, and is no failure
+/// of the file. The standard library does this for the reads, writes
+/// and syncs above; this is for the calls made through `rustix`,
+/// which does not.
+#[cfg(target_os = "linux")]
+fn retried<T>(
+    mut call: impl FnMut() -> Result<T, rustix::io::Errno>,
+) -> Result<T, rustix::io::Errno> {
+    loop {
+        match call() {
+            Err(rustix::io::Errno::INTR) => {}
+            other => return other,
+        }
+    }
+}
+
 /// An open real file.
 #[derive(Debug)]
 pub struct FsFile {
@@ -458,7 +475,7 @@ impl File for FsFile {
             return Ok(());
         }
         let flags = FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE;
-        match fallocate(&self.file, flags, offset, len) {
+        match retried(|| fallocate(&self.file, flags, offset, len)) {
             Ok(()) => Ok(()),
             // The file system has no holes, or the kernel no such call.
             Err(Errno::OPNOTSUPP | Errno::NOSYS) => Err(io::ErrorKind::Unsupported.into()),
@@ -473,7 +490,7 @@ impl File for FsFile {
 
     #[cfg(target_os = "linux")]
     fn block_size(&self) -> io::Result<u64> {
-        let size = rustix::fs::fstatfs(&self.file)?.f_bsize;
+        let size = retried(|| rustix::fs::fstatfs(&self.file))?.f_bsize;
         u64::try_from(size)
             .ok()
             .filter(|size| *size > 0)
@@ -500,6 +517,30 @@ mod tests {
         let size = page_size();
         assert!(size.is_power_of_two());
         assert!((4096..=65536).contains(&size), "{size}");
+    }
+
+    /// A call that a signal interrupts is made again, and any other
+    /// answer is passed on as it is.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_interrupted_call_is_made_again() {
+        use rustix::io::Errno;
+        let mut calls = 0;
+        let done = retried(|| {
+            calls += 1;
+            if calls < 4 {
+                Err(Errno::INTR)
+            } else {
+                Ok(calls)
+            }
+        });
+        assert_eq!(done, Ok(4));
+        let mut calls = 0;
+        let refused: Result<(), Errno> = retried(|| {
+            calls += 1;
+            Err(Errno::OPNOTSUPP)
+        });
+        assert_eq!((refused, calls), (Err(Errno::OPNOTSUPP), 1));
     }
 
     /// A real file says the block size of its file system: a power of
