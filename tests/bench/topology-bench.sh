@@ -487,8 +487,8 @@ if any(mode(r) != 'none' for r in runs):
 # The daemon against the benchmark model (design §9, M1: tpcb within
 # 10% of the benchmark model on the same machine). The model is the
 # zfs-slog row. A ratio, and with it a verdict, is only formed between
-# two rows of one machine: each row carries the boot id of the machine
-# it ran on, and rows are compared only where it is the same. The
+# two rows of one machine: each row carries the boot id and the host
+# name of the machine it ran on, and rows are compared only where it is the same. The
 # workflow's summary job puts the rows of every matrix runner in one
 # directory; those end with NO VERDICT, and so does a row that does not
 # say where it ran.
@@ -500,7 +500,7 @@ if skz:
         here = [o for o in rows if r.get('machine') and o.get('machine') == r['machine']]
         return here, len(rows) - len(here)
     print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
-          '(the same boot of the same runner); rows of other machines are counted and not compared. '
+          '(the same boot id and host name); rows of other machines are counted and not compared. '
           'The criterion is a ratio of at least 0.90 to zfs-slog; the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
     print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|')
@@ -1819,8 +1819,10 @@ if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
 # The machine the row ran on: this boot of this runner. Two rows are
 # compared only where it is the same.
+# The host name beside the boot id: machines resumed from one memory
+# snapshot could share a boot id.
 try:
-    r['machine'] = open('/proc/sys/kernel/random/boot_id').read().strip()
+    r['machine'] = open('/proc/sys/kernel/random/boot_id').read().strip() + ' ' + os.uname().nodename
 except OSError:
     pass
 for name in ad:
