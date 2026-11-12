@@ -154,6 +154,9 @@ impl Mutants {
     /// The reader answers a read of a record that is not durable yet
     /// without asking whether a sync of the log failed meanwhile.
     pub(crate) const UNFLUSHED_READ_UNCHECKED: u32 = 1 << 17;
+    /// A barrier waits for a moment with no reader under way, and not
+    /// only for the readers that were under way when it began.
+    pub(crate) const BARRIER_WAITS_FOR_ALL: u32 = 1 << 31;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -604,28 +607,116 @@ impl Lookup {
 ///   freed can be used again.
 /// - `failed` says that the volume has failed, to a reader that
 ///   begins a read.
-/// - `syncing` and `durable` are for a read of a record that is not
-///   durable yet. After a failed sync the page cache may show a file
-///   as it was before the last writes, so such a record's payload can
-///   read as something else from the moment a sync of the log begins
-///   to fail, which is before anybody knows that it failed. The
-///   worker holds `syncing` around every call of the log that can
-///   sync a segment file and sets `failed` before it lets go; a
-///   reader that read from a record at or beyond `durable` (as it was
-///   at the lookup) takes `syncing` for an instant after its reads
-///   and then asks `failed`. If no sync failed until then, what it
-///   read was what was written. Records below `durable` and the home
-///   image are not exposed to this: a failed sync takes back only
-///   what no sync had covered, and what a step writes into the home
-///   image is read from the log until the step's end.
+/// - `durable` is for a read of a record that is not durable yet.
+///   After a failed sync the page cache may show a file as it was
+///   before the writes the sync was to cover, so such a record's
+///   payload can read as something else from the moment a sync of the
+///   log begins to fail, which is before anybody knows that it failed.
+///   A reader that finds a record at or beyond `durable` (as it is at
+///   the lookup) reads the record's whole payload and checks it
+///   against the header's checksum: a payload that matches is the one
+///   that was written, and is served whatever the sync does
+///   afterwards (rule R11 lets a request in flight at a failure
+///   complete either way). One that does not match is a log that
+///   cannot be read: the worker fails the volume and answers the read,
+///   which is also what a sync that is failing comes to. Records below
+///   `durable` and the home image are not exposed to this: a failed
+///   sync takes back only what no sync had covered, and what a step
+///   writes into the home image is read from the log until the step's
+///   end.
+///
+/// A read's whole range is looked up under one hold of `lookup`, and a
+/// mutation's whole range is entered under one: a read shows a
+/// mutation whole or not at all, and for a block the index only moves
+/// forward (to a newer record, or to the home image once that holds
+/// the newest), so a write that a read has shown is shown by every
+/// later read.
 #[derive(Debug, Default)]
 struct Shared {
     lookup: RwLock<Lookup>,
-    pin: RwLock<()>,
+    pin: Pins,
     failed: AtomicBool,
-    syncing: Mutex<()>,
     /// Up to where the log is durable, as the worker last knew.
     durable: AtomicU64,
+}
+
+/// The pin of design §5.1: readers enter it before they look up and
+/// leave it after their last read of a file; a barrier waits for the
+/// readers that were under way when it began.
+///
+/// Readers enter under a generation, and a barrier begins a new one
+/// and waits until no reader of an older generation is under way. A
+/// reader that enters while a barrier waits is of the new generation
+/// and is not waited for, so reads that keep arriving, overlapping each
+/// other, never hold a step: the barrier waits for as long as the
+/// slowest read that was under way when it began, and no longer. This
+/// rests on nothing a lock promises about who goes first.
+#[derive(Debug, Default)]
+struct Pins {
+    state: Mutex<PinState>,
+    left: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct PinState {
+    /// The generation a reader that enters now is of.
+    generation: u64,
+    /// The readers under way, by the generation they entered under.
+    under_way: BTreeMap<u64, usize>,
+}
+
+/// A reader's pin: it leaves when this is dropped.
+struct Pin<'a> {
+    pins: &'a Pins,
+    generation: u64,
+}
+
+impl Pins {
+    fn state(&self) -> std::sync::MutexGuard<'_, PinState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn enter(&self) -> Pin<'_> {
+        let mut state = self.state();
+        let generation = state.generation;
+        *state.under_way.entry(generation).or_default() += 1;
+        Pin {
+            pins: self,
+            generation,
+        }
+    }
+
+    /// Wait for the readers that are under way now. With `all` (a
+    /// defect, for tests), wait for a moment with no reader at all.
+    fn barrier(&self, all: bool) {
+        let mut state = self.state();
+        let before = state.generation;
+        state.generation += 1;
+        while state
+            .under_way
+            .iter()
+            .any(|(generation, readers)| *readers > 0 && (all || *generation <= before))
+        {
+            state = self
+                .left
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+impl Drop for Pin<'_> {
+    fn drop(&mut self) {
+        let mut state = self.pins.state();
+        if let Some(readers) = state.under_way.get_mut(&self.generation) {
+            *readers -= 1;
+            if *readers == 0 {
+                state.under_way.remove(&self.generation);
+            }
+        }
+        drop(state);
+        self.pins.left.notify_all();
+    }
 }
 
 impl Shared {
@@ -638,14 +729,15 @@ impl Shared {
     }
 
     /// What a reader holds while it looks up and reads.
-    fn pinned(&self) -> RwLockReadGuard<'_, ()> {
-        self.pin.read().unwrap_or_else(PoisonError::into_inner)
+    fn pinned(&self) -> Pin<'_> {
+        self.pin.enter()
     }
 
     /// Wait for the readers that are under way. A reader that begins
-    /// after this looks up after it.
-    fn barrier(&self) {
-        drop(self.pin.write().unwrap_or_else(PoisonError::into_inner));
+    /// after this began looks up after it.
+    fn barrier(&self, mutants: Mutants) {
+        self.pin
+            .barrier(mutants.has(Mutants::BARRIER_WAITS_FOR_ALL));
     }
 }
 
@@ -715,6 +807,10 @@ struct Core<D: Dir> {
     /// every lookup.
     #[cfg(any(test, feature = "test-hooks"))]
     read_pause: Option<StepPause>,
+    /// For test rigs: how a sync of the log for a flush waits before
+    /// it begins.
+    #[cfg(any(test, feature = "test-hooks"))]
+    sync_pause: Option<StepPause>,
     mutants: Mutants,
 }
 
@@ -883,6 +979,10 @@ impl<D: Dir> Core<D> {
         // the disk, and such a flush promises nothing new: a disk that
         // would refuse the next sync and has not been asked has not
         // failed yet (design §4.1).
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(pause) = &self.sync_pause {
+            pause.wait();
+        }
         let synced = self.with_log(|log| log.sync().map(|_| ()));
         match synced {
             Ok(()) => {
@@ -1135,22 +1235,18 @@ impl<D: Dir> Core<D> {
     }
 
     /// Call the log where it can sync a segment file (an append, which
-    /// seals a segment at a roll, and a sync), for the readers beside
-    /// the worker: see [`Shared`]. The flag is set before the lock is
-    /// let go, so a reader that takes the lock after its reads knows
-    /// whether a sync failed while it read.
+    /// seals a segment at a roll, and a sync), and tell the readers
+    /// beside the worker up to where it is durable now: see [`Shared`].
+    /// The durable position is told only after the sync that made it
+    /// so has returned.
     fn with_log<T>(&mut self, call: impl FnOnce(&mut Log<D>) -> T) -> T {
-        let shared = self.shared.clone();
-        let syncing = shared
-            .syncing
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
         let done = call(&mut self.log);
         if self.log.is_failed() {
-            shared.failed.store(true, Ordering::SeqCst);
+            self.shared.failed.store(true, Ordering::SeqCst);
         }
-        shared.durable.store(self.log.durable().0, Ordering::SeqCst);
-        drop(syncing);
+        self.shared
+            .durable
+            .store(self.log.durable().0, Ordering::SeqCst);
         done
     }
 
@@ -1298,7 +1394,7 @@ impl<D: Dir> Core<D> {
         // the index before the batch was chosen, and stay there until
         // the step's end. Deallocating is a write here.
         if !self.mutants.has(Mutants::HOME_WRITTEN_UNBARRED) {
-            self.shared.barrier();
+            self.shared.barrier(self.mutants);
         }
         let saved_at = self.barred(saved_at, false);
         // (1) The neighbours are saved and durable; the home image is
@@ -1451,7 +1547,7 @@ impl<D: Dir> Core<D> {
         // place after another record was written there. A reader that
         // begins after the barrier cannot find the old position.
         if !self.mutants.has(Mutants::SLOT_REUSED_UNBARRED) {
-            self.shared.barrier();
+            self.shared.barrier(self.mutants);
         }
         self.barred(ended_at, true);
         Ok((start, cut))
@@ -2064,11 +2160,12 @@ pub struct Timing {
     /// reader has served. A served store only.
     pub reader: [u64; 3],
     /// The reads that found a block in a record of the log that was
-    /// not durable yet, and how long each then waited for a sync of
-    /// the log that was under way, to know that it did not fail (a
-    /// failed sync can take such a record's content back). The wait is
-    /// inside the read's call. A served store only.
-    pub read_unflushed: Spent,
+    /// not durable yet, whose payload the reader then read whole and
+    /// checked against its checksum (a failed sync can take such a
+    /// record's content back: see [`Shared`]): how many reads; the
+    /// bytes they read beyond those asked for; how many records did not
+    /// match, each of which failed the volume. A served store only.
+    pub read_unflushed: [u64; 3],
 }
 
 /// The log as a store shows it to its owner.
@@ -2683,6 +2780,8 @@ impl<D: Dir> Store<D> {
                 refuse_holes: false,
                 #[cfg(any(test, feature = "test-hooks"))]
                 read_pause: None,
+                #[cfg(any(test, feature = "test-hooks"))]
+                sync_pause: None,
                 mutants: options.mutants,
             },
             unacknowledged,
@@ -2756,6 +2855,14 @@ impl<D: Dir> Store<D> {
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_read_pause(&mut self, pause: StepPause) {
         self.core.read_pause = Some(pause);
+    }
+
+    /// For test rigs: make every sync of the log for a flush (a
+    /// client's, the rule's own, or one that makes room) wait before
+    /// it begins.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_sync_pause(&mut self, pause: StepPause) {
+        self.core.sync_pause = Some(pause);
     }
 
     /// For test rigs: make every step wait at `point`.
@@ -3004,11 +3111,13 @@ enum ToReader {
 /// is asked of the index or of the log again.
 enum Found {
     /// In the payload of the write record at `record`, `skip` bytes
-    /// in, in the segment file of number `file`.
+    /// in, in the segment file of number `file`; `unflushed` if the
+    /// record was not durable at the lookup.
     Log {
         file: usize,
         record: Lsn,
         skip: u64,
+        unflushed: bool,
     },
     Zero,
     Home,
@@ -3036,9 +3145,11 @@ struct Reader<D: Dir> {
     identity: crate::format::Identity,
     geometry: Geometry,
     shared: Arc<Shared>,
-    /// The reads that found a record that was not durable yet, and
-    /// how long each then waited for a sync of the log under way.
-    unflushed: Spent,
+    /// Reads of records that were not durable yet: see
+    /// [`Timing::read_unflushed`].
+    unflushed: [u64; 3],
+    /// Where a record's whole payload is read to be checked.
+    scratch: Vec<u8>,
     mutants: Mutants,
     #[cfg(any(test, feature = "test-hooks"))]
     pause: Option<StepPause>,
@@ -3068,9 +3179,6 @@ impl<D: Dir> Reader<D> {
         let shared = self.shared.clone();
         let _pin = shared.pinned();
         let mut runs = Vec::new();
-        // Whether a record that is not durable yet is among what the
-        // read found.
-        let mut unflushed = false;
         if self.mutants.has(Mutants::READ_HOME_ONLY) {
             runs.push((start, blocks, Found::Home));
         } else {
@@ -3080,13 +3188,13 @@ impl<D: Dir> Reader<D> {
             for (run, len, source) in lookup.index.lookup(start, blocks) {
                 let found = match source {
                     Some(Source::Data { record, first }) => {
-                        unflushed |= record >= durable;
                         let base = self.identity.base_of(record);
                         match lookup.segments.get(&base) {
                             Some(&file) => Found::Log {
                                 file,
                                 record,
                                 skip: first * BLOCK_SIZE,
+                                unflushed: record >= durable,
                             },
                             // The index names a record whose segment
                             // the log does not have: the store's own
@@ -3104,11 +3212,17 @@ impl<D: Dir> Reader<D> {
         if let Some(pause) = &self.pause {
             pause.wait();
         }
+        let mut checked_any = false;
         for (run, len, found) in runs {
             let from = ((run - start) * BLOCK_SIZE) as usize;
             let part = &mut buf[from..from + (len * BLOCK_SIZE) as usize];
             let read = match found {
-                Found::Log { file, record, skip } => {
+                Found::Log {
+                    file,
+                    record,
+                    skip,
+                    unflushed,
+                } => {
                     if let std::collections::btree_map::Entry::Vacant(unopened) =
                         self.segments.entry(file)
                     {
@@ -3119,10 +3233,39 @@ impl<D: Dir> Reader<D> {
                             Err(_) => return Err(Unread::Fault),
                         }
                     }
-                    self.segments.get(&file).is_some_and(|file| {
+                    let Some(file) = self.segments.get(&file) else {
+                        return Err(Unread::Fault);
+                    };
+                    if unflushed && !self.mutants.has(Mutants::UNFLUSHED_READ_UNCHECKED) {
+                        // Checked against the record's checksum: see
+                        // [`Shared`].
+                        if !checked_any {
+                            self.unflushed[0] += 1;
+                            checked_any = true;
+                        }
+                        let checked = crate::log::read_checked_payload_in(
+                            file,
+                            &self.identity,
+                            record,
+                            skip,
+                            part,
+                            &mut self.scratch,
+                        );
+                        match checked {
+                            Ok(Some(beyond)) => {
+                                self.unflushed[1] += beyond;
+                                true
+                            }
+                            Ok(None) => {
+                                self.unflushed[2] += 1;
+                                false
+                            }
+                            Err(_) => false,
+                        }
+                    } else {
                         crate::log::read_payload_in(file, &self.identity, record, skip, part)
                             .is_ok()
-                    })
+                    }
                 }
                 Found::Zero => {
                     part.fill(0);
@@ -3132,24 +3275,6 @@ impl<D: Dir> Reader<D> {
             };
             if !read {
                 return Err(Unread::Fault);
-            }
-        }
-        if unflushed && !self.mutants.has(Mutants::UNFLUSHED_READ_UNCHECKED) {
-            // What was read from a record that no sync had covered is
-            // what was written only if no sync of the log failed
-            // meanwhile: wait for one that is under way, then ask.
-            let began = Instant::now();
-            drop(
-                shared
-                    .syncing
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
-            self.unflushed.add(began.elapsed());
-            if shared.failed.load(Ordering::SeqCst)
-                && !self.mutants.has(Mutants::SERVE_AFTER_FAILURE)
-            {
-                return Err(Unread::Refused(BlkError::Failed));
             }
         }
         Ok(())
@@ -3186,7 +3311,7 @@ struct ReaderShown {
     longest_wait_cause: u64,
     longest_wait_cause_ns: u64,
     time: [u64; 3],
-    unflushed: Spent,
+    unflushed: [u64; 3],
 }
 
 /// The store behind a worker thread.
@@ -3348,7 +3473,8 @@ where
             identity: *core.log.identity(),
             geometry,
             shared: core.shared.clone(),
-            unflushed: Spent::default(),
+            unflushed: [0; 3],
+            scratch: Vec::new(),
             mutants: core.mutants,
             #[cfg(any(test, feature = "test-hooks"))]
             pause: core.read_pause.take(),

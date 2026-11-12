@@ -2022,6 +2022,56 @@ pub(crate) fn read_payload_in<F: File>(
         .map_err(|e| read_error("reading the log", &e))
 }
 
+/// As [`read_payload_in`], for a record that may not be durable yet:
+/// the record's whole payload is read into `scratch` and checked
+/// against the checksum in its header, and only then is the part asked
+/// for copied into `buf`. `Ok(Some(n))`: it matched, `buf` holds the
+/// record's bytes, and `n` bytes were read beyond those asked for.
+/// `Ok(None)`: the header at the position is not a write record's at
+/// that position of at least that length, or the payload does not
+/// match its checksum; `buf` is left as it was.
+///
+/// After a failed sync the page cache may show a file as it was before
+/// the writes the sync was to cover. A payload that matches its
+/// checksum is the one that was written, whatever a sync does with it
+/// afterwards.
+pub(crate) fn read_checked_payload_in<F: File>(
+    file: &F,
+    identity: &Identity,
+    record: Lsn,
+    skip: u64,
+    buf: &mut [u8],
+    scratch: &mut Vec<u8>,
+) -> Result<Option<u64>, LogError> {
+    let align = u64::from(identity.align);
+    let at = record.0 % identity.segment_size;
+    if at + align > identity.segment_size {
+        return Ok(None);
+    }
+    let mut raw = [0u8; RECORD_HEADER];
+    file.read_at(at, &mut raw)
+        .map_err(|e| read_error("reading the log", &e))?;
+    let Some((kind, data_len)) = RecordHeader::peek(&raw, record) else {
+        return Ok(None);
+    };
+    let wanted = skip.checked_add(buf.len() as u64);
+    if kind != Kind::Write
+        || wanted.is_none_or(|end| end > u64::from(data_len))
+        || !identity.fits(at, data_len)
+    {
+        return Ok(None);
+    }
+    scratch.resize(data_len as usize, 0);
+    file.read_at(at + align, scratch)
+        .map_err(|e| read_error("reading the log", &e))?;
+    if crc32c::crc32c(scratch) != RecordHeader::peek_data_crc(&raw) {
+        return Ok(None);
+    }
+    let from = skip as usize;
+    buf.copy_from_slice(&scratch[from..from + buf.len()]);
+    Ok(Some(u64::from(data_len) - buf.len() as u64))
+}
+
 #[cfg(test)]
 impl<D: Dir> Log<D> {
     /// For tests that play the part of someone who knows everything

@@ -289,9 +289,11 @@ fn store_kill_test_child() {
 }
 
 /// A full log behind a hold, through the worker thread: a write that
-/// finds no room stays with the worker, and a read submitted after it
-/// waits behind it, neither completed nor failed; when the hold is
-/// released both complete, in order, and the data is there.
+/// finds no room stays with the worker, neither completed nor failed;
+/// a read submitted after it is answered meanwhile (since M1.3j a read
+/// does not wait for the worker, and rule R8 orders only mutations);
+/// when the hold is released the write completes, and the data is
+/// there.
 #[test]
 fn a_write_held_behind_a_hold_completes_when_the_hold_moves() {
     let tmp = tempfile::tempdir().unwrap();
@@ -334,16 +336,19 @@ fn a_write_held_behind_a_hold_completes_when_the_hold_moves() {
             op: behind,
         })
         .unwrap();
+    assert_eq!(store.wait(&mut done, TIMEOUT), 1);
+    assert_eq!((done[0].id, done[0].result), (RequestId(100), Ok(())));
+    assert_eq!(done[0].buf.as_ref().unwrap()[0], 1);
+    // The write is still held.
     assert_eq!(store.wait(&mut done, Duration::from_millis(300)), 0);
     store.set_hold(None).unwrap();
     while done.len() < 2 {
         assert!(
             store.wait(&mut done, TIMEOUT) > 0,
-            "the held requests did not complete"
+            "the held write did not complete"
         );
     }
-    assert_eq!((done[0].id, done[0].result), (RequestId(held), Ok(())));
-    assert_eq!((done[1].id, done[1].result), (RequestId(100), Ok(())));
+    assert_eq!((done[1].id, done[1].result), (RequestId(held), Ok(())));
     assert_eq!(read(&mut store, held * 256, 1)[0], held as u8);
     assert_eq!(read(&mut store, 0, 1)[0], 1);
 }

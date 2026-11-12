@@ -4543,7 +4543,7 @@ fn every_kind_of_request_is_timed_under_its_kind() {
     assert!(timing.worker[0] > 0 && timing.reader[0] > 0, "{timing:?}");
     // The read found a record that the flush before it had made
     // durable: it did not have to ask about a sync.
-    assert_eq!(timing.read_unflushed, Spent::default());
+    assert_eq!(timing.read_unflushed, [0; 3]);
     assert_eq!(ACTIVITIES[0], "idle");
     assert_eq!(
         ACTIVITIES[1..6],
@@ -5076,19 +5076,23 @@ fn a_read_the_reader_cannot_do_fails_the_volume() {
 
 /// A read of a record that no sync has covered, beside a sync of the
 /// log that fails. After a failed sync the cache may show the file as
-/// it was before the write, so what the reader reads then is not what
-/// was written, and the reader cannot see that from the file.
+/// it was before the write, so what the reader reads then may not be
+/// what was written, and the file alone does not say so.
 ///
 /// A write is acknowledged and not flushed. A read of it looks up,
 /// finds the record, and is held. The disk then refuses syncs, a
 /// flush fails and is answered, and the reader is released. The read
-/// is answered as failed: the reader asks whether a sync failed after
-/// it has read, whatever it read. Mutant: it does not ask. Then, in
-/// at least one environment, the read is answered as done with what
-/// the cache showed after the failure.
+/// is answered with the bytes that were written or as failed, never
+/// with anything else: the reader checks the record's whole payload
+/// against its checksum. In at least one environment the failed sync
+/// took the record back and the read is answered as failed. Mutant:
+/// the reader does not check, and in at least one environment
+/// answers with what the cache showed after the failure.
 #[test]
 fn a_read_of_an_unflushed_record_is_not_answered_from_a_failed_log() {
-    fn round(env: &Env) -> Result<Result<(), BlkError>, String> {
+    /// The read's result, and whether the bytes it returned are the
+    /// write's.
+    fn round(env: &Env) -> Result<(Result<(), BlkError>, bool), String> {
         let (disk, mut store) = env.fresh()?;
         write(&mut store, 0, 1, 1)?;
         flush(&mut store)?;
@@ -5116,32 +5120,213 @@ fn a_read_of_an_unflushed_record_is_not_answered_from_a_failed_log() {
         reader.open();
         take(&mut served, &mut done, 3, "the read")?;
         let read = completion(&done, 100)?;
-        if read.result.is_ok()
-            && read
-                .buf
-                .as_ref()
-                .is_none_or(|b| b.iter().any(|b| *b != 0x33))
-        {
-            // Only the mutant gets here; what it served is not the
-            // write.
-            return Ok(Ok(()));
-        }
-        Ok(read.result)
+        let written = read
+            .buf
+            .as_ref()
+            .is_some_and(|b| b.iter().all(|b| *b == 0x33));
+        Ok((read.result, written))
     }
+    let mut failed = 0;
     for env in environments(0) {
-        assert_eq!(
-            round(&env),
-            Ok(Err(BlkError::Failed)),
-            "the read was answered from a failed log in {env:?}"
-        );
+        match round(&env) {
+            Ok((Ok(()), true)) => {}
+            Ok((Err(BlkError::Failed), _)) => failed += 1,
+            other => panic!("the read came to {other:?} in {env:?}"),
+        }
     }
-    // The reader of the mutant answers as done wherever the record's
-    // header still reads as it was written.
+    assert!(failed > 0, "no failed sync took the record back");
     let served = environments(Mutants::UNFLUSHED_READ_UNCHECKED)
         .iter()
-        .filter(|env| round(env) == Ok(Ok(())))
+        .filter(|env| matches!(round(env), Ok((Ok(()), false))))
         .count();
     assert!(served > 0, "the defect was noticed nowhere");
+}
+
+/// A read of a record that no sync has covered does not wait for a
+/// sync of the log: the worker is held at the start of a flush's sync
+/// while the read is submitted, and the read is answered with the
+/// write's bytes before the flush is let go. The reader counts it:
+/// one read checked, the rest of the record read beyond what it asked
+/// for, no mismatch.
+#[test]
+fn a_read_of_an_unflushed_record_does_not_wait_for_a_sync() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    let sync = Gate::new("unflushed-sync");
+    store.set_sync_pause(sync.pause());
+    let mut served = store.serve().unwrap();
+    let _opened = Opened(&[&sync]);
+    let mut done = Vec::new();
+    submit(&mut served, write_request(1, 8, 8, 0x44)).unwrap();
+    take(&mut served, &mut done, 1, "the write").unwrap();
+    served
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Flush,
+        })
+        .unwrap();
+    sync.wait_reached("the flush's sync").unwrap();
+    // Two blocks of the eight: the other six are read to be checked.
+    submit(&mut served, read_request(100, 10, 2)).unwrap();
+    take(&mut served, &mut done, 2, "the read").unwrap();
+    // The flush is still held: the read did not wait for it.
+    assert!(completion(&done, 2).is_err());
+    let read = completion(&done, 100).unwrap();
+    assert_eq!(read.result, Ok(()));
+    assert!(read.buf.as_ref().unwrap().iter().all(|b| *b == 0x44));
+    let unflushed = served.timing().read_unflushed;
+    sync.open();
+    take(&mut served, &mut done, 3, "the flush").unwrap();
+    assert_eq!(unflushed, [1, 6 * BLOCK, 0]);
+}
+
+/// A reader that found a record of a step's batch in the index reads
+/// it after the log's start has moved past it (design §5.1): it asks
+/// the log nothing that the worker changes, and reads the file and
+/// the place it found under the lock. The step is held where the new
+/// start is durable and the index has not let go of the batch; a read
+/// of a block of the batch looks up then, and is held. The step goes
+/// on, lets go of the batch in the index and waits at its second
+/// barrier: the checkpoint does not complete while the reader is held.
+/// Released, the read returns the record's data and the volume has not
+/// failed.
+#[test]
+fn a_reader_reads_a_record_the_log_has_given_up_while_it_held_its_pin() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 4, 4, 0x55).unwrap();
+    flush(&mut store).unwrap();
+    let (step, reader) = (Gate::new("given-up-step"), Gate::new("given-up-read"));
+    store.set_step_pause_at(step.pause(), StepPoint::StartDurable);
+    store.set_read_pause(reader.pause());
+    let mut served = store.serve().unwrap();
+    let _opened = Opened(&[&step, &reader]);
+    let (reply, checkpointed) = mpsc::channel();
+    assert!(served.send(Command::Checkpoint(reply)));
+    step.wait_reached("the step").unwrap();
+    let start = served.log_state().start;
+    submit(&mut served, read_request(100, 5, 2)).unwrap();
+    reader.wait_reached("the read").unwrap();
+    step.open();
+    // However long this is, the step cannot pass its second barrier.
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(checkpointed.try_recv().is_err());
+    reader.open();
+    let mut done = Vec::new();
+    take(&mut served, &mut done, 1, "the read").unwrap();
+    let new_start = checkpointed.recv_timeout(Duration::from_secs(20)).unwrap();
+    let read = completion(&done, 100).unwrap();
+    assert_eq!(read.result, Ok(()));
+    assert!(read.buf.as_ref().unwrap().iter().all(|b| *b == 0x55));
+    assert!(new_start.unwrap().0 > start, "the start did not move");
+    // The volume goes on.
+    submit(&mut served, read_request(101, 4, 1)).unwrap();
+    take(&mut served, &mut done, 2, "a read after").unwrap();
+    assert_eq!(completion(&done, 101).unwrap().result, Ok(()));
+    assert!(!served.gone());
+}
+
+/// The reader does not answer a read it cannot do: the worker marks
+/// the log and only then answers (design §5.1). Here the worker is
+/// held in a step while the reader fails a read, so the mark has not
+/// been made: no failed read is delivered. Then the process is lost
+/// (the machine stops taking anything, and the disk's process is
+/// killed): a restart finds no mark, opens the volume, and reads what
+/// was flushed, as after any loss of the process. Mutant: the reader
+/// answers the failure itself, before any mark.
+#[test]
+fn a_failed_read_is_not_answered_before_the_log_is_marked() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 4, 4, 0x66)?;
+        flush(&mut store)?;
+        let step = Gate::new("unmarked-step");
+        store.set_step_pause_at(step.pause(), StepPoint::Saved);
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&step]);
+        let (reply, _checkpointed) = mpsc::channel();
+        if !served.send(Command::Checkpoint(reply)) {
+            return Err("the worker is gone".into());
+        }
+        step.wait_reached("the step")?;
+        disk.fail_read(0, true);
+        submit(&mut served, read_request(100, 5, 1))?;
+        // However long this is, no failed read can be delivered.
+        std::thread::sleep(Duration::from_millis(50));
+        let mut done = Vec::new();
+        if served.poll(&mut done) != 0 {
+            return Err(format!(
+                "a read was answered before the log was marked: {:?}",
+                done[0].result
+            ));
+        }
+        // The process is lost here.
+        disk.halt_after(0);
+        step.open();
+        drop(served);
+        disk.kill();
+        disk.clear_faults();
+        let mut store = env.reopen(&disk)?;
+        expect(&mut store, 4, 4, 0x66, "after the restart")
+    }
+    caught(scenario, Mutants::READ_ERROR_SERVED);
+}
+
+/// A barrier waits for the readers that were under way when it began,
+/// and not for a moment with no reader: pins that overlap each other
+/// without a gap, entered and left for as long as the test lets them,
+/// do not hold a barrier. Mutant (the defect, given to the barrier):
+/// it waits for a moment with no reader, which never comes while the
+/// pins go on.
+#[test]
+fn a_barrier_is_not_held_by_reads_that_keep_arriving() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    for all in [false, true] {
+        let pins = Arc::new(Pins::default());
+        let stop = Arc::new(AtomicBool::new(false));
+        let (entered, first) = mpsc::channel();
+        let chain = {
+            let (pins, stop) = (pins.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut held = pins.enter();
+                let _ = entered.send(());
+                while !stop.load(Ordering::SeqCst) {
+                    // The next pin is entered before the last is left.
+                    let next = pins.enter();
+                    drop(held);
+                    held = next;
+                    std::thread::sleep(Duration::from_micros(100));
+                }
+                drop(held);
+            })
+        };
+        first.recv().unwrap();
+        let (passed, barrier) = mpsc::channel();
+        let waiting = {
+            let pins = pins.clone();
+            std::thread::spawn(move || {
+                pins.barrier(all);
+                let _ = passed.send(());
+            })
+        };
+        let wait = if all {
+            Duration::from_millis(300)
+        } else {
+            Duration::from_secs(20)
+        };
+        let result = barrier.recv_timeout(wait);
+        stop.store(true, Ordering::SeqCst);
+        chain.join().unwrap();
+        waiting.join().unwrap();
+        if all {
+            assert!(result.is_err(), "the defect was not noticed");
+        } else {
+            assert!(
+                result.is_ok(),
+                "the barrier was held by reads that kept arriving"
+            );
+        }
+    }
 }
 
 /// The reader's own account. A read's wait is laid over what the
