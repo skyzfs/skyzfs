@@ -111,3 +111,15 @@ Reviewed: `origin/zfs-topology` ... `origin/skyzfs-coding` 78c204b.
   the step's parts and the barrier are not in it.
 - fmt, clippy clean; skyzfs-local 213 pass, skyzfs-ublk 123 pass,
   test_skz_time.py 24 pass.
+
+### Correction to the third look
+
+My "can merge" on 90e7c88 was wrong. Codex found what I missed: a
+look counts a busy thread's open span under what it last published
+("other" for the worker through a request or step, idle for the
+reader through a read). The thread later closes that time under the
+real activity, so a single activity's sum can be lower at a later
+look. The totals stay exact, which is all the new test and my plants
+looked at. `skz_time.py`'s `delta()` rejects a window with a sum that
+went down. I saw the shift between activities while reading and did
+not follow it to a sum that decreases.
