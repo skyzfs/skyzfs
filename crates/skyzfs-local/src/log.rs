@@ -709,6 +709,8 @@ pub struct Log<D: Dir> {
     slots: Vec<Slot<D::File>>,
     /// The segments of the log, by first position.
     live: BTreeMap<u64, usize>,
+    /// How often `live` has changed.
+    segments_changed: u64,
     /// The end of the last record.
     tail: Lsn,
     chain: u64,
@@ -1095,6 +1097,7 @@ impl<D: Dir> Log<D> {
             copy,
             slots,
             live,
+            segments_changed: 0,
             tail: end,
             chain: cursor.chain,
             durable: end,
@@ -1480,6 +1483,7 @@ impl<D: Dir> Log<D> {
         self.slots[next_index].sized = true;
         self.dirty.insert(next_index);
         self.live.insert(next, next_index);
+        self.segments_changed += 1;
         self.closed = false;
         self.fresh_block = false;
         self.tail = Lsn(next + identity.unit());
@@ -1878,22 +1882,25 @@ impl<D: Dir> Log<D> {
         let Some(&index) = self.live.get(&base) else {
             return Err(Corruption::MissingSegment { base }.into());
         };
-        let file = &self.slots[index].file;
-        let mut raw = [0u8; RECORD_HEADER];
-        file.read_at(at, &mut raw)
-            .map_err(|e| read_error("reading the log", &e))?;
-        let Some((kind, data_len)) = RecordHeader::peek(&raw, record) else {
-            return Err(LogError::BadPosition(record));
-        };
-        let wanted = skip.checked_add(buf.len() as u64);
-        if kind != Kind::Write
-            || wanted.is_none_or(|end| end > u64::from(data_len))
-            || !identity.fits(at, data_len)
-        {
-            return Err(LogError::BadPosition(record));
-        }
-        file.read_at(at + align + skip, buf)
-            .map_err(|e| read_error("reading the log", &e))
+        read_payload_in(&self.slots[index].file, &identity, record, skip, buf)
+    }
+
+    /// The segment files that hold the log now: for each, the position
+    /// its segment begins at and the file's number
+    /// ([`slot_name`]). For a reader that is not the log's owner and
+    /// reads a record's payload from a handle of its own
+    /// ([`read_payload_in`]).
+    pub(crate) fn segments(&self) -> BTreeMap<u64, usize> {
+        self.live
+            .iter()
+            .map(|(base, index)| (*base, self.slots[*index].number))
+            .collect()
+    }
+
+    /// How often the set of segment files that hold the log has
+    /// changed: a segment begun, or segments given up.
+    pub(crate) fn segments_changed(&self) -> u64 {
+        self.segments_changed
     }
 
     /// The most segment files the log may have, or `None` for no limit
@@ -1968,6 +1975,7 @@ impl<D: Dir> Log<D> {
         }
         let first = self.current.identity.base_of(target);
         self.live.retain(|base, _| *base >= first);
+        self.segments_changed += 1;
         // The walk to the new start is where the next replay begins.
         self.start = match (self.start, walked) {
             (Some((_, stale)), _) if self.mutants.has(Mutants::STALE_CURSOR) => {
@@ -1977,6 +1985,41 @@ impl<D: Dir> Log<D> {
         };
         Ok(target)
     }
+}
+
+/// Read from the payload of the write record at `record`, in `file`,
+/// the segment file that holds that position: as [`Log::read_payload`]
+/// does, for a reader with a handle of its own. Whether the position
+/// is still in the log is the caller's business: this asks only the
+/// file, where the header at the position must be a write record's at
+/// that position and of at least that length.
+pub(crate) fn read_payload_in<F: File>(
+    file: &F,
+    identity: &Identity,
+    record: Lsn,
+    skip: u64,
+    buf: &mut [u8],
+) -> Result<(), LogError> {
+    let align = u64::from(identity.align);
+    let at = record.0 % identity.segment_size;
+    if at + align > identity.segment_size {
+        return Err(LogError::BadPosition(record));
+    }
+    let mut raw = [0u8; RECORD_HEADER];
+    file.read_at(at, &mut raw)
+        .map_err(|e| read_error("reading the log", &e))?;
+    let Some((kind, data_len)) = RecordHeader::peek(&raw, record) else {
+        return Err(LogError::BadPosition(record));
+    };
+    let wanted = skip.checked_add(buf.len() as u64);
+    if kind != Kind::Write
+        || wanted.is_none_or(|end| end > u64::from(data_len))
+        || !identity.fits(at, data_len)
+    {
+        return Err(LogError::BadPosition(record));
+    }
+    file.read_at(at + align + skip, buf)
+        .map_err(|e| read_error("reading the log", &e))
 }
 
 #[cfg(test)]

@@ -2187,8 +2187,8 @@ fn the_served_store_acknowledges_what_its_owner_has_taken() {
     drop(served);
     assert_eq!(
         calls.load(Ordering::SeqCst),
-        4,
-        "and one when the worker ended"
+        5,
+        "and one when the worker ended, and one when the reader did"
     );
 }
 
@@ -4010,14 +4010,15 @@ fn the_rules_own_sync_is_shown_as_the_beginning_of_its_step() {
 // ---------------------------------------------------------------------
 // Where the time goes (M1.3h).
 
-/// A read that arrives while a step is under way is counted with the
-/// time it waited, which is at least what was left of the step, among
-/// the requests that waited for a step, and among the reads that did.
+/// A flush that arrives while a step is under way is counted with the
+/// time it waited, which is at least what was left of the step. (A
+/// flush, since M1.3j: a read no longer waits for the worker. The
+/// variables below still say "read".)
 /// The step's time is in the part it was spent in, and the numbers fit
 /// each other and the clock of the test. The step is held in its hook
 /// behind its writes, so the time is the home image's sync's part.
 #[test]
-fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step() {
+fn a_flush_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step() {
     const HELD: Duration = Duration::from_millis(300);
     let env = environments(0)[0];
     let (_disk, mut store) = env.fresh().unwrap();
@@ -4039,10 +4040,7 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     served
         .submit(Request {
             id: RequestId(1),
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::zeroed(1),
-            },
+            op: Op::Flush,
         })
         .unwrap();
     std::thread::sleep(HELD);
@@ -4065,7 +4063,7 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     let _ = std::fs::remove_file(StepPause::reached(&gate));
     let ns = |time: Duration| time.as_nanos() as u64;
 
-    let read = timing.requests[0];
+    let read = timing.requests[2];
     assert_eq!((read.wait.count, read.call.count), (1, 1), "{timing:?}");
     assert!(read.wait.sum_ns >= ns(HELD), "{timing:?}");
     assert!(
@@ -4074,7 +4072,7 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     );
     assert_eq!(read.wait.max_ns, read.wait.sum_ns);
     // It is the only request.
-    for kind in 1..5 {
+    for kind in [0, 1, 3, 4] {
         assert_eq!(timing.requests[kind], RequestTiming::default());
     }
     // The step that was held: its time is in the part behind the
@@ -4110,11 +4108,11 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
         .iter()
         .position(|a| *a == "step_home_sync")
         .unwrap();
-    let by = timing.wait_by[0];
+    let by = timing.wait_by[2];
     assert_eq!(by.iter().sum::<u64>(), read.wait.sum_ns, "{timing:?}");
     assert!(by[home_sync] >= ns(HELD), "{timing:?}");
-    assert_eq!(timing.longest_wait_cause[0], home_sync as u64);
-    assert_eq!(timing.longest_wait_cause_ns[0], by[home_sync]);
+    assert_eq!(timing.longest_wait_cause[2], home_sync as u64);
+    assert_eq!(timing.longest_wait_cause_ns[2], by[home_sync]);
     assert_eq!(by[0], 0, "the worker was not idle while the read waited");
     // The worker's own time: no more than the test's, and the sync it
     // was held in is in it.
@@ -4124,12 +4122,13 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     assert!(timing.step_home_sync.count <= state.steps);
 }
 
-/// A read submitted while a step is held, behind two writes that were
-/// submitted in the same moment: its wait is the rest of the step, the
+/// A flush (a read, before reads left the worker in M1.3j; the
+/// variables still say so) submitted while a step is held, behind two
+/// writes that were submitted in the same moment: its wait is the rest of the step, the
 /// steps the gate takes after it, and the two writes' calls, and the
 /// parts add up to the wait. The two writes' calls are in it whole.
 #[test]
-fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
+fn a_flush_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
     const HELD: Duration = Duration::from_millis(200);
     let env = environments(0)[0];
     let (_disk, mut store) = env.fresh().unwrap();
@@ -4153,10 +4152,7 @@ fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
             offset: 320 * BLOCK,
             data: Buf::filled(16, 8),
         },
-        Op::Read {
-            offset: 300 * BLOCK,
-            buf: Buf::zeroed(16),
-        },
+        Op::Flush,
     ];
     for (n, op) in requests.into_iter().enumerate() {
         served
@@ -4179,15 +4175,13 @@ fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
     drop(served);
     let _ = std::fs::remove_file(&gate);
     let _ = std::fs::remove_file(StepPause::reached(&gate));
-    // The read saw the write before it.
-    let read = done.iter().find(|c| c.id == RequestId(2)).unwrap();
-    assert!(read.buf.as_ref().unwrap().iter().all(|b| *b == 7));
+    assert!(done.iter().all(|c| c.result.is_ok()));
 
     let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
     let ns = HELD.as_nanos() as u64;
-    let (reads, writes) = (timing.requests[0], timing.requests[1]);
+    let (reads, writes) = (timing.requests[2], timing.requests[1]);
     assert_eq!((reads.wait.count, writes.wait.count), (1, 2), "{timing:?}");
-    let by = timing.wait_by[0];
+    let by = timing.wait_by[2];
     assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
     // Both writes' calls lie wholly inside the read's wait.
     assert_eq!(by[at("write")], writes.call.sum_ns, "{timing:?}");
@@ -4198,7 +4192,7 @@ fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
     for none in ["idle", "read", "flush", "discard", "zeroes"] {
         assert_eq!(by[at(none)], 0, "{none}: {timing:?}");
     }
-    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+    assert_eq!(timing.longest_wait_cause[2], at("step_home_sync") as u64);
     // The second write waited for the first one's call too; the first
     // for none.
     let by = timing.wait_by[1];
@@ -4211,13 +4205,13 @@ fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
 
 /// A write that finds the log full makes room inside its own call: a
 /// sync of the log and a whole checkpoint. The checkpoint's parts are
-/// the step's, in the worker's time and in the wait of a read queued
-/// behind that write, and the write's activity is only the rest of its
+/// the step's, in the worker's time and in the wait of a flush queued
+/// behind that write (a read, before M1.3j; the variables still say so), and the write's activity is only the rest of its
 /// call. The checkpoint is held 200 ms in the home image's part, so
 /// that part is at least that long and the time under "write" is
 /// shorter than the write's call by at least that.
 #[test]
-fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
+fn a_flush_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
     const HELD: Duration = Duration::from_millis(200);
     let env = Env {
         segments: Some(2),
@@ -4261,10 +4255,7 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
     served
         .submit(Request {
             id: read,
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::zeroed(1),
-            },
+            op: Op::Flush,
         })
         .unwrap();
     std::thread::sleep(HELD);
@@ -4284,7 +4275,7 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
     // No step before the write that made room.
     assert_eq!(before.step_apply.count, 0, "{before:?}");
     assert_eq!(before.requests[1].call.count, writes - 1, "{before:?}");
-    let (reads, wrote) = (timing.requests[0], timing.requests[1]);
+    let (reads, wrote) = (timing.requests[2], timing.requests[1]);
     assert_eq!((reads.wait.count, wrote.call.count), (1, writes));
     // The write that made room is the longest, and its call holds the
     // checkpoint whole.
@@ -4293,11 +4284,11 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
     // The read's wait: the checkpoint's parts under their names, the
     // held one the largest, and under "write" only the rest of that
     // one write's call.
-    let by = timing.wait_by[0];
+    let by = timing.wait_by[2];
     assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
     assert!(by[at("step_home_sync")] >= ns, "{timing:?}");
     assert!(by[at("write")] <= made_room - ns, "{timing:?}");
-    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+    assert_eq!(timing.longest_wait_cause[2], at("step_home_sync") as u64);
     // Nothing under a call that did not happen. (The worker's receive
     // of the read, after the write, is a moment under "idle".)
     for none in ["read", "flush", "discard", "zeroes", "own_sync"] {
@@ -4319,7 +4310,16 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
         assert_eq!(timing.worker[at(name)], part.sum_ns, "{name}: {timing:?}");
         in_parts += part.sum_ns;
     }
+    // And the step's two barriers, which are no part of the six.
+    let barriers = timing.barrier_home.sum_ns + timing.barrier_reuse.sum_ns;
+    assert_eq!(timing.worker[at("step_barrier")], barriers, "{timing:?}");
+    in_parts += barriers;
     assert!(timing.step_apply.count >= 1, "{timing:?}");
+    assert_eq!(
+        (timing.barrier_home.count, timing.barrier_reuse.count),
+        (timing.step_apply.count, timing.step_apply.count),
+        "{timing:?}"
+    );
     assert_eq!(
         timing.worker[at("write")],
         wrote.call.sum_ns - in_parts,
@@ -4329,8 +4329,8 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
 
 /// An explicit checkpoint of a served store is no request, and its
 /// parts are taken right after it: they are the step's activities in
-/// the worker's time and in the wait of a read that was submitted
-/// meanwhile, and "other" holds nothing of the checkpoint. The
+/// the worker's time and in the wait of a flush that was submitted
+/// meanwhile (a read, before M1.3j; the variables still say so), and "other" holds nothing of the checkpoint. The
 /// checkpoint is held 200 ms in the home image's part while the read
 /// is submitted, so the read is the next thing the worker does after
 /// it: if the parts were not taken at once they would lie before the
@@ -4359,10 +4359,7 @@ fn an_explicit_checkpoints_parts_are_the_steps_activities_in_a_served_store() {
     served
         .submit(Request {
             id: RequestId(1),
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::zeroed(16),
-            },
+            op: Op::Flush,
         })
         .unwrap();
     std::thread::sleep(HELD);
@@ -4380,9 +4377,9 @@ fn an_explicit_checkpoints_parts_are_the_steps_activities_in_a_served_store() {
     let _ = std::fs::remove_file(&gate);
     let _ = std::fs::remove_file(StepPause::reached(&gate));
     assert!(matches!(checkpointed, Ok(Ok(_))), "{checkpointed:?}");
-    // The checkpoint took the whole log, and the read saw the data.
+    // The checkpoint took the whole log.
     assert_eq!(live, 0);
-    assert!(done[0].buf.as_ref().unwrap().iter().all(|b| *b == 1));
+    assert_eq!(done[0].result, Ok(()));
 
     let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
     let ns = HELD.as_nanos() as u64;
@@ -4403,12 +4400,12 @@ fn an_explicit_checkpoints_parts_are_the_steps_activities_in_a_served_store() {
     // The read's wait: the held part under its name, and under
     // "other" no more than what is left of the wait beside the 200 ms
     // it spent behind that part.
-    let reads = timing.requests[0];
-    let by = timing.wait_by[0];
+    let reads = timing.requests[2];
+    let by = timing.wait_by[2];
     assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
     assert!(by[at("step_home_sync")] >= ns, "{timing:?}");
     assert!(by[at("other")] <= reads.wait.sum_ns - ns, "{timing:?}");
-    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+    assert_eq!(timing.longest_wait_cause[2], at("step_home_sync") as u64);
 }
 
 /// A completion that `wait` takes after waiting for it has its stamp,
@@ -4434,10 +4431,7 @@ fn a_completion_taken_by_wait_has_its_ready_time() {
     served
         .submit(Request {
             id: RequestId(5),
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::zeroed(1),
-            },
+            op: Op::Flush,
         })
         .unwrap();
     let mut done = Vec::new();
@@ -4537,9 +4531,19 @@ fn every_kind_of_request_is_timed_under_its_kind() {
             timing.requests[kind].wait.sum_ns,
             "{timing:?}"
         );
-        assert_eq!(timing.worker[1 + kind], timing.requests[kind].call.sum_ns);
+        // Reads are the reader's: its calls are in its time and not
+        // in the worker's.
+        let calls = timing.requests[kind].call.sum_ns;
+        if kind == 0 {
+            assert_eq!((timing.worker[1], timing.reader[1]), (0, calls));
+        } else {
+            assert_eq!(timing.worker[1 + kind], calls);
+        }
     }
-    assert!(timing.worker[0] > 0, "{timing:?}");
+    assert!(timing.worker[0] > 0 && timing.reader[0] > 0, "{timing:?}");
+    // The read found a record that the flush before it had made
+    // durable: it did not have to ask about a sync.
+    assert_eq!(timing.read_unflushed, Spent::default());
     assert_eq!(ACTIVITIES[0], "idle");
     assert_eq!(
         ACTIVITIES[1..6],
@@ -4548,6 +4552,724 @@ fn every_kind_of_request_is_timed_under_its_kind() {
     // No marks: no step and no gate.
     assert_eq!(timing.gate, Spent::default());
     assert_eq!(timing.step_home_sync, Spent::default());
+}
+
+// ---------------------------------------------------------------------
+// Reads leave the worker (M1.3j).
+
+/// A file that a hook waits for, and the one the hook makes when it
+/// has reached its point. Both are removed when this is made and when
+/// it is dropped.
+struct Gate(std::path::PathBuf);
+
+impl Gate {
+    fn new(what: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("skyzfs-gate-{}-{what}-{n}", std::process::id());
+        let gate = Gate(std::env::temp_dir().join(name));
+        gate.clear();
+        gate
+    }
+
+    fn clear(&self) {
+        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(StepPause::reached(&self.0));
+    }
+
+    fn pause(&self) -> StepPause {
+        StepPause::Until(self.0.clone())
+    }
+
+    /// Whether the hook has reached its point.
+    fn reached(&self) -> bool {
+        StepPause::reached(&self.0).exists()
+    }
+
+    /// Wait until the hook has reached its point.
+    fn wait_reached(&self, what: &str) -> Outcome {
+        let began = std::time::Instant::now();
+        while !self.reached() {
+            if began.elapsed() > Duration::from_secs(20) {
+                return Err(format!("{what}: the hook was not reached"));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    }
+
+    /// Let the hook go on, now and at every later time.
+    fn open(&self) {
+        std::fs::write(&self.0, b"").unwrap();
+    }
+}
+
+impl Drop for Gate {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+/// Opens gates when it is dropped. Declared after the served store,
+/// so that it is dropped before it: a scenario that returns early
+/// leaves no thread of the store waiting in a hook, which the store's
+/// own drop would then wait for.
+struct Opened<'a>(&'a [&'a Gate]);
+
+impl Drop for Opened<'_> {
+    fn drop(&mut self) {
+        for gate in self.0 {
+            gate.open();
+        }
+    }
+}
+
+/// Take completions of a served store until there are `n`.
+fn take(served: &mut Served, done: &mut Vec<Completion>, n: usize, what: &str) -> Outcome {
+    let began = std::time::Instant::now();
+    while done.len() < n {
+        served.wait(done, Duration::from_millis(100));
+        if began.elapsed() > Duration::from_secs(20) {
+            return Err(format!("{what}: {} of {n} completions", done.len()));
+        }
+    }
+    Ok(())
+}
+
+fn read_request(id: u64, block: u64, count: usize) -> Request {
+    Request {
+        id: RequestId(id),
+        op: Op::Read {
+            offset: block * BLOCK,
+            buf: Buf::zeroed(count),
+        },
+    }
+}
+
+fn write_request(id: u64, block: u64, count: usize, byte: u8) -> Request {
+    Request {
+        id: RequestId(id),
+        op: Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(count, byte),
+        },
+    }
+}
+
+fn submit(served: &mut Served, request: Request) -> Outcome {
+    served.submit(request).map_err(|e| e.to_string())
+}
+
+/// The completion of request `id` among `done`.
+fn completion(done: &[Completion], id: u64) -> Result<&Completion, String> {
+    done.iter()
+        .find(|c| c.id == RequestId(id))
+        .ok_or_else(|| format!("request {id} has no completion"))
+}
+
+/// The second barrier (design §5.1): a segment file that a step freed
+/// is not used again while a reader that found a record in it is still
+/// reading.
+///
+/// The log has two segment files and may have no more. A block is in
+/// a record of the first. A checkpoint is held where the home image is
+/// durable and the log's start has not moved; a read of the block
+/// looks up, finds the record, and is held before it reads the file.
+/// Then the checkpoint goes on: it frees the first file. A
+/// megabyte is written behind it, which needs a new segment, and that
+/// is the freed file.
+///
+/// The store waits at the barrier: nothing completes while the reader
+/// is held, and the reader, released, returns the block's content.
+/// Mutant: no barrier. The checkpoint and the write complete while
+/// the reader is held, the record's place holds another record, and
+/// the read does not return the block.
+#[test]
+fn a_freed_segment_is_not_reused_under_a_reader() {
+    fn scenario(env: &Env) -> Outcome {
+        let env = Env {
+            segments: Some(2),
+            ..*env
+        };
+        let mutant = env.mutants & Mutants::SLOT_REUSED_UNBARRED != 0;
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 0x11)?;
+        megabyte(&mut store, 1, 2)?;
+        megabyte(&mut store, 2, 3)?;
+        flush(&mut store)?;
+        if store.core.log.segment_files() != 2 {
+            return Err("the log is not in two files".into());
+        }
+        let (step, reader) = (Gate::new("reuse-step"), Gate::new("reuse-read"));
+        store.set_step_pause_at(step.pause(), StepPoint::Synced);
+        store.set_read_pause(reader.pause());
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&step, &reader]);
+        let (reply, checkpointed) = mpsc::channel();
+        if !served.send(Command::Checkpoint(reply)) {
+            return Err("the worker is gone".into());
+        }
+        step.wait_reached("the checkpoint")?;
+        submit(&mut served, read_request(100, 0, 1))?;
+        reader.wait_reached("the read")?;
+        submit(&mut served, write_request(1, 256, 256, 4))?;
+        step.open();
+        let mut done = Vec::new();
+        if mutant {
+            // Nothing holds the worker.
+            take(&mut served, &mut done, 1, "the write, with no barrier")?;
+        } else {
+            // However long this is, nothing can have completed.
+            std::thread::sleep(Duration::from_millis(50));
+            if served.poll(&mut done) != 0 {
+                return Err("a request completed while the reader was held".into());
+            }
+        }
+        reader.open();
+        take(&mut served, &mut done, 2, "both")?;
+        let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
+        if !matches!(checkpointed, Ok(Ok(_))) {
+            return Err(format!("the checkpoint: {checkpointed:?}"));
+        }
+        let read = completion(&done, 100)?;
+        if read.result.is_err()
+            || read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != 0x11))
+        {
+            return Err(format!("the held read came to {:?}", read.result));
+        }
+        if done.iter().any(|c| c.result.is_err()) || served.gone() {
+            return Err("a request failed".into());
+        }
+        // The writes are there, and the block still is.
+        submit(&mut served, read_request(101, 0, 1))?;
+        submit(&mut served, read_request(102, 256, 256))?;
+        take(&mut served, &mut done, 4, "the reads after")?;
+        for (id, byte) in [(101, 0x11), (102, 4)] {
+            let read = completion(&done, id)?;
+            if read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != byte))
+            {
+                return Err(format!("read {id} after the step is not {byte}"));
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::SLOT_REUSED_UNBARRED);
+}
+
+/// The first barrier (design §5.1): a step does not write into the
+/// home image while a reader that looked up before is still reading.
+///
+/// A read of a block that nothing has written looks up, finds the
+/// home image, and is held before it reads the file. A write to the
+/// block is acknowledged and made durable, and a checkpoint is asked
+/// for, which is to write that block into the home image.
+///
+/// The store waits at the barrier: the step does not reach the point
+/// behind its writes while the reader is held, the reader, released,
+/// returns the block as it was, wholly, and then the step goes on.
+/// Mutant: no barrier. The step reaches the point behind its writes
+/// with the reader still held, and the reader returns what the step
+/// wrote.
+///
+/// What this does not show: that a read beside the write would return
+/// a block that is part old and part new. The simulated disk applies
+/// a write whole. That a buffered read beside a buffered write of the
+/// same page can tear is assumed of the kernel (a probe for it is the
+/// testing session's); the barrier is what the store does about it.
+#[test]
+fn a_step_does_not_write_the_home_image_under_a_reader() {
+    fn scenario(env: &Env) -> Outcome {
+        let mutant = env.mutants & Mutants::HOME_WRITTEN_UNBARRED != 0;
+        let (_disk, mut store) = env.fresh()?;
+        let (step, reader) = (Gate::new("home-step"), Gate::new("home-read"));
+        store.set_step_pause_at(step.pause(), StepPoint::Written);
+        store.set_read_pause(reader.pause());
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&step, &reader]);
+        submit(&mut served, read_request(100, 5, 1))?;
+        reader.wait_reached("the read")?;
+        let mut done = Vec::new();
+        submit(&mut served, write_request(1, 5, 1, 0x22))?;
+        take(&mut served, &mut done, 1, "the write")?;
+        submit(
+            &mut served,
+            Request {
+                id: RequestId(2),
+                op: Op::Flush,
+            },
+        )?;
+        take(&mut served, &mut done, 2, "the flush")?;
+        let (reply, checkpointed) = mpsc::channel();
+        if !served.send(Command::Checkpoint(reply)) {
+            return Err("the worker is gone".into());
+        }
+        if mutant {
+            // The home image holds the write, with the reader that
+            // found the block there still at it.
+            step.wait_reached("the step, with no barrier")?;
+        } else {
+            // However long this is, the step cannot have written.
+            std::thread::sleep(Duration::from_millis(50));
+            if step.reached() {
+                return Err("the step wrote the home image while a reader was held".into());
+            }
+        }
+        reader.open();
+        take(&mut served, &mut done, 3, "the read")?;
+        let read = completion(&done, 100)?;
+        if read.result.is_err() || read.buf.as_ref().is_none_or(|b| b.iter().any(|b| *b != 0)) {
+            return Err(format!(
+                "the held read came to {:?} and is not the block as it was",
+                read.result
+            ));
+        }
+        step.wait_reached("the step, after the reader")?;
+        step.open();
+        let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
+        if !matches!(checkpointed, Ok(Ok(_))) {
+            return Err(format!("the checkpoint: {checkpointed:?}"));
+        }
+        // A read after the write's acknowledgement sees it.
+        submit(&mut served, read_request(101, 5, 1))?;
+        take(&mut served, &mut done, 4, "the read after")?;
+        let read = completion(&done, 101)?;
+        if read
+            .buf
+            .as_ref()
+            .is_none_or(|b| b.iter().any(|b| *b != 0x22))
+        {
+            return Err("the read after the step does not see the write".into());
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::HOME_WRITTEN_UNBARRED);
+}
+
+/// A read submitted after a write was acknowledged sees it (rule R3),
+/// with the reader and the worker really beside each other: the marks
+/// are so low that steps fall between the requests, with their
+/// barriers and their drops of the index, while reads go on. Every
+/// read is of the block just written and of its neighbours.
+#[test]
+fn a_read_after_an_acknowledged_write_sees_it_while_the_store_steps() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        store.set_marks(Some(Marks {
+            high: 24 << 10,
+            low: 12 << 10,
+            step: StepBound {
+                payload: 16 << 10,
+                records: 2,
+            },
+        }));
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        // What each of 48 blocks holds.
+        let mut model = [0u8; 48];
+        let mut done = Vec::new();
+        for round in 0..600u64 {
+            let block = round * 7 % 46;
+            let byte = (round % 250) as u8 + 1;
+            let op = match round % 5 {
+                4 => Op::WriteZeroes {
+                    offset: block * BLOCK,
+                    len: 2 * BLOCK,
+                },
+                _ => Op::Write {
+                    offset: block * BLOCK,
+                    data: Buf::filled(2, byte),
+                },
+            };
+            let zeroes = matches!(op, Op::WriteZeroes { .. });
+            submit(
+                &mut served,
+                Request {
+                    id: RequestId(1),
+                    op,
+                },
+            )?;
+            take(&mut served, &mut done, 1, "a write")?;
+            for at in block..block + 2 {
+                model[at as usize] = if zeroes { 0 } else { byte };
+            }
+            if round % 11 == 0 {
+                submit(
+                    &mut served,
+                    Request {
+                        id: RequestId(2),
+                        op: Op::Flush,
+                    },
+                )?;
+                take(&mut served, &mut done, 2, "a flush")?;
+            }
+            done.clear();
+            // The block before, the two written, the block after.
+            let first = block.saturating_sub(1);
+            submit(&mut served, read_request(3, first, 4))?;
+            take(&mut served, &mut done, 1, "a read")?;
+            let read = done.pop().ok_or("no completion")?;
+            read.result.map_err(|e| format!("round {round}: {e}"))?;
+            let got = read.buf.ok_or("a read without its buffer")?;
+            for (n, block) in got.chunks(BLOCK as usize).enumerate() {
+                let want = model[first as usize + n];
+                if block.iter().any(|b| *b != want) {
+                    return Err(format!(
+                        "round {round}: block {} reads {} and holds {want}",
+                        first as usize + n,
+                        block[0]
+                    ));
+                }
+            }
+        }
+        let state = served.log_state();
+        if state.steps == 0 {
+            return Err("no step was taken".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A reader that has ended tells its owner, as a worker does: the
+/// waker is called, `gone` says so from then on, and nothing is taken
+/// any more, a write no more than a read.
+#[test]
+fn a_reader_that_has_ended_tells_its_owner() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    let env = environments(0)[0];
+    let (_disk, store) = env.fresh().unwrap();
+    let calls = Arc::new(AtomicU32::new(0));
+    let counter = calls.clone();
+    let waker = Waker::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let mut served = store.serve_with(Some(waker)).unwrap();
+    assert!(!served.gone());
+    served.panic_reader();
+    assert!(served.gone());
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "the owner is woken");
+    let refused = served.submit(read_request(1, 0, 1)).unwrap_err();
+    assert_eq!(refused.kind, SubmitErrorKind::Busy);
+    let refused = served.submit(write_request(2, 0, 1, 1)).unwrap_err();
+    assert_eq!(refused.kind, SubmitErrorKind::Busy);
+    let mut done = Vec::new();
+    assert_eq!(served.poll(&mut done), 0);
+}
+
+/// A read behind a write that is held is answered (M1.3j: rule R8
+/// orders mutations, and a read does not wait for the worker). The log
+/// is full behind a hold and a write is held; the store is then
+/// served, and a read of what was written before is answered while
+/// the write stays held. With the hold released the write completes.
+#[test]
+fn a_served_read_is_answered_behind_a_held_write() {
+    fn scenario(env: &Env) -> Outcome {
+        let env = Env {
+            segments: Some(2),
+            ..*env
+        };
+        let (_disk, mut store) = env.fresh()?;
+        megabyte(&mut store, 0, 1)?;
+        store
+            .set_hold(Some(store.position()))
+            .map_err(|e| e.to_string())?;
+        let mut done = Vec::new();
+        let mut held = None;
+        for round in 0..4u64 {
+            store
+                .submit(write_request(round, round % 3 * 256, 256, 10 + round as u8))
+                .map_err(|e| e.to_string())?;
+            if store.wait(&mut done, Duration::ZERO) == 0 {
+                held = Some(round);
+                break;
+            }
+        }
+        let Some(held) = held else {
+            return Err("no write was held behind the hold".into());
+        };
+        let completed = done.len();
+        // Served with the held write at the head of its queue.
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        // A block no write of the rounds before the held one touched,
+        // or the last of them did.
+        let (block, byte) = match held {
+            0 => (0, 1),
+            n => ((n - 1) % 3 * 256, 10 + (n - 1) as u8),
+        };
+        submit(&mut served, read_request(100, block, 1))?;
+        take(&mut served, &mut done, completed + 1, "the read")?;
+        let read = completion(&done, 100)?;
+        if read.result.is_err()
+            || read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != byte))
+        {
+            return Err(format!("the read behind the held write: {:?}", read.result));
+        }
+        if done.len() != completed + 1 || served.gone() {
+            return Err("the held write completed behind the hold".into());
+        }
+        served.set_hold(None).map_err(|e| e.to_string())?;
+        take(&mut served, &mut done, completed + 2, "the held write")?;
+        completion(&done, held)?
+            .result
+            .map_err(|e| format!("the held write: {e}"))
+    }
+    holds(scenario);
+}
+
+/// A read that the reader cannot do fails the volume, as on the
+/// worker: the read is answered as failed, every later request fails,
+/// a write among them, and the next open finds the volume marked.
+/// Mutant: the error is served and the volume goes on.
+#[test]
+fn a_read_the_reader_cannot_do_fails_the_volume() {
+    fn scenario(env: &Env) -> Outcome {
+        for from_home in [true, false] {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 4, 4, 1)?;
+            flush(&mut store)?;
+            if from_home {
+                checkpoint(&mut store)?;
+            }
+            let mut served = store.serve().map_err(|e| e.to_string())?;
+            if from_home {
+                disk.fail_read_of(HOME_NAME);
+            } else {
+                disk.fail_read(0, false);
+            }
+            let mut done = Vec::new();
+            submit(&mut served, read_request(1, 4, 1))?;
+            take(&mut served, &mut done, 1, "the read")?;
+            if done[0].result != Err(BlkError::Failed) {
+                return Err("a read that could not be done succeeded".into());
+            }
+            disk.clear_faults();
+            submit(&mut served, read_request(2, 5, 1))?;
+            submit(&mut served, write_request(3, 9, 1, 2))?;
+            take(&mut served, &mut done, 3, "the requests after")?;
+            if done[1..].iter().any(|c| c.result != Err(BlkError::Failed)) {
+                return Err(format!(
+                    "after a failed read (from the home image: {from_home}) the volume served"
+                ));
+            }
+            if served.gone() {
+                return Err("a thread ended".into());
+            }
+            drop(served);
+            match Store::open(disk.clone(), env.options()) {
+                Err(StoreError::Log(LogError::MarkedFailed)) => {}
+                Ok(_) => return Err("the next open did not find the volume marked".into()),
+                Err(other) => return Err(format!("the next open: {other}")),
+            }
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::READ_ERROR_SERVED);
+}
+
+/// A read of a record that no sync has covered, beside a sync of the
+/// log that fails. After a failed sync the cache may show the file as
+/// it was before the write, so what the reader reads then is not what
+/// was written, and the reader cannot see that from the file.
+///
+/// A write is acknowledged and not flushed. A read of it looks up,
+/// finds the record, and is held. The disk then refuses syncs, a
+/// flush fails and is answered, and the reader is released. The read
+/// is answered as failed: the reader asks whether a sync failed after
+/// it has read, whatever it read. Mutant: it does not ask. Then, in
+/// at least one environment, the read is answered as done with what
+/// the cache showed after the failure.
+#[test]
+fn a_read_of_an_unflushed_record_is_not_answered_from_a_failed_log() {
+    fn round(env: &Env) -> Result<Result<(), BlkError>, String> {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 1)?;
+        flush(&mut store)?;
+        let reader = Gate::new("unflushed-read");
+        store.set_read_pause(reader.pause());
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&reader]);
+        let mut done = Vec::new();
+        submit(&mut served, write_request(1, 8, 8, 0x33))?;
+        take(&mut served, &mut done, 1, "the write")?;
+        submit(&mut served, read_request(100, 8, 8))?;
+        reader.wait_reached("the read")?;
+        disk.fail_sync(0, true);
+        submit(
+            &mut served,
+            Request {
+                id: RequestId(2),
+                op: Op::Flush,
+            },
+        )?;
+        take(&mut served, &mut done, 2, "the flush")?;
+        if done[1].result != Err(BlkError::Failed) {
+            return Err("the flush did not fail".into());
+        }
+        reader.open();
+        take(&mut served, &mut done, 3, "the read")?;
+        let read = completion(&done, 100)?;
+        if read.result.is_ok()
+            && read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != 0x33))
+        {
+            // Only the mutant gets here; what it served is not the
+            // write.
+            return Ok(Ok(()));
+        }
+        Ok(read.result)
+    }
+    for env in environments(0) {
+        assert_eq!(
+            round(&env),
+            Ok(Err(BlkError::Failed)),
+            "the read was answered from a failed log in {env:?}"
+        );
+    }
+    // The reader of the mutant answers as done wherever the record's
+    // header still reads as it was written.
+    let served = environments(Mutants::UNFLUSHED_READ_UNCHECKED)
+        .iter()
+        .filter(|env| round(env) == Ok(Ok(())))
+        .count();
+    assert!(served > 0, "the defect was noticed nowhere");
+}
+
+/// The reader's own account. A read's wait is laid over what the
+/// reader did meanwhile: idle (its wake-up), the calls of reads before
+/// it, anything else; and the three are the reader's whole time. The
+/// first read is held 200 ms in its call; the second is submitted
+/// meanwhile, so at least those 200 ms of its wait are behind a read.
+/// Nothing of a read is in the worker's account.
+#[test]
+fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
+    const HELD: Duration = Duration::from_millis(200);
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 4, 9).unwrap();
+    flush(&mut store).unwrap();
+    let reader = Gate::new("timing-read");
+    store.set_read_pause(reader.pause());
+    let began = std::time::Instant::now();
+    let mut served = store.serve().unwrap();
+    served.submit(read_request(1, 0, 1)).unwrap();
+    reader.wait_reached("the first read").unwrap();
+    served.submit(read_request(2, 1, 1)).unwrap();
+    std::thread::sleep(HELD);
+    reader.open();
+    let mut done = Vec::new();
+    take(&mut served, &mut done, 2, "the reads").unwrap();
+    let total = began.elapsed().as_nanos() as u64;
+    let timing = served.timing();
+    drop(served);
+    let ns = HELD.as_nanos() as u64;
+    let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
+
+    let reads = timing.requests[0];
+    assert_eq!((reads.wait.count, reads.call.count), (2, 2), "{timing:?}");
+    // The first read's call holds the 200 ms, and the second read's
+    // wait holds them behind that call.
+    assert!(reads.call.max_ns >= ns, "{timing:?}");
+    assert!(reads.wait.max_ns >= ns, "{timing:?}");
+    let by = timing.wait_by[0];
+    assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
+    assert!(by[at("read")] >= ns, "{timing:?}");
+    assert_eq!(timing.longest_wait_cause[0], at("read") as u64);
+    assert_eq!(timing.longest_wait_cause_ns[0], by[at("read")]);
+    // A read waits for the reader's three activities and no other.
+    for (activity, waited) in by.iter().enumerate() {
+        let readers = ["idle", "read", "other"].contains(&ACTIVITIES[activity]);
+        assert!(
+            readers || *waited == 0,
+            "{}: {timing:?}",
+            ACTIVITIES[activity]
+        );
+    }
+    // The reader's time: its calls are the reads' calls, and all of
+    // it is no more than the test's.
+    assert_eq!(timing.reader[1], reads.call.sum_ns, "{timing:?}");
+    assert!(timing.reader.iter().sum::<u64>() <= total, "{timing:?}");
+    // The worker did no read.
+    assert_eq!(timing.worker[at("read")], 0, "{timing:?}");
+    for kind in 1..5 {
+        assert_eq!(timing.requests[kind], RequestTiming::default());
+    }
+}
+
+/// What a barrier costs is counted. A reader is held 200 ms with its
+/// pin while a checkpoint is asked for: the step waits at its first
+/// barrier for at least that long, the wait is the worker's activity
+/// "step_barrier" and in none of the step's parts, each batch has
+/// passed both barriers, and a flush submitted meanwhile has the
+/// barrier in its wait.
+#[test]
+fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
+    const HELD: Duration = Duration::from_millis(200);
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 4, 9).unwrap();
+    flush(&mut store).unwrap();
+    let reader = Gate::new("barrier-read");
+    store.set_read_pause(reader.pause());
+    let mut served = store.serve().unwrap();
+    served.submit(read_request(1, 100, 1)).unwrap();
+    reader.wait_reached("the read").unwrap();
+    let (reply, checkpointed) = mpsc::channel();
+    assert!(served.send(Command::Checkpoint(reply)));
+    served
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Flush,
+        })
+        .unwrap();
+    std::thread::sleep(HELD);
+    reader.open();
+    let mut done = Vec::new();
+    take(&mut served, &mut done, 2, "the read and the flush").unwrap();
+    assert!(matches!(
+        checkpointed.recv_timeout(Duration::from_secs(20)),
+        Ok(Ok(_))
+    ));
+    served.position().unwrap();
+    let timing = served.timing();
+    drop(served);
+    let ns = HELD.as_nanos() as u64;
+    let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
+
+    let batches = timing.step_apply.count;
+    assert!(batches >= 1, "{timing:?}");
+    assert_eq!(
+        (timing.barrier_home.count, timing.barrier_reuse.count),
+        (batches, batches),
+        "{timing:?}"
+    );
+    assert!(timing.barrier_home.max_ns >= ns, "{timing:?}");
+    let barriers = timing.barrier_home.sum_ns + timing.barrier_reuse.sum_ns;
+    assert_eq!(timing.worker[at("step_barrier")], barriers, "{timing:?}");
+    // The step's parts are as their sums have them, without the wait.
+    for (name, part) in [
+        ("step_save", timing.step_save),
+        ("step_apply", timing.step_apply),
+        ("step_home_sync", timing.step_home_sync),
+        ("step_log_start", timing.step_start),
+        ("step_end", timing.step_end),
+    ] {
+        assert_eq!(timing.worker[at(name)], part.sum_ns, "{name}: {timing:?}");
+    }
+    // The flush waited behind the checkpoint, the barrier included.
+    let by = timing.wait_by[2];
+    assert_eq!(by.iter().sum::<u64>(), timing.requests[2].wait.sum_ns);
+    assert!(by[at("step_barrier")] >= ns, "{timing:?}");
+    assert_eq!(timing.longest_wait_cause[2], at("step_barrier") as u64);
 }
 
 // ---------------------------------------------------------------------
