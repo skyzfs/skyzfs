@@ -255,6 +255,10 @@ pub struct Stats {
     pub syncs: u64,
     /// Calls of [`Dir::sync`] that succeeded.
     pub dir_syncs: u64,
+    /// Bytes handed to [`File::write_at`], failed calls included.
+    pub written: u64,
+    /// Bytes deallocated by [`File::deallocate`].
+    pub deallocated: u64,
 }
 
 #[derive(Debug, Default)]
@@ -355,6 +359,10 @@ struct State {
     write_fault_of: Option<String>,
     read_fault_of: Option<String>,
     read_fault: Option<Fault>,
+    /// The file system has no call that deallocates.
+    no_holes: bool,
+    /// The next deallocation fails, having zeroed any part of its range.
+    hole_fault: bool,
     /// The machine stops after this many more writes and syncs.
     halt: Option<u64>,
     /// Who holds the directory's lock, and the next holder's number.
@@ -462,6 +470,8 @@ impl SimDisk {
                 write_fault_of: None,
                 read_fault_of: None,
                 read_fault: None,
+                no_holes: false,
+                hole_fault: false,
                 halt: None,
                 lock: None,
                 next_lock: 0,
@@ -683,6 +693,19 @@ impl SimDisk {
         state.read_fault_of = None;
         state.halt = None;
         state.read_fault = None;
+    }
+
+    /// Whether the file system can deallocate a range of a file
+    /// ([`File::deallocate`]). It can, unless this says otherwise; a
+    /// power cut does not change it.
+    pub fn set_deallocation(&self, supported: bool) {
+        self.lock().no_holes = !supported;
+    }
+
+    /// The next deallocation fails with an I/O error, having zeroed any
+    /// part of its range.
+    pub fn fail_deallocation(&self) {
+        self.lock().hole_fault = true;
     }
 
     /// Operation counts so far.
@@ -955,6 +978,7 @@ impl File for SimFile {
             return Err(injected("write"));
         }
         state.stats.writes += 1;
+        state.stats.written += data.len() as u64;
         let failing = State::strikes(&mut state.write_fault);
         let end = offset
             .checked_add(data.len() as u64)
@@ -1068,6 +1092,73 @@ impl File for SimFile {
     fn extend(&mut self, len: u64) -> io::Result<()> {
         // The simulated disk reserves nothing in either case.
         self.preallocate(len)
+    }
+
+    /// A hole that is not synced yet is one more version of each of
+    /// its sectors, zeros, so a power cut leaves each as it was or as
+    /// zeros, as it does a write's (or as garbage, where the cut makes
+    /// garbage of what was being rewritten: more than a hole can do,
+    /// and a store that survives it survives a hole). Where the range
+    /// ends inside a write unit, that unit's other sectors are
+    /// rewritten as they are, as by a write: the file system zeroes a
+    /// part of a unit by writing it. Whole units inside the range take
+    /// no neighbour with them. It counts as one operation for
+    /// [`SimDisk::halt_after`].
+    fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        let mut guard = self.disk.lock();
+        let state = &mut *guard;
+        self.check(state)?;
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
+        if state.no_holes {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let failing = std::mem::take(&mut state.hole_fault);
+        let rng = &mut state.rng;
+        let unit = state.write_unit;
+        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        if !offset.is_multiple_of(SECTOR) || !len.is_multiple_of(SECTOR) || end > inode.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a deallocation of whole blocks inside the file",
+            ));
+        }
+        state.stats.deallocated += len;
+        let zeros = || vec![0u8; SECTOR_USIZE].into_boxed_slice();
+        if unit > SECTOR && len > 0 {
+            // The units the range covers only in part.
+            let head = offset / unit * unit..offset;
+            let tail = end..(end.div_ceil(unit) * unit).min(inode.len);
+            for index in (head.start / SECTOR..head.end / SECTOR)
+                .chain(tail.start / SECTOR..tail.end.div_ceil(SECTOR))
+            {
+                let sector = inode.sectors.entry(index).or_default();
+                let same: Box<[u8]> = match sector.current() {
+                    Some(current) => current.into(),
+                    None => zeros(),
+                };
+                sector.cached = None;
+                sector.unsynced.push(same);
+            }
+        }
+        for index in offset / SECTOR..end / SECTOR {
+            // A failed deallocation leaves any part of its range zero.
+            if failing && rng.coin() {
+                continue;
+            }
+            let sector = inode.sectors.entry(index).or_default();
+            sector.cached = None;
+            sector.unsynced.push(zeros());
+        }
+        if failing {
+            Err(injected("deallocate"))
+        } else {
+            Ok(())
+        }
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -1494,6 +1585,88 @@ mod tests {
         assert!(disk.try_lock().is_err());
         drop(fourth);
         disk.try_lock().unwrap();
+    }
+
+    /// A deallocated range reads as zeros at once and keeps the file's
+    /// length. Until a sync it is one more version of each sector: a
+    /// power cut leaves each as it was or as zeros. What lies beside
+    /// the range is not touched, and with a write unit of one sector
+    /// has no pending version at all.
+    #[test]
+    fn a_hole_reads_as_zeros_and_is_durable_only_after_a_sync() {
+        let disk = disk_with(8, 7);
+        let mut f = disk.open("f").unwrap();
+        f.deallocate(2 * SECTOR, 3 * SECTOR).unwrap();
+        assert_eq!(f.len().unwrap(), 8 * SECTOR);
+        assert_eq!(read(&disk, "f", 0, 2 * S), vec![7; 2 * S]);
+        assert_eq!(read(&disk, "f", 2 * SECTOR, 3 * S), vec![0; 3 * S]);
+        assert_eq!(read(&disk, "f", 5 * SECTOR, 3 * S), vec![7; 3 * S]);
+        assert_eq!(disk.stats().deallocated, 3 * SECTOR);
+        // Not synced: sector 2 is lost, sector 3 kept, and a sector
+        // outside the range has nothing pending to make garbage of.
+        disk.power_cut(BySector(|_: Option<&str>, index| match index {
+            2 => Fate::Durable,
+            3 => Fate::Latest,
+            _ => Fate::Garbage,
+        }));
+        assert_eq!(read(&disk, "f", 0, 3 * S), vec![7; 3 * S]);
+        assert_eq!(read(&disk, "f", 3 * SECTOR, S), vec![0; S]);
+        assert_eq!(read(&disk, "f", 5 * SECTOR, 3 * S), vec![7; 3 * S]);
+        // Synced: it survives whatever the cut does.
+        let mut f = disk.open("f").unwrap();
+        f.deallocate(0, 2 * SECTOR).unwrap();
+        f.sync().unwrap();
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", 0, 2 * S), vec![0; 2 * S]);
+    }
+
+    /// Where a hole begins or ends inside a write unit, the unit's
+    /// other sectors are rewritten, as by a write: a power cut can
+    /// make garbage of them. Units that the hole covers whole take no
+    /// neighbour with them.
+    #[test]
+    fn a_hole_that_ends_inside_a_write_unit_rewrites_the_unit() {
+        let disk = disk_with(16, 7);
+        disk.set_write_unit(4 * SECTOR);
+        let mut f = disk.open("f").unwrap();
+        // Sectors 2 to 9: units 0 and 2 in part, unit 1 whole.
+        f.deallocate(2 * SECTOR, 8 * SECTOR).unwrap();
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let now = read(&disk, "f", 0, 16 * S);
+        let same = |sector: usize| now[sector * S..(sector + 1) * S] == [7u8; S];
+        // The neighbours in the two edge units had a pending version.
+        assert!(!same(0) && !same(1) && !same(10) && !same(11));
+        // Unit 3 was not touched.
+        assert!((12..16).all(same));
+    }
+
+    /// A file system that cannot deallocate says so and changes
+    /// nothing; a deallocation that fails may have zeroed any part of
+    /// its range and nothing outside it; a range that is not of whole
+    /// sectors inside the file is refused.
+    #[test]
+    fn a_hole_refused_changes_nothing_and_one_that_fails_stays_in_its_range() {
+        let disk = disk_with(8, 7);
+        let mut f = disk.open("f").unwrap();
+        disk.set_deallocation(false);
+        let refused = f.deallocate(0, 4 * SECTOR).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(read(&disk, "f", 0, 8 * S), vec![7; 8 * S]);
+        assert_eq!(disk.stats().deallocated, 0);
+        disk.set_deallocation(true);
+        assert!(f.deallocate(1, SECTOR).is_err());
+        assert!(f.deallocate(4 * SECTOR, 8 * SECTOR).is_err());
+        disk.fail_deallocation();
+        assert!(f.deallocate(0, 4 * SECTOR).is_err());
+        let now = read(&disk, "f", 0, 8 * S);
+        for sector in 0..4 {
+            let bytes = &now[sector * S..(sector + 1) * S];
+            assert!(bytes == [7u8; S] || bytes == [0u8; S], "sector {sector}");
+        }
+        assert_eq!(now[4 * S..], vec![7; 4 * S]);
+        // The fault struck once.
+        f.deallocate(0, 4 * SECTOR).unwrap();
+        assert_eq!(read(&disk, "f", 0, 4 * S), vec![0; 4 * S]);
     }
 
     /// Injected errors: a halted disk takes the writes and syncs it was

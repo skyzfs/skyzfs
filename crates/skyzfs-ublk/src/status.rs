@@ -18,14 +18,16 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's third version. The second (`SKYZSTA2`, 144
-//! bytes) ended before the log's fields, from offset 144 on; a file
-//! of that version is still read, without them. The first
-//! (`SKYZSTA1`, 128 bytes) is read as no status.
+//! This is the file's fourth version. The third (`SKYZSTA3`, 192
+//! bytes) ended before offset 192; a file of that version is still
+//! read, and says nothing of how write-zeroes are applied. The second
+//! (`SKYZSTA2`, 144 bytes) ended before the log's fields, from offset
+//! 144 on; a file of that version is still read, without them. The
+//! first (`SKYZSTA1`, 128 bytes) is read as no status.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA3` |
+//! | 0 | 8 | magic `SKYZSTA4` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -49,6 +51,7 @@
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
+//! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate. Any other value is read as "not said" |
 //!
 //! # The rules
 //!
@@ -93,8 +96,11 @@ use crate::records::StoredFailure;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA3";
-const LEN: usize = 192;
+const MAGIC: &[u8; 8] = b"SKYZSTA4";
+const LEN: usize = 200;
+/// The third version: without the field at offset 192.
+const THIRD_MAGIC: &[u8; 8] = b"SKYZSTA3";
+const THIRD_LEN: usize = 192;
 /// The second version: without the fields from offset 144 on.
 const SECOND_MAGIC: &[u8; 8] = b"SKYZSTA2";
 const SECOND_LEN: usize = 144;
@@ -157,6 +163,60 @@ pub struct LogShown {
     /// The syncs of the log the worker issued for its steps: its own,
     /// apart from the flushes clients asked for.
     pub own_syncs: u64,
+    /// How a checkpoint applies write-zeroes to the home image.
+    pub zeroes: ZeroesShown,
+}
+
+/// How a checkpoint applies write-zeroes to the home image, as the
+/// status file says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ZeroesShown {
+    /// The file does not say: it is of a version before the fourth, or
+    /// holds a value this version does not know.
+    #[default]
+    Unsaid,
+    /// No checkpoint has applied one since the daemon started serving.
+    Untried,
+    /// Their ranges are deallocated: nothing is written for them.
+    Deallocated,
+    /// Zeros are written: the file system cannot deallocate.
+    Written,
+}
+
+impl ZeroesShown {
+    fn code(self) -> u64 {
+        match self {
+            Self::Untried => 0,
+            Self::Deallocated => 1,
+            Self::Written => 2,
+            Self::Unsaid => u64::MAX,
+        }
+    }
+
+    fn of(code: u64) -> Self {
+        match code {
+            0 => Self::Untried,
+            1 => Self::Deallocated,
+            2 => Self::Written,
+            _ => Self::Unsaid,
+        }
+    }
+
+    /// The report's words, or none where the file does not say.
+    fn said(self) -> Option<&'static str> {
+        match self {
+            Self::Unsaid => None,
+            Self::Untried => {
+                Some("not yet: no checkpoint has applied one since this daemon started serving")
+            }
+            Self::Deallocated => Some("deallocated in the home image: nothing is written for them"),
+            Self::Written => Some(
+                "written as zeros: the file system of the volume's directory cannot deallocate, \
+                 so a log of write-zeroes is worked off at the pace of that writing, and \
+                 requests wait for it",
+            ),
+        }
+    }
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -194,6 +254,7 @@ fn encode(status: &Status) -> [u8; LEN] {
         log.start_ms,
         log.replayed_bytes,
         log.shown.own_syncs,
+        log.shown.zeroes.code(),
     ];
     for (i, field) in fields.iter().enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
@@ -202,17 +263,23 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let third = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let fourth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let third = bytes.len() == THIRD_LEN && &bytes[..8] == THIRD_MAGIC;
     let second = bytes.len() == SECOND_LEN && &bytes[..8] == SECOND_MAGIC;
-    if !third && !second {
+    if !fourth && !third && !second {
         return None;
     }
-    let log = third.then(|| LogStatus {
+    let log = (fourth || third).then(|| LogStatus {
         shown: LogShown {
             live: u64_at(bytes, 144),
             steps: u64_at(bytes, 152),
             stepping: u64_at(bytes, 160) != 0,
             own_syncs: u64_at(bytes, 184),
+            zeroes: if fourth {
+                ZeroesShown::of(u64_at(bytes, 192))
+            } else {
+                ZeroesShown::Unsaid
+            },
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
@@ -721,6 +788,9 @@ pub fn report(
                 ("replayed_bytes", log.replayed_bytes.to_string()),
             ] {
                 lines.push((key, value));
+            }
+            if let Some(said) = log.shown.zeroes.said() {
+                lines.push(("zeroes_applied", said.to_string()));
             }
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);

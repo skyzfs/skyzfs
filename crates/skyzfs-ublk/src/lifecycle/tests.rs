@@ -3444,3 +3444,44 @@ fn a_dead_device_without_a_note_is_said_to_be_deleted_already() {
         &[("a dead device by hand", Mutants::DEAD_BY_HAND)],
     );
 }
+
+/// After a failed delete the note is put back only on a device that is
+/// not dead (the reviewer of #18). "Dead" is also what the driver
+/// reports for a device that is deleted and still held open: if the
+/// delete was done although it answered with an error, a note put back
+/// would outlive the device and sit on a free number. So a dead device
+/// keeps no note, and the answer names the delete by hand. A device
+/// that waits gets its note back, as before. Mutant: the note is put
+/// back on a dead device too.
+#[test]
+fn a_failed_delete_puts_no_note_back_on_a_dead_device() {
+    fn scenario(mutants: u32) -> Result<(), String> {
+        for (state, back) in [(DeviceState::Dead, false), (DeviceState::Waiting, true)] {
+            let mut world = World::new().attached(4, state, EARLIER);
+            world.delete_refused = true;
+            let (mut control, mut records, shared) = fakes(world);
+            let deleted = delete(&mut control, &mut records, 4, Mutants(mutants));
+            drop((control, records));
+            let world = unwrap(shared);
+            let said = match &deleted {
+                Err(undeleted) => undeleted.said(4),
+                Ok(()) => return Err(format!("{state:?}: the delete is said to be done")),
+            };
+            check(
+                world.notes.contains_key(&4) == back,
+                &format!("{state:?}: the note is back: {}", !back),
+            )?;
+            check(
+                matches!(deleted, Err(Undeleted::NotePutBack(_))) == back
+                    && said.contains("tries again") == back
+                    && said.contains("by hand") != back,
+                &format!("{state:?}: {said}"),
+            )?;
+        }
+        Ok(())
+    }
+    holds(
+        scenario,
+        &[("a note back on a dead device", Mutants::PUT_BACK_ON_DEAD)],
+    );
+}

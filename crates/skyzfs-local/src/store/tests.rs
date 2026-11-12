@@ -4006,3 +4006,366 @@ fn the_rules_own_sync_is_shown_as_the_beginning_of_its_step() {
         "the owner was told of the step after the rule's sync of the log: {first:?}"
     );
 }
+
+// ---------------------------------------------------------------------
+// Write-zeroes deallocates (M1.3f).
+
+fn zeroes(store: &mut SimStore, block: u64, count: u64) -> Outcome {
+    ok(
+        store,
+        Op::WriteZeroes {
+            offset: block * BLOCK,
+            len: count * BLOCK,
+        },
+    )
+    .map(|_| ())
+}
+
+/// A write-zeroes record is applied by deallocating its range in the
+/// home image: nothing is written for it, the range reads as zeros
+/// under the load, after the steps and after a restart, and what lies
+/// beside it stays, also where the range begins and ends inside a
+/// write unit. Mutant: the zeros are written, as before M1.3f.
+#[test]
+fn a_write_zeroes_is_deallocated_and_nothing_is_written_for_it() {
+    // Blocks 301 to 801: 500 blocks, not on a boundary of 4 blocks.
+    const FIRST: u64 = 301;
+    const COUNT: u64 = 500;
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        for mib in 0..4 {
+            write(&mut store, mib * 256, 256, 9)?;
+        }
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        if store.log_state().zeroes != Zeroes::Untried {
+            return Err("a store that met no write-zeroes says how it treats them".into());
+        }
+        zeroes(&mut store, FIRST, COUNT)?;
+        write(&mut store, 10, 1, 3)?;
+        flush(&mut store)?;
+        let before = disk.stats();
+        while step(&mut store, StepBound::DAEMON)?.more {}
+        let after = disk.stats();
+        let (written, deallocated) = (
+            after.written - before.written,
+            after.deallocated - before.deallocated,
+        );
+        if deallocated != COUNT * BLOCK {
+            return Err(format!("{deallocated} bytes were deallocated"));
+        }
+        // One block of data, the neighbours saved beside the range's
+        // two edges, and the log's start: far less than the range.
+        if written >= COUNT * BLOCK / 4 {
+            return Err(format!(
+                "{written} bytes were written for a range of {}",
+                COUNT * BLOCK
+            ));
+        }
+        if store.log_state().zeroes != Zeroes::Deallocated {
+            return Err(format!("{:?}", store.log_state().zeroes));
+        }
+        // In reads of at most 128 blocks.
+        let all = |store: &mut SimStore, from: u64, to: u64, byte: u8, when: &str| -> Outcome {
+            let mut at = from;
+            while at < to {
+                let n = (to - at).min(128);
+                expect(store, at, n as usize, byte, when)?;
+                at += n;
+            }
+            Ok(())
+        };
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            all(store, 0, 10, 9, when)?;
+            all(store, 10, 11, 3, when)?;
+            all(store, 11, FIRST, 9, when)?;
+            all(store, FIRST, FIRST + COUNT, 0, when)?;
+            all(store, FIRST + COUNT, 1024, 9, when)
+        };
+        check(&mut store, "after the steps")?;
+        drop(store);
+        disk.kill();
+        let mut store = env.reopen_ack(&disk)?;
+        check(&mut store, "after a restart")
+    }
+    caught(scenario, Mutants::ZEROES_WRITTEN);
+}
+
+/// A write-zeroes record whose range is deallocated counts no bytes in
+/// a step's bound, as a discard counts none: once the file system has
+/// shown that it deallocates, a step takes such records up to its
+/// count of records, whatever they cover. The first of them after an
+/// open still counts its length, because the step does not know yet
+/// which it will be. Mutant: they count their length.
+#[test]
+fn deallocated_write_zeroes_count_no_bytes_in_a_step() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        for n in 0..40 {
+            zeroes(&mut store, n * 16, 16)?;
+        }
+        flush(&mut store)?;
+        let bound = StepBound {
+            payload: 16 * BLOCK,
+            records: 30,
+        };
+        let first = step(&mut store, bound)?;
+        if (first.records, first.payload) != (1, 16 * BLOCK) {
+            return Err(format!("the first step, not knowing yet: {first:?}"));
+        }
+        let second = step(&mut store, bound)?;
+        if (second.records, second.payload, second.more) != (30, 0, true) {
+            return Err(format!("a step of deallocated ranges: {second:?}"));
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::ZEROES_WRITTEN);
+}
+
+/// A file system that cannot deallocate is not a failed volume: the
+/// zeros are written, the range reads as zeros, the store says that it
+/// writes them, and each such record counts its length in a step's
+/// bound again, so a step still writes no more than its bound. The
+/// same when the test hook refuses in the file system's place.
+/// Mutants: the refusal fails the volume; written zeros count nothing,
+/// so one step writes them all.
+#[test]
+fn a_file_system_without_holes_has_the_zeros_written() {
+    fn scenario_with(env: &Env, by_hook: bool) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        if by_hook {
+            store.set_refuse_holes(true);
+        } else {
+            disk.set_deallocation(false);
+        }
+        write(&mut store, 0, 256, 9)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        for n in 0..12 {
+            zeroes(&mut store, 8 + n * 16, 16)?;
+        }
+        flush(&mut store)?;
+        let bound = StepBound {
+            payload: 32 * BLOCK,
+            records: 30,
+        };
+        let before = disk.stats();
+        let mut steps = 0;
+        loop {
+            let done = step(&mut store, bound)?;
+            if done.payload > bound.payload || done.records > 2 {
+                return Err(format!("a step beyond its bound: {done:?}"));
+            }
+            steps += 1;
+            if !done.more {
+                break;
+            }
+        }
+        let after = disk.stats();
+        if steps != 6 {
+            return Err(format!("12 records of 16 blocks in {steps} steps of 32"));
+        }
+        if after.deallocated != before.deallocated {
+            return Err("something was deallocated".into());
+        }
+        if after.written - before.written < 12 * 16 * BLOCK {
+            return Err(format!(
+                "{} bytes written for 12 ranges of 16 blocks",
+                after.written - before.written
+            ));
+        }
+        if store.log_state().zeroes != Zeroes::Written {
+            return Err(format!("{:?}", store.log_state().zeroes));
+        }
+        if store.is_failed() {
+            return Err("the volume failed".into());
+        }
+        expect(&mut store, 0, 8, 9, "before the ranges")?;
+        expect(&mut store, 8, 12 * 16, 0, "the ranges")?;
+        expect(&mut store, 200, 56, 9, "after the ranges")
+    }
+    fn scenario(env: &Env) -> Outcome {
+        scenario_with(env, false)?;
+        scenario_with(env, true)
+    }
+    caught(scenario, Mutants::NO_HOLES_FAILS);
+    caught(scenario, Mutants::WRITTEN_ZEROES_FREE);
+}
+
+/// An I/O error from the deallocation is a failed write into the home
+/// image: the volume fails, as for any other, and nothing is lost,
+/// because the log keeps the record: the next open applies it again.
+#[test]
+fn a_deallocation_that_fails_fails_the_volume_and_loses_nothing() {
+    fn scenario(env: &Env) -> Outcome {
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 256, 9)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        zeroes(&mut store, 33, 100)?;
+        write(&mut store, 200, 4, 5)?;
+        flush(&mut store)?;
+        disk.fail_deallocation();
+        if store.checkpoint_step(StepBound::DAEMON).is_ok() {
+            return Err("the step went on after the deallocation failed".into());
+        }
+        if !store.is_failed() {
+            return Err("the volume did not fail".into());
+        }
+        drop(store);
+        disk.kill();
+        let mut store = env.reopen_ack(&disk)?;
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            expect(store, 0, 33, 9, when)?;
+            expect(store, 33, 100, 0, when)?;
+            expect(store, 133, 67, 9, when)?;
+            expect(store, 200, 4, 5, when)
+        };
+        check(&mut store, "after the failure")?;
+        while step(&mut store, StepBound::DAEMON)?.more {}
+        check(&mut store, "after the steps of the next instance")
+    }
+    holds(scenario);
+}
+
+/// Steps over holes, and over holes mixed with writes, can be cut
+/// anywhere. The volume is filled and checkpointed; then in each of
+/// its 128 groups of eight blocks, blocks 1 to 5 are zeroed (a range
+/// that begins and ends inside a write unit of four blocks) and block
+/// 7 is written. The steps are stopped after a number of writes,
+/// deallocations and syncs with a power cut, and so is the open that
+/// follows. After the next open every block reads as what was flushed:
+/// the zeroed ones as zeros, their neighbours in the same units as
+/// they were, the written ones as written; and the steps that remain
+/// finish the work. Mutants, as for writes: the log given up before
+/// the home image is durable; the neighbours not saved.
+#[test]
+fn steps_of_holes_and_writes_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let bound = StepBound {
+            payload: 16 * BLOCK,
+            records: 16,
+        };
+        for stop in (0..30).chain([44, 61, 90, 150, 300, 700]) {
+            let (disk, mut store) = env.fresh()?;
+            for mib in 0..4 {
+                write(&mut store, mib * 256, 256, 9)?;
+            }
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for group in 0..128u64 {
+                zeroes(&mut store, group * 8 + 1, 5)?;
+                write(&mut store, group * 8 + 7, 1, (group % 200) as u8 + 10)?;
+            }
+            flush(&mut store)?;
+            disk.halt_after(stop);
+            let cut_off = loop {
+                match store.checkpoint_step(bound) {
+                    Err(_) => break true,
+                    Ok(done) if !done.more => break false,
+                    Ok(done) if done.records > 16 => {
+                        return Err(format!("a step took {done:?}"));
+                    }
+                    Ok(_) => {}
+                }
+            };
+            if !cut_off && stop < 3 {
+                return Err(format!("the steps were not stopped at {stop}"));
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            disk.halt_after(stop % 7);
+            drop(Store::open(disk.clone(), env.options()));
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                for group in 0..128u64 {
+                    let what = format!("group {group} {when} a cut at {stop}");
+                    expect(store, group * 8, 1, 9, &what)?;
+                    expect(store, group * 8 + 1, 5, 0, &what)?;
+                    expect(store, group * 8 + 6, 1, 9, &what)?;
+                    expect(store, group * 8 + 7, 1, (group % 200) as u8 + 10, &what)?;
+                }
+                Ok(())
+            };
+            check(&mut store, "after")?;
+            while step(&mut store, bound)?.more {}
+            if store.log_start() < store.log_durable() {
+                return Err("steps after the restart left durable records".into());
+            }
+            check(&mut store, "and the remaining steps after")?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::RECLAIM_BEFORE_HOME_SYNC);
+    caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
+}
+
+/// Behind a log of write-zeroes records a write waits for one step,
+/// once the store knows that the file system deallocates: the records
+/// count no bytes, so a step takes as many as its count of records
+/// allows, which is more log than a write adds (here 64 records of
+/// 4 KiB against a write of 64 KiB; in the daemon 1024 against one of
+/// 1 MiB). On a file system that cannot deallocate the cost is back:
+/// a write is followed by several steps. Record alignment 4096, the
+/// daemon's. Mutant: the zeros are written.
+#[test]
+fn behind_deallocated_write_zeroes_a_write_waits_for_one_step() {
+    const WIDE: Marks = Marks {
+        step: StepBound {
+            payload: 128 << 10,
+            records: 64,
+        },
+        ..MARKS
+    };
+    fn most_steps(env: &Env, holes: bool) -> Result<u64, String> {
+        let (disk, mut store, _) = a_log_of_short_records(env, Short::Zeroes)?;
+        disk.set_deallocation(holes);
+        flush(&mut store)?;
+        // The first step finds out how the file system treats them.
+        step(&mut store, WIDE.step)?;
+        store.set_marks(Some(WIDE));
+        let mut most = 0;
+        for n in 0..12u64 {
+            let before = store.log_state();
+            write(&mut store, n * 16, 16, n as u8 + 1)?;
+            let after = store.log_state();
+            if after.live() >= WIDE.high + ONE_REQUEST {
+                return Err(format!("the log holds {} bytes", after.live()));
+            }
+            // Only while short records are what a step finds.
+            if after.start < before.end - WIDE.high / 2 {
+                most = most.max(after.steps - before.steps);
+            }
+        }
+        for n in 0..12u64 {
+            expect(&mut store, n * 16, 16, n as u8 + 1, "under the load")?;
+        }
+        expect(&mut store, 512, 16, 0, "the zeroed blocks")?;
+        Ok(most)
+    }
+    fn scenario(env: &Env) -> Outcome {
+        match most_steps(env, true)? {
+            1 => Ok(()),
+            most => Err(format!("a write was followed by {most} steps")),
+        }
+    }
+    fn at_the_daemons_alignment(env: &Env) -> bool {
+        env.align == 4096
+    }
+    for env in environments(0).into_iter().filter(at_the_daemons_alignment) {
+        scenario(&env).unwrap_or_else(|why| panic!("{env:?}: {why}"));
+        let most = most_steps(&env, false).unwrap();
+        assert!(most >= 2, "without holes a write waited for {most} steps");
+    }
+    let as_before = environments(Mutants::ZEROES_WRITTEN);
+    for env in as_before.into_iter().filter(at_the_daemons_alignment) {
+        assert!(
+            scenario(&env).is_err(),
+            "zeros written and one step a write in {env:?}"
+        );
+    }
+}

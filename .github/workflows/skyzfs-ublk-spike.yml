@@ -22,7 +22,7 @@ on:
         description: "seconds one request is held"
         default: "300"
       preludes:
-        description: "the checkpoint step's runs, each with what goes before the pool: none; zero128 (blkdiscard -z over 128 MiB); zerofill (blkdiscard -z over the whole device eight times: a log at the high mark of write-zeroes records)"
+        description: "the checkpoint step's runs, each with what goes before the pool: none; zero128 (blkdiscard -z over 128 MiB); zerofill (blkdiscard -z over the whole device eight times: a log at the high mark of write-zeroes records); zerofill-refused (the same, served with --refuse-holes: zeros are written)"
         default: "none"
       red:
         description: "true: run only the stop test against two builds that must FAIL it (the buffers freed at a stop; the last commits of a stop not handed over)"
@@ -123,12 +123,17 @@ jobs:
           . "$2/tests/lib/lim.sh"
           rm -rf "$base"; mkdir -p "$base/run"
           say() { echo "ckpt_$*"; }
+          # The home image's allocated size, in bytes (M1.3f).
+          home() { say "home_allocated_$1 $(( $(stat -c '%b * %B' "$base/vol/home.img") )) bytes of $(stat -c '%s' "$base/vol/home.img")"; }
+          serve_args=
+          case $pre in zerofill-refused) serve_args=--refuse-holes ;; esac
           fail() { say "verdict FAIL: $*"; exit 1; }
           status() { say "status_$1 $("$d" status --dir "$base/vol" --run-dir "$base/run" 2>&1 | tr '\n' ';')"; }
           field() { "$d" status --dir "$base/vol" --run-dir "$base/run" 2>/dev/null | tr ';' '\n' | sed -n "s/^ *$1 \([0-9]*\).*/\1/p" | head -n 1; }
           serve() {
             : > "$base/ready"
-            "$d" serve --dir "$base/vol" --run-dir "$base/run" > "$base/ready" 2>> "$base/serve.log" &
+            # shellcheck disable=SC2086
+            "$d" serve --dir "$base/vol" --run-dir "$base/run" $serve_args > "$base/ready" 2>> "$base/serve.log" &
             pid=$!
             dev=
             for _ in $(seq 150); do
@@ -148,6 +153,7 @@ jobs:
           serve
           status at_start
           say "prelude $pre"
+          home before_prelude
           # Write-zeroes before the pool (M1.3e): each request of up to
           # 1 MiB is one header in the log. zerofill is 32768 of them
           # at 4 KiB each: the high mark of 128 MiB.
@@ -157,7 +163,7 @@ jobs:
             zero128)
               lim 300 blkdiscard -z -o 0 -l $((128 << 20)) "$dev" || fail "blkdiscard -z"
               ;;
-            zerofill)
+            zerofill|zerofill-refused)
               for pass in 1 2 3 4 5 6 7 8; do
                 lim 600 blkdiscard -z "$dev" || fail "blkdiscard -z, pass $pass"
                 status "after_zero_pass_$pass"
@@ -167,6 +173,7 @@ jobs:
           esac
           say "prelude_took $(( $(date +%s) - t0 )) s"
           status after_prelude
+          home after_prelude
           lim 180 zpool create -f -o ashift=12 -o cachefile=none -O compression=off -O mountpoint="$base/mnt" "$pool" "$dev" || fail "zpool create"
           # 640 MiB that do not compress: five times the high mark of
           # two 64 MiB segments.
@@ -187,11 +194,13 @@ jobs:
             done
             wait "$writer" || fail "dd $i"
             say "file_$i took $(( $(date +%s) - t0 )) s"
+            home "after_file_$i"
             status "after_${i}x128MiB"
           done
           lim 120 zpool sync "$pool" || fail "zpool sync"
           sleep 3
           status after_load
+          home after_load
           steps=$(field checkpoint_steps); live=$(field log_live)
           say "steps_after_load ${steps:-none} log_live ${live:-none}"
           sums=$(cd "$base/mnt" && sha256sum f1 f2 f3 f4 f5 | sha256sum | cut -d' ' -f1)
@@ -222,7 +231,7 @@ jobs:
           case $health in *"state: ONLINE"*"errors: No known data errors"*) ;; *) fail "the pool is not healthy: $health" ;; esac
           say "verdict PASS: $steps steps, pool healthy, content the same after a restart"
           SCRIPT
-          [[ $PRELUDES =~ ^(none|zero128|zerofill)(\ (none|zero128|zerofill))*$ ]] || { echo "::error::preludes are none, zero128, zerofill with a space between: '$PRELUDES'"; exit 64; }
+          [[ $PRELUDES =~ ^(none|zero128|zerofill|zerofill-refused)(\ (none|zero128|zerofill|zerofill-refused))*$ ]] || { echo "::error::preludes are none, zero128, zerofill, zerofill-refused with a space between: '$PRELUDES'"; exit 64; }
           rc=0
           : > ckpt.log
           set +o pipefail

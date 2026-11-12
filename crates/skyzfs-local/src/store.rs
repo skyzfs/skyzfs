@@ -124,6 +124,14 @@ impl Mutants {
     /// The acknowledged position is the end of the record, which is
     /// the log's end, and not where the record starts.
     pub(crate) const ACKNOWLEDGED_IS_END: u32 = 1 << 20;
+    /// A write-zeroes record is applied by writing zeros, and counts
+    /// its length in a step's bound: the store before M1.3f.
+    pub(crate) const ZEROES_WRITTEN: u32 = 1 << 21;
+    /// A file system that cannot deallocate fails the volume.
+    pub(crate) const NO_HOLES_FAILS: u32 = 1 << 22;
+    /// A write-zeroes record counts no bytes in a step's bound also
+    /// where its zeros are written.
+    pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -460,9 +468,15 @@ struct Core<D: Dir> {
     /// The times the rule made the log durable itself, with no flush
     /// of the client's, to have something to take.
     own_syncs: u64,
+    /// How a write-zeroes record reaches the home image.
+    zeroes: Zeroes,
     /// For test rigs: how and where every batch of a checkpoint waits.
     #[cfg(any(test, feature = "test-hooks"))]
     pause: Option<(StepPause, StepPoint)>,
+    /// For test rigs: the store behaves as on a file system that
+    /// cannot deallocate.
+    #[cfg(any(test, feature = "test-hooks"))]
+    refuse_holes: bool,
     mutants: Mutants,
 }
 
@@ -746,13 +760,24 @@ impl<D: Dir> Core<D> {
         let per_unit = self.log.identity().unit() / BLOCK_SIZE;
         let mut end = target;
         let (mut saved, mut records, mut payload) = (0u64, 0u64, 0u64);
+        let free_zeroes = !self.mutants.has(Mutants::ZEROES_WRITTEN)
+            && (self.zeroes == Zeroes::Deallocated
+                || self.mutants.has(Mutants::WRITTEN_ZEROES_FREE));
         let scanned = self.log.replay_until(floor, target, limit, &mut |record| {
             // Every record counts as one, so that the step's walk is
             // bounded whatever the log holds. Only what the step
             // writes into the home image counts in bytes: a discard
-            // writes nothing there.
+            // writes nothing there, and neither does a write-zeroes
+            // whose range is deallocated. Until the file system has
+            // shown that it deallocates, and where it has refused, a
+            // write-zeroes counts its whole length, which is what is
+            // then written.
             let writes = matches!(record.kind, Kind::Write | Kind::WriteZeroes);
-            let length = if writes { record.length } else { 0 };
+            let length = match record.kind {
+                Kind::Write => record.length,
+                Kind::WriteZeroes if !free_zeroes => record.length,
+                _ => 0,
+            };
             // The blocks to save beside it: at most the rest of its
             // first and of its last unit.
             let first = record.offset / BLOCK_SIZE;
@@ -795,6 +820,7 @@ impl<D: Dir> Core<D> {
             steps: self.steps,
             own_syncs: self.own_syncs,
             stepping: false,
+            zeroes: self.zeroes,
         }
     }
 
@@ -935,6 +961,15 @@ impl<D: Dir> Core<D> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.pause_at(StepPoint::Saved);
         let home = &mut self.home;
+        let zeroes = &mut self.zeroes;
+        #[cfg(any(test, feature = "test-hooks"))]
+        let refused = self.refuse_holes;
+        #[cfg(not(any(test, feature = "test-hooks")))]
+        let refused = false;
+        let (always_written, no_holes_fails) = (
+            self.mutants.has(Mutants::ZEROES_WRITTEN),
+            self.mutants.has(Mutants::NO_HOLES_FAILS),
+        );
         let mut written = Ok(());
         let replayed = self.log.replay_within(floor, target, limit, &mut |record| {
             if written.is_err() {
@@ -942,7 +977,36 @@ impl<D: Dir> Core<D> {
             }
             written = match record.kind {
                 Kind::Write => home.write_at(record.offset, record.data),
-                Kind::WriteZeroes => write_zeros(home, record.offset, record.length),
+                Kind::WriteZeroes if always_written || *zeroes == Zeroes::Written => {
+                    write_zeros(home, record.offset, record.length)
+                }
+                // The range is deallocated: nothing is written for it.
+                // Its first and last write unit may be covered only in
+                // part, and the file system then zeroes that part by
+                // a write: their other blocks were saved above, as for
+                // a write there.
+                Kind::WriteZeroes => {
+                    let hole = if refused {
+                        Err(io::ErrorKind::Unsupported.into())
+                    } else {
+                        home.deallocate(record.offset, record.length)
+                    };
+                    match hole {
+                        Ok(()) => {
+                            *zeroes = Zeroes::Deallocated;
+                            Ok(())
+                        }
+                        // The file system has no such call and changed
+                        // nothing: zeros are written, for this record
+                        // and from now on. Not a failure of the volume.
+                        Err(e) if e.kind() == io::ErrorKind::Unsupported && !no_holes_fails => {
+                            *zeroes = Zeroes::Written;
+                            write_zeros(home, record.offset, record.length)
+                        }
+                        // A failed write, as any other.
+                        Err(e) => Err(e),
+                    }
+                }
                 _ => Ok(()),
             };
         });
@@ -1135,9 +1199,11 @@ struct Preimages;
 /// How much one step of a checkpoint may take ([`Store::checkpoint_step`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StepBound {
-    /// The most bytes of writes and write-zeroes, by the length each
-    /// covers on the volume: what the step writes into the home image.
-    /// A discard counts zero bytes: a step writes nothing for it.
+    /// The most bytes of writes, and of write-zeroes whose zeros are
+    /// written, by the length each covers on the volume: what the step
+    /// writes into the home image. A discard counts zero bytes, and so
+    /// does a write-zeroes whose range is deallocated ([`Zeroes`]): a
+    /// step writes nothing for them.
     pub payload: u64,
     /// The most records, of every kind: a discard is one record too,
     /// so a log of discards alone is worked off in bounded steps and a
@@ -1150,7 +1216,8 @@ impl StepBound {
     /// whichever comes first. For writes that is more than the largest
     /// request adds to the log, so a step after every request shortens
     /// the log. For records that are short in the log it is not: eight
-    /// write-zeroes of 1 MiB are 32 KiB of log at a record alignment
+    /// write-zeroes of 1 MiB whose zeros are written
+    /// ([`Zeroes::Written`]) are 32 KiB of log at a record alignment
     /// of 4096, and 1024 discards are 64 KiB at an alignment of 64.
     /// The log's bound then rests on the rule and not on the step
     /// ([`Marks`]): at the high mark it takes as many steps as it
@@ -1261,23 +1328,23 @@ impl StepPause {
 /// For records that are short in the log it does. With the daemon's
 /// step, a record alignment of 4096 and requests of at most 1 MiB:
 ///
-/// - behind write-zeroes of 1 MiB each a step takes eight records,
+/// - behind discards, and behind write-zeroes whose ranges are
+///   deallocated ([`Zeroes::Deallocated`]), a step takes 1024
+///   records, 4 MiB of log and nothing to write: one step a request,
+///   as for writes. At a record alignment of 64 it is 64 KiB of log a
+///   step, and a write of 1 MiB waits for 17 steps, each with its
+///   syncs and nothing written;
+/// - behind write-zeroes of 1 MiB each on a file system that cannot
+///   deallocate ([`Zeroes::Written`]) a step takes eight records,
 ///   32 KiB of log, and writes 8 MiB of zeros into the home image; a
 ///   write of 1 MiB adds 1 MiB and 4 KiB, so the next request waits
 ///   for 33 steps: 264 MiB of zeros written and 33 syncs of the home
 ///   image. A log filled to a high mark of 128 MiB with such records
 ///   holds 32 768 of them, 32 GiB of zeros to write in 4096 steps,
-///   and writes are served at that pace until they are gone;
-/// - behind discards a step takes 1024 records, 4 MiB of log and
-///   nothing to write: one step a request, as for writes. At a record
-///   alignment of 64 it is 64 KiB of log a step, and a write of 1 MiB
-///   waits for 17 steps, each with its syncs and nothing written.
-///
-/// The first of these is long. It is the price of writing zeros into
-/// the home image for a record that names them in one header; the
-/// bound of a step does not hide it. What would remove it is to
-/// deallocate the range in the home image and write nothing, which is
-/// not done here: see the note where the zeros are written.
+///   and writes are served at that pace until they are gone. That is
+///   long, and it is the price of a file system without holes: the
+///   bound of a step does not hide it, and the store says which of
+///   the two a volume is on ([`LogState::zeroes`]).
 ///
 /// This cost is the design's choice of a bounded log and a bounded
 /// start over an even latency (design §5.1). It has not been measured
@@ -1314,6 +1381,57 @@ pub struct LogState {
     /// rule's own sync of the log, when it needs one: that sync can
     /// take as long as any, and is shown as the step it is for.
     pub stepping: bool,
+    /// How write-zeroes records reach the home image.
+    pub zeroes: Zeroes,
+}
+
+/// How a write-zeroes record reaches the home image when a checkpoint
+/// applies it (design §5.1).
+///
+/// The range is deallocated in the home image, which is a sparse file:
+/// a hole reads as zeros, nothing is written, and the record counts no
+/// bytes in a step's bound, as a discard counts none. Where the file
+/// system has no call for that, zeros are written instead, the record
+/// counts its length, and a log of such records is worked off at the
+/// pace of that writing: a request can then wait for many steps
+/// ([`Marks`], "what it costs a client").
+///
+/// Which of the two holds for a volume is found out by the first
+/// write-zeroes record that a checkpoint applies after an open, and
+/// holds until the store is closed. Until then such a record counts
+/// its length, so that a step keeps to its bound whichever it turns
+/// out to be.
+///
+/// - **The edges.** The volume's blocks are 4 KiB. Where the write
+///   unit is larger, a range can cover its first and last unit only in
+///   part, and the file system zeroes a part of a unit by writing it.
+///   So the other blocks of those two units are saved as preimages
+///   before the range is deallocated, exactly as for a write there. A
+///   range that covers whole units, and every range where the unit is
+///   one block, has no neighbours and saves nothing.
+/// - **Durability.** A hole is durable when the home image's sync has
+///   returned, like a write, and the log keeps the record until then.
+///   A power cut before that leaves each block of the range as it was
+///   or zero; the open applies the record again.
+/// - **Reads.** While the record is in the log, a read of its blocks
+///   is answered from the index, with zeros and without the home
+///   image. Afterwards the home image is read, and a hole reads as
+///   zeros. The store keeps no other copy of a block that could bring
+///   older content back.
+/// - **A discard is unchanged**: it is recorded and changes nothing in
+///   the home image. A read after a discard returns what was there,
+///   which the contract allows and the store's tests assert; freeing
+///   the space would be a change of what a discard does, not a part of
+///   making write-zeroes cheap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Zeroes {
+    /// No checkpoint has applied a write-zeroes record since the open.
+    #[default]
+    Untried,
+    /// The ranges are deallocated.
+    Deallocated,
+    /// The file system cannot deallocate: zeros are written.
+    Written,
 }
 
 impl LogState {
@@ -1494,19 +1612,10 @@ impl Preimages {
     }
 }
 
-/// Write `len` zeros at `offset`.
-///
-/// This is what a write-zeroes record costs a step: its whole length
-/// in zeros written, for a record that is one header in the log. It is
-/// why a log of such records is worked off slowly ([`Marks`], "what it
-/// costs a client"). The home image is a sparse file, so the range
-/// could be deallocated instead (a hole reads as zeros, and blocks of
-/// 4 KiB are whole blocks of the file): nothing written, nothing of a
-/// write unit rewritten and so no preimages for it, and the record
-/// would count no bytes in a step, as a discard does. That needs a
-/// call of [`File`] that this crate does not have yet, and a model of
-/// its loss at a power cut in the simulated disk. Not done here: it is
-/// proposed in the description of M1.3e.
+/// Write `len` zeros at `offset`: for a write-zeroes record on a file
+/// system that cannot deallocate ([`Zeroes::Written`]). The record's
+/// whole length is written, for a record that is one header in the
+/// log.
 fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
     const CHUNK: u64 = 1 << 20;
     let zeros = vec![0u8; len.min(CHUNK) as usize];
@@ -1797,8 +1906,11 @@ impl<D: Dir> Store<D> {
                 working: false,
                 steps: 0,
                 own_syncs: 0,
+                zeroes: Zeroes::Untried,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
+                #[cfg(any(test, feature = "test-hooks"))]
+                refuse_holes: false,
                 mutants: options.mutants,
             },
             unacknowledged,
@@ -1857,6 +1969,13 @@ impl<D: Dir> Store<D> {
     pub fn set_marks(&mut self, marks: Option<Marks>) {
         self.core.marks = marks;
         self.core.working = false;
+    }
+
+    /// For test rigs: behave as on a file system that cannot
+    /// deallocate ([`Zeroes::Written`]).
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_refuse_holes(&mut self, refuse: bool) {
+        self.core.refuse_holes = refuse;
     }
 
     /// For test rigs: make every step wait at `point`.
@@ -2348,6 +2467,13 @@ where
                         wake();
                     });
                     busy = stepped == Ok(true);
+                    // `begun` is a safeguard and cannot decide today: the
+                    // rule tells the owner of a step before its own sync
+                    // only when that sync makes more durable below the
+                    // hold, so a step follows (`Ok(true)`) or the sync
+                    // fails the volume (an error). Should the rule ever
+                    // begin and then take nothing, the owner is still
+                    // shown the end of what it was told had begun.
                     if stepped != Ok(false) || begun {
                         // Only a safeguard: a request is held when
                         // the log is full behind a hold, after the log

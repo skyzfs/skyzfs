@@ -97,6 +97,30 @@ pub trait File {
     /// behind it.
     fn extend(&mut self, len: u64) -> io::Result<()>;
 
+    /// Deallocate `len` bytes at `offset`, both multiples of 4096 and
+    /// inside the file: the range reads as zeros afterwards and has no
+    /// space behind it, and the file's length stays.
+    ///
+    /// As a write, it is durable only after [`File::sync`]. Until
+    /// then a power cut leaves each block of the range as it was or
+    /// as zeros. Where the range does not cover a whole block of the
+    /// file system (or write unit of the device), the file system
+    /// zeroes that part by a write, which rewrites the unit around it
+    /// as any write does: a caller that protects the neighbours of a
+    /// write protects them here in the same way.
+    ///
+    /// Fails with [`io::ErrorKind::Unsupported`] where the file system
+    /// or the platform has no such call, and has then changed nothing:
+    /// the caller writes zeros in its place. Any other error is a
+    /// failed write: any part of the range may be zero.
+    ///
+    /// The calls: Linux `fallocate` with `FALLOC_FL_PUNCH_HOLE |
+    /// FALLOC_FL_KEEP_SIZE` (built). macOS `fcntl(F_PUNCHHOLE)`, which
+    /// wants a range of whole file-system blocks, and Windows
+    /// `FSCTL_SET_ZERO_DATA` on a file marked sparse: not built, and
+    /// until they are those platforms answer "unsupported".
+    fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()>;
+
     /// The file's length in bytes.
     fn len(&self) -> io::Result<u64>;
 
