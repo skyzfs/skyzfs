@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. M1 still lacks two things: the power-cut replay has run on the ublk project's reference server and not yet on `skyzfsd`, and the throughput criterion is not met (§9). |
-| Date | 2026-11-10 |
+| Date | 2026-11-12. First draft 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
 | Detail | `skyzfs-impl-notes.md`: for each milestone, its work packages, the design as built, what was measured, and the review record |
@@ -174,7 +174,7 @@ ublk is the in-kernel userspace block driver, driven by io_uring passthrough com
 - **Library.** The transport is built on the `libublk` crate[^libublk], pinned to one version and confined to one module, for the queue. The daemon sends the control commands itself, through a binding of its own (`skyzfs-ublk-sys`), and takes the driver's own answers: add, lookup, the asynchronous delete, and the begin and the end of a recovery. The binding has kernel tests of its own.
 - **One copy per request**, into buffers that are the daemon's own and locked in memory: two per request slot, 128 MiB for a volume at one queue, a depth of 64 and 1 MiB requests. The zero-copy modes are not adopted (gate G1, §9).
 - **Labels at byte 0.** `zpool create` partitions only what it recognises as a whole disk, and its device table does not list ublk[^wholedisk], so the pool's labels sit at the start of the device, as they do through `udrive_shm`. CI pins this (§6.2).
-- **Kernels.** ublk was merged in Linux 6.0. Feature flags and their kernel versions must be pinned during M1 against the kernel documentation, not from memory.
+- **Kernels.** ublk was merged in Linux 6.0. Feature flags and their kernel versions must be pinned during M1 against the kernel documentation, not from memory. That is not done yet: the daemon asks for user recovery with reissue and has run on kernel 7.0 only, and nothing records the oldest kernel that has every flag it needs or makes the daemon say so on a kernel that lacks one. It is M1's to finish, beside its two open exit criteria (§9).
 - **Evidence.** Four rigs run in GitHub Actions on Ubuntu 24.04 and 26.04 (kernel 7.0, ZFS 2.4.1): a kernel probe, a power-cut replay rig, a control rig for the binding, and a daemon rig that takes `skyzfsd` through kills, an orderly stop, a held request, a failed volume, the conformance suite and its checkpoints. What each has shown is in the notes.
 - **Fallback.** Where ublk is missing, the existing NBD server on a local socket is the transport.
 
@@ -449,7 +449,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
 | **H** ZFS in user space on macOS, after 1.x | Not sized | Deferred by decision D4, and no longer a hedge for M6. A macOS client on FSKit, built on the macOS port once that supports FSKit, with the daemon and the `udrive_shm` code of M5 reused. | Planned once 1.x has shipped and the port's FSKit work exists to build on. |
 
-**Where M1 stands (2026-11-12).** M1 still lacks two things.
+**Where M1 stands (2026-11-12).** M1 still lacks two of its exit criteria. A smaller item is open beside them: the ublk feature flags and the kernels that have them are not pinned (§4.2).
 
 **The power-cut replay has not been run on `skyzfsd`.** The replay rig that this criterion rests on has so far run against the ublk project's reference server. What the daemon's own log does at a power cut is covered by the store's tests on a simulated disk, and what it does at `kill -9` by the daemon rig on the kernel; neither is the criterion. Running the rig on the daemon is the next testing package.
 
