@@ -943,6 +943,11 @@ struct Core<D: Dir> {
     read_pauses_at: Vec<(u64, StepPause)>,
     /// How many reader threads the store has when it is served.
     readers: usize,
+    /// For tests: the thread that [`Store::serve_with`] cannot start,
+    /// by its place in the order it starts them (the readers from 0,
+    /// then the worker).
+    #[cfg(test)]
+    spawn_fails_at: Option<usize>,
     /// For test rigs: how a sync of the log for a flush waits before
     /// it begins.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -3341,6 +3346,8 @@ impl<D: Dir> Store<D> {
                 #[cfg(any(test, feature = "test-hooks"))]
                 read_pauses_at: Vec::new(),
                 readers: options.readers.max(1),
+                #[cfg(test)]
+                spawn_fails_at: None,
                 #[cfg(any(test, feature = "test-hooks"))]
                 sync_pause: None,
                 mutants: options.mutants,
@@ -3866,6 +3873,60 @@ impl<T> ReadQueue<T> {
         if let Some(hook) = hook {
             hook(holding);
         }
+    }
+}
+
+/// The readers [`Store::serve_with`] has started, until a [`Served`]
+/// holds them. On any other way out of it (a later reader or the worker
+/// that cannot be started, a panic) the queue of reads is closed and the
+/// readers are joined: nothing else would close it, and they would wait
+/// for a read for ever, with their handles on the store's files. (With
+/// the channel the readers had before, the sender's drop did that.)
+struct Starting {
+    reads: Arc<ReadQueue<ToReader>>,
+    readers: Vec<thread::JoinHandle<()>>,
+    handed: bool,
+}
+
+impl Starting {
+    /// The readers, for the [`Served`] that now closes their queue.
+    fn hand_over(mut self) -> Vec<thread::JoinHandle<()>> {
+        self.handed = true;
+        std::mem::take(&mut self.readers)
+    }
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        if self.handed {
+            return;
+        }
+        self.reads.close();
+        for reader in self.readers.drain(..) {
+            let _ = reader.join();
+        }
+    }
+}
+
+/// [`thread::Builder::spawn`], or, when `refused` (for tests), the
+/// error of a thread that cannot be started.
+trait SpawnUnless {
+    fn spawn_unless<F, T>(self, refused: bool, f: F) -> io::Result<thread::JoinHandle<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static;
+}
+
+impl SpawnUnless for thread::Builder {
+    fn spawn_unless<F, T>(self, refused: bool, f: F) -> io::Result<thread::JoinHandle<T>>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        if refused {
+            return Err(io::Error::other("a test refused to start the thread"));
+        }
+        self.spawn(f)
     }
 }
 
@@ -4406,7 +4467,16 @@ where
                 waiting.push_back((request, served_at));
             }
         }
-        let mut reading = Vec::new();
+        #[cfg(test)]
+        let refused = core.spawn_fails_at;
+        #[cfg(not(test))]
+        let refused: Option<usize> = None;
+        let reader_count = core.readers;
+        let mut starting = Starting {
+            reads: reads.clone(),
+            readers: Vec::new(),
+            handed: false,
+        };
         for (at_index, (mut reader, read_spans)) in readers.into_iter().zip(read_spans).enumerate()
         {
             let ending = Ending {
@@ -4418,7 +4488,7 @@ where
             let read_inbox = reads.clone();
             let spawned = thread::Builder::new()
                 .name(format!("skyzfs-reader-{at_index}"))
-                .spawn(move || {
+                .spawn_unless(refused == Some(at_index), move || {
                     let _ending = ending;
                     // What the reader did, for the waits of its reads:
                     // idle, the call of a read, anything else.
@@ -4521,13 +4591,13 @@ where
                         }
                     }
                 });
-            // The readers already started end when the reads' sender is
-            // dropped on an early return.
-            reading.push(spawned?);
+            // On an early return, `starting` closes the queue and joins
+            // the readers already started.
+            starting.readers.push(spawned?);
         }
         let worker = thread::Builder::new()
             .name("skyzfs-store".into())
-            .spawn(move || {
+            .spawn_unless(refused == Some(reader_count), move || {
                 let _ending = ending;
                 // Whether the request at the head was tried and cannot
                 // proceed until something changes.
@@ -4842,7 +4912,7 @@ where
             ended,
             log,
             worker: Some(worker),
-            readers: reading,
+            readers: starting.hand_over(),
         })
     }
 }
