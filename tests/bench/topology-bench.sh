@@ -93,6 +93,30 @@
 #             of the ublk device: the control. zfs-ublk against zfs-loop
 #             is the ublk hop alone; zfs-loop against zfs-slog is what
 #             the dm-snapshot model itself costs.
+#   zfs-skyzfsd  zfs-ublk with the project's daemon (`skyzfsd serve`,
+#             TB_SKYZFSD names the binary) in place of the reference
+#             server: the row M1's exit criterion is about. The daemon
+#             keeps a volume in its own format (a home image and a
+#             write log), so the pool image is not handed to it as a
+#             file: a volume of the image's size is created and served,
+#             and the exported image is copied onto the served device
+#             with direct I/O, 1 MiB at a time, leaving out every 1 MiB
+#             that is all zeros (dd conv=sparse), so that what the other
+#             rows' sparse image never wrote the daemon is never given
+#             either. Everything of the image that is not zeros has
+#             passed through the daemon's log and its checkpoint before
+#             the pool is imported. The script then waits for the daemon
+#             to be at rest (no checkpoint step under way, nothing
+#             unstored or held, its write count still) and says where
+#             the log stood. Same datasets and log device as zfs-slog.
+#             The daemon's status is recorded before and after each
+#             window and sampled every second during it: steps taken,
+#             the range of `log_live`, and how many samples found a
+#             step under way. `origin`, `pool` and `fs` report the
+#             served device, which is the pool's view: what the daemon
+#             writes to its own files (the log and the home image, in
+#             TB_WORK) is NOT counted, so this row has no flash-write
+#             figure that can be compared with the others.
 #
 # For these rows `origin` is the delayed pool image, `pool` is the
 # dm-snapshot's COW device (the local flash every vdev write lands on),
@@ -120,7 +144,7 @@
 #                           twovol-hydrated bcache opencas zfs zfs-plain
 #                           zfs-l2arc zfs-slog zfs-slog-l2arc
 #                           zfs-slog-rcache; and, never in the default
-#                           set, zfs-ublk zfs-loop
+#                           set, zfs-ublk zfs-loop zfs-skyzfsd
 #   TB_WORKLOADS="..."      pgbench builtins by short name: tpcb select update
 #   TB_SCALE=100            pgbench scale (~15 MiB per unit)
 #   TB_CLIENTS=8 TB_JOBS=4  pgbench -c / -j
@@ -184,6 +208,27 @@
 #   TB_UBLK_ARGS=           extra arguments for zfs-ublk's `ublk add`, comma-
 #                           separated ("-q,4,-d,256": four queues of depth
 #                           256; the server's default is one queue of 128)
+#   TB_SKYZFSD=             the skyzfsd binary for zfs-skyzfsd (a release
+#                           build without the test hooks is what the
+#                           workflow builds)
+#   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
+#                           ("--depth,128,--log-high,8,--log-low,4"; the
+#                           marks are in segments of 64 MiB, default 2 and 1)
+#   TB_SKYZFSD_MEM=         cgroup v2 memory.max for the daemon (e.g. 1G).
+#                           The daemon's files (home image and log) go
+#                           through the host's page cache, which is
+#                           outside postgres's TB_MEM_LIMIT: unset, the
+#                           daemon rows have a cache under the pool as
+#                           large as the machine's free memory, which the
+#                           other rows (direct I/O under the pool) have
+#                           not. Set, the daemon runs in a cgroup of its
+#                           own from its first instruction, so the pages
+#                           of its files are charged there and bounded.
+#                           This bounds the cache; it is NOT what direct
+#                           I/O would cost: at the limit the kernel
+#                           reclaims and throttles the daemon's
+#                           write-back. The daemon's resident memory and
+#                           its cgroup's file pages are recorded either way
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -240,6 +285,26 @@
 # zfsutils (zpool, zfs, the zfs module) and dm-snapshot for the zfs ones.
 set -euo pipefail
 
+# lim SECONDS COMMAND: a time limit that also gives up on a command
+# that cannot be killed. A pool whose device has lost its server makes
+# such commands, and zfs-skyzfsd's teardown must not hang on one.
+# shellcheck source=tests/lib/lim.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/lim.sh"
+# lim was written for scripts without errexit and pipefail: its look at
+# a process that has just ended fails, and under `set -e` that ended
+# this script with status 2 and no message (run 43134306342). blim is
+# lim with both off while it runs, and the command's status returned.
+blim() {
+    local rc=0 e="" p=""
+    case $- in *e*) e=1 ;; esac
+    if shopt -qo pipefail; then p=1; fi
+    set +e +o pipefail
+    lim "$@"; rc=$?
+    [ -z "$p" ] || set -o pipefail
+    [ -z "$e" ] || set -e
+    return "$rc"
+}
+
 # GNU dd as "$DD" (`gnudd` on ubuntu-26.04, plain `dd` before it): the
 # O_DIRECT calls below fail with the Rust coreutils dd. See the helper.
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -260,7 +325,7 @@ out = sys.argv[1]
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
          'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache',
-         'zfs-loop', 'zfs-ublk']
+         'zfs-loop', 'zfs-ublk', 'zfs-skyzfsd']
 modes = ['none', 'sync', 'suspend', 'freeze', 'zfs']
 def mode(r): return r.get('snap', {}).get('mode', 'none')
 def label(r): return r.get('label', r['topology']) + ('' if mode(r) == 'none' else ' +' + mode(r))
@@ -357,16 +422,23 @@ if drows:
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
               'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
-              'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0:\n')
-        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | host page cache | host dirty | buffered loops |')
-        print('|---|---|---|---|---|---|---|---|---|')
+              'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0. '
+              'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
+              'the page cache its files were charged for there, and how many times the cgroup reached its limit, '
+              'during the window and since the daemon started, which includes the copy of the pool image and the '
+              'warm-up (counts, not MiB):\n')
+        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit in the window | since the daemon started |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in md:
             m = r['diag']['mem_mb']; lp = r['diag'].get('loops', {})
             arc = r.get('zfs', {}).get('after', {}).get('arc.size')
             print(f"| {r['workload']} | {label(r)} | {nf(m.get('cgroup.current'), '.0f')} | {nf(m.get('cgroup.file'), '.0f')} | "
                   f"{nf(m.get('cgroup.anon', 0) + m.get('cgroup.shmem', 0) if 'cgroup.anon' in m else None, '.0f')} | "
-                  f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
-                  f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} |")
+                  f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('zfs.arc_max'), '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
+                  f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} | "
+                  f"{nf(m.get('skz.VmRSS'), '.0f')} | {nf(m.get('skz.cgroup.max'), '.0f') if 'skz.cgroup.max' in m else ('none' if 'skz.VmRSS' in m else 'n/a')} | "
+                  f"{nf(m.get('skz.cgroup.file'), '.0f')} | {nf(m.get('skz.cgroup.events.max.window'), '.0f')} | "
+                  f"{nf(m.get('skz.cgroup.events.max.since_start'), '.0f')} |")
     zd = [(r, d) for r, d in drows if r.get('zfs')]
     if zd:
         MB = 1 << 20
@@ -412,6 +484,67 @@ if any(mode(r) != 'none' for r in runs):
               f"{r['tps'] or 0:.0f} | {fmt(r['tps'] / base_tps if base_tps and r['tps'] else None, '.2f')} | "
               f"{fmt(lat.get('p99_ms'))} | {fmt(lat.get('max_ms'), '.0f')} | {fmt(lat.get('min_tps_1s'), '.0f')} | "
               f"{flash / (txn / 1000) if txn else float('nan'):.1f} |")
+# The daemon against the benchmark model (design §9, M1: tpcb within
+# 10% of the benchmark model on the same machine). The model is the
+# zfs-slog row. A ratio, and with it a verdict, is only formed between
+# two rows of one machine: each row carries the boot id and the host
+# name of the machine it ran on, and rows are compared only where it is the same. The
+# workflow's summary job puts the rows of every matrix runner in one
+# directory; those end with NO VERDICT, and so does a row that does not
+# say where it ran.
+skz = [r for r in runs if r['topology'] == 'zfs-skyzfsd' and mode(r) == 'none']
+if skz:
+    def others(topo, r):
+        """-> (rows of `topo` and r's workload from r's machine, how many from elsewhere)."""
+        rows = [o for o in runs if o['topology'] == topo and o['workload'] == r['workload'] and mode(o) == 'none' and o['tps']]
+        here = [o for o in rows if r.get('machine') and o.get('machine') == r['machine']]
+        return here, len(rows) - len(here)
+    print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
+          '(the same boot id and host name); rows of other machines are counted and not compared. '
+          'The criterion is a ratio of at least 0.90 to a zfs-slog row with no origin delay (TB_ORIGIN_DELAY_MS=0); '
+          'the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
+    print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
+    print('|---|---|---|---|---|---|---|---|')
+    for r in skz:
+        lim_ = r.get('skyzfsd', {}).get('info', {}).get('mem_max', 'n/a')
+        if not r['tps']:
+            print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
+            continue
+        model, elsewhere = others('zfs-slog', r)
+        if not r.get('machine'):
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | - | - | NO VERDICT: this row does not say what machine it ran on |")
+        elif not model:
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none on this machine | - | "
+                  f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
+        for o in model:
+            q = r['tps'] / o['tps']
+            # The daemon's row has no origin under it. A model row with
+            # an origin delay was slowed by it at every origin read, and
+            # a ratio to it would flatter the daemon: no verdict.
+            delay = o.get('origin_delay_ms')
+            if delay == 0:
+                verdict = 'at least 0.90' if q >= 0.90 else 'BELOW 0.90'
+            elif delay is None:
+                verdict = 'NO VERDICT: the model row does not say what origin delay it had'
+            else:
+                verdict = f'NO VERDICT: the model row had an origin delay of {delay} ms, the daemon row has no origin'
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | {verdict} |")
+        for topo in ('zfs-loop', 'zfs-ublk'):
+            for o in others(topo, r)[0]:
+                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
+    print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
+    print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    for r in skz:
+        k = r.get('skyzfsd', {})
+        w = k.get('window', {})
+        mib = lambda v: 'n/a' if v is None else f'{v / (1 << 20):.0f}'
+        nn = lambda v: 'n/a' if v is None else str(v)
+        print(f"| {r['workload']} | {label(r)} | {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
+              f"{nn(k.get('steps'))} | {nn(k.get('syncs'))} | {nn(k.get('writes'))} | {mib(w.get('log_live_min'))} | {mib(w.get('log_live_max'))} | "
+              f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
+              f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
+              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} |")
 PY
 }
 if [ "${1:-}" = summarize ]; then
@@ -491,6 +624,9 @@ PREALLOC=${TB_PREALLOC:-0}
 ZFS_L2ARC_MB=${TB_ZFS_L2ARC_MB:-}
 UBLK_ARGS=${TB_UBLK_ARGS:-}
 UBLK_ID=${TB_UBLK_ID:-7}
+SKYZFSD=${TB_SKYZFSD:-}
+SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
+SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
@@ -519,6 +655,10 @@ for t in $TOPOLOGIES; do
         opencas) need casadm; ANY_THIN=1 ;;
         zfs|zfs-plain|zfs-l2arc|zfs-slog|zfs-slog-l2arc|zfs-slog-rcache|zfs-loop) need zpool zfs tar; ANY_ZFS=1 ;;
         zfs-ublk) need zpool zfs tar ublk; ANY_ZFS=1; ANY_UBLK=1 ;;
+        zfs-skyzfsd)
+            need zpool zfs tar; ANY_ZFS=1; ANY_UBLK=1
+            { [ -n "$SKYZFSD" ] && [ -x "$SKYZFSD" ]; } || { echo "zfs-skyzfsd needs TB_SKYZFSD, the skyzfsd binary: '${SKYZFSD}' is not a program" >&2; exit 64; }
+            ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
 done
@@ -668,6 +808,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -689,15 +830,36 @@ teardown_topology() {
         fsfreeze -u "$MNT_WAL" 2>/dev/null; fsfreeze -u "$MNT" 2>/dev/null
         dmsetup resume tb-data 2>/dev/null; dmsetup resume tb-wal 2>/dev/null
     fi
+    if [ -n "$SKZ_SAMPLER" ]; then
+        kill "$SKZ_SAMPLER" 2>/dev/null; SKZ_SAMPLER=""
+    fi
     stop_pg
-    umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
+    if [ -n "$SKZ_UP" ]; then
+        # The pool is on the daemon's device. If the daemon is gone the
+        # pool waits for it, and an unmount or an export then never
+        # returns: each of them has a limit here, and what could not be
+        # undone is said.
+        blim 120 umount "$MNT" 2>/dev/null; blim 120 umount "$MNT_WAL" 2>/dev/null
+    else
+        umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
+    fi
     umount "$WORK/mnt-src" 2>/dev/null
-    if [ -n "$ZFS_UP" ]; then
+    if [ -n "$ZFS_UP" ] && [ -n "$SKZ_UP" ]; then
+        blim 300 zpool export -f "$ZFS_POOL" 2>/dev/null || blim 120 zpool destroy -f "$ZFS_POOL" 2>/dev/null \
+            || log "WARNING: pool $ZFS_POOL is still imported (its state: $(cat "/proc/spl/kstat/zfs/$ZFS_POOL/state" 2>/dev/null || echo unknown))"
+        ZFS_UP=""
+    elif [ -n "$ZFS_UP" ]; then
         # The pool is scratch: if it will not export, destroy it rather
         # than leave an imported pool holding the dm devices below.
         zpool export -f "$ZFS_POOL" 2>/dev/null || zpool destroy -f "$ZFS_POOL" 2>/dev/null \
             || log "WARNING: pool $ZFS_POOL is still imported"
         ZFS_UP=""
+    fi
+    if [ -n "$SKZ_UP" ]; then
+        # After the export, like the reference server's device below:
+        # an orderly stop, then the device is detached.
+        skz_stop
+        SKZ_UP=""
     fi
     if [ -n "$UBLK_UP" ]; then
         # After the export: deleting a device under an imported pool
@@ -737,6 +899,7 @@ teardown_topology() {
     rm -f "$WORK/zfs-origin.img"
     POOL_LOOP=""; CACHE_LOOP=""; BSB_LOOP=""; FS_DEV=""; TWO_VOL=""; WAL_FROM_ORIGIN=""
     ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; STAT_ORIGIN=""; STAT_POOL=""; SLOG_LOOP=""; ZFS_RCACHE=""
+    SKZ_DEV=""
     [ "$errexit" = 1 ] && set -e
     return 0
 }
@@ -1058,7 +1221,125 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     zfs_set_props
     FS_DEV=/dev/mapper/tb-zdev
 }
-build_zfs_direct() { # ublk|loop: the pool imported from its own image, served read-write by that device
+# ---- zfs-skyzfsd: the project's daemon serves the vdev
+skz_status() { blim 30 "$SKYZFSD" status --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" 2>/dev/null || true; }
+# key -> its value. awk reads to the end: one that left early could end
+# the writer with SIGPIPE, which pipefail turns into a failure here.
+skz_stat() { skz_status | awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }'; }
+# The low mark of the log in bytes: `--log-low N` of TB_SKYZFSD_ARGS in
+# segments of 64 MiB, or the daemon's default of 1.
+skz_low_bytes() {
+    local n
+    n=$(printf '%s\n' "$SKYZFSD_ARGS" | tr ',' '\n' | awk 'prev == "--log-low" { print; exit } { prev = $0 } /^--log-low=/ { sub(/^--log-low=/, ""); print; exit }')
+    [[ $n =~ ^[0-9]+$ ]] || n=1
+    echo $(( n * 64 << 20 ))
+}
+skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
+    local i args=()
+    [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
+    : > "$WORK/skyzfsd.ready"
+    # A cgroup of the daemon's own, with or without a limit: its file
+    # pages (the home image and the log, through the page cache) are
+    # then counted apart from everything else on the machine. The shell
+    # joins it before it becomes the daemon, so the first page the
+    # daemon touches is charged there.
+    SKZ_CGROUP=""
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+        SKZ_CGROUP=/sys/fs/cgroup/topology-bench-skyzfsd
+        mkdir -p "$SKZ_CGROUP"
+        echo "${SKYZFSD_MEM:-max}" > "$SKZ_CGROUP/memory.max"
+    elif [ -n "$SKYZFSD_MEM" ]; then
+        echo "TB_SKYZFSD_MEM needs cgroup v2 at /sys/fs/cgroup" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2016  # the inner shell expands them
+    bash -c '[ -z "$1" ] || echo $$ > "$1/cgroup.procs" || exit 97; shift; exec "$@"' skz "$SKZ_CGROUP" \
+        "$SKYZFSD" serve --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" "${args[@]}" > "$WORK/skyzfsd.ready" 2>> "$OUT/skyzfsd-serve.log" &
+    SKZ_PID=$!
+    for i in $(seq 1 240); do
+        SKZ_DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$WORK/skyzfsd.ready" | head -n 1)
+        if [ -n "$SKZ_DEV" ] && [ -b "$SKZ_DEV" ]; then return 0; fi
+        if ! kill -0 "$SKZ_PID" 2>/dev/null; then
+            echo "skyzfsd serve ended before it was ready: $(tail -n 3 "$OUT/skyzfsd-serve.log" | tr '\n' ';')" >&2
+            SKZ_PID=""
+            return 1
+        fi
+        sleep 0.25
+    done
+    echo "skyzfsd serve was not ready after 60 s: $(tail -n 3 "$OUT/skyzfsd-serve.log" | tr '\n' ';')" >&2
+    return 1
+}
+skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the volume removed
+    local i
+    if [ -n "$SKZ_PID" ]; then
+        kill -TERM "$SKZ_PID" 2>/dev/null
+        for i in $(seq 1 240); do kill -0 "$SKZ_PID" 2>/dev/null || break; sleep 0.25; done
+        if kill -0 "$SKZ_PID" 2>/dev/null; then
+            log "WARNING: skyzfsd did not end within 60 s of SIGTERM; killed"
+            kill -9 "$SKZ_PID" 2>/dev/null
+        else
+            wait "$SKZ_PID" 2>/dev/null; i=$?
+            [ "$i" = 0 ] || log "WARNING: skyzfsd serve ended with $i"
+        fi
+        SKZ_PID=""
+    fi
+    blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
+        || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(blim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
+    rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
+    if [ -n "$SKZ_CGROUP" ]; then rmdir "$SKZ_CGROUP" 2>/dev/null; SKZ_CGROUP=""; fi
+}
+# Wait for the daemon to be at rest after the copy, so that a window
+# does not begin on the copy's backlog: no checkpoint step under way,
+# nothing unstored, nothing held, and the write count the same over a
+# second. Then `log_live` is looked at: under the low mark is what a
+# finished checkpoint leaves. If the daemon rests with the log at or
+# above the low mark (a step only begins at the high mark), waiting
+# longer changes nothing: after 30 s of rest the script goes on and the
+# row says where the log stood. 1: never at rest in 600 s.
+skz_settle() {
+    local low t0 step unst held w0 w1 ll rest=0 said=""
+    low=$(skz_low_bytes)
+    t0=$(date +%s)
+    while [ $(( $(date +%s) - t0 )) -lt 600 ]; do
+        w0=$(skz_stat writes); sleep 1
+        w1=$(skz_stat writes); step=$(skz_stat checkpoint_step); unst=$(skz_stat unstored); held=$(skz_stat held); ll=$(skz_stat log_live)
+        if [ "$step" = none ] && [ "$unst" = 0 ] && [ "$held" = 0 ] && [ -n "$w0" ] && [ "$w0" = "$w1" ] && [[ $ll =~ ^[0-9]+$ ]]; then
+            rest=$((rest + 1))
+            if [ "$ll" -lt "$low" ]; then
+                said="at rest after $(( $(date +%s) - t0 )) s: no step under way, unstored 0, held 0, log_live $ll under the low mark of $low"
+                break
+            elif [ "$rest" -ge 30 ]; then
+                said="at rest for 30 s after $(( $(date +%s) - t0 )) s: no step under way, unstored 0, held 0, but log_live $ll is NOT under the low mark of $low: the window begins with that much in the log"
+                break
+            fi
+        else
+            rest=0
+        fi
+    done
+    if [ -z "$said" ]; then
+        echo "skyzfsd did not come to rest within 600 s of the copy: checkpoint_step '${step:-}', unstored '${unst:-}', held '${held:-}', writes '${w0:-}' then '${w1:-}', log_live '${ll:-}'" >&2
+        return 1
+    fi
+    log "skyzfsd: $said"
+    echo "settle $said" >> "$OUT/$TOPO.skzinfo"
+}
+skz_sample() { # file: one line a second, "epoch key=value ...", until killed
+    while :; do
+        # A pool whose daemon is gone waits for it, and pgbench with it,
+        # until the job's limit. End the measurement instead: pgbench
+        # is killed, the script fails on that, and its teardown has
+        # limits.
+        if ! kill -0 "$SKZ_PID" 2>/dev/null; then
+            log "skyzfsd (pid $SKZ_PID) is GONE during the window; its log's end: $(tail -n 5 "$OUT/skyzfsd-serve.log" | tr '\n' ';'). Ending pgbench: this run has no result"
+            echo "$(date +%s) daemon_gone=1" >> "$1"
+            pkill -9 -x pgbench 2>/dev/null || true
+            return 0
+        fi
+        printf '%s %s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" >> "$1"
+        sleep 1
+    done
+}
+build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, served read-write by that device
     local dev t0
     if [ "$ORIGIN_DELAY_MS" -gt 0 ]; then
         log "WARNING: $TOPO has no origin under it: TB_ORIGIN_DELAY_MS=$ORIGIN_DELAY_MS does not apply to it"
@@ -1077,6 +1358,31 @@ build_zfs_direct() { # ublk|loop: the pool imported from its own image, served r
         loop)
             ZORIGIN_LOOP=$(attach_loop "$WORK/zfs-origin.img")
             dev=$ZORIGIN_LOOP
+            ;;
+        skyzfsd)
+            # A previous run's leftover: its device and its files.
+            blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
+            rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
+            mkdir -p "$SKZ_RUN"
+            : > "$OUT/$TOPO.skzinfo"
+            blim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
+                || { echo "skyzfsd create failed or did not end in 120 s" >&2; return 1; }
+            SKZ_UP=1
+            skz_start
+            dev=$SKZ_DEV
+            log "skyzfsd: serve ${SKYZFSD_ARGS//,/ } -> $dev, pid $SKZ_PID, memory.max of its cgroup: $(cat "$SKZ_CGROUP/memory.max" 2>/dev/null || echo 'no cgroup') (cgroup of the pid: $(cut -d: -f3 "/proc/$SKZ_PID/cgroup" 2>/dev/null | tr '\n' ' '))"
+            echo "mem_max ${SKYZFSD_MEM:-none}" >> "$OUT/$TOPO.skzinfo"
+            # The exported image onto the served device, through the
+            # daemon. A 1 MiB block of zeros is left out, so what the
+            # image never held the daemon is never given.
+            t0=$(date +%s%N)
+            "$DD" if="$WORK/zfs-origin.img" of="$dev" bs=1M oflag=direct conv=sparse,nocreat status=none
+            sync
+            t0=$(( ($(date +%s%N) - t0) / 1000000 ))
+            log "skyzfsd: the pool image ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated of $(( $(stat -c %s "$WORK/zfs-origin.img") >> 20 )) MiB) was copied onto $dev in $t0 ms, direct I/O, conv=sparse; the daemon counted $(skz_stat writes) writes, checkpoint_steps $(skz_stat checkpoint_steps), log_live $(skz_stat log_live)"
+            echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
+            echo "serve_args ${SKYZFSD_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
+            skz_settle
             ;;
         *) echo "build_zfs_direct: $1?" >&2; return 1 ;;
     esac
@@ -1249,6 +1555,7 @@ topo_zfs_slog_rcache() { ZFS_RCACHE=1; topo_zfs_slog; }
 topo_zfs_slog() { topo_zfs; add_slog; }
 topo_zfs_ublk() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_direct ublk; add_slog; }
 topo_zfs_loop() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_direct loop; add_slog; }
+topo_zfs_skyzfsd() { build_zfs_origin "$ZFS_COMPRESSION" "$ZFS_FPW"; build_zfs_direct skyzfsd; add_slog; }
 add_slog() {
     # The log device is plain local flash: ZIL blocks land here and
     # never on the vdev. A cut of the vdev then holds the last synced
@@ -1333,6 +1640,7 @@ diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
+    local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
          $1 == "ctxt" { print "cpu ctxt", $2 }' /proc/stat
     # CPU ticks by thread name (kernel threads included). A process's
@@ -1366,6 +1674,19 @@ PY
     if [ -n "${CGROUP:-}" ] && [ -f "$CGROUP/memory.stat" ]; then
         echo "mem cgroup.current $(cat "$CGROUP/memory.current")"
         awk '$1 ~ /^(anon|file|shmem|kernel|slab|file_dirty|file_writeback)$/ { print "mem cgroup." $1, $2 }' "$CGROUP/memory.stat"
+    fi
+    # The ARC's limit: the cache the model allows under postgres.
+    [ ! -r /sys/module/zfs/parameters/zfs_arc_max ] || echo "mem zfs.arc_max $(cat /sys/module/zfs/parameters/zfs_arc_max)"
+    # The daemon: its own resident memory, and what its cgroup holds
+    # (file = the page cache of its home image and log).
+    if [ -n "$SKZ_PID" ]; then
+        awk '$1 ~ /^(VmRSS|VmLck|RssAnon|RssFile|RssShmem):$/ { sub(":", "", $1); print "mem skz." $1, $2 * 1024 }' "/proc/$SKZ_PID/status" 2>/dev/null || true
+        if [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ]; then
+            echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
+            skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
+            awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
+            awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
+        fi
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
         | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
@@ -1403,6 +1724,15 @@ snapshot() { # file
             opencas) casadm --stats --cache-id 1 --core-id 1 --output-format csv 2>/dev/null | sed 's/^/cas /' ;;
             zfs*) zfs_stats; [ -z "$ZFS_RCACHE" ] || echo "dmcache $(dmsetup status tb-zrcache)" ;;
         esac
+        # The daemon's whole status, "skz key value" (a value of two
+        # words joined by _).
+        [ -z "$SKZ_UP" ] || skz_status | awk '{ k = $1; $1 = ""; sub(/^ /, ""); gsub(/ /, "_"); print "skz", k, $0 }'
+        # Whether the pool has seen an error on the daemon's device: a
+        # server that returned wrong data shows here first (a checksum
+        # error), and it is the one check on correctness this benchmark
+        # has. `zpool status -x` says "pool 'NAME' is healthy" or what
+        # is wrong.
+        [ -z "$SKZ_UP" ] || echo "skzpool $(blim 60 zpool status -x "$ZFS_POOL" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300)"
     } > "$1"
 }
 
@@ -1435,14 +1765,25 @@ run_workload() { # topology workload [snapshot mode]
         snap_loop "$OUT/$tag.snaps" "$mode" &
         SNAP_PID=$!
     fi
+    if [ -n "$SKZ_UP" ]; then
+        log "$tag: skyzfsd before the window: $(grep '^skz ' "$OUT/$tag.before" | cut -d' ' -f2- | tr '\n' ';')"
+        : > "$OUT/$tag.skz"
+        skz_sample "$OUT/$tag.skz" &
+        SKZ_SAMPLER=$!
+    fi
     log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
     if [ -n "$SNAP_PID" ]; then
         touch "$SNAP_STOP"; wait "$SNAP_PID" || true; SNAP_PID=""
         rm -f "$SNAP_STOP"
     fi
+    if [ -n "$SKZ_SAMPLER" ]; then
+        # Before the sync below: the samples are of the window.
+        kill "$SKZ_SAMPLER" 2>/dev/null || true; wait "$SKZ_SAMPLER" 2>/dev/null || true; SKZ_SAMPLER=""
+    fi
     sync; sleep 2
     snapshot "$OUT/$tag.after"
+    [ -z "$SKZ_UP" ] || log "$tag: skyzfsd after the window: $(grep '^skz ' "$OUT/$tag.after" | cut -d' ' -f2- | tr '\n' ';')"
     if [ -s "$OUT/$tag.snaps" ]; then
         # The next phase starts from a stack with no snapshots.
         taken=$(wc -l < "$OUT/$tag.snaps")
@@ -1453,16 +1794,23 @@ run_workload() { # topology workload [snapshot mode]
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
         ZFS_WIN=""
     fi
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" > "$OUT/$tag.json" <<'PY'
+    # The origin delay that was under this row: the knob's value where
+    # the topology has an origin, 0 where it has none (the pool served
+    # from its own image by a loop device, the reference server or the
+    # daemon), whatever the knob says.
+    case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 fsync_file, run_label = sys.argv[8], sys.argv[9]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
+skz = {}          # the daemon's status, keyed by file
 cpu, thr, txgs, mem, loops = {}, {}, {}, {}, {}
 def load(p):
     dev, pg, other = {}, {}, {}
     zc[p], zg[p] = {}, {}
+    skz[p] = {}
     cpu[p], thr[p], txgs[p], mem[p], loops[p] = {}, {}, {}, {}, {}
     for line in open(p):
         f = line.split()
@@ -1474,6 +1822,7 @@ def load(p):
         elif f[0] == 'mem' and len(f) > 2 and f[2].isdigit(): mem[p][f[1]] = int(f[2])
         elif f[0] == 'loop' and len(f) > 2: loops[p][f[1]] = {'dio': f[2] == '1', 'ro': len(f) > 3 and f[3] == '1'}
         elif f[0] == 'zfstxg' and len(f) >= 8: txgs[p][int(f[1])] = [int(x) for x in f[2:8]]
+        elif f[0] == 'skz' and len(f) > 2: skz[p][f[1]] = f[2]
         elif f[0] in ('zfsc', 'zfsg'):
             if len(f) > 2 and f[2].isdigit(): (zc if f[0] == 'zfsc' else zg)[p][f[1]] = int(f[2])
         else: other.setdefault(f[0], []).append(line.strip())
@@ -1483,6 +1832,15 @@ MB = 1 << 20
 r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {}}
 if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
+r['origin_delay_ms'] = int(sys.argv[11])
+# The machine the row ran on: this boot of this runner. Two rows are
+# compared only where it is the same.
+# The host name beside the boot id: machines resumed from one memory
+# snapshot could share a boot id.
+try:
+    r['machine'] = open('/proc/sys/kernel/random/boot_id').read().strip() + ' ' + os.uname().nodename
+except OSError:
+    pass
 for name in ad:
     d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
@@ -1496,6 +1854,32 @@ txt = open(base + '.pgbench').read()
 m = re.search(r'tps = ([\d.]+)', txt); r['tps'] = float(m.group(1)) if m else None
 m = re.search(r'latency average = ([\d.]+)', txt); r['latency_ms'] = float(m.group(1)) if m else None
 r['cache_stats'] = {'before': bo, 'after': ao}
+# zfs-skyzfsd: the daemon's own account of the window.
+if skz[base + '.after']:
+    sb, sa = skz[base + '.before'], skz[base + '.after']
+    num = lambda d, k: int(d[k]) if d.get(k, '').isdigit() else None
+    diff = lambda k: None if num(sa, k) is None or num(sb, k) is None else num(sa, k) - num(sb, k)
+    k = {'before': sb, 'after': sa, 'steps': diff('checkpoint_steps'), 'syncs': diff('checkpoint_syncs'),
+         'writes': diff('writes'), 'log_live_before': num(sb, 'log_live'), 'log_live_after': num(sa, 'log_live'),
+         'pid_same': sb.get('pid') == sa.get('pid'), 'info': {}}
+    samples = []
+    if os.path.exists(base + '.skz'):
+        for line in open(base + '.skz'):
+            f = line.split()
+            if len(f) > 1: samples.append(dict(x.split('=', 1) for x in f[1:] if '=' in x))
+    live = [int(x['log_live']) for x in samples if x.get('log_live', '').isdigit()]
+    k['window'] = {'samples': len(samples), 'step_under_way': sum(1 for x in samples if x.get('checkpoint_step') not in (None, 'none')),
+                   'log_live_min': min(live) if live else None, 'log_live_max': max(live) if live else None,
+                   'unstored_max': max([int(x['unstored']) for x in samples if x.get('unstored', '').isdigit()] or [0])}
+    info = os.path.join(os.path.dirname(base), topo + '.skzinfo')
+    if os.path.exists(info):
+        for line in open(info):
+            key, _, value = line.strip().partition(' ')
+            if key: k['info'][key] = value
+    k['serve_args'] = k['info'].get('serve_args', '')
+    said = ao.get('skzpool', [''])[0].split(None, 1)
+    k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
+    r['skyzfsd'] = k
 # Snapshots taken during the window: "epoch-s bracket-ms rc" per line.
 r['snap'] = {'mode': snap_mode, 'interval_s': snap_interval, 'ms': [], 'pre_ms': [], 'failed': 0}
 if os.path.exists(base + '.snaps'):
@@ -1554,6 +1938,15 @@ for k, v in ta.items():
 diag['cpu_s_by_thread'] = dict(by.most_common(20))
 # Memory at the end of the window, MiB, and how the loops are attached.
 if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
+# The cgroup counts the times it reached its limit since it was made,
+# which is before the copy and the warm-up: the window's count is the
+# difference of the two snapshots. (The counts travel as n MiB.)
+for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events.oom', 'skz.cgroup.events.oom_kill'):
+    if ev in mem[base + '.after']:
+        m_ = diag['mem_mb']
+        m_[ev + '.since_start'] = m_.pop(ev)
+        if ev in mem[base + '.before']:
+            m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
 # pg_test_fsync, first table: one 8 kB write per sync, by wal_sync_method.

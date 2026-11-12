@@ -11,7 +11,9 @@ name: topology-bench
 # a delayed image of the same database, the stand-in for ZFS on a
 # userspace block backend; and, by request only, zfs-ublk (the pool on
 # a ublk device served by the reference server) with its control
-# zfs-loop. All the logic is `tests/bench/topology-bench.sh`,
+# zfs-loop, and zfs-skyzfsd (the pool on a device served by the
+# project's daemon, built here in release without its test hooks).
+# All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
 # the runner's loop-on-virtual-disk I/O is throttled and noisy, so the
 # numbers here establish shapes and ratios, not absolutes.
@@ -44,7 +46,7 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache zfs-loop zfs-ublk"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache zfs-loop zfs-ublk zfs-skyzfsd"
         default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
       workloads:
         description: "space-separated subset of: tpcb select update"
@@ -203,6 +205,18 @@ jobs:
           sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
           sudo modprobe ublk_drv
           sudo ublk features || true
+
+      - name: Build skyzfsd
+        # A release build WITHOUT the test hooks: the binary one would
+        # deploy, not the rigs'. The workspace's system packages, and
+        # libclang for the binding to the ublk library.
+        if: matrix.topology == 'zfs-skyzfsd' || contains(inputs.sequence, 'zfs-skyzfsd')
+        run: |
+          sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          cargo build --release --locked -p skyzfsd
+          echo "TB_SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          git rev-parse HEAD
+          sudo modprobe ublk_drv
 
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
