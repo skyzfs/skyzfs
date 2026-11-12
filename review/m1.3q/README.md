@@ -110,3 +110,39 @@ that it has not (the plain delete then removes it, nobody holds it). That
 would cover backports and fixed point releases without the operator's
 word. Not run; it adds and removes a device at each start, which the
 "touches nothing" rule may not allow.
+
+## Second look, at f1b4d52 (one commit on 0ddab81)
+
+**Verdict: can merge. Finding 1 is dropped; nothing in the new messages or
+the errno mapping blocks.**
+
+What I did: read the commit before the answers on the pull request (not
+read). Tests of the three packages: 203 pass, 9 kernel tests ignored here.
+Read the v6.2 driver and the v6.10 line numbers the module now cites: both
+as it says. Three plants, removed after. Nothing ran on a kernel; no clippy
+or fmt.
+
+Per finding:
+
+1. Dropped. `DELETE_KERNEL` and `OLDEST_KERNEL` are 6.11, the header's 6.9
+   is named apart, and the module says why with the lines I read. With the
+   floor planted back at 6.9, eight tests fail.
+2. Dropped. Errno 524 from a delete becomes a message that names the
+   command, the answer and Linux 6.11. Only an unknown command gives 524,
+   so the mapping cannot hide another error. It has no test: planted out,
+   nothing fails (it sits in the call to the kernel). Not blocking; the
+   mapping as a function of the answer would be testable, as
+   `control_missing` is.
+3. Dropped, with one flaw in the new sentence, not blocking.
+   `serve.rs`, `not_served`: "a start with --kernel-has-async-delete goes on
+   to it" is said whenever the release is among the lacks
+   (`Unsupported::by_release` is `any`). On Linux 6.1 to 6.4 the features
+   command is missing as well, and a start with the option is refused
+   again. It should be said only when the release is all that is lacking.
+   Also "Nothing was touched": the run directory was made.
+4. Dropped. v6.1 and v6.2 preset `ENODEV`; v6.3 and v6.4 look the device
+   up. The help now says what each command does before the check.
+5. Dropped. A control device that is not there is told as such and carries
+   no errno; planted to let `ENODEV` through, its test fails.
+
+The probe was not taken, by the lead's decision; nothing to add.
