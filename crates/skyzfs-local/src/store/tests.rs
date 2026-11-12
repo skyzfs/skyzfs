@@ -5272,6 +5272,77 @@ fn a_failed_read_is_not_answered_before_the_log_is_marked() {
     caught(scenario, Mutants::READ_ERROR_SERVED);
 }
 
+/// The reader is told that the volume has failed only after the log's
+/// marker was attempted (design §5.1): a read that begins while the
+/// worker is failing the volume and has not yet tried the marker is
+/// not answered as failed by the reader on its own.
+///
+/// The worker is held inside the failure, at the moment the log tells
+/// its observer, which is before the marker is attempted; a read of
+/// a flushed block is submitted then. It is answered with the block,
+/// as a read in flight at the failure may be (rule R11), and not as
+/// failed. Once the worker goes on, every later request fails and the
+/// next open finds the mark. Mutant: the reader is told before the
+/// marker, and answers the read as failed while there is no mark.
+#[test]
+fn a_read_is_not_answered_as_failed_before_the_marker_is_attempted() {
+    fn scenario(env: &Env) -> Outcome {
+        let disk = SimDisk::new(7);
+        disk.set_write_unit(u64::from(env.unit));
+        let observer = Gate::new("marking");
+        let pause = observer.pause();
+        let options = OpenOptions {
+            on_failure: Some(FailureObserver::new(move || pause.wait())),
+            ..env.options()
+        };
+        let key = Key(*b"a key for tests!");
+        let mut store = Store::create_keyed(disk.clone(), &env.config(), key, options)
+            .map_err(|e| e.to_string())?;
+        write(&mut store, 4, 4, 0x77)?;
+        flush(&mut store)?;
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&observer]);
+        let mut done = Vec::new();
+        // The failure, asked for without waiting for it.
+        let (reply, failed) = mpsc::channel();
+        if !served.send(Command::Fail(reply)) {
+            return Err("the worker is gone".into());
+        }
+        observer.wait_reached("the failure")?;
+        submit(&mut served, read_request(100, 5, 1))?;
+        take(&mut served, &mut done, 1, "the read")?;
+        let answered = &done[0];
+        if answered.result != Ok(())
+            || answered
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != 0x77))
+        {
+            return Err(format!(
+                "a read was answered {:?} before the marker was attempted",
+                answered.result
+            ));
+        }
+        observer.open();
+        failed
+            .recv_timeout(Duration::from_secs(20))
+            .map_err(|_| "the failure did not end")?;
+        done.clear();
+        submit(&mut served, read_request(101, 5, 1))?;
+        take(&mut served, &mut done, 1, "a read after")?;
+        if done[0].result != Err(BlkError::Failed) {
+            return Err("a read after the failure was served".into());
+        }
+        drop(served);
+        match Store::open(disk.clone(), env.options()) {
+            Err(StoreError::Log(LogError::MarkedFailed)) => Ok(()),
+            Ok(_) => Err("the next open did not find the volume marked".into()),
+            Err(other) => Err(format!("the next open: {other}")),
+        }
+    }
+    caught(scenario, Mutants::FAILED_SHOWN_BEFORE_MARK);
+}
+
 /// A barrier waits for the readers that were under way when it began,
 /// and not for a moment with no reader: pins that overlap each other
 /// without a gap, entered and left for as long as the test lets them,

@@ -157,6 +157,9 @@ impl Mutants {
     /// A barrier waits for a moment with no reader under way, and not
     /// only for the readers that were under way when it began.
     pub(crate) const BARRIER_WAITS_FOR_ALL: u32 = 1 << 31;
+    /// The reader is told that the volume has failed before the log's
+    /// marker is attempted.
+    pub(crate) const FAILED_SHOWN_BEFORE_MARK: u32 = 1 << 24;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -855,12 +858,25 @@ impl<D: Dir> Core<D> {
     /// The volume fails: something of the store's own could not be read
     /// or written. Nothing is served from now on, and the log's marker
     /// says so to the next instance.
+    ///
+    /// The reader beside the worker is told only after the marker was
+    /// attempted (design §5.1): it answers a read as failed on its own
+    /// when it finds the flag, and no read may be answered as failed
+    /// before the next instance can find the mark. A read that begins
+    /// while the marker is written is served, or checked, as any read
+    /// in flight at the failure (rule R11). The log's own failures mark
+    /// before the log call returns, and [`Core::with_log`] tells the
+    /// reader after it returns.
     fn fail(&mut self) -> BlkError {
         self.failed = true;
-        self.shared.failed.store(true, Ordering::SeqCst);
+        let early = self.mutants.has(Mutants::FAILED_SHOWN_BEFORE_MARK);
+        if early {
+            self.shared.failed.store(true, Ordering::SeqCst);
+        }
         if !self.log.is_failed() && !self.mutants.has(Mutants::FAIL_UNMARKED) {
             self.log.mark_failed();
         }
+        self.shared.failed.store(true, Ordering::SeqCst);
         BlkError::Failed
     }
 
@@ -1238,7 +1254,9 @@ impl<D: Dir> Core<D> {
     /// seals a segment at a roll, and a sync), and tell the readers
     /// beside the worker up to where it is durable now: see [`Shared`].
     /// The durable position is told only after the sync that made it
-    /// so has returned.
+    /// so has returned. A log that failed in the call has attempted its
+    /// marker before it returned (`Log::fail`), so the reader is told
+    /// of the failure after the marker, as in [`Core::fail`].
     fn with_log<T>(&mut self, call: impl FnOnce(&mut Log<D>) -> T) -> T {
         let done = call(&mut self.log);
         if self.log.is_failed() {
