@@ -68,3 +68,22 @@ Reviewed: e8746ae ... 19ca666 (skyzfs-coding), one commit.
   a change of the hold that does not (1), the end that does not (1),
   no wait at the high mark (1).
 - Status version 8: 1856 + 13 fields = 1960 bytes, 220 fields.
+
+## Second look (19ca666..34dcf39, three commits)
+
+- 1 dropped. A helper that cannot be started answers `NotBegun`
+  (dup or spawn failed, nothing begun, no helper kept). The step then
+  does what `apply` does: the worker's sync of the home image, its
+  time as the step's home sync, then the second half. The branch
+  stands before the hand-over's own accounting and before `handed` is
+  set, so nothing is counted twice and no report is waited for. Only
+  `NotBegun` takes it. Plant "not begun taken for a failed write":
+  caught.
+- 2 dropped. My plant now fails
+  `a_volume_that_failed_meanwhile_does_not_take_the_step_up`.
+- 3 dropped. The durable length is the greater of the two.
+- aab5217: the worker's replies are to Hold, Checkpoint, Position,
+  Fail and the completions. All but Position publish before they
+  answer; Position reads the log's end and changes nothing.
+- eae0220: the waiter is woken after the state changed.
+- fmt, clippy clean; skyzfs-local 235 pass (3 ignored).
