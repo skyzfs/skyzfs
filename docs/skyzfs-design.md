@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. M1 still lacks two things: the power-cut replay now runs through `skyzfsd` and has passed every prefix it checked, but the run that checks every prefix is still to be made, and the throughput criterion is not met (§9). |
+| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. M1 still lacks one thing, its throughput criterion (§9). The power-cut replay criterion is shown on `skyzfsd`, by one full run on each image. |
 | Date | 2026-11-12. First draft 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
@@ -449,9 +449,9 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
 | **H** ZFS in user space on macOS, after 1.x | Not sized | Deferred by decision D4, and no longer a hedge for M6. A macOS client on FSKit, built on the macOS port once that supports FSKit, with the daemon and the `udrive_shm` code of M5 reused. | Planned once 1.x has shipped and the port's FSKit work exists to build on. |
 
-**Where M1 stands (2026-11-12).** M1 still lacks two of its exit criteria.
+**Where M1 stands (2026-11-12).** M1 still lacks one of its exit criteria, the throughput.
 
-**The power-cut replay on `skyzfsd` is not shown yet.** The replay rig now takes the cut below the daemon: it records the disk under the daemon's files, and at a prefix it mounts that disk, starts the daemon as after a reboot and checks the pool it serves (M1.T14). Every prefix checked so far passed on both images: every flush boundary, every fsync mark, and in one run a fifth of the prefixes between flushes. The criterion says every record prefix, and no run has checked them all; the run that does, on the merged daemon, is the next step.
+**The power-cut replay criterion is shown on `skyzfsd`.** The replay rig takes the cut below the daemon: it records the disk under the daemon's files, and at a prefix it mounts that disk, starts the daemon as after a reboot and checks the pool it serves (M1.T14). One run on each image, on the merged daemon, checked every record prefix, 669 and 671 of them: the pool imported at each, the deep checks passed at the first and the last prefix of each of 31 and 29 transaction groups, and every file was intact at each of 44 and 45 fsync marks. It rests on one run per image and one workload, and the cut is a prefix of the recorded writes: it does not reorder writes that were never flushed (notes, M1, "The power-cut replay below the daemon").
 
 **The throughput criterion is not met.**
 
