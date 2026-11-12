@@ -602,6 +602,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     options.pretend_short_by = serve.hooks.recover_short;
     options.writeback_unit = serve.writeback_kib << 10;
     options.home_writeback_unit = serve.home_writeback_kib << 10;
+    options.readers = usize::from(serve.readers);
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {

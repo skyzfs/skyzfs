@@ -1022,6 +1022,9 @@ impl Mutants {
     /// A write asked for with [`Board::write_again`] that fails is
     /// forgotten.
     pub(crate) const OWED_FORGOTTEN: u32 = 1 << 4;
+    /// Every post wakes the publisher, also while it waits for the end
+    /// of an interval.
+    pub(crate) const WOKEN_BY_EVERY_POST: u32 = 1 << 5;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -1110,6 +1113,17 @@ struct Posted {
     /// How often [`Board::publish`] has tried to write the file, done
     /// or failed.
     attempts: u64,
+    /// Whether [`Board::publish`] waits for a change and for nothing
+    /// else: only then does a post wake it. While it waits for the end
+    /// of an interval, the write at that end takes whatever is posted
+    /// by then, so a post has nothing to wake it for. Woken by every
+    /// post, it took most of its time in the wakes alone: with a post
+    /// every 20 µs, 95 ms a second against 9 ms for its writes.
+    awaits_change: bool,
+    /// How often [`Board::publish`] has woken from a wait.
+    wakes: u64,
+    /// A defect, for tests: every post wakes [`Board::publish`].
+    every_post_wakes: bool,
 }
 
 /// Where the queue thread puts its counters for the thread that writes
@@ -1136,12 +1150,16 @@ impl Board {
 
     /// Put the counters up. Does no I/O and waits for none: the lock is
     /// never held across a write of the file. Wakes the publishing
-    /// thread only if they changed.
+    /// thread only if they changed and it waits for a change: while it
+    /// waits for the end of an interval, the write at that end takes
+    /// whatever is posted by then.
     pub fn post(&self, counters: Counters) {
         let mut posted = self.lock();
         if posted.counters != counters {
             posted.counters = counters;
-            self.changed.notify_all();
+            if posted.awaits_change || posted.every_post_wakes {
+                self.changed.notify_all();
+            }
         }
     }
 
@@ -1153,8 +1171,25 @@ impl Board {
         if posted.log != log {
             posted.log = log;
             posted.at_once |= at_once;
-            self.changed.notify_all();
+            if at_once || posted.awaits_change || posted.every_post_wakes {
+                self.changed.notify_all();
+            }
         }
+    }
+
+    /// How often [`Board::publish`] has woken from a wait, and how
+    /// often it has tried to write: for tests of what its wakes cost.
+    pub fn wakes_and_attempts(&self) -> (u64, u64) {
+        let posted = self.lock();
+        (posted.wakes, posted.attempts)
+    }
+
+    /// For tests: whether [`Board::publish`] waits for a change and for
+    /// nothing else. Read under the board's lock, so a waiting thread
+    /// has let go of it in its wait.
+    #[cfg(test)]
+    pub(crate) fn awaits_change(&self) -> bool {
+        self.lock().awaits_change
     }
 
     /// Wait until [`Board::publish`] has tried to write the file at
@@ -1228,6 +1263,7 @@ impl Board {
         // both may equal what was written last.
         let mut owed = false;
         let mut posted = self.lock();
+        posted.every_post_wakes = pace.mutants.has(Mutants::WOKEN_BY_EVERY_POST);
         loop {
             let mut due = pace.due(&posted.counters, now());
             if due == Due::Never && (posted.log != written_log || owed) {
@@ -1271,11 +1307,17 @@ impl Board {
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     guard
                 }
-                _ => self
-                    .changed
-                    .wait(posted)
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                _ => {
+                    posted.awaits_change = true;
+                    let mut guard = self
+                        .changed
+                        .wait(posted)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    guard.awaits_change = false;
+                    guard
+                }
             };
+            posted.wakes += 1;
         }
     }
 }

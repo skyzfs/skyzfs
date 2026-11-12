@@ -767,3 +767,59 @@ fn a_served_stores_steps_hand_their_sync_to_the_helper() {
     let mut served = store.serve().unwrap();
     assert_eq!(&read(&mut served, 0, 1)[..], &[4u8; 4096][..]);
 }
+
+/// Real files, four readers: many reads in flight at once, of blocks
+/// in the home image, in the log and never written, each come back as
+/// written, from whichever reader took it, before and after a
+/// checkpoint.
+#[test]
+fn a_served_store_with_four_readers_reads_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let mut options = OpenOptions::default();
+    options.readers = 4;
+    let store = Store::create(dir, &config(16, 4096), options).unwrap();
+    let mut served = store.serve().unwrap();
+    for block in 0..32u64 {
+        write(&mut served, block * 4, Buf::filled(1, block as u8 + 1));
+    }
+    flush(&mut served);
+    served.checkpoint().unwrap();
+    for block in 32..48u64 {
+        write(&mut served, block * 4, Buf::filled(1, block as u8 + 1));
+    }
+    for round in 0..4 {
+        let blocks: Vec<u64> = (0..56u64).collect();
+        for block in &blocks {
+            served
+                .submit(Request {
+                    id: RequestId(*block),
+                    op: Op::Read {
+                        offset: block * 4 * BLOCK,
+                        buf: Buf::filled(1, 0xEE),
+                    },
+                })
+                .unwrap();
+        }
+        let mut done = Vec::new();
+        let began = Instant::now();
+        while done.len() < blocks.len() {
+            served.wait(&mut done, Duration::from_millis(100));
+            assert!(
+                began.elapsed() < TIMEOUT,
+                "round {round}: {} completions",
+                done.len()
+            );
+        }
+        for completion in done {
+            let block = completion.id.0;
+            let want = if block < 48 { block as u8 + 1 } else { 0 };
+            assert_eq!(completion.result, Ok(()), "round {round}, block {block}");
+            let buf = completion.buf.unwrap();
+            assert!(
+                buf.iter().all(|b| *b == want),
+                "round {round}, block {block}"
+            );
+        }
+    }
+}
