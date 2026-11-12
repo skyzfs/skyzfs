@@ -53,6 +53,7 @@ jobs:
       - name: Package mirrors
         run: bash tests/lib/apt-fallback.sh
       - run: bash tests/lib/test_apt_fallback.sh
+      - run: python3 tests/bench/test_skz_time.py
       # First: needs no toolchain or cache, and the shell harness is
       # ~4.6k lines nothing else lints. Preinstalled on ubuntu runners.
       # No blanket excludes — deliberate idioms carry a targeted
