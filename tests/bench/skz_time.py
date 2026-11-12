@@ -17,14 +17,22 @@ of records not yet durable have keys of their own. A version 5 reading
 (an older daemon) still gives its tables: its reads' waits are over the
 worker's activities, and what it does not have is shown as n/a.
 
+Since status version 8 a step of the checkpoint rule hands the home
+image's sync to a helper thread and the worker serves on until the
+helper reports: the worker's `step_home_sync` is then its part in that
+sync (the hand-over), it has a sixteenth activity (`step_report`,
+waiting for the report: at the high mark, before an explicit
+checkpoint, a change of the hold, room in a full log, and the end), and
+the helper's syncs have keys of their own (`time_helper_*`).
+
 A reading is a dict of the status's lines, key -> text.
 """
 
 KINDS = ('read', 'write', 'flush', 'discard', 'zeroes')
-# What the one worker does, in the status's order (version 6; version 5
-# had the first fourteen).
+# What the one worker does, in the status's order (version 8; version 5
+# had the first fourteen, versions 6 and 7 the first fifteen).
 ACTIVITIES = ('idle', 'read', 'write', 'flush', 'discard', 'zeroes', 'step_walk', 'step_save', 'step_apply',
-              'step_home_sync', 'step_log_start', 'step_end', 'own_sync', 'other', 'step_barrier')
+              'step_home_sync', 'step_log_start', 'step_end', 'own_sync', 'other', 'step_barrier', 'step_report')
 # What the reader does (version 6): a read's wait is over these.
 READER_ACTIVITIES = ('idle', 'read', 'other')
 # The step's two barriers (version 6): before the home image is written,
@@ -46,6 +54,9 @@ KEYS_ADDED = {
                  | {'time_worker_as_of_ns', 'time_reader_as_of_ns'}),
     7: frozenset({f'time_writeback_{f}_{x}' for f in WRITEBACK_FILES for x in ('count', 'bytes', 'ns', 'off', 'refused')}
                  | {f'time_sync_{k}_{x}' for k in SYNC_KINDS for x in ('count', 'ns', 'bytes', 'handed')}),
+    8: frozenset({'time_worker_step_report_ns'} | {f'time_{k}_wait_by_step_report_ns' for k in KINDS}
+                 | {f'time_{w}_{x}' for w in ('helper', 'step_report') for x in ('count', 'ns', 'max_ns')}
+                 | {'time_helper_requests'}),
 }
 
 
@@ -194,11 +205,12 @@ def wait_by(d, kind):
 
 # A wait's causes in groups: the hand-over to the thread that does the
 # request (the worker; the reader for reads since version 6); a
-# checkpoint step and the rule's own sync; a step waiting at a barrier
+# checkpoint step and the rule's own sync, and the worker waiting for
+# the helper's report of a step's sync (version 8); a step waiting at a barrier
 # for the readers; the log's sync for a flush; requests that write;
 # other reads; the rest.
 GROUPS = (('idle (hand-over)', ('idle',)),
-          ('a step and the own sync', tuple('step_' + p for p in STEP_PARTS) + ('own_sync',)),
+          ('a step and the own sync', tuple('step_' + p for p in STEP_PARTS) + ('own_sync', 'step_report')),
           ("a step's barrier", ('step_barrier',)),
           ('flush', ('flush',)),
           ('write, discard, zeroes', ('write', 'discard', 'zeroes')),
@@ -432,9 +444,27 @@ def render(rows):
                           _f(None if not ns or b is None else b / MIB / (ns / 1e9), '.0f'),
                           _share(h, b)]
             out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
+        out += ['', 'The home image\'s syncs that steps handed to the helper (status version 8; n/a for an older daemon): '
+                'how many, ms each from the hand-over to the worker taking the report (not the worker\'s time: it served '
+                'meanwhile), the requests the worker completed while one was under way; and the worker\'s own waits for '
+                'the report (its activity `step_report`: at the high mark, before an explicit checkpoint, a change of the '
+                'hold, room in a full log, and the end), how many and ms in all. The worker\'s part in a handed sync, '
+                'handing it over, is its `step_home_sync`:', '',
+                '| workload | daemon row | handed syncs | ms each | requests meanwhile | waits for the report | '
+                'ms waited in all |', '|---|---|---|---|---|---|---|']
+        for r in usable:
+            d = r['time']['delta']
+            n, waits = d.get('time_helper_count'), d.get('time_step_report_count')
+            waited = d.get('time_step_report_ns')
+            out.append(f"| {r['workload']} | {r['label']} | {_f(n, 'd') if n is not None else 'n/a'} | "
+                       f"{_f(_per(d.get('time_helper_ns'), n, 1e6), '.1f')} | "
+                       f"{_f(d.get('time_helper_requests'), 'd') if d.get('time_helper_requests') is not None else 'n/a'} | "
+                       f"{_f(waits, 'd') if waits is not None else 'n/a'} | "
+                       f"{_f(None if waited is None else waited / 1e6, '.1f')} |")
         out += ['', 'The hint that hands a file\'s writes to the device before their sync (status version 7; n/a for an '
                 'older daemon), by file: calls, MiB handed over, the calls\' time in ms (inside the activity the hint '
-                'was made from: the calls of writes for the log, `step_apply` for the home image), and whether the file '
+                'was made from: the calls of writes for the log, `step_apply` for the home image, whose hint is off '
+                'unless asked for since version 8), and whether the file '
                 'system said it has no such call (`off`), and the calls it declined this time (`refused`: short of '
                 'memory, interrupted, busy; the volume went on and the bytes were offered again or left to the sync):', '',
                 '| workload | daemon row | ' + ' | '.join(f'{f}: calls | {f}: MiB | {f}: ms | {f}: off | {f}: refused'

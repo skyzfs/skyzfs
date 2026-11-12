@@ -24,7 +24,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::io::{Dir, File};
+use std::sync::mpsc;
+use std::thread;
+
+use crate::io::{Dir, File, HelperEnded};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
@@ -326,6 +329,76 @@ pub struct FsFile {
     /// A second descriptor on the same file that bypasses the cache.
     /// `None`: the file system, or this system, has none to give.
     direct: Option<fs::File>,
+    /// The thread that syncs the file for [`File::sync_begin`], once
+    /// one was begun.
+    helper: Option<SyncHelper>,
+}
+
+/// What the helper is asked to do.
+enum Job {
+    /// Sync the file, then call this.
+    Sync(Box<dyn FnOnce() + Send>),
+    /// For tests: panic.
+    #[cfg(test)]
+    Panic,
+}
+
+/// A thread that syncs a file, with a descriptor of its own on it, so
+/// that the file's owner can go on meanwhile ([`File::sync_begin`]).
+/// It lives as long as the file is open: dropping the file ends it,
+/// after the sync it is doing, if any.
+struct SyncHelper {
+    jobs: Option<mpsc::Sender<Job>>,
+    results: mpsc::Receiver<io::Result<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Debug for SyncHelper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SyncHelper").finish_non_exhaustive()
+    }
+}
+
+impl SyncHelper {
+    /// A helper with `file`, a descriptor of its own on the file.
+    fn start(file: fs::File) -> io::Result<Self> {
+        let (jobs, inbox) = mpsc::channel::<Job>();
+        let (outbox, results) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("skyzfs-sync".into())
+            .spawn(move || {
+                for job in inbox {
+                    match job {
+                        Job::Sync(wake) => {
+                            // `fdatasync` through its own descriptor: a
+                            // sync of the file, as `File::sync` is.
+                            if outbox.send(file.sync_data()).is_err() {
+                                return;
+                            }
+                            wake();
+                        }
+                        #[cfg(test)]
+                        Job::Panic => panic!("a test asked the sync helper to panic"),
+                    }
+                }
+            })?;
+        Ok(Self {
+            jobs: Some(jobs),
+            results,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for SyncHelper {
+    fn drop(&mut self) {
+        // The thread ends when its jobs' sender is gone, after the sync
+        // it is doing.
+        self.jobs = None;
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The alignment `O_DIRECT` wants of offsets, lengths and memory. 4 KiB
@@ -340,6 +413,7 @@ impl FsFile {
             file,
             writeback,
             direct,
+            helper: None,
         })
     }
 
@@ -484,6 +558,50 @@ impl File for FsFile {
 
     fn sync(&mut self) -> io::Result<()> {
         self.file.sync_data()
+    }
+
+    /// The sync is done by a thread of the file's own, started the
+    /// first time and kept while the file is open, through a
+    /// descriptor of its own on the file: `fdatasync` covers what was
+    /// written to the file before it is called, through any descriptor.
+    fn sync_begin(&mut self, wake: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        if self.helper.is_none() {
+            self.helper = Some(SyncHelper::start(self.file.try_clone()?)?);
+        }
+        let sent = self
+            .helper
+            .as_ref()
+            .and_then(|helper| helper.jobs.as_ref())
+            .is_some_and(|jobs| jobs.send(Job::Sync(wake)).is_ok());
+        if sent {
+            Ok(())
+        } else {
+            Err(HelperEnded::error())
+        }
+    }
+
+    fn sync_end(&mut self, wait: bool) -> Option<io::Result<()>> {
+        let Some(helper) = &self.helper else {
+            return Some(self.sync());
+        };
+        if wait {
+            Some(
+                helper
+                    .results
+                    .recv()
+                    .unwrap_or_else(|_| Err(HelperEnded::error())),
+            )
+        } else {
+            match helper.results.try_recv() {
+                Ok(result) => Some(result),
+                Err(mpsc::TryRecvError::Empty) => None,
+                Err(mpsc::TryRecvError::Disconnected) => Some(Err(HelperEnded::error())),
+            }
+        }
+    }
+
+    fn sync_wakes(&self) -> bool {
+        true
     }
 
     fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
@@ -892,5 +1010,46 @@ mod tests {
         dir.remove("b").unwrap();
         assert_eq!(dir.open("b").unwrap_err().kind(), io::ErrorKind::NotFound);
         assert!(FsDir::new(tmp.path().join("missing")).is_err());
+    }
+
+    /// A sync begun is done by the file's helper: it ends, it wakes,
+    /// and the helper is used again; a helper that ended is said to
+    /// have ended, and its wake is dropped, not left waiting.
+    #[test]
+    fn a_sync_is_done_by_the_files_helper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = FsDir::new(tmp.path()).unwrap();
+        let mut file = dir.create("a").unwrap();
+        assert!(file.sync_wakes());
+        for round in 0..3u8 {
+            file.write_at(0, &[round; 512]).unwrap();
+            let (woke, wakes) = mpsc::channel();
+            file.sync_begin(Box::new(move || {
+                let _ = woke.send(());
+            }))
+            .unwrap();
+            wakes.recv().unwrap();
+            assert!(file.sync_end(false).unwrap().is_ok());
+        }
+        // Panicked: the wake is dropped, and the end says so.
+        struct Dropped(mpsc::Sender<()>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let helper = file.helper.as_ref().unwrap();
+        helper.jobs.as_ref().unwrap().send(Job::Panic).unwrap();
+        let (dropped, gone) = mpsc::channel();
+        let guard = Dropped(dropped);
+        let begun = file.sync_begin(Box::new(move || drop(guard)));
+        if begun.is_ok() {
+            gone.recv().unwrap();
+        }
+        let ended = match begun {
+            Ok(()) => file.sync_end(true).unwrap().unwrap_err(),
+            Err(e) => e,
+        };
+        assert!(HelperEnded::is(&ended), "{ended}");
     }
 }

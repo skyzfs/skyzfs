@@ -1676,6 +1676,7 @@ fn harnesses(mutants: u64) -> Vec<SimHarness> {
                     mutants,
                     threaded: false,
                     marks: None,
+                    sync_delay: 0,
                 });
             }
         }
@@ -1688,7 +1689,9 @@ fn harnesses(mutants: u64) -> Vec<SimHarness> {
 /// between its operations, at its kills and at its power cuts, with
 /// the store called directly and behind its worker. Steps of two
 /// records begin at 24 KiB of log and end below 12 KiB; a new log
-/// holds 8 KiB.
+/// holds 8 KiB. And the same with the steps' home-image syncs handed
+/// over and ending up to three looks later, so that requests, syncs of
+/// the log and rolls fall between a sync's begin and its end.
 #[test]
 fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
     let config = Config {
@@ -1703,10 +1706,11 @@ fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
             records: 2,
         },
     };
-    for threaded in [false, true] {
+    for (threaded, sync_delay) in [(false, 0), (true, 0), (false, 3), (true, 3)] {
         for mut harness in harnesses(0) {
             harness.marks = Some(marks);
             harness.threaded = threaded;
+            harness.sync_delay = sync_delay;
             let report = run_all(&mut harness, &config);
             assert!(report.passed(), "in {harness:?}:\n{report}");
             if !threaded {
@@ -6675,6 +6679,7 @@ fn hinted_in(env: Env, unit: u64) -> (SimDisk, SimStore) {
     disk.set_write_unit(u64::from(env.unit));
     let options = OpenOptions {
         writeback_unit: unit,
+        home_writeback_unit: unit,
         ..env.options()
     };
     let key = Key(*b"a key for tests!");
@@ -6954,4 +6959,477 @@ fn a_roll_hands_over_what_waits_in_the_segment_it_leaves() {
         "{:?}",
         hints_of(&disk, "log.000001")
     );
+}
+
+// ---------------------------------------------------------------------
+// The home image's sync with the helper.
+
+/// Wait for `what`, looking every millisecond, for up to 20 s.
+fn until(mut what: impl FnMut() -> bool, which: &str) -> Outcome {
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !what() {
+        if std::time::Instant::now() > deadline {
+            return Err(format!("no {which} in 20 s"));
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+/// One request through a served store, and its completion.
+fn through(served: &mut Served, id: u64, op: Op) -> Result<Completion, String> {
+    served
+        .submit(Request {
+            id: RequestId(id),
+            op,
+        })
+        .map_err(|e| e.to_string())?;
+    let mut done = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while done.is_empty() {
+        served.wait(&mut done, Duration::from_millis(100));
+        if std::time::Instant::now() > deadline {
+            return Err(format!("no answer to request {id}"));
+        }
+    }
+    done.pop().ok_or_else(|| "no completion".to_string())
+}
+
+/// A served store whose rule has handed a step's home-image sync over,
+/// below the high mark, and a disk that holds that sync at its end.
+struct Helping {
+    disk: SimDisk,
+    served: Served,
+    /// Where the log starts: the held step's batch begins here.
+    start: Lsn,
+    /// The record whose payload, 16 blocks of byte `first + 1` from
+    /// block `first * 16`, is the batch's first.
+    first: u64,
+}
+
+/// `records` records of 16 blocks each (record n holds byte n + 1 from
+/// block n * 16) are written and made durable, at least `marks.high` of
+/// log. A hold at the end of record `hold_after` keeps the rule's first
+/// steps there, below the high mark and not below the low one: still
+/// stepping. Then the disk holds the home image's syncs, the hold goes,
+/// and the next step hands its sync over.
+fn helping(env: &Env, records: u64, hold_after: u64, marks: Marks) -> Result<Helping, String> {
+    let (disk, mut store) = env.fresh()?;
+    let mut ends = Vec::new();
+    for n in 0..records {
+        write(&mut store, n * 16, 16, n as u8 + 1)?;
+        ends.push(store.position());
+    }
+    flush(&mut store)?;
+    if store.log_state().live() < marks.high {
+        return Err("the log is below the high mark".into());
+    }
+    store.set_marks(Some(marks));
+    let hold = ends[hold_after as usize - 1];
+    store.set_hold(Some(hold)).map_err(|e| e.to_string())?;
+    let served = store.serve().map_err(|e| e.to_string())?;
+    until(
+        || {
+            let state = served.log_state();
+            state.start == hold.0 && !state.stepping
+        },
+        "steps to the hold",
+    )?;
+    let state = served.log_state();
+    if state.live() >= marks.high || state.live() < marks.low {
+        return Err(format!("the log rests outside the marks: {state:?}"));
+    }
+    disk.hold_syncs_of(HOME_NAME);
+    let begun = disk.stats().sync_begins;
+    served.set_hold(None).map_err(|e| e.to_string())?;
+    until(
+        || disk.stats().sync_begins > begun,
+        "step that hands its sync over",
+    )?;
+    Ok(Helping {
+        disk,
+        served,
+        start: hold,
+        first: hold_after,
+    })
+}
+
+/// `op` waits for the helper's report: a thread lets the held sync end
+/// only once a wait for it has begun, and finds that `op` has not
+/// returned by then. Events, not times: what the thread looks for is a
+/// caller blocked at the held sync's end.
+fn waits_for_the_report(disk: &SimDisk, op: impl FnOnce() -> Outcome) -> Outcome {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let returned = Arc::new(AtomicBool::new(false));
+    let releaser = {
+        let (disk, returned) = (disk.clone(), returned.clone());
+        std::thread::spawn(move || -> Outcome {
+            let waited = until(|| disk.held_waiters() > 0, "wait for the report");
+            let early = returned.load(Ordering::SeqCst);
+            disk.release_syncs();
+            waited?;
+            if early {
+                return Err("it returned before anything waited for the report".into());
+            }
+            Ok(())
+        })
+    };
+    let done = op();
+    returned.store(true, Ordering::SeqCst);
+    let released = releaser
+        .join()
+        .map_err(|_| "the releasing thread panicked".to_string())?;
+    done.and(released)
+}
+
+/// Marks under which a log of 12 records of 64 KiB is above the high
+/// mark, and a hold after the sixth leaves it between the marks.
+const HELPED: Marks = MARKS;
+
+/// With the helper held at the home image's sync, the worker serves: a
+/// write and a flush complete, and a read of a block of the batch is
+/// answered, from the log, where the batch's records stay until the
+/// step is taken up. Nothing is written to the home image while its
+/// sync is under way, and the log's start does not move; once the
+/// sync ends, the step is taken up and the start moves. Mutant: the
+/// rule takes the next step while one waits for its report.
+#[test]
+fn a_held_helper_leaves_the_worker_serving() {
+    fn scenario(env: &Env) -> Outcome {
+        let Helping {
+            disk,
+            mut served,
+            start,
+            first,
+        } = helping(env, 12, 6, HELPED)?;
+        let write = Op::Write {
+            offset: 600 * BLOCK,
+            data: Buf::filled(16, 0x77),
+        };
+        let read = Op::Read {
+            offset: first * 16 * BLOCK,
+            buf: Buf::zeroed(16),
+        };
+        let mut answers = Vec::new();
+        for (id, op) in [(1, write), (2, Op::Flush), (3, read)] {
+            answers.push(through(&mut served, id, op)?);
+        }
+        for answer in &answers {
+            if answer.result.is_err() {
+                return Err(format!("{answer:?}"));
+            }
+        }
+        let batch = answers[2].buf.as_ref().map(|buf| buf.to_vec());
+        if batch != Some(vec![first as u8 + 1; 16 * BLOCK as usize]) {
+            return Err("a block of the batch read wrong while its sync was held".into());
+        }
+        let written = disk.writes_while_syncing(HOME_NAME);
+        let state = served.log_state();
+        let held = (state.start, state.stepping);
+        disk.release_syncs();
+        if written > 0 {
+            return Err(format!(
+                "{written} writes to the home image while its sync was under way"
+            ));
+        }
+        if held != (start.0, true) {
+            return Err(format!("while held: start and stepping {held:?}"));
+        }
+        until(|| served.log_state().start > start.0, "step taken up")?;
+        let timing = served.timing();
+        if timing.helper.count < 1 || timing.helper_requests < 2 {
+            return Err(format!("the helper's account: {timing:?}"));
+        }
+        drop(served);
+        let mut store = env.reopen(&disk)?;
+        expect(
+            &mut store,
+            600,
+            16,
+            0x77,
+            "the write made while the sync was held",
+        )?;
+        expect(&mut store, first * 16, 16, first as u8 + 1, "the batch")?;
+        Ok(())
+    }
+    holds(scenario);
+    caught(scenario, Mutants::HOME_WRITTEN_BEFORE_REPORT);
+}
+
+/// With the helper held, an explicit checkpoint, a change of the hold,
+/// and the end of the served store each wait for the report, and then
+/// do what they do. (`skyzfsd detach` reaches the store as the serving
+/// daemon's end: the drop of the served store.)
+#[test]
+fn a_checkpoint_a_hold_and_the_end_wait_for_the_report() {
+    let env = environments(0)[0];
+    let h = helping(&env, 12, 6, HELPED).unwrap();
+    waits_for_the_report(&h.disk, || {
+        h.served.checkpoint().map(|_| ()).map_err(|e| e.to_string())
+    })
+    .unwrap();
+    // The checkpoint took the whole durable log.
+    let state = h.served.log_state();
+    assert_eq!(state.start, state.durable, "{state:?}");
+    let timing = h.served.timing();
+    assert!(timing.step_report.count >= 1, "{timing:?}");
+
+    let h = helping(&env, 12, 6, HELPED).unwrap();
+    let at = h.start;
+    waits_for_the_report(&h.disk, || {
+        h.served.set_hold(Some(at)).map_err(|e| e.to_string())
+    })
+    .unwrap();
+    // The step was taken up under the hold it was chosen under, and the
+    // new hold is in place: nothing below it is given up.
+    assert!(h.served.log_state().start > at.0);
+    assert!(h.served.checkpoint().is_ok());
+
+    let Helping {
+        disk,
+        served,
+        start,
+        ..
+    } = helping(&env, 12, 6, HELPED).unwrap();
+    waits_for_the_report(&disk, || {
+        drop(served);
+        Ok(())
+    })
+    .unwrap();
+    // The end took the step up: the next open finds the log's start
+    // moved.
+    let store = env.reopen(&disk).unwrap();
+    assert!(store.log_start() > start);
+}
+
+/// With the helper held, a request that brings the log to the high
+/// mark is answered, and the worker then waits for the report before
+/// the next request: the log's bound is the high mark and one request,
+/// as when the worker made the sync itself.
+#[test]
+fn at_the_high_mark_the_worker_waits_for_the_report() {
+    let env = environments(0)[0];
+    let Helping {
+        disk, mut served, ..
+    } = helping(&env, 12, 6, HELPED).unwrap();
+    let mut id = 10;
+    let mut write = |served: &mut Served| {
+        id += 1;
+        let op = Op::Write {
+            offset: (700 + id % 4 * 16) * BLOCK,
+            data: Buf::filled(16, id as u8),
+        };
+        through(served, id, op).map(|done| done.result.is_ok())
+    };
+    // Below the high mark the writes are answered with the sync held.
+    while served.log_state().live() < HELPED.high {
+        assert!(write(&mut served).unwrap());
+    }
+    // At it, the next request waits for the report.
+    waits_for_the_report(&disk, || {
+        if write(&mut served)? {
+            Ok(())
+        } else {
+            Err("the write failed".into())
+        }
+    })
+    .unwrap();
+    let state = served.log_state();
+    assert!(state.live() < HELPED.high + ONE_REQUEST, "{state:?}");
+}
+
+/// With the helper held, a write that finds the log full makes room:
+/// a sync of the log, then a checkpoint, which waits for the report
+/// first. The log here has three segment files and a high mark that
+/// it does not reach before it is full.
+#[test]
+fn room_in_a_full_log_waits_for_the_report() {
+    let env = Env {
+        segments: Some(3),
+        ..environments(0)[0]
+    };
+    // How many records of 64 KiB fill the three segments, and the log's
+    // size then: what the high mark is set to, so that the first steps
+    // begin at once.
+    let (records, live) = {
+        let (_disk, mut store) = env.fresh().unwrap();
+        let identity = *store.core.log.identity();
+        let mut records = 0;
+        loop {
+            let tail = store.position().0;
+            let last = tail / identity.segment_size == 2;
+            if last && !identity.fits(tail % identity.segment_size, 16 * BLOCK as u32) {
+                break;
+            }
+            write(&mut store, records * 16 % 1024, 16, 1).unwrap();
+            records += 1;
+        }
+        (records, store.log_state().live())
+    };
+    let marks = Marks {
+        high: live,
+        low: 64 << 10,
+        step: MARKS.step,
+    };
+    let Helping {
+        disk, mut served, ..
+    } = helping(&env, records, 10, marks).unwrap();
+    let rooms = served.timing().syncs[SyncKind::ROOM].count;
+    waits_for_the_report(&disk, || {
+        let op = Op::Write {
+            offset: 1000 * BLOCK,
+            data: Buf::filled(16, 0x5a),
+        };
+        match through(&mut served, 99, op)?.result {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .unwrap();
+    let timing = served.timing();
+    assert_eq!(timing.syncs[SyncKind::ROOM].count, rooms + 1, "{timing:?}");
+    assert_eq!(timing.gate.count, 0, "{timing:?}");
+    drop(served);
+    let mut store = env.reopen(&disk).unwrap();
+    expect(&mut store, 1000, 16, 0x5a, "the write that made room").unwrap();
+}
+
+/// A home-image sync that the helper reports as failed fails the
+/// volume, as one the worker made would: later requests are answered
+/// failed and the log is marked. What was acknowledged while the sync
+/// was under way is there after the failure is acknowledged, and so is
+/// the batch, which the log still held.
+#[test]
+fn a_failed_sync_with_the_helper_fails_the_volume_and_loses_nothing_acknowledged() {
+    let env = environments(0)[0];
+    let Helping {
+        disk,
+        mut served,
+        first,
+        ..
+    } = helping(&env, 12, 6, HELPED).unwrap();
+    for (id, block, byte) in [(1, 600, 0x51u8), (2, 700, 0x52)] {
+        let op = Op::Write {
+            offset: block * BLOCK,
+            data: Buf::filled(16, byte),
+        };
+        assert_eq!(through(&mut served, id, op).unwrap().result, Ok(()));
+    }
+    disk.fail_sync_of(HOME_NAME);
+    disk.release_syncs();
+    assert_eq!(
+        through(&mut served, 3, Op::Flush).unwrap().result,
+        Err(BlkError::Failed)
+    );
+    drop(served);
+    disk.clear_faults();
+    match env.reopen(&disk) {
+        Err(why) => assert!(why.contains("failed"), "{why}"),
+        Ok(_) => panic!("the log is not marked"),
+    }
+    let mut store = env.reopen_ack(&disk).unwrap();
+    expect(&mut store, 600, 16, 0x51, "acknowledged during the sync").unwrap();
+    expect(&mut store, 700, 16, 0x52, "acknowledged during the sync").unwrap();
+    expect(&mut store, first * 16, 16, first as u8 + 1, "the batch").unwrap();
+}
+
+/// A step whose home-image sync ends some requests after it began can
+/// be cut anywhere: between the sync's begin and its end the store
+/// appends, syncs the log for flushes and rolls to new segment files,
+/// and after a power cut at any of those points every block reads the
+/// last value a flush covered or a later one. Nothing is written to the
+/// home image while its sync is under way. Mutants: the log's start
+/// moved before the report; the next step taken while one waits for
+/// its report.
+#[test]
+fn a_step_whose_sync_ends_later_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let marks = Marks {
+            high: 160 << 10,
+            low: 64 << 10,
+            step: StepBound {
+                payload: 48 << 10,
+                records: 4,
+            },
+        };
+        let mut overlapped = 0;
+        for stop in (0..60).chain((70..400).step_by(23)) {
+            let disk = SimDisk::new(stop);
+            disk.set_write_unit(u64::from(env.unit));
+            disk.set_sync_delay(5);
+            let options = OpenOptions {
+                hand_over_home_sync: true,
+                ..env.options()
+            };
+            let key = Key(*b"a key for tests!");
+            let mut store = Store::create_keyed(disk.clone(), &env.config(), key, options)
+                .map_err(|e| e.to_string())?;
+            store.set_marks(Some(marks));
+            // Per group of four blocks: the bytes written, in order, and
+            // how many of them a flush covered.
+            let mut written: Vec<Vec<u8>> = vec![Vec::new(); 64];
+            let mut durable = [0usize; 64];
+            disk.halt_after(stop);
+            let mut n = 0u64;
+            let finished = 'load: {
+                for _ in 0..40 {
+                    for _ in 0..4 {
+                        let group = (n * 13 % 64) as usize;
+                        let byte = (n % 250) as u8 + 1;
+                        n += 1;
+                        if write(&mut store, group as u64 * 4, 4, byte).is_err() {
+                            break 'load false;
+                        }
+                        written[group].push(byte);
+                    }
+                    if flush(&mut store).is_err() {
+                        break 'load false;
+                    }
+                    for (group, values) in written.iter().enumerate() {
+                        durable[group] = values.len();
+                    }
+                }
+                true
+            };
+            let during = disk.writes_while_syncing(HOME_NAME);
+            if during > 0 {
+                return Err(format!(
+                    "{during} writes to the home image while its sync was under way, cut at {stop}"
+                ));
+            }
+            overlapped += store.timing().helper_requests;
+            if finished && store.timing().helper.count == 0 {
+                return Err("no step handed its sync over".into());
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            for (group, values) in written.iter().enumerate() {
+                let got = read(&mut store, group as u64 * 4, 4)?;
+                let allowed = match durable[group] {
+                    0 => std::iter::once(0)
+                        .chain(values.iter().copied())
+                        .collect::<Vec<_>>(),
+                    covered => values[covered - 1..].to_vec(),
+                };
+                let first = got[0];
+                if got.iter().any(|b| *b != first) || !allowed.contains(&first) {
+                    return Err(format!(
+                        "group {group} reads {first:#04x} after a cut at {stop}; \
+                         written {values:?}, a flush covered {}",
+                        durable[group]
+                    ));
+                }
+            }
+        }
+        if overlapped == 0 {
+            return Err("no request fell between a sync's begin and its end".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+    caught(scenario, Mutants::START_BEFORE_REPORT);
+    caught(scenario, Mutants::HOME_WRITTEN_BEFORE_REPORT);
 }

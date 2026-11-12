@@ -104,6 +104,39 @@ pub trait File {
     /// everything written so far would survive a power cut.
     fn sync(&mut self) -> io::Result<()>;
 
+    /// Begin a sync of the file that ends at a later
+    /// [`File::sync_end`], so that the caller can do other things
+    /// meanwhile. What it makes durable is what was written to the file
+    /// before this call, as [`File::sync`] would; what is written after
+    /// it may or may not be. A caller writes nothing to the file until
+    /// the sync has ended, and begins no other on it.
+    ///
+    /// `wake` is called once the sync has ended, if the file says that
+    /// it is ([`File::sync_wakes`]). By default nothing begins here:
+    /// the whole sync is the end's, and `wake` is never called.
+    fn sync_begin(&mut self, wake: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        drop(wake);
+        Ok(())
+    }
+
+    /// The end of the sync that [`File::sync_begin`] began: `None` if
+    /// it has not ended yet, which only a call with `wait` false can
+    /// answer; else its outcome, as [`File::sync`]'s. A file that syncs
+    /// on a thread of its own answers [`HelperEnded`] if that thread
+    /// has ended. By default this is the whole sync, done now.
+    fn sync_end(&mut self, wait: bool) -> Option<io::Result<()>> {
+        let _ = wait;
+        Some(self.sync())
+    }
+
+    /// Whether a sync begun by [`File::sync_begin`] calls its `wake`
+    /// when it ends. A caller of a file that does not must ask
+    /// [`File::sync_end`] with `wait` before it waits for anything
+    /// else: nothing will tell it that the sync has ended.
+    fn sync_wakes(&self) -> bool {
+        false
+    }
+
     /// Ask the system to start writing `len` bytes at `offset`, written
     /// and not yet synced, to the device, and return without waiting
     /// for it. A hint: it promises nothing about durability or order,
@@ -172,5 +205,31 @@ pub trait File {
     /// Whether the file is empty.
     fn is_empty(&self) -> io::Result<bool> {
         Ok(self.len()? == 0)
+    }
+}
+
+/// What [`File::sync_end`] answers when the thread that was syncing
+/// the file has ended (it panicked): whether the sync took place, and
+/// what the file holds, is not known.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HelperEnded;
+
+impl std::fmt::Display for HelperEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the thread that was syncing the file has ended")
+    }
+}
+
+impl std::error::Error for HelperEnded {}
+
+impl HelperEnded {
+    /// The error that says so.
+    pub fn error() -> io::Error {
+        io::Error::other(Self)
+    }
+
+    /// Whether `e` says so.
+    pub fn is(e: &io::Error) -> bool {
+        e.get_ref().is_some_and(|inner| inner.is::<Self>())
     }
 }

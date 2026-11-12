@@ -4,7 +4,7 @@
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
 //!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
-//!                [--writeback-kib KIB]
+//!                [--writeback-kib KIB] [--home-writeback-kib KIB]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -99,6 +99,7 @@ pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
+                 [--home-writeback-kib KIB]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -122,6 +123,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
+                [--home-writeback-kib KIB]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -143,12 +145,16 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       next start takes to read it; a write load is slowed at the mark.
       Both are at least 1, and low is below high.
       The daemon writes the volume's files through the page cache and
-      syncs them when it must. Once --writeback-kib KiB of a file's
+      syncs them when it must. Once --writeback-kib KiB of the log's
       writes wait (1024 unless given), it asks the kernel to start
       writing them to the disk, so that the sync that follows has less
       left to wait for. It is a hint: nothing about what is durable, or
       when, depends on it. 0 never asks. A file system that has no such
       call is not asked again, and the status says so.
+      --home-writeback-kib does the same for a step's writes into the
+      home image (0, never, unless given): a thread of the daemon's
+      syncs the home image while the requests are served, and the hint
+      would cost the requests time that the sync does not need.
 
   skyzfsd detach --dir DIR [--run-dir DIR]
       Delete the volume's device if no server serves it. It never stops
@@ -271,6 +277,9 @@ pub struct Serve {
     /// this many KiB of them wait; 0 never asks
     /// ([`skyzfs_local::writeback`]).
     pub writeback_kib: u64,
+    /// The same for a step's writes into the home image; 0 unless
+    /// given.
+    pub home_writeback_kib: u64,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -434,6 +443,7 @@ const SERVE: &[Opt] = &[
     opt("--log-high", true, false),
     opt("--log-low", true, false),
     opt("--writeback-kib", true, false),
+    opt("--home-writeback-kib", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -599,6 +609,15 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     .filter(|n| (1..=most).contains(n))
                     .ok_or(UsageError::Value(name.into(), "out of range"))
             };
+            // A writeback unit in KiB: at most 1 GiB, 0 for never.
+            let unit = |name: &'static str, default: u64| match given.number(name)? {
+                None => Ok(default),
+                Some(kib) if kib <= MAX_WRITEBACK_KIB => Ok(kib),
+                Some(_) => Err(UsageError::Value(
+                    name.into(),
+                    "out of range: at most 1048576 (1 GiB)",
+                )),
+            };
             let recover_short = given.number("--recover-short")?.unwrap_or(0);
             let recover_short = u32::try_from(recover_short)
                 .map_err(|_| UsageError::Value("--recover-short".into(), "out of range"))?;
@@ -661,16 +680,8 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
                 log_high,
                 log_low,
-                writeback_kib: match given.number("--writeback-kib")? {
-                    None => DEFAULT_WRITEBACK_KIB,
-                    Some(kib) if kib <= MAX_WRITEBACK_KIB => kib,
-                    Some(_) => {
-                        return Err(UsageError::Value(
-                            "--writeback-kib".into(),
-                            "out of range: at most 1048576 (1 GiB)",
-                        ))
-                    }
-                },
+                writeback_kib: unit("--writeback-kib", DEFAULT_WRITEBACK_KIB)?,
+                home_writeback_kib: unit("--home-writeback-kib", 0)?,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {
