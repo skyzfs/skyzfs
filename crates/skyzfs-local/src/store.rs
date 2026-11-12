@@ -173,6 +173,9 @@ impl Mutants {
     /// its report: it writes into the home image while that sync is
     /// under way.
     pub(crate) const HOME_WRITTEN_BEFORE_REPORT: u64 = 1 << 34;
+    /// A barrier waits until one of the readers that were under way
+    /// when it began has left, and not for all of them.
+    pub(crate) const BARRIER_WAITS_FOR_ONE: u64 = 1 << 35;
 
     fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -312,6 +315,13 @@ pub struct OpenOptions {
     /// does if this is set (for tests: the simulated disk then ends the
     /// sync at a point its seed chooses).
     pub hand_over_home_sync: bool,
+    /// How many reader threads a served store has (design §5.1 "Reads
+    /// leave the worker"): at least one, and 0 counts as one. Each
+    /// executes reads on handles of its own, beside the worker and
+    /// beside each other, so that a read does not wait behind another
+    /// read's file read. A store that is not served has none and is
+    /// unchanged by this.
+    pub readers: usize,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -330,6 +340,7 @@ impl Default for OpenOptions {
             writeback_unit: crate::writeback::DEFAULT_UNIT,
             home_writeback_unit: 0,
             hand_over_home_sync: false,
+            readers: 1,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -628,8 +639,16 @@ impl Lookup {
 }
 
 /// What the store's worker shares with whoever reads beside it (the
-/// reader thread of a served store, design §5.1 "Reads leave the
+/// reader threads of a served store, design §5.1 "Reads leave the
 /// worker").
+///
+/// What follows holds for each reader, whatever their number
+/// ([`OpenOptions::readers`]): each takes its own pin before its own
+/// lookup, holds the lookup's lock for its lookup alone, and a barrier
+/// waits for the pin of every reader that was under way when it began.
+/// Readers never wait for each other but at the lock of the lookup,
+/// which they share, and at the queue of reads, where an idle reader
+/// takes the next.
 ///
 /// - `lookup` is held by a reader for the lookup alone, never across
 ///   a read of a file, and by the worker for an insert and for the
@@ -704,6 +723,12 @@ struct PinState {
     /// time.
     #[cfg(test)]
     waited: u64,
+    /// For tests: how often a barrier woke from its wait and looked
+    /// again, and how many barriers that waited have passed.
+    #[cfg(test)]
+    woke: u64,
+    #[cfg(test)]
+    passed: u64,
 }
 
 /// A reader's pin: it leaves when this is dropped.
@@ -728,18 +753,24 @@ impl Pins {
     }
 
     /// Wait for the readers that are under way now. With `all` (a
-    /// defect, for tests), wait for a moment with no reader at all.
-    fn barrier(&self, all: bool) {
+    /// defect, for tests), wait for a moment with no reader at all;
+    /// with `one` (another), until one of them has left.
+    fn barrier(&self, all: bool, one: bool) {
         let mut state = self.state();
         let before = state.generation;
         state.generation += 1;
+        let older = |state: &PinState| -> usize {
+            state
+                .under_way
+                .iter()
+                .filter(|(generation, _)| all || **generation <= before)
+                .map(|(_, readers)| *readers)
+                .sum()
+        };
+        let at_first = older(&state);
         #[cfg(test)]
         let mut counted = false;
-        while state
-            .under_way
-            .iter()
-            .any(|(generation, readers)| *readers > 0 && (all || *generation <= before))
-        {
+        while older(&state) > 0 && !(one && older(&state) < at_first) {
             #[cfg(test)]
             if !counted {
                 state.waited += 1;
@@ -749,6 +780,14 @@ impl Pins {
                 .left
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
+            #[cfg(test)]
+            {
+                state.woke += 1;
+            }
+        }
+        #[cfg(test)]
+        if counted {
+            state.passed += 1;
         }
     }
 
@@ -756,6 +795,14 @@ impl Pins {
     #[cfg(test)]
     fn waited(&self) -> u64 {
         self.state().waited
+    }
+
+    /// For tests: how often a barrier woke and looked again, and how
+    /// many barriers that waited have passed.
+    #[cfg(test)]
+    fn woke_and_passed(&self) -> (u64, u64) {
+        let state = self.state();
+        (state.woke, state.passed)
     }
 }
 
@@ -790,8 +837,10 @@ impl Shared {
     /// Wait for the readers that are under way. A reader that begins
     /// after this began looks up after it.
     fn barrier(&self, mutants: Mutants) {
-        self.pin
-            .barrier(mutants.has(Mutants::BARRIER_WAITS_FOR_ALL));
+        self.pin.barrier(
+            mutants.has(Mutants::BARRIER_WAITS_FOR_ALL),
+            mutants.has(Mutants::BARRIER_WAITS_FOR_ONE),
+        );
     }
 }
 
@@ -877,6 +926,12 @@ struct Core<D: Dir> {
     /// every lookup.
     #[cfg(any(test, feature = "test-hooks"))]
     read_pause: Option<StepPause>,
+    /// For test rigs: how a read that begins at a given block waits
+    /// after its lookup, as [`Core::read_pause`] for every read.
+    #[cfg(any(test, feature = "test-hooks"))]
+    read_pauses_at: Vec<(u64, StepPause)>,
+    /// How many reader threads the store has when it is served.
+    readers: usize,
     /// For test rigs: how a sync of the log for a flush waits before
     /// it begins.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -2255,6 +2310,13 @@ impl Spent {
         self.sum_ns = self.sum_ns.saturating_add(ns);
         self.max_ns = self.max_ns.max(ns);
     }
+
+    /// Count what `other` counted as well.
+    fn merge(&mut self, other: &Spent) {
+        self.count += other.count;
+        self.sum_ns = self.sum_ns.saturating_add(other.sum_ns);
+        self.max_ns = self.max_ns.max(other.max_ns);
+    }
 }
 
 /// The kinds of request the timing tells apart, in the order of
@@ -2536,10 +2598,14 @@ pub struct Timing {
     /// The same at the second barrier, before a segment file the step
     /// freed can be used again.
     pub barrier_reuse: Spent,
-    /// The reader's whole time since it started, in nanoseconds:
-    /// idle, in the calls of reads, and anything else. The three
-    /// follow each other with no gap, so their sum is the time the
-    /// reader has served. A served store only.
+    /// The readers' whole time since they started, in nanoseconds:
+    /// idle, in the calls of reads, and anything else. For each reader
+    /// the three follow each other with no gap, so their sum is the
+    /// time the reader has served. With several readers
+    /// ([`OpenOptions::readers`]) each is the sum over the readers, in
+    /// thread-nanoseconds: a share of their sum is the share of the
+    /// readers' time on average, and the sum itself is as many times
+    /// the time served as there are readers. A served store only.
     pub reader: [u64; 3],
     /// The reads that found a block in a record of the log that was
     /// not durable yet, whose payload the reader then read whole and
@@ -2559,7 +2625,12 @@ pub struct Timing {
     /// difference of this exactly, and no sum goes down. A served
     /// store only.
     pub worker_as_of_ns: u64,
-    /// The same for the reader's activities ([`Timing::reader`]).
+    /// The same for the readers' activities ([`Timing::reader`]), summed
+    /// over the readers: each reader's moment, as this says it for one
+    /// thread, added up. So between two looks the readers' activities
+    /// sum to the difference of this exactly, with any number of
+    /// readers, and the difference is about the number of readers
+    /// times the time between the looks.
     pub reader_as_of_ns: u64,
     /// The hint that hands writes to the device before their sync
     /// ([`crate::writeback`]): for the log's segment files, and for the
@@ -3257,6 +3328,9 @@ impl<D: Dir> Store<D> {
                 #[cfg(any(test, feature = "test-hooks"))]
                 read_pause: None,
                 #[cfg(any(test, feature = "test-hooks"))]
+                read_pauses_at: Vec::new(),
+                readers: options.readers.max(1),
+                #[cfg(any(test, feature = "test-hooks"))]
                 sync_pause: None,
                 mutants: options.mutants,
             },
@@ -3332,6 +3406,15 @@ impl<D: Dir> Store<D> {
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_read_pause(&mut self, pause: StepPause) {
         self.core.read_pause = Some(pause);
+    }
+
+    /// For test rigs: as [`Store::set_read_pause`], for the reads that
+    /// begin at block `block` only. With several readers, one read can
+    /// be held so while others go on; with a pause for each of two
+    /// blocks, two readers can be held, each with its pin.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_read_pause_at(&mut self, block: u64, pause: StepPause) {
+        self.core.read_pauses_at.push((block, pause));
     }
 
     /// For test rigs: make every sync of the log for a flush (a
@@ -3630,9 +3713,14 @@ enum Unread {
     Fault,
 }
 
-/// The reader of a served store: it executes the reads, on a thread
-/// of its own, with handles of its own on the store's files (design
-/// §5.1 "Reads leave the worker"). It writes nothing.
+/// A reader of a served store: it executes reads, on a thread of its
+/// own, with handles of its own on the store's files (design §5.1
+/// "Reads leave the worker"). It writes nothing. A served store has
+/// [`OpenOptions::readers`] of them, which take the reads from one
+/// queue: a read goes to whichever reader is idle, and reads complete
+/// in any order. That is no change to what a read promises: a read
+/// submitted after a write was acknowledged looks up after it,
+/// whichever reader takes it.
 struct Reader<D: Dir> {
     dir: D,
     home: D::File,
@@ -3651,6 +3739,8 @@ struct Reader<D: Dir> {
     mutants: Mutants,
     #[cfg(any(test, feature = "test-hooks"))]
     pause: Option<StepPause>,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pauses_at: Vec<(u64, StepPause)>,
 }
 
 impl<D: Dir> Reader<D> {
@@ -3711,8 +3801,15 @@ impl<D: Dir> Reader<D> {
             }
         }
         #[cfg(any(test, feature = "test-hooks"))]
-        if let Some(pause) = &self.pause {
-            pause.wait();
+        {
+            if let Some(pause) = &self.pause {
+                pause.wait();
+            }
+            for (block, pause) in &self.pauses_at {
+                if *block == start {
+                    pause.wait();
+                }
+            }
         }
         let _late_pin = late.then(|| shared.pinned());
         let mut checked_any = false;
@@ -3836,7 +3933,7 @@ pub struct Served {
     geometry: Geometry,
     identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
-    /// To the reader: every read goes there, and nothing else.
+    /// To the readers: every read goes there, and nothing else.
     reads: Option<mpsc::Sender<ToReader>>,
     completions: mpsc::Receiver<(Completion, Option<Lsn>, Instant)>,
     /// When the worker had each completion of the last
@@ -3849,7 +3946,7 @@ pub struct Served {
     /// What the worker shows of the log.
     log: Arc<Shown>,
     worker: Option<thread::JoinHandle<()>>,
-    reader: Option<thread::JoinHandle<()>>,
+    readers: Vec<thread::JoinHandle<()>>,
 }
 
 /// The log's state as the worker last published it: read by the owner
@@ -3868,7 +3965,11 @@ pub struct Served {
 /// wait than the thread then does. The last field is the moment the
 /// times are counted from.
 #[derive(Debug)]
-struct Shown(Mutex<(LogState, Timing, Open)>, Mutex<ReaderShown>, Instant);
+struct Shown(
+    Mutex<(LogState, Timing, Open)>,
+    Mutex<Vec<ReaderShown>>,
+    Instant,
+);
 
 /// The span a thread has open: since when, and doing what (an
 /// [`Activity`]).
@@ -3908,9 +4009,13 @@ impl Shown {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).0
     }
 
-    /// The reader's part of the times, as it last showed it.
-    fn read(&self, reader: ReaderShown) {
-        *self.1.lock().unwrap_or_else(PoisonError::into_inner) = reader;
+    /// Reader `at`'s part of the times, as it last showed it.
+    fn read(&self, at: usize, reader: ReaderShown) {
+        let mut shown = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        if shown.len() <= at {
+            shown.resize(at + 1, ReaderShown::default());
+        }
+        shown[at] = reader;
     }
 
     /// The worker woke from a wait for work: the wait is closed and
@@ -3925,9 +4030,12 @@ impl Shown {
     /// The reader woke from a wait for work: `close` closes the wait at
     /// the moment it is given and says what the reader shows then, in
     /// one hold of the lock (see [`Shown`]).
-    fn reader_woke(&self, close: impl FnOnce(Instant) -> ReaderShown) {
+    fn reader_woke(&self, at: usize, close: impl FnOnce(Instant) -> ReaderShown) {
         let mut shown = self.1.lock().unwrap_or_else(PoisonError::into_inner);
-        *shown = close(Instant::now());
+        let now = close(Instant::now());
+        if let Some(reader) = shown.get_mut(at) {
+            *reader = now;
+        }
     }
 
     fn timing(&self) -> Timing {
@@ -3935,16 +4043,18 @@ impl Shown {
     }
 
     /// The log's state and the worker's times of one moment, with the
-    /// reader's times as it last showed them: reads are the reader's.
+    /// readers' times as they last showed them: reads are the readers'.
     /// A thread's wait for work is closed at the look, which reads the
     /// clock with both shown values held; anything else a thread has
     /// open is left to it.
+    ///
+    /// The readers' times are summed over the readers, each thread's
+    /// complete up to its own moment (see [`Timing::reader_as_of_ns`]).
     fn both(&self) -> (LogState, Timing) {
         let worker = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let reader = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let readers = self.1.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
         let (state, mut timing, open) = *worker;
-        let mut reader = *reader;
         let ns = |from: Instant, to: Instant| {
             u64::try_from(to.saturating_duration_since(from).as_nanos()).unwrap_or(u64::MAX)
         };
@@ -3959,13 +4069,38 @@ impl Shown {
             None => 0,
         };
         timing.worker_as_of_ns = complete(open, &mut timing.worker[Activity::IDLE]);
-        timing.reader_as_of_ns = complete(reader.open, &mut reader.time[0]);
-        timing.requests[0] = reader.requests;
-        timing.wait_by[0] = reader.wait_by;
-        timing.longest_wait_cause[0] = reader.longest_wait_cause;
-        timing.longest_wait_cause_ns[0] = reader.longest_wait_cause_ns;
-        timing.reader = reader.time;
-        timing.read_unflushed = reader.unflushed;
+        let (mut reads, mut wait_by) = (RequestTiming::default(), [0u64; ACTIVITY_COUNT]);
+        let (mut time, mut unflushed, mut as_of) = ([0u64; 3], [0u64; 3], 0u64);
+        let mut longest = (0u64, 0u64, 0u64);
+        for reader in readers.iter() {
+            let mut reader = *reader;
+            as_of = as_of.saturating_add(complete(reader.open, &mut reader.time[0]));
+            if reader.requests.wait.count > 0 && reader.requests.wait.max_ns >= longest.0 {
+                longest = (
+                    reader.requests.wait.max_ns,
+                    reader.longest_wait_cause,
+                    reader.longest_wait_cause_ns,
+                );
+            }
+            reads.wait.merge(&reader.requests.wait);
+            reads.call.merge(&reader.requests.call);
+            for (sum, ns) in wait_by.iter_mut().zip(reader.wait_by) {
+                *sum = sum.saturating_add(ns);
+            }
+            for (sum, ns) in time.iter_mut().zip(reader.time) {
+                *sum = sum.saturating_add(ns);
+            }
+            for (sum, n) in unflushed.iter_mut().zip(reader.unflushed) {
+                *sum = sum.saturating_add(n);
+            }
+        }
+        timing.reader_as_of_ns = as_of;
+        timing.requests[0] = reads;
+        timing.wait_by[0] = wait_by;
+        timing.longest_wait_cause[0] = longest.1;
+        timing.longest_wait_cause_ns[0] = longest.2;
+        timing.reader = time;
+        timing.read_unflushed = unflushed;
         (state, timing)
     }
 }
@@ -4031,38 +4166,56 @@ where
         let shown = Arc::new(Shown::default());
         // Each thread's time is counted from here, and shown from here
         // with the span it has open, so that every look holds it whole.
-        let (spans, read_spans) = (Spans::new(), Spans::new());
+        let spans = Spans::new();
+        let read_spans: Vec<Spans> = (0..core.readers).map(|_| Spans::new()).collect();
         shown.publish(&core, false, spans.open(Activity::OTHER));
-        shown.read(ReaderShown {
-            open: read_spans.open(Activity::OTHER),
-            ..ReaderShown::default()
-        });
+        for (at, read_spans) in read_spans.iter().enumerate() {
+            shown.read(
+                at,
+                ReaderShown {
+                    open: read_spans.open(Activity::OTHER),
+                    ..ReaderShown::default()
+                },
+            );
+        }
         let log = shown.clone();
         let ending = Ending {
             ended: ended.clone(),
             waker: waker.clone(),
         };
-        // The reader: a thread of its own for the reads, with handles
-        // of its own on the store's files. Either thread's end is the
-        // store's end for its owner.
+        // The readers: threads of their own for the reads, each with
+        // handles of its own on the store's files. Any thread's end is
+        // the store's end for its owner.
         let (reads, read_inbox) = mpsc::channel::<ToReader>();
+        // One queue of reads for all the readers: a reader that is idle
+        // takes the next read, whichever reader is busy with another.
+        let read_inbox = Arc::new(Mutex::new(read_inbox));
         let dir = core.log.dir().clone();
-        let home = dir.open(HOME_NAME)?;
-        let mut reader = Reader {
-            dir,
-            home,
-            segments: BTreeMap::new(),
-            identity: *core.log.identity(),
-            geometry,
-            shared: core.shared.clone(),
-            unflushed: [0; 3],
-            scratch: Vec::new(),
-            mutants: core.mutants,
-            #[cfg(any(test, feature = "test-hooks"))]
-            pause: core.read_pause.take(),
-        };
+        #[cfg(any(test, feature = "test-hooks"))]
+        let (pause, pauses_at) = (
+            core.read_pause.take(),
+            std::mem::take(&mut core.read_pauses_at),
+        );
+        let mut readers = Vec::new();
+        for _ in 0..core.readers {
+            readers.push(Reader {
+                dir: dir.clone(),
+                home: dir.open(HOME_NAME)?,
+                segments: BTreeMap::new(),
+                identity: *core.log.identity(),
+                geometry,
+                shared: core.shared.clone(),
+                unflushed: [0; 3],
+                scratch: Vec::new(),
+                mutants: core.mutants,
+                #[cfg(any(test, feature = "test-hooks"))]
+                pause: pause.clone(),
+                #[cfg(any(test, feature = "test-hooks"))]
+                pauses_at: pauses_at.clone(),
+            });
+        }
         // What the open left queued counts from here: the reads go to
-        // the reader, the rest to the worker, each in its order.
+        // the readers, the rest to the worker, each in its order.
         let served_at = Instant::now();
         let mut waiting = VecDeque::new();
         for request in queue.drain(..) {
@@ -4072,15 +4225,18 @@ where
                 waiting.push_back((request, served_at));
             }
         }
-        let reading = {
+        let mut reading = Vec::new();
+        for (at_index, (mut reader, read_spans)) in readers.into_iter().zip(read_spans).enumerate()
+        {
             let ending = Ending {
                 ended: ended.clone(),
                 waker: waker.clone(),
             };
             let (outbox, waker, shown) = (outbox.clone(), waker.clone(), shown.clone());
             let failures = commands.clone();
-            thread::Builder::new()
-                .name("skyzfs-reader".into())
+            let read_inbox = read_inbox.clone();
+            let spawned = thread::Builder::new()
+                .name(format!("skyzfs-reader-{at_index}"))
                 .spawn(move || {
                     let _ending = ending;
                     // What the reader did, for the waits of its reads:
@@ -4103,21 +4259,35 @@ where
                         open,
                     };
                     loop {
-                        let next = match read_inbox.try_recv() {
-                            Ok(next) => next,
-                            Err(mpsc::TryRecvError::Disconnected) => return,
-                            Err(mpsc::TryRecvError::Empty) => {
+                        // A read that is there already, taken without
+                        // a wait. The queue's lock is held by a reader
+                        // that waits for the next read: then there is
+                        // none, and this reader waits too.
+                        let ready = match read_inbox.try_lock() {
+                            Ok(inbox) => Some(inbox.try_recv()),
+                            Err(std::sync::TryLockError::WouldBlock) => None,
+                            Err(std::sync::TryLockError::Poisoned(inbox)) => {
+                                Some(inbox.into_inner().try_recv())
+                            }
+                        };
+                        let next = match ready {
+                            Some(Ok(next)) => next,
+                            Some(Err(mpsc::TryRecvError::Disconnected)) => return,
+                            Some(Err(mpsc::TryRecvError::Empty)) | None => {
                                 spans.forget(None);
                                 spans.close(Activity::OTHER, Instant::now(), &mut timing);
                                 // Shown as waiting, so that a look counts
-                                // the wait as idle.
-                                shown.read(show(
-                                    &timing,
-                                    reader.unflushed,
-                                    spans.open(Activity::IDLE),
-                                ));
-                                let next = read_inbox.recv();
-                                shown.reader_woke(|now| {
+                                // the wait as idle: the wait for the
+                                // queue's lock as well as for a read.
+                                shown.read(
+                                    at_index,
+                                    show(&timing, reader.unflushed, spans.open(Activity::IDLE)),
+                                );
+                                let next = read_inbox
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .recv();
+                                shown.reader_woke(at_index, |now| {
                                     spans.close(Activity::IDLE, now, &mut timing);
                                     show(&timing, reader.unflushed, spans.open(Activity::OTHER))
                                 });
@@ -4155,7 +4325,10 @@ where
                         timing.requests[0].call.add(ended - began);
                         // Shown before the completion can be taken, as
                         // the worker does.
-                        shown.read(show(&timing, reader.unflushed, spans.open(Activity::OTHER)));
+                        shown.read(
+                            at_index,
+                            show(&timing, reader.unflushed, spans.open(Activity::OTHER)),
+                        );
                         match executed {
                             Ok((result, buf)) => {
                                 let completion = Completion { id, result, buf };
@@ -4178,8 +4351,14 @@ where
                             }
                         }
                     }
-                })?
-        };
+                });
+            match spawned {
+                Ok(handle) => reading.push(handle),
+                // The readers already started end when the reads'
+                // sender is dropped on this return.
+                Err(e) => return Err(e),
+            }
+        }
         let worker = thread::Builder::new()
             .name("skyzfs-store".into())
             .spawn(move || {
@@ -4497,7 +4676,7 @@ where
             ended,
             log,
             worker: Some(worker),
-            reader: Some(reading),
+            readers: reading,
         })
     }
 }
@@ -4623,14 +4802,15 @@ impl Served {
         }
     }
 
-    /// For tests: make the reader panic, and wait until it has.
+    /// For tests: make a reader panic, and wait until it has: until
+    /// the store shows that it has ended.
     #[cfg(test)]
     pub(crate) fn panic_reader(&mut self) {
         if let Some(reads) = &self.reads {
             let _ = reads.send(ToReader::Panic);
         }
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
+        while !self.ended.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -4655,7 +4835,7 @@ impl Drop for Served {
         }
         self.commands = None;
         self.reads = None;
-        if let Some(reader) = self.reader.take() {
+        for reader in self.readers.drain(..) {
             let _ = reader.join();
         }
         if let Some(worker) = self.worker.take() {

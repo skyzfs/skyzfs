@@ -4,7 +4,7 @@
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure]
 //!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
-//!                [--writeback-kib KIB] [--home-writeback-kib KIB]
+//!                [--writeback-kib KIB] [--home-writeback-kib KIB] [--readers N]
 //! skyzfsd detach --dir DIR [--run-dir DIR]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -75,6 +75,12 @@ pub const MAX_DEPTH: u16 = 4096;
 /// is a usage error until more are served.
 pub const MAX_QUEUES: u16 = 1;
 
+/// How many threads execute reads unless told otherwise.
+pub const DEFAULT_READERS: u16 = 4;
+
+/// The most reader threads `serve` takes.
+pub const MAX_READERS: u16 = 64;
+
 /// The log's live size at which the daemon begins to checkpoint, in
 /// segments, unless told otherwise (design §5.1: two).
 pub const DEFAULT_LOG_HIGH: u32 = 2;
@@ -99,7 +105,7 @@ pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                 [--home-writeback-kib KIB]
+                 [--home-writeback-kib KIB] [--readers N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -123,7 +129,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                [--home-writeback-kib KIB]
+                [--home-writeback-kib KIB] [--readers N]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -155,6 +161,9 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       home image (0, never, unless given): a thread of the daemon's
       syncs the home image while the requests are served, and the hint
       would cost the requests time that the sync does not need.
+      Reads are executed by --readers threads of their own (4 unless
+      given, 1 to 64), beside the thread that executes the other
+      requests and beside each other.
 
   skyzfsd detach --dir DIR [--run-dir DIR]
       Delete the volume's device if no server serves it. It never stops
@@ -280,6 +289,9 @@ pub struct Serve {
     /// The same for a step's writes into the home image; 0 unless
     /// given.
     pub home_writeback_kib: u64,
+    /// How many threads execute reads: 1 is the daemon before there
+    /// were several.
+    pub readers: u16,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -444,6 +456,7 @@ const SERVE: &[Opt] = &[
     opt("--log-low", true, false),
     opt("--writeback-kib", true, false),
     opt("--home-writeback-kib", true, false),
+    opt("--readers", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -682,6 +695,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 log_low,
                 writeback_kib: unit("--writeback-kib", DEFAULT_WRITEBACK_KIB)?,
                 home_writeback_kib: unit("--home-writeback-kib", 0)?,
+                readers: small("--readers", DEFAULT_READERS, MAX_READERS)?,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {

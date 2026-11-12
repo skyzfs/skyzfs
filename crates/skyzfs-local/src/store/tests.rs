@@ -1677,6 +1677,7 @@ fn harnesses(mutants: u64) -> Vec<SimHarness> {
                     threaded: false,
                     marks: None,
                     sync_delay: 0,
+                    readers: 1,
                 });
             }
         }
@@ -1691,7 +1692,8 @@ fn harnesses(mutants: u64) -> Vec<SimHarness> {
 /// records begin at 24 KiB of log and end below 12 KiB; a new log
 /// holds 8 KiB. And the same with the steps' home-image syncs handed
 /// over and ending up to three looks later, so that requests, syncs of
-/// the log and rolls fall between a sync's begin and its end.
+/// the log and rolls fall between a sync's begin and its end; served,
+/// that one has three reader threads (the other served one has one).
 #[test]
 fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
     let config = Config {
@@ -1706,11 +1708,14 @@ fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
             records: 2,
         },
     };
-    for (threaded, sync_delay) in [(false, 0), (true, 0), (false, 3), (true, 3)] {
+    for (threaded, sync_delay, readers) in
+        [(false, 0, 1), (true, 0, 1), (false, 3, 1), (true, 3, 3)]
+    {
         for mut harness in harnesses(0) {
             harness.marks = Some(marks);
             harness.threaded = threaded;
             harness.sync_delay = sync_delay;
+            harness.readers = readers;
             let report = run_all(&mut harness, &config);
             assert!(report.passed(), "in {harness:?}:\n{report}");
             if !threaded {
@@ -5416,7 +5421,7 @@ fn a_barrier_is_not_held_by_reads_that_keep_arriving() {
         let waiting = {
             let pins = pins.clone();
             std::thread::spawn(move || {
-                pins.barrier(all);
+                pins.barrier(all, false);
                 let _ = passed.send(());
             })
         };
@@ -6451,12 +6456,25 @@ fn step_parts_numbers() {
 /// nanosecond of both threads is idle. Before this, the span open at a
 /// look was in no sum, and a worker idle for seconds put the identity
 /// out by seconds.
+///
+/// With several readers, the readers' times are summed over them, each
+/// complete up to its own moment, and those moments are summed: the
+/// identity is exact with one reader and with three, and with every
+/// thread idle the readers' moment moves by exactly three times the
+/// worker's.
 #[test]
 fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
+    for readers in [1, 3] {
+        threads_times_sum_exactly(readers);
+    }
+}
+
+fn threads_times_sum_exactly(readers: usize) {
     let env = environments(0)[0];
     let (_disk, mut store) = env.fresh().unwrap();
     write(&mut store, 0, 4, 9).unwrap();
     flush(&mut store).unwrap();
+    store.core.readers = readers;
     let mut served = store.serve().unwrap();
     let mut before = served.timing();
     let mut done = Vec::new();
@@ -6511,7 +6529,9 @@ fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
             now.worker[0] - before.worker[0],
             now.reader[0] - before.reader[0],
         );
-        if between.0 > 0 && between.1 > 0 && idle == between {
+        // Every thread idle at both looks: the readers' moment moves by
+        // the worker's once per reader.
+        if between.0 > 0 && idle == between && between.1 == readers as u64 * between.0 {
             break;
         }
         assert!(
@@ -7534,4 +7554,300 @@ fn a_volume_that_failed_meanwhile_does_not_take_the_step_up() {
     let mut store = env.reopen_ack(&disk).unwrap();
     assert_eq!(store.log_start(), start);
     expect(&mut store, first * 16, 16, first as u8 + 1, "the batch").unwrap();
+}
+
+// ---------------------------------------------------------------------
+// Several readers (M1.3n).
+
+/// A read held in one reader leaves the others reading: with two
+/// readers, a read is held after its lookup, with its pin, and reads of
+/// other blocks submitted after it complete meanwhile, one from a
+/// record of the log and one from the home image. Released, the held
+/// read returns its block.
+#[test]
+fn a_read_held_in_one_reader_leaves_the_others_reading() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 0x11)?;
+        write(&mut store, 5, 1, 0x55)?;
+        flush(&mut store)?;
+        store.core.readers = 2;
+        let held = Gate::new("held-read");
+        store.set_read_pause_at(0, held.pause());
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&held]);
+        submit(&mut served, read_request(100, 0, 1))?;
+        held.wait_reached("the held read")?;
+        submit(&mut served, read_request(101, 5, 1))?;
+        submit(&mut served, read_request(102, 9, 1))?;
+        let mut done = Vec::new();
+        take(&mut served, &mut done, 2, "the reads beside the held one")?;
+        if done.iter().any(|c| c.id == RequestId(100)) {
+            return Err("the held read completed while it was held".into());
+        }
+        for (id, byte) in [(101, 0x55), (102, 0)] {
+            let read = completion(&done, id)?;
+            if read.result.is_err()
+                || read
+                    .buf
+                    .as_ref()
+                    .is_none_or(|b| b.iter().any(|b| *b != byte))
+            {
+                return Err(format!("read {id} is not {byte:#x}"));
+            }
+        }
+        held.open();
+        take(&mut served, &mut done, 3, "the held read")?;
+        let read = completion(&done, 100)?;
+        if read.result.is_err()
+            || read
+                .buf
+                .as_ref()
+                .is_none_or(|b| b.iter().any(|b| *b != 0x11))
+        {
+            return Err("the held read does not return its block".into());
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// Release the two held readers, `first` first: after the first has
+/// completed and the barrier has woken and looked again, the barrier
+/// still waits (none has passed since `passed`) and nothing the worker
+/// does has completed. Then the second.
+fn release_one_after_the_other(
+    served: &mut Served,
+    shared: &Shared,
+    gates: [&Gate; 2],
+    done: &mut Vec<Completion>,
+    alone: impl Fn() -> Outcome,
+) -> Outcome {
+    let (woke, passed) = shared.pin.woke_and_passed();
+    let before = done.len();
+    gates[0].open();
+    take(served, done, before + 1, "the read released first")?;
+    let began = std::time::Instant::now();
+    while shared.pin.woke_and_passed().0 <= woke {
+        if began.elapsed() > Duration::from_secs(20) {
+            return Err("the barrier did not look again when a reader left".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if shared.pin.woke_and_passed().1 != passed {
+        return Err("the barrier passed with a reader still pinned".into());
+    }
+    alone()?;
+    gates[1].open();
+    Ok(())
+}
+
+/// The two orders of release, as gates of blocks `blocks`.
+const ORDERS: [[usize; 2]; 2] = [[0, 1], [1, 0]];
+
+/// The first barrier waits for every reader that is pinned, with two
+/// readers: two reads of blocks that only the home image holds are held
+/// after their lookups, writes to both blocks are made durable, and a
+/// checkpoint is asked for. The step waits at the barrier; when one
+/// reader is released and has completed, it still waits for the other
+/// and has not written; released too, both return the blocks as they
+/// were. In both orders. Mutants: the barrier waits for one reader
+/// only; there is no barrier; the readers pin after their lookups.
+fn two_held_readers_at_the_first_barrier(env: &Env) -> Outcome {
+    let unbarred = env.mutants & (Mutants::HOME_WRITTEN_UNBARRED | Mutants::PIN_AFTER_LOOKUP) != 0;
+    for order in ORDERS {
+        let blocks = [0u64, 5];
+        let (_disk, mut store) = env.fresh()?;
+        store.core.readers = 2;
+        let step = Gate::new("two-home-step");
+        let gates = [Gate::new("two-home-a"), Gate::new("two-home-b")];
+        store.set_step_pause_at(step.pause(), StepPoint::Written);
+        for (block, gate) in blocks.iter().zip(&gates) {
+            store.set_read_pause_at(*block, gate.pause());
+        }
+        let shared = store.core.shared.clone();
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&step, &gates[0], &gates[1]]);
+        for (n, (block, gate)) in blocks.iter().zip(&gates).enumerate() {
+            submit(&mut served, read_request(100 + n as u64, *block, 1))?;
+            gate.wait_reached("a read")?;
+        }
+        let mut done = Vec::new();
+        for (n, block) in blocks.iter().enumerate() {
+            submit(&mut served, write_request(1 + n as u64, *block, 1, 0x22))?;
+        }
+        submit(
+            &mut served,
+            Request {
+                id: RequestId(3),
+                op: Op::Flush,
+            },
+        )?;
+        take(&mut served, &mut done, 3, "the writes and the flush")?;
+        let (reply, checkpointed) = mpsc::channel();
+        if !served.send(Command::Checkpoint(reply)) {
+            return Err("the worker is gone".into());
+        }
+        let first = [&gates[order[0]], &gates[order[1]]];
+        if unbarred {
+            step.wait_reached("the step, with no barrier")?;
+            first[0].open();
+            first[1].open();
+        } else {
+            at_a_barrier(&shared, 0, "the first barrier")?;
+            release_one_after_the_other(&mut served, &shared, first, &mut done, || {
+                if step.reached() {
+                    return Err("the step wrote the home image with a reader held".into());
+                }
+                Ok(())
+            })?;
+        }
+        take(&mut served, &mut done, 5, "both reads")?;
+        for id in [100, 101] {
+            let read = completion(&done, id)?;
+            if read.result.is_err() || read.buf.as_ref().is_none_or(|b| b.iter().any(|b| *b != 0)) {
+                return Err(format!(
+                    "held read {id} is not its block as it was, order {order:?}"
+                ));
+            }
+        }
+        step.wait_reached("the step, after the readers")?;
+        step.open();
+        let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
+        if !matches!(checkpointed, Ok(Ok(_))) {
+            return Err(format!("the checkpoint: {checkpointed:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The second barrier, the same way: two blocks are in records of the
+/// log's first segment file, reads of both are held after their lookups
+/// while a checkpoint stands where it is to free that file, and a
+/// megabyte that needs the freed file is written behind it. When one
+/// reader is released and has completed, the step still waits and the
+/// write has not completed; released too, both return their blocks. In
+/// both orders. Mutants: as for the first barrier.
+fn two_held_readers_at_the_second_barrier(env: &Env) -> Outcome {
+    let unbarred = env.mutants & (Mutants::SLOT_REUSED_UNBARRED | Mutants::PIN_AFTER_LOOKUP) != 0;
+    let env = Env {
+        segments: Some(2),
+        ..*env
+    };
+    for order in ORDERS {
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 1, 0x11)?;
+        write(&mut store, 1, 1, 0x12)?;
+        megabyte(&mut store, 1, 2)?;
+        megabyte(&mut store, 2, 3)?;
+        flush(&mut store)?;
+        if store.core.log.segment_files() != 2 {
+            return Err("the log is not in two files".into());
+        }
+        store.core.readers = 2;
+        let step = Gate::new("two-reuse-step");
+        let gates = [Gate::new("two-reuse-a"), Gate::new("two-reuse-b")];
+        store.set_step_pause_at(step.pause(), StepPoint::Synced);
+        for (block, gate) in [0u64, 1].iter().zip(&gates) {
+            store.set_read_pause_at(*block, gate.pause());
+        }
+        let shared = store.core.shared.clone();
+        let mut served = store.serve().map_err(|e| e.to_string())?;
+        let _opened = Opened(&[&step, &gates[0], &gates[1]]);
+        let (reply, checkpointed) = mpsc::channel();
+        if !served.send(Command::Checkpoint(reply)) {
+            return Err("the worker is gone".into());
+        }
+        step.wait_reached("the checkpoint")?;
+        let waited = shared.pin.waited();
+        for (n, gate) in gates.iter().enumerate() {
+            submit(&mut served, read_request(100 + n as u64, n as u64, 1))?;
+            gate.wait_reached("a read")?;
+        }
+        submit(&mut served, write_request(1, 256, 256, 4))?;
+        step.open();
+        let mut done = Vec::new();
+        let first = [&gates[order[0]], &gates[order[1]]];
+        if unbarred {
+            take(&mut served, &mut done, 1, "the write, with no barrier")?;
+            first[0].open();
+            first[1].open();
+        } else {
+            at_a_barrier(&shared, waited, "the second barrier")?;
+            let mut more = Vec::new();
+            release_one_after_the_other(&mut served, &shared, first, &mut done, || Ok(()))?;
+            // The worker waits at the barrier, and nothing behind it
+            // completed while the second reader was held.
+            if done.len() != 1 || served.poll(&mut more) > 1 {
+                return Err("the write completed with a reader held".into());
+            }
+            done.append(&mut more);
+        }
+        take(&mut served, &mut done, 3, "both reads and the write")?;
+        let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
+        if !matches!(checkpointed, Ok(Ok(_))) {
+            return Err(format!("the checkpoint: {checkpointed:?}"));
+        }
+        for (id, byte) in [(100, 0x11), (101, 0x12)] {
+            let read = completion(&done, id)?;
+            if read.result.is_err()
+                || read
+                    .buf
+                    .as_ref()
+                    .is_none_or(|b| b.iter().any(|b| *b != byte))
+            {
+                return Err(format!(
+                    "held read {id} does not return its block, order {order:?}"
+                ));
+            }
+        }
+        if done.iter().any(|c| c.result.is_err()) || served.gone() {
+            return Err("a request failed".into());
+        }
+    }
+    Ok(())
+}
+
+/// Acceptance (b): each barrier waits for a pin held by any of the
+/// readers, shown with two readers pinned and released one after the
+/// other.
+#[test]
+fn each_barrier_waits_for_every_reader_that_is_pinned() {
+    caught(
+        two_held_readers_at_the_first_barrier,
+        Mutants::BARRIER_WAITS_FOR_ONE,
+    );
+    caught(
+        two_held_readers_at_the_second_barrier,
+        Mutants::BARRIER_WAITS_FOR_ONE,
+    );
+    for env in environments(Mutants::HOME_WRITTEN_UNBARRED) {
+        assert!(
+            two_held_readers_at_the_first_barrier(&env).is_err(),
+            "{env:?}"
+        );
+    }
+    for env in environments(Mutants::SLOT_REUSED_UNBARRED) {
+        assert!(
+            two_held_readers_at_the_second_barrier(&env).is_err(),
+            "{env:?}"
+        );
+    }
+}
+
+/// Acceptance (c): the pin is taken before the lookup with several
+/// readers too. Mutant: the pin after the lookup, caught at both
+/// barriers with two readers.
+#[test]
+fn several_readers_hold_their_pins_from_before_their_lookups() {
+    for env in environments(Mutants::PIN_AFTER_LOOKUP) {
+        assert!(
+            two_held_readers_at_the_first_barrier(&env).is_err(),
+            "{env:?}"
+        );
+        assert!(
+            two_held_readers_at_the_second_barrier(&env).is_err(),
+            "{env:?}"
+        );
+    }
 }
