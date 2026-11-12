@@ -134,6 +134,9 @@ impl Mutants {
     pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
     /// A range is deallocated whatever the file system's block size.
     pub(crate) const HOLES_IN_LARGE_BLOCKS: u32 = 1 << 24;
+    /// A step goes on past the record at which the file system first
+    /// refused to deallocate.
+    pub(crate) const REFUSAL_ENDS_NO_STEP: u32 = 1 << 25;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -732,7 +735,14 @@ impl<D: Dir> Core<D> {
         };
         let mut start = floor;
         for end in ends {
-            start = self.apply(start, end, limit, hold)?;
+            let (reached, cut) = self.apply(start, end, limit, hold)?;
+            start = reached;
+            // The batch ended where the file system first refused to
+            // deallocate: its rest is a batch of its own, and that one
+            // cannot end early, because the store now writes zeros.
+            if cut.is_some() {
+                start = self.apply(start, end, limit, hold)?.0;
+            }
         }
         Ok(start)
     }
@@ -804,12 +814,22 @@ impl<D: Dir> Core<D> {
         if scanned.is_err() {
             return Err(self.fail());
         }
-        let start = self.apply(floor, end, limit, hold)?;
-        Ok(Step {
-            start,
-            records,
-            payload,
-            more: end < target,
+        let (start, cut) = self.apply(floor, end, limit, hold)?;
+        // A step that ended early, at the record where the file system
+        // first refused to deallocate, says what it took.
+        Ok(match cut {
+            Some(cut) => Step {
+                start,
+                records: cut.records,
+                payload: cut.payload,
+                more: cut.end < target,
+            },
+            None => Step {
+                start,
+                records,
+                payload,
+                more: end < target,
+            },
         })
     }
 
@@ -954,7 +974,7 @@ impl<D: Dir> Core<D> {
         target: Lsn,
         limit: Lsn,
         hold: Option<Lsn>,
-    ) -> Result<Lsn, BlkError> {
+    ) -> Result<(Lsn, Option<Cut>), BlkError> {
         if self.protect_neighbours(floor, target, limit).is_err() {
             return Err(self.fail());
         }
@@ -974,13 +994,21 @@ impl<D: Dir> Core<D> {
         );
         let unit = self.log.identity().unit();
         let any_block = self.mutants.has(Mutants::HOLES_IN_LARGE_BLOCKS);
+        let goes_on = self.mutants.has(Mutants::REFUSAL_ENDS_NO_STEP);
         let mut written = Ok(());
+        // Where the batch ends early, and what it took until there.
+        let mut cut: Option<Cut> = None;
+        let (mut records, mut payload) = (0u64, 0u64);
         let replayed = self.log.replay_within(floor, target, limit, &mut |record| {
-            if written.is_err() {
+            if written.is_err() || cut.is_some() {
                 return;
             }
+            records += 1;
             written = match record.kind {
-                Kind::Write => home.write_at(record.offset, record.data),
+                Kind::Write => {
+                    payload += record.length;
+                    home.write_at(record.offset, record.data)
+                }
                 Kind::WriteZeroes if always_written || zeroes.written() => {
                     write_zeros(home, record.offset, record.length)
                 }
@@ -1016,7 +1044,21 @@ impl<D: Dir> Core<D> {
                         // The file system has no such call and changed
                         // nothing: zeros are written, for this record
                         // and from now on. Not a failure of the volume.
+                        //
+                        // If it deallocated until now, the batch was
+                        // sized with these records counting nothing,
+                        // and writing the rest of it could be far
+                        // more than a step's bound: the batch ends
+                        // with this record, and the next is sized by
+                        // what it writes.
                         Err(e) if e.kind() == io::ErrorKind::Unsupported && !no_holes_fails => {
+                            if *zeroes == Zeroes::Deallocated && !goes_on {
+                                cut = Some(Cut {
+                                    end: record.end,
+                                    records,
+                                    payload: payload + record.length,
+                                });
+                            }
                             *zeroes = Zeroes::Written;
                             write_zeros(home, record.offset, record.length)
                         }
@@ -1031,6 +1073,7 @@ impl<D: Dir> Core<D> {
         if replayed.is_err() || written {
             return Err(self.fail());
         }
+        let target = cut.map_or(target, |cut| cut.end);
         // (2) The middle of a step: the home image holds the batch and
         // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1073,8 +1116,21 @@ impl<D: Dir> Core<D> {
         } else {
             self.index.drop_below(start);
         }
-        Ok(start)
+        Ok((start, cut))
     }
+}
+
+/// A batch that ended before its target: the file system, which had
+/// deallocated until then, refused at a write-zeroes record.
+#[derive(Debug, Clone, Copy)]
+struct Cut {
+    /// The end of that record, where the batch ended.
+    end: Lsn,
+    /// The records the batch took, that one included.
+    records: u64,
+    /// The bytes it wrote into the home image for them, as a step
+    /// counts them: that record's zeros, and the writes before it.
+    payload: u64,
 }
 
 impl<D: Dir> Core<D> {

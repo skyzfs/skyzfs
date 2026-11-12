@@ -4294,6 +4294,87 @@ fn a_write_zeroes_inside_a_larger_block_can_be_cut_anywhere() {
     caught(scenario, Mutants::HOLES_IN_LARGE_BLOCKS);
 }
 
+/// A file system that deallocated and then refuses: the step was sized
+/// with write-zeroes counting nothing, so it ends with the record at
+/// which the refusal came, having written that one record's zeros,
+/// and the steps after it are sized by what they write. Nothing is
+/// lost and the volume does not fail. Mutant: the step goes on and
+/// writes all it took, far beyond its bound.
+#[test]
+fn a_step_ends_where_the_file_system_first_refuses_to_deallocate() {
+    fn scenario(env: &Env) -> Outcome {
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 256, 9)?;
+        write(&mut store, 256, 256, 9)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        for n in 0..25 {
+            zeroes(&mut store, 8 + n * 16, 16)?;
+        }
+        flush(&mut store)?;
+        let bound = StepBound {
+            payload: 32 * BLOCK,
+            records: 30,
+        };
+        // The first step does not know yet and takes by length.
+        let first = step(&mut store, bound)?;
+        if store.log_state().zeroes != Zeroes::Deallocated || first.records != 2 {
+            return Err(format!("the first step: {first:?}"));
+        }
+        store.set_refuse_holes(true);
+        let at = step(&mut store, bound)?;
+        if at.records != 1 || at.payload != 16 * BLOCK || !at.more {
+            return Err(format!("the step with the refusal: {at:?}"));
+        }
+        if store.log_state().zeroes != Zeroes::Written {
+            return Err(format!("{:?}", store.log_state().zeroes));
+        }
+        let mut steps = 0;
+        loop {
+            let done = step(&mut store, bound)?;
+            if done.payload > bound.payload || done.records > 2 {
+                return Err(format!("a step beyond its bound: {done:?}"));
+            }
+            steps += 1;
+            if !done.more {
+                break;
+            }
+        }
+        if steps != 11 {
+            return Err(format!("22 records of 16 blocks in {steps} steps of 32"));
+        }
+        if store.is_failed() {
+            return Err("the volume failed".into());
+        }
+        expect(&mut store, 0, 8, 9, "before the ranges")?;
+        expect(&mut store, 8, 200, 0, "the ranges")?;
+        expect(&mut store, 208, 200, 0, "the ranges")?;
+        expect(&mut store, 408, 104, 9, "after the ranges")?;
+        // A whole checkpoint that meets the refusal takes all the same.
+        let (_disk, mut store) = env.fresh()?;
+        write(&mut store, 0, 256, 9)?;
+        write(&mut store, 256, 256, 9)?;
+        zeroes(&mut store, 8, 16)?;
+        flush(&mut store)?;
+        checkpoint(&mut store)?;
+        for n in 1..25 {
+            zeroes(&mut store, 8 + n * 16, 16)?;
+        }
+        write(&mut store, 500, 4, 5)?;
+        flush(&mut store)?;
+        store.set_refuse_holes(true);
+        checkpoint(&mut store)?;
+        if store.log_start() < store.log_durable() {
+            return Err("a checkpoint left durable records".into());
+        }
+        expect(&mut store, 8, 200, 0, "the ranges, by a checkpoint")?;
+        expect(&mut store, 208, 200, 0, "the ranges, by a checkpoint")?;
+        expect(&mut store, 408, 92, 9, "after the ranges, by a checkpoint")?;
+        expect(&mut store, 500, 4, 5, "the write, by a checkpoint")
+    }
+    caught(scenario, Mutants::REFUSAL_ENDS_NO_STEP);
+}
+
 /// An I/O error from the deallocation is a failed write into the home
 /// image: the volume fails, as for any other, and nothing is lost,
 /// because the log keeps the record: the next open applies it again.
@@ -4399,6 +4480,89 @@ fn steps_of_holes_and_writes_can_be_cut_anywhere() {
                 return Err("steps after the restart left durable records".into());
             }
             check(&mut store, "and the remaining steps after")?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::RECLAIM_BEFORE_HOME_SYNC);
+    caught_where(scenario, Mutants::NO_PREIMAGES, garbled_neighbours);
+}
+
+/// A write inside a range that an earlier record zeroed, and a second
+/// write-zeroes inside the first with a write inside that: the later
+/// record wins wherever the steps are cut. Steps of at most five
+/// records, so a step often ends between a write-zeroes and the write
+/// into its range; the power is cut at every point and again inside
+/// the open; the content is checked after the open, after the
+/// remaining steps and after one more open.
+#[test]
+fn a_write_inside_a_zeroed_range_can_be_cut_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        let bound = StepBound {
+            payload: 16 * BLOCK,
+            records: 5,
+        };
+        let byte = |group: u64| (group % 200) as u8 + 10;
+        for stop in (0..40).chain([44, 61, 90, 150, 300, 700]) {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 0, 256, 9)?;
+            write(&mut store, 256, 256, 9)?;
+            flush(&mut store)?;
+            checkpoint(&mut store)?;
+            for group in 0..64u64 {
+                zeroes(&mut store, group * 8 + 1, 5)?;
+                write(&mut store, group * 8 + 3, 1, byte(group))?;
+                if group % 3 == 0 {
+                    zeroes(&mut store, group * 8 + 2, 2)?;
+                    write(&mut store, group * 8 + 2, 1, byte(group) + 1)?;
+                }
+            }
+            flush(&mut store)?;
+            disk.halt_after(stop);
+            loop {
+                match store.checkpoint_step(bound) {
+                    Err(_) => break,
+                    Ok(done) if !done.more => break,
+                    Ok(done) if done.records > 5 => {
+                        return Err(format!("a step took {done:?}"));
+                    }
+                    Ok(_) => {}
+                }
+            }
+            drop(store);
+            let lost = env.lost();
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            disk.halt_after(stop % 7);
+            drop(Store::open(disk.clone(), env.options()));
+            disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen_ack(&disk)?;
+            let check = |store: &mut SimStore, when: &str| -> Outcome {
+                for group in 0..64u64 {
+                    let what = format!("group {group} {when} a cut at {stop}");
+                    let base = group * 8;
+                    expect(store, base, 1, 9, &what)?;
+                    expect(store, base + 1, 1, 0, &what)?;
+                    if group % 3 == 0 {
+                        expect(store, base + 2, 1, byte(group) + 1, &what)?;
+                        expect(store, base + 3, 1, 0, &what)?;
+                    } else {
+                        expect(store, base + 2, 1, 0, &what)?;
+                        expect(store, base + 3, 1, byte(group), &what)?;
+                    }
+                    expect(store, base + 4, 2, 0, &what)?;
+                    expect(store, base + 6, 2, 9, &what)?;
+                }
+                Ok(())
+            };
+            check(&mut store, "after")?;
+            while step(&mut store, bound)?.more {}
+            if store.log_start() < store.log_durable() {
+                return Err("steps after the restart left durable records".into());
+            }
+            check(&mut store, "and the remaining steps after")?;
+            let mut store = env.reopen_ack(&disk)?;
+            check(&mut store, "and one more open after")?;
         }
         Ok(())
     }
