@@ -52,6 +52,27 @@
 # Needs root, ZFS with zdb, dm-log-writes, dm-snapshot, and `ublk` unless
 # RIG_DEVICE is set. For a throwaway machine: it creates a pool named
 # skzreplay.
+#
+# Through skyzfsd (RIG_SKYZFSD names a build with its test hooks): the
+# cut falls below the daemon. The stack while recording is
+#
+#   ZFS pool ── /dev/ublkbN ── skyzfsd serve ── volume dir (xfs)
+#            ── dm-log-writes ── lower disk (a loop file)
+#
+# and the pool is in the whole-pool layout, so the intent log is on the
+# device under test. The base image is the lower disk after the volume
+# was made, served, the pool created and exported, and the daemon
+# stopped. The marks go into the lower disk's log. The check is
+# replay_daemon.py, which makes the pool's device at each prefix by
+# mounting the lower disk and starting the daemon as after a reboot.
+# Knobs of this mode: RIG_VOLUME_MB=1024, RIG_FILL_MB=160 (a file
+# written at the start of the workload and synced by the first sync, so
+# that the log passes the daemon's high mark and checkpoint steps fall
+# inside the recording), RIG_SERVE_ARGS (options for every serve,
+# split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME,
+# RIG_EVERY_PREFIX=1 (every record prefix, no time limit). A
+# recording in which the daemon took no checkpoint step is the rig's
+# error (exit 2): it would say nothing about a cut inside a step.
 set -euo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -80,14 +101,85 @@ fi
 FILE_SLEEP=${RIG_FILE_SLEEP:-0.05}
 SYNC_SLEEP=${RIG_SYNC_SLEEP:-0.6}
 DEVICE=${RIG_DEVICE:-}
+SKYZFSD=${RIG_SKYZFSD:-}
 LAYOUT=${RIG_LAYOUT:-slog}
+if [ -n "$SKYZFSD" ]; then
+    # Through the daemon there is one device, and it is under test.
+    [ -z "${RIG_LAYOUT:-}" ] || [ "$LAYOUT" = whole ] || { echo "through skyzfsd the layout is whole" >&2; exit 64; }
+    [ -z "$DEVICE" ] || { echo "RIG_DEVICE and RIG_SKYZFSD exclude each other" >&2; exit 64; }
+    [ -x "$SKYZFSD" ] || { echo "RIG_SKYZFSD=$SKYZFSD is not an executable" >&2; exit 64; }
+    LAYOUT=whole
+fi
 case $LAYOUT in slog|whole) ;; *) echo "RIG_LAYOUT must be slog or whole" >&2; exit 64 ;; esac
+VOLUME_MB=${RIG_VOLUME_MB:-1024}
+LOWER_MB=$((VOLUME_MB * 3))
+FILL_MB=${RIG_FILL_MB:-160}
+for v in "$VOLUME_MB" "$FILL_MB"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
+read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
+LOWER_MNT=$WORK/lower-mnt
+VOL=$LOWER_MNT/vol
+REC_RUN=/run/skz-replay-rec
 MANIFEST=$WORK/manifest
 STOP=$WORK/stop
 SCRATCH=/dev/shm/skz-replay.$$
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 SLOG_LOOP=""; LOG_LOOP=""; UBLK_UP=""; WRITER=""
+LOWER_LOOP=""; LOWER_MOUNTED=""; SERVE_PID=""; PHASE=setup; VERDICT=""
+# Through the daemon, an error before the check is the rig's own (exit
+# 2), and the summary says where it happened.
+rig_error() {
+    { echo "## Power-cut replay through skyzfsd: the rig's own error, not a verdict"
+      echo
+      echo "In the $PHASE phase: $*"
+      [ ! -s "$OUT/serve.log" ] || { echo; echo "The daemon's last lines:"; echo; echo '```'; tail -n 15 "$OUT/serve.log"; echo '```'; }
+    } > "$OUT/replay-summary.md"
+    echo "$*" >&2
+    exit 2
+}
+# The daemon failed at something it is judged on (its start, its stop,
+# its detach, the pool's writes through it) before the check: a verdict
+# against the daemon (exit 1), as the same events are in the check.
+daemon_verdict() {
+    { echo "## Power-cut replay through skyzfsd: a verdict against the daemon"
+      echo
+      echo "In the $PHASE phase: $*"
+      [ ! -s "$OUT/serve.log" ] || { echo; echo "The daemon's last lines:"; echo; echo '```'; tail -n 15 "$OUT/serve.log"; echo '```'; }
+    } > "$OUT/replay-summary.md"
+    echo "$*" >&2
+    VERDICT=1
+    exit 1
+}
+# Start `serve` on the volume and wait for its ready line: DEVICE.
+serve_up() {
+    : > "$WORK/serve.ready"
+    "$SKYZFSD" serve --dir "$VOL" --run-dir "$REC_RUN" "${SERVE_ARGS[@]}" > "$WORK/serve.ready" 2>> "$OUT/serve.log" &
+    SERVE_PID=$!
+    local i st
+    for i in $(seq 1 480); do
+        DEVICE=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$WORK/serve.ready" | head -n 1)
+        [ -n "$DEVICE" ] && [ -b "$DEVICE" ] && return 0
+        if ! kill -0 "$SERVE_PID" 2>/dev/null; then
+            st=0
+            wait "$SERVE_PID" || st=$?
+            SERVE_PID=""
+            daemon_verdict "skyzfsd serve exited with status $st before it was ready"
+        fi
+        sleep 0.25
+    done
+    daemon_verdict "skyzfsd serve was not ready after 120 s"
+}
+# SIGTERM, then the device is deleted: an orderly stop and a detach.
+serve_down() {
+    local i rc=0
+    kill -TERM "$SERVE_PID" 2>/dev/null || true
+    for i in $(seq 1 240); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done
+    if kill -0 "$SERVE_PID" 2>/dev/null; then kill -9 "$SERVE_PID"; SERVE_PID=""; daemon_verdict "skyzfsd serve had not ended 60 s after SIGTERM"; fi
+    wait "$SERVE_PID" || rc=$?
+    SERVE_PID=""
+    [ "$rc" = 0 ] || daemon_verdict "skyzfsd serve ended with status $rc after SIGTERM"
+    timeout 120 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >&2 || daemon_verdict "skyzfsd detach failed"
+}
 # The writer is told to stop and waited for, 300 s at most: a write to
 # a pool whose device does not answer never returns, and a bare `wait`
 # would then hold the job to its limit with nothing said.
@@ -122,10 +214,19 @@ cleanup() {
         elif [ "$wrc" -ne 0 ]; then log "the writer ended with status $wrc"; fi
     fi
     timeout 120 zpool export -f "$POOL" 2>/dev/null
+    if [ -n "$SERVE_PID" ]; then kill -9 "$SERVE_PID" 2>/dev/null; timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >/dev/null 2>&1; fi
+    [ -z "$LOWER_MOUNTED" ] || timeout 120 umount "$LOWER_MNT" 2>/dev/null
     dmsetup remove "$LW" 2>/dev/null
+    [ -z "$LOWER_LOOP" ] || losetup -d "$LOWER_LOOP" 2>/dev/null
     [ -n "$UBLK_UP" ] && timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1
     for l in "$SLOG_LOOP" "$LOG_LOOP"; do [ -n "$l" ] && losetup -d "$l" 2>/dev/null; done
     [ -d "$SCRATCH" ] && find "$SCRATCH" -maxdepth 1 -type f -delete && rmdir "$SCRATCH"
+    if [ "$rc" -ne 0 ] && [ -n "$SKYZFSD" ] && [ "$PHASE" != check ] && [ "$rc" != 2 ] && [ "$rc" != 64 ] && [ -z "$VERDICT" ]; then
+        # set -e ended a step of the rig's own before the check.
+        { echo "## Power-cut replay through skyzfsd: the rig's own error, not a verdict"; echo
+          echo "A command of the rig failed in the $PHASE phase (status $rc); see the job's log."; } > "$OUT/replay-summary.md"
+        rc=2
+    fi
     if [ "$rc" -ne 0 ]; then
         log "replay rig FAILED (rc=$rc); recent kernel messages:"
         dmesg 2>/dev/null | grep -iE 'ublk|log-writes|device-mapper|zfs|zio|loop[0-9]|error' | tail -n 30 >&2
@@ -142,7 +243,20 @@ timeout 60 zpool export -f "$POOL" 2>/dev/null || true   # a previous run's left
 dmsetup remove "$LW" 2>/dev/null || true
 
 # ---------------------------------------------------- device under test
-if [ -z "$DEVICE" ]; then
+if [ -n "$SKYZFSD" ]; then
+    command -v ublk >/dev/null || { echo "no ublk command: the check deletes the devices of its starts with it (build-ublksrv.sh)" >&2; exit 64; }
+    command -v mkfs.xfs >/dev/null || { echo "no mkfs.xfs" >&2; exit 64; }
+    rm -rf "$REC_RUN"
+    : > "$WORK/lower.img"
+    truncate -s "${LOWER_MB}M" "$WORK/lower.img"
+    LOWER_LOOP=$(losetup --find --show --direct-io=on "$WORK/lower.img" 2>/dev/null || losetup --find --show "$WORK/lower.img")
+    mkfs.xfs -q -f "$LOWER_LOOP"
+    mkdir -p "$LOWER_MNT"
+    mount "$LOWER_LOOP" "$LOWER_MNT"; LOWER_MOUNTED=1
+    "$SKYZFSD" create --dir "$VOL" --size $((VOLUME_MB << 20)) >&2 || rig_error "skyzfsd create failed"
+    serve_up
+    log "device under test: $DEVICE, skyzfsd over $VOL (xfs on a loop file); serve options: ${SERVE_ARGS[*]:-none}"
+elif [ -z "$DEVICE" ]; then
     command -v ublk >/dev/null || { echo "no ublk command: build the reference server (build-ublksrv.sh) or set RIG_DEVICE" >&2; exit 64; }
     [ -e /dev/ublk-control ] || { echo "no /dev/ublk-control: ublk_drv is not loaded" >&2; exit 64; }
     timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || true
@@ -179,22 +293,46 @@ zpool export "$POOL"
 # The log device as it is now, for tools that cannot open the pool
 # without one (zdb): it matches the base image and nothing later.
 [ -z "$SLOG_LOOP" ] || cp --sparse=always "$WORK/slog.img" "$WORK/slog-base.img"
-log "copying the device as the base image"
-"$DD" if="$DEVICE" of="$WORK/base.img" bs=1M iflag=direct conv=sparse status=none
-truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
+if [ -n "$SKYZFSD" ]; then
+    # Through the daemon the base is the lower disk, the daemon stopped.
+    serve_down
+    umount "$LOWER_MNT"; LOWER_MOUNTED=""
+    losetup -d "$LOWER_LOOP"; LOWER_LOOP=""
+    log "copying the lower disk as the base image"
+    cp --sparse=always "$WORK/lower.img" "$WORK/base.img"
+else
+    log "copying the device as the base image"
+    "$DD" if="$DEVICE" of="$WORK/base.img" bs=1M iflag=direct conv=sparse status=none
+    truncate -s "$(blockdev --getsize64 "$DEVICE")" "$WORK/base.img"
+fi
 
 # ------------------------------------------------------------ recording
 : > "$WORK/log.img"
 truncate -s "${LOG_MB}M" "$WORK/log.img"
 LOG_LOOP=$(losetup --find --show --direct-io=on "$WORK/log.img" 2>/dev/null || losetup --find --show "$WORK/log.img")
-dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
-zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
+PHASE=recording
+if [ -n "$SKYZFSD" ]; then
+    # dm-log-writes under the volume's file system; the daemon on top.
+    LOWER_LOOP=$(losetup --find --show --direct-io=on "$WORK/lower.img" 2>/dev/null || losetup --find --show "$WORK/lower.img")
+    dmsetup create "$LW" --table "0 $(blockdev --getsz "$LOWER_LOOP") log-writes $LOWER_LOOP $LOG_LOOP"
+    mount "/dev/mapper/$LW" "$LOWER_MNT"; LOWER_MOUNTED=1
+    serve_up
+    log "recording below the daemon: $DEVICE"
+    zpool import -d "$DEVICE" -o cachefile=none "$POOL"
+else
+    dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
+    zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
+fi
 [ -z "${RIG_AUTOTRIM:-}" ] || zpool set autotrim="$RIG_AUTOTRIM" "$POOL"
 zpool status -P "$POOL" >&2
 
 mkdir -p "$SCRATCH"
 : > "$MANIFEST"
 [ ! -e "$STOP" ] || unlink "$STOP"
+# Its status says which step failed: WRITER_POOL_RC for the write and
+# fsync of a file on the pool (the daemon's device in the daemon mode),
+# WRITER_RIG_RC for its own steps (the scratch file, the mark).
+WRITER_POOL_RC=90; WRITER_RIG_RC=91
 writer() {
     local n=0 sum
     while [ ! -e "$STOP" ]; do
@@ -204,17 +342,23 @@ writer() {
         {
             printf "SKZ-FILE-$(printf %06d "$n")\\n%.0s" {1..256}
             head -c $((FILE_KB * 1024 - 4096)) /dev/urandom
-        } > "$SCRATCH/f"
-        sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
-        "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
+        } > "$SCRATCH/f" || exit "$WRITER_RIG_RC"
+        sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1) || exit "$WRITER_RIG_RC"
+        "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none || exit "$WRITER_POOL_RC"
         # The fsync has returned: from here on in the log, the file is safe.
-        dmsetup message "$LW" 0 mark "fsync-$n"
+        dmsetup message "$LW" 0 mark "fsync-$n" || exit "$WRITER_RIG_RC"
         # Listed only once complete and fsynced: a line here is a promise.
-        echo "$sum f.$n" >> "$MANIFEST"
+        echo "$sum f.$n" >> "$MANIFEST" || exit "$WRITER_RIG_RC"
         n=$((n + 1))
         sleep "$FILE_SLEEP"
     done
 }
+if [ -n "$SKYZFSD" ] && [ "$FILL_MB" -gt 0 ]; then
+    # Not in the manifest: it is there to fill the daemon's log, so that
+    # checkpoint steps run while the files are written.
+    "$DD" if=/dev/urandom of="$MOUNTPOINT/fill" bs=1M count="$FILL_MB" status=none \
+        || daemon_verdict "the fill file could not be written to the pool, and the pool's device is the daemon's"
+fi
 writer &
 WRITER=$!
 log "workload: $SYNCS syncs, files of $FILE_KB KiB"
@@ -227,14 +371,20 @@ for k in $(seq 1 "$SYNCS"); do
 done
 wrc=0; writer_end || wrc=$?
 if [ -n "$WRITER_KILLED" ]; then
-    echo "the writer had not ended 300 s after it was told to stop (pool $(cat "/proc/spl/kstat/zfs/$POOL/state" 2>/dev/null || echo unknown)): the workload did not finish, nothing is checked" >&2
+    why="the writer had not ended 300 s after it was told to stop (pool $(cat "/proc/spl/kstat/zfs/$POOL/state" 2>/dev/null || echo unknown)): the workload did not finish, nothing is checked"
+    [ -z "$SKYZFSD" ] || daemon_verdict "$why; the pool's device is the daemon's"
+    echo "$why" >&2
     exit 1
 fi
 # As the bare `wait` under errexit did before the limit: a writer whose
 # write, fsync or mark failed leaves a manifest that promises less than
 # was done, and nothing is judged on it.
 if [ "$wrc" -ne 0 ]; then
-    echo "the recording writer failed with status $wrc (a write, an fsync or a mark): the manifest is incomplete, nothing is checked" >&2
+    why="the recording writer failed with status $wrc (a write, an fsync or a mark): the manifest is incomplete, nothing is checked"
+    if [ -n "$SKYZFSD" ] && [ "$wrc" = "$WRITER_POOL_RC" ]; then
+        daemon_verdict "$why: the write or fsync of a file on the pool failed, and the pool's device is the daemon's"
+    fi
+    echo "$why" >&2
     exit "$wrc"
 fi
 c=$(wc -l < "$MANIFEST")
@@ -242,14 +392,42 @@ zpool sync "$POOL"
 dmsetup message "$LW" 0 mark "sync-$((SYNCS + 1))-$c"
 zpool export "$POOL"
 log "recorded: $c files, log-writes status: $(dmsetup status "$LW")"
+STEPS=""
+if [ -n "$SKYZFSD" ]; then
+    timeout 30 "$SKYZFSD" status --dir "$VOL" --run-dir "$REC_RUN" > "$OUT/status-after-recording.txt" 2>&1 || true
+    STEPS=$(awk '$1 == "checkpoint_steps" { print $2; exit }' "$OUT/status-after-recording.txt")
+    log "checkpoint steps while recording: ${STEPS:-not said}"
+    serve_down
+    umount "$LOWER_MNT"; LOWER_MOUNTED=""
+fi
 for _ in $(seq 1 20); do dmsetup remove "$LW" 2>/dev/null && break; sleep 0.25; done
 ! dmsetup info "$LW" >/dev/null 2>&1 || { echo "could not remove $LW" >&2; exit 1; }
 losetup -d "$LOG_LOOP"; LOG_LOOP=""
+[ -z "$LOWER_LOOP" ] || losetup -d "$LOWER_LOOP"; LOWER_LOOP=""
 [ -z "$SLOG_LOOP" ] || losetup -d "$SLOG_LOOP"; SLOG_LOOP=""
 if [ -n "$UBLK_UP" ]; then timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1 || true; UBLK_UP=""; fi
 log "log: $(du -m "$WORK/log.img" | cut -f1) MiB on disk"
 
 if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exit 0; fi
+if [ -n "$SKYZFSD" ]; then
+    [[ ${STEPS:-} =~ ^[0-9]+$ ]] || rig_error "the daemon's status after recording gave no checkpoint_steps: $(head -c 300 "$OUT/status-after-recording.txt")"
+    [ "$STEPS" -gt 0 ] || rig_error "the daemon took no checkpoint step while recording (RIG_FILL_MB=$FILL_MB, serve options: ${SERVE_ARGS[*]:-none}): a run without one says nothing about a cut inside a step"
+    PHASE=check
+    args=(--log "$WORK/log.img" --base "$WORK/base.img" --manifest "$MANIFEST" --pool "$POOL" --mountpoint "$MOUNTPOINT"
+          --work "$WORK/check" --out "$OUT" --skyzfsd "$SKYZFSD" --ublk "$(command -v ublk)" --dd "$DD" --volume vol
+          --dev-bytes $((VOLUME_MB << 20)) --budget-s "${RIG_BUDGET_S:-600}" --budget-name "${RIG_BUDGET_NAME:-}"
+          --between-budget-s "${RIG_BETWEEN_BUDGET_S:-0}" --steps "$STEPS" --discard "${RIG_DISCARD:-zero}")
+    for o in "${SERVE_ARGS[@]}"; do args+=("--serve-arg=$o"); done
+    [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
+    [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)
+    [ -z "${RIG_EVERY_PREFIX:-}" ] || args+=(--every-prefix)
+    mkdir -p "$WORK/check"
+    # Not exec: the EXIT trap still runs, for the kernel's messages after
+    # a failed check and the scratch directory.
+    crc=0
+    python3 "$HERE/replay_daemon.py" "${args[@]}" || crc=$?
+    exit "$crc"
+fi
 
 # ----------------------------------------------------------------- check
 args=(--log "${RIG_LOG:-$WORK/log.img}" --base "$WORK/base.img" --manifest "$MANIFEST"

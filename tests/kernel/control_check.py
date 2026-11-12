@@ -65,7 +65,7 @@ STATE_WORDS = {
 # name -> (expected, who produces it, the design's row or sentence, the claim)
 EXPECTED = {
     # The crate's own tests: no stranger needed.
-    'control_can_reissue': ('PASS', CRATE, 'Recovery', 'the driver offers recovery with reissue'),
+    'control_can_reissue': ('PASS', CRATE, 'Recovery', 'the kernel has everything the daemon needs (every flag, GET_FEATURES, release 6.11 or later)'),
     'control_lookup_free_is_none': ('PASS', CRATE, 'row: not there', 'a lookup of a free number says nothing is there'),
     'control_add_taken_delete': (
         'PASS', CRATE, 'rows: an add under a free number; an add under its number; a delete, unheld',
