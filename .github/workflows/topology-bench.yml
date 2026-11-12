@@ -103,10 +103,12 @@ on:
         description: "Open CAS Linux git ref to build (only when topologies include opencas)"
         default: "v26.03.4"
       barriers:
-        # The runners' work disk is ext4 mounted nobarrier over a disk with a
-        # volatile cache (M1.T15), so no fsync there sends the disk a flush.
-        # `on` remounts it with barriers before the first row, so that every
-        # row of the job runs on that mount.
+        # The runners' work disk is ext4 mounted nobarrier (M1.T15), so no
+        # fsync there sends the disk a flush. `on` remounts it with barriers
+        # before the first row, so that every row of the job runs on that
+        # mount. Whether a flush then reaches the disk follows the disk, not
+        # the image: one that declares no volatile cache (write_cache =
+        # write through, the `sda` runners) gets none either way.
         description: "Work disk barriers: off leaves the runner's mount as it is (nobarrier on the runners seen so far); on remounts it with barriers before the first row"
         type: choice
         options: ["off", "on"]
@@ -299,11 +301,27 @@ jobs:
           rc=0; sudo mount -o remount,barrier "$mp" || rc=$?
           after=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
           echo "after (mount rc $rc): $after"
+          # The whole disk's queue: with write through, the block layer
+          # completes a flush without sending it, barriers or not.
+          # By the device number, as disk-sync.py finds it: the mount table
+          # names the root file system /dev/root on the runners. A
+          # partition's queue is its disk's.
+          dev=$(mountpoint -d "$mp")
+          src=$(readlink -f "/sys/dev/block/$dev")
+          disk=$(basename "$src"); [ -e "$src/queue" ] || disk=$(basename "$(dirname "$src")")
+          src=/dev/$(basename "$src")
+          wc=$(cat "/sys/block/$disk/queue/write_cache" 2>/dev/null || echo "not said")
+          echo "disk $disk, queue write_cache: $wc"
           {
             echo "### Work disk barriers"
             echo
-            echo "\`$mp\` ($fs). Before: \`$before\`. After \`mount -o remount,barrier\` (exit $rc): \`$after\`."
+            echo "\`$mp\` ($fs) on \`$src\`, disk \`$disk\` (queue \`write_cache\`: **$wc**). Before: \`$before\`. After \`mount -o remount,barrier\` (exit $rc): \`$after\`."
+            if [ "$wc" = "write through" ]; then
+              echo
+              echo "**This disk declares no volatile cache: the block layer completes every flush without sending it, so no flush reaches it, barriers or not.** The rows of this job say nothing about what a flush costs."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
+          [ "$wc" != "write through" ] || echo "::warning::the work disk $disk is write through: no flush reaches it, with barriers or without"
           if [ "$rc" -ne 0 ] || [[ ",$after," == *,nobarrier,* ]]; then
             echo "::error::the work disk could not be remounted with barriers; the job stops before its rows"
             echo "The remount did not take: the job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
