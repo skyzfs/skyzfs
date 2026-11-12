@@ -2004,6 +2004,11 @@ impl Spans {
         }
     }
 
+    /// The span that is open now, if the thread is doing `activity`.
+    fn open(&self, activity: usize) -> Open {
+        Some((self.last, activity))
+    }
+
     /// The worker did `activity` from the last span's end until `now`.
     fn close(&mut self, activity: usize, now: Instant, timing: &mut Timing) {
         let Some(time) = now
@@ -2188,6 +2193,15 @@ pub struct Timing {
     /// bytes they read beyond those asked for; how many records did not
     /// match, each of which failed the volume. A served store only.
     pub read_unflushed: [u64; 3],
+    /// When these times were looked at, in nanoseconds since the store
+    /// began to be served. The span that each thread has open at the
+    /// look is counted to it up to this moment, under what the thread
+    /// last said it was doing: idle while it waits for work, else
+    /// "other" (a step under way shows as "other" until it ends). So
+    /// between two looks, the worker's activities ([`Timing::worker`])
+    /// and the reader's ([`Timing::reader`]) each sum to the difference
+    /// of this, exactly. A served store only.
+    pub as_of_ns: u64,
 }
 
 /// The log as a store shows it to its owner.
@@ -3340,6 +3354,8 @@ struct ReaderShown {
     longest_wait_cause_ns: u64,
     time: [u64; 3],
     unflushed: [u64; 3],
+    /// The span the reader has open.
+    open: Open,
 }
 
 /// The store behind a worker thread.
@@ -3382,16 +3398,31 @@ pub struct Served {
 /// nothing else, so a reader gets the state of one moment: never a
 /// start beyond the end (a step can move the start past the end that
 /// was published before it), never a step that has ended as under way.
-#[derive(Debug, Default)]
-struct Shown(Mutex<(LogState, Timing)>, Mutex<ReaderShown>);
+///
+/// With the times, each thread shows the span it has open (since when,
+/// and doing what), which a look closes: see [`Timing::as_of_ns`]. The
+/// last field is the moment the times are counted from.
+#[derive(Debug)]
+struct Shown(Mutex<(LogState, Timing, Open)>, Mutex<ReaderShown>, Instant);
+
+/// The span a thread has open: since when, and doing what (an
+/// [`Activity`]).
+type Open = Option<(Instant, usize)>;
+
+impl Default for Shown {
+    fn default() -> Self {
+        Self(Mutex::default(), Mutex::default(), Instant::now())
+    }
+}
 
 impl Shown {
-    fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
+    /// The worker's state and times, with the span it has open.
+    fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool, open: Open) {
         let state = LogState {
             stepping,
             ..core.log_state()
         };
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing);
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing, open);
     }
 
     #[cfg(test)]
@@ -3423,9 +3454,30 @@ impl Shown {
 
     /// The log's state and the worker's times of one moment, with the
     /// reader's times as it last showed them: reads are the reader's.
+    /// Each thread's open span is closed at the look, which is taken
+    /// with both shown values held, so that neither can show a span
+    /// that begins after it.
     fn both(&self) -> (LogState, Timing) {
-        let (state, mut timing) = *self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let reader = *self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let worker = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let reader = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        let (state, mut timing, open) = *worker;
+        let mut reader = *reader;
+        let open_for = |since: Instant| {
+            u64::try_from(now.saturating_duration_since(since).as_nanos()).unwrap_or(u64::MAX)
+        };
+        if let Some((since, activity)) = open {
+            timing.worker[activity] = timing.worker[activity].saturating_add(open_for(since));
+        }
+        if let Some((since, activity)) = reader.open {
+            let at = match activity {
+                Activity::IDLE => 0,
+                Activity::OTHER => 2,
+                _ => 1,
+            };
+            reader.time[at] = reader.time[at].saturating_add(open_for(since));
+        }
+        timing.as_of_ns = open_for(self.2);
         timing.requests[0] = reader.requests;
         timing.wait_by[0] = reader.wait_by;
         timing.longest_wait_cause[0] = reader.longest_wait_cause;
@@ -3482,7 +3534,14 @@ where
         let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>, Instant)>();
         let ended = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(Shown::default());
-        shown.publish(&core, false);
+        // Each thread's time is counted from here, and shown from here
+        // with the span it has open, so that every look holds it whole.
+        let (spans, read_spans) = (Spans::new(), Spans::new());
+        shown.publish(&core, false, spans.open(Activity::OTHER));
+        shown.read(ReaderShown {
+            open: read_spans.open(Activity::OTHER),
+            ..ReaderShown::default()
+        });
         let log = shown.clone();
         let ending = Ending {
             ended: ended.clone(),
@@ -3531,8 +3590,23 @@ where
                     let _ending = ending;
                     // What the reader did, for the waits of its reads:
                     // idle, the call of a read, anything else.
-                    let mut spans = Spans::new();
+                    let mut spans = read_spans;
                     let mut timing = Timing::default();
+                    // What the reader shows of its times, with the span
+                    // it has open.
+                    let show = |timing: &Timing, unflushed: [u64; 3], open: Open| ReaderShown {
+                        requests: timing.requests[0],
+                        wait_by: timing.wait_by[0],
+                        longest_wait_cause: timing.longest_wait_cause[0],
+                        longest_wait_cause_ns: timing.longest_wait_cause_ns[0],
+                        time: [
+                            timing.worker[Activity::IDLE],
+                            timing.worker[Activity::call(0)],
+                            timing.worker[Activity::OTHER],
+                        ],
+                        unflushed,
+                        open,
+                    };
                     loop {
                         let next = match read_inbox.try_recv() {
                             Ok(next) => next,
@@ -3540,6 +3614,13 @@ where
                             Err(mpsc::TryRecvError::Empty) => {
                                 spans.forget(None);
                                 spans.close(Activity::OTHER, Instant::now(), &mut timing);
+                                // Shown as waiting, so that a look counts
+                                // the wait as idle.
+                                shown.read(show(
+                                    &timing,
+                                    reader.unflushed,
+                                    spans.open(Activity::IDLE),
+                                ));
                                 let next = read_inbox.recv();
                                 spans.close(Activity::IDLE, Instant::now(), &mut timing);
                                 match next {
@@ -3576,18 +3657,7 @@ where
                         timing.requests[0].call.add(ended - began);
                         // Shown before the completion can be taken, as
                         // the worker does.
-                        shown.read(ReaderShown {
-                            requests: timing.requests[0],
-                            wait_by: timing.wait_by[0],
-                            longest_wait_cause: timing.longest_wait_cause[0],
-                            longest_wait_cause_ns: timing.longest_wait_cause_ns[0],
-                            time: [
-                                timing.worker[Activity::IDLE],
-                                timing.worker[Activity::call(0)],
-                                timing.worker[Activity::OTHER],
-                            ],
-                            unflushed: reader.unflushed,
-                        });
+                        shown.read(show(&timing, reader.unflushed, spans.open(Activity::OTHER)));
                         match executed {
                             Ok((result, buf)) => {
                                 let completion = Completion { id, result, buf };
@@ -3628,14 +3698,23 @@ where
                 // goes back with its time.
                 let mut queue: VecDeque<(Request, Instant)> = waiting;
                 // What the worker did, for the waits of the requests.
-                let mut spans = Spans::new();
+                let mut spans = spans;
                 core.parts = Some(Vec::new());
                 loop {
-                    shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
-                    // to do.
-                    let command = if (queue.is_empty() || held) && !busy {
+                    // to do. What is shown says which, so that a look
+                    // counts the wait as idle.
+                    let waits = (queue.is_empty() || held) && !busy;
+                    if waits {
                         spans.close(Activity::OTHER, Instant::now(), &mut core.timing);
+                    }
+                    let doing = if waits {
+                        Activity::IDLE
+                    } else {
+                        Activity::OTHER
+                    };
+                    shown.publish(&core, false, spans.open(doing));
+                    let command = if waits {
                         let command = inbox.recv();
                         spans.close(Activity::IDLE, Instant::now(), &mut core.timing);
                         match command {
@@ -3682,7 +3761,7 @@ where
                             busy = true;
                             // As for a completion: whoever is answered
                             // finds the log as the checkpoint left it.
-                            shown.publish(&core, false);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             let _ = reply.send(result);
                             continue;
                         }
@@ -3697,7 +3776,7 @@ where
                             // that was held gets its answer now.
                             core.fail();
                             held = false;
-                            shown.publish(&core, false);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             let completion = Completion {
                                 id,
                                 result: Err(BlkError::Failed),
@@ -3727,7 +3806,7 @@ where
                             // before each of its wakes, and the
                             // worker's end changes nothing after the
                             // last state shown.
-                            shown.publish(&core, false);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             // The owner is woken before the caller is
                             // answered: when `fail_now` returns, the
                             // owner has been told.
@@ -3802,7 +3881,7 @@ where
                                 // behind for an owner that looked at
                                 // once, and stayed so while nothing
                                 // else woke it.
-                                shown.publish(&core, false);
+                                shown.publish(&core, false, spans.open(Activity::OTHER));
                                 if outbox.send((completion, start, ended)).is_err() {
                                     return;
                                 }
@@ -3856,7 +3935,7 @@ where
                         // gets here. If that ever changes, the request
                         // is tried again and not left waiting.
                         held = false;
-                        shown.publish(&core, false);
+                        shown.publish(&core, false, spans.open(Activity::OTHER));
                         wake();
                     }
                 }

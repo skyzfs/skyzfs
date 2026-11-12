@@ -6411,3 +6411,68 @@ fn step_parts_numbers() {
         100.0 * steps as f64 / busy as f64
     );
 }
+
+/// The times of a served store hold at every look, and not only
+/// between two spans: the span each thread has open at a look (an idle
+/// wait for work, or what it does now) is counted to it up to the
+/// look, and the look says when it was (`Timing::as_of_ns`). So the
+/// worker's activities and the reader's sum, between any two looks, to
+/// the time between them exactly, with requests between the looks or
+/// none.
+///
+/// And a thread that waits for work shows the wait as idle, whole:
+/// with nothing submitted, there come two looks between which every
+/// nanosecond of both threads is idle. Before this, the span open at a
+/// look was in no sum, and a worker idle for seconds put the identity
+/// out by seconds.
+#[test]
+fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 4, 9).unwrap();
+    flush(&mut store).unwrap();
+    let mut served = store.serve().unwrap();
+    let sums = |t: &Timing| (t.worker.iter().sum::<u64>(), t.reader.iter().sum::<u64>());
+    let mut before = served.timing();
+    let mut done = Vec::new();
+    for round in 0..40u64 {
+        if round % 2 == 0 {
+            submit(&mut served, write_request(2 * round, round % 8, 1, 7)).unwrap();
+            submit(&mut served, read_request(2 * round + 1, round % 8, 2)).unwrap();
+            take(
+                &mut served,
+                &mut done,
+                2 * (round as usize / 2 + 1),
+                "the round",
+            )
+            .unwrap();
+        }
+        let now = served.timing();
+        let between = now.as_of_ns - before.as_of_ns;
+        assert!(between > 0, "two looks at one moment: {now:?}");
+        let (after, earlier) = (sums(&now), sums(&before));
+        assert_eq!(after.0 - earlier.0, between, "the worker, round {round}");
+        assert_eq!(after.1 - earlier.1, between, "the reader, round {round}");
+        before = now;
+    }
+    // Nothing more is submitted: both threads go to wait for work, and
+    // then the time between two looks is all idle.
+    let began = std::time::Instant::now();
+    loop {
+        let now = served.timing();
+        let between = now.as_of_ns - before.as_of_ns;
+        let idle = (
+            now.worker[0] - before.worker[0],
+            now.reader[0] - before.reader[0],
+        );
+        if between > 0 && idle == (between, between) {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(20),
+            "no two looks with both threads idle between them: {idle:?} of {between}"
+        );
+        before = now;
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}

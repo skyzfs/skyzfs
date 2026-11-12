@@ -56,15 +56,15 @@ def fifth(r):
 VERSION_6_KEYS = {'time_worker_step_barrier_ns'} | {f'time_{k}_wait_by_step_barrier_ns' for k in st.KINDS} | {
     f'time_barrier_{b}_{f}' for b in st.BARRIERS for f in ('count', 'ns', 'max_ns')} | {
     f'time_reader_{a}_ns' for a in st.READER_ACTIVITIES} | {
-    f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')}
+    f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')} | {'time_as_of_ns'}
 
 
 class Delta(unittest.TestCase):
     def test_the_module_knows_the_daemons_keys(self):
         keys = status_keys()
-        self.assertEqual(len(keys), 171)
+        self.assertEqual(len(keys), 172)
         # what version 6 added, all of it known to the module
-        self.assertEqual(len(VERSION_6_KEYS), 171 - 153)
+        self.assertEqual(len(VERSION_6_KEYS), 172 - 153)
         for key in VERSION_6_KEYS:
             self.assertIn(key, keys)
         for a in st.READER_ACTIVITIES:
@@ -87,9 +87,9 @@ class Delta(unittest.TestCase):
         b, a = reading(1), reading(3)
         t = st.delta(b, a, 1000, 5000)
         self.assertTrue(t['ok'], t['why'])
-        self.assertEqual(len(t['delta']) + len(t['end']), 171)
-        self.assertEqual(len(t['before']), 171)
-        self.assertEqual(len(t['after']), 171)
+        self.assertEqual(len(t['delta']) + len(t['end']), 172)
+        self.assertEqual(len(t['before']), 172)
+        self.assertEqual(len(t['after']), 172)
         self.assertEqual(t['window_ns'], 4000)
         keys = status_keys()
         i = keys.index('time_read_call_ns')
@@ -189,16 +189,25 @@ class Tables(unittest.TestCase):
         keys = status_keys()
         worker = sum(2 * int(b[f'time_worker_{x}_ns']) for x in st.ACTIVITIES)
         reader = sum(2 * (keys.index(f'time_reader_{x}_ns') + 1) for x in st.READER_ACTIVITIES)
-        t = st.delta(b, a, 0, worker + 7)
+        # the daemon's two looks were the worker's sum and 7 ns apart; the readings, 1000 s
+        a['time_as_of_ns'] = str(int(b['time_as_of_ns']) + worker + 7)
+        t = st.delta(b, a, 0, 10 ** 12)
         ids = st.identities(t)
         self.assertEqual(len(ids), 7)
         for what, left, right, diff in ids[:5]:
             self.assertEqual(diff, 0, what)
+        self.assertIn('time_as_of_ns', ids[5][0])
         self.assertEqual(ids[5][3], -7)
         self.assertIn("the reader's", ids[6][0])
         self.assertEqual(ids[6][1:], (reader, worker + 7, reader - worker - 7))
-        # without the readings' times the worker's and the reader's lines are not formed
-        self.assertEqual(len(st.identities(st.delta(b, a))), 5)
+        # the daemon's looks need no readings' times
+        self.assertEqual(len(st.identities(st.delta(b, a))), 7)
+        # a daemon that does not say when it looked is set against the readings' times, and without them not at all
+        b2, a2 = ({k: v for k, v in r.items() if k != 'time_as_of_ns'} for r in (b, a))
+        ids = st.identities(st.delta(b2, a2, 0, worker + 3))
+        self.assertIn('the two readings', ids[5][0])
+        self.assertEqual(ids[5][3], -3)
+        self.assertEqual(len(st.identities(st.delta(b2, a2))), 5)
         # a reading in which a kind's causes do not add up shows it
         a['time_read_wait_by_idle_ns'] = str(int(a['time_read_wait_by_idle_ns']) + 5)
         self.assertEqual(st.identities(st.delta(b, a))[0][3], 5)
@@ -227,6 +236,10 @@ class Tables(unittest.TestCase):
         doubtful = dict(good, label='restarted', time=st.delta(reading(1, pid='1'), reading(3, pid='2')))
         text = '\n'.join(st.render([good, none, bare, doubtful]))
         self.assertIn('old daemon: NO TIMES', text)
+        # a kind's plural in a header
+        self.assertIn('| flushes |', text)
+        self.assertNotIn('flushs', text)
+        self.assertNotIn('zeroess', text)
         self.assertIn('no reading: NO TIMES: the row has no reading', text)
         self.assertIn('restarted: THE READING IS DOUBTFUL', text)
         for head in ("A read's life", "A write's life", "A flush's life", "A read's wait", "The worker's time",
@@ -351,7 +364,7 @@ class Columns(unittest.TestCase):
 
     def test_the_mean_flush_call_is_over_the_flushes(self):
         c = cells(self.text, 'Flushes beside reads', 'row')
-        self.assertEqual((c['flushes'], c['flushes per read'], c['mean flush call, µs']), ('50', '0.025', '70000.0'))
+        self.assertEqual((c['flushes'], c['flushes per 1000 reads'], c['mean flush call, µs']), ('50', '25.00', '70000.0'))
 
     def test_the_daemons_reads_in_total_are_seconds(self):
         c = cells(self.text, "A read's life", 'row')

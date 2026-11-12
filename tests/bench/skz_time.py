@@ -31,6 +31,8 @@ READER_ACTIVITIES = ('idle', 'read', 'other')
 # and before a segment file the step freed is used again.
 BARRIERS = ('home', 'reuse')
 STEP_PARTS = ('walk', 'save', 'apply', 'home_sync', 'log_start', 'end')
+# A kind's name in a header that counts requests of it.
+PLURALS = {'read': 'reads', 'write': 'writes', 'flush': 'flushes', 'discard': 'discards', 'zeroes': 'write-zeroes'}
 
 
 def is_end_value(key):
@@ -171,14 +173,23 @@ def identities(t):
         rows, total, wait = wait_by(d, kind)
         if rows and wait is not None:
             out.append((f"{kind}: the wait's causes sum to the wait (ns)", total, wait, total - wait))
+    # Since the daemon says when it looked (time_as_of_ns), a thread's
+    # activities are set against the time between its two looks, and
+    # sum to it exactly; before, against the time between the two
+    # readings, to within the span open at each.
+    looked = d.get('time_as_of_ns')
+    if looked is not None:
+        span, between = looked, "the daemon's two looks (time_as_of_ns)"
+    else:
+        span, between = t.get('window_ns'), 'the two readings'
     worker = [d.get(f'time_worker_{a}_ns') for a in worker_activities(d)]
-    if worker and t.get('window_ns') is not None:
-        out.append(("the worker's activities sum to the time between the two readings (ns)",
-                    sum(worker), t['window_ns'], sum(worker) - t['window_ns']))
+    if worker and span is not None:
+        out.append((f"the worker's activities sum to the time between {between} (ns)",
+                    sum(worker), span, sum(worker) - span))
     reader = [d.get(f'time_reader_{a}_ns') for a in READER_ACTIVITIES]
-    if all(v is not None for v in reader) and t.get('window_ns') is not None:
-        out.append(("the reader's activities sum to the time between the two readings (ns)",
-                    sum(reader), t['window_ns'], sum(reader) - t['window_ns']))
+    if all(v is not None for v in reader) and span is not None:
+        out.append((f"the reader's activities sum to the time between {between} (ns)",
+                    sum(reader), span, sum(reader) - span))
     return out
 
 
@@ -228,7 +239,7 @@ def render(rows):
                         'of postgres\'s read time is not in the daemon\'s account is outside the daemon: the kernel, '
                         'the ring, ZFS, and the reads the ARC answered.')
                 out += ['', f"A {kind}'s life, mean µs per {kind}.{note}", '',
-                        f"| workload | daemon row | tps | {kind}s | " + ' | '.join(heads) + f' | sum |{extra}',
+                        f"| workload | daemon row | tps | {PLURALS[kind]} | " + ' | '.join(heads) + f' | sum |{extra}',
                         '|---|---|---|---|' + '---|' * (len(heads) + 1 + (6 if extra else 0))]
             vals = [v for _, v in stages]
             total = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
@@ -262,13 +273,13 @@ def render(rows):
             out.append(f"| {r['workload']} | {r['label']} | "
                        + ' | '.join(f'{_f(_per(v, n))} ({_share(v, wait)})' for _, v in wait_groups(d, kind)) + ' |')
     if usable:
-        out += ['', 'Flushes beside reads:', '', '| workload | daemon row | flushes | flushes per read | mean flush call, µs |',
+        out += ['', 'Flushes beside reads:', '', '| workload | daemon row | flushes | flushes per 1000 reads | mean flush call, µs |',
                 '|---|---|---|---|---|']
         for r in usable:
             d = r['time']['delta']
             nf_, nr = d.get('time_flush_count'), d.get('time_read_count')
             out.append(f"| {r['workload']} | {r['label']} | {_f(nf_, 'd') if nf_ is not None else 'n/a'} | "
-                       f"{_f(None if not nr or nf_ is None else nf_ / nr, '.3f')} | {_f(_per(d.get('time_flush_call_ns'), nf_))} |")
+                       f"{_f(None if not nr or nf_ is None else 1000 * nf_ / nr, '.2f')} | {_f(_per(d.get('time_flush_call_ns'), nf_))} |")
         out += ['', "The worker's time by activity, as shares of all it counted in the window; `busy` is all but idle. "
                 'Since status version 6 the worker does no read (`read` is 0) and `step_barrier` is a step waiting '
                 'for the readers; an older daemon has no `step_barrier` (n/a):', '',
@@ -370,11 +381,13 @@ def render(rows):
                        + ' | ' + ' | '.join(ms(e.get(f'time_{k}_call_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(cause(k) for k in KINDS[:3]) + ' |')
         out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly: that is '
-                'the guard that counts. The worker\'s activities are set against the time between the two looks at '
-                'the clock, taken just before each reading. The sums are the worker\'s spans closed at its last '
-                'publish; the span open at each reading (an idle wait or a step in progress) is not in them, so that '
-                'identity holds to within one open span and the status file\'s age at each end, about 0.1% of the '
-                'window (−3 to +141 ms in the first runs), and is not accounted for row by row:', '',
+                'the guard that counts. The worker\'s activities, and the reader\'s, are set against the time between '
+                'the daemon\'s two looks at its own times (`time_as_of_ns`): each thread\'s span open at a look is '
+                'counted to it up to the look, so these too hold exactly, and a difference is a fault of the daemon '
+                'or of the reading. A daemon without `time_as_of_ns` (version 5, and version 6 before it) is set '
+                'against the time between the two readings, taken just before each: its sums leave out the span '
+                'open at each reading, so that identity holds only to within one open span (with reads off the '
+                'worker, an idle span of up to seconds) and the status file\'s age at each end:', '',
                 '| workload | daemon row | identity | left | right | difference |', '|---|---|---|---|---|---|']
         for r in usable:
             ids = identities(r['time'])
