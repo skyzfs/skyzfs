@@ -1411,7 +1411,7 @@ check_f() {
             # Check b's arms as they were until M1.T8: 300 s, a second
             # writer, a read that must reach the device, a scrub.
             long) course=long ;;
-            longnolog) tag=fg; ld="no"; course=long ;;
+            longnolog) tag="fg"; ld="no"; course=long ;;
         esac
         # A course that was not asked for has its line, and the line
         # says so: one that is missing is the rig's error.
