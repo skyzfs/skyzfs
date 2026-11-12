@@ -40,8 +40,13 @@ fn run(command: &Command) -> Output {
             Ok(now) => commands::status(volume, &mut kernel(), &now),
             Err(e) => failed(format!("reading the boot id and the uptime: {e}")),
         },
-        Command::Detach(volume) => match Now::read() {
-            Ok(now) => commands::detach(volume, &mut kernel(), now.boot),
+        Command::Detach(detach) => match Now::read() {
+            Ok(now) => commands::detach(
+                &detach.volume,
+                detach.async_delete_asserted,
+                &mut kernel(),
+                now.boot,
+            ),
             Err(e) => failed(format!("reading the boot id: {e}")),
         },
         Command::Create(create) => {

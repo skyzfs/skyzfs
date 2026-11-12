@@ -93,8 +93,11 @@ impl<C> TimedControl<C> {
 }
 
 impl<C: Control> Control for TimedControl<C> {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        self.inner.can_reissue()
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        self.inner.features()
+    }
+    fn release(&mut self) -> io::Result<String> {
+        self.inner.release()
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         let info = self.inner.info(number)?;
@@ -136,8 +139,11 @@ mod tests {
     struct Scripted(Vec<DeviceState>);
 
     impl Control for Scripted {
-        fn can_reissue(&mut self) -> io::Result<bool> {
-            Ok(true)
+        fn features(&mut self) -> io::Result<Option<u64>> {
+            Ok(Some(u64::MAX))
+        }
+        fn release(&mut self) -> io::Result<String> {
+            Ok("7.0.0".to_string())
         }
         fn info(&mut self, _number: u32) -> io::Result<Option<DeviceInfo>> {
             let state = if self.0.len() > 1 {

@@ -131,9 +131,19 @@ fn clean(n: u32) {
 #[test]
 #[ignore = "needs root and the ublk driver"]
 fn the_driver_can_reissue() {
-    property("can_reissue", || match kernel()?.can_reissue() {
-        Ok(true) => Ok(()),
-        other => Err(format!("{other:?}")),
+    // The line keeps its name: it now says that the kernel has what the
+    // daemon needs (`skyzfs_ublk::features::check`): every flag in
+    // `NEEDED`, reissue among them, and a release with the asynchronous
+    // delete, without the operator's word for it. A failure names what
+    // is missing, the features word the driver reported and the
+    // release.
+    property("can_reissue", || {
+        let mut kernel = kernel()?;
+        let features = kernel.features().map_err(|e| e.to_string())?;
+        let release = kernel.release().map_err(|e| e.to_string())?;
+        skyzfs_ublk::features::check(features, &release, false)
+            .map_err(|why| format!("{why} (features {features:#x?}, release {release})"))?;
+        Ok(())
     });
 }
 
