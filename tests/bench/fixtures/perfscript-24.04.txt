@@ -1,0 +1,109 @@
+skyzfsd-queue   22254 
+	ffffffff9dff37c0 try_to_wake_up
+	ffffffff9dff3dab wake_up_q
+	ffffffff9e0ef32d futex_wake
+	ffffffff9e0ebb5e do_futex
+	ffffffff9e0ec399 __x64_sys_futex
+	ffffffff9de90738 x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89b2752d syscall
+
+skyzfsd-queue   22254 
+	ffffffff9f2ccfa1 _raw_spin_unlock_irqrestore
+	ffffffffc0992ec7 taskq_dispatch_ent
+	ffffffffc0f8d1d6 spa_taskq_dispatch
+	ffffffffc102ecc3 zio_taskq_dispatch
+	ffffffffc102edc5 zio_interrupt
+	ffffffffc103549a zio_delay_interrupt
+	ffffffffc1049466 vbio_completion
+	ffffffff9e766b3a bio_endio
+	ffffffff9e77eadb blk_update_request
+	ffffffffc099d8d1 __ublk_complete_rq
+	ffffffffc099eb58 ublk_ch_uring_cmd_local
+	ffffffffc099efac ublk_ch_uring_cmd
+	ffffffff9e7e54d7 io_uring_cmd
+
+skyzfsd-queue   22254 
+	ffffffff9df64f97 __virt_addr_valid
+	ffffffff9e42852b check_heap_object
+	ffffffff9e428789 __check_object_size
+	ffffffffc099adbf ublk_copy_user_bvec.isra.0
+	ffffffffc099aef1 ublk_copy_user_pages.isra.0
+	ffffffffc099d9c8 __ublk_complete_rq
+	ffffffffc099eb58 ublk_ch_uring_cmd_local
+	ffffffffc099efac ublk_ch_uring_cmd
+	ffffffff9e7e54d7 io_uring_cmd
+	ffffffff9e7cfa93 __io_issue_sqe
+	ffffffff9e7d5e0e io_issue_sqe
+	ffffffff9e7d617f io_submit_sqe
+	ffffffff9e7d6883 io_submit_sqes
+
+skyzfs-store   22253 
+	ffffffff9e808279 copy_folio_from_iter_atomic
+	ffffffff9e2ce9e5 generic_perform_write
+	ffffffff9e55030d ext4_buffered_write_iter
+	ffffffff9e55089f ext4_file_write_iter
+	ffffffff9e43797b vfs_write
+	ffffffff9e437be8 __x64_sys_pwrite64
+	ffffffff9de90b7f x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89afa655 __libc_pwrite
+	    56240701bbcf <std::fs::File as std::os::unix::fs::FileExt>::write_at
+	    562406feacab <std::fs::File as std::os::unix::fs::FileExt>::write_all_at
+
+skyzfs-reader-1   22250 
+	ffffffff9f2cd8a5 _raw_spin_unlock_irq
+	ffffffff9e4c0d44 eventfd_write
+	ffffffff9e4377ea vfs_write
+	ffffffff9e437ef1 ksys_write
+	ffffffff9e437f99 __x64_sys_write
+	ffffffff9de8e839 x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89b1c87d write
+	    56240701cd92 <&std::fs::File as core::io::write::Write>::write
+	    562406f84cfe <skyzfs_ublk_sys::wake::Wake>::wake
+
+skyzfs-reader-3   22252 
+	ffffffff9dfe942b finish_task_switch.isra.0
+	ffffffff9f2c31d8 __schedule
+	ffffffff9f2c3597 schedule
+	ffffffff9e0ef7aa futex_do_wait
+	ffffffff9e0effc9 __futex_wait
+	ffffffff9e0f00c2 futex_wait
+	ffffffff9e0ebad5 do_futex
+	ffffffff9e0ec399 __x64_sys_futex
+	ffffffff9de90738 x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89b2752d syscall
+	    562406f37719 <skyzfs_local::store::ReadQueue<skyzfs_local::store::ToReader>>::next
+
+skyzfs-store   22253 
+	ffffffff9e8039f4 _copy_to_iter
+	ffffffff9e804089 copy_page_to_iter
+	ffffffff9e2d0947 filemap_read
+	ffffffff9e2d0ceb generic_file_read_iter
+	ffffffff9e54ffc0 ext4_file_read_iter
+	ffffffff9e436e91 vfs_read
+	ffffffff9e437068 __x64_sys_pread64
+	ffffffff9de8ff4f x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89afa5b5 __libc_pread
+	    56240701bb5f <std::fs::File as std::os::unix::fs::FileExt>::read_at
+	    562406feaddb <std::fs::File as std::os::unix::fs::FileExt>::read_exact_at
+
+skyzfsd-queue   22254 
+	ffffffff9dfe942b finish_task_switch.isra.0
+	ffffffff9f2c31d8 __schedule
+	ffffffff9f2c3597 schedule
+	ffffffff9e7e43ca io_cqring_wait
+	ffffffff9e7d6c9d __do_sys_io_uring_enter
+	ffffffff9e7d6e42 __x64_sys_io_uring_enter
+	ffffffff9de902a6 x64_sys_call
+	ffffffff9f2b3b29 do_syscall_64
+	ffffffff9dc0012b entry_SYSCALL_64_after_hwframe
+	    7f1e89b2752d syscall

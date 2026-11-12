@@ -88,6 +88,16 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     if not row.get('machine'):
         out['verdict'] = 'NO VERDICT: this row does not say what machine it ran on'
         return out
+    if row.get('slowed_by') and not row.get('syscalls') and not row.get('perf_record'):
+        out['verdict'] = (f"NO VERDICT: its daemon was traced or recorded ({', '.join(row['slowed_by'])}), "
+                          'which slows it, though the output is missing')
+        return out
+    if row.get('syscalls'):
+        out['verdict'] = 'NO VERDICT: its system calls were traced (TB_SYSCALLS), which slows the daemon'
+        return out
+    if row.get('perf_record'):
+        out['verdict'] = 'NO VERDICT: the daemon was recorded by perf (TB_PERF_RECORD), which slows it'
+        return out
     if row.get('_seq') is None:
         out['verdict'] = 'NO VERDICT: the row is not in a sequence, so no model rows enclose it'
         return out

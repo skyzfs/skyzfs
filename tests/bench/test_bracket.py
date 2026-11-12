@@ -126,6 +126,27 @@ class Bracketed(unittest.TestCase):
         rows[0]['origin_delay_ms'] = None
         self.assertIn('does not say what origin delay', bk.bracketed(rows[1], rows)['verdict'])
 
+    def test_a_traced_row_has_no_verdict(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, syscalls={'tool': 'perf'}),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: its system calls were traced', b['verdict'])
+
+    def test_a_row_marked_by_its_setting_has_no_verdict(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, slowed_by=['TB_PERF_RECORD']),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: its daemon was traced or recorded (TB_PERF_RECORD)', b['verdict'])
+
+    def test_a_recorded_row_has_no_verdict(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, perf_record={'threads': {}}),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: the daemon was recorded by perf', b['verdict'])
+
 
 if __name__ == '__main__':
     unittest.main()
