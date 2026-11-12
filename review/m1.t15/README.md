@@ -38,3 +38,24 @@ were read, not run (they need the daemon and root).
 For the lead: the work disk's ext4 is mounted `nobarrier` on the runner
 (`disk-sync.txt` in the artifact confirms it), which the author raises as a
 decision.
+
+## Second look, at 3cde27c: no finding left that blocks; it can merge
+
+3cde27c is e4590cc plus a merge of `zfs-topology`.
+
+- The five bench test files pass, the new `test_embedded_python.py` among them.
+- `topology-bench.sh summarize` on the artifact of run 43285245364 renders 352
+  lines at the head.
+- `recount.py` with the head's rules: the pump's copy in ublk is 83 samples
+  (6%), the store's copies 98 (26%), the readers' 29 (5%); the rest as before.
+- 8 plants; 7 fail a test: the apostrophe back, a syntax error in the row
+  builder, the setting's mark ignored by `bracket.py`, `copy_folio_` not a
+  copy, a sample under the ublk copy not a copy, page cache ranked before
+  wake, a copy judged by any frame. Not caught: the row builder never writes
+  `slowed_by` (no test runs the row builder).
+- The shell expression that sets `TB_ROW_SLOWED`, evaluated for the five
+  combinations of daemon up, TB_SYSCALLS and TB_PERF_RECORD: marks exactly the
+  rows whose daemon is traced or recorded.
+
+Not done: no benchmark has run at this head, so the changed lines of the
+background jobs and the row's mark have not run on a runner.
