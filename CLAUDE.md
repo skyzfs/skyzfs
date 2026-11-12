@@ -207,19 +207,24 @@ there, and the user decides when it merges.
   or the workflow still starts thirteen runner jobs.
 - **The daemon in the benchmark.** The topology `zfs-skyzfsd` serves
   the pool's data device with a release build of `skyzfsd`. Its summary
-  judges a daemon row against the model (`zfs-slog`) only when both
-  rows ran on one machine and the model row had no origin delay: use
-  the `sequence` input with every entry on one runner and
-  `origin_delay_ms: 0` (the workflow's default is 10). Anything else
-  ends with NO VERDICT, which is not a failure of the run.
+  judges a daemon row against the model (`zfs-slog`) by the mean of
+  the two model rows that enclose it in the sequence (M1.T12): put a
+  model row at least every third row, first and last. A row gets a
+  verdict only when both model rows ran on the same machine with its
+  clients, duration and `TB_MEM_LIMIT`, had no origin delay
+  (`origin_delay_ms: 0`; the workflow's default is 10), and differ by
+  at most 10% of their mean. Anything else ends with NO VERDICT and
+  says why, which is not a failure of the run. The criterion itself is
+  a median over rows and jobs (design §9), not one row's verdict.
   Since M1.T11 an entry may name `TB_SKYZFSD_REF=<commit or branch>`
   and runs that build of the daemon, so several builds are compared in
   one job; `TB_SKZ_TIME_REF=<ref>` reads the job's times with that
-  ref's `skz_time.py` (name the newest daemon's). Only the first model
-  row of a sequence is judged against; a model row at the end shows
-  whether the machine drifted. Each job starts with a disk-sync line
-  that says whether the machine's syncs are slow or fast.
-  `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own. The
+  ref's `skz_time.py` (name the newest daemon's). Each job starts with
+  a disk-sync line that says whether the machine's syncs are slow or
+  fast.
+  `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own, and
+  postgres runs in a cgroup of its own in every row; rows from before
+  M1.T12 are not known to be comparable in tps with rows after it. The
   script records and exits 0 whatever the ratio.
 - **Runner noise.** Two GitHub runner VMs differ by more than most
   effects being measured. Compare configurations only on one runner (the

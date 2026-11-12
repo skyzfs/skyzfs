@@ -70,7 +70,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T9 | skyzfs/skyzfs#24 | tpcb on the daemon against the benchmark model | The criterion |
 | M1.T10 | skyzfs/skyzfs#28 | The benchmark reads where a request's time goes in the daemon | The criterion |
 | M1.T11 | skyzfs/skyzfs#32 | The benchmark runs several builds of the daemon on one machine | The criterion |
-| M1.T12 | skyzfs/skyzfs#36, open | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
+| M1.T12 | skyzfs/skyzfs#36 | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
 
 ### The contract (design §4.1)
@@ -332,10 +332,21 @@ What is left on slow-sync machines is writes. A write waits 2.3 to 2.6 ms there 
 
 **What a transaction waits for beside the daemon, on the steadier machine** (the same round, one run per row). Postgres does not work harder: its CPU per transaction is 0.32 ms beside the model and beside the daemon. It waits: the machine's time waiting for I/O is 16 to 22% in daemon rows against 6.5 to 10.9% in model rows, and a transaction takes 1.72 to 1.80 ms against 1.44 to 1.58 ms. Reads are not it; they are faster through the daemon (123 to 134 µs against 160 to 179). The commit is part of it: a sync of the write-ahead log takes 446 to 465 µs beside the daemon against 352 to 399 µs beside the model, at the same 0.41 syncs and the same flushes of the pool's log device per transaction, which is about a third of the difference. The pool's log device, the daemon's log and the home image are files on the runner's one disk, and on the other machine every row's throughput, the model's too, follows what a sync of the write-ahead log cost at that moment. The pool's write throttle is not it: every delay counter is zero in all twenty rows, and the transaction groups are closed by their timeout. Nor are the other writes of a transaction, which cost the same to within 2 µs. About 0.15 to 0.2 ms per transaction is not placed; the next round measures how long postgres's backends are runnable without running beside the daemon's threads, and adds a row with the ublk project's reference server in the daemon's place, to tell the store's cost from the cost of serving a device from user space.
 
+#### The benchmark judges by the rule (M1.T12)
+
+Merged on 2026-11-12 (skyzfs/skyzfs#36). `topology-bench.sh summarize` gives each daemon row its bracketed ratio: its tps over the mean of the two model rows that enclose it in the sequence. A row gets a verdict only when both model rows ran on the same machine with the row's clients, measured seconds and `TB_MEM_LIMIT`, had no origin delay, and differ by at most 10% of their mean; otherwise it says NO VERDICT and why. The verdict is one row's, and the criterion stays the median over rows and jobs stated above.
+
+Each row also records what the next rounds need to place the rest of a transaction's wait:
+
+- what a commit costs, beside the flushes of the disks under it (the work disk's counts are the whole disk's);
+- postgres's and the daemon's CPU and I/O pressure and CPU time, from their cgroups, between a look before the window and one right after pgbench returns;
+- the daemon's threads by user and system time, run delay and context switches, with every `skyzfs*` name and `postgres` kept in every metric.
+
+Postgres now runs in a cgroup of its own in every row; until this package it did so only under `TB_MEM_LIMIT`. Where the cpu controller is on, the kernel shares CPU between top-level groups by weight, so rows from before and after this change are not known to be comparable in tps. A bracketed ratio stays fair, because both model rows of a bracket and the daemon row between them are treated alike.
+
 #### Open at this writing (2026-11-12)
 
 - M1.3p (skyzfs/skyzfs#37): the readers' shared queue cost two wakes per read with several readers; it is replaced by one that wakes one thread. Not yet merged or measured on a runner.
-- M1.T12 (skyzfs/skyzfs#36): the benchmark's own summary judges by the rule above, and each row records what a commit costs, postgres's CPU and I/O pressure, and the daemon's threads by user and system time.
 - A round on the merged daemon with a row of the ublk project's reference server (`zfs-ublk`), to separate the store's cost from the cost of a userspace server as such.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -393,6 +404,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | §5.1, several readers and the status thread as built (M1.3n, skyzfs/skyzfs#34); one look by the review session, one finding of Codex | Nothing blocked. The barriers hold for any number of readers as they stood. Closed in review: no test showed that a write asked for at once wakes a status thread that waits out its interval, which the rig's kills inside steps rest on. Codex: a test checked for a completion after it had released what held it back. |
 | 2026-11-12 | §5.1 and the kernel rigs: a device after an orderly stop (M1.T13, skyzfs/skyzfs#35), from one red line of the control rig | The rigs read a device's state once at the moment its server's process had ended; the driver moves it to waiting in a work item after that. The pins now wait up to the daemon's own 5 s and record the time. The review found nothing the daemon relies on made weaker. |
 | 2026-11-12 | §9, the criterion under its rule after M1.3n, and what a transaction waits for | Not met on slow-sync machines: median 0.871 unbounded over four rows of two jobs. Two guesses of the lead's were tested on the round's own data: the commit is dearer beside the daemon and explains a third; the pool's write throttle explains nothing. The rule gains a bound on the model rows around a daemon row (10%). |
+| 2026-11-12 | The benchmark's bracketed verdict and its new measurements (M1.T12, skyzfs/skyzfs#36); one look by the review session and two findings by Codex | Can merge; no blocking finding. Fixed before the merge: per-name metrics dropped a daemon thread beyond the twenty largest names or at a delta of 0; pressure was divided by the nominal duration although the second look came after a sync and 2 s; a model row with other clients, duration or memory limit was taken as a bracket; a failed move into postgres's cgroup showed 0.0; an unreadable pressure file failed the row. Stated and not changed: postgres in a cgroup of its own changes how CPU is shared, so earlier rows are not compared with later ones. |
 
 ## References
 
