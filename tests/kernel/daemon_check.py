@@ -40,8 +40,9 @@ EXPECTED = {
                                               'zeros written over the middle of data read back as zeros, with the data '
                                               'around them, before a checkpoint, after it and after a kill -9 and a new '
                                               'serve; the status then says how the checkpoint applied them: '
-                                              'zeroes_applied 1 (deallocated) as served by default on the runner\'s '
-                                              'file system, 2 (zeros written) with --refuse-holes', 'WAITING'),
+                                              'zeroes_applied "deallocated in the home image" as served by default on '
+                                              'the runner\'s file system, "written as zeros: the file system ... '
+                                              'cannot deallocate" with --refuse-holes', 'WAITING'),
     'pin_volume_on_larger_blocks': ('a', 'PASS', WAITING,
                                     'on an XFS with 16 KiB blocks: create makes a volume whose write unit is the '
                                     'block and says so; a volume made on 4 KiB blocks and copied there is refused '

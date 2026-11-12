@@ -1096,8 +1096,9 @@ refused_start_arm() {
 # the home image. The 8 MiB are read through the device before the
 # checkpoint, after it, and after a kill -9 and a new serve: each time
 # the data with zeros in the middle. Once as served by default, where
-# the status must then say zeroes_applied 1 (the ranges deallocated),
-# and once with --refuse-holes, where it must say 2 (zeros written).
+# the status must then say that the ranges were deallocated, and once
+# with --refuse-holes, where it must say that zeros were written
+# because the file system cannot deallocate (the status's own words).
 #   zero_arm TAG [serve arguments] -> ZA_BAD ("" or what was wrong),
 #   ZA_SAID; ZA_ERR set when the arm did not happen.
 zero_arm() {
@@ -1124,7 +1125,7 @@ zero_arm() {
     }
     za_read "before a checkpoint"
     s0=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps)
-    ZA_SAID+="zeroes_applied then '$(vol_stat "$SKYZFSD" "$dir" zeroes_applied)', checkpoint_steps '${s0:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
+    ZA_SAID+="zeroes_applied then '$(vol_status "$SKYZFSD" "$dir" | sed -n 's/^zeroes_applied  *//p' | head -n 1 | cut -c1-60)', checkpoint_steps '${s0:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
     if ! lim 300 "$DD" if=/dev/urandom of="$BDEV" bs=1M seek=$(((at >> 20) + 1024)) count=200 oflag=direct conv=nocreat,fsync status=none 2> "$OUT/$tag-fill.err"; then
         ZA_ERR="the 200 MiB that bring the checkpoint were not written: $(tail -n 1 "$OUT/$tag-fill.err" | cut -c1-200)"; kill_cleanup "$tag"; return
     fi
@@ -1145,7 +1146,10 @@ zero_arm() {
         ZA_ERR="no checkpoint came to rest within 120 s of 200 MiB written (checkpoint_steps '${s0:-}' then '${s1:-}', checkpoint_step '${st:-}', log_live '$(vol_stat "$SKYZFSD" "$dir" log_live)')"
         kill_cleanup "$tag"; return
     fi
-    za=$(vol_stat "$SKYZFSD" "$dir" zeroes_applied)
+    # The line's whole text: the status says it in words (`said` of
+    # the zeroes in crates/skyzfs-ublk/src/status.rs), and the two
+    # ways of writing zeros begin alike.
+    za=$(vol_status "$SKYZFSD" "$dir" | sed -n 's/^zeroes_applied  *//p' | head -n 1 | cut -c1-120)
     ZA_SAID+="after 200 MiB more: checkpoint_steps $s1, log_live $(vol_stat "$SKYZFSD" "$dir" log_live), zeroes_applied '${za:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
     ZA_APPLIED=$za
     za_read "after the checkpoint"
@@ -1169,11 +1173,11 @@ check_a_zeroes() {
     ZA_APPLIED=""; zero_arm az
     if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "served by default: $ZA_ERR"; return; fi
     plain="served by default: $ZA_SAID"; bad+=$ZA_BAD
-    [ "$ZA_APPLIED" = 1 ] || bad+="served by default the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 1 (deallocated); "
+    [[ $ZA_APPLIED == "deallocated in the home image"* ]] || bad+="served by default the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 'deallocated in the home image'; "
     ZA_APPLIED=""; zero_arm azr --refuse-holes
     if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "with --refuse-holes: $ZA_ERR ($plain)"; return; fi
     hard="with --refuse-holes: $ZA_SAID"; bad+=$ZA_BAD
-    [ "$ZA_APPLIED" = 2 ] || bad+="with --refuse-holes the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 2 (zeros written); "
+    [[ $ZA_APPLIED == "written as zeros: the file system of the volume's directory cannot deallocate"* ]] || bad+="with --refuse-holes the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 'written as zeros: the file system of the volume's directory cannot deallocate'; "
     if [ -z "$bad" ]; then pin write_zeroes_through_a_checkpoint PASS "$plain $hard"; else pin write_zeroes_through_a_checkpoint FAIL "$bad $plain $hard"; fi
 }
 # a: a volume on a file system whose blocks are larger than the page
