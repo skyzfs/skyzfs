@@ -284,6 +284,17 @@ class Pass(unittest.TestCase):
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             self.assertIn('prefixes FAILED', f.read())
 
+    def test_a_failed_calibration_point_is_counted(self):
+        # A budget that samples no flush boundary: the two calibration
+        # points are timed only, and one that fails must still count.
+        records = logwrites.index(self.log, 0)['records']
+        _, rest, _ = rd.prefix_plan(records)
+        self.assertTrue(rest)
+        self.fake(fail_at=set(rest))
+        self.assertEqual(rd.check(self.args(budget_s=0.001)), 1)
+        with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
+            self.assertIn('prefixes FAILED', f.read())
+
     def test_a_control_not_caught_is_a_verdict(self):
         self.fake(withheld_caught=False)
         self.assertEqual(rd.check(self.args()), 1)

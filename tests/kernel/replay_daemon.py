@@ -614,20 +614,23 @@ def check(a):
     kind, rest, counts = prefix_plan(records)
     res['available'] = counts
 
-    # Calibration: two flush boundaries, which belong to the sample anyway.
     # Calibration: two flush boundaries, for the time a prefix takes.
-    # They are timed only; the main pass checks whatever it samples.
+    # They are timed only; the main pass checks whatever it samples, and
+    # a calibration point that failed is put in the sample so that its
+    # failure is counted there.
     ck.daemon.reset()
     points, failures, rig_errors = [], [], []
-    t_cal = []
+    t_cal, cal_failed = [], []
     for n in spread(rest, 2) or spread(sorted(kind), 2):
         ck.held = None
         r = ck.point(n, 'calibration')
+        if not r['ok'] and n in rest:
+            cal_failed.append(n)
         t_cal.append(r['t_make'] + r.get('t_light', 0) + r.get('t_txg', 0))
         print(f"calibration {n}: {'ok' if r['ok'] else 'FAILED ' + r['failed']} {t_cal[-1]:.2f}s "
               f"(make {r['t_make']:.2f}, light {r.get('t_light', 0):.2f}, zdb -u {r.get('t_txg', 0):.2f})", flush=True)
     per = statistics.mean(t_cal) if t_cal else 8.0
-    sample = set(spread(rest, int(a.budget_s / per)))
+    sample = set(spread(rest, int(a.budget_s / per))) | set(cal_failed)
     for n in sample:
         kind[n] = 'flush'
     betw = between_points(records, kind, int(a.between_budget_s / per), a.seed)
