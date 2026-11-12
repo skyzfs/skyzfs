@@ -64,13 +64,13 @@ VERSION_7_KEYS = st.KEYS_ADDED[7]
 class Delta(unittest.TestCase):
     def test_the_module_knows_the_daemons_keys(self):
         keys = status_keys()
-        self.assertEqual(len(keys), 205)
+        self.assertEqual(len(keys), 207)
         # what version 6 added, all of it known to the module
         self.assertEqual(len(VERSION_6_KEYS), 173 - 153)
         for key in VERSION_6_KEYS:
             self.assertIn(key, keys)
         # and what version 7 added
-        self.assertEqual(len(VERSION_7_KEYS), 205 - 173)
+        self.assertEqual(len(VERSION_7_KEYS), 207 - 173)
         for key in VERSION_7_KEYS:
             self.assertIn(key, keys)
         for a in st.READER_ACTIVITIES:
@@ -93,9 +93,9 @@ class Delta(unittest.TestCase):
         b, a = reading(1), reading(3)
         t = st.delta(b, a, 1000, 5000)
         self.assertTrue(t['ok'], t['why'])
-        self.assertEqual(len(t['delta']) + len(t['end']), 205)
-        self.assertEqual(len(t['before']), 205)
-        self.assertEqual(len(t['after']), 205)
+        self.assertEqual(len(t['delta']) + len(t['end']), 207)
+        self.assertEqual(len(t['before']), 207)
+        self.assertEqual(len(t['after']), 207)
         self.assertEqual(t['window_ns'], 4000)
         keys = status_keys()
         i = keys.index('time_read_call_ns')
@@ -376,7 +376,8 @@ class Columns(unittest.TestCase):
             time_sync_home_handed=60 << 20,
             # the hint: 300 calls and 300 MiB for the log in 30 ms, 60 and 60 MiB for the home image in 6 ms
             time_writeback_log_count=300, time_writeback_log_bytes=300 << 20, time_writeback_log_ns=30_000_000,
-            time_writeback_home_count=60, time_writeback_home_bytes=60 << 20, time_writeback_home_ns=6_000_000)
+            time_writeback_home_count=60, time_writeback_home_bytes=60 << 20, time_writeback_home_ns=6_000_000,
+            time_writeback_log_refused=2)
         after = {'time_sync_superblock_count': '10', 'time_sync_superblock_ns': '20000000',
                  'time_sync_superblock_bytes': '40960', 'time_sync_superblock_handed': '0',
                  'time_writeback_log_off': '0', 'time_writeback_home_off': '1'}
@@ -404,7 +405,9 @@ class Columns(unittest.TestCase):
 
     def test_the_hint_is_per_file(self):
         c = cells(self.text, 'The hint that hands', 'row')
-        self.assertEqual((c['log: calls'], c['log: MiB'], c['log: ms'], c['log: off']), ('300', '300.0', '30.0', 'no'))
+        self.assertEqual((c['log: calls'], c['log: MiB'], c['log: ms'], c['log: off'], c['log: refused']),
+                         ('300', '300.0', '30.0', 'no', '2'))
+        self.assertEqual(c['home: refused'], '0')
         self.assertEqual((c['home: calls'], c['home: MiB'], c['home: ms'], c['home: off']), ('60', '60.0', '6.0', 'yes'))
 
     def test_the_step_parts_are_ms_per_step(self):

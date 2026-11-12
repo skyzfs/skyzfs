@@ -35,7 +35,7 @@ fn sample_pump() -> PumpTiming {
 
 /// The time fields that say whether the hint is off for the log and
 /// for the home image.
-const OFF_FIELDS: [usize; 2] = [176, 180];
+const OFF_FIELDS: [usize; 2] = [176, 181];
 
 /// What the sample has in time field `field`.
 fn sample_field(field: usize) -> u64 {
@@ -94,7 +94,7 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 205 fields from offset 200, here 100 to 304
+    // The times are the 207 fields from offset 200, here 100 to 306
     // but for the two that say the hint is off, 1.
     for field in (1..=14u64)
         .chain([1, 16, 17, 18, 2])
@@ -102,8 +102,8 @@ fn the_file_has_the_documented_layout() {
     {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(TIME_FIELDS, 205);
-    assert_eq!(bytes.len(), 1840);
+    assert_eq!(TIME_FIELDS, 207);
+    assert_eq!(bytes.len(), 1856);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -147,15 +147,16 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(timing.reader, [265, 266, 267]);
     assert_eq!(timing.read_unflushed, [268, 269, 270]);
     assert_eq!((timing.worker_as_of_ns, timing.reader_as_of_ns), (271, 272));
-    let hinted = |count, bytes, ns| skyzfs_local::writeback::Hinted {
+    let hinted = |count, bytes, ns, refused| skyzfs_local::writeback::Hinted {
         count,
         bytes,
         ns,
         off: true,
+        refused,
     };
     assert_eq!(
         timing.writeback,
-        [hinted(273, 274, 275), hinted(277, 278, 279)]
+        [hinted(273, 274, 275, 277), hinted(278, 279, 280, 282)]
     );
     let synced = |at: u64| skyzfs_local::store::Synced {
         count: at,
@@ -163,9 +164,9 @@ fn the_file_has_the_documented_layout() {
         bytes: at + 2,
         handed: at + 3,
     };
-    assert_eq!(timing.syncs[0], synced(281));
-    assert_eq!(timing.syncs[3], synced(293));
-    assert_eq!(timing.syncs[5], synced(301));
+    assert_eq!(timing.syncs[0], synced(283));
+    assert_eq!(timing.syncs[3], synced(295));
+    assert_eq!(timing.syncs[5], synced(303));
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -374,10 +375,11 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_reader_as_of_ns", "272"),
         ("time_writeback_log_count", "273"),
         ("time_writeback_log_off", "1"),
-        ("time_writeback_home_bytes", "278"),
-        ("time_sync_flush_count", "281"),
-        ("time_sync_home_bytes", "295"),
-        ("time_sync_superblock_handed", "304"),
+        ("time_writeback_log_refused", "277"),
+        ("time_writeback_home_bytes", "279"),
+        ("time_sync_flush_count", "283"),
+        ("time_sync_home_bytes", "297"),
+        ("time_sync_superblock_handed", "306"),
     ] {
         assert_eq!(self::value(&lines, key), Some(value), "{key}");
     }
@@ -1286,7 +1288,7 @@ fn status_prints_the_version_of_the_file_it_read() {
     for (len, magic, version) in [
         (1424, b"SKYZSTA5", "5"),
         (1584, b"SKYZSTA6", "6"),
-        (1840, b"SKYZSTA7", "7"),
+        (1856, b"SKYZSTA7", "7"),
     ] {
         let mut bytes = encode(&sample())[..len].to_vec();
         bytes[..8].copy_from_slice(magic);

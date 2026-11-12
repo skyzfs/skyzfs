@@ -44,7 +44,7 @@ KEYS_ADDED = {
                  | {f'time_reader_{a}_ns' for a in READER_ACTIVITIES}
                  | {f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')}
                  | {'time_worker_as_of_ns', 'time_reader_as_of_ns'}),
-    7: frozenset({f'time_writeback_{f}_{x}' for f in WRITEBACK_FILES for x in ('count', 'bytes', 'ns', 'off')}
+    7: frozenset({f'time_writeback_{f}_{x}' for f in WRITEBACK_FILES for x in ('count', 'bytes', 'ns', 'off', 'refused')}
                  | {f'time_sync_{k}_{x}' for k in SYNC_KINDS for x in ('count', 'ns', 'bytes', 'handed')}),
 }
 
@@ -435,19 +435,22 @@ def render(rows):
         out += ['', 'The hint that hands a file\'s writes to the device before their sync (status version 7; n/a for an '
                 'older daemon), by file: calls, MiB handed over, the calls\' time in ms (inside the activity the hint '
                 'was made from: the calls of writes for the log, `step_apply` for the home image), and whether the file '
-                'system said it has no such call (`off`):', '',
-                '| workload | daemon row | ' + ' | '.join(f'{f}: calls | {f}: MiB | {f}: ms | {f}: off'
+                'system said it has no such call (`off`), and the calls it declined this time (`refused`: short of '
+                'memory, interrupted, busy; the volume went on and the bytes were offered again or left to the sync):', '',
+                '| workload | daemon row | ' + ' | '.join(f'{f}: calls | {f}: MiB | {f}: ms | {f}: off | {f}: refused'
                                                             for f in WRITEBACK_FILES) + ' |',
-                '|---|---|' + '---|' * (4 * len(WRITEBACK_FILES))]
+                '|---|---|' + '---|' * (5 * len(WRITEBACK_FILES))]
         for r in usable:
             d, after = r['time']['delta'], r['time']['after']
             cells = []
             for f in WRITEBACK_FILES:
                 n, b, ns = d.get(f'time_writeback_{f}_count'), d.get(f'time_writeback_{f}_bytes'), d.get(f'time_writeback_{f}_ns')
                 off = after.get(f'time_writeback_{f}_off')
+                refused = d.get(f'time_writeback_{f}_refused')
                 cells += [_f(n, 'd') if n is not None else 'n/a', _f(None if b is None else b / MIB, '.1f'),
                           _f(None if ns is None else ns / 1e6, '.1f'),
-                          'n/a' if off is None else ('yes' if off == '1' else 'no')]
+                          'n/a' if off is None else ('yes' if off == '1' else 'no'),
+                          _f(refused, 'd') if refused is not None else 'n/a']
             out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
         out += ['', "The pump's store of what was acknowledged:", '',
                 '| workload | daemon row | stores | ms each | completions behind one store |', '|---|---|---|---|---|']

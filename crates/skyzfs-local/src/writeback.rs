@@ -41,6 +41,11 @@ pub struct Hinted {
     /// Whether the file system answered "unsupported" and the hint was
     /// switched off for a file of this kind.
     pub off: bool,
+    /// Calls the system declined this time (short of memory,
+    /// interrupted, or busy: `ENOMEM`, `EINTR`, `EAGAIN`): the volume
+    /// goes on, and their bytes are offered again with the next unit,
+    /// or left to the sync.
+    pub refused: u64,
 }
 
 /// What a file's syncs had to wait for: the bytes written to it since
@@ -73,6 +78,9 @@ pub(crate) struct Writeback {
     /// The range of the writes not handed over yet, and their bytes.
     pending: Option<(u64, u64)>,
     pending_bytes: u64,
+    /// Hand over once this many bytes wait: the unit, or after a hint
+    /// the system declined, what then waited and one unit more.
+    hand_at: u64,
     /// Bytes written since the last sync, and how many of them were
     /// handed over.
     written: u64,
@@ -88,6 +96,7 @@ impl Writeback {
             off: false,
             pending: None,
             pending_bytes: 0,
+            hand_at: unit,
             written: 0,
             handed: 0,
             done: Hinted::default(),
@@ -97,6 +106,7 @@ impl Writeback {
     /// From now on hand over once `unit` bytes are waiting; 0 is never.
     pub(crate) fn set_unit(&mut self, unit: u64) {
         self.unit = unit;
+        self.hand_at = unit;
     }
 
     /// `len` bytes were written at `offset` of `file`. Once a unit is
@@ -113,7 +123,7 @@ impl Writeback {
             None => (offset, end),
         });
         self.pending_bytes += len;
-        if self.pending_bytes >= self.unit {
+        if self.pending_bytes >= self.hand_at {
             self.hand(file)
         } else {
             Ok(())
@@ -136,6 +146,7 @@ impl Writeback {
                 self.done.bytes += bytes;
                 self.done.ns = self.done.ns.saturating_add(ns);
                 self.handed += bytes;
+                self.hand_at = self.unit;
                 Ok(())
             }
             Err(e) if e.kind() == io::ErrorKind::Unsupported => {
@@ -143,19 +154,50 @@ impl Writeback {
                 self.done.off = true;
                 Ok(())
             }
+            // Not this time: under writeback that does not wait
+            // (`WB_SYNC_NONE`) the kernel gives up on a page it cannot
+            // get memory for and says so, where the sync, which waits,
+            // would retry. The writes stay waiting and are offered
+            // again, in one range with what follows, once one unit
+            // more has been written; or the sync covers them.
+            Err(e) if refused(&e) => {
+                self.done.refused += 1;
+                self.done.ns = self.done.ns.saturating_add(ns);
+                self.pending = Some((from, to));
+                self.pending_bytes = bytes;
+                self.hand_at = bytes.saturating_add(self.unit);
+                Ok(())
+            }
             Err(e) => Err(e),
         }
+    }
+
+    /// What waits is left to the file's sync and not offered again:
+    /// for a file the writes leave (a log's segment at a roll), once
+    /// what waited there was offered.
+    pub(crate) fn forget(&mut self) {
+        self.pending = None;
+        self.pending_bytes = 0;
+        self.hand_at = self.unit;
     }
 
     /// The file was synced: what waits is covered, and the bytes the
     /// sync had to have written since the last, with how many of them
     /// had been handed over, are returned and start again from 0.
     pub(crate) fn synced(&mut self) -> (u64, u64) {
-        self.pending = None;
-        self.pending_bytes = 0;
+        self.forget();
         (
             std::mem::take(&mut self.written),
             std::mem::take(&mut self.handed),
         )
     }
+}
+
+/// Whether the system declined a hint this time, and not for good:
+/// short of memory, interrupted, or busy.
+fn refused(e: &io::Error) -> bool {
+    matches!(
+        e.kind(),
+        io::ErrorKind::OutOfMemory | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+    )
 }

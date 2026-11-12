@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1840
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1856
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -81,8 +81,8 @@
 //! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
 //! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
 //! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's fifteen activities sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
-//! | 1584 | 64 | the hint that hands a file's writes to the device before their sync (`skyzfs_local::writeback`): for the log's segment files, and then for the home image, how many calls, the bytes of the writes they handed over, their time, and 1 if the file system answered "unsupported" and the hint was switched off, else 0. The time lies inside the activity the hint was made from: the call of a write, a write-zeroes or a discard for the log's, a step's apply for the home image's |
-//! | 1648 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over |
+//! | 1584 | 80 | the hint that hands a file's writes to the device before their sync (`skyzfs_local::writeback`): for the log's segment files, and then for the home image, how many calls handed writes over, the bytes of the writes they handed over, the time of all calls, 1 if the file system answered "unsupported" and the hint was switched off (else 0), and how many calls the system declined this time (short of memory, interrupted, busy) while the volume went on. The time lies inside the activity the hint was made from: the call of a write, a write-zeroes or a discard for the log's, a step's apply for the home image's |
+//! | 1664 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -138,7 +138,7 @@ pub const STATUS: &str = "status";
 const MAGIC: &[u8; 8] = b"SKYZSTA7";
 /// The version this crate writes.
 pub const VERSION: u32 = 7;
-const LEN: usize = 1840;
+const LEN: usize = 1856;
 /// The sixth version: nothing from the hint on.
 const SIXTH_MAGIC: &[u8; 8] = b"SKYZSTA6";
 const SIXTH_LEN: usize = 1584;
@@ -343,10 +343,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_writeback_log_bytes",
     "time_writeback_log_ns",
     "time_writeback_log_off",
+    "time_writeback_log_refused",
     "time_writeback_home_count",
     "time_writeback_home_bytes",
     "time_writeback_home_ns",
     "time_writeback_home_off",
+    "time_writeback_home_refused",
     "time_sync_flush_count",
     "time_sync_flush_ns",
     "time_sync_flush_bytes",
@@ -557,7 +559,7 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 205;
+const TIME_FIELDS: usize = 207;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
@@ -639,6 +641,7 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
         put(hinted.bytes);
         put(hinted.ns);
         put(u64::from(hinted.off));
+        put(hinted.refused);
     }
     for synced in timing.syncs {
         put(synced.count);
@@ -781,6 +784,7 @@ fn timing_at(bytes: &[u8], fifth: bool, seventh: bool) -> Timing {
                 bytes: take(),
                 ns: take(),
                 off: take() != 0,
+                refused: take(),
             };
         }
         for synced in &mut timing.syncs {

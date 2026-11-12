@@ -378,6 +378,9 @@ struct State {
     no_writeback: bool,
     /// The file whose every call that starts writeback fails.
     writeback_fault_of: Option<String>,
+    /// How many of the next calls that start writeback the system
+    /// declines this time, short of memory.
+    writeback_refusals: u64,
     /// Every call that started writeback: the file's name, the offset
     /// and the length.
     writebacks: Vec<(String, u64, u64)>,
@@ -494,6 +497,7 @@ impl SimDisk {
                 hole_fault: false,
                 no_writeback: false,
                 writeback_fault_of: None,
+                writeback_refusals: 0,
                 writebacks: Vec::new(),
                 halt: None,
                 lock: None,
@@ -757,6 +761,13 @@ impl SimDisk {
     /// ([`File::start_writeback`]). It can, unless this says otherwise.
     pub fn set_writeback(&self, supported: bool) {
         self.lock().no_writeback = !supported;
+    }
+
+    /// The next `calls` calls that start writeback, of any file, are
+    /// declined this time ([`io::ErrorKind::OutOfMemory`], as `ENOMEM`)
+    /// and do nothing; they are not recorded.
+    pub fn refuse_writeback(&self, calls: u64) {
+        self.lock().writeback_refusals = calls;
     }
 
     /// Every call that starts writeback of the file named `name` fails
@@ -1168,24 +1179,14 @@ impl File for SimFile {
         self.preallocate(len)
     }
 
-    /// A hole that is not synced yet is one more version of each of
-    /// its sectors, zeros, so a power cut leaves each as it was or as
-    /// zeros, as it does a write's (or as garbage, where the cut makes
-    /// garbage of what was being rewritten: more than a hole can do,
-    /// and a store that survives it survives a hole). Where the range
-    /// ends inside a write unit or inside a block of the file system,
-    /// whichever is larger, that unit's or block's other sectors are
-    /// rewritten as they are, as by a write: the file system zeroes a
-    /// part of a block by writing it. Whole ones inside the range take
-    /// no neighbour with them. It counts as one operation for
-    /// [`SimDisk::halt_after`].
     /// A hint that changes nothing the disk holds or will hold: the
     /// simulated disk keeps no cache apart from what a sync makes
     /// durable, so there is nothing to start. It is recorded
     /// ([`SimDisk::writebacks`]), is no operation for
     /// [`SimDisk::halt_after`], and does not fail on a halted machine:
     /// it fails only where a test says so ([`SimDisk::set_writeback`],
-    /// [`SimDisk::fail_writeback_of`]), so that whatever a store does
+    /// [`SimDisk::fail_writeback_of`], [`SimDisk::refuse_writeback`]),
+    /// so that whatever a store does
     /// on this disk, and what each request is answered, is the same
     /// with the hint as without it.
     fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
@@ -1199,6 +1200,10 @@ impl File for SimFile {
         if state.writeback_fault_of.is_some() && state.writeback_fault_of == name {
             return Err(injected("writeback"));
         }
+        if state.writeback_refusals > 0 {
+            state.writeback_refusals -= 1;
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
         state.stats.writebacks += 1;
         state.stats.writeback_bytes += len;
         state
@@ -1207,6 +1212,17 @@ impl File for SimFile {
         Ok(())
     }
 
+    /// A hole that is not synced yet is one more version of each of
+    /// its sectors, zeros, so a power cut leaves each as it was or as
+    /// zeros, as it does a write's (or as garbage, where the cut makes
+    /// garbage of what was being rewritten: more than a hole can do,
+    /// and a store that survives it survives a hole). Where the range
+    /// ends inside a write unit or inside a block of the file system,
+    /// whichever is larger, that unit's or block's other sectors are
+    /// rewritten as they are, as by a write: the file system zeroes a
+    /// part of a block by writing it. Whole ones inside the range take
+    /// no neighbour with them. It counts as one operation for
+    /// [`SimDisk::halt_after`].
     fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()> {
         let mut guard = self.disk.lock();
         let state = &mut *guard;

@@ -6855,3 +6855,103 @@ fn a_hint_that_fails_fails_the_volume() {
         assert!(env.reopen_ack(&disk).is_ok(), "{name}");
     }
 }
+
+/// A hint the system declines this time (short of memory: under
+/// writeback that does not wait the kernel gives up on a page it
+/// cannot get memory for) does not fail the volume. It is counted, the
+/// bytes stay waiting and are offered again in one range with the next
+/// unit's; and a hint declined just before a sync leaves its bytes to
+/// the sync.
+#[test]
+fn a_hint_declined_this_time_is_offered_again_and_the_volume_goes_on() {
+    const UNIT: u64 = 64 << 10;
+    const RECORD: u64 = 4160;
+    let run = UNIT.div_ceil(RECORD) * RECORD;
+    let (disk, mut store) = hinted(UNIT);
+    let before = hints_of(&disk, "log.").len();
+    disk.refuse_writeback(1);
+    // One unit's records: the hint is declined.
+    for block in 0..run / RECORD {
+        write(&mut store, block, 1, 4).unwrap();
+    }
+    let timing = store.timing();
+    assert_eq!(
+        (timing.writeback[0].count, timing.writeback[0].refused),
+        (0, 1)
+    );
+    assert_eq!(hints_of(&disk, "log.").len(), before);
+    // One unit more: both are offered in one range, from where the
+    // declined one began.
+    for block in run / RECORD..2 * run / RECORD {
+        write(&mut store, block, 1, 4).unwrap();
+    }
+    let hints = hints_of(&disk, "log.");
+    assert_eq!(hints.len(), before + 1, "{hints:?}");
+    assert_eq!(hints[before].1, 2 * run, "{hints:?}");
+    let timing = store.timing();
+    assert_eq!(timing.writeback[0].count, 1);
+    assert_eq!(timing.writeback[0].bytes, 2 * run);
+    flush(&mut store).unwrap();
+    let synced = store.timing().syncs[0];
+    assert_eq!((synced.bytes, synced.handed), (2 * run, 2 * run));
+
+    // Declined, and then a flush before the next unit: the sync covers
+    // the bytes, none of them handed over.
+    disk.refuse_writeback(1);
+    for block in 0..run / RECORD {
+        write(&mut store, 100 + block, 1, 5).unwrap();
+    }
+    flush(&mut store).unwrap();
+    let timing = store.timing();
+    assert_eq!(timing.writeback[0].refused, 2);
+    let synced = timing.syncs[0];
+    assert_eq!(synced.count, 2);
+    assert!(
+        synced.bytes >= 3 * run && synced.handed == 2 * run,
+        "{synced:?}"
+    );
+    assert!(!store.core.failed);
+    let env = environments(0)[0];
+    let mut again = env.reopen(&disk).unwrap();
+    assert_eq!(read(&mut again, 100, 1).unwrap(), vec![5u8; BLOCK as usize]);
+    assert_eq!(read(&mut again, 0, 1).unwrap(), vec![4u8; BLOCK as usize]);
+}
+
+/// A log that rolls to a new segment file with the hint on: what waits
+/// in the old file, its closing pad included, is handed over before the
+/// writes go to the new one, and the new file's zeros and its records
+/// are handed over there.
+#[test]
+fn a_roll_hands_over_what_waits_in_the_segment_it_leaves() {
+    const UNIT: u64 = 64 << 10;
+    let (disk, mut store) = hinted(UNIT);
+    // More than one segment of records of 4160 bytes.
+    let records = SEGMENT / 4160 + 20;
+    for block in 0..records {
+        write(&mut store, block % 1024, 1, 6).unwrap();
+    }
+    let all = disk.writebacks();
+    let first_new = all
+        .iter()
+        .position(|(name, _, _)| name == "log.000001")
+        .expect("the log rolled to a new file");
+    // Just before the new file's first hint: the old file's last, the
+    // rest of it that had not reached a unit.
+    let (name, offset, len) = &all[first_new - 1];
+    assert_eq!(name, "log.000000", "{all:?}");
+    assert!(*len < UNIT, "a remainder, not a unit: {all:?}");
+    let old: Vec<(u64, u64)> = hints_of(&disk, "log.000000");
+    for pair in old.windows(2) {
+        assert_eq!(pair[0].0 + pair[0].1, pair[1].0, "{old:?}");
+    }
+    // It reaches the closing pad's header, at the end of the records.
+    let end = offset + len;
+    assert!(end > SEGMENT - 2 * 4160 && end <= SEGMENT, "{end} {old:?}");
+    // The new file: its zeros, whole, then its records.
+    assert_eq!(all[first_new], ("log.000001".to_string(), 0, SEGMENT));
+    assert!(
+        hints_of(&disk, "log.000001").len() >= 2,
+        "{:?}",
+        hints_of(&disk, "log.000001")
+    );
+}

@@ -1453,6 +1453,9 @@ impl<D: Dir> Log<D> {
                 if let Err(e) = self.writeback.hand(&mut self.slots[old].file) {
                     return Err(self.fail(during, &e));
                 }
+                // Declined, it is left to the sync: what waits next is
+                // another file's.
+                self.writeback.forget();
             }
             self.writeback_at = Some(index);
         }

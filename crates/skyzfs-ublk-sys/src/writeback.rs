@@ -18,8 +18,19 @@ use std::os::fd::AsRawFd;
 ///
 /// The answers the kernel gives where it has no such call for the file
 /// (`ENOSYS`, `EINVAL`, `EOPNOTSUPP`, `ESPIPE`) are
-/// [`io::ErrorKind::Unsupported`]; any other is the kernel's error.
+/// [`io::ErrorKind::Unsupported`]. `EINVAL` is also what a wrong
+/// argument would get, so such a mistake would switch the hint off
+/// quietly: the status's `off` is what would show it. `ENOMEM`,
+/// `EINTR` and `EAGAIN` keep their kinds (out of memory, interrupted,
+/// would block), which the store takes as "not this time". Any other
+/// is the kernel's error.
+///
+/// A length of 0 asks nothing and makes no call: the kernel would read
+/// it as "to the end of the file".
 pub fn start_writeback(file: &File, offset: u64, len: u64) -> io::Result<()> {
+    if len == 0 {
+        return Ok(());
+    }
     let (Ok(offset), Ok(len)) = (i64::try_from(offset), i64::try_from(len)) else {
         return Err(io::ErrorKind::InvalidInput.into());
     };
@@ -76,6 +87,8 @@ mod tests {
             start_writeback(&file, u64::MAX, 1).map_err(|e| e.kind()),
             Err(io::ErrorKind::InvalidInput)
         );
+        // No length is no call, whatever the offset: not "to the end".
+        assert!(start_writeback(&file, u64::MAX, 0).is_ok());
         drop(file);
         let _ = std::fs::remove_file(&path);
     }
