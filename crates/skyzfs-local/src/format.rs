@@ -211,6 +211,19 @@ impl Identity {
         crate::fs::page_size().clamp(MIN_WRITE_UNIT, MAX_WRITE_UNIT)
     }
 
+    /// The write unit to give a new log in a directory whose file
+    /// system has blocks of `block` bytes ([`crate::io::Dir::block_size`]):
+    /// the larger of [`Identity::system_write_unit`] and the block.
+    /// A file system writes back whole blocks, so a write unit below
+    /// its block would not be how far a write reaches. `None` if that
+    /// is no unit the format carries: a block that is not a power of
+    /// two, or one above 65536.
+    pub fn write_unit_for(block: u64) -> Option<u32> {
+        let block = u32::try_from(block).ok().filter(|b| b.is_power_of_two())?;
+        let unit = block.max(Self::system_write_unit());
+        (unit <= MAX_WRITE_UNIT).then_some(unit)
+    }
+
     /// Whether the values can describe a log.
     pub fn valid(&self) -> bool {
         (self.align == 64 || self.align == 4096)
@@ -844,6 +857,25 @@ mod tests {
 
     /// Layout arithmetic: record sizes at both alignments, the largest
     /// payload a segment allows, and what an identity must satisfy.
+    /// A new log's write unit is the larger of the system's and the
+    /// file system's block, where the format carries that.
+    #[test]
+    fn the_write_unit_is_at_least_the_file_systems_block() {
+        let system = Identity::system_write_unit();
+        for block in [512u64, 1024, 4096] {
+            assert_eq!(Identity::write_unit_for(block), Some(system));
+        }
+        for block in [16384u32, 65536] {
+            assert_eq!(
+                Identity::write_unit_for(u64::from(block)),
+                Some(block.max(system))
+            );
+        }
+        for block in [0u64, 3000, 12288, 131072, 1 << 20, 1 << 40] {
+            assert_eq!(Identity::write_unit_for(block), None, "{block}");
+        }
+    }
+
     #[test]
     fn sizes_follow_the_alignment() {
         let small = identity();

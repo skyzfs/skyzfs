@@ -172,6 +172,16 @@ fn still_named(_file: &fs::File, _path: &Path) -> io::Result<bool> {
 }
 
 impl Dir for FsDir {
+    #[cfg(target_os = "linux")]
+    fn block_size(&self) -> io::Result<u64> {
+        said_block_size(retried(|| rustix::fs::statfs(&self.path))?.f_bsize)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn block_size(&self) -> io::Result<u64> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     type File = FsFile;
     type Lock = FsLock;
 
@@ -271,6 +281,15 @@ fn retried<T>(
             other => return other,
         }
     }
+}
+
+/// A block size as `statfs` gave it: a number above zero.
+#[cfg(target_os = "linux")]
+fn said_block_size<T: TryInto<u64>>(size: T) -> io::Result<u64> {
+    size.try_into()
+        .ok()
+        .filter(|size| *size > 0)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no block size"))
 }
 
 /// An open real file.
@@ -490,11 +509,7 @@ impl File for FsFile {
 
     #[cfg(target_os = "linux")]
     fn block_size(&self) -> io::Result<u64> {
-        let size = retried(|| rustix::fs::fstatfs(&self.file))?.f_bsize;
-        u64::try_from(size)
-            .ok()
-            .filter(|size| *size > 0)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no block size"))
+        said_block_size(retried(|| rustix::fs::fstatfs(&self.file))?.f_bsize)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -553,6 +568,7 @@ mod tests {
         let file = dir.create("image").expect("a file");
         let size = file.block_size().expect("a block size");
         assert!(size >= 512 && size.is_power_of_two(), "{size}");
+        assert_eq!(dir.block_size().expect("the directory's"), size);
     }
 
     /// On a real file: a deallocated range reads as zeros, the file

@@ -15,8 +15,16 @@
 //! # What `create` fixes
 //!
 //! A new volume has 4096-byte record alignment, log segments of
-//! [`SEGMENT_SIZE`], and the write unit of the system it is made on
-//! ([`Identity::system_write_unit`]). None of them is an option: they
+//! [`SEGMENT_SIZE`], and a write unit that is the larger of the
+//! system's page size and the block size of the file system the
+//! directory is on ([`Identity::write_unit_for`]): the files are
+//! written through the page cache, and a file system writes back
+//! whole blocks, so that is how far a write can reach. A directory
+//! whose file system has blocks above 65536 bytes (a network file
+//! system that reports its transfer size, for one), blocks that are no
+//! power of two, or a block size that cannot be read is refused: the
+//! format carries no such unit, and the store's protection against a
+//! power cut rests on it. None of them is an option: they
 //! are recorded with the volume, and a later version that wants others
 //! makes new volumes with others. If the directory is missing, `create`
 //! makes it (its last component only, mode 0700); a missing parent, a
@@ -467,16 +475,38 @@ fn unmake(path: &Path) {
     let _ = std::fs::remove_dir(path);
 }
 
+/// The write unit of a new volume in a directory whose file system
+/// says `block` for its block size, or why no volume is made there
+/// (words that follow the directory's path).
+fn write_unit_on(block: io::Result<u64>) -> Result<u32, String> {
+    match block {
+        Ok(block) => Identity::write_unit_for(block).ok_or_else(|| {
+            format!(
+                "is on a file system with blocks of {block} bytes: a volume's write unit must \
+                 be at least the file system's block, and it is a power of two of at most \
+                 65536 bytes"
+            )
+        }),
+        Err(e) => Err(format!(
+            "is on a file system whose block size could not be read ({e}): whether a write \
+             there stays within a volume's write unit cannot be checked"
+        )),
+    }
+}
+
 /// Make the store of `create` in `dir`; its identity.
 fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
+    use skyzfs_local::io::Dir as _;
     let shown = create.dir.display();
+    let write_unit = write_unit_on(dir.block_size())
+        .map_err(|why| Output::error(format_args!("{shown} {why}. Nothing was done")))?;
     let config = StoreConfig {
         volume: id,
         size_mib: create.size >> 20,
         base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
         align: ALIGN,
         segment_size: SEGMENT_SIZE,
-        write_unit: Identity::system_write_unit(),
+        write_unit,
     };
     match Store::create(dir, &config, OpenOptions::default()) {
         Ok(store) => Ok(store.identity()),

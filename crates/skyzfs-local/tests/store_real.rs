@@ -168,9 +168,6 @@ fn a_write_zeroes_gives_the_home_images_space_back_on_real_files() {
             "the home image held {before} bytes and holds {after}"
         ),
         Zeroes::Written => eprintln!("this file system cannot deallocate: zeros were written"),
-        Zeroes::WrittenForBlocks => eprintln!(
-            "this file system's blocks are larger than the write unit: zeros were written"
-        ),
         Zeroes::Untried => {
             panic!("a checkpoint applied write-zeroes and the store does not say how")
         }
