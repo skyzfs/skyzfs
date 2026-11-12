@@ -100,6 +100,9 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::time::Instant;
+
+use skyzfs_local::store::Spent;
 
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId, BLOCK_SIZE};
 
@@ -250,6 +253,46 @@ pub struct Counters {
     pub unstored: u64,
 }
 
+/// Where a request's time goes in the pump, before the target has it
+/// and after the target is done with it. Measurement only. One read
+/// of the monotonic clock per turn that fetched something, per
+/// request submitted, per request finished and per batch committed,
+/// and two around a position that is stored; the times are kept by
+/// tag, in a table as long as the queue is deep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PumpTiming {
+    /// From the queue's wait returning with a request to the target
+    /// having it: the translation, a first write's copy, and the time
+    /// in the backlog while the target had no room. What the request
+    /// waited in the kernel before the pump's thread came back to the
+    /// queue is before this and in no number.
+    pub to_submit: Spent,
+    /// Reads: from the pump learning that the request is finished (the
+    /// target's completion taken, or the request refused) to its
+    /// commit to the queue. A commit waits for the acknowledged
+    /// position to be stored if a mutation completed with it.
+    pub read_to_commit: Spent,
+    /// The same for every other request.
+    pub other_to_commit: Spent,
+    /// The storing of the acknowledged position, when it had moved:
+    /// how often, how long together, the longest. A store that failed
+    /// is counted too.
+    pub store: Spent,
+    /// The completions that were committed behind those stores.
+    pub behind_store: u64,
+}
+
+/// What the pump notes for a tag in flight.
+#[derive(Debug, Clone, Copy)]
+struct Stamp {
+    /// When the queue's wait returned with it.
+    fetched: Instant,
+    /// When it was finished.
+    finished: Instant,
+    /// Whether it is a read.
+    read: bool,
+}
+
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Mutants(pub(crate) u32);
@@ -354,6 +397,9 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     failed_answers: u64,
     stop_tries: u32,
     counters: Counters,
+    timing: PumpTiming,
+    /// By tag.
+    stamps: Vec<Stamp>,
     mutants: Mutants,
 }
 
@@ -363,6 +409,13 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     pub fn new(queue: Q, target: T, ack: A) -> Self {
         let translator = Translator::new(&target.geometry());
         let slots = (0..queue.depth()).map(|_| Slot::Idle).collect();
+        let now = Instant::now();
+        let stamp = Stamp {
+            fetched: now,
+            finished: now,
+            read: false,
+        };
+        let stamps = (0..queue.depth()).map(|_| stamp).collect();
         Self {
             queue,
             target,
@@ -379,6 +432,8 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             failed_answers: 0,
             stop_tries: Self::STOP_TRIES,
             counters: Counters::default(),
+            timing: PumpTiming::default(),
+            stamps,
             mutants: Mutants::default(),
         }
     }
@@ -404,6 +459,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// What the pump has done so far.
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    /// Where the requests' time went in the pump: see [`PumpTiming`].
+    pub fn timing(&self) -> PumpTiming {
+        self.timing
     }
 
     /// The queue.
@@ -538,6 +598,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
         if !self.stopping {
             self.counters.in_flight += fetched.len() as u64;
+            if !fetched.is_empty() {
+                let now = Instant::now();
+                for request in &fetched {
+                    if let Some(stamp) = self.stamps.get_mut(usize::from(request.tag)) {
+                        stamp.fetched = now;
+                    }
+                }
+            }
             self.backlog.extend(fetched);
         }
         // Completions make room, and room lets more be submitted.
@@ -698,6 +766,8 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                 }
                 self.counters.refused += 1;
                 self.slots[usize::from(tag)] = Slot::Finished;
+                self.stamps[usize::from(tag)].finished = Instant::now();
+                self.stamps[usize::from(tag)].read = false;
                 self.finished
                     .push((tag, self.translator.refused(desc), None));
                 return Ok(true);
@@ -750,6 +820,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return Err(self.refused());
         }
         self.in_target += 1;
+        self.timing
+            .to_submit
+            .add(self.stamps[usize::from(tag)].fetched.elapsed());
         self.slots[usize::from(tag)] = Slot::Running(plan);
         let mutation = !matches!(plan.action, Action::Read { .. } | Action::Flush);
         if mutation && self.mutants.has(Mutants::ACK_AT_SUBMIT) {
@@ -809,6 +882,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             drop(buf);
             return;
         }
+        let stamp = &mut self.stamps[usize::from(tag)];
+        stamp.finished = Instant::now();
+        stamp.read = matches!(plan.action, Action::Read { .. });
         self.finished
             .push((tag, self.translator.result(plan, outcome), buf));
     }
@@ -825,9 +901,17 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return;
         }
         self.counters.unstored = 0;
+        let now = Instant::now();
         for (tag, result, buf) in self.finished.drain(..) {
             self.slots[usize::from(tag)] = Slot::Idle;
             self.counters.in_flight = self.counters.in_flight.saturating_sub(1);
+            let stamp = self.stamps[usize::from(tag)];
+            let waited = now.saturating_duration_since(stamp.finished);
+            if stamp.read {
+                self.timing.read_to_commit.add(waited);
+            } else {
+                self.timing.other_to_commit.add(waited);
+            }
             self.queue.commit(tag, result, buf);
         }
         if after {
@@ -842,7 +926,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if self.stored.is_some_and(|stored| position <= stored) {
             return Ok(());
         }
-        self.ack.advance(position)?;
+        let began = Instant::now();
+        let advanced = self.ack.advance(position);
+        self.timing.store.add(began.elapsed());
+        advanced?;
+        self.timing.behind_store += self.finished.len() as u64;
         self.stored = Some(position);
         Ok(())
     }

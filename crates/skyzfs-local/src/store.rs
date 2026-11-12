@@ -1592,7 +1592,8 @@ pub struct Spent {
 }
 
 impl Spent {
-    fn add(&mut self, time: Duration) {
+    /// Count one more thing that took `time`.
+    pub fn add(&mut self, time: Duration) {
         let ns = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
         self.count += 1;
         self.sum_ns = self.sum_ns.saturating_add(ns);

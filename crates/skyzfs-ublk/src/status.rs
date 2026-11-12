@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1192
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1296
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -63,6 +63,11 @@
 //! | 632 | 480 | for each kind of request, in the order above: twelve fields, its summed wait by what the worker did meanwhile, in the order of the worker's time. A kind's twelve add up to its summed wait |
 //! | 1112 | 40 | for each kind: of its longest wait, which of the twelve took the largest part, as a number from 0 |
 //! | 1152 | 40 | for each kind: how long that part was |
+//! | 1192 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
+//! | 1216 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the pump taking the completion to the commit; the longest |
+//! | 1240 | 24 | the same for every other request |
+//! | 1264 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
+//! | 1288 | 8 | the completions that were committed behind those stores |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -107,7 +112,7 @@ use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
-use crate::pump::Counters;
+use crate::pump::{Counters, PumpTiming};
 use crate::records::StoredFailure;
 use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 
@@ -115,7 +120,7 @@ use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA5";
-const LEN: usize = 1192;
+const LEN: usize = 1296;
 /// The fourth version: without the times from offset 200 on.
 const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
 const FOURTH_LEN: usize = 200;
@@ -260,6 +265,19 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_flush_longest_wait_cause_ns",
     "time_discard_longest_wait_cause_ns",
     "time_zeroes_longest_wait_cause_ns",
+    "time_pump_submit_count",
+    "time_pump_submit_ns",
+    "time_pump_submit_max_ns",
+    "time_pump_commit_read_count",
+    "time_pump_commit_read_ns",
+    "time_pump_commit_read_max_ns",
+    "time_pump_commit_other_count",
+    "time_pump_commit_other_ns",
+    "time_pump_commit_other_max_ns",
+    "time_pump_store_count",
+    "time_pump_store_ns",
+    "time_pump_store_max_ns",
+    "time_pump_store_completions",
 ];
 
 /// What the file holds.
@@ -322,6 +340,9 @@ pub struct LogShown {
     /// Where the store's time went. `None` in a file of a version
     /// before the fifth.
     pub timing: Option<Timing>,
+    /// Where the pump's time went. `None` in a file of a version
+    /// before the fifth.
+    pub pump: Option<PumpTiming>,
 }
 
 /// How a checkpoint applies write-zeroes to the home image, as the
@@ -426,7 +447,10 @@ fn encode(status: &Status) -> [u8; LEN] {
         log.shown.own_syncs,
         log.shown.zeroes.code(),
     ];
-    let times = time_fields(&log.shown.timing.unwrap_or_default());
+    let times = time_fields(
+        &log.shown.timing.unwrap_or_default(),
+        &log.shown.pump.unwrap_or_default(),
+    );
     for (i, field) in fields.iter().chain(&times).enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
@@ -434,14 +458,14 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 124;
+const TIME_FIELDS: usize = 137;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
 const CAUSE_FIELDS: std::ops::Range<usize> = 114..119;
 
 /// The times in the file's order: see the table at the top.
-fn time_fields(timing: &Timing) -> [u64; TIME_FIELDS] {
+fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
     let mut fields = [0u64; TIME_FIELDS];
     let mut at = 0;
     let mut put = |value: u64| {
@@ -488,7 +512,43 @@ fn time_fields(timing: &Timing) -> [u64; TIME_FIELDS] {
     for value in timing.longest_wait_cause_ns {
         put(value);
     }
+    for spent in [
+        pump.to_submit,
+        pump.read_to_commit,
+        pump.other_to_commit,
+        pump.store,
+    ] {
+        put(spent.count);
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
+    put(pump.behind_store);
     fields
+}
+
+/// The pump's times of a file of the fifth version.
+fn pump_at(bytes: &[u8]) -> PumpTiming {
+    let mut at = 1192;
+    let mut spent = || {
+        let fields = [
+            u64_at(bytes, at),
+            u64_at(bytes, at + 8),
+            u64_at(bytes, at + 16),
+        ];
+        at += 24;
+        Spent {
+            count: fields[0],
+            sum_ns: fields[1],
+            max_ns: fields[2],
+        }
+    };
+    PumpTiming {
+        to_submit: spent(),
+        read_to_commit: spent(),
+        other_to_commit: spent(),
+        store: spent(),
+        behind_store: u64_at(bytes, 1288),
+    }
 }
 
 /// The times of a file of the fifth version. What the file does not
@@ -578,6 +638,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
                 ZeroesShown::Unsaid
             },
             timing: fifth.then(|| timing_at(bytes)),
+            pump: fifth.then(|| pump_at(bytes)),
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
@@ -1090,8 +1151,8 @@ pub fn report(
             if let Some(said) = log.shown.zeroes.said() {
                 lines.push(("zeroes_applied", said.to_string()));
             }
-            if let Some(timing) = &log.shown.timing {
-                let fields = time_fields(timing);
+            if let (Some(timing), Some(pump)) = (&log.shown.timing, &log.shown.pump) {
+                let fields = time_fields(timing, pump);
                 for (at, (key, value)) in TIME_KEYS.iter().zip(fields).enumerate() {
                     // A cause is said by its name; a number this
                     // version has no name for is printed as it is.

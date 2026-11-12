@@ -22,6 +22,16 @@ fn sample_timing() -> skyzfs_local::store::Timing {
     timing_at(&bytes)
 }
 
+/// The pump's times with the same fields: 224 to 236.
+fn sample_pump() -> PumpTiming {
+    let mut bytes = [0u8; LEN];
+    for field in 0..TIME_FIELDS {
+        let at = 200 + 8 * field;
+        bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
+    }
+    pump_at(&bytes)
+}
+
 fn sample() -> Status {
     Status {
         pid: 0x0102_0304,
@@ -51,6 +61,7 @@ fn sample() -> Status {
                 own_syncs: 18,
                 zeroes: ZeroesShown::Written,
                 timing: Some(sample_timing()),
+                pump: Some(sample_pump()),
             },
             start_ms: 16,
             replayed_bytes: 17,
@@ -68,11 +79,11 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 124 fields from offset 200, here 100 to 223.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..224) {
+    // The times are the 137 fields from offset 200, here 100 to 236.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..237) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1192);
+    assert_eq!(bytes.len(), 1296);
     // Where the times lie, by what they are.
     let timing = sample_timing();
     assert_eq!(timing.requests[0].wait.count, 100);
@@ -90,6 +101,11 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(timing.wait_by[1][8], 174);
     assert_eq!(timing.longest_wait_cause, [214, 215, 216, 217, 218]);
     assert_eq!(timing.longest_wait_cause_ns, [219, 220, 221, 222, 223]);
+    let pump = sample_pump();
+    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (224, 226));
+    assert_eq!(pump.read_to_commit.sum_ns, 228);
+    assert_eq!(pump.other_to_commit.count, 230);
+    assert_eq!((pump.store.sum_ns, pump.behind_store), (234, 236));
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
 }
@@ -144,6 +160,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.zeroes = ZeroesShown::Unsaid;
         log.shown.timing = None;
+        log.shown.pump = None;
     }
     assert_eq!(read, unsaid);
     let lines_of = |status: &Status| {
@@ -185,6 +202,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     unknown[192..200].copy_from_slice(&7u64.to_le_bytes());
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.timing = Some(sample_timing());
+        log.shown.pump = Some(sample_pump());
     }
     assert_eq!(decode(&unknown), Some(unsaid));
 }
@@ -204,6 +222,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     let mut untimed = sample();
     if let Some(log) = untimed.log.as_mut() {
         log.shown.timing = None;
+        log.shown.pump = None;
     }
     assert_eq!(read, untimed);
     let lines_of = |status: &Status| {
@@ -263,6 +282,10 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         Some("219")
     );
     assert_eq!(value(&lines, "time_worker_idle_ns"), Some("142"));
+    assert_eq!(value(&lines, "time_pump_submit_ns"), Some("225"));
+    assert_eq!(value(&lines, "time_pump_commit_read_max_ns"), Some("229"));
+    assert_eq!(value(&lines, "time_pump_store_count"), Some("233"));
+    assert_eq!(value(&lines, "time_pump_store_completions"), Some("236"));
     assert_eq!(
         value(&lines, "time_write_wait_by_step_home_sync_ns"),
         Some("174")

@@ -4119,6 +4119,91 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     assert!(timing.step_home_sync.count <= state.steps);
 }
 
+/// A read submitted while a step is held, behind two writes that were
+/// submitted in the same moment: its wait is the rest of the step, the
+/// steps the gate takes after it, and the two writes' calls, and the
+/// parts add up to the wait. The two writes' calls are in it whole.
+#[test]
+fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
+    const HELD: Duration = Duration::from_millis(200);
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    flush(&mut store).unwrap();
+    store.set_marks(Some(MARKS));
+    let gate = std::env::temp_dir().join(format!("skyzfs-split-gate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Written);
+    let mut served = store.serve().unwrap();
+    at_the_point(&gate, "the first step");
+    let requests = [
+        Op::Write {
+            offset: 300 * BLOCK,
+            data: Buf::filled(16, 7),
+        },
+        Op::Write {
+            offset: 320 * BLOCK,
+            data: Buf::filled(16, 8),
+        },
+        Op::Read {
+            offset: 300 * BLOCK,
+            buf: Buf::zeroed(16),
+        },
+    ];
+    for (n, op) in requests.into_iter().enumerate() {
+        served
+            .submit(Request {
+                id: RequestId(n as u64),
+                op,
+            })
+            .unwrap();
+    }
+    std::thread::sleep(HELD);
+    std::fs::write(&gate, b"").unwrap();
+    let asked = std::time::Instant::now();
+    let mut done = Vec::new();
+    while done.len() < 3 {
+        served.wait(&mut done, Duration::from_secs(1));
+        assert!(asked.elapsed() < Duration::from_secs(20), "no answer");
+    }
+    served.position().unwrap();
+    let timing = served.timing();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    // The read saw the write before it.
+    let read = done.iter().find(|c| c.id == RequestId(2)).unwrap();
+    assert!(read.buf.as_ref().unwrap().iter().all(|b| *b == 7));
+
+    let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
+    let ns = HELD.as_nanos() as u64;
+    let (reads, writes) = (timing.requests[0], timing.requests[1]);
+    assert_eq!((reads.wait.count, writes.wait.count), (1, 2), "{timing:?}");
+    let by = timing.wait_by[0];
+    assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
+    // Both writes' calls lie wholly inside the read's wait.
+    assert_eq!(by[at("write")], writes.call.sum_ns, "{timing:?}");
+    assert!(by[at("write")] > 0, "{timing:?}");
+    // The held step's part, and the rest: other steps' parts and the
+    // loop's own work, and nothing under a call that did not happen.
+    assert!(by[at("step_home_sync")] >= ns, "{timing:?}");
+    for none in ["idle", "read", "flush", "discard", "zeroes"] {
+        assert_eq!(by[at(none)], 0, "{none}: {timing:?}");
+    }
+    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+    // The second write waited for the first one's call too; the first
+    // for none.
+    let by = timing.wait_by[1];
+    assert_eq!(by.iter().sum::<u64>(), writes.wait.sum_ns, "{timing:?}");
+    assert!(
+        by[at("write")] > 0 && by[at("write")] < writes.call.sum_ns,
+        "{timing:?}"
+    );
+}
+
 /// Every kind of request is counted under its own kind, once per
 /// request that completed, with a wait and a call each; a request that
 /// waited for no step is not among those that did; and the sums and

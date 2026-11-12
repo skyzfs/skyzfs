@@ -137,6 +137,23 @@ fn the_pump_serves_a_real_store_and_what_it_stored_is_what_the_next_open_must_re
     results.sort_unstable();
     assert_eq!(results, [(0, 4096), (1, 8192), (2, 0)]);
 
+    // The pump's own times: three requests submitted and committed,
+    // none of them a read; the position stored as often as the record
+    // was written, with at least one completion behind each.
+    let timing = pump.timing();
+    let stores = pump.ack().stored.len() as u64;
+    assert_eq!(timing.to_submit.count, 3, "{timing:?}");
+    assert_eq!(timing.other_to_commit.count, 3, "{timing:?}");
+    assert_eq!(timing.read_to_commit.count, 0, "{timing:?}");
+    assert!(stores >= 1 && timing.store.count == stores, "{timing:?}");
+    assert!(
+        timing.behind_store >= stores && timing.behind_store <= 3,
+        "{timing:?}"
+    );
+    for spent in [timing.to_submit, timing.other_to_commit, timing.store] {
+        assert!(spent.max_ns <= spent.sum_ns, "{timing:?}");
+    }
+
     // What the pump stored is what the store says it acknowledged, and
     // it is on the file.
     let acknowledged = pump.target().acknowledged().expect("two writes");
@@ -152,6 +169,13 @@ fn the_pump_serves_a_real_store_and_what_it_stored_is_what_the_next_open_must_re
     ]));
     pump.queue().script.push_back(Step::Stop);
     assert_eq!(pump.run(), Stopped::Orderly);
+    // Three reads more: committed as reads, and no position stored for
+    // them.
+    let after = pump.timing();
+    assert_eq!(after.to_submit.count, 6, "{after:?}");
+    assert_eq!(after.read_to_commit.count, 3, "{after:?}");
+    assert_eq!(after.other_to_commit.count, 3, "{after:?}");
+    assert_eq!(after.store.count, stores, "{after:?}");
     let returned = &pump.queue().returned;
     assert!(returned[&3].iter().all(|b| *b == 0x40));
     assert!(returned[&4].iter().all(|b| *b == 0x41));
