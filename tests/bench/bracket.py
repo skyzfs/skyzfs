@@ -53,6 +53,18 @@ def enclose(row, rows, model=MODEL):
 
 WIDEST = 0.10
 
+# The settings a model row must share with the daemon row it brackets:
+# pgbench's clients and measured seconds, and postgres's memory limit,
+# which bounds postgres in a model row as in a daemon row. A key that
+# a row does not carry (rows recorded before it was) is not compared.
+SETTINGS = (('clients', 'clients'), ('duration_s', 'measured seconds'), ('mem_limit', 'TB_MEM_LIMIT'))
+
+
+def unlike(row, other):
+    """-> the settings in which `other` differs from `row`, as text; empty if none."""
+    return [f'{name} {other[k]} against {row[k]}' for k, name in SETTINGS
+            if k in row and k in other and row[k] != other[k]]
+
 
 def width(before, after):
     """How far the two model rows differ, as a share of their mean."""
@@ -63,8 +75,9 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     """-> dict: before, after (rows or None), ratio and width (floats or None), verdict (text).
 
     The verdict is 'at least 0.90' or 'BELOW 0.90' only when the row is
-    enclosed, its two model rows differ by at most `widest` of their
-    mean, and both had no origin delay (the daemon row has
+    enclosed, its two model rows ran with its settings (`SETTINGS`),
+    differ by at most `widest` of their mean, and both had no origin
+    delay (the daemon row has
     no origin under it, and a model row slowed at its origin reads would
     flatter the daemon). Otherwise it starts with NO VERDICT and says why.
     """
@@ -86,8 +99,12 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
         return out
     out['ratio'] = row['tps'] / ((before['tps'] + after['tps']) / 2)
     out['width'] = width(before, after)
+    other = [f'the model row {w} it: ' + ', '.join(d) for w, o in (('before', before), ('after', after))
+             for d in [unlike(row, o)] if d]
     delays = [before.get('origin_delay_ms'), after.get('origin_delay_ms')]
-    if any(d is None for d in delays):
+    if other:
+        out['verdict'] = 'NO VERDICT: a model row ran with other settings (' + '; '.join(other) + ')'
+    elif any(d is None for d in delays):
         out['verdict'] = 'NO VERDICT: a model row does not say what origin delay it had'
     elif any(d != 0 for d in delays):
         out['verdict'] = (f'NO VERDICT: the model rows had origin delays of {delays[0]} and {delays[1]} ms, '

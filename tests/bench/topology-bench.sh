@@ -521,10 +521,14 @@ if drows:
     # name (they live through the window): run delay, user and system.
     cr = [(r, d) for r, d in drows if r['diag'].get('psi_pct')]
     if cr:
-        print('\nWaiting for a CPU. Pressure is /proc/pressure, and cpu.pressure of a cgroup, as a share of the window '
-              '(`some`: at least one task of it was runnable and not running; for io, waiting for I/O); postgres is '
-              'its cgroup, its backends included; the daemon\'s threads are those named skyzfs*, with their run '
-              'delay (schedstat: runnable and not running) and their user and system time:\n')
+        print('\nWaiting for a CPU. Pressure is /proc/pressure, and cpu.pressure of a cgroup (`some`: at least one '
+              'task of it was runnable and not running; for io, waiting for I/O), as a share of the time from the '
+              'look before the window to the look right after pgbench returned (rows recorded before that look was '
+              'taken: of pgbench\'s duration, over looks 2 s and a sync further apart, which overstates it); the '
+              'cgroups\' CPU is over the same time. Postgres is its cgroup, its backends included (n/a where not '
+              'every postgres process could be moved into it). The daemon\'s threads are those named skyzfs*, with '
+              'their run delay (schedstat: runnable and not running) and their user and system time, over the looks '
+              'before and after the window, which also hold the sync and the 2 s after it:\n')
         print('| workload | topology | tps | machine cpu some % | machine io some / full % | postgres cpu some % | '
               'postgres io some % | postgres CPU ms per txn, user / system | daemon cpu some % | all switches per txn | '
               'daemon run delay ms by thread | daemon user / system s by thread |')
@@ -547,7 +551,8 @@ if drows:
                   f"{nf(g.get('ctxt', 0) / txn if 'ctxt' in g else None, '.1f')} | {drd} | {dus} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
-        print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
+        print('\nMemory at the end of the window, MiB. The cgroup is postgres\'s (its memory.max is TB_MEM_LIMIT, or '
+              'none when it is unset); its `file` is the '
               'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
               'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0. '
               'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
@@ -854,7 +859,7 @@ MNT="$WORK/mnt"; MNT_WAL="$WORK/mnt-wal"; SOCK="$WORK/sock"
 mkdir -p "$MNT" "$MNT_WAL" "$SOCK"
 chown "$PG_USER" "$SOCK" "$WORK"
 PGDATA="$MNT/data"
-CGROUP=""
+CGROUP=""; PG_CG_OK=""
 # postgres's own I/O timers, as "name value" rows. One file for every
 # server version: a statement that names a column this version lacks
 # fails by itself and the rest still run. pg_stat_io carries WAL rows
@@ -1098,11 +1103,17 @@ start_pg() {
     # `su` opens a PAM session, and pam_systemd parks it in a fresh
     # scope, so a cgroup joined before the su is silently escaped.
     # Backends forked later inherit the postmaster's cgroup.
+    PG_CG_OK=""
     if [ -n "$CGROUP" ]; then
-        local p
+        local p missed=0
         for p in $(pgrep -u "$PG_USER" postgres); do
             echo "$p" > "$CGROUP/cgroup.procs" 2>/dev/null || true
+            grep -qx "$p" "$CGROUP/cgroup.procs" || missed=$((missed + 1))
         done
+        # Only a cgroup that holds every postgres process speaks for
+        # postgres: otherwise its pressure and CPU are left out (n/a).
+        if [ "$missed" = 0 ]; then PG_CG_OK=1
+        else log "postgres's cgroup: $missed postgres processes could not be moved in; its pressure and CPU are not recorded"; fi
         log "postgres's cgroup: memory.max ${MEM_LIMIT:-max} on $(wc -l < "$CGROUP/cgroup.procs") postgres processes"
     fi
 }
@@ -1821,6 +1832,28 @@ work_disk() { # -> the kernel name of the disk under $WORK, or nothing
     [ ! -e "$d/partition" ] || d=$(dirname "$d")
     basename "$d"
 }
+pressure_look() { # the pressure stall totals and the cgroups' CPU, and when they were read
+    # Pressure stall information: the time some (and, for io and
+    # memory, all) runnable tasks waited for the resource, in us: the
+    # machine's, postgres's cgroup's (pg.) and the daemon's (skz.).
+    # Postgres's only when it is known to be in its cgroup (PG_CG_OK).
+    # A file that cannot be read (PSI off: it is there and its read
+    # fails) leaves its keys out.
+    local res cg pre f
+    echo "clock now $(date +%s%N)"
+    for cg in "/proc/pressure:" "$([ -z "${PG_CG_OK:-}" ] || echo "${CGROUP:-}"):pg." "${SKZ_CGROUP:-}:skz."; do
+        pre=${cg##*:}; cg=${cg%:*}
+        [ -n "$cg" ] || continue
+        for res in cpu io memory; do
+            if [ "$cg" = /proc/pressure ]; then f="$cg/$res"; else f="$cg/$res.pressure"; fi
+            [ -r "$f" ] || continue
+            awk -v r="$pre$res" '{ for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print "psi", r "." $1, $i } }' "$f" 2>/dev/null || true
+        done
+        # The cgroup's CPU: usage, user and system, in us.
+        [ "$cg" = /proc/pressure ] || [ ! -r "$cg/cpu.stat" ] \
+            || awk -v p="$pre" '$1 ~ /^(usage_usec|user_usec|system_usec)$/ { print "cgs", p $1, $2 }' "$cg/cpu.stat" 2>/dev/null || true
+    done
+}
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
     local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
@@ -1865,22 +1898,7 @@ for kind, cc in ext.items():
     for k, v in cc.items():
         if v: print(kind, k, v)
 PY
-    # Pressure stall information: the time some (and, for io and
-    # memory, all) runnable tasks waited for the resource, in us: the
-    # machine's, postgres's cgroup's (pg.) and the daemon's (skz.).
-    local res cg pre f
-    for cg in "/proc/pressure:" "${CGROUP:-}:pg." "${SKZ_CGROUP:-}:skz."; do
-        pre=${cg##*:}; cg=${cg%:*}
-        [ -n "$cg" ] || continue
-        for res in cpu io memory; do
-            if [ "$cg" = /proc/pressure ]; then f="$cg/$res"; else f="$cg/$res.pressure"; fi
-            [ -r "$f" ] || continue
-            awk -v r="$pre$res" '{ for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print "psi", r "." $1, $i } }' "$f"
-        done
-        # The cgroup's CPU: usage, user and system, in us.
-        [ "$cg" = /proc/pressure ] || [ ! -r "$cg/cpu.stat" ] \
-            || awk -v p="$pre" '$1 ~ /^(usage_usec|user_usec|system_usec)$/ { print "cgs", p $1, $2 }' "$cg/cpu.stat"
-    done
+    pressure_look
     as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
     # Who holds the memory: the host's page cache (a buffered loop
     # would put the images there, outside the cap), postgres's cgroup
@@ -1996,6 +2014,9 @@ run_workload() { # topology workload [snapshot mode]
     fi
     log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
+    # The pressure and the cgroups' CPU at the end of the window, before
+    # anything after it (the sync, the wait, the after-look) adds its own.
+    pressure_look > "$OUT/$tag.pressure"
     if [ -n "$SNAP_PID" ]; then
         touch "$SNAP_STOP"; wait "$SNAP_PID" || true; SNAP_PID=""
         rm -f "$SNAP_STOP"
@@ -2022,7 +2043,7 @@ run_workload() { # topology workload [snapshot mode]
     # from its own image by a loop device, the reference server or the
     # daemon), whatever the knob says.
     case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
+    TB_ROW_MEM_LIMIT="$MEM_LIMIT" python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 sys.path.insert(0, sys.argv[12])
 import skz_time
@@ -2037,7 +2058,7 @@ def load(p):
     zc[p], zg[p] = {}, {}
     skz[p] = {}
     cpu[p], thr[p], txgs[p], mem[p], loops[p] = {}, {}, {}, {}, {}
-    ext[p] = {k: {} for k in ('thu', 'ths', 'rdl', 'csv', 'csi', 'psi', 'cgs')}
+    ext[p] = {k: {} for k in ('thu', 'ths', 'rdl', 'csv', 'csi', 'psi', 'cgs', 'clock')}
     for line in open(p):
         f = line.split()
         if not f: continue
@@ -2060,6 +2081,8 @@ r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {
 if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
 r['origin_delay_ms'] = int(sys.argv[11])
+# Postgres's memory limit, a setting a bracketing model row must share.
+r['mem_limit'] = os.environ.get('TB_ROW_MEM_LIMIT') or 'none'
 # The machine the row ran on: this boot of this runner. Two rows are
 # compared only where it is the same.
 # The host name beside the boot id: machines resumed from one memory
@@ -2212,13 +2235,29 @@ if ea.get('rdl'):
     diag['run_delay_ms_by_thread'] = per_name('rdl', 1e-6)
     diag['voluntary_csw_by_thread'] = per_name('csv', 1)
     diag['involuntary_csw_by_thread'] = per_name('csi', 1)
-# Pressure as a share of the window, %: the machine's, and postgres's
-# and the daemon's cgroups' (keys pg.* and skz.*).
-if ea.get('psi'):
+# Pressure as a share, %: the machine's, and postgres's and the
+# daemon's cgroups' (keys pg.* and skz.*), and the cgroups' CPU, s. Both
+# from the before-look to the look right after pgbench returned (the
+# .pressure file), so that nothing after the window (the sync, the
+# wait, the after-look) is counted; the share is of the time between
+# those two looks by the clock they carry. Rows recorded before that
+# look was taken use the after-look and pgbench's duration, which
+# overstates the share by the 2 s and the sync between them.
+pe = ext[base + '.after']; span = None
+if os.path.exists(base + '.pressure'):
+    load(base + '.pressure'); pe = ext[base + '.pressure']
+    t0, t1 = eb.get('clock', {}).get('now'), pe.get('clock', {}).get('now')
+    if t0 and t1 and t1 > t0:
+        span = (t1 - t0) / 1e9
+if pe.get('psi') and span:
+    diag['psi_span_s'] = span
+    diag['psi_pct'] = {k: 100 * (v - eb.get('psi', {}).get(k, 0)) / (span * 1e6) for k, v in pe['psi'].items()
+                       if k in eb.get('psi', {})}
+elif ea.get('psi'):
     diag['psi_pct'] = {k: 100 * (v - eb.get('psi', {}).get(k, 0)) / (dur * 1e6) for k, v in ea['psi'].items()}
-# The cgroups' CPU over the window, s (pg.*, skz.*).
-if ea.get('cgs'):
-    diag['cgroup_cpu_s'] = {k: (v - eb.get('cgs', {}).get(k, 0)) / 1e6 for k, v in ea['cgs'].items()}
+if pe.get('cgs'):
+    diag['cgroup_cpu_s'] = {k: (v - eb.get('cgs', {}).get(k, 0)) / 1e6 for k, v in pe['cgs'].items()
+                            if k in eb.get('cgs', {})}
 # Memory at the end of the window, MiB, and how the loops are attached.
 if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
 # The cgroup counts the times it reached its limit since it was made,

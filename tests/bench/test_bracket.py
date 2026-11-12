@@ -96,6 +96,28 @@ class Bracketed(unittest.TestCase):
         # The recorded run of 43234635170: 3732 and 3677, 1.5% apart.
         self.assertAlmostEqual(bk.bracketed(RUN[2], RUN)['width'], 55.273 / 3704.73, places=4)
 
+    def test_model_row_with_other_settings(self):
+        base = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950), row(3, 'zfs-slog', 1000)]
+        for k, v, said in (('clients', 16, 'clients 16 against 8'), ('duration_s', 30, 'measured seconds 30 against 120'),
+                           ('mem_limit', '2G', 'TB_MEM_LIMIT 2G against none')):
+            rows = [dict(r, clients=8, duration_s=120, mem_limit='none') for r in base]
+            rows[2][k] = v
+            b = bk.bracketed(rows[1], rows)
+            self.assertAlmostEqual(b['ratio'], 0.95)
+            self.assertTrue(b['verdict'].startswith('NO VERDICT: a model row ran with other settings'), b['verdict'])
+            self.assertIn('the model row after it: ' + said, b['verdict'])
+        # The same settings, or a key a row does not carry, judge as before.
+        rows = [dict(r, clients=8, duration_s=120, mem_limit='none') for r in base]
+        self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'at least 0.90')
+        del rows[0]['mem_limit']
+        self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'at least 0.90')
+
+    def test_exactly_the_criterion(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 900), row(3, 'zfs-slog', 1000)]
+        self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'at least 0.90')
+        rows[1] = row(2, 'zfs-skyzfsd', 899.9)
+        self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'BELOW 0.90')
+
     def test_origin_delay(self):
         rows = [row(1, 'zfs-slog', 1000, delay=10), row(2, 'zfs-skyzfsd', 950), row(3, 'zfs-slog', 1000)]
         b = bk.bracketed(rows[1], rows)
