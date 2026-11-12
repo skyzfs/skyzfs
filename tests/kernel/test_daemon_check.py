@@ -33,6 +33,13 @@ def as_expected(impl='reference'):
         # A pin only the daemon can carry; the tests below set the
         # other one that waits on the stand-in by hand.
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: seen'
+        r['pin_detach_of_held_says_6'] = 'PASS: seen'
+        r['pin_orderly_stop_under_load'] = 'PASS: seen'
+        r['pin_serve_on_zfs_refused'] = 'PASS: seen'
+        r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: seen'
+        # And those the daemon cannot carry yet.
+        for name in dc.WAITS_FOR_THE_DAEMON:
+            r[name] = 'WAITING: seen'
     return r
 
 
@@ -84,6 +91,49 @@ class Cases(unittest.TestCase):
         _, _, errors = dc.judge(r, self.C)
         self.assertTrue(errors)
 
+    def test_an_observation_only_the_daemon_makes(self):
+        name = 'obs_b_refused_start_under_writes'
+        self.assertIn(name, dc.DAEMON_ONLY_OBSERVED)
+        # the stand-in writes no line for it and none is asked for
+        r = as_expected()
+        del r[name]
+        self.assertEqual(dc.judge(r, self.C)[1:], ([], []))
+        # a line that says "not run" is the rig's error on either server
+        r[name] = 'not run: x'
+        self.assertEqual(len(dc.judge(r, self.C)[2]), 1)
+        # with the daemon it is asked for
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        del r[name]
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+        r[name] = 'not run: x'
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+
+    def test_the_arm_without_a_log_device_is_judged_too(self):
+        # An arm that did not happen, or whose start served, must not
+        # hide behind its observation.
+        name = 'ctl_recovered_log_too_short_no_log_device'
+
+        def daemon_run(value):
+            r = as_expected('daemon')
+            r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+            r[name] = value
+            r['obs_b_refused_start_no_log_device'] = 'nothing to report: this arm ended before a refusal'
+            return dc.judge(r, self.C, impl='daemon')[1:]
+
+        self.assertEqual(daemon_run('FAIL: refused, served nothing'), ([], []))
+        differs, errors = daemon_run('PASS: serve --recover-short 1 SERVED')
+        self.assertEqual((len(differs), errors), (1, []))
+        differs, errors = daemon_run('ERROR: zpool create failed')
+        self.assertEqual((differs, len(errors)), ([], 1))
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: refused'
+        del r[name]
+        self.assertEqual(len(dc.judge(r, self.C, impl='daemon')[2]), 1)
+        # on the stand-in it waits, like the first arm's control
+        self.assertEqual(as_expected()[name], 'WAITING: seen')
+        self.assertEqual(dc.judge(as_expected(), self.C)[1:], ([], []))
+
     def test_the_daemon_is_held_to_its_own_counts(self):
         r = as_expected('daemon')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
@@ -92,6 +142,10 @@ class Cases(unittest.TestCase):
         r = as_expected('reference')
         r['ctl_recovered_log_too_short'] = 'FAIL: refused'
         r['pin_no_ublksrvd_entry_from_daemon'] = 'PASS: none'
+        r['pin_detach_of_held_says_6'] = 'PASS: exit 6'
+        r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: refused'
+        r['pin_orderly_stop_under_load'] = 'PASS: exit 0'
+        r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -146,7 +200,8 @@ class Judge(unittest.TestCase):
             del r[name]
             _, differs, errors = dc.judge(r, ALL)
             self.assertEqual(differs, [], name)
-            self.assertEqual(len(errors), 1, name)
+            # but for an observation only the daemon makes (its own test below)
+            self.assertEqual(len(errors), 0 if name in dc.DAEMON_ONLY_OBSERVED else 1, name)
 
     def test_an_unknown_word_is_a_rig_error(self):
         r = as_expected()
@@ -262,6 +317,26 @@ class Judge(unittest.TestCase):
             self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
             self.assertTrue(claim, name)
+
+
+class WaitsForTheDaemon(unittest.TestCase):
+    def test_a_pin_the_daemon_cannot_carry_yet_is_waiting_there_and_nothing_else(self):
+        r = as_expected('daemon')
+        r['ctl_recovered_log_too_short'] = 'FAIL: seen'       # the control only the daemon runs
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual((differs, errors), ([], []))
+        # PASS before its time is a difference: the table is changed on
+        # purpose when the daemon can carry the pin.
+        r['pin_takeover_time_does_not_grow'] = 'PASS: early'
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual(len(differs), 1)
+        r['pin_takeover_time_does_not_grow'] = 'FAIL: grew'
+        _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+        self.assertEqual(len(differs), 1)
+
+    def test_every_such_pin_is_in_the_table_and_waits_on_the_stand_in(self):
+        for name in dc.WAITS_FOR_THE_DAEMON:
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
 
 
 class Main(unittest.TestCase):

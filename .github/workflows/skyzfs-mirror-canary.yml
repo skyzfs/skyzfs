@@ -10,10 +10,14 @@ name: skyzfs-mirror-canary
 # With the input `force`, the script is told that the image's mirrors
 # do not resolve, so the fallback can be tried on a healthy day.
 #
-# Two groups fail for their own reasons on today's images and are not
-# the mirror's doing: linux-modules-extra (no such package for the
-# azure kernel) and, on 24.04, zfs-dkms (does not build on a 7.0
-# kernel; the prebuilt module is there). Read the table.
+# The job is red when a group the workflows need did not install. Two
+# groups can fail for reasons that are not the mirror's, and are then
+# reported in the table and not counted, each by a stated rule:
+#   linux-modules-extra-<kernel>: when apt knows no package of that
+#     name (the azure kernels have none; the modules are in the image).
+#   zfs-dkms: when the running kernel is newer than the newest the
+#     packaged ZFS source says it supports (Linux-Maximum in its META).
+# A failure of either group for any other reason counts.
 
 on:
   workflow_dispatch:
@@ -118,18 +122,35 @@ jobs:
             echo
             echo "### Installs "
             echo
-            echo "| group | exit | seconds | packages fetched, by host | first error |"
-            echo "|---|---|---|---|---|"
+            echo "| group | exit | counted | seconds | packages fetched, by host | first error |"
+            echo "|---|---|---|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
           group() { # NAME PACKAGE...
-            local name=$1 t0 rc from err; shift
+            local name=$1 t0 rc from err why counted=yes; shift
             t0=$(date +%s)
             sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" > "$RUNNER_TEMP/install-$name.log" 2>&1; rc=$?
             from=$(grep '^Get:' "$RUNNER_TEMP/install-$name.log" | awk '{ print $2 }' | sort | uniq -c | awk '{ printf "%s x %s; ", $1, $2 }')
             err=$(grep -m 1 -E '^(E|Err)[: ]|Temporary failure' "$RUNNER_TEMP/install-$name.log" | tr '|' '/')
-            echo "| $name | $rc | $(( $(date +%s) - t0 )) | ${from:-nothing fetched} | ${err:-none} |" >> "$GITHUB_STEP_SUMMARY"
-            echo "== $name: exit $rc"; tail -n 15 "$RUNNER_TEMP/install-$name.log"
-            [ $rc = 0 ] || fails=$((fails + 1))
+            if [ $rc != 0 ] && why=$(expected_here "$name"); then counted="no: $why"; fi
+            echo "| $name | $rc | $counted | $(( $(date +%s) - t0 )) | ${from:-nothing fetched} | ${err:-none} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "== $name: exit $rc${why:+ (expected here, not counted: $why)}"; tail -n 15 "$RUNNER_TEMP/install-$name.log"
+            [ $rc = 0 ] || [ "$counted" != yes ] || fails=$((fails + 1))
+          }
+          # expected_here GROUP: succeeds, and prints why, when the rule
+          # in this file's header says that group's failure is not counted.
+          expected_here() {
+            local max kver
+            case $1 in
+              modules-extra)
+                apt-cache show "linux-modules-extra-$(uname -r)" > /dev/null 2>&1 && return 1
+                echo "apt knows no package linux-modules-extra-$(uname -r)" ;;
+              dkms)
+                max=$(sed -n 's/^Linux-Maximum: *//p' /usr/src/zfs-*/META 2>/dev/null | head -n 1)
+                kver=$(uname -r | sed 's/^\([0-9]*\.[0-9]*\).*/\1/')
+                [ -n "$max" ] && [ "$max" != "$kver" ] && [ "$(printf '%s\n%s\n' "$max" "$kver" | sort -V | tail -n 1)" = "$kver" ] || return 1
+                echo "kernel $kver is newer than Linux-Maximum $max of the packaged ZFS source" ;;
+              *) return 1 ;;
+            esac
           }
           group build libdevmapper-dev libudev-dev libclang-dev build-essential liburing-dev linux-libc-dev \
             git ca-certificates autoconf automake libtool pkg-config libelf-dev python3-setuptools

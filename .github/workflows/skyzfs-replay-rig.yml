@@ -40,6 +40,7 @@ on:
   pull_request:
     paths:
       - tests/kernel/**
+      - tests/lib/**
       - .github/workflows/skyzfs-replay-rig.yml
 
 # A newer push to a pull request supersedes the run of the older one; a
@@ -81,18 +82,35 @@ jobs:
       - name: Package mirrors
         run: bash tests/lib/apt-fallback.sh
       - name: Install ZFS, build the ublk server and replay-log
+        # Steps that need the network are tried three times. One that
+        # still fails ends the job with exit 2 and a summary that says
+        # so: the rig's error, not a verdict on what was recorded.
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy
+          . tests/lib/net-try.sh
+          mkdir -p replay-out
+          setup() { # NAME COMMAND...
+            local name=$1 log; shift
+            log=replay-out/setup-$name.log
+            net_try "$@" > "$log" 2>&1 && return 0
+            tail -n 40 "$log"
+            {
+              echo "## Replay rig: the rig's own error, not a verdict"
+              echo
+              echo "Setup step \`$name\` failed in $NET_TRIES tries: $(net_why "$log")"
+            } > replay-out/replay-summary.md
+            echo "::error::setup ($name): $(net_why "$log")"
+            exit 2
+          }
+          setup apt sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy'
           # Only some kernel flavours split modules into this package;
           # where it does not exist, the modules are already there.
           sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
           sudo modprobe zfs
-          sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          setup ublksrv sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
           sudo modprobe ublk_drv
           sudo modprobe dm_log_writes
           sudo modprobe dm_snapshot
-          tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
+          setup replay-log tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
           uname -r; sudo zfs version
       - name: Record and replay
         # Settings go in a file: ubuntu-26.04's sudo-rs does not carry

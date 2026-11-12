@@ -22,6 +22,7 @@ on:
   pull_request:
     paths:
       - tests/kernel/**
+      - tests/lib/**
       - .github/workflows/skyzfs-kernel-probe.yml
 
 # The jobs run branch code, and the probe runs third-party code as
