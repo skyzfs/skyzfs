@@ -4273,6 +4273,10 @@ where
                             // nothing). The position and the failure
                             // hook leave it nothing new.
                             busy |= changed.is_ok();
+                            // As for a checkpoint: the change can have
+                            // taken a step up, and whoever is answered
+                            // finds the log as that left it.
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             let _ = reply.send(changed);
                             continue;
                         }
