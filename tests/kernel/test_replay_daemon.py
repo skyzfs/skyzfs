@@ -264,13 +264,14 @@ class Serve(unittest.TestCase):
         d = self.dir.name
         self.a = type('A', (), dict(work=d, base=os.path.join(d, 'base'), serve_arg=None, skyzfsd='true',
                                     ublk='ublk', volume='vol', dd='dd', dev_bytes=1 << 20))()
-        self.saved = (rd.run, rd.Daemon._serve, rd.ublk_numbers)
+        self.saved = (rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT)
+        rd.RUN_PARENT = d               # not /run: the tests do not run as root
         self.devices = set()
         rd.ublk_numbers = lambda: set(self.devices)
         rd.run = lambda cmd, timeout=300: (1, 'ublk del: busy', 0.0)   # the delete fails, the device stays
 
     def tearDown(self):
-        rd.run, rd.Daemon._serve, rd.ublk_numbers = self.saved
+        rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT = self.saved
         self.dir.cleanup()
 
     def serve_with(self, result):

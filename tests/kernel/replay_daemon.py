@@ -107,6 +107,7 @@ BASE_MAX = 16
 SNAP = 'skz-lower-snap'
 READY_S = 120
 STOP_S = 60
+RUN_PARENT = '/run'             # where a start's run directory goes, as after a reboot
 READY_RE = re.compile(r'^ready (/dev/ublkb(\d+))$', re.M)
 TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
 START_RE = re.compile(r'recovery (\d+) ms of a log of (\d+) bytes and (\d+) operations')
@@ -403,7 +404,7 @@ class Daemon:
 
     def serve(self, image, hooks, info):
         """Start the daemon as after a reboot, read its device, stop it -> (failed stage or None, detail)."""
-        run_dir = tempfile.mkdtemp(prefix='skz-replay-run.', dir='/run')
+        run_dir = tempfile.mkdtemp(prefix='skz-replay-run.', dir=RUN_PARENT)
         # Beside the run directory, not through it: removed with it below.
         boot = run_dir + '.boot'
         with open(boot, 'w') as f:
