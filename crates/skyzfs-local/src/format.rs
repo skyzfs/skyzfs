@@ -557,6 +557,13 @@ impl RecordHeader {
         Some((Kind::from_code(bytes[5])?, u32_at(bytes, 40)))
     }
 
+    /// The checksum of the payload, as the header's bytes say,
+    /// without the key: for a reader that checks a payload it read
+    /// beside a writer, nothing more.
+    pub fn peek_data_crc(bytes: &[u8; RECORD_HEADER]) -> u32 {
+        u32_at(bytes, 44)
+    }
+
     /// Whether `bytes` look like a record header that says it is at
     /// `position`, without the key. For reports only: nothing is ever
     /// replayed on the strength of this.

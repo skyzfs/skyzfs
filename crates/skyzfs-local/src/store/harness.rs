@@ -39,7 +39,7 @@ pub(crate) struct SimHarness {
     pub(crate) queue_depth: u32,
     /// The log's limit of segment files.
     pub(crate) segments: Option<usize>,
-    pub(crate) mutants: u32,
+    pub(crate) mutants: u64,
     /// Put the store behind its worker thread ([`Served`]). The suite
     /// then cannot choose how far a request in flight got, or which
     /// records a power cut keeps: the thread and a seed do.

@@ -19,17 +19,17 @@ fn sample_timing() -> skyzfs_local::store::Timing {
         let at = 200 + 8 * field;
         bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
     }
-    timing_at(&bytes)
+    timing_at(&bytes, false)
 }
 
-/// The pump's times with the same fields: 236 to 252.
+/// The pump's times with the same fields: 242 to 258.
 fn sample_pump() -> PumpTiming {
     let mut bytes = [0u8; LEN];
     for field in 0..TIME_FIELDS {
         let at = 200 + 8 * field;
         bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
     }
-    pump_at(&bytes)
+    pump_at(&bytes, false)
 }
 
 fn sample() -> Status {
@@ -73,17 +73,18 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA5");
+    expected.extend(b"SKYZSTA6");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 153 fields from offset 200, here 100 to 252.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..253) {
+    // The times are the 173 fields from offset 200, here 100 to 272.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..273) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1424);
+    assert_eq!(bytes.len(), 1584);
+    assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
     assert_eq!(timing.requests[0].wait.count, 100);
@@ -96,27 +97,36 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(timing.step_end.sum_ns, 135);
     assert_eq!(timing.step_own_sync.sum_ns, 137);
     assert_eq!((timing.gate.count, timing.gate.max_ns), (139, 141));
-    assert_eq!((timing.worker[0], timing.worker[13]), (142, 155));
-    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][13]), (156, 225));
-    assert_eq!(timing.wait_by[1][9], 179);
-    assert_eq!(timing.longest_wait_cause, [226, 227, 228, 229, 230]);
-    assert_eq!(timing.longest_wait_cause_ns, [231, 232, 233, 234, 235]);
+    assert_eq!((timing.worker[0], timing.worker[14]), (142, 156));
+    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][14]), (157, 231));
+    assert_eq!(timing.wait_by[1][9], 181);
+    assert_eq!(timing.longest_wait_cause, [232, 233, 234, 235, 236]);
+    assert_eq!(timing.longest_wait_cause_ns, [237, 238, 239, 240, 241]);
     let pump = sample_pump();
-    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (236, 238));
-    assert_eq!(pump.read_to_commit.sum_ns, 240);
-    assert_eq!(pump.other_to_commit.count, 242);
-    assert_eq!((pump.store.sum_ns, pump.behind_store), (246, 248));
+    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (242, 244));
+    assert_eq!(pump.read_to_commit.sum_ns, 246);
+    assert_eq!(pump.other_to_commit.count, 248);
+    assert_eq!((pump.store.sum_ns, pump.behind_store), (252, 254));
     // The times to the taking have no count in the file: it is the
     // commits'.
     let taken = (pump.read_to_taken, pump.other_to_taken);
     assert_eq!(
         (taken.0.count, taken.0.sum_ns, taken.0.max_ns),
-        (239, 249, 250)
+        (245, 255, 256)
     );
     assert_eq!(
         (taken.1.count, taken.1.sum_ns, taken.1.max_ns),
-        (242, 251, 252)
+        (248, 257, 258)
     );
+    let barriers = (timing.barrier_home, timing.barrier_reuse);
+    assert_eq!(
+        (barriers.0.count, barriers.0.sum_ns, barriers.0.max_ns),
+        (259, 260, 261)
+    );
+    assert_eq!(barriers.1.max_ns, 264);
+    assert_eq!(timing.reader, [265, 266, 267]);
+    assert_eq!(timing.read_unflushed, [268, 269, 270]);
+    assert_eq!((timing.worker_as_of_ns, timing.reader_as_of_ns), (271, 272));
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -259,6 +269,16 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     fifth[..8].copy_from_slice(b"SKYZSTA4");
     fs::write(&path, &fifth).expect("write");
     assert!(super::read(&path).is_err());
+    // Nor the sixth's at the fifth's length, nor the fifth's at the
+    // sixth's.
+    let mut short = encode(&sample())[..1424].to_vec();
+    fs::write(&path, &short).expect("write");
+    assert!(super::read(&path).is_err());
+    short[..8].copy_from_slice(b"SKYZSTA5");
+    let mut long = encode(&sample()).to_vec();
+    long[..8].copy_from_slice(b"SKYZSTA5");
+    fs::write(&path, &long).expect("write");
+    assert!(super::read(&path).is_err());
 
     let lines = lines_of(&sample());
     let timed: Vec<(&str, &str)> = lines
@@ -275,7 +295,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     // A cause is said by its name.
     let mut named = sample();
     if let Some(timing) = named.log.as_mut().and_then(|log| log.shown.timing.as_mut()) {
-        timing.longest_wait_cause = [9, 3, 0, 13, 1];
+        timing.longest_wait_cause = [9, 3, 0, 13, 14];
     }
     let lines = lines_of(&named);
     for (key, cause) in [
@@ -283,18 +303,28 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_write_longest_wait_cause", "flush"),
         ("time_flush_longest_wait_cause", "idle"),
         ("time_discard_longest_wait_cause", "other"),
-        ("time_zeroes_longest_wait_cause", "read"),
+        ("time_zeroes_longest_wait_cause", "step_barrier"),
     ] {
         assert_eq!(value(&lines, key), Some(cause), "{key}");
     }
     for (key, value) in [
-        ("time_read_longest_wait_cause_ns", "231"),
+        ("time_read_longest_wait_cause_ns", "237"),
         ("time_worker_idle_ns", "142"),
-        ("time_pump_submit_ns", "237"),
-        ("time_pump_commit_read_max_ns", "241"),
-        ("time_pump_store_count", "245"),
-        ("time_pump_store_completions", "248"),
-        ("time_write_wait_by_step_home_sync_ns", "179"),
+        ("time_worker_step_barrier_ns", "156"),
+        ("time_pump_submit_ns", "243"),
+        ("time_pump_commit_read_max_ns", "247"),
+        ("time_pump_store_count", "251"),
+        ("time_pump_store_completions", "254"),
+        ("time_write_wait_by_step_home_sync_ns", "181"),
+        ("time_zeroes_wait_by_step_barrier_ns", "231"),
+        ("time_barrier_home_count", "259"),
+        ("time_barrier_reuse_max_ns", "264"),
+        ("time_reader_idle_ns", "265"),
+        ("time_reader_other_ns", "267"),
+        ("time_read_unflushed_count", "268"),
+        ("time_read_unflushed_mismatched", "270"),
+        ("time_worker_as_of_ns", "271"),
+        ("time_reader_as_of_ns", "272"),
     ] {
         assert_eq!(self::value(&lines, key), Some(value), "{key}");
     }
@@ -308,7 +338,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_step_end_max_ns", "136"),
         ("time_step_own_sync_max_ns", "138"),
         ("time_gate_ns", "140"),
-        ("time_read_wait_by_step_walk_ns", "162"),
+        ("time_read_wait_by_step_walk_ns", "163"),
     ] {
         assert_eq!(value_of(&timed, key), Some(value), "{key}");
     }
@@ -316,6 +346,47 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     keys.sort_unstable();
     keys.dedup();
     assert_eq!(keys.len(), TIME_FIELDS);
+}
+
+/// A file of the fifth version (1424 bytes, `SKYZSTA5`) is still read:
+/// its fourteen activities where they were, the fifteenth at zero, and
+/// nothing from the barriers on. Its fields here are 100, 101, and so
+/// on from offset 200, as the fifth version's own layout test had them.
+#[test]
+fn a_file_of_the_fifth_version_is_read_with_its_fourteen_activities() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut fifth = encode(&sample())[..1424].to_vec();
+    fifth[..8].copy_from_slice(b"SKYZSTA5");
+    for field in 0..153 {
+        let at = 200 + 8 * field;
+        fifth[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
+    }
+    fs::write(&path, &fifth).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let log = read.log.expect("the log");
+    let (timing, pump) = (
+        log.shown.timing.expect("times"),
+        log.shown.pump.expect("pump"),
+    );
+    assert_eq!(
+        (timing.worker[0], timing.worker[13], timing.worker[14]),
+        (142, 155, 0)
+    );
+    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][13]), (156, 225));
+    assert_eq!((timing.wait_by[0][14], timing.wait_by[4][14]), (0, 0));
+    assert_eq!(timing.wait_by[1][9], 179);
+    assert_eq!(timing.longest_wait_cause, [226, 227, 228, 229, 230]);
+    assert_eq!(timing.longest_wait_cause_ns, [231, 232, 233, 234, 235]);
+    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (236, 238));
+    assert_eq!((pump.store.sum_ns, pump.behind_store), (246, 248));
+    assert_eq!(
+        (pump.read_to_taken.sum_ns, pump.other_to_taken.max_ns),
+        (249, 252)
+    );
+    assert_eq!(timing.barrier_home, Spent::default());
+    assert_eq!(timing.barrier_reuse, Spent::default());
+    assert_eq!((timing.reader, timing.read_unflushed), ([0; 3], [0; 3]));
 }
 
 fn value_of<'a>(lines: &[(&str, &'a str)], key: &str) -> Option<&'a str> {

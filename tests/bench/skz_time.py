@@ -8,14 +8,31 @@ daemon started serving) and what the longest wait was for
 readings; `render` prints the tables. Nothing here judges: the numbers
 are observations, and the identities are a guard on the reading.
 
+Since status version 6 a served store's reads have a reader thread of
+their own: a read's wait is laid over what the reader did (idle, which
+is its wake-up; the calls of reads before it; anything else), the
+worker has a fifteenth activity (`step_barrier`, a step waiting for the
+readers under way), and the barriers, the reader and the checked reads
+of records not yet durable have keys of their own. A version 5 reading
+(an older daemon) still gives its tables: its reads' waits are over the
+worker's activities, and what it does not have is shown as n/a.
+
 A reading is a dict of the status's lines, key -> text.
 """
 
 KINDS = ('read', 'write', 'flush', 'discard', 'zeroes')
-# What the one worker does, in the status's order.
+# What the one worker does, in the status's order (version 6; version 5
+# had the first fourteen).
 ACTIVITIES = ('idle', 'read', 'write', 'flush', 'discard', 'zeroes', 'step_walk', 'step_save', 'step_apply',
-              'step_home_sync', 'step_log_start', 'step_end', 'own_sync', 'other')
+              'step_home_sync', 'step_log_start', 'step_end', 'own_sync', 'other', 'step_barrier')
+# What the reader does (version 6): a read's wait is over these.
+READER_ACTIVITIES = ('idle', 'read', 'other')
+# The step's two barriers (version 6): before the home image is written,
+# and before a segment file the step freed is used again.
+BARRIERS = ('home', 'reuse')
 STEP_PARTS = ('walk', 'save', 'apply', 'home_sync', 'log_start', 'end')
+# A kind's name in a header that counts requests of it.
+PLURALS = {'read': 'reads', 'write': 'writes', 'flush': 'flushes', 'discard': 'discards', 'zeroes': 'write-zeroes'}
 
 
 def is_end_value(key):
@@ -102,19 +119,37 @@ def life(d, kind):
     return stages, n
 
 
+def has_reader(d):
+    """Whether the reading is of a daemon whose reads have a reader of their own (status version 6)."""
+    return d.get('time_reader_idle_ns') is not None
+
+
+def waited_for(d, kind):
+    """The activities a kind's wait is laid over: the reader's for reads of a version 6 daemon, else the worker's."""
+    return READER_ACTIVITIES if kind == 'read' and has_reader(d) else ACTIVITIES
+
+
+def worker_activities(d):
+    """The worker's activities the reading has (version 5 has no step_barrier)."""
+    return tuple(a for a in ACTIVITIES if d.get(f'time_worker_{a}_ns') is not None)
+
+
 def wait_by(d, kind):
     """-> ([(activity, ns)] largest first, their sum, the kind's wait)."""
-    rows = [(a, d.get(f'time_{kind}_wait_by_{a}_ns')) for a in ACTIVITIES]
+    rows = [(a, d.get(f'time_{kind}_wait_by_{a}_ns')) for a in waited_for(d, kind)]
     rows = [(a, v) for a, v in rows if v is not None]
     rows.sort(key=lambda r: -r[1])
     return rows, sum(v for _, v in rows), d.get(f'time_{kind}_wait_ns')
 
 
-# A wait's causes in groups: the hand-over to the worker; a checkpoint
-# step and the rule's own sync; the log's sync for a flush; requests
-# that write; other reads; the rest.
-GROUPS = (('idle (hand-over to the worker)', ('idle',)),
+# A wait's causes in groups: the hand-over to the thread that does the
+# request (the worker; the reader for reads since version 6); a
+# checkpoint step and the rule's own sync; a step waiting at a barrier
+# for the readers; the log's sync for a flush; requests that write;
+# other reads; the rest.
+GROUPS = (('idle (hand-over)', ('idle',)),
           ('a step and the own sync', tuple('step_' + p for p in STEP_PARTS) + ('own_sync',)),
+          ("a step's barrier", ('step_barrier',)),
           ('flush', ('flush',)),
           ('write, discard, zeroes', ('write', 'discard', 'zeroes')),
           ('read', ('read',)),
@@ -122,8 +157,13 @@ GROUPS = (('idle (hand-over to the worker)', ('idle',)),
 
 
 def wait_groups(d, kind):
-    """-> [(group, ns)] in the order of GROUPS; every activity is in exactly one group."""
-    return [(name, sum(d.get(f'time_{kind}_wait_by_{a}_ns') or 0 for a in acts)) for name, acts in GROUPS]
+    """-> [(group, ns)] in the order of GROUPS; every activity is in exactly one group.
+
+    For the reads of a version 6 daemon only the reader's three causes
+    count; the worker's others are not what a read waits for.
+    """
+    own = waited_for(d, kind)
+    return [(name, sum(d.get(f'time_{kind}_wait_by_{a}_ns') or 0 for a in acts if a in own)) for name, acts in GROUPS]
 
 
 def identities(t):
@@ -133,10 +173,26 @@ def identities(t):
         rows, total, wait = wait_by(d, kind)
         if rows and wait is not None:
             out.append((f"{kind}: the wait's causes sum to the wait (ns)", total, wait, total - wait))
-    worker = [d.get(f'time_worker_{a}_ns') for a in ACTIVITIES]
-    if all(v is not None for v in worker) and t.get('window_ns') is not None:
-        out.append(("the worker's activities sum to the time between the two readings (ns)",
-                    sum(worker), t['window_ns'], sum(worker) - t['window_ns']))
+    # Since the daemon says up to when each thread's sums are complete
+    # (time_worker_as_of_ns, time_reader_as_of_ns), a thread's
+    # activities are set against the difference of its own, and sum to
+    # it exactly; before, against the time between the two readings, to
+    # within the span open at each.
+    def against(who):
+        complete = d.get(f'time_{who}_as_of_ns')
+        if complete is not None:
+            return complete, f"the {who}'s two moments of completeness (time_{who}_as_of_ns)"
+        return t.get('window_ns'), 'the two readings'
+    worker = [d.get(f'time_worker_{a}_ns') for a in worker_activities(d)]
+    span, between = against('worker')
+    if worker and span is not None:
+        out.append((f"the worker's activities sum to the time between {between} (ns)",
+                    sum(worker), span, sum(worker) - span))
+    reader = [d.get(f'time_reader_{a}_ns') for a in READER_ACTIVITIES]
+    span, between = against('reader')
+    if all(v is not None for v in reader) and span is not None:
+        out.append((f"the reader's activities sum to the time between {between} (ns)",
+                    sum(reader), span, sum(reader) - span))
     return out
 
 
@@ -186,7 +242,7 @@ def render(rows):
                         'of postgres\'s read time is not in the daemon\'s account is outside the daemon: the kernel, '
                         'the ring, ZFS, and the reads the ARC answered.')
                 out += ['', f"A {kind}'s life, mean µs per {kind}.{note}", '',
-                        f"| workload | daemon row | tps | {kind}s | " + ' | '.join(heads) + f' | sum |{extra}',
+                        f"| workload | daemon row | tps | {PLURALS[kind]} | " + ' | '.join(heads) + f' | sum |{extra}',
                         '|---|---|---|---|' + '---|' * (len(heads) + 1 + (6 if extra else 0))]
             vals = [v for _, v in stages]
             total = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
@@ -201,8 +257,10 @@ def render(rows):
             out.append(line)
         if not usable:
             continue
-        out += ['', f"A {kind}'s wait (submitted to begun) by what the worker did meanwhile, µs per {kind} and share, "
-                'largest first; `idle` is the worker waking up:', '', '| workload | daemon row | ' + f'{kind} wait, µs | by cause |',
+        who = ('the reader (the worker where the daemon is older than status version 6)' if kind == 'read'
+               else 'the worker')
+        out += ['', f"A {kind}'s wait (submitted to begun) by what {who} did meanwhile, µs per {kind} and share, "
+                'largest first; `idle` is that thread waking up:', '', '| workload | daemon row | ' + f'{kind} wait, µs | by cause |',
                 '|---|---|---|---|']
         for r in usable:
             d = r['time']['delta']
@@ -218,14 +276,16 @@ def render(rows):
             out.append(f"| {r['workload']} | {r['label']} | "
                        + ' | '.join(f'{_f(_per(v, n))} ({_share(v, wait)})' for _, v in wait_groups(d, kind)) + ' |')
     if usable:
-        out += ['', 'Flushes beside reads:', '', '| workload | daemon row | flushes | flushes per read | mean flush call, µs |',
+        out += ['', 'Flushes beside reads:', '', '| workload | daemon row | flushes | flushes per 1000 reads | mean flush call, µs |',
                 '|---|---|---|---|---|']
         for r in usable:
             d = r['time']['delta']
             nf_, nr = d.get('time_flush_count'), d.get('time_read_count')
             out.append(f"| {r['workload']} | {r['label']} | {_f(nf_, 'd') if nf_ is not None else 'n/a'} | "
-                       f"{_f(None if not nr or nf_ is None else nf_ / nr, '.3f')} | {_f(_per(d.get('time_flush_call_ns'), nf_))} |")
-        out += ['', "The worker's time by activity, as shares of all it counted in the window; `busy` is all but idle:", '',
+                       f"{_f(None if not nr or nf_ is None else 1000 * nf_ / nr, '.2f')} | {_f(_per(d.get('time_flush_call_ns'), nf_))} |")
+        out += ['', "The worker's time by activity, as shares of all it counted in the window; `busy` is all but idle. "
+                'Since status version 6 the worker does no read (`read` is 0) and `step_barrier` is a step waiting '
+                'for the readers; an older daemon has no `step_barrier` (n/a):', '',
                 '| workload | daemon row | busy | ' + ' | '.join(ACTIVITIES) + ' |', '|---|---|---|' + '---|' * len(ACTIVITIES)]
         for r in usable:
             d = r['time']['delta']
@@ -271,6 +331,38 @@ def render(rows):
             keys = [f'time_step_{p}_max_ns' for p in STEP_PARTS] + ['time_step_own_sync_max_ns', 'time_gate_max_ns']
             out.append(f"| {r['workload']} | {r['label']} | "
                        + ' | '.join(_f(e[k] / 1e6, '.2f') if isinstance(e.get(k), int) else 'n/a' for k in keys) + ' |')
+        out += ['', "The reader (status version 6; n/a for an older daemon): its time as shares of all it counted in the "
+                'window, and the reads that found a record of the log not yet durable, whose whole payload it read '
+                'and checked against the record\'s checksum (a record that did not match failed the volume):', '',
+                '| workload | daemon row | busy | ' + ' | '.join(READER_ACTIVITIES)
+                + ' | checked reads | of all reads | bytes read beyond those asked for, per checked read | mismatched |',
+                '|---|---|---|' + '---|' * (len(READER_ACTIVITIES) + 4)]
+        for r in usable:
+            d = r['time']['delta']
+            w = [d.get(f'time_reader_{a}_ns') for a in READER_ACTIVITIES]
+            whole = sum(v for v in w if v is not None) if any(v is not None for v in w) else None
+            busy = None if w[0] is None or whole is None else whole - w[0]
+            n, nr = d.get('time_read_unflushed_count'), d.get('time_read_count')
+            extra, bad = d.get('time_read_unflushed_extra_bytes'), d.get('time_read_unflushed_mismatched')
+            out.append(f"| {r['workload']} | {r['label']} | {_share(busy, whole)} | "
+                       + ' | '.join(_share(v, whole) for v in w)
+                       + f" | {_f(n, 'd') if n is not None else 'n/a'} | {_share(n, nr)} | "
+                       f"{_f(_per(extra, n, 1), '.0f')} | {_f(bad, 'd') if bad is not None else 'n/a'} |")
+        out += ['', "The step's barriers in the window (status version 6; n/a for an older daemon): a step waits for the "
+                'readers under way before it writes the home image (`home`) and before a segment file it freed is used '
+                "again (`reuse`), once each per batch. The wait is the worker's `step_barrier` and in no part of a step. "
+                'The longest is since the daemon started serving:', '',
+                '| workload | daemon row | ' + ' | '.join(f'{b}: count | {b}: ms in all | {b}: µs each | {b}: longest, ms'
+                                                            for b in BARRIERS) + ' |',
+                '|---|---|' + '---|' * (4 * len(BARRIERS))]
+        for r in usable:
+            d, e = r['time']['delta'], r['time']['end']
+            cells = []
+            for b in BARRIERS:
+                n, ns, mx = d.get(f'time_barrier_{b}_count'), d.get(f'time_barrier_{b}_ns'), e.get(f'time_barrier_{b}_max_ns')
+                cells += [_f(n, 'd') if n is not None else 'n/a', _f(None if ns is None else ns / 1e6, '.1f'),
+                          _f(_per(ns, n)), _f(mx / 1e6, '.2f') if isinstance(mx, int) else 'n/a']
+            out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
         out += ['', "The pump's store of what was acknowledged:", '',
                 '| workload | daemon row | stores | ms each | completions behind one store |', '|---|---|---|---|---|']
         for r in usable:
@@ -292,11 +384,15 @@ def render(rows):
                        + ' | ' + ' | '.join(ms(e.get(f'time_{k}_call_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(cause(k) for k in KINDS[:3]) + ' |')
         out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly: that is '
-                'the guard that counts. The worker\'s activities are set against the time between the two looks at '
-                'the clock, taken just before each reading. The sums are the worker\'s spans closed at its last '
-                'publish; the span open at each reading (an idle wait or a step in progress) is not in them, so that '
-                'identity holds to within one open span and the status file\'s age at each end, about 0.1% of the '
-                'window (−3 to +141 ms in the first runs), and is not accounted for row by row:', '',
+                'the guard that counts. The worker\'s activities, and the reader\'s, are each set against the time '
+                'between the two moments up to which that thread\'s sums are complete (`time_worker_as_of_ns`, '
+                '`time_reader_as_of_ns`: the look\'s moment for a thread waiting for work, whose wait is counted as '
+                'idle up to it; the end of its last span for a thread doing something), so these too hold exactly, '
+                'and a difference is a fault of the daemon or of the reading. A daemon without those keys (version 5, '
+                'and version 6 before them) is set against the time between the two readings, taken just before '
+                'each: its sums leave out the span open at each reading, so that identity holds only to within one '
+                'open span (with reads off the worker, an idle span of up to seconds) and the status file\'s age at '
+                'each end:', '',
                 '| workload | daemon row | identity | left | right | difference |', '|---|---|---|---|---|---|']
         for r in usable:
             ids = identities(r['time'])

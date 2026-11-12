@@ -296,20 +296,7 @@ set -euo pipefail
 # such commands, and zfs-skyzfsd's teardown must not hang on one.
 # shellcheck source=tests/lib/lim.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/lim.sh"
-# lim was written for scripts without errexit and pipefail: its look at
-# a process that has just ended fails, and under `set -e` that ended
-# this script with status 2 and no message (run 43134306342). blim is
-# lim with both off while it runs, and the command's status returned.
-blim() {
-    local rc=0 e="" p=""
-    case $- in *e*) e=1 ;; esac
-    if shopt -qo pipefail; then p=1; fi
-    set +e +o pipefail
-    lim "$@"; rc=$?
-    [ -z "$p" ] || set -o pipefail
-    [ -z "$e" ] || set -e
-    return "$rc"
-}
+# It holds under this script's errexit and pipefail (tests/lib/test_lim.sh).
 
 # GNU dd as "$DD" (`gnudd` on ubuntu-26.04, plain `dd` before it): the
 # O_DIRECT calls below fail with the Rust coreutils dd. See the helper.
@@ -905,13 +892,13 @@ teardown_topology() {
         # pool waits for it, and an unmount or an export then never
         # returns: each of them has a limit here, and what could not be
         # undone is said.
-        blim 120 umount "$MNT" 2>/dev/null; blim 120 umount "$MNT_WAL" 2>/dev/null
+        lim 120 umount "$MNT" 2>/dev/null; lim 120 umount "$MNT_WAL" 2>/dev/null
     else
         umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
     fi
     umount "$WORK/mnt-src" 2>/dev/null
     if [ -n "$ZFS_UP" ] && [ -n "$SKZ_UP" ]; then
-        blim 300 zpool export -f "$ZFS_POOL" 2>/dev/null || blim 120 zpool destroy -f "$ZFS_POOL" 2>/dev/null \
+        lim 300 zpool export -f "$ZFS_POOL" 2>/dev/null || lim 120 zpool destroy -f "$ZFS_POOL" 2>/dev/null \
             || log "WARNING: pool $ZFS_POOL is still imported (its state: $(cat "/proc/spl/kstat/zfs/$ZFS_POOL/state" 2>/dev/null || echo unknown))"
         ZFS_UP=""
     elif [ -n "$ZFS_UP" ]; then
@@ -1288,7 +1275,7 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     FS_DEV=/dev/mapper/tb-zdev
 }
 # ---- zfs-skyzfsd: the project's daemon serves the vdev
-skz_status() { blim 30 "$SKYZFSD" status --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" 2>/dev/null || true; }
+skz_status() { lim 30 "$SKYZFSD" status --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" 2>/dev/null || true; }
 # key -> its value. awk reads to the end: one that left early could end
 # the writer with SIGPIPE, which pipefail turns into a failure here.
 skz_stat() { skz_status | awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }'; }
@@ -1349,8 +1336,8 @@ skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the v
         fi
         SKZ_PID=""
     fi
-    blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
-        || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(blim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
+    lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
+        || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(lim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
     rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
     if [ -n "$SKZ_CGROUP" ]; then rmdir "$SKZ_CGROUP" 2>/dev/null; SKZ_CGROUP=""; fi
 }
@@ -1427,11 +1414,11 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             ;;
         skyzfsd)
             # A previous run's leftover: its device and its files.
-            blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
+            lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
             rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
             mkdir -p "$SKZ_RUN"
             : > "$OUT/$TOPO.skzinfo"
-            blim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
+            lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
                 || { echo "skyzfsd create failed or did not end in 120 s" >&2; return 1; }
             SKZ_UP=1
             skz_start
@@ -1807,7 +1794,7 @@ snapshot() { # file
         # error), and it is the one check on correctness this benchmark
         # has. `zpool status -x` says "pool 'NAME' is healthy" or what
         # is wrong.
-        [ -z "$SKZ_UP" ] || echo "skzpool $(blim 60 zpool status -x "$ZFS_POOL" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300)"
+        [ -z "$SKZ_UP" ] || echo "skzpool $(lim 60 zpool status -x "$ZFS_POOL" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300)"
     } > "$1"
 }
 

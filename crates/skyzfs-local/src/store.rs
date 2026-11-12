@@ -18,8 +18,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -71,81 +71,101 @@ pub const PREIMAGE_NAME: &str = "home.pre";
 /// Deliberate defects, for the tests that show each defence is needed.
 /// Production code never sets one.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u32);
+pub(crate) struct Mutants(pub(crate) u64);
 
 #[allow(dead_code)]
 impl Mutants {
     /// A checkpoint applies records that are not durable yet.
-    pub(crate) const CHECKPOINT_UNSYNCED: u32 = 1 << 0;
+    pub(crate) const CHECKPOINT_UNSYNCED: u64 = 1 << 0;
     /// A checkpoint goes beyond the hold.
-    pub(crate) const CHECKPOINT_PAST_HOLD: u32 = 1 << 1;
+    pub(crate) const CHECKPOINT_PAST_HOLD: u64 = 1 << 1;
     /// A checkpoint gives up the log before the home image is synced.
-    pub(crate) const RECLAIM_BEFORE_HOME_SYNC: u32 = 1 << 2;
+    pub(crate) const RECLAIM_BEFORE_HOME_SYNC: u64 = 1 << 2;
     /// A checkpoint switches to the home image every block whose record
     /// is durable, applied or not.
-    pub(crate) const INDEX_SWITCH_EARLY: u32 = 1 << 3;
+    pub(crate) const INDEX_SWITCH_EARLY: u64 = 1 << 3;
     /// An open does not rebuild the index from the log.
-    pub(crate) const NO_INDEX_REBUILD: u32 = 1 << 4;
+    pub(crate) const NO_INDEX_REBUILD: u64 = 1 << 4;
     /// A flush is acknowledged without a sync of the log.
-    pub(crate) const FLUSH_NO_SYNC: u32 = 1 << 5;
+    pub(crate) const FLUSH_NO_SYNC: u64 = 1 << 5;
     /// A write is acknowledged before it is appended: the append is
     /// left for the next request.
-    pub(crate) const ACK_BEFORE_APPEND: u32 = 1 << 6;
+    pub(crate) const ACK_BEFORE_APPEND: u64 = 1 << 6;
     /// Requests are served after the volume has failed.
-    pub(crate) const SERVE_AFTER_FAILURE: u32 = 1 << 7;
+    pub(crate) const SERVE_AFTER_FAILURE: u64 = 1 << 7;
     /// A read takes every block from the home image.
-    pub(crate) const READ_HOME_ONLY: u32 = 1 << 8;
+    pub(crate) const READ_HOME_ONLY: u64 = 1 << 8;
     /// A checkpoint keeps no preimages of the blocks it rewrites
     /// without writing them.
-    pub(crate) const NO_PREIMAGES: u32 = 1 << 9;
+    pub(crate) const NO_PREIMAGES: u64 = 1 << 9;
     /// A checkpoint's preimages are not made durable before the home
     /// image is written.
-    pub(crate) const PREIMAGES_UNSYNCED: u32 = 1 << 10;
+    pub(crate) const PREIMAGES_UNSYNCED: u64 = 1 << 10;
     /// An open does not take the directory's lock.
-    pub(crate) const NO_LOCK: u32 = 1 << 11;
+    pub(crate) const NO_LOCK: u64 = 1 << 11;
     /// An open takes a preimage file for the current one whatever
     /// start of the log it was written for.
-    pub(crate) const STALE_PREIMAGES: u32 = 1 << 12;
+    pub(crate) const STALE_PREIMAGES: u64 = 1 << 12;
     /// An open does not write the preimages back.
-    pub(crate) const NO_RESTORE: u32 = 1 << 13;
+    pub(crate) const NO_RESTORE: u64 = 1 << 13;
     /// A checkpoint does not look at the result of its writes into the
     /// home image.
-    pub(crate) const IGNORE_HOME_WRITE: u32 = 1 << 14;
+    pub(crate) const IGNORE_HOME_WRITE: u64 = 1 << 14;
     /// A volume that fails on its own files does not mark the log.
-    pub(crate) const FAIL_UNMARKED: u32 = 1 << 15;
+    pub(crate) const FAIL_UNMARKED: u64 = 1 << 15;
     /// A read that fails on the store's files fails alone: the volume
     /// goes on serving.
-    pub(crate) const READ_ERROR_SERVED: u32 = 1 << 16;
+    pub(crate) const READ_ERROR_SERVED: u64 = 1 << 16;
     /// A hold is taken at any position.
-    pub(crate) const HOLD_UNCHECKED: u32 = 1 << 18;
+    pub(crate) const HOLD_UNCHECKED: u64 = 1 << 18;
     /// A neighbour counts as held by the log when the index names a
     /// record for it, durable or not, and is not saved.
-    pub(crate) const UNSYNCED_COVERS: u32 = 1 << 19;
+    pub(crate) const UNSYNCED_COVERS: u64 = 1 << 19;
     /// The acknowledged position is the end of the record, which is
     /// the log's end, and not where the record starts.
-    pub(crate) const ACKNOWLEDGED_IS_END: u32 = 1 << 20;
+    pub(crate) const ACKNOWLEDGED_IS_END: u64 = 1 << 20;
     /// A write-zeroes record is applied by writing zeros, and counts
     /// its length in a step's bound: the store before M1.3f.
-    pub(crate) const ZEROES_WRITTEN: u32 = 1 << 21;
+    pub(crate) const ZEROES_WRITTEN: u64 = 1 << 21;
     /// A file system that cannot deallocate fails the volume.
-    pub(crate) const NO_HOLES_FAILS: u32 = 1 << 22;
+    pub(crate) const NO_HOLES_FAILS: u64 = 1 << 22;
     /// A write-zeroes record counts no bytes in a step's bound also
     /// where its zeros are written.
-    pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
+    pub(crate) const WRITTEN_ZEROES_FREE: u64 = 1 << 23;
     /// A step goes on past the record at which the file system first
     /// refused to deallocate.
-    pub(crate) const REFUSAL_ENDS_NO_STEP: u32 = 1 << 25;
+    pub(crate) const REFUSAL_ENDS_NO_STEP: u64 = 1 << 25;
     /// A store is created whatever the block size of the directory's
     /// file system.
-    pub(crate) const CREATE_ON_ANY_BLOCKS: u32 = 1 << 26;
+    pub(crate) const CREATE_ON_ANY_BLOCKS: u64 = 1 << 26;
     /// A store is opened whatever the block size of the file systems
     /// its files are on.
-    pub(crate) const OPEN_ON_ANY_BLOCKS: u32 = 1 << 27;
+    pub(crate) const OPEN_ON_ANY_BLOCKS: u64 = 1 << 27;
     /// A store is created and opened whatever the page size of the
     /// system it runs on.
-    pub(crate) const UNDER_ANY_PAGES: u32 = 1 << 28;
+    pub(crate) const UNDER_ANY_PAGES: u64 = 1 << 28;
+    /// A step writes into the home image without waiting for the
+    /// readers that are under way.
+    pub(crate) const HOME_WRITTEN_UNBARRED: u64 = 1 << 29;
+    /// A step's end does not wait for the readers that are under way:
+    /// a segment file it freed can be used again while one of them
+    /// still reads a record in it.
+    pub(crate) const SLOT_REUSED_UNBARRED: u64 = 1 << 30;
+    /// The reader answers a read of a record that is not durable yet
+    /// without asking whether a sync of the log failed meanwhile.
+    pub(crate) const UNFLUSHED_READ_UNCHECKED: u64 = 1 << 17;
+    /// A barrier waits for a moment with no reader under way, and not
+    /// only for the readers that were under way when it began.
+    pub(crate) const BARRIER_WAITS_FOR_ALL: u64 = 1 << 31;
+    /// The reader is told that the volume has failed before the log's
+    /// marker is attempted.
+    pub(crate) const FAILED_SHOWN_BEFORE_MARK: u64 = 1 << 24;
+    /// The reader takes its pin after its lookup, and not before it:
+    /// after the read's pause, where a test can hold it between the
+    /// two.
+    pub(crate) const PIN_AFTER_LOOKUP: u64 = 1 << 32;
 
-    fn has(self, flag: u32) -> bool {
+    fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
 }
@@ -553,6 +573,181 @@ impl Index {
     }
 }
 
+/// What a read looks at before it reads a file: the index, and for
+/// every segment of the log the number of the file that holds it.
+#[derive(Debug, Default)]
+struct Lookup {
+    index: Index,
+    /// The log's segments as the index needs them: by first position,
+    /// the file's number ([`crate::log::slot_name`]). A segment the
+    /// log has given up stays here until the index lets go of its
+    /// records, in the same hold of the lock.
+    segments: BTreeMap<u64, usize>,
+    /// [`Log::segments_changed`] when `segments` was taken.
+    changed: Option<u64>,
+}
+
+impl Lookup {
+    /// Take the log's segments again if they have changed.
+    fn follow<D: Dir>(&mut self, log: &Log<D>) {
+        let changed = Some(log.segments_changed());
+        if self.changed != changed {
+            self.segments = log.segments();
+            self.changed = changed;
+        }
+    }
+}
+
+/// What the store's worker shares with whoever reads beside it (the
+/// reader thread of a served store, design §5.1 "Reads leave the
+/// worker").
+///
+/// - `lookup` is held by a reader for the lookup alone, never across
+///   a read of a file, and by the worker for an insert and for the
+///   drop at a step's end.
+/// - `pin` is held shared by a reader from just before its lookup to
+///   the end of its last read of a file. The worker takes it
+///   exclusively for an instant, as a barrier that waits for the
+///   readers under way, at two points of a step and nowhere else:
+///   before the step's first write into the home image, and after the
+///   index has let go of the batch, before a segment file the step
+///   freed can be used again.
+/// - `failed` says that the volume has failed, to a reader that
+///   begins a read.
+/// - `durable` is for a read of a record that is not durable yet.
+///   After a failed sync the page cache may show a file as it was
+///   before the writes the sync was to cover, so such a record's
+///   payload can read as something else from the moment a sync of the
+///   log begins to fail, which is before anybody knows that it failed.
+///   A reader that finds a record at or beyond `durable` (as it is at
+///   the lookup) reads the record's whole payload and checks it
+///   against the header's checksum: a payload that matches is the one
+///   that was written, and is served whatever the sync does
+///   afterwards (rule R11 lets a request in flight at a failure
+///   complete either way). One that does not match is a log that
+///   cannot be read: the worker fails the volume and answers the read,
+///   which is also what a sync that is failing comes to. Records below
+///   `durable` and the home image are not exposed to this: a failed
+///   sync takes back only what no sync had covered, and what a step
+///   writes into the home image is read from the log until the step's
+///   end.
+///
+/// A read's whole range is looked up under one hold of `lookup`, and a
+/// mutation's whole range is entered under one: a read shows a
+/// mutation whole or not at all, and for a block the index only moves
+/// forward (to a newer record, or to the home image once that holds
+/// the newest), so a write that a read has shown is shown by every
+/// later read.
+#[derive(Debug, Default)]
+struct Shared {
+    lookup: RwLock<Lookup>,
+    pin: Pins,
+    failed: AtomicBool,
+    /// Up to where the log is durable, as the worker last knew.
+    durable: AtomicU64,
+}
+
+/// The pin of design §5.1: readers enter it before they look up and
+/// leave it after their last read of a file; a barrier waits for the
+/// readers that were under way when it began.
+///
+/// Readers enter under a generation, and a barrier begins a new one
+/// and waits until no reader of an older generation is under way. A
+/// reader that enters while a barrier waits is of the new generation
+/// and is not waited for, so reads that keep arriving, overlapping each
+/// other, never hold a step: the barrier waits for as long as the
+/// slowest read that was under way when it began, and no longer. This
+/// rests on nothing a lock promises about who goes first.
+#[derive(Debug, Default)]
+struct Pins {
+    state: Mutex<PinState>,
+    left: std::sync::Condvar,
+}
+
+#[derive(Debug, Default)]
+struct PinState {
+    /// The generation a reader that enters now is of.
+    generation: u64,
+    /// The readers under way, by the generation they entered under.
+    under_way: BTreeMap<u64, usize>,
+}
+
+/// A reader's pin: it leaves when this is dropped.
+struct Pin<'a> {
+    pins: &'a Pins,
+    generation: u64,
+}
+
+impl Pins {
+    fn state(&self) -> std::sync::MutexGuard<'_, PinState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn enter(&self) -> Pin<'_> {
+        let mut state = self.state();
+        let generation = state.generation;
+        *state.under_way.entry(generation).or_default() += 1;
+        Pin {
+            pins: self,
+            generation,
+        }
+    }
+
+    /// Wait for the readers that are under way now. With `all` (a
+    /// defect, for tests), wait for a moment with no reader at all.
+    fn barrier(&self, all: bool) {
+        let mut state = self.state();
+        let before = state.generation;
+        state.generation += 1;
+        while state
+            .under_way
+            .iter()
+            .any(|(generation, readers)| *readers > 0 && (all || *generation <= before))
+        {
+            state = self
+                .left
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+impl Drop for Pin<'_> {
+    fn drop(&mut self) {
+        let mut state = self.pins.state();
+        if let Some(readers) = state.under_way.get_mut(&self.generation) {
+            *readers -= 1;
+            if *readers == 0 {
+                state.under_way.remove(&self.generation);
+            }
+        }
+        drop(state);
+        self.pins.left.notify_all();
+    }
+}
+
+impl Shared {
+    fn read(&self) -> RwLockReadGuard<'_, Lookup> {
+        self.lookup.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, Lookup> {
+        self.lookup.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What a reader holds while it looks up and reads.
+    fn pinned(&self) -> Pin<'_> {
+        self.pin.enter()
+    }
+
+    /// Wait for the readers that are under way. A reader that begins
+    /// after this began looks up after it.
+    fn barrier(&self, mutants: Mutants) {
+        self.pin
+            .barrier(mutants.has(Mutants::BARRIER_WAITS_FOR_ALL));
+    }
+}
+
 /// The buffer an operation carries, for its completion.
 fn buffer_of(op: Op) -> Option<Buf> {
     match op {
@@ -574,7 +769,8 @@ struct Core<D: Dir> {
     preimages: Option<D::File>,
     /// The directory's lock, held for as long as the store lives.
     _lock: Option<D::Lock>,
-    index: Index,
+    /// The index, and what else a reader beside the worker needs.
+    shared: Arc<Shared>,
     geometry: Geometry,
     /// The volume has failed: nothing is served any more.
     failed: bool,
@@ -614,6 +810,14 @@ struct Core<D: Dir> {
     /// cannot deallocate.
     #[cfg(any(test, feature = "test-hooks"))]
     refuse_holes: bool,
+    /// For test rigs: how the reader of a served store waits after
+    /// every lookup.
+    #[cfg(any(test, feature = "test-hooks"))]
+    read_pause: Option<StepPause>,
+    /// For test rigs: how a sync of the log for a flush waits before
+    /// it begins.
+    #[cfg(any(test, feature = "test-hooks"))]
+    sync_pause: Option<StepPause>,
     mutants: Mutants,
 }
 
@@ -658,11 +862,25 @@ impl<D: Dir> Core<D> {
     /// The volume fails: something of the store's own could not be read
     /// or written. Nothing is served from now on, and the log's marker
     /// says so to the next instance.
+    ///
+    /// The reader beside the worker is told only after the marker was
+    /// attempted (design §5.1): it answers a read as failed on its own
+    /// when it finds the flag, and no read may be answered as failed
+    /// before the next instance can find the mark. A read that begins
+    /// while the marker is written is served, or checked, as any read
+    /// in flight at the failure (rule R11). The log's own failures mark
+    /// before the log call returns, and [`Core::with_log`] tells the
+    /// reader after it returns.
     fn fail(&mut self) -> BlkError {
         self.failed = true;
+        let early = self.mutants.has(Mutants::FAILED_SHOWN_BEFORE_MARK);
+        if early {
+            self.shared.failed.store(true, Ordering::SeqCst);
+        }
         if !self.log.is_failed() && !self.mutants.has(Mutants::FAIL_UNMARKED) {
             self.log.mark_failed();
         }
+        self.shared.failed.store(true, Ordering::SeqCst);
         BlkError::Failed
     }
 
@@ -711,7 +929,7 @@ impl<D: Dir> Core<D> {
         }
         let mut made_room = false;
         let appended = loop {
-            match self.log.append(kind, offset, len, data) {
+            match self.with_log(|log| log.append(kind, offset, len, data)) {
                 Ok(appended) => break appended,
                 Err(LogError::Full) if !made_room => {
                     made_room = true;
@@ -731,8 +949,13 @@ impl<D: Dir> Core<D> {
             appended.start
         });
         let (start, blocks) = (offset / BLOCK_SIZE, len / BLOCK_SIZE);
+        // The index points at the record before the caller
+        // acknowledges it: a read that is submitted after the
+        // acknowledgement looks up after this.
+        let mut lookup = self.shared.write();
+        lookup.follow(&self.log);
         match kind {
-            Kind::Write => self.index.insert(
+            Kind::Write => lookup.index.insert(
                 start,
                 blocks,
                 Source::Data {
@@ -740,7 +963,7 @@ impl<D: Dir> Core<D> {
                     first: 0,
                 },
             ),
-            Kind::WriteZeroes => self.index.insert(
+            Kind::WriteZeroes => lookup.index.insert(
                 start,
                 blocks,
                 Source::Zero {
@@ -751,6 +974,7 @@ impl<D: Dir> Core<D> {
             // for whoever uploads, and changes nothing here.
             _ => {}
         }
+        drop(lookup);
         Some(Ok(()))
     }
 
@@ -775,7 +999,11 @@ impl<D: Dir> Core<D> {
         // the disk, and such a flush promises nothing new: a disk that
         // would refuse the next sync and has not been asked has not
         // failed yet (design §4.1).
-        let synced = self.log.sync().map(|_| ());
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(pause) = &self.sync_pause {
+            pause.wait();
+        }
+        let synced = self.with_log(|log| log.sync().map(|_| ()));
         match synced {
             Ok(()) => {
                 self.unsynced.clear();
@@ -793,7 +1021,7 @@ impl<D: Dir> Core<D> {
         let runs = if self.mutants.has(Mutants::READ_HOME_ONLY) {
             vec![(start, blocks, None)]
         } else {
-            self.index.lookup(start, blocks)
+            self.shared.read().index.lookup(start, blocks)
         };
         for (run, len, source) in runs {
             let from = ((run - start) * BLOCK_SIZE) as usize;
@@ -1010,6 +1238,40 @@ impl<D: Dir> Core<D> {
         self.part(began, ended, Activity::STEP_WALK);
     }
 
+    /// A barrier of a step has been passed, where the step waited for
+    /// the readers under way since `since`: the one before a segment
+    /// file can be used again if `reuse`, else the one before the home
+    /// image is written. Returns when it was passed.
+    fn barred(&mut self, since: Instant, reuse: bool) -> Instant {
+        let passed = Instant::now();
+        let barrier = if reuse {
+            &mut self.timing.barrier_reuse
+        } else {
+            &mut self.timing.barrier_home
+        };
+        barrier.add(passed - since);
+        self.part(since, passed, Activity::STEP_BARRIER);
+        passed
+    }
+
+    /// Call the log where it can sync a segment file (an append, which
+    /// seals a segment at a roll, and a sync), and tell the readers
+    /// beside the worker up to where it is durable now: see [`Shared`].
+    /// The durable position is told only after the sync that made it
+    /// so has returned. A log that failed in the call has attempted its
+    /// marker before it returned (`Log::fail`), so the reader is told
+    /// of the failure after the marker, as in [`Core::fail`].
+    fn with_log<T>(&mut self, call: impl FnOnce(&mut Log<D>) -> T) -> T {
+        let done = call(&mut self.log);
+        if self.log.is_failed() {
+            self.shared.failed.store(true, Ordering::SeqCst);
+        }
+        self.shared
+            .durable
+            .store(self.log.durable().0, Ordering::SeqCst);
+        done
+    }
+
     /// Note a part of a batch for the worker, if there is one.
     fn part(&mut self, began: Instant, ended: Instant, activity: usize) {
         if let Some(parts) = &mut self.parts {
@@ -1142,6 +1404,21 @@ impl<D: Dir> Core<D> {
         let saved_at = Instant::now();
         self.timing.step_save.add(saved_at - began);
         self.part(began, saved_at, Activity::STEP_SAVE);
+        // The first barrier: the readers that are under way end before
+        // the home image is written. One of them may have found a
+        // block in the home image before the write that this batch
+        // applies there was appended, and still be reading it: a
+        // buffered read beside a buffered write of the same page may
+        // return a block that is part old and part new (assumed of
+        // the kernel, not shown by a test here), which rule R3
+        // forbids. A reader that begins after the barrier finds every
+        // block of the batch in the log: the batch's records were in
+        // the index before the batch was chosen, and stay there until
+        // the step's end. Deallocating is a write here.
+        if !self.mutants.has(Mutants::HOME_WRITTEN_UNBARRED) {
+            self.shared.barrier(self.mutants);
+        }
+        let saved_at = self.barred(saved_at, false);
         // (1) The neighbours are saved and durable; the home image is
         // as it was.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1269,16 +1546,32 @@ impl<D: Dir> Core<D> {
         let started_at = Instant::now();
         self.timing.step_start.add(started_at - synced_at);
         self.part(synced_at, started_at, Activity::STEP_LOG_START);
-        if self.mutants.has(Mutants::INDEX_SWITCH_EARLY) {
-            self.index.drop_below(self.log.durable());
-        } else {
-            self.index.drop_below(start);
+        {
+            // In one hold of the lock: the index lets go of the batch,
+            // and of the segment files the log gave up with it.
+            let mut lookup = self.shared.write();
+            if self.mutants.has(Mutants::INDEX_SWITCH_EARLY) {
+                lookup.index.drop_below(self.log.durable());
+            } else {
+                lookup.index.drop_below(start);
+            }
+            lookup.follow(&self.log);
         }
         // The batch's last part: the index lets go of what is now in
         // the home image.
         let ended_at = Instant::now();
         self.timing.step_end.add(ended_at - started_at);
         self.part(started_at, ended_at, Activity::STEP_END);
+        // The second barrier: the readers that are under way end
+        // before a segment file this step freed can be used again.
+        // The log reuses its files, so a reader that found a record
+        // before the index let go of it would otherwise read that
+        // place after another record was written there. A reader that
+        // begins after the barrier cannot find the old position.
+        if !self.mutants.has(Mutants::SLOT_REUSED_UNBARRED) {
+            self.shared.barrier(self.mutants);
+        }
+        self.barred(ended_at, true);
         Ok((start, cut))
     }
 }
@@ -1340,6 +1633,8 @@ impl<D: Dir> Core<D> {
                 // cut can take it and the block's copy here together.
                 let durable = self.log.durable();
                 let logged = self
+                    .shared
+                    .read()
                     .index
                     .lookup(block, 1)
                     .first()
@@ -1654,13 +1949,16 @@ impl Activity {
     /// Everything else: the loop's own work between two of the above
     /// and commands that are no request.
     const OTHER: usize = 13;
+    /// A step waiting at one of its two barriers for the readers
+    /// that are under way.
+    const STEP_BARRIER: usize = 14;
 }
 
 /// The names of what a worker can be doing, in the order of
 /// [`Timing::worker`]: idle; the call of a read, a write, a flush (the
 /// log's sync), a discard, a write-zeroes; the six parts of a step
 /// and the rule's own sync of the log; anything else.
-pub const ACTIVITIES: [&str; 14] = [
+pub const ACTIVITIES: [&str; 15] = [
     "idle",
     "read",
     "write",
@@ -1675,6 +1973,7 @@ pub const ACTIVITIES: [&str; 14] = [
     "step_end",
     "own_sync",
     "other",
+    "step_barrier",
 ];
 
 /// What the worker did, span after span, for as far back as a request
@@ -1703,6 +2002,11 @@ impl Spans {
             last: Instant::now(),
             spans: VecDeque::new(),
         }
+    }
+
+    /// The span that is open now, if the thread is doing `activity`.
+    fn open(&self, activity: usize) -> Open {
+        Some((self.last, activity))
     }
 
     /// The worker did `activity` from the last span's end until `now`.
@@ -1753,8 +2057,8 @@ impl Spans {
     /// activity, in nanoseconds. The oldest span that is kept is taken
     /// to reach back as far as `from`: its begin was forgotten because
     /// no request that waits was submitted before it.
-    fn between(&self, from: Instant) -> [u64; 14] {
-        let mut by = [0u64; 14];
+    fn between(&self, from: Instant) -> [u64; 15] {
+        let mut by = [0u64; 15];
         for at in (0..self.spans.len()).rev() {
             let (end, activity) = self.spans[at];
             if end <= from {
@@ -1857,18 +2161,51 @@ pub struct Timing {
     /// the spans follow each other with no gap, so the sum is the time
     /// served, and one entry over the sum is the share of the worker's
     /// time that went there.
-    pub worker: [u64; 14],
+    pub worker: [u64; 15],
     /// For each kind of request ([`TIMED_KINDS`]): the summed waits of
     /// [`RequestTiming::wait`] by what the worker did meanwhile
     /// ([`ACTIVITIES`]). Each request's wait is laid over the worker's
     /// spans, so a row's sum is that kind's summed wait. "Idle" here is
     /// the time the worker took to wake for a request.
-    pub wait_by: [[u64; 14]; 5],
+    pub wait_by: [[u64; 15]; 5],
     /// For each kind: of its longest wait, the activity that took the
     /// largest part of it, as a number into [`ACTIVITIES`].
     pub longest_wait_cause: [u64; 5],
     /// And how long that part was.
     pub longest_wait_cause_ns: [u64; 5],
+    /// How long steps waited at their first barrier, before the home
+    /// image is written, for the readers under way: once per batch.
+    /// This time is the activity "step_barrier" and in none of the
+    /// step's parts above.
+    pub barrier_home: Spent,
+    /// The same at the second barrier, before a segment file the step
+    /// freed can be used again.
+    pub barrier_reuse: Spent,
+    /// The reader's whole time since it started, in nanoseconds:
+    /// idle, in the calls of reads, and anything else. The three
+    /// follow each other with no gap, so their sum is the time the
+    /// reader has served. A served store only.
+    pub reader: [u64; 3],
+    /// The reads that found a block in a record of the log that was
+    /// not durable yet, whose payload the reader then read whole and
+    /// checked against its checksum (a failed sync can take such a
+    /// record's content back: see the design, §5.1): how many reads; the
+    /// bytes they read beyond those asked for; how many records did not
+    /// match, each of which failed the volume. A served store only.
+    pub read_unflushed: [u64; 3],
+    /// Up to when the worker's activities ([`Timing::worker`]) are
+    /// complete, in nanoseconds since the store began to be served.
+    /// A worker that waits for work at the look has the wait counted
+    /// as idle up to the look, and this is the look's moment; a worker
+    /// that is doing something has its sums up to the end of its last
+    /// span and this is that end: what it is doing now is counted when
+    /// it is done, under what it was, and never first under something
+    /// else. So between two looks the worker's activities sum to the
+    /// difference of this exactly, and no sum goes down. A served
+    /// store only.
+    pub worker_as_of_ns: u64,
+    /// The same for the reader's activities ([`Timing::reader`]).
+    pub reader_as_of_ns: u64,
 }
 
 /// The log as a store shows it to its owner.
@@ -2448,13 +2785,23 @@ impl<D: Dir> Store<D> {
                 }
             })?;
         }
+        let mut shared = Shared::default();
+        {
+            let lookup = shared
+                .lookup
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            lookup.index = index;
+            lookup.follow(&log);
+        }
+        shared.durable.store(log.durable().0, Ordering::SeqCst);
         Ok(Self {
             core: Core {
                 log,
                 home,
                 preimages,
                 _lock: lock,
-                index,
+                shared: Arc::new(shared),
                 geometry,
                 failed: false,
                 unsynced: Vec::new(),
@@ -2471,6 +2818,10 @@ impl<D: Dir> Store<D> {
                 pause: None,
                 #[cfg(any(test, feature = "test-hooks"))]
                 refuse_holes: false,
+                #[cfg(any(test, feature = "test-hooks"))]
+                read_pause: None,
+                #[cfg(any(test, feature = "test-hooks"))]
+                sync_pause: None,
                 mutants: options.mutants,
             },
             unacknowledged,
@@ -2536,6 +2887,23 @@ impl<D: Dir> Store<D> {
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn set_refuse_holes(&mut self, refuse: bool) {
         self.core.refuse_holes = refuse;
+    }
+
+    /// For test rigs: make the reader of the served store wait after
+    /// every lookup, with the lookup's lock released, before it reads
+    /// a file. It holds its pin while it waits, taken before the
+    /// lookup, so a step waits for it at its next barrier.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_read_pause(&mut self, pause: StepPause) {
+        self.core.read_pause = Some(pause);
+    }
+
+    /// For test rigs: make every sync of the log for a flush (a
+    /// client's, the rule's own, or one that makes room) wait before
+    /// it begins.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn set_sync_pause(&mut self, pause: StepPause) {
+        self.core.sync_pause = Some(pause);
     }
 
     /// For test rigs: make every step wait at `point`.
@@ -2758,12 +3126,240 @@ enum Command {
     Hold(Option<Lsn>, mpsc::Sender<Result<(), NotABoundary>>),
     Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
     Position(mpsc::Sender<Lsn>),
+    /// The reader could not read one of the store's files for the
+    /// read `RequestId`: the worker fails the volume and answers the
+    /// read, in that order.
+    ReadFailed(RequestId, Buf),
     /// For tests: the worker panics.
     #[cfg(test)]
     Panic,
     /// For test rigs: fail the log now.
     #[cfg(any(test, feature = "test-hooks"))]
     Fail(mpsc::Sender<()>),
+}
+
+/// What the owner of a [`Served`] store hands its reader.
+enum ToReader {
+    /// A read, and when it was submitted.
+    Read(Request, Instant),
+    /// For tests: the reader panics.
+    #[cfg(test)]
+    Panic,
+}
+
+/// Where a run of a read's blocks is, as the reader found it under the
+/// lock: resolved as far as a file and a place in it, so that nothing
+/// is asked of the index or of the log again.
+enum Found {
+    /// In the payload of the write record at `record`, `skip` bytes
+    /// in, in the segment file of number `file`; `unflushed` if the
+    /// record was not durable at the lookup.
+    Log {
+        file: usize,
+        record: Lsn,
+        skip: u64,
+        unflushed: bool,
+    },
+    Zero,
+    Home,
+}
+
+/// Why the reader did not read.
+enum Unread {
+    /// The request is not valid, or the volume has failed: answered
+    /// with this, and nothing was read.
+    Refused(BlkError),
+    /// One of the store's files could not be read.
+    Fault,
+}
+
+/// The reader of a served store: it executes the reads, on a thread
+/// of its own, with handles of its own on the store's files (design
+/// §5.1 "Reads leave the worker"). It writes nothing.
+struct Reader<D: Dir> {
+    dir: D,
+    home: D::File,
+    /// The log's segment files it has opened, by number. A file keeps
+    /// its name for as long as the store lives: the log reuses its
+    /// files and removes none.
+    segments: BTreeMap<usize, D::File>,
+    identity: crate::format::Identity,
+    geometry: Geometry,
+    shared: Arc<Shared>,
+    /// Reads of records that were not durable yet: see
+    /// [`Timing::read_unflushed`].
+    unflushed: [u64; 3],
+    /// Where a record's whole payload is read to be checked.
+    scratch: Vec<u8>,
+    mutants: Mutants,
+    #[cfg(any(test, feature = "test-hooks"))]
+    pause: Option<StepPause>,
+}
+
+impl<D: Dir> Reader<D> {
+    /// A read: each block from the record the index names, or from
+    /// the home image, as [`Core::read`] does on the worker.
+    ///
+    /// The read was submitted before this is called, so the lookup
+    /// sees every operation that was acknowledged before the read was
+    /// received: the worker points the index at a record before it
+    /// acknowledges it. An operation in flight is seen or not, whole:
+    /// the lookup is of one moment (rule R3 asks less, block by
+    /// block).
+    fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), Unread> {
+        if self.shared.failed.load(Ordering::SeqCst)
+            && !self.mutants.has(Mutants::SERVE_AFTER_FAILURE)
+        {
+            return Err(Unread::Refused(BlkError::Failed));
+        }
+        let start = offset / BLOCK_SIZE;
+        let blocks = (buf.len() / BLOCK_USIZE) as u64;
+        // The pin, from before the lookup to the end of the last read
+        // of a file: a step waits for it before it writes into the
+        // home image and before a segment file it freed is used again.
+        // Taken after the lookup, a step could drop the index and pass
+        // its barrier between the two, and the reader would read a
+        // file the step had given up.
+        let shared = self.shared.clone();
+        let late = self.mutants.has(Mutants::PIN_AFTER_LOOKUP);
+        let _pin = (!late).then(|| shared.pinned());
+        let mut runs = Vec::new();
+        if self.mutants.has(Mutants::READ_HOME_ONLY) {
+            runs.push((start, blocks, Found::Home));
+        } else {
+            // The lock, for the lookup alone.
+            let lookup = shared.read();
+            let durable = Lsn(shared.durable.load(Ordering::SeqCst));
+            for (run, len, source) in lookup.index.lookup(start, blocks) {
+                let found = match source {
+                    Some(Source::Data { record, first }) => {
+                        let base = self.identity.base_of(record);
+                        match lookup.segments.get(&base) {
+                            Some(&file) => Found::Log {
+                                file,
+                                record,
+                                skip: first * BLOCK_SIZE,
+                                unflushed: record >= durable,
+                            },
+                            // The index names a record whose segment
+                            // the log does not have: the store's own
+                            // state is not what it must be.
+                            None => return Err(Unread::Fault),
+                        }
+                    }
+                    Some(Source::Zero { .. }) => Found::Zero,
+                    None => Found::Home,
+                };
+                runs.push((run, len, found));
+            }
+        }
+        #[cfg(any(test, feature = "test-hooks"))]
+        if let Some(pause) = &self.pause {
+            pause.wait();
+        }
+        let _late_pin = late.then(|| shared.pinned());
+        let mut checked_any = false;
+        for (run, len, found) in runs {
+            let from = ((run - start) * BLOCK_SIZE) as usize;
+            let part = &mut buf[from..from + (len * BLOCK_SIZE) as usize];
+            let read = match found {
+                Found::Log {
+                    file,
+                    record,
+                    skip,
+                    unflushed,
+                } => {
+                    if let std::collections::btree_map::Entry::Vacant(unopened) =
+                        self.segments.entry(file)
+                    {
+                        match self.dir.open(&crate::log::slot_name(file)) {
+                            Ok(opened) => {
+                                unopened.insert(opened);
+                            }
+                            Err(_) => return Err(Unread::Fault),
+                        }
+                    }
+                    let Some(file) = self.segments.get(&file) else {
+                        return Err(Unread::Fault);
+                    };
+                    if unflushed && !self.mutants.has(Mutants::UNFLUSHED_READ_UNCHECKED) {
+                        // Checked against the record's checksum: see
+                        // [`Shared`].
+                        if !checked_any {
+                            self.unflushed[0] += 1;
+                            checked_any = true;
+                        }
+                        let checked = crate::log::read_checked_payload_in(
+                            file,
+                            &self.identity,
+                            record,
+                            skip,
+                            part,
+                            &mut self.scratch,
+                        );
+                        match checked {
+                            Ok(Some(beyond)) => {
+                                self.unflushed[1] += beyond;
+                                true
+                            }
+                            Ok(None) => {
+                                self.unflushed[2] += 1;
+                                false
+                            }
+                            Err(_) => false,
+                        }
+                    } else {
+                        crate::log::read_payload_in(file, &self.identity, record, skip, part)
+                            .is_ok()
+                    }
+                }
+                Found::Zero => {
+                    part.fill(0);
+                    true
+                }
+                Found::Home => self.home.read_at(run * BLOCK_SIZE, part).is_ok(),
+            };
+            if !read {
+                return Err(Unread::Fault);
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute a read request: its result and its buffer, or the
+    /// buffer back if a file could not be read.
+    fn execute(&mut self, op: Op) -> Result<Done, Buf> {
+        if let Err(rejected) = self.geometry.validate(&op) {
+            return Ok((Err(rejected), buffer_of(op)));
+        }
+        let Op::Read { offset, mut buf } = op else {
+            // Not reached: only reads are handed to the reader.
+            return Ok((Err(BlkError::Failed), buffer_of(op)));
+        };
+        match self.read(offset, &mut buf) {
+            Ok(()) => Ok((Ok(()), Some(buf))),
+            Err(Unread::Refused(why)) => Ok((Err(why), Some(buf))),
+            // A defect on purpose: the error is served and the volume
+            // goes on.
+            Err(Unread::Fault) if self.mutants.has(Mutants::READ_ERROR_SERVED) => {
+                Ok((Err(BlkError::Failed), Some(buf)))
+            }
+            Err(Unread::Fault) => Err(buf),
+        }
+    }
+}
+
+/// What the reader shows of its time: see [`Timing`].
+#[derive(Debug, Clone, Copy, Default)]
+struct ReaderShown {
+    requests: RequestTiming,
+    wait_by: [u64; 15],
+    longest_wait_cause: u64,
+    longest_wait_cause_ns: u64,
+    time: [u64; 3],
+    unflushed: [u64; 3],
+    /// The span the reader has open.
+    open: Open,
 }
 
 /// The store behind a worker thread.
@@ -2783,6 +3379,8 @@ pub struct Served {
     geometry: Geometry,
     identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
+    /// To the reader: every read goes there, and nothing else.
+    reads: Option<mpsc::Sender<ToReader>>,
     completions: mpsc::Receiver<(Completion, Option<Lsn>, Instant)>,
     /// When the worker had each completion of the last
     /// [`BlockTarget::poll`] or [`BlockTarget::wait`] ready.
@@ -2794,6 +3392,7 @@ pub struct Served {
     /// What the worker shows of the log.
     log: Arc<Shown>,
     worker: Option<thread::JoinHandle<()>>,
+    reader: Option<thread::JoinHandle<()>>,
 }
 
 /// The log's state as the worker last published it: read by the owner
@@ -2803,16 +3402,35 @@ pub struct Served {
 /// nothing else, so a reader gets the state of one moment: never a
 /// start beyond the end (a step can move the start past the end that
 /// was published before it), never a step that has ended as under way.
-#[derive(Debug, Default)]
-struct Shown(Mutex<(LogState, Timing)>);
+///
+/// With the times, each thread shows the span it has open (since when,
+/// and whether it is a wait for work, which a look closes): see
+/// [`Timing::worker_as_of_ns`]. A thread that wakes from a wait closes
+/// it and shows that in one hold of its lock, which is the lock a look
+/// holds while it reads the clock: so a look never counts more of a
+/// wait than the thread then does. The last field is the moment the
+/// times are counted from.
+#[derive(Debug)]
+struct Shown(Mutex<(LogState, Timing, Open)>, Mutex<ReaderShown>, Instant);
+
+/// The span a thread has open: since when, and doing what (an
+/// [`Activity`]).
+type Open = Option<(Instant, usize)>;
+
+impl Default for Shown {
+    fn default() -> Self {
+        Self(Mutex::default(), Mutex::default(), Instant::now())
+    }
+}
 
 impl Shown {
-    fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
+    /// The worker's state and times, with the span it has open.
+    fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool, open: Open) {
         let state = LogState {
             stepping,
             ..core.log_state()
         };
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing);
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing, open);
     }
 
     #[cfg(test)]
@@ -2833,12 +3451,65 @@ impl Shown {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).0
     }
 
-    fn timing(&self) -> Timing {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).1
+    /// The reader's part of the times, as it last showed it.
+    fn read(&self, reader: ReaderShown) {
+        *self.1.lock().unwrap_or_else(PoisonError::into_inner) = reader;
     }
 
+    /// The worker woke from a wait for work: the wait is closed and
+    /// shown in one hold of the lock (see [`Shown`]).
+    fn worker_woke(&self, spans: &mut Spans, timing: &mut Timing) {
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        spans.close(Activity::IDLE, Instant::now(), timing);
+        shown.1 = *timing;
+        shown.2 = spans.open(Activity::OTHER);
+    }
+
+    /// The reader woke from a wait for work: `close` closes the wait at
+    /// the moment it is given and says what the reader shows then, in
+    /// one hold of the lock (see [`Shown`]).
+    fn reader_woke(&self, close: impl FnOnce(Instant) -> ReaderShown) {
+        let mut shown = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        *shown = close(Instant::now());
+    }
+
+    fn timing(&self) -> Timing {
+        self.both().1
+    }
+
+    /// The log's state and the worker's times of one moment, with the
+    /// reader's times as it last showed them: reads are the reader's.
+    /// A thread's wait for work is closed at the look, which reads the
+    /// clock with both shown values held; anything else a thread has
+    /// open is left to it.
     fn both(&self) -> (LogState, Timing) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        let worker = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let reader = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = Instant::now();
+        let (state, mut timing, open) = *worker;
+        let mut reader = *reader;
+        let ns = |from: Instant, to: Instant| {
+            u64::try_from(to.saturating_duration_since(from).as_nanos()).unwrap_or(u64::MAX)
+        };
+        // Up to when a thread's sums are complete, the wait it is in
+        // counted.
+        let complete = |open: Open, idle: &mut u64| match open {
+            Some((since, Activity::IDLE)) => {
+                *idle = idle.saturating_add(ns(since, now));
+                ns(self.2, now)
+            }
+            Some((since, _)) => ns(self.2, since),
+            None => 0,
+        };
+        timing.worker_as_of_ns = complete(open, &mut timing.worker[Activity::IDLE]);
+        timing.reader_as_of_ns = complete(reader.open, &mut reader.time[0]);
+        timing.requests[0] = reader.requests;
+        timing.wait_by[0] = reader.wait_by;
+        timing.longest_wait_cause[0] = reader.longest_wait_cause;
+        timing.longest_wait_cause_ns[0] = reader.longest_wait_cause_ns;
+        timing.reader = reader.time;
+        timing.read_unflushed = reader.unflushed;
+        (state, timing)
     }
 }
 
@@ -2861,7 +3532,7 @@ impl Drop for Ending {
 
 impl<D> Store<D>
 where
-    D: Dir + Send + 'static,
+    D: Dir + Clone + Send + 'static,
     D::File: Send,
     D::Lock: Send,
 {
@@ -2888,11 +3559,156 @@ where
         let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>, Instant)>();
         let ended = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(Shown::default());
-        shown.publish(&core, false);
+        // Each thread's time is counted from here, and shown from here
+        // with the span it has open, so that every look holds it whole.
+        let (spans, read_spans) = (Spans::new(), Spans::new());
+        shown.publish(&core, false, spans.open(Activity::OTHER));
+        shown.read(ReaderShown {
+            open: read_spans.open(Activity::OTHER),
+            ..ReaderShown::default()
+        });
         let log = shown.clone();
         let ending = Ending {
             ended: ended.clone(),
             waker: waker.clone(),
+        };
+        // The reader: a thread of its own for the reads, with handles
+        // of its own on the store's files. Either thread's end is the
+        // store's end for its owner.
+        let (reads, read_inbox) = mpsc::channel::<ToReader>();
+        let dir = core.log.dir().clone();
+        let home = dir.open(HOME_NAME)?;
+        let mut reader = Reader {
+            dir,
+            home,
+            segments: BTreeMap::new(),
+            identity: *core.log.identity(),
+            geometry,
+            shared: core.shared.clone(),
+            unflushed: [0; 3],
+            scratch: Vec::new(),
+            mutants: core.mutants,
+            #[cfg(any(test, feature = "test-hooks"))]
+            pause: core.read_pause.take(),
+        };
+        // What the open left queued counts from here: the reads go to
+        // the reader, the rest to the worker, each in its order.
+        let served_at = Instant::now();
+        let mut waiting = VecDeque::new();
+        for request in queue.drain(..) {
+            if matches!(request.op, Op::Read { .. }) {
+                let _ = reads.send(ToReader::Read(request, served_at));
+            } else {
+                waiting.push_back((request, served_at));
+            }
+        }
+        let reading = {
+            let ending = Ending {
+                ended: ended.clone(),
+                waker: waker.clone(),
+            };
+            let (outbox, waker, shown) = (outbox.clone(), waker.clone(), shown.clone());
+            let failures = commands.clone();
+            thread::Builder::new()
+                .name("skyzfs-reader".into())
+                .spawn(move || {
+                    let _ending = ending;
+                    // What the reader did, for the waits of its reads:
+                    // idle, the call of a read, anything else.
+                    let mut spans = read_spans;
+                    let mut timing = Timing::default();
+                    // What the reader shows of its times, with the span
+                    // it has open.
+                    let show = |timing: &Timing, unflushed: [u64; 3], open: Open| ReaderShown {
+                        requests: timing.requests[0],
+                        wait_by: timing.wait_by[0],
+                        longest_wait_cause: timing.longest_wait_cause[0],
+                        longest_wait_cause_ns: timing.longest_wait_cause_ns[0],
+                        time: [
+                            timing.worker[Activity::IDLE],
+                            timing.worker[Activity::call(0)],
+                            timing.worker[Activity::OTHER],
+                        ],
+                        unflushed,
+                        open,
+                    };
+                    loop {
+                        let next = match read_inbox.try_recv() {
+                            Ok(next) => next,
+                            Err(mpsc::TryRecvError::Disconnected) => return,
+                            Err(mpsc::TryRecvError::Empty) => {
+                                spans.forget(None);
+                                spans.close(Activity::OTHER, Instant::now(), &mut timing);
+                                // Shown as waiting, so that a look counts
+                                // the wait as idle.
+                                shown.read(show(
+                                    &timing,
+                                    reader.unflushed,
+                                    spans.open(Activity::IDLE),
+                                ));
+                                let next = read_inbox.recv();
+                                shown.reader_woke(|now| {
+                                    spans.close(Activity::IDLE, now, &mut timing);
+                                    show(&timing, reader.unflushed, spans.open(Activity::OTHER))
+                                });
+                                match next {
+                                    Ok(next) => next,
+                                    Err(_) => return,
+                                }
+                            }
+                        };
+                        let (Request { id, op }, at) = match next {
+                            ToReader::Read(request, at) => (request, at),
+                            #[cfg(test)]
+                            ToReader::Panic => panic!("a test asked the reader to panic"),
+                        };
+                        let began = Instant::now();
+                        spans.close(Activity::OTHER, began, &mut timing);
+                        let by = spans.between(at);
+                        let executed = reader.execute(op);
+                        let ended = Instant::now();
+                        spans.close(Activity::call(0), ended, &mut timing);
+                        let wait = began.saturating_duration_since(at);
+                        let longest = wait.as_nanos() >= u128::from(timing.requests[0].wait.max_ns);
+                        let mut most = 0;
+                        for (activity, ns) in by.iter().enumerate() {
+                            timing.wait_by[0][activity] += ns;
+                            if *ns > by[most] {
+                                most = activity;
+                            }
+                        }
+                        if longest {
+                            timing.longest_wait_cause[0] = most as u64;
+                            timing.longest_wait_cause_ns[0] = by[most];
+                        }
+                        timing.requests[0].wait.add(wait);
+                        timing.requests[0].call.add(ended - began);
+                        // Shown before the completion can be taken, as
+                        // the worker does.
+                        shown.read(show(&timing, reader.unflushed, spans.open(Activity::OTHER)));
+                        match executed {
+                            Ok((result, buf)) => {
+                                let completion = Completion { id, result, buf };
+                                if outbox.send((completion, None, ended)).is_err() {
+                                    return;
+                                }
+                                if let Some(Waker(wake)) = &waker {
+                                    wake();
+                                }
+                            }
+                            // A file of the store's could not be read:
+                            // the worker fails the volume, marks the
+                            // log and answers this read, in that
+                            // order, so the mark is there before the
+                            // first failed completion goes out.
+                            Err(buf) => {
+                                if failures.send(Command::ReadFailed(id, buf)).is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                })?
         };
         let worker = thread::Builder::new()
             .name("skyzfs-store".into())
@@ -2907,24 +3723,28 @@ where
                 let mut busy = true;
                 // The requests that wait, each with the time of its
                 // submission, in one queue: a request that is put back
-                // goes back with its time. What the open left queued
-                // counts from here.
-                let served_at = Instant::now();
-                let mut queue: VecDeque<(Request, Instant)> = queue
-                    .drain(..)
-                    .map(|request| (request, served_at))
-                    .collect();
+                // goes back with its time.
+                let mut queue: VecDeque<(Request, Instant)> = waiting;
                 // What the worker did, for the waits of the requests.
-                let mut spans = Spans::new();
+                let mut spans = spans;
                 core.parts = Some(Vec::new());
                 loop {
-                    shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
-                    // to do.
-                    let command = if (queue.is_empty() || held) && !busy {
+                    // to do. What is shown says which, so that a look
+                    // counts the wait as idle.
+                    let waits = (queue.is_empty() || held) && !busy;
+                    if waits {
                         spans.close(Activity::OTHER, Instant::now(), &mut core.timing);
+                    }
+                    let doing = if waits {
+                        Activity::IDLE
+                    } else {
+                        Activity::OTHER
+                    };
+                    shown.publish(&core, false, spans.open(doing));
+                    let command = if waits {
                         let command = inbox.recv();
-                        spans.close(Activity::IDLE, Instant::now(), &mut core.timing);
+                        shown.worker_woke(&mut spans, &mut core.timing);
                         match command {
                             Ok(command) => Some(command),
                             Err(_) => return,
@@ -2969,12 +3789,33 @@ where
                             busy = true;
                             // As for a completion: whoever is answered
                             // finds the log as the checkpoint left it.
-                            shown.publish(&core, false);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             let _ = reply.send(result);
                             continue;
                         }
                         Some(Command::Position(reply)) => {
                             let _ = reply.send(core.log.tail());
+                            continue;
+                        }
+                        Some(Command::ReadFailed(id, buf)) => {
+                            // As a failed sync does: the volume has
+                            // failed and the log is marked, and only
+                            // then is the read answered. A request
+                            // that was held gets its answer now.
+                            core.fail();
+                            held = false;
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
+                            let completion = Completion {
+                                id,
+                                result: Err(BlkError::Failed),
+                                buf: Some(buf),
+                            };
+                            if outbox.send((completion, None, Instant::now())).is_err() {
+                                return;
+                            }
+                            if let Some(Waker(wake)) = &waker {
+                                wake();
+                            }
                             continue;
                         }
                         #[cfg(test)]
@@ -2993,7 +3834,7 @@ where
                             // before each of its wakes, and the
                             // worker's end changes nothing after the
                             // last state shown.
-                            shown.publish(&core, false);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             // The owner is woken before the caller is
                             // answered: when `fail_now` returns, the
                             // owner has been told.
@@ -3068,7 +3909,7 @@ where
                                 // behind for an owner that looked at
                                 // once, and stayed so while nothing
                                 // else woke it.
-                                shown.publish(&core, false);
+                                shown.publish(&core, false, spans.open(Activity::OTHER));
                                 if outbox.send((completion, start, ended)).is_err() {
                                     return;
                                 }
@@ -3122,7 +3963,7 @@ where
                         // gets here. If that ever changes, the request
                         // is tried again and not left waiting.
                         held = false;
-                        shown.publish(&core, false);
+                        shown.publish(&core, false, spans.open(Activity::OTHER));
                         wake();
                     }
                 }
@@ -3131,6 +3972,7 @@ where
             geometry,
             identity,
             commands: Some(commands),
+            reads: Some(reads),
             completions,
             ready: Vec::new(),
             ids,
@@ -3138,6 +3980,7 @@ where
             ended,
             log,
             worker: Some(worker),
+            reader: Some(reading),
         })
     }
 }
@@ -3231,8 +4074,8 @@ impl Served {
         self.identity
     }
 
-    /// Whether the worker has ended, which only a panic in it does
-    /// while the store is served. Nothing more will complete: requests
+    /// Whether the worker or the reader has ended, which only a panic
+    /// in it does while the store is served. Nothing more will complete: requests
     /// in flight stay in flight, and [`BlockTarget::submit`] answers
     /// "busy" from then on. The owner is told through the [`Waker`].
     pub fn gone(&self) -> bool {
@@ -3263,6 +4106,17 @@ impl Served {
         }
     }
 
+    /// For tests: make the reader panic, and wait until it has.
+    #[cfg(test)]
+    pub(crate) fn panic_reader(&mut self) {
+        if let Some(reads) = &self.reads {
+            let _ = reads.send(ToReader::Panic);
+        }
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+
     fn took(&mut self, taken: (Completion, Option<Lsn>, Instant), out: &mut Vec<Completion>) {
         let (completion, start, ready) = taken;
         self.ready.push((completion.id, ready));
@@ -3276,8 +4130,14 @@ impl Served {
 
 impl Drop for Served {
     fn drop(&mut self) {
-        // The worker ends when the commands' sender is gone.
+        // The reader ends when the reads' sender is gone, and the
+        // worker when the commands' senders are: this one and the
+        // reader's, for the reads it cannot do.
         self.commands = None;
+        self.reads = None;
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
@@ -3300,7 +4160,37 @@ impl BlockTarget for Served {
         if let Some(kind) = kind {
             return Err(SubmitError { kind, request });
         }
+        // Either thread's end is the store's end: with the worker or
+        // the reader gone, nothing is taken any more, of either kind.
+        if self.gone() {
+            return Err(SubmitError {
+                kind: SubmitErrorKind::Busy,
+                request,
+            });
+        }
         let id = request.id;
+        // A read goes to the reader and everything else to the worker.
+        if matches!(request.op, Op::Read { .. }) {
+            return match self.reads.as_ref() {
+                Some(reads) => match reads.send(ToReader::Read(request, Instant::now())) {
+                    Ok(()) => {
+                        self.ids.insert(id);
+                        Ok(())
+                    }
+                    // The reader is gone, which only a panic in it does.
+                    Err(mpsc::SendError(ToReader::Read(request, _))) => Err(SubmitError {
+                        kind: SubmitErrorKind::Busy,
+                        request,
+                    }),
+                    #[cfg(test)]
+                    Err(_) => Ok(()),
+                },
+                None => Err(SubmitError {
+                    kind: SubmitErrorKind::Busy,
+                    request,
+                }),
+            };
+        }
         match self.commands.as_ref() {
             Some(commands) => match commands.send(Command::Request(request, Instant::now())) {
                 Ok(()) => {

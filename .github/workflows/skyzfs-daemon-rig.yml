@@ -25,8 +25,11 @@ on:
   workflow_dispatch:
     inputs:
       checks:
-        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request"
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
         default: "a b c d e"
+      f_courses:
+        description: "check f only: which courses, of scrub export reopen clear writers zed zedreopen long longnolog (long and longnolog: check b's 300 s courses until M1.T8). One course per run gives it a clean machine"
+        default: "scrub export reopen clear writers zed zedreopen long longnolog"
       kills:
         description: "kill -9 of the server under load, how many times"
         default: "20"
@@ -147,13 +150,14 @@ jobs:
         # carry the environment through.
         env:
           CHECKS: ${{ inputs.checks || 'a b c d e' }}
+          F_COURSES: ${{ inputs.f_courses || 'scrub export reopen clear writers zed zedreopen long longnolog' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
           SERVER: ${{ matrix.server }}
         run: |
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
-          [[ $CHECKS =~ ^[abcde](\ [abcde])*$ ]] || { echo "::error::checks are letters of a b c d e with a space between: '$CHECKS'"; exit 64; }
+          [[ $CHECKS =~ ^[abcdef](\ [abcdef])*$ ]] || { echo "::error::checks are letters of a b c d e f with a space between: '$CHECKS'"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
@@ -174,6 +178,7 @@ jobs:
           {
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
+            printf 'export RIG_F_COURSES=%q\n' "$F_COURSES"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
             # On the daemon, with its own defaults: no --unsafe-allow-*
             # override until a run shows that one is needed.
@@ -191,7 +196,9 @@ jobs:
           rc=0
           python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d e}" > summary.md || rc=$?
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
-          cp summary.md rig-out/ 2>/dev/null || true
+          # rig-out is root's (the rig runs under sudo): the judge's table
+          # goes into the artifact with sudo, or it is silently left out.
+          sudo cp summary.md rig-out/ || echo "::warning::the judge's table could not be put into the artifact"
           case $rc in
             0) ;;
             1) echo "::error title=daemon rig::results differ from the table EXPECTED"; exit 1 ;;
