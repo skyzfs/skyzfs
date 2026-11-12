@@ -73,6 +73,8 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T11 | skyzfs/skyzfs#32 | The benchmark runs several builds of the daemon on one machine | The criterion |
 | M1.T12 | skyzfs/skyzfs#36 | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
+| M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
+| M1.T16 | skyzfs/skyzfs#41 (open) | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
 
@@ -462,11 +464,11 @@ So a read costs two wakes, the pump's of a reader and the reader's of the pump.
 
 | Thread | Samples | Kernel | Kernel samples by kind, % |
 |---|---|---|---|
-| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4, other 4, page cache 1 |
-| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 |
-| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24, wake and switch 6 |
+| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4 (6 with the copy's own checks), other 4, page cache 1 |
+| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 (5 with its checks) |
+| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24 (26 with its checks), wake and switch 6 |
 
-- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers'. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
+- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers', or 6% and 5% when the checks the kernel makes around a copy are counted with it, as the merged classifier does after the review's recount of the raw samples. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
 - "ZFS's completion" is `zio_interrupt` and its dispatch to a ZFS task queue: the kernel runs ZFS's completion of each request in the thread that ends it, which is the pump, and wakes a ZFS thread from there. That part is any ublk server's.
 - The runner has no hardware counters, so perf samples by a timer, and a sample taken with interrupts off is charged where they come back on. The kinds are from the whole call chain and are the better guide than the leaf symbols.
 
@@ -483,12 +485,43 @@ So a read costs two wakes, the pump's of a reader and the reader's of the pump.
 
 M1.3p took a third off the readers' CPU and their wait for a CPU, and the throughput did not move. Per transaction the pump now spends about 12 µs in the kernel and the readers 6.5 µs (9.5 before). What a transaction lacks against the model is about 190 µs at eight clients, so the daemon's own CPU is a tenth of the gap at most, and a read served by the pump itself where the data is in memory, which would save both wakes, is worth about 20 µs of it. No such package is planned on this evidence.
 
-**The runners' work disk is mounted without barriers.** The disk declares a volatile write cache, and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
+**The runners' work disk is mounted without barriers.** On the machines whose work disk is an nvme device the disk declares a volatile write cache (on those with `sda` it does not; see M1.T16 below), and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
+
+#### With barriers on, the runners' flush costs nothing (M1.T16)
+
+One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
+
+Ubuntu 24.04 (work disk `nvme0n1p1`, disk-sync 200 MiB/s, the model rows 2.1% apart):
+
+| Row | tps | WAL fsync, µs | Work disk's flushes per transaction | ms per flush | Ratio |
+|---|---|---|---|---|---|
+| model | 4478 | 519 | 0.38 | 0.09 | |
+| daemon | 4144 | 587 | 0.37 | 0.10 | 0.916 |
+| daemon at 1 GiB | 4062 | 569 | 0.38 | 0.09 | 0.897 |
+| model | 4575 | 511 | 0.38 | 0.10 | |
+| ref | 4718 | 489 | 0.38 | 0.09 | |
+| model | 4872 | 474 | 0.38 | 0.10 | |
+
+Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart), where the work disk's flushes stayed at 0.00 per transaction in every row:
+
+| Row | tps | WAL fsync, µs | Ratio |
+|---|---|---|---|
+| model | 3339 | 677 | |
+| daemon | 3219 | 713 | 0.949 |
+| daemon at 1 GiB | 2920 | 760 | 0.861 |
+| model | 3445 | 656 | |
+| ref | 3613 | 605 | |
+| model | 3653 | 615 | |
+
+- **On the nvme machine a flush reaches the device and costs about 0.1 ms.** There is about one per commit of the intent log, the same for the model and the daemon. A device that made data durable on flash would take longer, so this virtual disk most likely acknowledges a flush without doing that. Whether anything got slower by it cannot be read from these rows: the rows without barriers are from other machines.
+- **On the `sda` machine no flush reaches the device even with barriers.** The split is by disk and not by image. The review counted eight of the day's runs: every machine with `sda` had counted no flush since its boot, on both images, and the one whose `write_cache` was read says `write through`, so the block layer completes a flush itself and `nobarrier` changes nothing there; every nvme machine had counted some, and the one read says `write back`. Five of the day's twelve machines had `sda`. This job did not read the field itself (M1.T15 adds that).
+- **So the hosted runners cannot say what a flush costs on real flash**, with barriers or without. That measurement needs a machine with a local flash device (design §10). A comparison with and without barriers on one runner was not ordered: it would price a flush that costs nothing.
+- The ratios, 0.916 and 0.949 unbounded and 0.897 and 0.861 at 1 GiB, are in the range of the rows before them. They are not added to the criterion's medians, because the mount differs from those rows'.
 
 #### Open at this writing (2026-11-12)
 
 - M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
-- A benchmark row on a disk with barriers on, so that a sync costs a device flush: not built.
+- What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
@@ -551,6 +584,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The whole design after the split, at the owner's request, by the review session, with its ZFS claims checked against OpenZFS 2.4.1 (skyzfs/skyzfs#2) | The architecture, the contract and the cut rule hold; no counterexample to the cut rule. Ten findings, all taken up in the design. M1's status said more than was run: the power-cut replay has not run on `skyzfsd` (§9; a testing package follows). M2's exit criterion asked for a scrub that ZFS refuses on a read-only pool, and would have passed a cut one group early. New rules in §6.2: no pool checkpoint, `zfs_nocacheflush` off. Stated more exactly: what encryption leaves in clear, frees under 32 KiB are never trimmed, the daemon's I/O path does allocate. Recorded as open: the bound on the local store when upload lags (M2), which `libzpool` the offline session links and its licence (M3). Document defects corrected: a paragraph rendered as a table row, gate G1's wording, M1's deliverables, a repeated paragraph and row in §4.1, what the study's 2.4 times is measured against. |
 | 2026-11-12 | §5.1, the readers' queue as built (M1.3p, skyzfs/skyzfs#37); three looks by the review session and one finding by Codex | The queue and its wake logic were right from the first look. Blocking, found by both: an early return from a start left the readers already started waiting for ever, which the channel's dropped sender had prevented; fixed with a guard. Blocking at the second look: the fix's test passed with the fix taken out; it now counts the readers that ended, and the missing guard is a mutant. Taken from the review: a push wakes only when a reader waits. Left as stated: the one test that rests on a window of time. |
 | 2026-11-12 | §4.2, the ublk features and the oldest kernel (M1.3q, skyzfs/skyzfs#38); three looks by the review session, Codex with nothing at the last head | Blocking at the first look: the floor was 6.9, where the header names the asynchronous delete, but the drivers of 6.9 and 6.10 answer it `ENOTSUPP`; the floor is 6.11, and the lead's decision of 6.9 was wrong. Fixed. Not blocking, fixed: a refused start offered the override when a feature was missing as well, and the delete's `ENOTSUPP` was read by untested code. Suggested and not taken: a probe that adds and deletes a device in place of reading the release. |
+| 2026-11-12 | The benchmark's system-call trace and profile (M1.T15, skyzfs/skyzfs#40); three looks by the review session and two findings by Codex | Blocking at the first look: `summarize` failed with a syntax error at the head, so no summary rendered; fixed, and a unit test now compiles the script's embedded Python and runs it. The review recounted the profile's raw samples and got the same table; with the checks around a copy counted as copy, copies are 6% of the pump's kernel samples and not 4%, and the conclusion stands on its one row. Codex: stale trace files of an earlier row, and a trace longer than the window; both fixed. |
 
 ## References
 
@@ -592,3 +626,4 @@ Every independent read of the design and every review of a work package, with wh
 [^readerr]: `module/zfs/zio.c`, `zio_done`: a failed read is marked for suspension only when its error is `ENXIO`. Any other error on a zio issued with `ZIO_FLAG_CANFAIL`, which demand reads are (`module/zfs/dbuf.c`), is returned to the caller. `zio_vdev_io_assess` turns a leaf error into `ENXIO` only once the vdev is no longer accessible. Slow I/O is reported after `zfs_deadman_ziotime_ms` (`module/zfs/spa_misc.c`), and with the default `zfs_deadman_failmode=wait` it is only reported. Read in upstream master on 2026-11-10.
 [^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
 [^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.
+[^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.

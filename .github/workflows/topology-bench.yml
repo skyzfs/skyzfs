@@ -217,6 +217,19 @@ jobs:
           sudo modprobe ublk_drv
           sudo ublk features || true
 
+      - name: System call tracing tools
+        # Only for an entry with TB_SYSCALLS=1 or TB_PERF_RECORD=1. perf
+        # for the running kernel where Ubuntu has it, strace in any case:
+        # the trace uses perf when `perf trace` works and strace
+        # otherwise; a recording needs perf.
+        if: contains(inputs.sequence, 'TB_SYSCALLS=1') || contains(inputs.sequence, 'TB_PERF_RECORD=1')
+        run: |
+          sudo apt-get install -y --no-install-recommends strace
+          sudo apt-get install -y --no-install-recommends linux-tools-common "linux-tools-$(uname -r)" \
+            || echo "::notice::no perf package for $(uname -r): the trace uses strace"
+          if sudo perf trace -s -- true > /dev/null 2>&1; then echo "perf trace works"; else echo "::notice::perf trace does not work here: the trace uses strace"; fi
+          if sudo perf record -g -o /tmp/perf-probe.data -- true > /dev/null 2>&1; then echo "perf record works"; else echo "::notice::perf record does not work here: no recording"; fi
+
       - name: Build skyzfsd
         # A release build WITHOUT the test hooks: the binary one would
         # deploy, not the rigs'. The workspace's system packages, and

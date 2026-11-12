@@ -2,7 +2,13 @@
 
     python3 -I tests/bench/disk-sync.py DIR [MIB]
 
-Also says which block device DIR is on and its queue's stable_writes.
+Also says which block device DIR is on, its queue's stable_writes, and
+its queue's write_cache (write_back when the disk declares a volatile
+cache, so that the kernel sends it flushes; write_through when it does
+not, and then a flush is completed without reaching the disk), and
+the file system DIR is on: its type, the mount's options and the super
+block's (`fs`, `mount`, `super`, from /proc/self/mountinfo; a mount with nobarrier or a file system that
+sends no flushes would explain syncs that cost nothing).
 Writes MIB (default 64) MiB to a new file under DIR through the page cache
 and times the fdatasync that follows; then the same amount with O_DIRECT,
 1 MiB a write, and its fdatasync. Prints one line of `key=value` fields,
@@ -33,20 +39,58 @@ def machine():
 
 
 def queue_of(where):
-    """The block device under DIR, and its queue's stable_writes: 1 when
-    a page under writeback must not change, so that a write into it
-    waits until the writeback has ended (M1.3m's open question)."""
+    """The block device under DIR, its queue's stable_writes (1 when a
+    page under writeback must not change, so that a write into it waits
+    until the writeback has ended: M1.3m's open question) and its
+    queue's write_cache."""
     try:
         st = os.stat(where).st_dev
         dev = os.path.realpath(f'/sys/dev/block/{os.major(st)}:{os.minor(st)}')
     except OSError:
-        return 'unknown', 'unknown'
+        return 'unknown', 'unknown', 'unknown'
     for d in (dev, os.path.dirname(dev)):  # a partition's queue is its disk's
         try:
-            return os.path.basename(dev), open(os.path.join(d, 'queue', 'stable_writes')).read().strip()
+            stable = open(os.path.join(d, 'queue', 'stable_writes')).read().strip()
         except OSError:
             continue
-    return os.path.basename(dev), 'not said'
+        try:
+            cache = open(os.path.join(d, 'queue', 'write_cache')).read().strip().replace(' ', '_')
+        except OSError:
+            cache = 'not said'
+        return os.path.basename(dev), stable, cache
+    return os.path.basename(dev), 'not said', 'not said'
+
+
+def mount_of(where, mountinfo='/proc/self/mountinfo'):
+    """The mount DIR is on: (type, the mount's options, the super block's)."""
+    try:
+        st = os.stat(where).st_dev
+        lines = open(mountinfo).read().splitlines()
+    except OSError:
+        return 'unknown', 'unknown', 'unknown'
+    best = None
+    for line in lines:
+        f = line.split()
+        if ' - ' not in line or len(f) < 6:
+            continue
+        pre, post = line.split(' - ', 1)
+        pf, qf = pre.split(), post.split()
+        if len(qf) < 3:
+            continue
+        try:
+            major, minor = (int(x) for x in pf[2].split(':'))
+        except ValueError:
+            continue
+        if os.makedev(major, minor) != st:
+            continue
+        point = pf[4]
+        # The deepest mount point that holds DIR (bind mounts share a device).
+        real = os.path.realpath(where)
+        if (real == point or real.startswith(point.rstrip('/') + '/')) and (best is None or len(point) > len(best[0])):
+            best = (point, qf[0], pf[5], qf[2])
+    if best is None:
+        return 'unknown', 'unknown', 'unknown'
+    return best[1:]
 
 
 def timed_write(path, total, direct):
@@ -74,7 +118,8 @@ def main():
     os.makedirs(where, exist_ok=True)
     path = os.path.join(where, f'disk-sync.{os.getpid()}')
     fields = {'machine': machine().replace(' ', '_'), 'mib': total}
-    fields['dev'], fields['stable_writes'] = queue_of(where)
+    fields['dev'], fields['stable_writes'], fields['write_cache'] = queue_of(where)
+    fields['fs'], fields['mount'], fields['super'] = mount_of(where)
     for name, direct in (('buffered', False), ('direct', True)):
         try:
             write_ms, sync_ms = timed_write(path, total, direct)
