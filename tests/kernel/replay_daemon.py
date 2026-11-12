@@ -674,7 +674,8 @@ def check(a):
         json.dump(res, f, indent=1, default=str)
     out = ['## Power-cut replay through skyzfsd: stopped by the rig\'s own error\n',
            f'The run stopped: {why}\n',
-           f"Prefixes checked before it stopped: {len(st['points'])} in the main pass.\n"]
+           f"Prefixes checked before it stopped: {len(st['points'])} in the main pass.\n",
+           "Design §9's replay criterion: **not shown by this run** (it stopped before the end).\n"]
     if failures:
         out.append(f'Before it stopped, {len(failures)} prefix(es) failed a check. That is a verdict against the daemon, '
                    'whatever stopped the rig after it:\n')

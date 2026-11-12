@@ -194,7 +194,28 @@ class Pure(unittest.TestCase):
                                                expected=hooked, absent=rd.ABSENT)
         self.assertTrue(ok)
 
+    def test_withheld_must_be_caught_by_the_fsync_check(self):
+        self.assertEqual(rd.EXPECTED['withheld'], {'block': {'by': 'fsync'}})
+        ctl = {'name': 'withheld', 'caught': True, 'failed_by': {'start': 1}, 'rig_errors': []}
+        _, _, ok = replay_check.judge_controls([ctl], expected=rd.EXPECTED,
+                                               absent=dict(rd.ABSENT, **{'recover-short': rd.RECOVER_SHORT_NOT_HERE}))
+        self.assertFalse(ok)
+
+    def test_the_criterion_line(self):
+        def res(n, of, ends, code, every=True):
+            return {'every_prefix': every, 'exit': code,
+                    'coverage': {'every': {'checked': n, 'prefixes': of, 'ends_deep': ends}}}
+        self.assertIn('shown by this run', rd.criterion_line(res(10, 10, True, 0)))
+        self.assertNotIn('not shown', rd.criterion_line(res(10, 10, True, 0)))
+        for r, why in ((res(10, 10, True, 1), 'the run exits 1'), (res(10, 10, False, 0), 'deep-checked'),
+                       (res(9, 10, True, 0), '1 prefixes were not checked')):
+            line = rd.criterion_line(r)
+            self.assertIn('**not shown by this run**', line)
+            self.assertIn(why, line.split('**not shown by this run**')[1])
+        self.assertIn('not shown by this run (this budget', rd.criterion_line(res(10, 10, True, 0, every=False)))
+
     def test_the_provider_stages_are_verdicts(self):
+        self.assertIn('deep: mount (writable)', rd.JUDGING)
         for s in ('volume mount', 'start', 'device read', 'stop', 'import', 'fsync: files', 'copies: differ'):
             self.assertIn(s, rd.JUDGING)
         self.assertNotIn('rig: losetup', rd.JUDGING)
@@ -233,6 +254,61 @@ class Cleanup(unittest.TestCase):
     def test_a_failed_cleanup_after_a_pass_is_the_rigs_error(self):
         with self.assertRaises(rd.RigError):
             self.make_with((None, ''))
+
+
+class Serve(unittest.TestCase):
+    """Daemon.serve with the daemon and its steps faked: what a failed delete of its device does."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = self.dir.name
+        self.a = type('A', (), dict(work=d, base=os.path.join(d, 'base'), serve_arg=None, skyzfsd='true',
+                                    ublk='ublk', volume='vol', dd='dd', dev_bytes=1 << 20))()
+        self.saved = (rd.run, rd.Daemon._serve, rd.ublk_numbers)
+        self.devices = set()
+        rd.ublk_numbers = lambda: set(self.devices)
+        rd.run = lambda cmd, timeout=300: (1, 'ublk del: busy', 0.0)   # the delete fails, the device stays
+
+    def tearDown(self):
+        rd.run, rd.Daemon._serve, rd.ublk_numbers = self.saved
+        self.dir.cleanup()
+
+    def serve_with(self, result):
+        def _serve(daemon, p, image, info, out_path, err_path, t0, state):
+            state['number'] = 3
+            self.devices.add(3)
+            return result
+        rd.Daemon._serve = _serve
+        info = {}
+        return rd.Daemon(self.a, None).serve(os.path.join(self.dir.name, 'img'), (), info), info
+
+    def test_a_failed_stage_survives_a_device_left_behind(self):
+        (failed, _), info = self.serve_with(('stop', 'not ended 60 s after SIGTERM'))
+        self.assertEqual(failed, 'stop')
+        self.assertIn('ublk del -n 3', info['abort'])
+
+    def test_a_device_left_after_a_pass_is_the_rigs_error(self):
+        with self.assertRaises(rd.RigError):
+            self.serve_with((None, ''))
+
+    def test_dd_that_cannot_write_the_image_is_the_rigs_error(self):
+        # _serve itself, up to the read: a ready line, a device that exists, dd failing to write.
+        rd.Daemon._serve = self.saved[1]
+        d = self.dir.name
+        out_path, err_path = os.path.join(d, 'out'), os.path.join(d, 'err')
+        with open(out_path, 'w') as f:
+            f.write('ready /dev/ublkb7\n')
+        open(err_path, 'w').close()
+        saved_exists = rd.os.path.exists
+        rd.os.path.exists = lambda path: True if path == '/dev/ublkb7' else saved_exists(path)
+        rd.run = lambda cmd, timeout=300: (1, "dd: error writing '/w/img': No space left on device", 0.0)
+        try:
+            p = type('P', (), {'poll': lambda self: None})()
+            failed, _ = rd.Daemon(self.a, None)._serve(p, os.path.join(d, 'img'), {}, out_path, err_path,
+                                                        rd.time.monotonic(), {'number': None})
+        finally:
+            rd.os.path.exists = saved_exists
+        self.assertEqual(failed, 'rig: writing the image')
 
 
 class Pass(unittest.TestCase):
@@ -366,6 +442,34 @@ class Pass(unittest.TestCase):
         self.assertIn('Exit 1', text)
         self.assertIn(f'| {fm[1][0]} |', text)
         self.assertTrue(os.path.exists(os.path.join(self.dir.name, 'out', 'replay-results.json')))
+
+    def test_a_stopped_run_keeps_a_failure_found_outside_the_main_pass(self):
+        records = logwrites.index(self.log, 0)['records']
+        later = replay_check.fsync_marks(records)[-1][0]
+        self.fake(kinds={'calibration': {'ok': False, 'failed': 'start', 'detail': 'exit 1 before it was ready'}},
+                  at={later: {'abort': 'umount: busy'}})
+        self.assertEqual(rd.check(self.args()), 1)
+        self.assertIn('| calibration | start |', self.summary_text())
+
+    def test_every_prefix_never_gives_way_to_time(self):
+        # A slow pass: each point takes far longer than the plan.
+        records = logwrites.index(self.log, 0)['records']
+        clock = [0.0]
+        saved = rd.time.monotonic
+        self.fake()
+        point = rd.Checker.point
+
+        def slow(ck, n, kind, **kw):
+            clock[0] += 1000.0
+            return point(ck, n, kind, **kw)
+        rd.Checker.point = slow
+        rd.time.monotonic = lambda: clock[0]
+        try:
+            self.assertEqual(rd.check(self.args(every_prefix=True)), 0)
+        finally:
+            rd.time.monotonic = saved
+        n = len(records) + 1
+        self.assertIn(f'Every record prefix: {n} of {n} checked', self.summary_text())
 
     def test_a_rig_error_alone_is_the_rigs_error(self):
         records = logwrites.index(self.log, 0)['records']

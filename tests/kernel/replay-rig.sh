@@ -329,6 +329,10 @@ zpool status -P "$POOL" >&2
 mkdir -p "$SCRATCH"
 : > "$MANIFEST"
 [ ! -e "$STOP" ] || unlink "$STOP"
+# Its status says which step failed: WRITER_POOL_RC for the write and
+# fsync of a file on the pool (the daemon's device in the daemon mode),
+# WRITER_RIG_RC for its own steps (the scratch file, the mark).
+WRITER_POOL_RC=90; WRITER_RIG_RC=91
 writer() {
     local n=0 sum
     while [ ! -e "$STOP" ]; do
@@ -338,13 +342,13 @@ writer() {
         {
             printf "SKZ-FILE-$(printf %06d "$n")\\n%.0s" {1..256}
             head -c $((FILE_KB * 1024 - 4096)) /dev/urandom
-        } > "$SCRATCH/f"
-        sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1)
-        "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none
+        } > "$SCRATCH/f" || exit "$WRITER_RIG_RC"
+        sum=$(sha256sum < "$SCRATCH/f" | cut -d' ' -f1) || exit "$WRITER_RIG_RC"
+        "$DD" if="$SCRATCH/f" of="$MOUNTPOINT/f.$n" bs=1M conv=fsync status=none || exit "$WRITER_POOL_RC"
         # The fsync has returned: from here on in the log, the file is safe.
-        dmsetup message "$LW" 0 mark "fsync-$n"
+        dmsetup message "$LW" 0 mark "fsync-$n" || exit "$WRITER_RIG_RC"
         # Listed only once complete and fsynced: a line here is a promise.
-        echo "$sum f.$n" >> "$MANIFEST"
+        echo "$sum f.$n" >> "$MANIFEST" || exit "$WRITER_RIG_RC"
         n=$((n + 1))
         sleep "$FILE_SLEEP"
     done
@@ -376,7 +380,9 @@ fi
 # was done, and nothing is judged on it.
 if [ "$wrc" -ne 0 ]; then
     why="the recording writer failed with status $wrc (a write, an fsync or a mark): the manifest is incomplete, nothing is checked"
-    [ -z "$SKYZFSD" ] || daemon_verdict "$why; the pool's device is the daemon's, so a failed write or fsync is its (the writer's lines in the job's log say which)"
+    if [ -n "$SKYZFSD" ] && [ "$wrc" = "$WRITER_POOL_RC" ]; then
+        daemon_verdict "$why: the write or fsync of a file on the pool failed, and the pool's device is the daemon's"
+    fi
     echo "$why" >&2
     exit "$wrc"
 fi
