@@ -38,3 +38,32 @@ For the lead: M1's criterion says "every record prefix" and "the first and
 the last prefix of every transaction group". The pull-request budget checks
 no prefix between two flushes, and the one full run so far checked 17% and
 26% of them.
+
+## Second look, at 2051d51: no blocking finding left
+
+The four rig files are as at 7911228; 2051d51 adds one line of text in
+`tests/kernel/control_check.py` for another package (M1.3q), which matches
+the kernel test behind it (`the_driver_can_reissue` in
+`crates/skyzfs-ublk-sys/tests/kernel.rs`).
+
+- `test_replay_daemon.py`: 37 pass. `test_replay.py`, `test_control_check.py`: pass.
+- `repro.py` here, all three cases, now end as they should: exit 1, exit 1, exit 2.
+  `replay_daemon.py --log <missing>` exits 2 with a summary.
+- 23 plants in the new `replay_daemon.py`; 15 fail a test. Not caught:
+  - a required prefix not checked is no error (the author's stated gap);
+  - `serve()`: a device left after a failed stage always raises (no test drives `serve()`);
+  - with every prefix asked, optional prefixes still give way to time (the
+    tested coverage error would then fire);
+  - the criterion line says "shown" although the run fails;
+  - the criterion line ignores the deep-check ends;
+  - `dd` that cannot write the image is a device read again;
+  - the writable mount is not judged again;
+  - `withheld` expected by any stage again;
+  - a stopped run drops the failures found outside the main pass.
+- The lead's rule for item 7 (every prefix on the full budget, N of N and the
+  deep ends in the summary, "not shown" otherwise) is what `criterion_line`
+  and `--every-prefix` do, read against the code.
+- No run of the rig has finished since 8348a73: the runs at 0c99998 and
+  7911228 were cancelled by the next push, and the run at 2051d51
+  (43296346205) was queued when I looked. So the reshaped `make()` and
+  `serve()` have not run on a kernel in front of me.
