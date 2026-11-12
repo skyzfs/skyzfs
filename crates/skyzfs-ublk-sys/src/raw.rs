@@ -211,17 +211,13 @@ pub fn set_params(number: u32, mut params: sys::ublk_params) -> io::Result<()> {
 /// A driver that does not execute the command (before Linux 6.11, see
 /// [`skyzfs_ublk::features`]) answers `ENOTSUPP`, which libc has no
 /// name for: that is told as what it is
-/// ([`skyzfs_ublk::features::delete_not_executed`]), not as "Unknown
+/// ([`skyzfs_ublk::features::delete_answered`]), not as "Unknown
 /// error 524".
 pub fn delete(number: u32) -> io::Result<()> {
-    match command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, 0, None) {
-        Ok(_) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(skyzfs_ublk::features::ENOTSUPP) => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            skyzfs_ublk::features::delete_not_executed(number),
-        )),
-        Err(e) => Err(e),
-    }
+    skyzfs_ublk::features::delete_answered(
+        number,
+        command::<u8>(sys::UBLK_U_CMD_DEL_DEV_ASYNC, number, 0, None).map(|_| ()),
+    )
 }
 
 /// End the recovery of the device under `number`, whose queue this

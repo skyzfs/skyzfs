@@ -154,9 +154,33 @@ impl Unsupported {
     /// Whether the release is among the lacks: the one the operator's
     /// option answers.
     pub fn by_release(&self) -> bool {
-        self.0
-            .iter()
-            .any(|lack| matches!(lack, Lack::Release(_) | Lack::UnreadableRelease(_)))
+        self.0.iter().any(Lack::is_release)
+    }
+
+    /// Whether the release is all that lacks: then, and only then, the
+    /// operator's option lets a start go on.
+    pub fn only_by_release(&self) -> bool {
+        !self.0.is_empty() && self.0.iter().all(Lack::is_release)
+    }
+}
+
+impl Lack {
+    fn is_release(&self) -> bool {
+        matches!(self, Lack::Release(_) | Lack::UnreadableRelease(_))
+    }
+}
+
+/// What the driver's answer to the asynchronous delete of `number`
+/// becomes: `ENOTSUPP` ([`ENOTSUPP`]) is a command the driver does not
+/// know, and is told as such ([`delete_not_executed`]) and not as
+/// "Unknown error 524"; any other error is passed on as it is.
+pub fn delete_answered(number: u32, answer: std::io::Result<()>) -> std::io::Result<()> {
+    match answer {
+        Err(e) if e.raw_os_error() == Some(ENOTSUPP) => Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            delete_not_executed(number),
+        )),
+        other => other,
     }
 }
 

@@ -247,6 +247,42 @@ fn a_refusal_says_whether_the_release_refused() {
     assert!(!check(None, "6.8.0", true).unwrap_err().by_release());
 }
 
+/// The release is all that lacks only when no feature lacks too.
+#[test]
+fn a_refusal_says_whether_the_release_alone_refused() {
+    assert!(check(Some(ALL), "6.10.3", false)
+        .unwrap_err()
+        .only_by_release());
+    assert!(check(Some(ALL), "linux", false)
+        .unwrap_err()
+        .only_by_release());
+    assert!(!check(Some(0), "6.8.0", false)
+        .unwrap_err()
+        .only_by_release());
+    assert!(!check(None, "6.4.0", false).unwrap_err().only_by_release());
+    assert!(!check(Some(0), "7.0.0", false)
+        .unwrap_err()
+        .only_by_release());
+    assert!(!Unsupported(Vec::new()).only_by_release());
+}
+
+/// The driver's answer to the asynchronous delete: ENOTSUPP becomes the
+/// named error, with no errno left; any other answer passes unchanged.
+#[test]
+fn the_answer_to_the_delete_is_read() {
+    let told =
+        delete_answered(4, Err(std::io::Error::from_raw_os_error(ENOTSUPP))).expect_err("refused");
+    assert_eq!(told.raw_os_error(), None);
+    assert_eq!(told.kind(), std::io::ErrorKind::Unsupported);
+    assert_eq!(told.to_string(), delete_not_executed(4));
+    for code in [19, 16, 1] {
+        let passed =
+            delete_answered(4, Err(std::io::Error::from_raw_os_error(code))).expect_err("an error");
+        assert_eq!(passed.raw_os_error(), Some(code));
+    }
+    assert!(delete_answered(4, Ok(())).is_ok());
+}
+
 /// A delete the driver does not know names the command, ENOTSUPP and
 /// its number, the device, that it was not given up, the release that
 /// executes it and the option.
