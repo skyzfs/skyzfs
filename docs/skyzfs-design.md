@@ -174,7 +174,7 @@ ublk is the in-kernel userspace block driver, driven by io_uring passthrough com
 - **Library.** The transport is built on the `libublk` crate[^libublk], pinned to one version and confined to one module, for the queue. The daemon sends the control commands itself, through a binding of its own (`skyzfs-ublk-sys`), and takes the driver's own answers: add, lookup, the asynchronous delete, and the begin and the end of a recovery. The binding has kernel tests of its own.
 - **One copy per request**, into buffers that are the daemon's own and locked in memory: two per request slot, 128 MiB for a volume at one queue, a depth of 64 and 1 MiB requests. The zero-copy modes are not adopted (gate G1, §9).
 - **Labels at byte 0.** `zpool create` partitions only what it recognises as a whole disk, and its device table does not list ublk[^wholedisk], so the pool's labels sit at the start of the device, as they do through `udrive_shm`. CI pins this (§6.2).
-- **Kernels.** ublk was merged in Linux 6.0. Feature flags and their kernel versions must be pinned during M1 against the kernel documentation, not from memory. That is not done yet: the daemon asks for user recovery with reissue and has run on kernel 7.0 only, and nothing records the oldest kernel that has every flag it needs or makes the daemon say so on a kernel that lacks one. It is M1's to finish, beside its two open exit criteria (§9).
+- **Kernels.** The daemon needs **Linux 6.11 or later**. ublk was merged in 6.0; the daemon needs user recovery with reissue (6.1), ioctl-encoded control commands (6.4), the command that reports the driver's features (6.5) and the asynchronous delete, which the header names from 6.9 and the driver executes from 6.11. Ubuntu 24.04 needs its HWE kernel (the one it was released with is 6.8); long-term kernels from 6.12 on qualify. At its start the daemon asks the driver for its features and reads the kernel's release, and on a kernel that lacks something it refuses, naming what is missing and the oldest kernel that has it. An operator whose older kernel carries the driver backported says so with an option; there is no fallback to another way of deleting. The flags were read in the kernel's header and driver at the release tags, not taken from memory (M1.3q; the table is in the notes, M1, "The ublk features the daemon needs").
 - **Evidence.** Four rigs run in GitHub Actions on Ubuntu 24.04 and 26.04 (kernel 7.0, ZFS 2.4.1): a kernel probe, a power-cut replay rig, a control rig for the binding, and a daemon rig that takes `skyzfsd` through kills, an orderly stop, a held request, a failed volume, the conformance suite and its checkpoints. What each has shown is in the notes.
 - **Fallback.** Where ublk is missing, the existing NBD server on a local socket is the transport.
 
@@ -397,7 +397,7 @@ ZFS's defaults assume a large pool and an uncapped ARC. A pool per volume is oft
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | ZFS | Distribution packages, unpatched | OpenZFS on OS X port, patched with the frontend | OpenZFS on Windows port, patched with the frontend |
-| Transport | ublk. NBD as fallback | `udrive_shm` under the LDI | `udrive_shm` under the disk vdev |
+| Transport | ublk, on Linux 6.11 or later (§4.2). NBD as fallback | `udrive_shm` under the LDI | `udrive_shm` under the disk vdev |
 | Kernel code we ship | None | The ZFS kext with our patch | The ZFS driver with our patch |
 | Install barrier | A package | Apple silicon: the user must lower the security policy to Reduced Security in Recovery and approve the extension[^applekext] | A signed driver. Microsoft requires an EV certificate and attestation signing through the Hardware Dev Center[^winsign] |
 | Daemon | systemd service, io_uring | launchd daemon | Windows service |
@@ -449,7 +449,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
 | **H** ZFS in user space on macOS, after 1.x | Not sized | Deferred by decision D4, and no longer a hedge for M6. A macOS client on FSKit, built on the macOS port once that supports FSKit, with the daemon and the `udrive_shm` code of M5 reused. | Planned once 1.x has shipped and the port's FSKit work exists to build on. |
 
-**Where M1 stands (2026-11-12).** M1 still lacks two of its exit criteria. A smaller item is open beside them: the ublk feature flags and the kernels that have them are not pinned (§4.2).
+**Where M1 stands (2026-11-12).** M1 still lacks two of its exit criteria.
 
 **The power-cut replay has not been run on `skyzfsd`.** The replay rig that this criterion rests on has so far run against the ublk project's reference server. What the daemon's own log does at a power cut is covered by the store's tests on a simulated disk, and what it does at `kill -9` by the daemon rig on the kernel; neither is the criterion. Running the rig on the daemon is the next testing package.
 

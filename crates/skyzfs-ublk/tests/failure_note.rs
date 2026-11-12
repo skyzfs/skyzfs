@@ -30,8 +30,11 @@ struct Kernel {
 }
 
 impl Control for Kernel {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        Ok(true)
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        Ok(Some(u64::MAX))
+    }
+    fn release(&mut self) -> io::Result<String> {
+        Ok("7.0.0".to_string())
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         Ok(self.devices.get(&number).copied())
@@ -78,6 +81,7 @@ fn wanted(acknowledge_failure: bool) -> Wanted {
         live_retries: 0,
         gone_retries: 0,
         acknowledge_failure,
+        async_delete_asserted: false,
     }
 }
 
