@@ -4352,12 +4352,9 @@ where
                         }
                     }
                 });
-            match spawned {
-                Ok(handle) => reading.push(handle),
-                // The readers already started end when the reads'
-                // sender is dropped on this return.
-                Err(e) => return Err(e),
-            }
+            // The readers already started end when the reads' sender is
+            // dropped on an early return.
+            reading.push(spawned?);
         }
         let worker = thread::Builder::new()
             .name("skyzfs-store".into())
