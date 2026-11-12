@@ -669,6 +669,19 @@ class Log(unittest.TestCase):
         self.assertIn('ok', out)
         self.assertEqual(replay_check.run(['sh', '-c', 'echo no; exit 3'])[:2], (3, 'no\n'))
 
+    def test_a_writable_mount_that_did_not_finish_is_the_rigs(self):
+        # zfs mount timed out or could not start: it judged nothing.
+        a = type('A', (), {'pool': 'p'})()
+        saved = replay_check.run
+        try:
+            for code, want in ((124, 'rig: mount (writable) timed out'), (127, 'rig: mount (writable) could not start'),
+                               (1, 'mount (writable)')):
+                replay_check.run = lambda cmd, timeout=300, code=code: (code, 'said', 0.0)
+                fake = type('R', (), {'scrub': False, 'fsynced': 3, 'a': a})()
+                self.assertEqual(replay_check.Rig.deep_imported(fake)[0], want)
+        finally:
+            replay_check.run = saved
+
     # ------------------------------------------- what may count as a result
     def test_only_stages_that_judge_the_image_catch_a_control(self):
         def pt(n, failed=None):
