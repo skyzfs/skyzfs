@@ -491,26 +491,46 @@ async fn duplicate_content_in_a_batch_uploads_once() {
     assert_eq!(r.cp.c.attach.load(Ordering::SeqCst), 1);
 }
 
-/// The measurement gate in miniature: publish wall time for a fixed
-/// delta at a simulated per-call RTT, depth 1 vs depth 16. Recorded for
-/// the PR, and asserted only loosely (the ideal is ~depth×) so a noisy
-/// runner cannot flake it.
-#[tokio::test(flavor = "multi_thread")]
-async fn pipelining_compresses_publish_wall_time_at_rtt() {
+/// The measurement gate in miniature: publish time for a fixed delta at
+/// a simulated per-call RTT, depth 1 vs depth 16, and depth 16 must be
+/// at least three times faster (the ideal is ~depth×).
+///
+/// The time judged is the runtime's clock, paused: it moves only when
+/// every task waits, and then straight to the next timer. So it counts
+/// the waits for the control plane (the RTTs, as many as the pipeline
+/// left one after another) and nothing of the machine: the same number
+/// on every run. The test used to compare two wall clocks, and under
+/// the coverage build on a shared runner the CPU time of 256 ops, which
+/// no depth shortens, brought the factor to 2.5 (run 43154941145). The
+/// wall clocks are still printed, for the record.
+#[tokio::test(start_paused = true)]
+async fn pipelining_compresses_publish_time_at_rtt() {
     let rtt = Duration::from_millis(2);
-    let mut walls = Vec::new();
+    let mut at_rtt = Vec::new();
     for depth in [1usize, 16] {
         let mut r = rig(depth, rtt).await;
         fill_distinct(&r.stack, 3);
-        let t = Instant::now();
+        let wall = Instant::now();
+        let t = tokio::time::Instant::now();
         r.eng.run_cycle().await.unwrap();
-        let wall = t.elapsed();
-        println!("depth={depth} ops={CHUNKS} rtt={rtt:?} publish_wall={wall:?}");
-        walls.push(wall);
+        let waited = t.elapsed();
+        println!(
+            "depth={depth} ops={CHUNKS} rtt={rtt:?} publish_time_at_rtt={waited:?} wall={:?}",
+            wall.elapsed()
+        );
+        // The clock is the simulated one: a publish of 256 ops that
+        // waited for less than one RTT per batch did not go through
+        // the probe's waits, and the comparison below would be of
+        // nothing.
+        assert!(
+            waited >= rtt * (CHUNKS / depth as u64) as u32,
+            "depth {depth}: {waited:?} is less than one RTT per batch"
+        );
+        at_rtt.push(waited);
     }
     assert!(
-        walls[1] * 3 < walls[0],
-        "depth 16 should be several times faster: {walls:?}"
+        at_rtt[1] * 3 < at_rtt[0],
+        "depth 16 should be several times faster: {at_rtt:?}"
     );
 }
 
