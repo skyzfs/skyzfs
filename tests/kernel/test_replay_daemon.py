@@ -515,6 +515,26 @@ class Pass(unittest.TestCase):
         self.assertEqual(rd.check(self.args()), 1)
         self.assertIn('| calibration | start |', self.summary_text())
 
+    def test_a_failed_zdb_at_the_end_survives_a_later_rig_error(self):
+        # zdb -bcc fails on the final image, then the withheld control's setup
+        # stops the rig: the zdb failure is still a verdict.
+        self.fake()
+        point, run = rd.Checker.point, rd.run
+
+        def control_breaks(ck, n, kind, hooks=(), marks=None, fmarks=None):
+            if marks is not None:
+                raise rd.RigError('withheld: the snapshot could not be set up')
+            return point(ck, n, kind, hooks=hooks, marks=marks, fmarks=fmarks)
+
+        def zdb_fails(cmd, timeout=300):
+            return (3, 'zdb: checksum error', 0.0) if cmd[0] == 'zdb' else run(cmd, timeout)
+        rd.Checker.point, rd.run = control_breaks, zdb_fails
+        self.assertEqual(rd.check(self.args()), 1)
+        text = self.summary_text()
+        self.assertIn('stopped by the rig', text)
+        self.assertIn('exit code 3', text)
+        self.assertIn('Exit 1', text)
+
     def test_every_prefix_never_gives_way_to_time(self):
         # A slow pass: each point takes far longer than the plan.
         records = logwrites.index(self.log, 0)['records']

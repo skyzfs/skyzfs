@@ -356,7 +356,8 @@ writer() {
 if [ -n "$SKYZFSD" ] && [ "$FILL_MB" -gt 0 ]; then
     # Not in the manifest: it is there to fill the daemon's log, so that
     # checkpoint steps run while the files are written.
-    "$DD" if=/dev/urandom of="$MOUNTPOINT/fill" bs=1M count="$FILL_MB" status=none
+    "$DD" if=/dev/urandom of="$MOUNTPOINT/fill" bs=1M count="$FILL_MB" status=none \
+        || daemon_verdict "the fill file could not be written to the pool, and the pool's device is the daemon's"
 fi
 writer &
 WRITER=$!

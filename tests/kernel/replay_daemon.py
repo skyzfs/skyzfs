@@ -716,7 +716,11 @@ def check(a):
     for r in st['points'] + st['outside']:
         if not r['ok']:
             classify(r, failures, rig_errors)
-    code = 1 if failures else 2
+    # zdb -bcc at the end judges the pool even when a later step (a
+    # control) stops the rig: its failure is a verdict too.
+    zcc = (st['res'].get('zdb_cc') or {}).get('rc')
+    zdb_against = zcc not in (0, None) and zcc not in rc.RIG_RC
+    code = 1 if failures or zdb_against else 2
     res = dict(st['res'], stopped=why, exit=code,
                failures=[{k: v for k, v in p.items() if k != 'dir'} for p in failures],
                rig_errors=[{'n': p['n'], 'failed': p['failed'], 'detail': p['detail']} for p in rig_errors],
@@ -733,6 +737,10 @@ def check(a):
         out.append('| prefix | kind | failed | detail |\n|---|---|---|---|')
         for r in failures:
             out.append(f"| {r['n']} | {r['kind']} | {r['failed']} | {r['detail'][:300]} |")
+    if zdb_against:
+        out.append(f'Before it stopped, `zdb -e -bcc` on the pool at the end of the log failed: exit code {zcc}. '
+                   'That is a verdict against the daemon, whatever stopped the rig after it.\n')
+    if code == 1:
         out.append('\nExit 1: a verdict against the daemon.\n')
     else:
         out.append('No prefix had failed a check before it. Exit 2: the rig\'s own error, not a verdict.\n')
