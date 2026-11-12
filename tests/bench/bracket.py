@@ -13,6 +13,12 @@ of the sequence. Its bracketed ratio is
 A daemon row with no model row before it or none after it, or that is
 not in a sequence, has no bracketed ratio.
 
+A bracket is too wide when its two model rows differ by more than a
+tenth of their mean: the machine moved by more than the effects judged
+while the row ran between them. Such a row keeps its ratio, printed,
+and has no verdict ("bracket too wide"), so it gives nothing to a
+median of verdicts.
+
 `enclose` finds the two rows; `bracketed` forms the ratio and says
 whether it may be judged. Rows are the benchmark's result dicts, with
 `_seq` (the row's place in its sequence, or None), `machine`,
@@ -45,15 +51,24 @@ def enclose(row, rows, model=MODEL):
     return before, after
 
 
-def bracketed(row, rows, model=MODEL, criterion=0.90):
-    """-> dict: before, after (rows or None), ratio (float or None), verdict (text).
+WIDEST = 0.10
+
+
+def width(before, after):
+    """How far the two model rows differ, as a share of their mean."""
+    return abs(before['tps'] - after['tps']) / ((before['tps'] + after['tps']) / 2)
+
+
+def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
+    """-> dict: before, after (rows or None), ratio and width (floats or None), verdict (text).
 
     The verdict is 'at least 0.90' or 'BELOW 0.90' only when the row is
-    enclosed and both model rows had no origin delay (the daemon row has
+    enclosed, its two model rows differ by at most `widest` of their
+    mean, and both had no origin delay (the daemon row has
     no origin under it, and a model row slowed at its origin reads would
     flatter the daemon). Otherwise it starts with NO VERDICT and says why.
     """
-    out = {'before': None, 'after': None, 'ratio': None}
+    out = {'before': None, 'after': None, 'ratio': None, 'width': None}
     if not row.get('tps'):
         out['verdict'] = 'no tps: the run did not measure'
         return out
@@ -70,12 +85,16 @@ def bracketed(row, rows, model=MODEL, criterion=0.90):
         out['verdict'] = f'NO VERDICT: no {model} row of this machine and workload {missing} it in the sequence'
         return out
     out['ratio'] = row['tps'] / ((before['tps'] + after['tps']) / 2)
+    out['width'] = width(before, after)
     delays = [before.get('origin_delay_ms'), after.get('origin_delay_ms')]
     if any(d is None for d in delays):
         out['verdict'] = 'NO VERDICT: a model row does not say what origin delay it had'
     elif any(d != 0 for d in delays):
         out['verdict'] = (f'NO VERDICT: the model rows had origin delays of {delays[0]} and {delays[1]} ms, '
                           'the daemon row has no origin')
+    elif out['width'] > widest:
+        out['verdict'] = (f'NO VERDICT: bracket too wide: the model rows differ by {out["width"]:.1%} of their mean '
+                          f'(at most {widest:.0%})')
     else:
         out['verdict'] = f'at least {criterion:.2f}' if out['ratio'] >= criterion else f'BELOW {criterion:.2f}'
     return out

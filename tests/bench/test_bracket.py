@@ -80,6 +80,22 @@ class Bracketed(unittest.TestCase):
         rows[1] = row(2, 'zfs-skyzfsd', None)
         self.assertEqual(bk.bracketed(rows[1], rows)['verdict'], 'no tps: the run did not measure')
 
+    def test_bracket_too_wide(self):
+        # Run 43250525526 (26.04): model rows 3371 and 2447 around row 5.
+        rows = [row(4, 'zfs-slog', 3371.0), row(5, 'zfs-skyzfsd', 1547.0), row(7, 'zfs-slog', 2447.0)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertAlmostEqual(b['ratio'], 1547 / ((3371 + 2447) / 2))
+        self.assertAlmostEqual(b['width'], 924 / 2909)
+        self.assertTrue(b['verdict'].startswith('NO VERDICT: bracket too wide'), b['verdict'])
+        self.assertIn('31.8%', b['verdict'])
+        # 10% of the mean is still judged; just over it is not.
+        for before, judged in ((1050, True), (1051, False)):
+            rows = [row(1, 'zfs-slog', before), row(2, 'zfs-skyzfsd', 1000), row(3, 'zfs-slog', 950)]
+            b = bk.bracketed(rows[1], rows)
+            self.assertEqual(b['verdict'].startswith('NO VERDICT'), not judged, (before, b))
+        # The recorded run of 43234635170: 3732 and 3677, 1.5% apart.
+        self.assertAlmostEqual(bk.bracketed(RUN[2], RUN)['width'], 55.273 / 3704.73, places=4)
+
     def test_origin_delay(self):
         rows = [row(1, 'zfs-slog', 1000, delay=10), row(2, 'zfs-skyzfsd', 950), row(3, 'zfs-slog', 1000)]
         b = bk.bracketed(rows[1], rows)

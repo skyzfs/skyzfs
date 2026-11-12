@@ -544,16 +544,19 @@ if skz:
     print('\nThe daemon against the benchmark model (`zfs-slog`). A daemon row is judged by its bracketed ratio: '
           'its tps over the mean tps of the model rows just before and just after it in its sequence, on its machine '
           '(the same boot id and host name). The criterion is a bracketed ratio of at least 0.90, with both model rows '
-          'run with no origin delay (TB_ORIGIN_DELAY_MS=0). A row that no two model rows enclose has no verdict.\n')
-    print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracketed ratio | verdict |')
-    print('|---|---|---|---|---|---|---|---|')
+          'run with no origin delay (TB_ORIGIN_DELAY_MS=0). A row that no two model rows enclose has no verdict, '
+          'and neither has a row whose two model rows differ by more than a tenth of their mean (bracket too wide): '
+          'the machine moved by more than is judged while it ran.\n')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
+    print('|---|---|---|---|---|---|---|---|---|')
     mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
     for r in sorted(skz, key=lambda r: (r['workload'], r.get('machine') or '', r.get('_seq') or 0)):
         b = bracket.bracketed(r, runs)
         tps_ = 'none' if not r['tps'] else f"{r['tps']:.0f}"
         rat = '-' if b['ratio'] is None else f"{b['ratio']:.3f}"
+        wid = '-' if b['width'] is None else f"{b['width']:.1%}"
         where = '' if r.get('_seq') is None else f" (row {r['_seq']})"
-        print(f"| {r['workload']} | {label(r)}{where} | {lim(r)} | {tps_} | {mrow(b['before'])} | {mrow(b['after'])} | {rat} | {b['verdict']} |")
+        print(f"| {r['workload']} | {label(r)}{where} | {lim(r)} | {tps_} | {mrow(b['before'])} | {mrow(b['after'])} | {wid} | {rat} | {b['verdict']} |")
     print('\nThe daemon\'s rows against each row of the model and of the other stacks on their machine (not judged; '
           'rows of other machines are counted and not compared):\n')
     print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio |')
