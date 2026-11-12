@@ -70,6 +70,37 @@ EXPECTED = {
     'pin_c_delay_cases': ('c', 'PASS', SERVER,
                           'every case of the suite ends with that delay as it does without it'),
 
+    # Checkpoints (design §5.1, "When the daemon checkpoints"): the four
+    # lines wait for M1.3c. They are WAITING on the stand-in for good,
+    # and on the daemon as long as they are named in WAITS_FOR_THE_DAEMON
+    # below; a name is taken out of that set on purpose, with the rig's
+    # code for the pin, when the daemon checkpoints.
+    'pin_takeover_time_does_not_grow': ('b', 'PASS', WAITING,
+                                        'over the kills of the kill test a take-over does not take longer and '
+                                        'longer: the median of the last five is at most twice the median of '
+                                        'the first five plus 1 s. Without checkpoints the log replayed at a '
+                                        'start grows from kill to kill (2.8 s to 23 s over 20 kills in the '
+                                        'daemon\'s first runs)', 'WAITING'),
+    'pin_log_stays_below_high_mark': ('b', 'PASS', WAITING,
+                                      'under the kill test\'s load the write log never holds more than the '
+                                      'high mark (two segments of 64 MiB) plus one step (8 MiB of payload or '
+                                      '1024 records) plus one request (1 MiB)', 'WAITING'),
+    'pin_kills_inside_steps_lose_nothing': ('b', 'PASS', WAITING,
+                                            'kills that land inside a checkpoint step lose nothing: the pool '
+                                            'comes through as after any kill, and enough kills landed in a '
+                                            'step to say so (fewer is a rig error)', 'WAITING'),
+    'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
+                                 'every case of the suite ends as declared with the marks set low enough that '
+                                 'the daemon checkpoints while the suite runs (no step taken is a rig error)', 'WAITING'),
+    'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
+                                                  'a volume that fails while the server holds a request (--hold '
+                                                  'with --fail-log-after) still ends: serve exits with the failed '
+                                                  'status within a stated time and its device is gone or dead. The '
+                                                  'driver\'s delete of a live device waits while that device\'s '
+                                                  'server holds a request (control rig, '
+                                                  'obs_delete_while_the_server_holds_a_request), and the daemon\'s '
+                                                  'failure path deletes its own live device before it stops its '
+                                                  'queue', 'WAITING'),
     'pin_kill_under_load': ('b', 'PASS', SERVER,
                             'kill -9 with writes in flight: no application write fails, no vdev error, '
                             'a clean scrub, every file as the writer recorded it (§4.1, M1 exit). Writes '
@@ -85,12 +116,44 @@ EXPECTED = {
     'pin_detach_frees_number': ('b', 'PASS', WAITING,
                                 'with the server stopped and the pool exported, detach exits 0 and the device '
                                 'number is free again (§4.2)'),
+    'pin_serve_on_zfs_refused': ('b', 'PASS', WAITING,
+                                 'serve with the volume\'s directory on a ZFS dataset, and serve with the run '
+                                 'directory on one, each exits with an error that says so, before any device '
+                                 'exists (§4.2: the daemon keeps its files off any pool)', 'WAITING'),
+    'pin_orderly_stop_under_load': ('b', 'PASS', WAITING,
+                                    'SIGTERM while a writer writes and syncs: serve exits 0, the next serve of the '
+                                    'boot finds nothing applied and not acknowledged, no write fails and every '
+                                    'file the writer was told is written reads back (§4.2). A stop that did not '
+                                    'find the writer at work is a rig error', 'WAITING'),
+    'pin_detach_of_held_says_6': ('b', 'PASS', WAITING,
+                                  'detach of a stopped device that a process holds open deletes it and exits 6: '
+                                  'the number stays taken while it is held, and an add under it succeeds within '
+                                  '5 s of the holder closing it (§4.2)', 'WAITING'),
     'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
                                          'no serve after a kill is refused by the check of what was acknowledged '
                                          '(§4.2): a false alarm would suspend a healthy pool'),
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
-                                    'refused with status 4 and the pool suspends', 'WAITING'),
+                                    'refused with status 4, with the daemon\'s own reason for it ("the log is '
+                                    'shorter than what was acknowledged"), and serves nothing: no ready line, '
+                                    'the device live at no look until the pool suspended or 300 s had passed. '
+                                    'What the pool does then is ZFS\'s reaction to what it had in flight '
+                                    'and is reported in obs_b_refused_start_under_writes, not judged (with only '
+                                    'writes waiting it did not suspend in 118 s, run 43086281904). The server is killed at rest '
+                                    '(writer stopped, pool synced, writes and requests in flight still for a '
+                                    'second, unstored 0), so that the log\'s last data record is the newest '
+                                    'acknowledged one. --recover-short N takes the log\'s end as if its last N data '
+                                    'records (writes, write-zeroes, discards) were not there; the daemon refuses '
+                                    'exactly when that end is at or before the stored acknowledged position, '
+                                    'which is where the newest acknowledged record starts. Killed under load '
+                                    'the line would be a coin toss (run 43064604469)',
+                                    'WAITING'),
+    'ctl_recovered_log_too_short_no_log_device': ('b', 'FAIL', WAITING,
+                                                  'the same control on a pool without a separate log device, the second '
+                                                  'arm of the course after a refused start: judged by the same rule, so '
+                                                  'that an arm that did not happen (ERROR) or whose start served (PASS) '
+                                                  'does not leave the run green behind an observation',
+                                                  'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
                                           'the daemon causes no file under /run/ublksrvd, the reference server\'s '
@@ -154,12 +217,22 @@ EXPECTED = {
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with a writer\'s '
+                                              'writes waiting at the device: the pool\'s and the device\'s state second '
+                                              'by second for 300 s; what waited at the device; the transaction '
+                                              'groups; whether the pool goes on acknowledging synced writes; whether '
+                                              'a second writer (120 s), a read of an uncached file (180 s) and a '
+                                              'scrub (240 s) fail or hang; what an operator would see'),
+    'obs_b_refused_start_no_log_device': ('b', 'the same course on a pool without a separate log device: does a synced '
+                                               'write then hang, fail, or still return?'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
     'obs_a_unordered_overlapping_writes': ('a', 'how often the reference server without the ordering tears the same load, '
                                                 'on this runner: the pin on overlapping writes means as much as this shows'),
+    'obs_b_takeover_ms': ('b', 'how long each take-over of the kill test took, in order, and the medians of '
+                               'the first and the last five'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
@@ -181,6 +254,11 @@ C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 # stand-in, whichever server is under test, because the daemon deletes
 # its device when the volume fails.
 REFERENCE_ONLY = set()
+
+# Observations only the daemon can make: on the stand-in the rig writes
+# no line for them and none is asked for. A line that says "not run"
+# is the rig's error whatever the server.
+DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device'}
 
 
 CHECKS = ('a', 'b', 'c', 'd', 'e')
@@ -220,6 +298,17 @@ def parse_checks(text):
 NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 
+# Pins the daemon cannot carry yet: expected WAITING on the daemon too.
+WAITS_FOR_THE_DAEMON = {
+    'pin_takeover_time_does_not_grow': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_log_stays_below_high_mark': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_kills_inside_steps_lose_nothing': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_c_suite_with_low_marks': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
+    'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
+                                                 'path does while the pump holds a request',
+}
+
+
 def judge(results, checks, impl='reference'):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
@@ -228,6 +317,8 @@ def judge(results, checks, impl='reference'):
             continue
         if impl == 'reference' and on_stand_in:
             want = on_stand_in[0]
+        if impl != 'reference' and name in WAITS_FOR_THE_DAEMON:
+            want = 'WAITING'
         if impl != 'reference':
             if name in REFERENCE_ONLY:
                 rows.append((name, want, 'not run', 'needs the reference server', KERNEL, claim))
@@ -246,6 +337,8 @@ def judge(results, checks, impl='reference'):
         rows.append((name, want, got, detail, basis, claim))
     for name, (check, _) in OBSERVED.items():
         if check not in checks:
+            continue
+        if name not in results and impl == 'reference' and name in DAEMON_ONLY_OBSERVED:
             continue
         if name not in results:
             errors.append(f'{name}: no observation')
@@ -319,7 +412,8 @@ def render(results, rows, differs, errors, checks):
     out += ['', '### Observations (not judged)', '']
     for name, (check, question) in OBSERVED.items():
         if check in checks:
-            out.append(f"- **{question}** {results.get(name, 'no observation')}")
+            none = 'made only with the daemon' if name in DAEMON_ONLY_OBSERVED else 'no observation'
+            out.append(f"- **{question}** {results.get(name, none)}")
     context = [k for k in results if not k.startswith(('pin_', 'ctl_', 'obs_', 'case_'))]
     out += ['', '<details><summary>Everything else the rig wrote down</summary>', '']
     out += [f'- `{k}`: {results[k]}' for k in context] + ['', '</details>', '']

@@ -1,0 +1,156 @@
+name: skyzfs-control-rig
+
+# The control rig (design §4.2, "The states of a device" and "Library"):
+# what the daemon's binding to the ublk driver (crates/skyzfs-ublk-sys)
+# says and does about a device in each state the driver knows, its own
+# and another server's. It first runs the binding's own kernel tests
+# (ignored by default: they need root and the driver), then takes the
+# binding through the states one step at a time with its test program,
+# beside devices of the ublk project's reference server. The job fails
+# unless every line is as the table `EXPECTED` in
+# `tests/kernel/control_check.py` has it. All the logic is
+# `tests/kernel/control-rig.sh`.
+on:
+  workflow_dispatch:
+  # A workflow that has never run cannot be dispatched from a branch.
+  # A push that changes this file or the rig runs it on the testing
+  # branches.
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - .github/workflows/skyzfs-control-rig.yml
+      - tests/kernel/control-rig.sh
+      - tests/kernel/control-holder.py
+      - tests/kernel/control_check.py
+      - tests/kernel/build-ublksrv.sh
+      - tests/kernel/ublksrvd-look.sh
+      - tests/lib/**
+  # Everything the job builds or sources: the binding and the crates
+  # its test program and kernel tests are built with (cargo tree of
+  # skyzfs-ublk-sys with control-test-program), what decides those
+  # builds beside the sources, the rig's own files, the scripts it
+  # sources or calls, and the unit job's tests.
+  pull_request:
+    paths:
+      - crates/skyzfs-ublk-sys/**
+      - crates/skyzfs-ublk/**
+      - crates/skyzfs-blk/**
+      - crates/skyzfs-local/**
+      - Cargo.lock
+      - Cargo.toml
+      - rust-toolchain.toml
+      - tests/kernel/control-rig.sh
+      - tests/kernel/control-holder.py
+      - tests/kernel/control_check.py
+      - tests/kernel/test_control_check.py
+      - tests/kernel/build-ublksrv.sh
+      - tests/kernel/ublksrvd-look.sh
+      - tests/kernel/test_net_try.sh
+      - tests/lib/**
+      - .github/workflows/skyzfs-control-rig.yml
+
+# A newer push supersedes the run of the older one, on a pull request
+# and on a branch; a dispatched run is left alone.
+concurrency:
+  group: control-rig-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
+  cancel-in-progress: true
+
+# No job writes to the repository, and the rig runs third-party code
+# (the reference ublk server) as root: the token is good for reading
+# the repository and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the table and its judge (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_control_check.py -v
+      - run: bash tests/kernel/test_net_try.sh
+
+  rig:
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-26.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Build the binding's kernel tests and its test program
+        run: |
+          # The workspace's system packages, and libclang for the
+          # binding's library.
+          # The runners' name resolution fails for minutes at a time
+          # (seen 2026-11-11): three tries, a minute apart.
+          for try in 1 2 3; do
+            if sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev; then break; fi
+            [ "$try" = 3 ] && { echo "::error title=control rig::apt could not install the build's packages in three tries (if the log says a name could not be resolved, the package mirrors are out); this is not a verdict on the binding"; exit 2; }
+            sleep 60
+          done
+          rustup update stable
+          # Built as the runner's user, run as root below. The kernel
+          # tests' binary is named by cargo; the test program is built
+          # with it, since one of the tests runs it. Both are behind
+          # the feature control-test-program.
+          cargo test --locked -p skyzfs-ublk-sys --features control-test-program --test kernel --no-run --message-format=json > "$RUNNER_TEMP/build.json"
+          tests=$(python3 -I -c '
+          import json, sys
+          for line in open(sys.argv[1]):
+              try:
+                  m = json.loads(line)
+              except ValueError:
+                  continue
+              if m.get("reason") == "compiler-artifact" and m.get("executable") and m.get("target", {}).get("name") == "kernel":
+                  print(m["executable"])' "$RUNNER_TEMP/build.json" | tail -n 1)
+          [ -x "$tests" ] || { echo "::error::no test binary for crates/skyzfs-ublk-sys/tests/kernel.rs"; exit 1; }
+          [ -x target/debug/skyzfs-ublk-control ] || { echo "::error::no target/debug/skyzfs-ublk-control"; exit 1; }
+          {
+            printf 'export RIG_KERNEL_TESTS=%q\n' "$tests"
+            printf 'export RIG_CONTROL=%q\n' "$PWD/target/debug/skyzfs-ublk-control"
+          } > "$RUNNER_TEMP/rig.env"
+      - name: Rig
+        # The settings go in a file: ubuntu-26.04's sudo-rs does not
+        # carry the environment through.
+        run: |
+          sudo bash -c '. "$1" && exec tests/kernel/control-rig.sh "$2" /mnt/skz-control-rig' \
+            rig "$RUNNER_TEMP/rig.env" "$PWD/rig-out"
+      - name: Judge against the table
+        if: always()
+        run: |
+          sudo chmod -R a+rX rig-out 2>/dev/null || true
+          rc=0
+          python3 tests/kernel/control_check.py rig-out > summary.md || rc=$?
+          cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          cp summary.md rig-out/ 2>/dev/null || true
+          case $rc in
+            0) ;;
+            1) echo "::error title=control rig::results differ from the table EXPECTED"; exit 1 ;;
+            *) echo "::error title=control rig::the rig itself failed; this is not a verdict on the binding"; exit 2 ;;
+          esac
+      - uses: actions/upload-artifact@v6
+        id: upload
+        if: always()
+        continue-on-error: true
+        with:
+          name: control-rig-${{ matrix.image }}
+          path: rig-out/
+          retention-days: 90
+      # GitHub's artifact service failed for ten minutes at a time on
+      # 2026-11-11 and the results of four jobs were lost. One more try,
+      # and this one decides the step's colour.
+      - name: Upload again if the first upload failed
+        uses: actions/upload-artifact@v6
+        if: always() && steps.upload.outcome == 'failure'
+        with:
+          name: control-rig-${{ matrix.image }}
+          path: rig-out/
+          retention-days: 90
+          overwrite: true

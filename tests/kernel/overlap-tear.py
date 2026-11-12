@@ -14,7 +14,13 @@ Each writer notes when its call began and ended. A round counts as
 had the writes in flight together, and only those say anything. Two
 writes that never overlap in time give "0 torn" on any server.
 
-Prints one line: rounds R torn T together G first "..." (whose sector
+The times are taken around the call, outside the request's time at
+the device, so "together" is an upper bound. "Well together" is the
+stricter count: the calls overlapped for at least a quarter of the
+shorter one's length, which a few microseconds of slack at either end
+cannot produce.
+
+Prints one line: rounds R torn T together G well W first "..." (whose sector
 each 512-byte sector of the first torn round was, run-length; "??" is
 neither writer's), and exits 0. Exit 2: could not run.
 """
@@ -36,7 +42,7 @@ def main():
     fd = os.open(dev, os.O_RDWR | os.O_DIRECT)
     bufs = [mmap.mmap(-1, size) for _ in range(writers)]
     back = mmap.mmap(-1, size)
-    rounds = torn = together = 0
+    rounds = torn = together = well = 0
     first = ''
     errors = []
     end = time.monotonic() + seconds
@@ -66,21 +72,24 @@ def main():
         for t in threads:
             t.join()
         if errors or None in spans:
-            print(f'rounds {rounds} torn {torn} together {together} error "{errors[0] if errors else "a writer did not return"}"')
+            print(f'rounds {rounds} torn {torn} together {together} well {well} error "{errors[0] if errors else "a writer did not return"}"')
             return 2
         if os.preadv(fd, [back], offset) != size:
-            print(f'rounds {rounds} torn {torn} together {together} error "short read"')
+            print(f'rounds {rounds} torn {torn} together {together} well {well} error "short read"')
             return 2
         rounds += 1
-        if max(b for b, _ in spans) < min(e for _, e in spans):
+        overlap = min(e for _, e in spans) - max(b for b, _ in spans)
+        if overlap > 0:
             together += 1
+            if overlap * 4 >= min(e - b for b, e in spans):
+                well += 1
         got = bytes(back)
         wrote = [bytes(buf) for buf in bufs]
         if got not in wrote:
             torn += 1
             if not first:
                 first = describe(got, wrote)
-    print(f'rounds {rounds} torn {torn} together {together} first "{first}"')
+    print(f'rounds {rounds} torn {torn} together {together} well {well} first "{first}"')
     return 0
 
 
@@ -104,5 +113,5 @@ if __name__ == '__main__':
     try:
         sys.exit(main())
     except (OSError, ValueError, IndexError) as e:
-        print(f'rounds 0 torn 0 together 0 error "{e}"')
+        print(f'rounds 0 torn 0 together 0 well 0 error "{e}"')
         sys.exit(2)

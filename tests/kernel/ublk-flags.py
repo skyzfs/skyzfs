@@ -159,6 +159,10 @@ def main():
 
     names = [p['res'].get('kernel', os.path.basename(p['dir'])) for p in probes]
     print('## SkyZFS kernel probe\n')
+    for p, n in zip(probes, names):
+        if p['res'].get('setup_error'):
+            print(f"**The probe's own error on {n}, not a verdict on the kernel:** "
+                  f"{p['res']['setup_error']}. The pins below were not checked there.\n")
     # All four rows, always: a pin that was never checked is not a pass.
     print('**Pinned properties.** A FAIL, or a property that was not checked, fails the probe.\n')
     print('| | ' + ' | '.join(names) + ' |')
