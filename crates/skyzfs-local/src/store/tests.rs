@@ -6437,20 +6437,42 @@ fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
     let mut done = Vec::new();
     for round in 0..40u64 {
         if round % 2 == 0 {
+            let wanted = done.len() + 2;
             submit(&mut served, write_request(2 * round, round % 8, 1, 7)).unwrap();
             submit(&mut served, read_request(2 * round + 1, round % 8, 2)).unwrap();
-            take(
-                &mut served,
-                &mut done,
-                2 * (round as usize / 2 + 1),
-                "the round",
-            )
-            .unwrap();
+            take(&mut served, &mut done, wanted, "the round").unwrap();
+        }
+        if round % 10 == 5 {
+            // A flush and a checkpoint: a step's parts and its
+            // barriers' waits are in the worker's time too.
+            let flushes = done.len() + 1;
+            served
+                .submit(Request {
+                    id: RequestId(1000 + round),
+                    op: Op::Flush,
+                })
+                .unwrap();
+            take(&mut served, &mut done, flushes, "the flush").unwrap();
+            let (reply, checkpointed) = mpsc::channel();
+            assert!(served.send(Command::Checkpoint(reply)));
+            assert!(matches!(
+                checkpointed.recv_timeout(Duration::from_secs(20)),
+                Ok(Ok(_))
+            ));
         }
         let now = served.timing();
         identities_hold(&before, &now, &format!("round {round}"));
         before = now;
     }
+    assert!(before.barrier_home.count >= 4, "{before:?}");
+    assert!(before.step_apply.sum_ns > 0, "{before:?}");
+    assert!(
+        before.worker[ACTIVITIES
+            .iter()
+            .position(|a| *a == "step_barrier")
+            .unwrap()]
+            > 0
+    );
     // Nothing more is submitted: both threads go to wait for work, and
     // then the time between two looks is all idle.
     let began = std::time::Instant::now();
@@ -6531,7 +6553,8 @@ fn monotonic(t: &Timing) -> Vec<u64> {
 /// No sum goes down from one look to the next, with the worker held
 /// inside a step and the reader inside a read: a look does not count
 /// what a thread is doing to an activity it did before, which the next
-/// look would take back. Shown by hand, not by a mutant: a look that
+/// look would take back. Then the same with a client's flush held
+/// inside its sync of the log. Shown by hand, not by a mutant: a look that
 /// closed a busy thread's open span under the activity it last showed
 /// ("other" for the worker, "idle" for a reader whose read is under
 /// way) fails here, as `time_worker_other_ns` goes down once the step
@@ -6576,4 +6599,45 @@ fn no_sum_goes_down_between_looks_taken_inside_a_step_and_a_read() {
     }
     let (first, last) = (&looks[0], &looks[looks.len() - 1]);
     assert!(last.step_apply.sum_ns > first.step_apply.sum_ns, "{last:?}");
+    drop(_opened);
+    drop(served);
+
+    // A request under way: a flush held inside its sync of the log.
+    let (_disk, mut store) = env.fresh().unwrap();
+    let sync = Gate::new("looks-sync");
+    store.set_sync_pause(sync.pause());
+    let mut served = store.serve().unwrap();
+    let _opened = Opened(&[&sync]);
+    let mut done = Vec::new();
+    submit(&mut served, write_request(1, 8, 8, 0x44)).unwrap();
+    take(&mut served, &mut done, 1, "the write").unwrap();
+    let mut looks = vec![served.timing()];
+    served
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Flush,
+        })
+        .unwrap();
+    sync.wait_reached("the flush's sync").unwrap();
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(5));
+        looks.push(served.timing());
+    }
+    sync.open();
+    take(&mut served, &mut done, 2, "the flush").unwrap();
+    looks.push(served.timing());
+    std::thread::sleep(Duration::from_millis(5));
+    looks.push(served.timing());
+    for (at, pair) in looks.windows(2).enumerate() {
+        identities_hold(
+            &pair[0],
+            &pair[1],
+            &format!("flush, look {at} to {}", at + 1),
+        );
+    }
+    let flush = ACTIVITIES.iter().position(|a| *a == "flush").unwrap();
+    assert!(
+        looks[looks.len() - 1].worker[flush] >= 25_000_000,
+        "{looks:?}"
+    );
 }
