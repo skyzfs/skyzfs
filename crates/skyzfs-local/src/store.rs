@@ -1733,6 +1733,17 @@ impl Spans {
         timing: &mut Timing,
     ) {
         for (began, ended, activity) in parts.iter_mut().flat_map(|parts| parts.drain(..)) {
+            // Whatever notes parts is followed by a take before the
+            // worker closes another span. Where one is missing, the
+            // parts would lie before the last span's end and `close`
+            // would drop them without a word: the time would be under
+            // whatever span was closed over them. A debug build, which
+            // the tests are, stops here.
+            debug_assert!(
+                began >= self.last,
+                "a part of a batch (activity {activity}) began before the last span's end: \
+                 parts were noted and not taken before the worker closed a span"
+            );
             self.close(around, began, timing);
             self.close(activity, ended, timing);
         }

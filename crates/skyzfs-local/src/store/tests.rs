@@ -4327,6 +4327,90 @@ fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
     );
 }
 
+/// An explicit checkpoint of a served store is no request, and its
+/// parts are taken right after it: they are the step's activities in
+/// the worker's time and in the wait of a read that was submitted
+/// meanwhile, and "other" holds nothing of the checkpoint. The
+/// checkpoint is held 200 ms in the home image's part while the read
+/// is submitted, so the read is the next thing the worker does after
+/// it: if the parts were not taken at once they would lie before the
+/// span the read's begin closes, and be lost.
+#[test]
+fn an_explicit_checkpoints_parts_are_the_steps_activities_in_a_served_store() {
+    const HELD: Duration = Duration::from_millis(200);
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    flush(&mut store).unwrap();
+    let gate = std::env::temp_dir().join(format!("skyzfs-explicit-gate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Written);
+    // No marks: the worker takes no step of its own, and the only
+    // batches are the checkpoint's.
+    let mut served = store.serve().unwrap();
+    // The checkpoint is asked for without waiting for it.
+    let (reply, result) = mpsc::channel();
+    assert!(served.send(Command::Checkpoint(reply)));
+    at_the_point(&gate, "the checkpoint");
+    let asked = std::time::Instant::now();
+    served
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(16),
+            },
+        })
+        .unwrap();
+    std::thread::sleep(HELD);
+    std::fs::write(&gate, b"").unwrap();
+    let mut done = Vec::new();
+    while done.is_empty() {
+        served.wait(&mut done, Duration::from_secs(1));
+        assert!(asked.elapsed() < Duration::from_secs(20), "no answer");
+    }
+    let checkpointed = result.recv_timeout(Duration::from_secs(20));
+    served.position().unwrap();
+    let timing = served.timing();
+    let live = served.log_state().live();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    assert!(matches!(checkpointed, Ok(Ok(_))), "{checkpointed:?}");
+    // The checkpoint took the whole log, and the read saw the data.
+    assert_eq!(live, 0);
+    assert!(done[0].buf.as_ref().unwrap().iter().all(|b| *b == 1));
+
+    let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
+    let ns = HELD.as_nanos() as u64;
+    let parts = [
+        ("step_walk", timing.step_walk),
+        ("step_save", timing.step_save),
+        ("step_apply", timing.step_apply),
+        ("step_home_sync", timing.step_home_sync),
+        ("step_log_start", timing.step_start),
+        ("step_end", timing.step_end),
+    ];
+    assert!(timing.step_apply.count >= 1, "{timing:?}");
+    assert!(timing.step_home_sync.sum_ns >= ns, "{timing:?}");
+    // The worker's time: every part as the step's sums have it.
+    for (name, part) in parts {
+        assert_eq!(timing.worker[at(name)], part.sum_ns, "{name}: {timing:?}");
+    }
+    // The read's wait: the held part under its name, and under
+    // "other" no more than what is left of the wait beside the 200 ms
+    // it spent behind that part.
+    let reads = timing.requests[0];
+    let by = timing.wait_by[0];
+    assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
+    assert!(by[at("step_home_sync")] >= ns, "{timing:?}");
+    assert!(by[at("other")] <= reads.wait.sum_ns - ns, "{timing:?}");
+    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+}
+
 /// A completion that `wait` takes after waiting for it has its stamp,
 /// as one that `poll` takes has. The worker is held in a step while
 /// the read is submitted, so `wait` finds nothing at first and takes
