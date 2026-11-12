@@ -22,9 +22,10 @@ for opts in ':' 'set -e' 'set -euo pipefail'; do
     out=$(run "$opts" 'lim 5 true; echo "after $?"'); rc=$?
     check "$name a command that succeeds, and the caller goes on" "after 0 / 0" "$out / $rc"
     out=$(run "$opts" 'lim 5 sh -c "echo said; exit 3" || echo "status $?"; echo went-on'); rc=$?
-    check "$name a failing command's status and output, in an || list" "said status 3 went-on / 0" "$(echo $out) / $rc"
+    check "$name a failing command's status and output, in an || list" "said status 3 went-on / 0" "${out//$'\n'/ } / $rc"
     out=$(run "$opts" 'if lim 5 false; then echo yes; else echo "no $?"; fi'); rc=$?
     check "$name a failing command in an if" "no 1 / 0" "$out / $rc"
+    # shellcheck disable=SC2016  # the inner shell expands it
     out=$(run "$opts" 'x=$(lim 5 sh -c "echo captured") && echo "$x"'); rc=$?
     check "$name output through a command substitution" "captured / 0" "$out / $rc"
     t0=$(date +%s)
@@ -37,4 +38,5 @@ done
 # status, like any failing command, and what it wrote is passed on first.
 out=$(run 'set -e' 'lim 5 sh -c "echo before-the-end; exit 7"; echo not-reached'); rc=$?
 check "[set -e] a bare failing lim ends the caller with the command's status, its output passed on" "before-the-end / 7" "$out / $rc"
-[ "$fails" = 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
+if [ "$fails" != 0 ]; then echo "$fails failed"; exit 1; fi
+echo "all passed"

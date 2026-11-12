@@ -132,6 +132,12 @@ EXPECTED = {
     'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
                                          'no serve after a kill is refused by the check of what was acknowledged '
                                          '(§4.2): a false alarm would suspend a healthy pool'),
+    'ctl_f_starts_refused': ('f', 'FAIL', WAITING,
+                             'control of check f (asked for by name, never by default): before each course of '
+                             'obs_f_refused_start_*, the start that drops the log\'s last record is refused as in '
+                             'ctl_recovered_log_too_short, on a pool and a volume of the course\'s own. FAIL is '
+                             'every start refused; one that served is PASS; a course that did not happen is the '
+                             'rig\'s error', 'WAITING'),
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4, with the daemon\'s own reason for it ("the log is '
@@ -226,6 +232,15 @@ OBSERVED = {
     'obs_b_refused_start_no_log_device': ('b', 'the same course on a pool without a separate log device: does a synced '
                                                'write then hang, fail, or still return?'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
+    'obs_f_refused_start_scrub': ('f', 'after a refused start, a scrub alone at 10 s: does it suspend the pool, how '
+                                       'soon, does the command return, and does the pool let go of the device?'),
+    'obs_f_refused_start_export': ('f', 'after a refused start, zpool export at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_reopen': ('f', 'after a refused start, zpool reopen at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_clear': ('f', 'after a refused start, zpool clear at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_writers': ('f', 'after a refused start, on a pool with a log device and nothing read: which '
+                                         'synced writers return, by when they were sent and how much the pool held '
+                                         'dirty then?'),
+    'obs_f_refused_start_zed': ('f', 'the scrub at 10 s again with zed running: does zed change the course?'),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
@@ -258,10 +273,14 @@ REFERENCE_ONLY = set()
 # Observations only the daemon can make: on the stand-in the rig writes
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
-DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device'}
+DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device',
+                        'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
+                        'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed'}
 
 
-CHECKS = ('a', 'b', 'c', 'd', 'e')
+# f is asked for by name: it is not among the default of a run.
+CHECKS = ('a', 'b', 'c', 'd', 'e', 'f')
+DEFAULT_CHECKS = 'a b c d e'
 JUDGED = ('pin_', 'ctl_', 'case_')
 
 
@@ -423,7 +442,7 @@ def render(results, rows, differs, errors, checks):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('out')
-    ap.add_argument('--checks', default='a b c d e')
+    ap.add_argument('--checks', default=DEFAULT_CHECKS)
     args = ap.parse_args(argv)
     checks, asked_wrong = parse_checks(args.checks)
     path = os.path.join(args.out, 'results.tsv')

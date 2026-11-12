@@ -10,7 +10,11 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daemon_check as dc  # noqa: E402
 
+# The checks of a run by default. Check f is asked for by name, and a
+# result of a check that was not asked for is a rig error: F below is
+# what the tables hold for it.
 ALL = {'a', 'b', 'c', 'd', 'e'}
+F = [name for name, (check, *_) in list(dc.EXPECTED.items()) + list(dc.OBSERVED.items()) if check == 'f']
 
 
 def cases(impl='reference'):
@@ -24,8 +28,8 @@ def cases(impl='reference'):
 
 
 def as_expected(impl='reference'):
-    r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
-    r.update({name: 'seen' for name in dc.OBSERVED})
+    r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items() if name not in F}
+    r.update({name: 'seen' for name in dc.OBSERVED if name not in F})
     r.update(impl='reference: x', setup='ok', dev_strays='none')
     r.update(c_run='ok: 26 cases', c_declared=dc.C_DECLARED[impl])
     r.update({f'case_{k}': v for k, v in cases(impl).items()})
@@ -195,7 +199,8 @@ class Judge(unittest.TestCase):
         self.assertEqual(len(errors), 2)
 
     def test_a_missing_line_is_a_rig_error(self):
-        for name in list(dc.EXPECTED) + list(dc.OBSERVED):
+        # check f's lines have a test of their own below
+        for name in [n for n in list(dc.EXPECTED) + list(dc.OBSERVED) if n not in F]:
             r = as_expected()
             del r[name]
             _, differs, errors = dc.judge(r, ALL)
@@ -290,10 +295,41 @@ class Judge(unittest.TestCase):
 
     def test_an_observation_that_did_not_run_is_a_rig_error(self):
         for name in dc.OBSERVED:
+            # with the check of the observation asked for, and the
+            # judged line that check f then needs
             r = as_expected()
             r[name] = 'not run: the serve did not start'
-            _, differs, errors = dc.judge(r, ALL)
+            checks = ALL
+            if name in F:
+                checks = ALL | {'f'}
+                r['ctl_f_starts_refused'] = 'WAITING: the stand-in'
+            _, differs, errors = dc.judge(r, checks)
             self.assertEqual((differs, len(errors)), ([], 1), name)
+
+    def test_check_f_is_asked_for_by_name_and_is_the_daemons(self):
+        f = [name for name, (check, _) in dc.OBSERVED.items() if check == 'f']
+        self.assertEqual(len(f), 6)
+        # one judged line: the courses' control
+        self.assertEqual([n for n, (check, *_) in dc.EXPECTED.items() if check == 'f'], ['ctl_f_starts_refused'])
+        self.assertEqual(dc.parse_checks('f'), ({'f'}, []))
+        # on the daemon each course's line must be there
+        r = dict(impl='daemon: x', setup='ok', dev_strays='none', ctl_f_starts_refused='FAIL: refused', **{name: 'seen' for name in f})
+        self.assertEqual(dc.judge(r, {'f'}, impl='daemon')[1:], ([], []))
+        for name in f:
+            q = dict(r)
+            del q[name]
+            self.assertEqual(dc.judge(q, {'f'}, impl='daemon')[2], [f'{name}: no observation'], name)
+        # a run of the default checks does not ask for them, and a
+        # line of check f in such a run is the rig's error
+        self.assertEqual(dc.parse_checks(dc.DEFAULT_CHECKS)[0], ALL)
+        q = as_expected()
+        self.assertEqual([k for k in q if k in F], [])
+        self.assertEqual(dc.judge(q, ALL)[1:], ([], []))
+        q['ctl_f_starts_refused'] = 'WAITING: the stand-in'
+        self.assertEqual(len(dc.judge(q, ALL)[2]), 1)
+        # the stand-in has no log to come out short: no line is asked for
+        q = dict(impl='reference: x', setup='ok', dev_strays='none', ctl_f_starts_refused='WAITING: the stand-in')
+        self.assertEqual(dc.judge(q, {'f'})[1:], ([], []))
 
     def test_a_pin_the_table_does_not_know_is_a_rig_error(self):
         for name, value in (('pin_new_thing', 'PASS: fine'), ('ctl_new_thing', 'FAIL: caught'), ('pin_new_thing', 'FAIL: x')):
@@ -313,7 +349,7 @@ class Judge(unittest.TestCase):
 
     def test_every_pin_says_what_it_rests_on(self):
         for name, (check, want, basis, claim, *_) in dc.EXPECTED.items():
-            self.assertIn(check, ALL, name)
+            self.assertIn(check, dc.CHECKS, name)
             self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
             self.assertTrue(claim, name)
@@ -323,6 +359,7 @@ class WaitsForTheDaemon(unittest.TestCase):
     def test_a_pin_the_daemon_cannot_carry_yet_is_waiting_there_and_nothing_else(self):
         r = as_expected('daemon')
         r['ctl_recovered_log_too_short'] = 'FAIL: seen'       # the control only the daemon runs
+        r.update({name: 'FAIL: seen' if name.startswith('ctl_') else 'seen' for name in F})
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual((differs, errors), ([], []))
         # PASS before its time is a difference: the table is changed on

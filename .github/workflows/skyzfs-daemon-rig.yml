@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       checks:
-        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request"
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
         default: "a b c d e"
       kills:
         description: "kill -9 of the server under load, how many times"
@@ -153,7 +153,7 @@ jobs:
         run: |
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
-          [[ $CHECKS =~ ^[abcde](\ [abcde])*$ ]] || { echo "::error::checks are letters of a b c d e with a space between: '$CHECKS'"; exit 64; }
+          [[ $CHECKS =~ ^[abcdef](\ [abcdef])*$ ]] || { echo "::error::checks are letters of a b c d e f with a space between: '$CHECKS'"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
