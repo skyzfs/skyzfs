@@ -34,6 +34,7 @@
 
 #[cfg(unix)]
 pub mod ack;
+pub mod features;
 pub mod lifecycle;
 pub mod pump;
 #[cfg(unix)]

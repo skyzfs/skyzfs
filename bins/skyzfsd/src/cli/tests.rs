@@ -214,6 +214,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         dir: "/v/a".into(),
         run_dir: "/run/skyzfsd".into(),
         acknowledge_failure: false,
+        async_delete_asserted: false,
         queues: 1,
         depth: 64,
         log_high: 2,
@@ -231,13 +232,14 @@ fn serve_has_the_agreed_defaults_and_options() {
     );
     let full = serve(
         "serve --run-dir /tmp/run --acknowledge-failure --dir /v/a --queues 1 --depth 128 \
-         --unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem",
+         --unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem --kernel-has-async-delete",
     );
     assert_eq!(
         full,
         Serve {
             run_dir: "/tmp/run".into(),
             acknowledge_failure: true,
+            async_delete_asserted: true,
             queues: 1,
             depth: 128,
             allow_unlocked_memory: true,
@@ -414,7 +416,17 @@ fn detach_and_status_name_a_volume() {
     };
     assert_eq!(
         plain("detach --dir /v/a"),
-        Ok(Command::Detach(volume.clone()))
+        Ok(Command::Detach(Detach {
+            volume: volume.clone(),
+            async_delete_asserted: false,
+        }))
+    );
+    assert_eq!(
+        plain("detach --kernel-has-async-delete --dir /v/a"),
+        Ok(Command::Detach(Detach {
+            volume: volume.clone(),
+            async_delete_asserted: true,
+        }))
     );
     assert_eq!(plain("status --dir /v/a"), Ok(Command::Status(volume)));
     let elsewhere = plain("status --dir /v/a --run-dir /tmp/run");
@@ -426,6 +438,9 @@ fn detach_and_status_name_a_volume() {
         "detach",
         "status --dir /v/a --acknowledge-failure",
         "detach --dir /v/a --size 1048576",
+        "status --dir /v/a --kernel-has-async-delete",
+        "detach --dir /v/a --kernel-has-async-delete=yes",
+        "create --dir /v/a --size 1048576 --kernel-has-async-delete",
     ] {
         assert!(plain(bad).is_err(), "{bad}");
     }
@@ -484,4 +499,22 @@ fn help_is_a_command_and_says_what_the_rig_asks_it_to_say() {
     }
     // A figure that was measured wrongly and is not to be quoted.
     assert!(!HELP.contains("130"));
+}
+
+/// The help names the oldest kernel and every flag the start checks,
+/// as the one table of them says.
+#[test]
+fn help_names_the_oldest_kernel_and_the_flags() {
+    use skyzfs_ublk::features::{ASYNC_DELETE_OPTION, NEEDED, OLDEST_KERNEL};
+    assert!(HELP.contains(&format!("Linux {OLDEST_KERNEL} or later")));
+    for flag in NEEDED {
+        assert!(HELP.contains(flag.name), "help does not name {}", flag.name);
+    }
+    for name in ["UBLK_U_CMD_DEL_DEV_ASYNC", "UBLK_U_CMD_GET_FEATURES"] {
+        assert!(HELP.contains(name), "help does not name {name}");
+    }
+    // The override, in the help of both commands that take it, and in
+    // the usage.
+    assert!(HELP.matches(ASYNC_DELETE_OPTION).count() >= 3, "{HELP}");
+    assert!(USAGE.matches(ASYNC_DELETE_OPTION).count() == 2, "{USAGE}");
 }

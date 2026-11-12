@@ -630,16 +630,11 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         live_retries: LIVE_RETRIES,
         gone_retries: GONE_RETRIES,
         acknowledge_failure: serve.acknowledge_failure,
+        async_delete_asserted: serve.async_delete_asserted,
     };
     let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
-        Err(Stop::CannotReissue) => {
-            return Err(
-                "the kernel's ublk driver cannot reissue requests after a recovery \
-                        (UBLK_F_USER_RECOVERY_REISSUE): not served"
-                    .into(),
-            )
-        }
+        Err(Stop::Unsupported(why)) => return Err(not_served(&why)),
         Err(Stop::Held) => {
             say("another instance or a live server holds the volume");
             return Ok(Exit::RefusedHeld);
@@ -1032,9 +1027,71 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }
 }
 
+/// What a start refused for the kernel says. The check comes before
+/// the attachment record is read, so a device of this volume may be
+/// waiting for a server: the message says that it is left so. When the
+/// release is all that lacks, the operator's option lets a start go on
+/// to it; when other things lack too, the option alone does not, and
+/// the message says that instead. By then the run directory has been
+/// made, so the message says what was not done, not that nothing was.
+fn not_served(why: &skyzfs_ublk::features::Unsupported) -> String {
+    let option = skyzfs_ublk::features::ASYNC_DELETE_OPTION;
+    let then = if why.only_by_release() {
+        format!(", and a start with {option} goes on to it")
+    } else if why.by_release() {
+        format!(
+            ". {option} alone does not let a start go on: this kernel lacks more than the \
+             release"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "not served: {why}. No device was added, taken over or deleted, and the volume's lock \
+         and store were not opened: a device of this volume that waits for a server, if there \
+         is one, still waits{then}"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A start refused for the kernel says what was not done and that a
+    /// waiting device of the volume is left as it is. The option is said
+    /// to let a start go on only when the release is all that lacks;
+    /// when a feature lacks too (Linux 6.1 to 6.4 lack the features
+    /// command), it is said not to be enough.
+    #[test]
+    fn a_refused_start_says_a_waiting_device_is_left() {
+        use skyzfs_ublk::features::{check, ASYNC_DELETE_OPTION};
+        let not_done = "No device was added, taken over or deleted, and the volume's lock and \
+                        store were not opened";
+        let goes_on = format!("a start with {ASYNC_DELETE_OPTION} goes on to it");
+        let alone = format!("{ASYNC_DELETE_OPTION} alone does not let a start go on");
+
+        let by_release = not_served(&check(Some(u64::MAX), "6.10.3", false).unwrap_err());
+        assert!(by_release.starts_with("not served: "), "{by_release}");
+        assert!(by_release.contains(not_done), "{by_release}");
+        assert!(by_release.contains("waits for a server, if there is one, still waits"));
+        assert!(by_release.ends_with(&goes_on), "{by_release}");
+        assert!(!by_release.contains(&alone), "{by_release}");
+        assert!(!by_release.contains("Nothing was touched"), "{by_release}");
+
+        // Linux 6.4: no features command, and a release below the floor.
+        for lacking_too in [None, Some(0)] {
+            let both = not_served(&check(lacking_too, "6.4.0", false).unwrap_err());
+            assert!(both.contains(not_done), "{both}");
+            assert!(both.contains(&alone), "{both}");
+            assert!(!both.contains(&goes_on), "{both}");
+        }
+
+        let by_flag = not_served(&check(Some(0), "7.0.0", false).unwrap_err());
+        assert!(by_flag.contains(not_done), "{by_flag}");
+        assert!(by_flag.contains("still waits"), "{by_flag}");
+        assert!(!by_flag.contains(&goes_on), "{by_flag}");
+        assert!(!by_flag.contains(&alone), "{by_flag}");
+    }
 
     /// `--fail-log-after` counts what appends to the log: not reads,
     /// not flushes, not what was refused or is in flight.

@@ -118,3 +118,37 @@ fn io_error(error: libublk::UblkError) -> std::io::Error {
         other => std::io::Error::other(format!("{other:?}")),
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use skyzfs_ublk::features::NEEDED;
+
+    /// The bits of the features the daemon needs are the kernel's, as
+    /// the library's bindings (made from the header it ships) say.
+    #[test]
+    fn the_needed_flags_are_the_kernels_bits() {
+        let kernel = [
+            ("UBLK_F_USER_RECOVERY", libublk::sys::UBLK_F_USER_RECOVERY),
+            (
+                "UBLK_F_USER_RECOVERY_REISSUE",
+                libublk::sys::UBLK_F_USER_RECOVERY_REISSUE,
+            ),
+            (
+                "UBLK_F_CMD_IOCTL_ENCODE",
+                libublk::sys::UBLK_F_CMD_IOCTL_ENCODE,
+            ),
+        ];
+        assert_eq!(NEEDED.len(), kernel.len());
+        for (flag, (name, bit)) in NEEDED.iter().zip(kernel) {
+            assert_eq!((flag.name, flag.bit), (name, u64::from(bit)));
+        }
+    }
+
+    /// Every flag the daemon asks for when it adds a device is one the
+    /// start checks the driver for.
+    #[test]
+    fn every_flag_asked_for_is_checked() {
+        let checked = NEEDED.iter().fold(0, |all, flag| all | flag.bit);
+        assert_eq!(super::FLAGS & !checked, 0);
+    }
+}
