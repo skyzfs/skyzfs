@@ -1090,6 +1090,172 @@ refused_start_arm() {
     sed -n '1,/^== [0-9]/p' "$OUT/$tag-end-stacks.txt" 2>/dev/null | sed '$d'
     awk '/^== [0-9]+ (txg_sync|spa_async)/ { n = 0; p = 1; print; next } /^== / { p = 0 } p && ++n <= 15' "$OUT/$tag-end-stacks.txt" 2>/dev/null | head -n 200
 }
+# a: a write of zeros through a checkpoint. 8 MiB of random data, zeros
+# over its middle 4 MiB (BLKZEROOUT), then 200 MiB elsewhere so that
+# the log passes its high mark and a checkpoint applies the zeros to
+# the home image. The 8 MiB are read through the device before the
+# checkpoint, after it, and after a kill -9 and a new serve: each time
+# the data with zeros in the middle. Once as served by default, where
+# the status must then say zeroes_applied 1 (the ranges deallocated),
+# and once with --refuse-holes, where it must say 2 (zeros written).
+#   zero_arm TAG [serve arguments] -> ZA_BAD ("" or what was wrong),
+#   ZA_SAID; ZA_ERR set when the arm did not happen.
+zero_arm() {
+    local tag=$1 dir=$WORK/vol-$1 at=$((1 << 30)) r s0 s1 st za i pid rc
+    shift
+    ZA_BAD=""; ZA_SAID=""; ZA_ERR=""
+    if ! vol_up "$SKYZFSD" "$dir" "$@"; then ZA_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return; fi
+    "$DD" if=/dev/urandom of="$WORK/$tag.data" bs=1M count=8 status=none
+    cp "$WORK/$tag.data" "$WORK/$tag.want"
+    "$DD" if=/dev/zero of="$WORK/$tag.want" bs=1M seek=2 count=4 conv=notrunc status=none
+    if ! lim 60 "$DD" if="$WORK/$tag.data" of="$BDEV" bs=1M seek=$((at >> 20)) oflag=direct conv=nocreat,fsync status=none 2> "$OUT/$tag-write.err"; then
+        ZA_ERR="the 8 MiB were not written: $(tail -n 1 "$OUT/$tag-write.err" | cut -c1-200)"; kill_cleanup "$tag"; return
+    fi
+    lim 30 blkdiscard -f -z -o $((at + (2 << 20))) -l $((4 << 20)) "$BDEV" > "$OUT/$tag-zeroout.log" 2>&1; rc=$?
+    if [ $rc != 0 ]; then ZA_ERR="blkdiscard -z exit $rc: $(tail -n 1 "$OUT/$tag-zeroout.log" | cut -c1-200)"; kill_cleanup "$tag"; return; fi
+    za_read() { # label: the 8 MiB through the device against what they must be
+        if ! lim 60 "$DD" if="$BDEV" of="$WORK/$tag.got" bs=1M skip=$((at >> 20)) count=8 iflag=direct status=none 2> "$OUT/$tag-read.err"; then
+            ZA_BAD+="the read $1 failed: $(tail -n 1 "$OUT/$tag-read.err" | cut -c1-160); "; ZA_SAID+="read $1: failed; "
+        elif cmp -s "$WORK/$tag.got" "$WORK/$tag.want"; then
+            ZA_SAID+="read $1: the data with zeros in its middle 4 MiB; "
+        else
+            ZA_BAD+="the read $1 DIFFERS from the data with zeros in the middle (first difference: $(cmp "$WORK/$tag.got" "$WORK/$tag.want" 2>&1 | cut -c1-120)); "; ZA_SAID+="read $1: DIFFERS; "
+        fi
+    }
+    za_read "before a checkpoint"
+    s0=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps)
+    ZA_SAID+="zeroes_applied then '$(vol_stat "$SKYZFSD" "$dir" zeroes_applied)', checkpoint_steps '${s0:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
+    if ! lim 300 "$DD" if=/dev/urandom of="$BDEV" bs=1M seek=$(((at >> 20) + 1024)) count=200 oflag=direct conv=nocreat,fsync status=none 2> "$OUT/$tag-fill.err"; then
+        ZA_ERR="the 200 MiB that bring the checkpoint were not written: $(tail -n 1 "$OUT/$tag-fill.err" | cut -c1-200)"; kill_cleanup "$tag"; return
+    fi
+    # The checkpoint has taken the zeros when steps were counted and
+    # none is under way, at two looks a second apart.
+    r=""
+    for i in $(seq 1 120); do
+        s1=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps); st=$(vol_stat "$SKYZFSD" "$dir" checkpoint_step)
+        if [[ $s1 =~ ^[0-9]+$ ]] && [ "$s1" -gt "${s0:-0}" ] && [ "$st" = none ]; then
+            if [ "$r" = "$s1" ]; then rc=rest; break; fi
+            r=$s1
+        else
+            r=""
+        fi
+        sleep 1
+    done
+    if [ "$rc" != rest ]; then
+        ZA_ERR="no checkpoint came to rest within 120 s of 200 MiB written (checkpoint_steps '${s0:-}' then '${s1:-}', checkpoint_step '${st:-}', log_live '$(vol_stat "$SKYZFSD" "$dir" log_live)')"
+        kill_cleanup "$tag"; return
+    fi
+    za=$(vol_stat "$SKYZFSD" "$dir" zeroes_applied)
+    ZA_SAID+="after 200 MiB more: checkpoint_steps $s1, log_live $(vol_stat "$SKYZFSD" "$dir" log_live), zeroes_applied '${za:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
+    ZA_APPLIED=$za
+    za_read "after the checkpoint"
+    pid=$(server_pid "$SKYZFSD" "$dir")
+    kill -9 "$pid" 2>/dev/null
+    [ -z "$SERVE_PID" ] || serve_wait 30
+    if ! serve_start "$SKYZFSD" "$dir" "$@"; then
+        ZA_BAD+="after a kill -9 the volume was not served again (serve rc ${SERVE_RC:-none}); "
+    else
+        za_read "after a kill -9 and a new serve"
+    fi
+    kill_cleanup "$tag"
+}
+check_a_zeroes() {
+    local plain hard bad=""
+    step "a: a write of zeros through a checkpoint"
+    if [ "$IMPL" = reference ]; then
+        pin write_zeroes_through_a_checkpoint WAITING "the stand-in has no checkpoint and no home image"
+        return
+    fi
+    ZA_APPLIED=""; zero_arm az
+    if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "served by default: $ZA_ERR"; return; fi
+    plain="served by default: $ZA_SAID"; bad+=$ZA_BAD
+    [ "$ZA_APPLIED" = 1 ] || bad+="served by default the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 1 (deallocated); "
+    ZA_APPLIED=""; zero_arm azr --refuse-holes
+    if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "with --refuse-holes: $ZA_ERR ($plain)"; return; fi
+    hard="with --refuse-holes: $ZA_SAID"; bad+=$ZA_BAD
+    [ "$ZA_APPLIED" = 2 ] || bad+="with --refuse-holes the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 2 (zeros written); "
+    if [ -z "$bad" ]; then pin write_zeroes_through_a_checkpoint PASS "$plain $hard"; else pin write_zeroes_through_a_checkpoint FAIL "$bad $plain $hard"; fi
+}
+# a: a volume on a file system whose blocks are larger than the page
+# (XFS with 16 KiB blocks, on a loop device). `create` there makes a
+# volume whose write unit is the file system's block and says so; a
+# volume made on 4 KiB blocks and copied there is refused by `serve`,
+# with the reason and with its files untouched; the volume made there
+# serves a pool that takes a synced write and scrubs clean.
+check_a_xfs16k() {
+    local img=$WORK/x16.img mnt=$WORK/x16 loop dir=$WORK/x16/vol small=$WORK/vol-ax copy=$WORK/x16/copied pool=skzd-ax
+    local a="" bad="" rc said before after st i bs
+    step "a: a volume on a file system with 16 KiB blocks"
+    if [ "$IMPL" = reference ]; then
+        pin volume_on_larger_blocks WAITING "the stand-in has no write unit"
+        return
+    fi
+    ax_end() { # everything this check made, each step under a limit
+        [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool" > /dev/null 2>&1
+        [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
+        vol_detach "$SKYZFSD" "$dir"
+        lim 60 umount "$mnt" > /dev/null 2>&1
+        [ -z "${loop:-}" ] || lim 30 losetup -d "$loop" > /dev/null 2>&1
+    }
+    modprobe xfs 2>/dev/null
+    truncate -s 20G "$img"; mkdir -p "$mnt"
+    loop=$(losetup --find --show --direct-io=on "$img" 2> "$OUT/ax-setup.log") || loop=""
+    if [ -z "$loop" ] || ! lim 300 mkfs.xfs -q -f -b size=16k "$loop" >> "$OUT/ax-setup.log" 2>&1 || ! lim 60 mount "$loop" "$mnt" >> "$OUT/ax-setup.log" 2>&1; then
+        pin volume_on_larger_blocks ERROR "an XFS with 16 KiB blocks was not made and mounted here: $(tail -n 1 "$OUT/ax-setup.log" | cut -c1-200)"
+        ax_end; return
+    fi
+    bs=$(stat -f -c %S "$mnt")
+    if [ "$bs" != 16384 ]; then
+        pin volume_on_larger_blocks ERROR "the file system made says a block of '$bs' bytes, not 16384"
+        ax_end; return
+    fi
+    # 1: create there
+    lim 120 "$SKYZFSD" create --dir "$dir" --size "$VOL_BYTES" > "$OUT/ax-create.out" 2> "$OUT/ax-create.err"; rc=$?
+    said=$(grep -m 1 "write unit is 16384 bytes" "$OUT/ax-create.err" | cut -c1-200)
+    a+="create on it: exit $rc, $([ -n "$said" ] && echo "said: $said" || echo "did NOT say the write unit is 16384 bytes (stderr: $(tail -n 1 "$OUT/ax-create.err" | cut -c1-200))"); "
+    { [ $rc = 0 ] && [ -n "$said" ]; } || bad+="create; "
+    # 2: a volume of 4 KiB units, copied there, must not be served
+    if ! vol_create "$SKYZFSD" "$small" > "$OUT/ax-small.log" 2>&1 || ! lim 300 cp -a --sparse=always "$small" "$copy"; then
+        pin volume_on_larger_blocks ERROR "the volume to copy was not made or not copied: $(tail -n 1 "$OUT/ax-small.log" | cut -c1-200) ($a)"
+        ax_end; return
+    fi
+    before=$(cd "$copy" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    serve_start "$SKYZFSD" "$copy"; rc=$?
+    said=$(grep -m 1 "larger than the volume's write unit" "$copy.serve.log" | cut -c1-240)
+    if [ $rc = 0 ]; then
+        a+="the copied volume (unit of the copy's source: 4096) WAS SERVED as $BDEV; "; bad+="the copy was served; "
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 60; vol_detach "$SKYZFSD" "$copy"
+    else
+        a+="serve of a volume made on 4 KiB blocks and copied there: exit ${SERVE_RC:-none}, $([ -n "$said" ] && echo "said: $said" || echo "did NOT give the reason (its last line: $(tail -n 1 "$copy.serve.log" | cut -c1-200))"); "
+        { [ $rc = 1 ] && [ "$SERVE_RC" = 1 ] && [ -n "$said" ]; } || bad+="the refusal; "
+    fi
+    after=$(cd "$copy" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    a+="the copy's files after it: $([ "$before" = "$after" ] && echo 'as before' || echo 'CHANGED'); "
+    [ "$before" = "$after" ] || bad+="the copy's files changed; "
+    # 3: the volume made there, under a pool
+    if ! serve_start "$SKYZFSD" "$dir"; then
+        a+="the volume made there was NOT served (serve rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" | cut -c1-200)); "; bad+="serve; "
+    else
+        a+="the volume made there serves as $BDEV with logical blocks of $(cat "/sys/block/${BDEV#/dev/}/queue/logical_block_size" 2>/dev/null) and physical of $(cat "/sys/block/${BDEV#/dev/}/queue/physical_block_size" 2>/dev/null); "
+        mkdir -p "$WORK/mnt/$pool"
+        if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$pool" -O compression=off "$pool" "$BDEV" > "$OUT/ax-pool.log" 2>&1; then
+            a+="zpool create FAILED: $(tail -n 1 "$OUT/ax-pool.log" | cut -c1-200); "; bad+="the pool; "
+        else
+            lim 120 "$DD" if=/dev/urandom of="$WORK/mnt/$pool/file" bs=1M count=64 conv=fsync status=none 2> "$OUT/ax-write.err"; rc=$?
+            lim 60 zpool scrub "$pool" > "$OUT/ax-scrub.log" 2>&1
+            for i in $(seq 1 120); do
+                lim 30 zpool status "$pool" > "$OUT/ax-status.txt" 2>&1
+                grep -q 'scrub repaired' "$OUT/ax-status.txt" && break
+                sleep 1
+            done
+            st=$(pool_errors "$pool")
+            a+="a pool on it: 64 MiB written and synced with exit $rc, then a scrub: $st; "
+            { [ $rc = 0 ] && grep -q 'scrub repaired 0B' "$OUT/ax-status.txt" && [[ $st == "vdev errors 0 "* ]] && [[ $st == *"No known data errors" ]]; } || bad+="the write or the scrub; "
+        fi
+    fi
+    ax_end
+    if [ -z "$bad" ]; then pin volume_on_larger_blocks PASS "$a"; else pin volume_on_larger_blocks FAIL "wrong: $bad$a"; fi
+}
 # With the daemon: the short-recovery control and what follows a refused
 # start, on a pool with a separate log device and on one without.
 check_b_short() {
@@ -2000,7 +2166,7 @@ check_e() {
     case $v in 0) ctl hold_too_short PASS "$HT_WHY" ;; 1) ctl hold_too_short FAIL "$HT_WHY" ;; *) ctl hold_too_short ERROR "$HT_ERR" ;; esac
 }
 
-case $CHECKS in *" a "*) check_a; check_a_overlap ;; esac
+case $CHECKS in *" a "*) check_a; check_a_overlap; check_a_zeroes; check_a_xfs16k ;; esac
 case $CHECKS in *" b "*) check_b ;; esac
 case $CHECKS in *" c "*)
     check_c

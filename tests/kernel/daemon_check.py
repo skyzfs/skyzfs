@@ -36,6 +36,17 @@ EXPECTED = {
     'pin_write_zeroes': ('a', 'PASS', SERVER, 'write_zeroes is offered (§4.1)'),
     'pin_discard_carried_out': ('a', 'PASS', SERVER, 'a discard issued to the device reaches the server (its own count)'),
     'pin_write_zeroes_carried_out': ('a', 'PASS', SERVER, 'a write of zeros issued to the device reaches the server as one'),
+    'pin_write_zeroes_through_a_checkpoint': ('a', 'PASS', WAITING,
+                                              'zeros written over the middle of data read back as zeros, with the data '
+                                              'around them, before a checkpoint, after it and after a kill -9 and a new '
+                                              'serve; the status then says how the checkpoint applied them: '
+                                              'zeroes_applied 1 (deallocated) as served by default on the runner\'s '
+                                              'file system, 2 (zeros written) with --refuse-holes', 'WAITING'),
+    'pin_volume_on_larger_blocks': ('a', 'PASS', WAITING,
+                                    'on an XFS with 16 KiB blocks: create makes a volume whose write unit is the '
+                                    'block and says so; a volume made on 4 KiB blocks and copied there is refused '
+                                    'by serve with exit 1, the reason, and its files untouched; the volume made '
+                                    'there serves a pool that takes a synced write and scrubs clean', 'WAITING'),
     'pin_no_fua': ('a', 'PASS', SERVER, 'forced-unit-access writes are not advertised (§4.1)'),
     'pin_label_at_byte_0': ('a', 'PASS', KERNEL, 'the pool is on the bare device, its first label at byte 0 (§4.2)'),
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
