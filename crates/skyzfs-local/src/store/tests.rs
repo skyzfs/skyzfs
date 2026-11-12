@@ -12,7 +12,7 @@ use skyzfs_blk::{Base, BlkError, BlockTarget, Buf, Completion, Op, Request, Requ
 
 use super::*;
 use crate::io::SECTOR;
-use crate::sim::{BySector, Fate, SimDisk};
+use crate::sim::{BySector, Fate, LoseAll, SimDisk};
 
 type SimStore = Store<SimDisk>;
 type Outcome = Result<(), String>;
@@ -7014,7 +7014,19 @@ struct Helping {
 /// stepping. Then the disk holds the home image's syncs, the hold goes,
 /// and the next step hands its sync over.
 fn helping(env: &Env, records: u64, hold_after: u64, marks: Marks) -> Result<Helping, String> {
+    helping_with(env, records, hold_after, marks, |_| {})
+}
+
+/// The same, with `prepare` done to the store before it is served.
+fn helping_with(
+    env: &Env,
+    records: u64,
+    hold_after: u64,
+    marks: Marks,
+    prepare: impl FnOnce(&mut SimStore),
+) -> Result<Helping, String> {
     let (disk, mut store) = env.fresh()?;
+    prepare(&mut store);
     let mut ends = Vec::new();
     for n in 0..records {
         write(&mut store, n * 16, 16, n as u8 + 1)?;
@@ -7432,4 +7444,94 @@ fn a_step_whose_sync_ends_later_can_be_cut_anywhere() {
     holds(scenario);
     caught(scenario, Mutants::START_BEFORE_REPORT);
     caught(scenario, Mutants::HOME_WRITTEN_BEFORE_REPORT);
+}
+
+/// A sync that cannot be begun (the helper cannot be started: no thread,
+/// no descriptor) is no fault of the volume's: the worker makes it
+/// itself and the step completes, nothing is marked, and what was
+/// flushed survives a power cut. The next step tries the helper again.
+/// The status shows it in its existing numbers: steps without a sync of
+/// the helper's, whose `step_home_sync` holds a whole sync.
+#[test]
+fn a_sync_that_cannot_be_begun_is_made_by_the_worker() {
+    fn scenario(env: &Env) -> Outcome {
+        for refused in [u64::MAX, 1] {
+            let disk = SimDisk::new(7);
+            disk.set_write_unit(u64::from(env.unit));
+            disk.refuse_sync_begins(refused);
+            let options = OpenOptions {
+                hand_over_home_sync: true,
+                ..env.options()
+            };
+            let key = Key(*b"a key for tests!");
+            let mut store = Store::create_keyed(disk.clone(), &env.config(), key, options)
+                .map_err(|e| e.to_string())?;
+            store.set_marks(Some(MARKS));
+            for n in 0..48u64 {
+                write(&mut store, n % 16 * 16, 16, n as u8 + 1)?;
+                if n % 4 == 3 {
+                    flush(&mut store)?;
+                }
+            }
+            let (timing, steps) = (store.timing(), store.log_state().steps);
+            if store.is_failed() || steps == 0 {
+                return Err(format!("failed {} after {steps} steps", store.is_failed()));
+            }
+            let helped = timing.helper.count;
+            let expected = if refused == 1 {
+                helped >= 1
+            } else {
+                helped == 0
+            };
+            if !expected || timing.step_home_sync.count < steps - helped {
+                return Err(format!("{refused} refused: {steps} steps, {timing:?}"));
+            }
+            drop(store);
+            disk.power_cut(LoseAll);
+            disk.set_write_unit(u64::from(env.unit));
+            let mut store = env.reopen(&disk)?;
+            for n in 32..48u64 {
+                expect(&mut store, n % 16 * 16, 16, n as u8 + 1, "after the cut")?;
+            }
+        }
+        Ok(())
+    }
+    holds(scenario);
+}
+
+/// A volume that fails while a step's sync is with the helper does not
+/// take the step up when the helper reports: the step goes no further
+/// than its sync (it never reaches its point `Synced`), the log's start
+/// stays, and the next open applies the batch again.
+#[test]
+fn a_volume_that_failed_meanwhile_does_not_take_the_step_up() {
+    let env = environments(0)[0];
+    let gate = std::env::temp_dir().join(format!("skyzfs-meanwhile-{}", std::process::id()));
+    let reached = StepPause::reached(&gate);
+    std::fs::write(&gate, b"").unwrap();
+    let pause = StepPause::Until(gate.clone());
+    let Helping {
+        disk,
+        served,
+        start,
+        first,
+    } = helping_with(&env, 12, 6, HELPED, |store| {
+        store.set_step_pause_at(pause, StepPoint::Synced)
+    })
+    .unwrap();
+    // The steps to the hold went through the point; this one has not.
+    let _ = std::fs::remove_file(&reached);
+    served.fail_now();
+    disk.release_syncs();
+    until(|| served.timing().helper.count >= 1, "report taken").unwrap();
+    let state = served.log_state();
+    drop(served);
+    let taken_up = reached.exists();
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(&reached);
+    assert!(!taken_up, "the step was taken up on a failed volume");
+    assert_eq!(state.start, start.0, "{state:?}");
+    let mut store = env.reopen_ack(&disk).unwrap();
+    assert_eq!(store.log_start(), start);
+    expect(&mut store, first * 16, 16, first as u8 + 1, "the batch").unwrap();
 }

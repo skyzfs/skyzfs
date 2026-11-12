@@ -86,7 +86,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use crate::io::{Dir, File, SECTOR};
+use crate::io::{Dir, File, NotBegun, SECTOR};
 
 const SECTOR_USIZE: usize = SECTOR as usize;
 
@@ -342,7 +342,9 @@ impl Inode {
             let mut before: Vec<_> = sector.unsynced.drain(..count).collect();
             sector.durable = before.pop();
         }
-        self.durable_len = begun.len;
+        // A whole sync in between may have made a greater length
+        // durable already.
+        self.durable_len = self.durable_len.max(begun.len);
     }
 }
 
@@ -423,6 +425,9 @@ struct State {
     held_syncs_of: Option<String>,
     /// Callers waiting at the end of a held sync.
     held_waiting: u64,
+    /// How many of the next syncs that would end later are not begun:
+    /// see [`SimDisk::refuse_sync_begins`].
+    begins_refused: u64,
     /// Calls that wrote to or deallocated in each file, by name: see
     /// [`SimDisk::writes_of`].
     writes_of: BTreeMap<String, u64>,
@@ -575,6 +580,7 @@ impl SimDisk {
                 sync_delay: 0,
                 held_syncs_of: None,
                 held_waiting: 0,
+                begins_refused: 0,
                 writes_of: BTreeMap::new(),
                 syncing: BTreeMap::new(),
                 writes_while_syncing: BTreeMap::new(),
@@ -876,6 +882,13 @@ impl SimDisk {
     /// not wait finds them under way, and one that waits waits.
     pub fn hold_syncs_of(&self, name: &str) {
         self.lock().held_syncs_of = Some(name.to_string());
+    }
+
+    /// The next `calls` calls of [`File::sync_begin`] begin nothing and
+    /// say so ([`NotBegun`]), as a file whose helper cannot be started
+    /// does.
+    pub fn refuse_sync_begins(&self, calls: u64) {
+        self.lock().begins_refused = calls;
     }
 
     /// How many callers wait now at the end of a held sync: a call of
@@ -1325,6 +1338,10 @@ impl File for SimFile {
         self.check(state)?;
         if state.halted(false) {
             return Err(injected("halt"));
+        }
+        if state.begins_refused > 0 {
+            state.begins_refused -= 1;
+            return Err(NotBegun::error("the simulated disk refused it"));
         }
         let delay = state.sync_delay;
         // The seed is drawn from only with a delay, so that what a seed
@@ -2314,6 +2331,32 @@ mod tests {
         disk.power_cut(LoseAll);
         assert_eq!(read(&disk, "f", 0, S), vec![1; S]);
         assert!(f.sync_end(true).unwrap().is_err());
+    }
+
+    /// A whole sync between the begin and the end keeps what it made
+    /// durable, the file's length included; a refused begin begins
+    /// nothing.
+    #[test]
+    fn a_whole_sync_between_keeps_its_length_and_a_refused_begin_begins_nothing() {
+        let disk = SimDisk::new(1);
+        let mut f = disk.create("f").unwrap();
+        Dir::sync(&disk).unwrap();
+        f.write_at(0, &[1; S]).unwrap();
+        f.sync_begin(Box::new(|| {})).unwrap();
+        f.write_at(S as u64, &[2; S]).unwrap();
+        f.sync().unwrap();
+        assert!(f.sync_end(true).unwrap().is_ok());
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", S as u64, S), vec![2; S]);
+
+        let disk = SimDisk::new(1);
+        let mut f = disk.create("f").unwrap();
+        disk.refuse_sync_begins(1);
+        let refused = f.sync_begin(Box::new(|| {})).unwrap_err();
+        assert!(NotBegun::is(&refused), "{refused}");
+        assert_eq!(disk.stats().sync_begins, 0);
+        f.sync_begin(Box::new(|| {})).unwrap();
+        assert_eq!(disk.stats().sync_begins, 1);
     }
 
     /// With a delay the end comes after as many calls that do not wait

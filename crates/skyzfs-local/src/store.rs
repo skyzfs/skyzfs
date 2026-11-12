@@ -30,7 +30,7 @@ use skyzfs_blk::{
 
 use crate::format::siphash24;
 use crate::format::{Identity, Key, Kind, Lsn};
-use crate::io::{Dir, File, HelperEnded};
+use crate::io::{Dir, File, HelperEnded, NotBegun};
 use crate::log::{Log, LogError, Observer, Options, Recovery};
 use crate::writeback::{Hinted, Writeback};
 
@@ -1568,6 +1568,19 @@ impl<D: Dir> Core<D> {
         let (target, cut, written_at) = (applied.target, applied.cut, applied.written_at);
         let wake = Waking(self.wake.clone());
         let begun = self.home.sync_begin(Box::new(move || drop(wake)));
+        // Not begun for want of a thread or a descriptor, which is no
+        // fault of the volume's: the worker makes this sync itself, as
+        // [`Core::apply`] does, and the next step tries the helper
+        // again. The whole sync is then the worker's part of it.
+        if matches!(&begun, Err(e) if NotBegun::is(e)) {
+            if self.sync_home(written_at).is_err() {
+                return Err(self.fail());
+            }
+            let synced_at = Instant::now();
+            self.timing.step_home_sync.add(synced_at - written_at);
+            self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
+            return self.finish(applied, synced_at, false);
+        }
         // The worker's part of this sync: handing it over.
         let began = Instant::now();
         self.timing.step_home_sync.add(began - written_at);

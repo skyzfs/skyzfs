@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use crate::io::{Dir, File, HelperEnded};
+use crate::io::{Dir, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
@@ -332,6 +332,10 @@ pub struct FsFile {
     /// The thread that syncs the file for [`File::sync_begin`], once
     /// one was begun.
     helper: Option<SyncHelper>,
+    /// For tests: the helper cannot be started, as when a thread or a
+    /// descriptor cannot be had.
+    #[cfg(test)]
+    no_helper: bool,
 }
 
 /// What the helper is asked to do.
@@ -414,6 +418,8 @@ impl FsFile {
             writeback,
             direct,
             helper: None,
+            #[cfg(test)]
+            no_helper: false,
         })
     }
 
@@ -564,9 +570,18 @@ impl File for FsFile {
     /// first time and kept while the file is open, through a
     /// descriptor of its own on the file: `fdatasync` covers what was
     /// written to the file before it is called, through any descriptor.
+    ///
+    /// A helper that cannot be started (no descriptor, no thread: the
+    /// daemon locks its memory, and a thread's stack with it) begins
+    /// nothing and says so ([`NotBegun`]); the next sync tries again.
     fn sync_begin(&mut self, wake: Box<dyn FnOnce() + Send>) -> io::Result<()> {
         if self.helper.is_none() {
-            self.helper = Some(SyncHelper::start(self.file.try_clone()?)?);
+            #[cfg(test)]
+            if self.no_helper {
+                return Err(NotBegun::error("a test refused the helper"));
+            }
+            let started = self.file.try_clone().and_then(SyncHelper::start);
+            self.helper = Some(started.map_err(NotBegun::error)?);
         }
         let sent = self
             .helper
@@ -1038,6 +1053,21 @@ mod tests {
                 let _ = self.0.send(());
             }
         }
+        // A helper that cannot be started begins nothing and says so;
+        // the file syncs as ever, and the next begin starts one.
+        let mut other = dir.create("b").unwrap();
+        other.no_helper = true;
+        let refused = other.sync_begin(Box::new(|| {})).unwrap_err();
+        assert!(
+            NotBegun::is(&refused) && !HelperEnded::is(&refused),
+            "{refused}"
+        );
+        assert!(other.helper.is_none());
+        other.write_at(0, &[1; 512]).unwrap();
+        other.sync().unwrap();
+        other.no_helper = false;
+        other.sync_begin(Box::new(|| {})).unwrap();
+        assert!(other.sync_end(true).unwrap().is_ok());
         let helper = file.helper.as_ref().unwrap();
         helper.jobs.as_ref().unwrap().send(Job::Panic).unwrap();
         let (dropped, gone) = mpsc::channel();

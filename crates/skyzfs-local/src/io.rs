@@ -114,6 +114,12 @@ pub trait File {
     /// `wake` is called once the sync has ended, if the file says that
     /// it is ([`File::sync_wakes`]). By default nothing begins here:
     /// the whole sync is the end's, and `wake` is never called.
+    ///
+    /// An error that [`NotBegun::is`] says so means that nothing was
+    /// begun and nothing is wrong with the file: whatever the sync needs
+    /// beside the file could not be had (a thread, a descriptor), and
+    /// the caller makes the sync itself with [`File::sync`]. Any other
+    /// error is the file's, as a failed sync's.
     fn sync_begin(&mut self, wake: Box<dyn FnOnce() + Send>) -> io::Result<()> {
         drop(wake);
         Ok(())
@@ -205,6 +211,33 @@ pub trait File {
     /// Whether the file is empty.
     fn is_empty(&self) -> io::Result<bool> {
         Ok(self.len()? == 0)
+    }
+}
+
+/// What [`File::sync_begin`] answers when it could not begin the sync
+/// for want of something beside the file (a thread, a descriptor):
+/// nothing was begun, the file is as it was, and the caller syncs it
+/// with [`File::sync`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotBegun(pub String);
+
+impl std::fmt::Display for NotBegun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the sync could not be begun: {}", self.0)
+    }
+}
+
+impl std::error::Error for NotBegun {}
+
+impl NotBegun {
+    /// The error that says so, for `why`.
+    pub fn error(why: impl std::fmt::Display) -> io::Error {
+        io::Error::other(Self(why.to_string()))
+    }
+
+    /// Whether `e` says so.
+    pub fn is(e: &io::Error) -> bool {
+        e.get_ref().is_some_and(|inner| inner.is::<Self>())
     }
 }
 
