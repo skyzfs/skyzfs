@@ -1,0 +1,56 @@
+name: skyzfs-xfs16k-probe
+
+# A probe on a run-only branch, record only: an XFS with 16 KiB blocks
+# on the runner, and what skyzfsd does with a volume directory there
+# (M1.3g). It judges nothing. Not meant to be merged.
+on:
+  workflow_dispatch:
+  push:
+    branches: [skyzfs-probe-xfs16k]
+    paths:
+      - .github/workflows/skyzfs-xfs16k-probe.yml
+      - tests/kernel/xfs16k-probe.sh
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-24.04, ubuntu-26.04]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Packages and the daemon
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xfsprogs e2fsprogs zfsutils-linux \
+            libdevmapper-dev libudev-dev libclang-dev
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          cargo build --release --locked -p skyzfsd
+          git rev-parse HEAD
+      - name: Probe
+        run: |
+          sudo modprobe ublk_drv || true
+          sudo modprobe zfs || true
+          sudo bash tests/kernel/xfs16k-probe.sh "$PWD/target/release/skyzfsd" "$PWD/probe-out" /mnt/xfs16k-probe
+          {
+            echo '## XFS with 16 KiB blocks, and skyzfsd on it (record only)'
+            echo
+            echo '```'
+            cat probe-out/probe.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: xfs16k-probe-${{ matrix.image }}
+          path: probe-out/
+          if-no-files-found: warn
+          retention-days: 30
