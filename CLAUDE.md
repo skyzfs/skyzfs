@@ -8,6 +8,11 @@ Read these before changing anything:
 
 - `docs/skyzfs-design.md`: architecture, roadmap, decisions. The current
   milestone and its exit criteria are in §9.
+- `docs/skyzfs-impl-notes.md`: by milestone and work package, the design
+  as built, what the rigs and the benchmark showed, and the review
+  record. A section there carries the number of the design section it
+  details, so "design §4.2, The states of a device" is found under
+  "The ublk transport (design §4.2)".
 - `docs/skynbd-postgres-study.md` §10: the measurements behind the design.
 - `CONTRIBUTING.md`: the test-first workflow and the ground rules
   (`cargo fmt`, `cargo clippy -D warnings`, no `unwrap()` outside tests,
@@ -30,7 +35,7 @@ request.
 
 | Session | Role | Branch |
 |---|---|---|
-| skyzfs lead | Plans work packages, merges pull requests, owns `docs/skyzfs-design.md` | `zfs-topology` (integration) |
+| skyzfs lead | Plans work packages, merges pull requests, owns `docs/skyzfs-design.md` and `docs/skyzfs-impl-notes.md` | `zfs-topology` (integration) |
 | skyzfs coding | Implements work packages | `skyzfs-coding` |
 | skyzfs testing | CI, test rigs and benchmarks, and running them | `skyzfs-testing` |
 | skyzfs review | Reviews pull requests. Does not change product code | none |
@@ -67,15 +72,15 @@ Codex, and other people can take part.
    (for example `skyzfs-coding-m1.2`) and tell the lead if your session
    cannot push it.
 
-The lead's own changes to the design document and this guide go
-straight to `zfs-topology`.
+The lead's own changes to the design document, the implementation
+notes and this guide go straight to `zfs-topology`.
 
 The design is also open for outside review as a documents-only pull
 request into `main`, from the branch `skyzfs-design-docs`
-(skyzfs/skyzfs#2). The lead copies `docs/skyzfs-design.md` and
-`docs/skynbd-postgres-study.md` to that branch whenever they change and
-answers its comments. Nobody else pushes there, and the user decides
-when it merges.
+(skyzfs/skyzfs#2). The lead copies `docs/skyzfs-design.md`,
+`docs/skyzfs-impl-notes.md` and `docs/skynbd-postgres-study.md` to that
+branch whenever they change and answers its comments. Nobody else pushes
+there, and the user decides when it merges.
 
 ## Easy to miss
 
