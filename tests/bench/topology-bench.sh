@@ -539,8 +539,9 @@ if drows:
                     f"{cs['pg.user_usec'] * 1000 / txn:.3f} / {cs.get('pg.system_usec', 0) * 1000 / txn:.3f}")
             rd = g.get('run_delay_ms_by_thread', {}); us, sy = g.get('user_s_by_thread', {}), g.get('system_s_by_thread', {})
             skz_ = sorted({k for k in list(rd) + list(us) + list(sy) if k.startswith('skyzfs')})
-            drd = ', '.join(f'{k} {rd.get(k, 0):.0f}' for k in skz_) or '-'
-            dus = ', '.join(f'{k} {us.get(k, 0):.1f} / {sy.get(k, 0):.1f}' for k in skz_) or '-'
+            nr = lambda d, k, f: format(d[k], f) if k in d else 'not recorded'
+            drd = ', '.join(f"{k} {nr(rd, k, '.0f')}" for k in skz_) or '-'
+            dus = ', '.join(f"{k} {nr(us, k, '.1f')} / {nr(sy, k, '.1f')}" for k in skz_) or '-'
             print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {pp('cpu.some')} | {pp('io.some')} / {pp('io.full')} | "
                   f"{pp('pg.cpu.some')} | {pp('pg.io.some')} | {pcpu} | {pp('skz.cpu.some') if 'skz.cpu.some' in ps else '-'} | "
                   f"{nf(g.get('ctxt', 0) / txn if 'ctxt' in g else None, '.1f')} | {drd} | {dus} |")
@@ -2173,15 +2174,25 @@ if 'total' in ca and 'total' in cb:
     diag['cpu_s_total'] = tot / HZ
 if 'ctxt' in ca and 'ctxt' in cb: diag['ctxt'] = ca['ctxt'][0] - cb['ctxt'][0]
 tb, ta = thr[base + '.before'], thr[base + '.after']
+# The daemon's threads (skyzfs*) and postgres are always kept; the
+# twenty largest of the others beside them. A cut of all names at
+# twenty could drop a daemon thread from one metric on a runner where
+# other threads did more.
+def kept(name): return name.startswith('skyzfs') or name == 'postgres'
+def top(counter, n=20):
+    out = {k: v for k, v in counter.items() if kept(k)}
+    out.update([c for c in counter.most_common() if not kept(c[0])][:n])
+    return out
 by = collections.Counter()
 for k, v in ta.items():
     dv = v - tb.get(k, 0)
-    if dv <= 0: continue
+    if dv <= 0 and not (kept(k) and k in tb): continue
+    dv = max(dv, 0)
     name = k.replace('(reaped)', '')
     # pgbench and the helpers of this script all end up as some shell's children.
     if name in ('su', 'bash', 'sh', 'sudo', 'pgbench', 'python', 'runuser', 'awk', 'sed'): name = 'pgbench+harness'
     by[name] += dv / HZ
-diag['cpu_s_by_thread'] = dict(by.most_common(20))
+diag['cpu_s_by_thread'] = top(by)
 # By thread name, over the window, of the threads alive at both looks:
 # user and system CPU seconds, the time runnable but not running (ms),
 # and the context switches. A thread that ended inside the window is
@@ -2191,8 +2202,10 @@ def per_name(kind, scale):
     out = collections.Counter()
     for k, v in ea.get(kind, {}).items():
         dv = v - eb.get(kind, {}).get(k, 0)
-        if dv > 0: out[k] += dv * scale
-    return dict(out.most_common(20))
+        # A kept name is kept at 0 too, so that 0 and "not recorded"
+        # can be told apart.
+        if dv > 0 or (kept(k) and k in eb.get(kind, {})): out[k] += max(dv, 0) * scale
+    return top(out)
 if ea.get('rdl'):
     diag['user_s_by_thread'] = per_name('thu', 1 / HZ)
     diag['system_s_by_thread'] = per_name('ths', 1 / HZ)
