@@ -275,6 +275,20 @@ set -euo pipefail
 # such commands, and zfs-skyzfsd's teardown must not hang on one.
 # shellcheck source=tests/lib/lim.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/lim.sh"
+# lim was written for scripts without errexit and pipefail: its look at
+# a process that has just ended fails, and under `set -e` that ended
+# this script with status 2 and no message (run 43134306342). blim is
+# lim with both off while it runs, and the command's status returned.
+blim() {
+    local rc=0 e="" p=""
+    case $- in *e*) e=1 ;; esac
+    if shopt -qo pipefail; then p=1; fi
+    set +e +o pipefail
+    lim "$@"; rc=$?
+    [ -z "$p" ] || set -o pipefail
+    [ -z "$e" ] || set -e
+    return "$rc"
+}
 
 # GNU dd as "$DD" (`gnudd` on ubuntu-26.04, plain `dd` before it): the
 # O_DIRECT calls below fail with the Rust coreutils dd. See the helper.
@@ -779,13 +793,13 @@ teardown_topology() {
         # pool waits for it, and an unmount or an export then never
         # returns: each of them has a limit here, and what could not be
         # undone is said.
-        lim 120 umount "$MNT" 2>/dev/null; lim 120 umount "$MNT_WAL" 2>/dev/null
+        blim 120 umount "$MNT" 2>/dev/null; blim 120 umount "$MNT_WAL" 2>/dev/null
     else
         umount "$MNT" 2>/dev/null; umount "$MNT_WAL" 2>/dev/null
     fi
     umount "$WORK/mnt-src" 2>/dev/null
     if [ -n "$ZFS_UP" ] && [ -n "$SKZ_UP" ]; then
-        lim 300 zpool export -f "$ZFS_POOL" 2>/dev/null || lim 120 zpool destroy -f "$ZFS_POOL" 2>/dev/null \
+        blim 300 zpool export -f "$ZFS_POOL" 2>/dev/null || blim 120 zpool destroy -f "$ZFS_POOL" 2>/dev/null \
             || log "WARNING: pool $ZFS_POOL is still imported (its state: $(cat "/proc/spl/kstat/zfs/$ZFS_POOL/state" 2>/dev/null || echo unknown))"
         ZFS_UP=""
     elif [ -n "$ZFS_UP" ]; then
@@ -1162,8 +1176,10 @@ build_zfs_stack() { # the pool on a no-read-before-write device over the delayed
     FS_DEV=/dev/mapper/tb-zdev
 }
 # ---- zfs-skyzfsd: the project's daemon serves the vdev
-skz_status() { lim 30 "$SKYZFSD" status --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" 2>/dev/null || true; }
-skz_stat() { skz_status | awk -v k="$1" '$1 == k { $1 = ""; sub(/^ /, ""); print; exit }'; }    # key -> its value
+skz_status() { blim 30 "$SKYZFSD" status --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" 2>/dev/null || true; }
+# key -> its value. awk reads to the end: one that left early could end
+# the writer with SIGPIPE, which pipefail turns into a failure here.
+skz_stat() { skz_status | awk -v k="$1" '$1 == k && !seen { seen = 1; $1 = ""; sub(/^ /, ""); print }'; }
 # The low mark of the log in bytes: `--log-low N` of TB_SKYZFSD_ARGS in
 # segments of 64 MiB, or the daemon's default of 1.
 skz_low_bytes() {
@@ -1205,8 +1221,8 @@ skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the v
         fi
         SKZ_PID=""
     fi
-    lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
-        || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(lim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
+    blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
+        || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(blim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
     rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
 }
 # Wait for the daemon to be at rest after the copy, so that a window
@@ -1253,7 +1269,7 @@ skz_sample() { # file: one line a second, "epoch key=value ...", until killed
         if ! kill -0 "$SKZ_PID" 2>/dev/null; then
             log "skyzfsd (pid $SKZ_PID) is GONE during the window; its log's end: $(tail -n 5 "$OUT/skyzfsd-serve.log" | tr '\n' ';'). Ending pgbench: this run has no result"
             echo "$(date +%s) daemon_gone=1" >> "$1"
-            pkill -9 -x pgbench 2>/dev/null
+            pkill -9 -x pgbench 2>/dev/null || true
             return 0
         fi
         printf '%s %s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" >> "$1"
@@ -1282,11 +1298,12 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             ;;
         skyzfsd)
             # A previous run's leftover: its device and its files.
-            lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
+            blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
             rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
             mkdir -p "$SKZ_RUN"
             : > "$OUT/$TOPO.skzinfo"
-            lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2
+            blim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
+                || { echo "skyzfsd create failed or did not end in 120 s" >&2; return 1; }
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
