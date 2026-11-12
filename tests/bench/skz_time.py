@@ -269,12 +269,12 @@ def render(rows):
             out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(ms(e.get(f'time_{k}_wait_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(ms(e.get(f'time_{k}_call_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(cause(k) for k in KINDS[:3]) + ' |')
-        out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly. The worker\'s '
-                'activities are set against the time between the two looks at the clock, taken just before each '
-                'reading: the status file is rewritten by the daemon on its own schedule, so each reading is as old '
-                'as the age it states, and the status command takes its own time after the look at the clock: a '
-                'difference of the order of those ages (up to 141 ms in the first runs) is expected and is not a '
-                'fault of the reading:', '',
+        out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly: that is '
+                'the guard that counts. The worker\'s activities are set against the time between the two looks at '
+                'the clock, taken just before each reading. The sums are the worker\'s spans closed at its last '
+                'publish; the span open at each reading (an idle wait or a step in progress) is not in them, so that '
+                'identity holds to within one open span and the status file\'s age at each end, about 0.1% of the '
+                'window (−3 to +141 ms in the first runs), and is not accounted for row by row:', '',
                 '| workload | daemon row | identity | left | right | difference |', '|---|---|---|---|---|---|']
         for r in usable:
             ids = identities(r['time'])
