@@ -284,7 +284,7 @@ jobs:
           # The full budget: more of them, and prefixes between flushes.
           case $BUDGET in
             pull-request) syncs=8; budget_s=400; between_s=0 ;;
-            full) syncs=16; budget_s=900; between_s=300 ;;
+            full) syncs=16; budget_s=900; between_s=900 ;;
             *) echo "::error::budget: $BUDGET"; exit 64 ;;
           esac
           {
