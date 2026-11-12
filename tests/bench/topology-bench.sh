@@ -1799,14 +1799,18 @@ diskstats_line() { # kernel device name -> "reads rsect writes wsect flush write
     # there since kernel 5.5, 0 where a line is shorter.
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; fm = (NF >= 20) ? $20 : 0; print $4, $6, $8, $10, f, $11, fm }' /proc/diskstats
 }
-work_disk() { # -> the kernel name of the block device under $WORK, or nothing
+work_disk() { # -> the kernel name of the disk under $WORK, or nothing
     # By its device number, as disk-sync.py finds it: df names the
     # runners' root filesystem /dev/root, which /proc/diskstats does not
-    # know.
-    local mm
+    # know. For a partition, the whole disk: the kernel counts flushes
+    # on the disk and leaves a partition's at 0, so the counts are the
+    # whole disk's, whatever else is on it.
+    local mm d
     mm=$(findmnt -n -o MAJ:MIN -T "$WORK" 2>/dev/null | tr -d ' ')
     [ -n "$mm" ] && [ -e "/sys/dev/block/$mm" ] || return 0
-    basename "$(readlink -f "/sys/dev/block/$mm")"
+    d=$(readlink -f "/sys/dev/block/$mm")
+    [ ! -e "$d/partition" ] || d=$(dirname "$d")
+    basename "$d"
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
     local skzmax
