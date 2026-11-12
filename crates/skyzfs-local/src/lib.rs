@@ -477,6 +477,43 @@
 //! under one sync is not there either); and a bound on the worker's
 //! queue per ublk queue, which today is the single `queue_depth`.
 //!
+//! ## The home image's sync on a helper
+//!
+//! A step of the checkpoint rule (see [`store::Marks`]) ends with a
+//! sync of the home image, which on a slow device takes tens of
+//! milliseconds. A served store hands that sync to a helper: the file's
+//! own thread on real files ([`io::File::sync_begin`]), and the worker
+//! serves appends, flushes and its own syncs of the log meanwhile.
+//! When the helper reports, the worker takes the step up where it was:
+//! the log's new start, the index's drop, the second barrier. Until
+//! then nothing else may touch what the step stands on:
+//!
+//! - no step is begun and nothing is written to the home image, so
+//!   the sync covers exactly the batch (`fdatasync` covers what was
+//!   written before it was called), and the preimage file keeps the
+//!   batch's neighbours until the step is over;
+//! - the log's start stays, so the log holds every record of the
+//!   batch and a start applies them again; the batch's blocks stay in
+//!   the index, and a read of them comes from the log;
+//! - what moves the log's start or the hold waits for the report: an
+//!   explicit checkpoint, room made in a full log, a change of the
+//!   hold, and the end of the served store;
+//! - at the high mark the worker waits for the report before the next
+//!   request, the time it would have spent in the sync itself, so the
+//!   log's bound is what it was.
+//!
+//! What can be on the disk is therefore not new in kind: a home image
+//! not yet durable, the log's start where it was, and the log longer
+//! than the batch, which exist between a step's writes today. New is
+//! only that appends, syncs of the log and rolls can fall between the
+//! sync's begin and its end; the simulated disk takes a sync that ends
+//! later as two points of the caller's own course (no thread), and the
+//! tests cut at every point between them. A failed sync fails the
+//! volume as the worker's own would. A helper that ends without a
+//! report ends the served store (the target's end), and the log is not
+//! marked: its start has not moved, and the next open applies the
+//! batch again.
+//!
 //! ## Why the volume keeps the contract
 //!
 //! Call *the order* the order of the log's records. The volume's

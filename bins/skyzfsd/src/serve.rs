@@ -601,6 +601,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let mut options = OpenOptions::default();
     options.pretend_short_by = serve.hooks.recover_short;
     options.writeback_unit = serve.writeback_kib << 10;
+    options.home_writeback_unit = serve.home_writeback_kib << 10;
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -610,10 +611,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }));
     let began = std::time::Instant::now();
     let volume = StoreVolume::new(&serve.dir, options);
-    // With the unit 0 the store never asks, and the call is not even
+    // With both units 0 the store never asks, and the call is not even
     // given: the benchmark's row without the hint is the daemon as it
     // was before it.
-    let volume = if serve.writeback_kib == 0 {
+    let volume = if serve.writeback_kib == 0 && serve.home_writeback_kib == 0 {
         volume
     } else {
         volume.with_writeback(skyzfs_ublk_sys::start_writeback)

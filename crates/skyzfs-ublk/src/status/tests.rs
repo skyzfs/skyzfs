@@ -20,7 +20,7 @@ fn sample_timing() -> skyzfs_local::store::Timing {
         let at = 200 + 8 * field;
         bytes[at..at + 8].copy_from_slice(&sample_field(field).to_le_bytes());
     }
-    timing_at(&bytes, false, true)
+    timing_at(&bytes, false, true, true)
 }
 
 /// The pump's times with the same fields: 242 to 258.
@@ -88,13 +88,13 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA7");
+    expected.extend(b"SKYZSTA8");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 207 fields from offset 200, here 100 to 306
+    // The times are the 220 fields from offset 200, here 100 to 319
     // but for the two that say the hint is off, 1.
     for field in (1..=14u64)
         .chain([1, 16, 17, 18, 2])
@@ -102,8 +102,8 @@ fn the_file_has_the_documented_layout() {
     {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(TIME_FIELDS, 207);
-    assert_eq!(bytes.len(), 1856);
+    assert_eq!(TIME_FIELDS, 220);
+    assert_eq!(bytes.len(), 1960);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -167,6 +167,20 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(timing.syncs[0], synced(283));
     assert_eq!(timing.syncs[3], synced(295));
     assert_eq!(timing.syncs[5], synced(303));
+    // The eighth version's: the sixteenth activity after the seventh's
+    // fields, and the helper's.
+    assert_eq!(timing.worker[15], 307);
+    assert_eq!((timing.wait_by[0][15], timing.wait_by[4][15]), (308, 312));
+    let spent = |at: u64| skyzfs_local::store::Spent {
+        count: at,
+        sum_ns: at + 1,
+        max_ns: at + 2,
+    };
+    assert_eq!(
+        (timing.helper, timing.step_report),
+        (spent(313), spent(316))
+    );
+    assert_eq!(timing.helper_requests, 319);
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -380,6 +394,13 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_sync_flush_count", "283"),
         ("time_sync_home_bytes", "297"),
         ("time_sync_superblock_handed", "306"),
+        ("time_worker_step_report_ns", "307"),
+        ("time_read_wait_by_step_report_ns", "308"),
+        ("time_zeroes_wait_by_step_report_ns", "312"),
+        ("time_helper_count", "313"),
+        ("time_helper_max_ns", "315"),
+        ("time_step_report_ns", "317"),
+        ("time_helper_requests", "319"),
     ] {
         assert_eq!(self::value(&lines, key), Some(value), "{key}");
     }
@@ -403,6 +424,45 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     assert_eq!(keys.len(), TIME_FIELDS);
 }
 
+/// The sample's times as a file of the seventh version has them: the
+/// worker's sixteenth activity, the waits by it and the helper's at
+/// zero.
+fn seventh_timing() -> skyzfs_local::store::Timing {
+    let mut timing = sample_timing();
+    timing.worker[15] = 0;
+    for kind in &mut timing.wait_by {
+        kind[15] = 0;
+    }
+    timing.helper = Default::default();
+    timing.step_report = Default::default();
+    timing.helper_requests = 0;
+    timing
+}
+
+/// A file of the seventh version (1856 bytes, `SKYZSTA7`) is still
+/// read: everything where it was, and the eighth's fields at zero.
+#[test]
+fn a_file_of_the_seventh_version_is_read_without_the_helper() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut seventh = encode(&sample())[..1856].to_vec();
+    seventh[..8].copy_from_slice(b"SKYZSTA7");
+    fs::write(&path, &seventh).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    assert_eq!(read.version, 7);
+    let timing = read.log.expect("the log").shown.timing.expect("times");
+    assert_eq!(timing, seventh_timing());
+    // The seventh version's magic at the eighth's length is no file,
+    // nor the eighth's at the seventh's.
+    let mut long = encode(&sample()).to_vec();
+    long[..8].copy_from_slice(b"SKYZSTA7");
+    fs::write(&path, &long).expect("write");
+    assert!(super::read(&path).is_err());
+    seventh[..8].copy_from_slice(b"SKYZSTA8");
+    fs::write(&path, &seventh).expect("write");
+    assert!(super::read(&path).is_err());
+}
+
 /// A file of the sixth version (1584 bytes, `SKYZSTA6`) is still read:
 /// everything where it was, and the hint and the syncs at zero.
 #[test]
@@ -414,7 +474,7 @@ fn a_file_of_the_sixth_version_is_read_without_the_hint_and_the_syncs() {
     fs::write(&path, &sixth).expect("write");
     let read = read(&path).expect("read").expect("a status");
     let timing = read.log.expect("the log").shown.timing.expect("times");
-    let mut expected = sample_timing();
+    let mut expected = seventh_timing();
     expected.writeback = Default::default();
     expected.syncs = Default::default();
     assert_eq!(timing, expected);
@@ -1289,6 +1349,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         (1424, b"SKYZSTA5", "5"),
         (1584, b"SKYZSTA6", "6"),
         (1856, b"SKYZSTA7", "7"),
+        (1960, b"SKYZSTA8", "8"),
     ] {
         let mut bytes = encode(&sample())[..len].to_vec();
         bytes[..8].copy_from_slice(magic);
@@ -1304,5 +1365,5 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 7);
+    assert_eq!(VERSION, 8);
 }

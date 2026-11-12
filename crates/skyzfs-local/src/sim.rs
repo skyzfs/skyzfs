@@ -54,6 +54,18 @@
 //!   system writes back whole blocks: where its block is larger than
 //!   the write unit, the block is what a write rewrites.
 //!
+//! - **A sync that ends later** ([`File::sync_begin`],
+//!   [`File::sync_end`]). The versions of the file's sectors that are
+//!   not synced when it begins are taken note of, and its end makes
+//!   those durable and nothing written after its begin. It ends at the
+//!   first call of `sync_end`, or, with [`SimDisk::set_sync_delay`],
+//!   after as many calls that do not wait as a seed chooses, or when a
+//!   call waits. It counts as a write or sync for
+//!   [`SimDisk::halt_after`] where it ends, not where it begins. A test
+//!   can hold a file's syncs at their end ([`SimDisk::hold_syncs_of`])
+//!   as a slow device would. No thread is involved: the sync begins and
+//!   ends at two points of its caller's own course.
+//!
 //! What it does not model: a disk that reports a sync it did not do, a
 //! write that lands in the wrong place, corruption of durable data on its
 //! own (a test can corrupt a file itself, with [`SimDisk::corrupt`]),
@@ -72,9 +84,9 @@
 
 use std::collections::BTreeMap;
 use std::io;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use crate::io::{Dir, File, SECTOR};
+use crate::io::{Dir, File, NotBegun, SECTOR};
 
 const SECTOR_USIZE: usize = SECTOR as usize;
 
@@ -266,6 +278,8 @@ pub struct Stats {
     pub writebacks: u64,
     /// The bytes those calls named.
     pub writeback_bytes: u64,
+    /// Calls of [`File::sync_begin`] that succeeded.
+    pub sync_begins: u64,
 }
 
 #[derive(Debug, Default)]
@@ -311,6 +325,26 @@ impl Inode {
             }
         }
         self.durable_len = self.len;
+    }
+
+    /// What a sync that began at `begun` makes durable: each sector's
+    /// last version written before then, and the length it had then.
+    /// Later versions stay unsynced.
+    fn settle_before(&mut self, begun: &PendingSync) {
+        for (index, &count) in &begun.versions {
+            let Some(sector) = self.sectors.get_mut(index) else {
+                continue;
+            };
+            // A whole sync since may have settled them already.
+            if count == 0 || sector.unsynced.len() < count {
+                continue;
+            }
+            let mut before: Vec<_> = sector.unsynced.drain(..count).collect();
+            sector.durable = before.pop();
+        }
+        // A whole sync in between may have made a greater length
+        // durable already.
+        self.durable_len = self.durable_len.max(begun.len);
     }
 }
 
@@ -384,6 +418,25 @@ struct State {
     /// Every call that started writeback: the file's name, the offset
     /// and the length.
     writebacks: Vec<(String, u64, u64)>,
+    /// A sync that ends later ends after up to this many calls of
+    /// `sync_end` that do not wait: see [`SimDisk::set_sync_delay`].
+    sync_delay: u64,
+    /// The file whose syncs that end later do not end until released.
+    held_syncs_of: Option<String>,
+    /// Callers waiting at the end of a held sync.
+    held_waiting: u64,
+    /// How many of the next syncs that would end later are not begun:
+    /// see [`SimDisk::refuse_sync_begins`].
+    begins_refused: u64,
+    /// Calls that wrote to or deallocated in each file, by name: see
+    /// [`SimDisk::writes_of`].
+    writes_of: BTreeMap<String, u64>,
+    /// The files with a sync that ended later under way, by inode: how
+    /// many handles have one.
+    syncing: BTreeMap<u64, u64>,
+    /// Calls that wrote to or deallocated in a file while it had such a
+    /// sync under way, by name: see [`SimDisk::writes_while_syncing`].
+    writes_while_syncing: BTreeMap<String, u64>,
     /// The machine stops after this many more writes and syncs.
     halt: Option<u64>,
     /// Who holds the directory's lock, and the next holder's number.
@@ -434,6 +487,28 @@ impl State {
         }
     }
 
+    /// A call wrote to the file `inode`: counted under its name, and
+    /// again if a sync of the file that ends later is under way.
+    fn count_write(&mut self, inode: u64) {
+        if let Some(name) = self.name_of(inode).map(str::to_string) {
+            if self.syncing.contains_key(&inode) {
+                *self.writes_while_syncing.entry(name.clone()).or_default() += 1;
+            }
+            *self.writes_of.entry(name).or_default() += 1;
+        }
+    }
+
+    /// A sync that ends later, of the file `inode`, is no longer under
+    /// way.
+    fn sync_over(&mut self, inode: u64) {
+        if let Some(count) = self.syncing.get_mut(&inode) {
+            *count -= 1;
+            if *count == 0 {
+                self.syncing.remove(&inode);
+            }
+        }
+    }
+
     fn name_of(&self, inode: u64) -> Option<&str> {
         self.names
             .iter()
@@ -462,6 +537,7 @@ impl State {
     fn close_all(&mut self) {
         self.generation += 1;
         self.open.clear();
+        self.syncing.clear();
         self.lock = None;
     }
 }
@@ -471,6 +547,8 @@ impl State {
 #[derive(Debug, Clone)]
 pub struct SimDisk {
     state: Arc<Mutex<State>>,
+    /// Woken when held syncs are released, and at a kill or power cut.
+    released: Arc<Condvar>,
 }
 
 impl SimDisk {
@@ -499,6 +577,13 @@ impl SimDisk {
                 writeback_fault_of: None,
                 writeback_refusals: 0,
                 writebacks: Vec::new(),
+                sync_delay: 0,
+                held_syncs_of: None,
+                held_waiting: 0,
+                begins_refused: 0,
+                writes_of: BTreeMap::new(),
+                syncing: BTreeMap::new(),
+                writes_while_syncing: BTreeMap::new(),
                 halt: None,
                 lock: None,
                 next_lock: 0,
@@ -507,6 +592,7 @@ impl SimDisk {
                 write_unit: SECTOR,
                 stats: Stats::default(),
             })),
+            released: Arc::new(Condvar::new()),
         }
     }
 
@@ -524,6 +610,8 @@ impl SimDisk {
         let mut state = self.lock();
         state.close_all();
         state.drop_unreachable();
+        drop(state);
+        self.released.notify_all();
     }
 
     /// Power is cut and returns. `cut` decides what is left of everything
@@ -593,6 +681,11 @@ impl SimDisk {
         }
         state.names = state.durable_names.clone();
         state.drop_unreachable();
+        // A sync held at its end wakes once the state has changed, and
+        // finds its handle dead: woken before, it could take the lock
+        // first, find nothing changed, and wait for good.
+        drop(guard);
+        self.released.notify_all();
     }
 
     /// The write after the next `after` writes fails, and, if `sticky`,
@@ -776,6 +869,59 @@ impl SimDisk {
         self.lock().writeback_fault_of = Some(name.to_string());
     }
 
+    /// A sync that ends later ([`File::sync_begin`]) ends after up to
+    /// `calls` calls of [`File::sync_end`] that do not wait, as many as
+    /// the seed chooses for each sync; at the first such call with 0,
+    /// which is where it starts.
+    pub fn set_sync_delay(&self, calls: u64) {
+        self.lock().sync_delay = calls;
+    }
+
+    /// Syncs of the file named `name` that end later do not end until
+    /// [`SimDisk::release_syncs`]: a call of [`File::sync_end`] that does
+    /// not wait finds them under way, and one that waits waits.
+    pub fn hold_syncs_of(&self, name: &str) {
+        self.lock().held_syncs_of = Some(name.to_string());
+    }
+
+    /// The next `calls` calls of [`File::sync_begin`] begin nothing and
+    /// say so ([`NotBegun`]), as a file whose helper cannot be started
+    /// does.
+    pub fn refuse_sync_begins(&self, calls: u64) {
+        self.lock().begins_refused = calls;
+    }
+
+    /// How many callers wait now at the end of a held sync: a call of
+    /// [`File::sync_end`] that waits, and found the sync held.
+    pub fn held_waiters(&self) -> u64 {
+        self.lock().held_waiting
+    }
+
+    /// How many calls of [`File::write_at`] and [`File::deallocate`] the
+    /// file named `name` had while a sync of it that ends later
+    /// ([`File::sync_begin`]) was under way: what such a sync may or may
+    /// not cover.
+    pub fn writes_while_syncing(&self, name: &str) -> u64 {
+        self.lock()
+            .writes_while_syncing
+            .get(name)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Let the held syncs end.
+    pub fn release_syncs(&self) {
+        self.lock().held_syncs_of = None;
+        self.released.notify_all();
+    }
+
+    /// How many calls of [`File::write_at`] and [`File::deallocate`]
+    /// the file named `name` has had so far, failed and refused ones
+    /// included (counted under the name it had at the call).
+    pub fn writes_of(&self, name: &str) -> u64 {
+        self.lock().writes_of.get(name).copied().unwrap_or(0)
+    }
+
     /// Every call that started writeback so far, in order: the file's
     /// name (where it still has one), the offset and the length.
     pub fn writebacks(&self) -> Vec<(String, u64, u64)> {
@@ -832,6 +978,7 @@ impl SimDisk {
             disk: self.clone(),
             inode,
             generation: state.generation,
+            pending: None,
         }
     }
 }
@@ -964,9 +1111,62 @@ pub struct SimFile {
     disk: SimDisk,
     inode: u64,
     generation: u64,
+    /// The sync that [`File::sync_begin`] began and that has not ended.
+    pending: Option<PendingSync>,
+}
+
+/// A sync under way: what it is to make durable, and how many more
+/// calls of `sync_end` that do not wait find it under way.
+#[derive(Debug)]
+struct PendingSync {
+    /// By sector, how many of its unsynced versions were written before
+    /// the sync began.
+    versions: BTreeMap<u64, usize>,
+    /// The file's length when it began.
+    len: u64,
+    polls: u64,
 }
 
 impl SimFile {
+    /// A sync, of everything written so far or, for one that began
+    /// earlier, of what was written before `begun`.
+    fn sync_locked(&self, state: &mut State, begun: Option<&PendingSync>) -> io::Result<()> {
+        self.check(state)?;
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
+        let named = state.sync_fault_of.as_deref();
+        let failing = (named.is_some() && named == state.name_of(self.inode))
+            || State::strikes(&mut state.sync_fault);
+        let rng = &mut state.rng;
+        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        if failing {
+            for sector in inode.sectors.values_mut() {
+                if sector.unsynced.is_empty() {
+                    continue;
+                }
+                match rng.below(3) {
+                    // Still dirty: a later sync may write it.
+                    0 => {}
+                    // Dropped: the file reads as it did before.
+                    1 => sector.unsynced.clear(),
+                    // Marked clean, and only the cache holds it.
+                    _ => {
+                        sector.cached = sector.unsynced.pop();
+                        sector.unsynced.clear();
+                    }
+                }
+            }
+            return Err(injected("sync"));
+        }
+        match begun {
+            None => inode.settle(),
+            Some(begun) => inode.settle_before(begun),
+        }
+        state.stats.syncs += 1;
+        Ok(())
+    }
+
     fn check(&self, state: &State) -> io::Result<()> {
         if state.generation == self.generation {
             Ok(())
@@ -984,6 +1184,9 @@ impl Drop for SimFile {
         if state.generation != self.generation {
             // The process this handle belonged to is gone already.
             return;
+        }
+        if self.pending.is_some() {
+            state.sync_over(self.inode);
         }
         if let Some(count) = state.open.get_mut(&self.inode) {
             *count -= 1;
@@ -1063,6 +1266,7 @@ impl File for SimFile {
         }
         state.stats.writes += 1;
         state.stats.written += data.len() as u64;
+        state.count_write(self.inode);
         let failing = State::strikes(&mut state.write_fault);
         let end = offset
             .checked_add(data.len() as u64)
@@ -1123,38 +1327,79 @@ impl File for SimFile {
 
     fn sync(&mut self) -> io::Result<()> {
         let mut guard = self.disk.lock();
+        self.sync_locked(&mut guard, None)
+    }
+
+    fn sync_begin(&mut self, wake: Box<dyn FnOnce() + Send>) -> io::Result<()> {
+        // Nothing wakes: the caller asks (`sync_wakes`).
+        drop(wake);
+        let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
-        if state.halted(true) {
+        if state.halted(false) {
             return Err(injected("halt"));
         }
-        let named = state.sync_fault_of.as_deref();
-        let failing = (named.is_some() && named == state.name_of(self.inode))
-            || State::strikes(&mut state.sync_fault);
-        let rng = &mut state.rng;
-        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
-        if failing {
-            for sector in inode.sectors.values_mut() {
-                if sector.unsynced.is_empty() {
-                    continue;
-                }
-                match rng.below(3) {
-                    // Still dirty: a later sync may write it.
-                    0 => {}
-                    // Dropped: the file reads as it did before.
-                    1 => sector.unsynced.clear(),
-                    // Marked clean, and only the cache holds it.
-                    _ => {
-                        sector.cached = sector.unsynced.pop();
-                        sector.unsynced.clear();
-                    }
-                }
-            }
-            return Err(injected("sync"));
+        if state.begins_refused > 0 {
+            state.begins_refused -= 1;
+            return Err(NotBegun::error("the simulated disk refused it"));
         }
-        inode.settle();
-        state.stats.syncs += 1;
+        let delay = state.sync_delay;
+        // The seed is drawn from only with a delay, so that what a seed
+        // decides elsewhere is as it was without one.
+        let polls = if delay > 0 {
+            state.rng.below(delay + 1)
+        } else {
+            0
+        };
+        let inode = state.inodes.get(&self.inode).ok_or_else(gone)?;
+        let versions = inode
+            .sectors
+            .iter()
+            .filter(|(_, sector)| !sector.unsynced.is_empty())
+            .map(|(index, sector)| (*index, sector.unsynced.len()))
+            .collect();
+        self.pending = Some(PendingSync {
+            versions,
+            len: inode.len,
+            polls,
+        });
+        *state.syncing.entry(self.inode).or_default() += 1;
+        state.stats.sync_begins += 1;
         Ok(())
+    }
+
+    fn sync_end(&mut self, wait: bool) -> Option<io::Result<()>> {
+        let disk = self.disk.clone();
+        let mut guard = disk.lock();
+        // Held: under way until released, or until the process is gone.
+        loop {
+            let held = guard.held_syncs_of.is_some()
+                && guard.held_syncs_of.as_deref() == guard.name_of(self.inode)
+                && guard.generation == self.generation;
+            if !held {
+                break;
+            }
+            if !wait {
+                return None;
+            }
+            guard.held_waiting += 1;
+            guard = disk
+                .released
+                .wait(guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.held_waiting -= 1;
+        }
+        let Some(mut pending) = self.pending.take() else {
+            // Nothing was begun: a whole sync, as by default.
+            return Some(self.sync_locked(&mut guard, None));
+        };
+        if !wait && pending.polls > 0 {
+            pending.polls -= 1;
+            self.pending = Some(pending);
+            return None;
+        }
+        guard.sync_over(self.inode);
+        Some(self.sync_locked(&mut guard, Some(&pending)))
     }
 
     fn preallocate(&mut self, len: u64) -> io::Result<()> {
@@ -1236,6 +1481,7 @@ impl File for SimFile {
         let end = offset
             .checked_add(len)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        state.count_write(self.inode);
         let failing = std::mem::take(&mut state.hole_fault);
         let rng = &mut state.rng;
         let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
@@ -2058,5 +2304,153 @@ mod tests {
         assert_eq!(read(&disk, "f", 3, 1), vec![0x81]);
         assert!(disk.corrupt("f", SECTOR, 1).is_err());
         assert!(disk.corrupt("nope", 0, 1).is_err());
+    }
+
+    /// A sync that ends later makes durable what was written before its
+    /// begin, and nothing written after it; a power cut between its
+    /// begin and its end loses what any unsynced write would.
+    #[test]
+    fn a_sync_that_ends_later_covers_what_was_written_before_it_began() {
+        let disk = disk_with(3, 1);
+        let mut f = disk.open("f").unwrap();
+        f.write_at(0, &vec![2; S]).unwrap();
+        f.sync_begin(Box::new(|| {})).unwrap();
+        f.write_at(S as u64, &vec![3; S]).unwrap();
+        f.write_at(0, &vec![4; S]).unwrap();
+        assert!(f.sync_end(false).unwrap().is_ok());
+        disk.power_cut(LoseAll);
+        // The first sector as it was at the begin; the later writes lost.
+        assert_eq!(read(&disk, "f", 0, S), vec![2; S]);
+        assert_eq!(read(&disk, "f", S as u64, S), vec![1; S]);
+
+        // Cut between begin and end: as if no sync had begun.
+        let disk = disk_with(1, 1);
+        let mut f = disk.open("f").unwrap();
+        f.write_at(0, &vec![5; S]).unwrap();
+        f.sync_begin(Box::new(|| {})).unwrap();
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", 0, S), vec![1; S]);
+        assert!(f.sync_end(true).unwrap().is_err());
+    }
+
+    /// A whole sync between the begin and the end keeps what it made
+    /// durable, the file's length included; a refused begin begins
+    /// nothing.
+    #[test]
+    fn a_whole_sync_between_keeps_its_length_and_a_refused_begin_begins_nothing() {
+        let disk = SimDisk::new(1);
+        let mut f = disk.create("f").unwrap();
+        Dir::sync(&disk).unwrap();
+        f.write_at(0, &[1; S]).unwrap();
+        f.sync_begin(Box::new(|| {})).unwrap();
+        f.write_at(S as u64, &[2; S]).unwrap();
+        f.sync().unwrap();
+        assert!(f.sync_end(true).unwrap().is_ok());
+        disk.power_cut(LoseAll);
+        assert_eq!(read(&disk, "f", S as u64, S), vec![2; S]);
+
+        let disk = SimDisk::new(1);
+        let mut f = disk.create("f").unwrap();
+        disk.refuse_sync_begins(1);
+        let refused = f.sync_begin(Box::new(|| {})).unwrap_err();
+        assert!(NotBegun::is(&refused), "{refused}");
+        assert_eq!(disk.stats().sync_begins, 0);
+        f.sync_begin(Box::new(|| {})).unwrap();
+        assert_eq!(disk.stats().sync_begins, 1);
+    }
+
+    /// With a delay the end comes after as many calls that do not wait
+    /// as the seed chooses, at most the delay; a call that waits ends
+    /// it at once; the end counts for a halt where it is, not the
+    /// begin.
+    #[test]
+    fn a_delayed_sync_ends_within_its_delay_or_when_waited_for() {
+        let mut seen = std::collections::BTreeSet::new();
+        for seed in 0..40 {
+            let disk = SimDisk::new(seed);
+            disk.set_sync_delay(3);
+            let mut f = disk.create("f").unwrap();
+            f.write_at(0, &[1; S]).unwrap();
+            f.sync_begin(Box::new(|| {})).unwrap();
+            let mut polls = 0;
+            while f.sync_end(false).is_none() {
+                polls += 1;
+                assert!(polls <= 3);
+            }
+            seen.insert(polls);
+            assert_eq!(disk.stats().syncs, 1);
+            assert_eq!(disk.stats().sync_begins, 1);
+        }
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        let disk = SimDisk::new(1);
+        disk.set_sync_delay(1000);
+        let mut f = disk.create("f").unwrap();
+        f.write_at(0, &[1; S]).unwrap();
+        f.sync_begin(Box::new(|| {})).unwrap();
+        disk.halt_after(1);
+        f.write_at(0, &[2; S]).unwrap();
+        // The halt took the write; the end is refused.
+        assert!(f.sync_end(true).unwrap().is_err());
+    }
+
+    /// A caller waiting at the end of a held sync is let go by a power
+    /// cut or a kill, and finds its handle dead.
+    #[test]
+    fn a_power_cut_or_a_kill_lets_a_waiter_at_a_held_sync_go() {
+        for cut in [true, false] {
+            let disk = SimDisk::new(1);
+            let mut f = disk.create("f").unwrap();
+            f.write_at(0, &[1; S]).unwrap();
+            disk.hold_syncs_of("f");
+            f.sync_begin(Box::new(|| {})).unwrap();
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = done.send(f.sync_end(true).map(|r| r.is_err()));
+            });
+            while disk.held_waiters() == 0 {
+                std::thread::yield_now();
+            }
+            if cut {
+                disk.power_cut(LoseAll);
+            } else {
+                disk.kill();
+            }
+            let ended = ended.recv_timeout(std::time::Duration::from_secs(20));
+            assert_eq!(ended, Ok(Some(true)), "cut {cut}");
+        }
+    }
+
+    /// A held sync is under way for a call that does not wait, and ends
+    /// for one that waits once it is released; writes to each file are
+    /// counted by name.
+    #[test]
+    fn a_held_sync_ends_when_released() {
+        let disk = SimDisk::new(1);
+        let mut f = disk.create("f").unwrap();
+        f.write_at(0, &[1; S]).unwrap();
+        f.write_at(0, &[2; S]).unwrap();
+        assert_eq!(disk.writes_of("f"), 2);
+        assert_eq!(disk.writes_of("g"), 0);
+        disk.hold_syncs_of("f");
+        f.sync_begin(Box::new(|| {})).unwrap();
+        for _ in 0..5 {
+            assert!(f.sync_end(false).is_none());
+        }
+        // A write while the sync is under way is counted as such.
+        f.write_at(S as u64, &[3; S]).unwrap();
+        assert_eq!(disk.writes_while_syncing("f"), 1);
+        let waiter = {
+            let disk = disk.clone();
+            std::thread::spawn(move || {
+                let ended = f.sync_end(true).unwrap().is_ok();
+                (ended, disk.stats().syncs)
+            })
+        };
+        while disk.held_waiters() == 0 {
+            std::thread::yield_now();
+        }
+        disk.release_syncs();
+        assert_eq!(waiter.join().unwrap(), (true, 1));
+        assert_eq!(disk.held_waiters(), 0);
     }
 }

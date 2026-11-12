@@ -30,7 +30,7 @@ use skyzfs_blk::{
 
 use crate::format::siphash24;
 use crate::format::{Identity, Key, Kind, Lsn};
-use crate::io::{Dir, File};
+use crate::io::{Dir, File, HelperEnded, NotBegun};
 use crate::log::{Log, LogError, Observer, Options, Recovery};
 use crate::writeback::{Hinted, Writeback};
 
@@ -165,6 +165,14 @@ impl Mutants {
     /// after the read's pause, where a test can hold it between the
     /// two.
     pub(crate) const PIN_AFTER_LOOKUP: u64 = 1 << 32;
+    /// A step that handed the home image's sync over moves the log's
+    /// start at once, before the helper reports, and takes the report
+    /// later.
+    pub(crate) const START_BEFORE_REPORT: u64 = 1 << 33;
+    /// The rule of the marks takes the next step while one waits for
+    /// its report: it writes into the home image while that sync is
+    /// under way.
+    pub(crate) const HOME_WRITTEN_BEFORE_REPORT: u64 = 1 << 34;
 
     fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -287,11 +295,23 @@ pub struct OpenOptions {
     pub must_reach_identity: Option<[u8; 16]>,
     /// For test rigs: see [`Options::pretend_short_by`]. Leave it 0.
     pub pretend_short_by: u32,
-    /// Hand a file's writes to the device once this many bytes of them
-    /// wait, before the sync that must wait for them: the log's
-    /// segment files and the home image (see [`crate::writeback`]).
-    /// 0 is never. A hint: nothing that is durable, or when, changes.
+    /// Hand the log's writes to the device once this many bytes of them
+    /// wait, before the sync that must wait for them (see
+    /// [`crate::writeback`]). 0 is never. A hint: nothing that is
+    /// durable, or when, changes.
     pub writeback_unit: u64,
+    /// The same for the home image's writes in a step. 0, never, unless
+    /// set: the step hands the home image's sync to a helper at once
+    /// ([`OpenOptions::hand_over_home_sync`]), and the hint's calls
+    /// would be time of the worker's that the helper's sync does not
+    /// need.
+    pub home_writeback_unit: u64,
+    /// Whether a step of the rule of the marks hands the home image's
+    /// sync over and goes on serving until it is reported (design
+    /// §5.1). A served store always does; a store that is not served
+    /// does if this is set (for tests: the simulated disk then ends the
+    /// sync at a point its seed chooses).
+    pub hand_over_home_sync: bool,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -308,6 +328,8 @@ impl Default for OpenOptions {
             must_reach_identity: None,
             pretend_short_by: 0,
             writeback_unit: crate::writeback::DEFAULT_UNIT,
+            home_writeback_unit: 0,
+            hand_over_home_sync: false,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -829,6 +851,19 @@ struct Core<D: Dir> {
     /// the worker can say what it was doing when. `None` for a store
     /// that is not served, which has nobody to take them.
     parts: Option<Vec<(Instant, Instant, usize)>>,
+    /// Whether the rule's steps hand the home image's sync over:
+    /// [`OpenOptions::hand_over_home_sync`], and always when served.
+    hands_over: bool,
+    /// The step whose home-image sync is with the helper and has not
+    /// been reported yet. Until it is, no step is begun and nothing is
+    /// written to the home image: see [`Core::hand_over`].
+    handed: Option<Handed>,
+    /// For a served store: called when the helper has synced the home
+    /// image, or has ended, so that a worker that waits for work wakes.
+    wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// The helper ended without saying how its sync went. A served
+    /// store's worker ends with it: the target's end.
+    helper_ended: bool,
     /// How a write-zeroes record reaches the home image.
     zeroes: Zeroes,
     /// For test rigs: how and where every batch of a checkpoint waits.
@@ -922,6 +957,11 @@ impl<D: Dir> Core<D> {
     /// reclaim takes nothing else. One at or below the log's start
     /// holds the whole log and is taken as it is.
     fn set_hold(&mut self, hold: Option<Lsn>) -> Result<(), NotABoundary> {
+        // A step whose sync is with the helper puts back the hold it was
+        // chosen under when it is taken up: it ends first. A sync that
+        // failed has failed the volume, and the hold changes all the
+        // same.
+        let _ = self.settle();
         if let Some(position) = hold {
             let inside = position > self.log.floor();
             if inside && !self.mutants.has(Mutants::HOLD_UNCHECKED) {
@@ -1107,6 +1147,9 @@ impl<D: Dir> Core<D> {
     ///    read goes to the home image for a block before the home image
     ///    is known to hold it.
     fn checkpoint(&mut self) -> Result<Lsn, BlkError> {
+        // A step's sync that is with the helper ends first: the log's
+        // start is that step's to move.
+        self.settle()?;
         let floor = self.log.floor();
         let limit = if self.mutants.has(Mutants::CHECKPOINT_UNSYNCED) {
             self.log.tail()
@@ -1155,6 +1198,16 @@ impl<D: Dir> Core<D> {
     /// The step reads the log only as far as it takes, so its cost does
     /// not grow with the log behind it.
     fn checkpoint_step(&mut self, bound: StepBound) -> Result<Step, BlkError> {
+        self.settle()?;
+        self.step(bound, false)
+    }
+
+    /// A step as [`Core::checkpoint_step`] takes it, with its home
+    /// image's sync handed over if `hand_over` and the store does
+    /// ([`Core::apply_handing_over`]): the step is then taken up when
+    /// the helper reports, and the start it returns is where the log
+    /// will start.
+    fn step(&mut self, bound: StepBound, hand_over: bool) -> Result<Step, BlkError> {
         let floor = self.log.floor();
         let limit = self.log.durable();
         let hold = self.log.hold();
@@ -1216,7 +1269,11 @@ impl<D: Dir> Core<D> {
             return Err(self.fail());
         }
         self.walked(walk_began);
-        let (start, cut) = self.apply(floor, end, limit, hold)?;
+        let (start, cut) = if hand_over {
+            self.apply_handing_over(floor, end, limit, hold)?
+        } else {
+            self.apply(floor, end, limit, hold)?
+        };
         // A step that ended early, at the record where the file system
         // first refused to deallocate, says what it took.
         Ok(match cut {
@@ -1362,12 +1419,29 @@ impl<D: Dir> Core<D> {
     ///
     /// The sync is the log's, as a flush's is, and is nobody's request:
     /// it has no place in the volume's order.
+    ///
+    /// A store that hands the home image's sync over begins a step and
+    /// returns: until the helper reports, the rule takes no step, and
+    /// at the high mark it waits for the report and takes the step up
+    /// (which counts as a step taken: the rule wants to be asked
+    /// again).
     fn tend(&mut self, before: &mut dyn FnMut()) -> Result<bool, BlkError> {
         let Some(marks) = self.marks else {
             return Ok(false);
         };
         if self.failed {
             return Ok(false);
+        }
+        // No step while one waits for its report, unless the log is at
+        // the high mark: then the report is waited for, which is the
+        // time the worker would have spent in the sync itself, and the
+        // log's bound is what it was.
+        if self.handed.is_some() && !self.mutants.has(Mutants::HOME_WRITTEN_BEFORE_REPORT) {
+            if !self.at_the_high_mark() {
+                return Ok(false);
+            }
+            self.settle()?;
+            return Ok(true);
         }
         let floor = self.log.floor();
         let live = self.log.tail().0 - floor.0;
@@ -1404,7 +1478,7 @@ impl<D: Dir> Core<D> {
         if !syncs {
             before();
         }
-        let step = self.checkpoint_step(marks.step)?;
+        let step = self.step(marks.step, self.hands_over)?;
         self.steps += 1;
         // Below the low mark the rule rests until the high one.
         if self.log.tail().0 - step.start.0 < marks.low {
@@ -1448,7 +1522,7 @@ impl<D: Dir> Core<D> {
     }
 
     /// One batch of a checkpoint: the records from `floor`, where the
-    /// log starts, to `target`.
+    /// log starts, to `target`, with the home image's sync made here.
     fn apply(
         &mut self,
         floor: Lsn,
@@ -1456,8 +1530,147 @@ impl<D: Dir> Core<D> {
         limit: Lsn,
         hold: Option<Lsn>,
     ) -> Result<(Lsn, Option<Cut>), BlkError> {
-        // The batch's time, in four parts that follow each other with
-        // no gap: one clock read at each boundary. A batch that fails
+        let applied = self.apply_writes(floor, target, limit, hold)?;
+        let written_at = applied.written_at;
+        let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
+        if !early && self.sync_home(written_at).is_err() {
+            return Err(self.fail());
+        }
+        let synced_at = Instant::now();
+        self.timing.step_home_sync.add(synced_at - written_at);
+        self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
+        self.finish(applied, synced_at, early)
+    }
+
+    /// A batch of a step of the rule's whose home-image sync goes to
+    /// the helper: its writes as [`Core::apply`]'s, then the sync is
+    /// begun and the worker goes on. Until the helper reports
+    /// ([`Core::report`]) no step is begun and nothing is written to
+    /// the home image: what the sync makes durable is what was written
+    /// before it began, and the preimage file holds this batch's
+    /// neighbours until the step is over. The log's start stays where
+    /// it is until then, so the log still holds every record of the
+    /// batch, and a start applies them again. Returns where the log
+    /// will start, and whether the batch was cut short. A sync that has
+    /// ended at once is taken up here.
+    fn apply_handing_over(
+        &mut self,
+        floor: Lsn,
+        target: Lsn,
+        limit: Lsn,
+        hold: Option<Lsn>,
+    ) -> Result<(Lsn, Option<Cut>), BlkError> {
+        let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
+        if early || !self.hands_over || self.handed.is_some() {
+            return self.apply(floor, target, limit, hold);
+        }
+        let applied = self.apply_writes(floor, target, limit, hold)?;
+        let (target, cut, written_at) = (applied.target, applied.cut, applied.written_at);
+        let wake = Waking(self.wake.clone());
+        let begun = self.home.sync_begin(Box::new(move || drop(wake)));
+        // Not begun for want of a thread or a descriptor, which is no
+        // fault of the volume's: the worker makes this sync itself, as
+        // [`Core::apply`] does, and the next step tries the helper
+        // again. The whole sync is then the worker's part of it.
+        if matches!(&begun, Err(e) if NotBegun::is(e)) {
+            if self.sync_home(written_at).is_err() {
+                return Err(self.fail());
+            }
+            let synced_at = Instant::now();
+            self.timing.step_home_sync.add(synced_at - written_at);
+            self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
+            return self.finish(applied, synced_at, false);
+        }
+        // The worker's part of this sync: handing it over.
+        let began = Instant::now();
+        self.timing.step_home_sync.add(began - written_at);
+        self.part(written_at, began, Activity::STEP_HOME_SYNC);
+        if let Err(e) = begun {
+            return Err(if HelperEnded::is(&e) {
+                self.helper_end()
+            } else {
+                self.fail()
+            });
+        }
+        let applied = if self.mutants.has(Mutants::START_BEFORE_REPORT) {
+            self.finish(applied, Instant::now(), false)?;
+            None
+        } else {
+            Some(applied)
+        };
+        self.handed = Some(Handed { applied, began });
+        match self.report(false) {
+            Some(Err(failed)) => Err(failed),
+            _ => Ok((target, cut)),
+        }
+    }
+
+    /// The helper's report of the home image's sync that a step handed
+    /// over: `None` if no step did, or if the sync is under way (with
+    /// `wait` it is waited for). Once it has ended the step is taken up
+    /// again where [`Core::apply`] would be after its sync: the log's
+    /// new start, the index's drop, the second barrier. A failed sync
+    /// fails the volume, as one of the worker's own would. On a volume
+    /// that failed meanwhile the step is not taken up.
+    fn report(&mut self, wait: bool) -> Option<Result<(), BlkError>> {
+        self.handed.as_ref()?;
+        let waited = wait.then(Instant::now);
+        let ended = self.home.sync_end(wait)?;
+        let reported_at = Instant::now();
+        if let Some(waited) = waited {
+            self.timing.step_report.add(reported_at - waited);
+            self.part(waited, reported_at, Activity::STEP_REPORT);
+        }
+        let handed = self.handed.take()?;
+        Some(match ended {
+            Err(e) if HelperEnded::is(&e) => Err(self.helper_end()),
+            Err(_) => Err(self.fail()),
+            Ok(()) => {
+                let took = reported_at - handed.began;
+                let (bytes, handed_bytes) = self.home_writeback.synced();
+                self.timing.syncs[SyncKind::HOME].add(took, bytes, handed_bytes);
+                self.timing.writeback[1] = self.home_writeback.done;
+                self.timing.helper.add(took);
+                match handed.applied {
+                    _ if self.failed => Err(BlkError::Failed),
+                    Some(applied) => self.finish(applied, reported_at, false).map(|_| ()),
+                    None => Ok(()),
+                }
+            }
+        })
+    }
+
+    /// Wait for the helper's report of a step that handed its sync over,
+    /// and take the step up: before whatever may not overlap that sync
+    /// (another step, an explicit checkpoint, room made in a full log,
+    /// a change of the hold, the end of a served store).
+    fn settle(&mut self) -> Result<(), BlkError> {
+        self.report(true).unwrap_or(Ok(()))
+    }
+
+    /// The helper ended without a report: the volume serves nothing
+    /// more, and a served store's worker ends (the target's end). The
+    /// log is not marked: what the helper did is not known, and the
+    /// log's start has not moved, so the next open applies the batch
+    /// again.
+    fn helper_end(&mut self) -> BlkError {
+        self.helper_ended = true;
+        self.failed = true;
+        BlkError::Failed
+    }
+
+    /// The first half of a batch: the neighbours saved, the first
+    /// barrier, and the batch written into the home image, which is
+    /// then not durable.
+    fn apply_writes(
+        &mut self,
+        floor: Lsn,
+        target: Lsn,
+        limit: Lsn,
+        hold: Option<Lsn>,
+    ) -> Result<Applied, BlkError> {
+        // The batch's time, in parts that follow each other with no
+        // gap: one clock read at each boundary. A batch that fails
         // leaves its last part uncounted: the volume has failed.
         let began = Instant::now();
         if self.protect_neighbours(floor, target, limit).is_err() {
@@ -1573,13 +1786,27 @@ impl<D: Dir> Core<D> {
         // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
         self.pause_at(StepPoint::Written);
-        let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
-        if !early && self.sync_home(written_at).is_err() {
-            return Err(self.fail());
-        }
-        let synced_at = Instant::now();
-        self.timing.step_home_sync.add(synced_at - written_at);
-        self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
+        Ok(Applied {
+            target,
+            cut,
+            hold,
+            written_at,
+        })
+    }
+
+    /// The second half of a batch, once the home image is durable
+    /// (`early`: with [`Mutants::RECLAIM_BEFORE_HOME_SYNC`], before it
+    /// is): the log's new start, the index's drop, the second barrier.
+    /// `synced_at` is where its time begins.
+    fn finish(
+        &mut self,
+        applied: Applied,
+        synced_at: Instant,
+        early: bool,
+    ) -> Result<(Lsn, Option<Cut>), BlkError> {
+        let Applied {
+            target, cut, hold, ..
+        } = applied;
         // (3) The home image is durable, and the log starts where it
         // did: a start now applies the batch again from the log.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1640,6 +1867,46 @@ impl<D: Dir> Core<D> {
         }
         self.barred(ended_at, true);
         Ok((start, cut))
+    }
+}
+
+/// A batch written into the home image and not yet durable there: see
+/// [`Core::apply_writes`] and [`Core::finish`].
+#[derive(Debug, Clone, Copy)]
+struct Applied {
+    /// Where the batch ends: where the log will start.
+    target: Lsn,
+    /// Where it was cut short, if it was.
+    cut: Option<Cut>,
+    /// The hold when the batch was chosen, which the log's new start
+    /// puts back.
+    hold: Option<Lsn>,
+    /// When its writes were done.
+    written_at: Instant,
+}
+
+/// A step whose home-image sync is with the helper: see
+/// [`Core::apply_handing_over`].
+#[derive(Debug)]
+struct Handed {
+    /// The batch to take up when the sync is reported. `None` with
+    /// [`Mutants::START_BEFORE_REPORT`], which took it up at once.
+    applied: Option<Applied>,
+    /// When the sync was handed over.
+    began: Instant,
+}
+
+/// What the helper calls when it has synced the home image: the
+/// worker's wake. Called by being dropped, so that a helper that ends
+/// with it uncalled still wakes the worker, which then finds the
+/// helper gone.
+struct Waking(Option<Arc<dyn Fn() + Send + Sync>>);
+
+impl Drop for Waking {
+    fn drop(&mut self) {
+        if let Some(wake) = &self.0 {
+            wake();
+        }
     }
 }
 
@@ -1912,8 +2179,12 @@ impl StepPause {
 ///
 /// Between the marks every request waits for one step before the next
 /// request is executed, and a step ends with a sync of the home image
-/// and one of the log's superblock. The worst case is therefore one
-/// home-image sync per request until the low mark: with a small step
+/// and one of the log's superblock. A served store hands the home
+/// image's sync to a helper and serves meanwhile; it takes no further
+/// step until the helper reports, and at the high mark it waits for
+/// the report (see the crate's documentation, "The home image's sync
+/// on a helper"). Where the worker makes the sync itself, the worst
+/// case is one home-image sync per request until the low mark: with a small step
 /// bound, or with requests that each append little while the step
 /// finds little durable, a burst that reaches the high mark is served
 /// at the pace of the volume's syncs until the log is below the low
@@ -2024,13 +2295,20 @@ impl Activity {
     /// A step waiting at one of its two barriers for the readers
     /// that are under way.
     const STEP_BARRIER: usize = 14;
+    /// Waiting for the helper to report the home image's sync: at the
+    /// high mark, and before what may not overlap that sync.
+    const STEP_REPORT: usize = 15;
 }
+
+/// How many activities a worker has: see [`ACTIVITIES`].
+pub const ACTIVITY_COUNT: usize = 16;
 
 /// The names of what a worker can be doing, in the order of
 /// [`Timing::worker`]: idle; the call of a read, a write, a flush (the
 /// log's sync), a discard, a write-zeroes; the six parts of a step
-/// and the rule's own sync of the log; anything else.
-pub const ACTIVITIES: [&str; 15] = [
+/// and the rule's own sync of the log; anything else; a step at its
+/// barriers; waiting for the helper's report.
+pub const ACTIVITIES: [&str; ACTIVITY_COUNT] = [
     "idle",
     "read",
     "write",
@@ -2046,6 +2324,7 @@ pub const ACTIVITIES: [&str; 15] = [
     "own_sync",
     "other",
     "step_barrier",
+    "step_report",
 ];
 
 /// What the worker did, span after span, for as far back as a request
@@ -2129,8 +2408,8 @@ impl Spans {
     /// activity, in nanoseconds. The oldest span that is kept is taken
     /// to reach back as far as `from`: its begin was forgotten because
     /// no request that waits was submitted before it.
-    fn between(&self, from: Instant) -> [u64; 15] {
-        let mut by = [0u64; 15];
+    fn between(&self, from: Instant) -> [u64; ACTIVITY_COUNT] {
+        let mut by = [0u64; ACTIVITY_COUNT];
         for at in (0..self.spans.len()).rev() {
             let (end, activity) = self.spans[at];
             if end <= from {
@@ -2214,7 +2493,11 @@ pub struct Timing {
     pub step_save: Spent,
     /// Writing and deallocating in the home image.
     pub step_apply: Spent,
-    /// The home image's sync.
+    /// The worker's part in the home image's sync: the whole sync where
+    /// it makes it itself (an explicit checkpoint's, one that makes room,
+    /// every step of a store that does not hand it over), and handing
+    /// it over where a step of the rule's gives it to the helper
+    /// ([`Timing::helper`]). One per batch, as the other parts.
     pub step_home_sync: Spent,
     /// The log's new start, written and made durable.
     pub step_start: Spent,
@@ -2233,13 +2516,13 @@ pub struct Timing {
     /// the spans follow each other with no gap, so the sum is the time
     /// served, and one entry over the sum is the share of the worker's
     /// time that went there.
-    pub worker: [u64; 15],
+    pub worker: [u64; ACTIVITY_COUNT],
     /// For each kind of request ([`TIMED_KINDS`]): the summed waits of
     /// [`RequestTiming::wait`] by what the worker did meanwhile
     /// ([`ACTIVITIES`]). Each request's wait is laid over the worker's
     /// spans, so a row's sum is that kind's summed wait. "Idle" here is
     /// the time the worker took to wake for a request.
-    pub wait_by: [[u64; 15]; 5],
+    pub wait_by: [[u64; ACTIVITY_COUNT]; 5],
     /// For each kind: of its longest wait, the activity that took the
     /// largest part of it, as a number into [`ACTIVITIES`].
     pub longest_wait_cause: [u64; 5],
@@ -2290,6 +2573,17 @@ pub struct Timing {
     /// and of those how many the hint had handed over. The superblock's
     /// are since the store was opened.
     pub syncs: [Synced; 6],
+    /// The home image's syncs that steps handed to the helper: from the
+    /// hand-over until the worker took the report. Not worker time: the
+    /// worker served meanwhile. The syncs are also counted in
+    /// [`Timing::syncs`] under `home`, with this time.
+    pub helper: Spent,
+    /// How long the worker waited for the helper's report (the activity
+    /// `step_report`): at the high mark, before an explicit checkpoint,
+    /// a change of the hold, room in a full log, and the end.
+    pub step_report: Spent,
+    /// Requests the worker completed while a sync was with the helper.
+    pub helper_requests: u64,
 }
 
 /// One kind of sync: see [`Timing::syncs`].
@@ -2360,7 +2654,9 @@ pub struct LogState {
     pub own_syncs: u64,
     /// Whether such a step is under way now. A step begins with the
     /// rule's own sync of the log, when it needs one: that sync can
-    /// take as long as any, and is shown as the step it is for.
+    /// take as long as any, and is shown as the step it is for. It is
+    /// under way while its home image's sync is with the helper, until
+    /// the worker has taken the report and the step up again.
     pub stepping: bool,
     /// How write-zeroes records reach the home image.
     pub zeroes: Zeroes,
@@ -2934,7 +3230,7 @@ impl<D: Dir> Store<D> {
             core: Core {
                 log,
                 home,
-                home_writeback: Writeback::new(options.writeback_unit),
+                home_writeback: Writeback::new(options.home_writeback_unit),
                 preimages,
                 _lock: lock,
                 shared: Arc::new(shared),
@@ -2949,6 +3245,10 @@ impl<D: Dir> Store<D> {
                 own_syncs: 0,
                 timing: Timing::default(),
                 parts: None,
+                hands_over: options.hand_over_home_sync,
+                handed: None,
+                wake: None,
+                helper_ended: false,
                 zeroes: Zeroes::Untried,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
@@ -3180,8 +3480,17 @@ impl<D: Dir> Store<D> {
             let Some(Request { id, op }) = self.queue.pop_front() else {
                 break;
             };
+            // A step's sync with the helper is asked after, before each
+            // request: on the simulated disk it ends where its seed says.
+            // A sync that failed has failed the volume, which the request
+            // finds.
+            let _ = self.core.report(false);
+            let helping = self.core.handed.is_some();
             match self.core.execute(op) {
                 Ok((result, buf)) => {
+                    if helping {
+                        self.core.timing.helper_requests += 1;
+                    }
                     self.ids.remove(&id);
                     if let Some(start) = self.core.appended.take() {
                         self.acknowledged = Some(start);
@@ -3272,7 +3581,19 @@ enum Command {
     /// For test rigs: fail the log now.
     #[cfg(any(test, feature = "test-hooks"))]
     Fail(mpsc::Sender<()>),
+    /// The helper has ended the home image's sync, or has ended: the
+    /// worker takes the report on its next turn.
+    Reported,
+    /// The owner is gone: the worker waits for the helper's report of
+    /// a step's sync, takes the step up, and ends. (The worker holds a
+    /// sender itself, for the helper's wake, so the channel does not
+    /// close when the owner's senders go.)
+    Stop,
 }
+
+/// How long a worker that waits for work, with a step's sync under way
+/// on a file that does not say when it ends, waits before it asks again.
+const LOOK_AGAIN: Duration = Duration::from_millis(1);
 
 /// What the owner of a [`Served`] store hands its reader.
 enum ToReader {
@@ -3489,7 +3810,7 @@ impl<D: Dir> Reader<D> {
 #[derive(Debug, Clone, Copy, Default)]
 struct ReaderShown {
     requests: RequestTiming,
-    wait_by: [u64; 15],
+    wait_by: [u64; ACTIVITY_COUNT],
     longest_wait_cause: u64,
     longest_wait_cause_ns: u64,
     time: [u64; 3],
@@ -3563,7 +3884,7 @@ impl Shown {
     /// The worker's state and times, with the span it has open.
     fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool, open: Open) {
         let state = LogState {
-            stepping,
+            stepping: stepping || core.handed.is_some(),
             ..core.log_state()
         };
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing, open);
@@ -3692,6 +4013,19 @@ where
         let geometry = core.geometry;
         let identity = core.identity();
         let (commands, inbox) = mpsc::channel::<Command>();
+        // A served store hands the home image's sync of its rule's steps
+        // to the helper, which wakes the worker when it is done. A step
+        // the store handed over before it was served ends first: nothing
+        // would wake the worker for it.
+        let _ = core.settle();
+        core.hands_over = true;
+        let reported = Mutex::new(commands.clone());
+        core.wake = Some(Arc::new(move || {
+            let _ = reported
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .send(Command::Reported);
+        }));
         let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>, Instant)>();
         let ended = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(Shown::default());
@@ -3864,7 +4198,28 @@ where
                 // What the worker did, for the waits of the requests.
                 let mut spans = spans;
                 core.parts = Some(Vec::new());
+                let wake = || {
+                    if let Some(Waker(wake)) = &waker {
+                        wake();
+                    }
+                };
                 loop {
+                    // The helper's report of a step's sync, if it has
+                    // come: the step is taken up (its new start, the
+                    // index's drop, the second barrier), and the rule
+                    // is asked again.
+                    if let Some(reported) = core.report(false) {
+                        spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
+                        if core.helper_ended {
+                            return;
+                        }
+                        // A failed sync has failed the volume: a held
+                        // request gets its answer now.
+                        held &= reported.is_ok();
+                        busy = true;
+                        shown.publish(&core, false, spans.open(Activity::OTHER));
+                        wake();
+                    }
                     // Take what has arrived; wait if there is nothing
                     // to do. What is shown says which, so that a look
                     // counts the wait as idle.
@@ -3879,26 +4234,46 @@ where
                     };
                     shown.publish(&core, false, spans.open(doing));
                     let command = if waits {
-                        let command = inbox.recv();
+                        // Where nothing wakes the worker when the sync
+                        // ends (the simulated disk), it looks again
+                        // every millisecond while it waits.
+                        let looks = core.handed.is_some() && !core.home.sync_wakes();
+                        let command = if looks {
+                            match inbox.recv_timeout(LOOK_AGAIN) {
+                                Ok(command) => Some(command),
+                                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                                Err(mpsc::RecvTimeoutError::Disconnected) => Some(Command::Stop),
+                            }
+                        } else {
+                            inbox.recv().ok().or(Some(Command::Stop))
+                        };
                         shown.worker_woke(&mut spans, &mut core.timing);
-                        match command {
-                            Ok(command) => Some(command),
-                            Err(_) => return,
-                        }
+                        command
                     } else {
                         match inbox.try_recv() {
                             Ok(command) => Some(command),
                             Err(mpsc::TryRecvError::Empty) => None,
-                            Err(mpsc::TryRecvError::Disconnected) => return,
+                            Err(mpsc::TryRecvError::Disconnected) => Some(Command::Stop),
                         }
                     };
                     match command {
+                        Some(Command::Reported) => continue,
+                        Some(Command::Stop) => {
+                            // The end waits for a step's sync that is
+                            // with the helper, and takes the step up.
+                            let _ = core.settle();
+                            spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
+                            return;
+                        }
                         Some(Command::Request(request, at)) => {
                             queue.push_back((request, at));
                             continue;
                         }
                         Some(Command::Hold(hold, reply)) => {
                             let changed = core.set_hold(hold);
+                            // The wait for a step's report, if any.
+                            spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
                             held = false;
                             // A hold that moved or went can leave the
                             // rule of the marks something to take with
@@ -3911,6 +4286,10 @@ where
                             // nothing). The position and the failure
                             // hook leave it nothing new.
                             busy |= changed.is_ok();
+                            // As for a checkpoint: the change can have
+                            // taken a step up, and whoever is answered
+                            // finds the log as that left it.
+                            shown.publish(&core, false, spans.open(Activity::OTHER));
                             let _ = reply.send(changed);
                             continue;
                         }
@@ -4002,6 +4381,7 @@ where
                         let kind = timed_kind(&op);
                         let began = Instant::now();
                         spans.close(Activity::OTHER, began, &mut core.timing);
+                        let helping = core.handed.is_some();
                         let executed = core.execute(op);
                         let ended = Instant::now();
                         // What it waited for, before its own call is
@@ -4035,6 +4415,9 @@ where
                                 }
                                 timing.requests[kind].wait.add(wait);
                                 timing.requests[kind].call.add(ended - began);
+                                if helping {
+                                    timing.helper_requests += 1;
+                                }
                                 let start = core.appended.take();
                                 let completion = Completion { id, result, buf };
                                 // Shown before the completion can be
@@ -4066,11 +4449,6 @@ where
                     // when a step begins, which is before the rule's
                     // own sync of the log if it needs one, and when it
                     // ends, so that it can show both.
-                    let wake = || {
-                        if let Some(Waker(wake)) = &waker {
-                            wake();
-                        }
-                    };
                     let mut begun = false;
                     let turn = gated.then(Instant::now);
                     let stepped = core.tend(&mut || {
@@ -4079,6 +4457,9 @@ where
                         wake();
                     });
                     spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
+                    if core.helper_ended {
+                        return;
+                    }
                     if let Some(turn) = turn.filter(|_| stepped != Ok(false)) {
                         core.timing.gate.add(turn.elapsed());
                     }
@@ -4267,8 +4648,11 @@ impl Served {
 impl Drop for Served {
     fn drop(&mut self) {
         // The reader ends when the reads' sender is gone, and the
-        // worker when the commands' senders are: this one and the
-        // reader's, for the reads it cannot do.
+        // worker when it is told to stop: it holds a sender of its
+        // commands itself, for the helper's wake.
+        if let Some(commands) = &self.commands {
+            let _ = commands.send(Command::Stop);
+        }
         self.commands = None;
         self.reads = None;
         if let Some(reader) = self.reader.take() {

@@ -46,6 +46,10 @@ pub(crate) struct SimHarness {
     pub(crate) threaded: bool,
     /// The marks by which the store checkpoints by itself, if it does.
     pub(crate) marks: Option<Marks>,
+    /// If not 0: the rule's steps hand the home image's sync over (a
+    /// served store's always do), and the simulated disk ends such a
+    /// sync after up to this many looks ([`SimDisk::set_sync_delay`]).
+    pub(crate) sync_delay: u64,
 }
 
 impl SimHarness {
@@ -62,6 +66,7 @@ impl SimHarness {
             acknowledge_failure,
             log_segments: self.segments,
             mutants: Mutants(self.mutants),
+            hand_over_home_sync: self.sync_delay > 0,
             ..OpenOptions::default()
         }
     }
@@ -280,6 +285,7 @@ impl Harness for SimHarness {
     fn create(&mut self, spec: &Spec) -> Result<OnSim, HarnessError> {
         let disk = SimDisk::new(spec.seed);
         disk.set_write_unit(u64::from(self.unit));
+        disk.set_sync_delay(self.sync_delay);
         let config = StoreConfig {
             volume: *b"conformance vol.",
             size_mib: 4,
