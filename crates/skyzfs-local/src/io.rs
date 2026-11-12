@@ -63,6 +63,13 @@ pub trait Dir {
     /// must then refuse, not assume.
     fn block_size(&self) -> io::Result<u64>;
 
+    /// The page size of the system that writes this directory's
+    /// files, in bytes: what its cache writes back as a whole,
+    /// whatever the file system. It belongs to the running kernel and
+    /// not to the files: the same directory can be opened under
+    /// another.
+    fn page_size(&self) -> u64;
+
     /// Take the directory's exclusive lock, without waiting. While the
     /// lock is held a second call fails with
     /// [`io::ErrorKind::WouldBlock`] and changes nothing. The lock is

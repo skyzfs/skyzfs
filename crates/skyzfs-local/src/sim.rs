@@ -366,6 +366,8 @@ struct State {
     no_holes: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
+    /// The page size the system reports.
+    page_size: u64,
     /// The next deallocation fails, having zeroed any part of its range.
     hole_fault: bool,
     /// The machine stops after this many more writes and syncs.
@@ -477,6 +479,7 @@ impl SimDisk {
                 read_fault: None,
                 no_holes: false,
                 block_size: Some(SECTOR),
+                page_size: SECTOR,
                 hole_fault: false,
                 halt: None,
                 lock: None,
@@ -720,6 +723,14 @@ impl SimDisk {
         self.lock().block_size = bytes;
     }
 
+    /// The page size the system reports ([`Dir::page_size`]). One
+    /// sector unless set. It only says what the system would answer:
+    /// how far a write reaches is the write unit's
+    /// ([`SimDisk::set_write_unit`]), which a test sets with it.
+    pub fn set_page_size(&self, bytes: u64) {
+        self.lock().page_size = bytes;
+    }
+
     /// The next deallocation fails with an I/O error, having zeroed any
     /// part of its range.
     pub fn fail_deallocation(&self) {
@@ -801,6 +812,10 @@ impl Drop for SimLock {
 impl Dir for SimDisk {
     type File = SimFile;
     type Lock = SimLock;
+
+    fn page_size(&self) -> u64 {
+        self.lock().page_size
+    }
 
     fn block_size(&self) -> io::Result<u64> {
         self.lock()

@@ -391,6 +391,30 @@ fn a_second_instance_is_refused_on_real_files() {
     assert_eq!(read(&mut store, 4, 1)[0], 2);
 }
 
+/// What the store does not write does not keep it from opening: the
+/// open asks the block size of the files it writes and of the
+/// directory, and leaves a subdirectory and a file nobody may open,
+/// put there by hand, alone.
+#[cfg(unix)]
+#[test]
+fn a_stranger_in_the_directory_does_not_refuse_an_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let store = Store::create(dir.clone(), &config(16, 64), OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    write(&mut store, 3, Buf::filled(4, 1));
+    flush(&mut store);
+    drop(store);
+    std::fs::create_dir(tmp.path().join("notes")).unwrap();
+    let closed = tmp.path().join("closed");
+    std::fs::write(&closed, b"x").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (store, _) = Store::open(dir, OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    assert_eq!(read(&mut store, 3, 1)[0], 1);
+}
+
 /// Process kill, for real (rule R9), and the lock with it: while the
 /// child lives the parent cannot open the store, and after the kill it
 /// can. A child process serves a writer

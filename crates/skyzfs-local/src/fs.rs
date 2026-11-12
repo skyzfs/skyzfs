@@ -172,6 +172,10 @@ fn still_named(_file: &fs::File, _path: &Path) -> io::Result<bool> {
 }
 
 impl Dir for FsDir {
+    fn page_size(&self) -> u64 {
+        u64::from(page_size())
+    }
+
     #[cfg(target_os = "linux")]
     fn block_size(&self) -> io::Result<u64> {
         said_block_size(retried(|| rustix::fs::statfs(&self.path))?.f_bsize)

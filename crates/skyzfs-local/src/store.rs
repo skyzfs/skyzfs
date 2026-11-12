@@ -141,6 +141,9 @@ impl Mutants {
     /// A store is opened whatever the block size of the file systems
     /// its files are on.
     pub(crate) const OPEN_ON_ANY_BLOCKS: u32 = 1 << 27;
+    /// A store is created and opened whatever the page size of the
+    /// system it runs on.
+    pub(crate) const UNDER_ANY_PAGES: u32 = 1 << 28;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -342,6 +345,21 @@ pub enum StoreError {
         /// The store's write unit.
         unit: u64,
     },
+    /// `create` and every open: the system's page is larger than the
+    /// store's write unit. Nothing was written. A kernel writes back
+    /// whole pages, so this is the same exposure by the other measure:
+    /// a volume made where pages are 4 KiB and opened where they are
+    /// 16 or 64 KiB.
+    #[error(
+        "this system's pages are {page} bytes, larger than the volume's write unit of {unit} \
+         bytes: a write here reaches beyond what the store protects"
+    )]
+    Pages {
+        /// The system's page size.
+        page: u64,
+        /// The store's write unit.
+        unit: u64,
+    },
     /// The same, where the block size could not be read: the
     /// assumption cannot be checked, and the store is refused.
     #[error(
@@ -367,20 +385,21 @@ pub enum Under {
     Log,
     /// The file of preimages.
     Preimages,
-    /// Any other file in the directory: the lock.
-    Other,
 }
 
 impl Under {
-    fn of(name: &str) -> Self {
-        if name == HOME_NAME {
-            Self::Home
+    /// What the store's file of this name is, or `None` for a name
+    /// under which the store writes nothing: its lock, and whatever
+    /// else is in the directory.
+    fn of(name: &str) -> Option<Self> {
+        if name == HOME_NAME || name == HOME_NEW_NAME {
+            Some(Self::Home)
         } else if name == PREIMAGE_NAME {
-            Self::Preimages
+            Some(Self::Preimages)
         } else if name.starts_with("log.") {
-            Self::Log
+            Some(Self::Log)
         } else {
-            Self::Other
+            None
         }
     }
 }
@@ -392,8 +411,16 @@ impl std::fmt::Display for Under {
             Self::Home => "the volume's home image",
             Self::Preimages => "the volume's file of preimages",
             Self::Log => "a file of the volume's write log",
-            Self::Other => "a file in the volume's directory",
         })
+    }
+}
+
+/// Refuse a system whose page is larger than `unit`.
+fn pages_within_unit(page: u64, unit: u64, mutants: Mutants) -> Result<(), StoreError> {
+    if page <= unit || mutants.has(Mutants::UNDER_ANY_PAGES) {
+        Ok(())
+    } else {
+        Err(StoreError::Pages { page, unit })
     }
 }
 
@@ -1838,6 +1865,7 @@ impl<D: Dir> Store<D> {
         // block of the directory's file system. Every file of a store
         // is created in this directory, under a name that did not
         // exist, so it is on this file system.
+        pages_within_unit(dir.page_size(), identity.unit(), options.mutants)?;
         if !options.mutants.has(Mutants::CREATE_ON_ANY_BLOCKS) {
             within_unit(Under::Directory, dir.block_size(), identity.unit())?;
         }
@@ -1963,36 +1991,45 @@ impl<D: Dir> Store<D> {
         Ok((store, recovery))
     }
 
-    /// Before an open reads, recovers or writes anything: every file
-    /// in the directory, and the directory itself, where files are
-    /// made later, is on a file system whose block is no larger than
-    /// the store's write unit. The directory may have been copied or
-    /// moved since the store was created, and a name in it may lead to
-    /// another file system. A directory with no readable superblock is
-    /// left to the log's own open, which says what is wrong with it.
-    fn blocks_within_the_unit(dir: &D) -> Result<(), StoreError> {
+    /// Before an open reads, recovers or writes anything: the system's
+    /// page is no larger than the store's write unit, and every file
+    /// the store writes, and the directory itself, where files are
+    /// made later, is on a file system whose block is no larger
+    /// either. The directory may have been copied or moved since the
+    /// store was created, to another file system or to a machine with
+    /// larger pages, and a name in it may lead to another file system.
+    /// Names under which the store writes nothing are not asked: the
+    /// lock, and whatever else somebody put there. A directory with no
+    /// readable superblock is left to the log's own open, which says
+    /// what is wrong with it.
+    fn writes_stay_within_the_unit(dir: &D, mutants: Mutants) -> Result<(), StoreError> {
         let reading = io_error("reading the superblock");
         let Some(unit) = crate::log::unit_of(dir).map_err(&reading)? else {
             return Ok(());
         };
+        pages_within_unit(dir.page_size(), unit, mutants)?;
+        if mutants.has(Mutants::OPEN_ON_ANY_BLOCKS) {
+            return Ok(());
+        }
         within_unit(Under::Directory, dir.block_size(), unit)?;
         for name in dir.list().map_err(io_error("listing the directory"))? {
+            let Some(what) = Under::of(&name) else {
+                continue;
+            };
             let block = match dir.open(&name) {
                 Ok(file) => file.block_size(),
-                // Gone since the listing: not a file of the store's.
+                // Gone since the listing.
                 Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                 Err(e) => Err(e),
             };
-            within_unit(Under::of(&name), block, unit)?;
+            within_unit(what, block, unit)?;
         }
         Ok(())
     }
 
     /// The open, without the lock.
     fn recover(dir: D, options: OpenOptions) -> Result<(Self, Recovery), StoreError> {
-        if !options.mutants.has(Mutants::OPEN_ON_ANY_BLOCKS) {
-            Self::blocks_within_the_unit(&dir)?;
-        }
+        Self::writes_stay_within_the_unit(&dir, options.mutants)?;
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
             must_reach: options.must_reach,

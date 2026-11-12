@@ -4298,6 +4298,59 @@ fn an_open_is_refused_where_blocks_are_larger_than_the_write_unit() {
     caught(scenario, Mutants::OPEN_ON_ANY_BLOCKS);
 }
 
+/// The other measure of how far a write reaches: the page of the
+/// system that writes. A store is not created with a write unit below
+/// the system's page, and one made where pages were no larger than its
+/// unit is not opened where they are larger: nothing is written, and
+/// it opens again, whole, where the pages fit. Mutant: the page size
+/// is not asked.
+#[test]
+fn a_store_is_refused_where_pages_are_larger_than_the_write_unit() {
+    fn scenario(env: &Env) -> Outcome {
+        let unit = u64::from(env.unit);
+        let disk = SimDisk::new(7);
+        disk.set_write_unit(4 * unit);
+        disk.set_page_size(4 * unit);
+        let key = Key(*b"a key for tests!");
+        let made = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+        let want = StoreError::Pages {
+            page: 4 * unit,
+            unit,
+        };
+        if made.as_ref().err() != Some(&want) {
+            return Err(format!("a creation under larger pages: {:?}", made.err()));
+        }
+        if !disk.list().map_err(|e| e.to_string())?.is_empty() {
+            return Err("a refused creation left files".into());
+        }
+
+        let (disk, mut store) = env.fresh()?;
+        disk.set_page_size(unit);
+        write(&mut store, 3, 5, 9)?;
+        flush(&mut store)?;
+        drop(store);
+        disk.kill();
+        let names = disk.list().map_err(|e| e.to_string())?;
+        let before = disk.stats();
+        disk.set_page_size(4 * unit);
+        let opened = Store::open(disk.clone(), env.options()).map(|_| ());
+        if opened != Err(want) {
+            return Err(format!("an open under larger pages: {opened:?}"));
+        }
+        let after = disk.stats();
+        if (after.writes, after.syncs, after.dir_syncs)
+            != (before.writes, before.syncs, before.dir_syncs)
+            || disk.list().map_err(|e| e.to_string())? != names
+        {
+            return Err(format!("a refused open wrote: {before:?} then {after:?}"));
+        }
+        disk.set_page_size(unit);
+        let (mut store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        expect(&mut store, 3, 5, 9, "what was flushed")
+    }
+    caught(scenario, Mutants::UNDER_ANY_PAGES);
+}
+
 /// What the two refusals are for. The disk rewrites the whole block of
 /// its file system around every write, in every file, and a power cut
 /// leaves what was not synced as the environment says (as it was, or
