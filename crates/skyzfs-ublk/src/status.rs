@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1424
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1584
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,13 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's fifth version. The fourth (`SKYZSTA4`, 200
+//! This is the file's sixth version. The fifth (`SKYZSTA5`, 1424
+//! bytes) had fourteen activities of the store's worker where this
+//! one has fifteen, so the fields from offset 536 on lie elsewhere,
+//! and ended before the barriers', the reader's and the checked
+//! reads' fields; a file of that version is still read, with those at
+//! zero, and its reads' times are the worker's (before the reads left
+//! the worker, design §5.1). The fourth (`SKYZSTA4`, 200
 //! bytes) ended before offset 200, where the times begin; a file of
 //! that version is still read, without them. The third (`SKYZSTA3`, 192
 //! bytes) ended before offset 192; a file of that version is still
@@ -29,7 +35,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA5` |
+//! | 0 | 8 | magic `SKYZSTA6` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -54,20 +60,24 @@
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
-//! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it; the longest such wait; the summed time of the store's call for them; the longest such call |
+//! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it (for reads, the store's reader); the longest such wait; the summed time of the store's call for them; the longest such call |
 //! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync; the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
 //! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
-//! | 536 | 112 | the worker's whole time by what it did, fourteen fields in the order: idle; the call of a read, a write, a flush (the log's sync), a discard, a write-zeroes; a step's six parts in the order above; the rule's own sync; anything else. They follow each other with no gap, so their sum is the time served |
-//! | 648 | 560 | for each kind of request, in the order above: fourteen fields, its summed wait by what the worker did meanwhile, in the order of the worker's time. A kind's fourteen add up to its summed wait |
-//! | 1208 | 40 | for each kind: of its longest wait, which of the fourteen took the largest part, as a number from 0 |
-//! | 1248 | 40 | for each kind: how long that part was |
-//! | 1288 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
-//! | 1312 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the store's completion being ready to the commit; the longest |
-//! | 1336 | 24 | the same for every other request |
-//! | 1360 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
-//! | 1384 | 8 | the completions that were committed behind those stores |
-//! | 1392 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
-//! | 1408 | 16 | the same for every other request |
+//! | 536 | 120 | the worker's whole time by what it did, fifteen fields in the order: idle; the call of a read (none since the reads have a reader of their own), a write, a flush (the log's sync), a discard, a write-zeroes; a step's six parts in the order above; the rule's own sync; anything else; a step waiting at one of its two barriers for the readers under way. They follow each other with no gap, so their sum is the time served |
+//! | 656 | 600 | for each kind of request, in the order above: fifteen fields, its summed wait by what was done meanwhile, in the order of the worker's time. A kind's fifteen add up to its summed wait. For reads it is what the reader did: idle (its wake-up), the calls of reads before it, anything else; the other twelve are zero |
+//! | 1256 | 40 | for each kind: of its longest wait, which of the fifteen took the largest part, as a number from 0 |
+//! | 1296 | 40 | for each kind: how long that part was |
+//! | 1336 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
+//! | 1360 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the store's completion being ready to the commit; the longest |
+//! | 1384 | 24 | the same for every other request |
+//! | 1408 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
+//! | 1432 | 8 | the completions that were committed behind those stores |
+//! | 1440 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
+//! | 1456 | 16 | the same for every other request |
+//! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
+//! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
+//! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
+//! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's fifteen activities sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -119,8 +129,12 @@ use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA5";
-const LEN: usize = 1424;
+const MAGIC: &[u8; 8] = b"SKYZSTA6";
+const LEN: usize = 1584;
+/// The fifth version: fourteen activities, and nothing from the
+/// barriers on.
+const FIFTH_MAGIC: &[u8; 8] = b"SKYZSTA5";
+const FIFTH_LEN: usize = 1424;
 /// The fourth version: without the times from offset 200 on.
 const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
 const FOURTH_LEN: usize = 200;
@@ -197,6 +211,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_worker_step_end_ns",
     "time_worker_own_sync_ns",
     "time_worker_other_ns",
+    "time_worker_step_barrier_ns",
     "time_read_wait_by_idle_ns",
     "time_read_wait_by_read_ns",
     "time_read_wait_by_write_ns",
@@ -211,6 +226,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_read_wait_by_step_end_ns",
     "time_read_wait_by_own_sync_ns",
     "time_read_wait_by_other_ns",
+    "time_read_wait_by_step_barrier_ns",
     "time_write_wait_by_idle_ns",
     "time_write_wait_by_read_ns",
     "time_write_wait_by_write_ns",
@@ -225,6 +241,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_write_wait_by_step_end_ns",
     "time_write_wait_by_own_sync_ns",
     "time_write_wait_by_other_ns",
+    "time_write_wait_by_step_barrier_ns",
     "time_flush_wait_by_idle_ns",
     "time_flush_wait_by_read_ns",
     "time_flush_wait_by_write_ns",
@@ -239,6 +256,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_flush_wait_by_step_end_ns",
     "time_flush_wait_by_own_sync_ns",
     "time_flush_wait_by_other_ns",
+    "time_flush_wait_by_step_barrier_ns",
     "time_discard_wait_by_idle_ns",
     "time_discard_wait_by_read_ns",
     "time_discard_wait_by_write_ns",
@@ -253,6 +271,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_discard_wait_by_step_end_ns",
     "time_discard_wait_by_own_sync_ns",
     "time_discard_wait_by_other_ns",
+    "time_discard_wait_by_step_barrier_ns",
     "time_zeroes_wait_by_idle_ns",
     "time_zeroes_wait_by_read_ns",
     "time_zeroes_wait_by_write_ns",
@@ -267,6 +286,7 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_zeroes_wait_by_step_end_ns",
     "time_zeroes_wait_by_own_sync_ns",
     "time_zeroes_wait_by_other_ns",
+    "time_zeroes_wait_by_step_barrier_ns",
     "time_read_longest_wait_cause",
     "time_write_longest_wait_cause",
     "time_flush_longest_wait_cause",
@@ -294,6 +314,20 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_pump_taken_read_max_ns",
     "time_pump_taken_other_ns",
     "time_pump_taken_other_max_ns",
+    "time_barrier_home_count",
+    "time_barrier_home_ns",
+    "time_barrier_home_max_ns",
+    "time_barrier_reuse_count",
+    "time_barrier_reuse_ns",
+    "time_barrier_reuse_max_ns",
+    "time_reader_idle_ns",
+    "time_reader_read_ns",
+    "time_reader_other_ns",
+    "time_read_unflushed_count",
+    "time_read_unflushed_extra_bytes",
+    "time_read_unflushed_mismatched",
+    "time_worker_as_of_ns",
+    "time_reader_as_of_ns",
 ];
 
 /// What the file holds.
@@ -474,11 +508,11 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 153;
+const TIME_FIELDS: usize = 173;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
-const CAUSE_FIELDS: std::ops::Range<usize> = 126..131;
+const CAUSE_FIELDS: std::ops::Range<usize> = 132..137;
 
 /// The times in the file's order: see the table at the top.
 fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
@@ -541,12 +575,23 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
         put(spent.sum_ns);
         put(spent.max_ns);
     }
+    for spent in [timing.barrier_home, timing.barrier_reuse] {
+        put(spent.count);
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
+    for value in timing.reader.iter().chain(&timing.read_unflushed) {
+        put(*value);
+    }
+    put(timing.worker_as_of_ns);
+    put(timing.reader_as_of_ns);
     fields
 }
 
-/// The pump's times of a file of the fifth version.
-fn pump_at(bytes: &[u8]) -> PumpTiming {
-    let mut at = 1288;
+/// The pump's times of a file of the sixth version, or of the fifth.
+fn pump_at(bytes: &[u8], fifth: bool) -> PumpTiming {
+    let base = if fifth { 1288 } else { 1336 };
+    let mut at = base;
     let mut spent = || {
         let fields = [
             u64_at(bytes, at),
@@ -571,18 +616,21 @@ fn pump_at(bytes: &[u8]) -> PumpTiming {
         to_submit,
         read_to_commit,
         other_to_commit,
-        read_to_taken: taken(1392, read_to_commit.count),
-        other_to_taken: taken(1408, other_to_commit.count),
+        read_to_taken: taken(base + 104, read_to_commit.count),
+        other_to_taken: taken(base + 120, other_to_commit.count),
         store,
-        behind_store: u64_at(bytes, 1384),
+        behind_store: u64_at(bytes, base + 96),
     }
 }
 
-/// The times of a file of the fifth version. What the file does not
-/// hold is filled in where another field says it (the count of a
-/// request's calls is that of its waits) and left zero where none
-/// does (how many batches a step's parts were measured over).
-fn timing_at(bytes: &[u8]) -> Timing {
+/// The times of a file of the sixth version, or of the fifth. What the
+/// file does not hold is filled in where another field says it (the
+/// count of a request's calls is that of its waits) and left zero
+/// where none does (how many batches a step's parts were measured
+/// over; in the fifth version, the fifteenth activity and everything
+/// from the barriers on).
+fn timing_at(bytes: &[u8], fifth: bool) -> Timing {
+    let activities = if fifth { 14 } else { ACTIVITIES.len() };
     let mut at = 200;
     let mut take = || {
         let value = u64_at(bytes, at);
@@ -621,11 +669,13 @@ fn timing_at(bytes: &[u8]) -> Timing {
         sum_ns: take(),
         max_ns: take(),
     };
-    for value in &mut timing.worker {
+    for value in &mut timing.worker[..activities] {
         *value = take();
     }
-    for value in timing.wait_by.iter_mut().flatten() {
-        *value = take();
+    for kind in &mut timing.wait_by {
+        for value in &mut kind[..activities] {
+            *value = take();
+        }
     }
     for value in &mut timing.longest_wait_cause {
         *value = take();
@@ -633,11 +683,37 @@ fn timing_at(bytes: &[u8]) -> Timing {
     for value in &mut timing.longest_wait_cause_ns {
         *value = take();
     }
+    if !fifth {
+        let mut at = 1472;
+        let mut take = || {
+            let value = u64_at(bytes, at);
+            at += 8;
+            value
+        };
+        for barrier in [&mut timing.barrier_home, &mut timing.barrier_reuse] {
+            *barrier = Spent {
+                count: take(),
+                sum_ns: take(),
+                max_ns: take(),
+            };
+        }
+        for value in timing
+            .reader
+            .iter_mut()
+            .chain(timing.read_unflushed.iter_mut())
+        {
+            *value = take();
+        }
+        timing.worker_as_of_ns = take();
+        timing.reader_as_of_ns = take();
+    }
     timing
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let fifth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let sixth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let only_fifth = bytes.len() == FIFTH_LEN && &bytes[..8] == FIFTH_MAGIC;
+    let fifth = sixth || only_fifth;
     let fourth = fifth || (bytes.len() == FOURTH_LEN && &bytes[..8] == FOURTH_MAGIC);
     let third = bytes.len() == THIRD_LEN && &bytes[..8] == THIRD_MAGIC;
     let second = bytes.len() == SECOND_LEN && &bytes[..8] == SECOND_MAGIC;
@@ -655,8 +731,8 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             } else {
                 ZeroesShown::Unsaid
             },
-            timing: fifth.then(|| timing_at(bytes)),
-            pump: fifth.then(|| pump_at(bytes)),
+            timing: fifth.then(|| timing_at(bytes, only_fifth)),
+            pump: fifth.then(|| pump_at(bytes, only_fifth)),
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
