@@ -218,6 +218,8 @@ impl Positions for FakeTarget {
 struct FakeAck {
     events: Events,
     fail: Rc<Cell<bool>>,
+    /// How long a store takes.
+    slow: Rc<Cell<std::time::Duration>>,
 }
 
 impl AckRecord for FakeAck {
@@ -225,6 +227,7 @@ impl AckRecord for FakeAck {
         if self.fail.get() {
             return Err(io::Error::other("the record cannot be written"));
         }
+        std::thread::sleep(self.slow.get());
         self.events.borrow_mut().push(Event::Stored(position));
         Ok(())
     }
@@ -234,6 +237,7 @@ struct Rig {
     pump: Pump<FakeQueue, FakeTarget, FakeAck>,
     events: Events,
     ack_fails: Rc<Cell<bool>>,
+    ack_slow: Rc<Cell<std::time::Duration>>,
 }
 
 impl Rig {
@@ -264,14 +268,17 @@ impl Rig {
             goes_at_poll: false,
             most: 0,
         };
+        let ack_slow = Rc::new(Cell::new(std::time::Duration::ZERO));
         let ack = FakeAck {
             events: events.clone(),
             fail: ack_fails.clone(),
+            slow: ack_slow.clone(),
         };
         Rig {
             pump: Pump::new(queue, target, ack).with_mutants(mutants),
             events,
             ack_fails,
+            ack_slow,
         }
     }
 
@@ -854,6 +861,43 @@ fn the_acknowledged_position_is_stored_before_the_completions_are_committed() {
         expect(stored(&rig), vec![8192, 12288], "never back")
     }
     caught(scenario, Mutants::STORE_AFTER_COMMIT);
+}
+
+/// The pump's own times. A read that completes in a batch with a
+/// write is committed behind the storing of the write's position: with
+/// a record that takes 30 ms to store, the read's time from finished
+/// to committed holds those 30 ms, the store is counted once with its
+/// time, and both completions are counted behind it. A read alone
+/// waits for no store.
+#[test]
+fn a_read_committed_with_a_write_waits_for_the_position_to_be_stored() {
+    const SLOW: std::time::Duration = std::time::Duration::from_millis(30);
+    let ns = SLOW.as_nanos() as u64;
+    let mut rig = Rig::new(0, 8, 8);
+    rig.ack_slow.set(SLOW);
+    rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
+    rig.complete(0, Some(4096));
+    rig.complete(1, None);
+    rig.turn();
+    assert_eq!(rig.committed().len(), 2);
+    let timing = rig.pump.timing();
+    assert_eq!(timing.to_submit.count, 2, "{timing:?}");
+    assert_eq!(timing.store.count, 1, "{timing:?}");
+    assert!(timing.store.sum_ns >= ns, "{timing:?}");
+    assert_eq!(timing.behind_store, 2, "{timing:?}");
+    assert_eq!(timing.read_to_commit.count, 1, "{timing:?}");
+    assert!(timing.read_to_commit.sum_ns >= ns, "{timing:?}");
+    assert_eq!(timing.other_to_commit.count, 1, "{timing:?}");
+    assert!(timing.other_to_commit.sum_ns >= ns, "{timing:?}");
+    // A read alone: no store, and its commit does not wait for one.
+    rig.fetch(&[request(2, op::READ, 0, 0, 1)]);
+    rig.complete(2, None);
+    rig.turn();
+    let after = rig.pump.timing();
+    assert_eq!(after.store, timing.store, "{after:?}");
+    assert_eq!(after.behind_store, 2, "{after:?}");
+    assert_eq!(after.read_to_commit.count, 2, "{after:?}");
+    assert_eq!(after.read_to_commit.max_ns, timing.read_to_commit.max_ns);
 }
 
 /// What was acknowledged (§4.2): if the position cannot be stored, the

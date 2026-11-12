@@ -185,6 +185,14 @@ pub trait Positions: BlockTarget {
     /// Whether the target can no longer complete anything: the thread
     /// that executes its requests has ended.
     fn gone(&self) -> bool;
+
+    /// When the target had the completion of request `id` ready, for a
+    /// completion the last poll returned, if the target says: the pump
+    /// then counts a completion's wait from there and not from when it
+    /// took the completion.
+    fn ready_at(&self, _id: RequestId) -> Option<Instant> {
+        None
+    }
 }
 
 /// Where the position of the newest acknowledged record is kept (design
@@ -267,10 +275,13 @@ pub struct PumpTiming {
     /// waited in the kernel before the pump's thread came back to the
     /// queue is before this and in no number.
     pub to_submit: Spent,
-    /// Reads: from the pump learning that the request is finished (the
-    /// target's completion taken, or the request refused) to its
-    /// commit to the queue. A commit waits for the acknowledged
-    /// position to be stored if a mutation completed with it.
+    /// Reads: from the request being finished to its commit to the
+    /// queue. Finished is when the target had the completion ready, if
+    /// the target says so (the store does: the end of its call), else
+    /// when the pump took the completion or refused the request. So it
+    /// holds the time until the pump's thread came to take the
+    /// completion, and the storing of the acknowledged position if a
+    /// mutation completed in the same batch: a commit waits for that.
     pub read_to_commit: Spent,
     /// The same for every other request.
     pub other_to_commit: Spent,
@@ -400,6 +411,8 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     timing: PumpTiming,
     /// By tag.
     stamps: Vec<Stamp>,
+    /// When the target had the completion ready that is being taken.
+    ready: Option<Instant>,
     mutants: Mutants,
 }
 
@@ -434,6 +447,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             counters: Counters::default(),
             timing: PumpTiming::default(),
             stamps,
+            ready: None,
             mutants: Mutants::default(),
         }
     }
@@ -837,6 +851,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         let Completion { id, result, buf } = completion;
         let tag = (id.0 & (FLUSH_ID - 1)) as u16;
         let is_flush = id.0 & FLUSH_ID != 0;
+        self.ready = self.target.ready_at(id);
         let Some(slot) = self.slots.get_mut(usize::from(tag)) else {
             return Err(Stopped::TargetFault);
         };
@@ -882,8 +897,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             drop(buf);
             return;
         }
+        let ready = self.ready.take();
         let stamp = &mut self.stamps[usize::from(tag)];
-        stamp.finished = Instant::now();
+        stamp.finished = ready.unwrap_or_else(Instant::now);
         stamp.read = matches!(plan.action, Action::Read { .. });
         self.finished
             .push((tag, self.translator.result(plan, outcome), buf));
@@ -943,6 +959,10 @@ impl Positions for skyzfs_local::store::Served {
 
     fn gone(&self) -> bool {
         skyzfs_local::store::Served::gone(self)
+    }
+
+    fn ready_at(&self, id: RequestId) -> Option<Instant> {
+        skyzfs_local::store::Served::ready_at(self, id)
     }
 }
 

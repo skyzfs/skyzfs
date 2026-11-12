@@ -857,6 +857,7 @@ impl<D: Dir> Core<D> {
             return Ok(floor);
         }
         let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        let walk_began = Instant::now();
         let ends = if per_unit <= 1 {
             vec![target]
         } else {
@@ -865,6 +866,7 @@ impl<D: Dir> Core<D> {
                 Err(()) => return Err(self.fail()),
             }
         };
+        self.walked(walk_began);
         let mut start = floor;
         for end in ends {
             let (reached, cut) = self.apply(start, end, limit, hold)?;
@@ -902,6 +904,8 @@ impl<D: Dir> Core<D> {
             return Ok(nothing);
         }
         let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        // The step's first part: reading the log to choose the batch.
+        let walk_began = Instant::now();
         let mut end = target;
         let (mut saved, mut records, mut payload) = (0u64, 0u64, 0u64);
         let free_zeroes = !self.mutants.has(Mutants::ZEROES_WRITTEN)
@@ -946,6 +950,7 @@ impl<D: Dir> Core<D> {
         if scanned.is_err() {
             return Err(self.fail());
         }
+        self.walked(walk_began);
         let (start, cut) = self.apply(floor, end, limit, hold)?;
         // A step that ended early, at the record where the file system
         // first refused to deallocate, says what it took.
@@ -995,6 +1000,14 @@ impl<D: Dir> Core<D> {
     fn at_the_high_mark(&self) -> bool {
         let live = self.log.tail().0 - self.log.floor().0;
         !self.failed && self.marks.is_some_and(|marks| live >= marks.high)
+    }
+
+    /// The walk of the log that chose a batch, or a checkpoint's
+    /// batches, is over: it began at `began`.
+    fn walked(&mut self, began: Instant) {
+        let ended = Instant::now();
+        self.timing.step_walk.add(ended - began);
+        self.part(began, ended, Activity::STEP_WALK);
     }
 
     /// Note a part of a batch for the worker, if there is one.
@@ -1261,6 +1274,11 @@ impl<D: Dir> Core<D> {
         } else {
             self.index.drop_below(start);
         }
+        // The batch's last part: the index lets go of what is now in
+        // the home image.
+        let ended_at = Instant::now();
+        self.timing.step_end.add(ended_at - started_at);
+        self.part(started_at, ended_at, Activity::STEP_END);
         Ok((start, cut))
     }
 }
@@ -1626,32 +1644,35 @@ impl Activity {
     const fn call(kind: usize) -> usize {
         1 + kind
     }
-    const STEP_SAVE: usize = 6;
-    const STEP_APPLY: usize = 7;
-    const STEP_HOME_SYNC: usize = 8;
-    const STEP_LOG_START: usize = 9;
-    const OWN_SYNC: usize = 10;
-    /// Everything else: the loop's own work between two of the above,
-    /// a step's reading of the log before its first part, commands
-    /// that are no request.
-    const OTHER: usize = 11;
+    const STEP_WALK: usize = 6;
+    const STEP_SAVE: usize = 7;
+    const STEP_APPLY: usize = 8;
+    const STEP_HOME_SYNC: usize = 9;
+    const STEP_LOG_START: usize = 10;
+    const STEP_END: usize = 11;
+    const OWN_SYNC: usize = 12;
+    /// Everything else: the loop's own work between two of the above
+    /// and commands that are no request.
+    const OTHER: usize = 13;
 }
 
 /// The names of what a worker can be doing, in the order of
 /// [`Timing::worker`]: idle; the call of a read, a write, a flush (the
-/// log's sync), a discard, a write-zeroes; the four parts of a step
+/// log's sync), a discard, a write-zeroes; the six parts of a step
 /// and the rule's own sync of the log; anything else.
-pub const ACTIVITIES: [&str; 12] = [
+pub const ACTIVITIES: [&str; 14] = [
     "idle",
     "read",
     "write",
     "flush",
     "discard",
     "zeroes",
+    "step_walk",
     "step_save",
     "step_apply",
     "step_home_sync",
     "step_log_start",
+    "step_end",
     "own_sync",
     "other",
 ];
@@ -1714,8 +1735,8 @@ impl Spans {
     /// activity, in nanoseconds. The oldest span that is kept is taken
     /// to reach back as far as `from`: its begin was forgotten because
     /// no request that waits was submitted before it.
-    fn between(&self, from: Instant) -> [u64; 12] {
-        let mut by = [0u64; 12];
+    fn between(&self, from: Instant) -> [u64; 14] {
+        let mut by = [0u64; 14];
         for at in (0..self.spans.len()).rev() {
             let (end, activity) = self.spans[at];
             if end <= from {
@@ -1771,7 +1792,7 @@ pub struct RequestTiming {
 /// in the store reads it.
 ///
 /// The cost is one read of the monotonic clock per boundary: three per
-/// request (its submission, its begin, its end), five per batch of a
+/// request (its submission, its begin, its end), eight per batch of a
 /// checkpoint, two per sync of the rule's own, two per turn of the
 /// worker at the gate, and two around each wait for a request. What
 /// the worker did is kept as one entry per span in a queue that is
@@ -1785,40 +1806,43 @@ pub struct Timing {
     /// By kind, in the order of [`TIMED_KINDS`]. Requests that
     /// completed, whatever their result. A served store only.
     pub requests: [RequestTiming; 5],
-    /// Batches applied by a checkpoint (every step is one; an explicit
-    /// checkpoint's batches count too), first part: saving the
-    /// neighbours of what the batch writes, with that file's sync.
+    /// The parts of a checkpoint's batch, which follow each other:
+    /// every step is one batch (an explicit checkpoint's batches count
+    /// too, and so does one a write makes inside its own call to make
+    /// room). First: reading the log to choose the batch. For an
+    /// explicit checkpoint this is one walk for all its batches.
+    pub step_walk: Spent,
+    /// Saving the neighbours of what the batch writes, with that
+    /// file's sync.
     pub step_save: Spent,
-    /// Second part: writing and deallocating in the home image.
+    /// Writing and deallocating in the home image.
     pub step_apply: Spent,
-    /// Third part: the home image's sync.
+    /// The home image's sync.
     pub step_home_sync: Spent,
-    /// Fourth part: the log's new start, written and made durable.
+    /// The log's new start, written and made durable.
     pub step_start: Spent,
+    /// The index letting go of what is now in the home image.
+    pub step_end: Spent,
     /// The rule's own syncs of the log, before a step that found too
-    /// little of the log durable. Not part of the four above.
+    /// little of the log durable. Not part of the six above.
     pub step_own_sync: Spent,
     /// Turns of the worker in which a request was waiting and none
     /// was taken because the log was at the high mark: the time of
-    /// the step taken in that turn (its own sync included).
+    /// the step taken in that turn (its own sync included). This
+    /// overlaps the parts above: it is a share of them, not more time.
     pub gate: Spent,
-    /// Requests that began after a step that ended while they waited:
-    /// their whole wait.
-    pub behind_step: Spent,
-    /// The reads among them.
-    pub reads_behind_step: Spent,
     /// The worker's whole time since it started, by what it did, in
     /// nanoseconds and in the order of [`ACTIVITIES`], idle included:
     /// the spans follow each other with no gap, so the sum is the time
     /// served, and one entry over the sum is the share of the worker's
     /// time that went there.
-    pub worker: [u64; 12],
+    pub worker: [u64; 14],
     /// For each kind of request ([`TIMED_KINDS`]): the summed waits of
     /// [`RequestTiming::wait`] by what the worker did meanwhile
     /// ([`ACTIVITIES`]). Each request's wait is laid over the worker's
     /// spans, so a row's sum is that kind's summed wait. "Idle" here is
     /// the time the worker took to wake for a request.
-    pub wait_by: [[u64; 12]; 5],
+    pub wait_by: [[u64; 14]; 5],
     /// For each kind: of its longest wait, the activity that took the
     /// largest part of it, as a number into [`ACTIVITIES`].
     pub longest_wait_cause: [u64; 5],
@@ -2506,6 +2530,12 @@ impl<D: Dir> Store<D> {
         self.core.tend(&mut || {})
     }
 
+    /// Where the time of the checkpoint's batches went: see [`Timing`].
+    /// A store that is not served times nothing else.
+    pub fn timing(&self) -> Timing {
+        self.core.timing
+    }
+
     /// The log's start, end and durable position, and the steps taken.
     pub fn log_state(&self) -> LogState {
         self.core.log_state()
@@ -2732,7 +2762,10 @@ pub struct Served {
     geometry: Geometry,
     identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
-    completions: mpsc::Receiver<(Completion, Option<Lsn>)>,
+    completions: mpsc::Receiver<(Completion, Option<Lsn>, Instant)>,
+    /// When the worker had each completion of the last
+    /// [`BlockTarget::poll`] or [`BlockTarget::wait`] ready.
+    ready: Vec<(RequestId, Instant)>,
     ids: BTreeSet<RequestId>,
     acknowledged: Option<Lsn>,
     /// Set by the worker as it ends, however it ends.
@@ -2782,6 +2815,10 @@ impl Shown {
     fn timing(&self) -> Timing {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).1
     }
+
+    fn both(&self) -> (LogState, Timing) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// Says that the worker has ended, when the worker's closure is left:
@@ -2827,7 +2864,7 @@ where
         let geometry = core.geometry;
         let identity = core.identity();
         let (commands, inbox) = mpsc::channel::<Command>();
-        let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>)>();
+        let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>, Instant)>();
         let ended = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(Shown::default());
         shown.publish(&core, false);
@@ -2847,15 +2884,18 @@ where
                 // or no request: at the start, for a long log that the
                 // open found, and after every step it took.
                 let mut busy = true;
-                // When each request of the queue was submitted, in the
-                // queue's order. What the open left queued counts from
-                // here.
-                let mut arrived: VecDeque<Instant> = queue.iter().map(|_| Instant::now()).collect();
+                // The requests that wait, each with the time of its
+                // submission, in one queue: a request that is put back
+                // goes back with its time. What the open left queued
+                // counts from here.
+                let served_at = Instant::now();
+                let mut queue: VecDeque<(Request, Instant)> = queue
+                    .drain(..)
+                    .map(|request| (request, served_at))
+                    .collect();
                 // What the worker did, for the waits of the requests.
                 let mut spans = Spans::new();
                 core.parts = Some(Vec::new());
-                // When the last step ended.
-                let mut step_ended: Option<Instant> = None;
                 loop {
                     shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
@@ -2877,8 +2917,7 @@ where
                     };
                     match command {
                         Some(Command::Request(request, at)) => {
-                            queue.push_back(request);
-                            arrived.push_back(at);
+                            queue.push_back((request, at));
                             continue;
                         }
                         Some(Command::Hold(hold, reply)) => {
@@ -2945,7 +2984,7 @@ where
                         }
                         // Nothing more has arrived: every request
                         // that waits is in the queue.
-                        None => spans.forget(arrived.front().copied()),
+                        None => spans.forget(queue.front().map(|(_, at)| *at)),
                     }
                     // At or above the high mark no request is executed
                     // while the rule still takes steps: `busy` says
@@ -2959,7 +2998,7 @@ where
                     let next = if held || steps_first {
                         None
                     } else {
-                        queue.pop_front().zip(arrived.pop_front())
+                        queue.pop_front()
                     };
                     if let Some((Request { id, op }, at)) = next {
                         let kind = timed_kind(&op);
@@ -2992,12 +3031,6 @@ where
                                 }
                                 timing.requests[kind].wait.add(wait);
                                 timing.requests[kind].call.add(ended - began);
-                                if step_ended.is_some_and(|ended| ended > at) {
-                                    timing.behind_step.add(wait);
-                                    if kind == 0 {
-                                        timing.reads_behind_step.add(wait);
-                                    }
-                                }
                                 let start = core.appended.take();
                                 let completion = Completion { id, result, buf };
                                 // Shown before the completion can be
@@ -3009,7 +3042,7 @@ where
                                 // once, and stayed so while nothing
                                 // else woke it.
                                 shown.publish(&core, false);
-                                if outbox.send((completion, start)).is_err() {
+                                if outbox.send((completion, start, ended)).is_err() {
                                     return;
                                 }
                                 if let Some(Waker(wake)) = &waker {
@@ -3017,8 +3050,7 @@ where
                                 }
                             }
                             Err(op) => {
-                                queue.push_front(Request { id, op });
-                                arrived.push_front(at);
+                                queue.push_front((Request { id, op }, at));
                                 held = true;
                             }
                         }
@@ -3043,12 +3075,8 @@ where
                         wake();
                     });
                     spans.take(&mut core.parts, &mut core.timing);
-                    if stepped != Ok(false) {
-                        let now = Instant::now();
-                        step_ended = Some(now);
-                        if let Some(turn) = turn {
-                            core.timing.gate.add(now - turn);
-                        }
+                    if let Some(turn) = turn.filter(|_| stepped != Ok(false)) {
+                        core.timing.gate.add(turn.elapsed());
                     }
                     busy = stepped == Ok(true);
                     // `begun` is a safeguard and cannot decide today: the
@@ -3077,6 +3105,7 @@ where
             identity,
             commands: Some(commands),
             completions,
+            ready: Vec::new(),
             ids,
             acknowledged,
             ended,
@@ -3109,6 +3138,25 @@ impl Served {
     /// the worker nothing and returns at once.
     pub fn timing(&self) -> Timing {
         self.log.timing()
+    }
+
+    /// When the worker had the completion of request `id` ready: the
+    /// end of the store's call for it. Known for the completions that
+    /// the last [`BlockTarget::poll`] or [`BlockTarget::wait`]
+    /// returned, so that their taker can say how long each waited to
+    /// be taken.
+    pub fn ready_at(&self, id: RequestId) -> Option<Instant> {
+        self.ready
+            .iter()
+            .find(|(ready, _)| *ready == id)
+            .map(|(_, at)| *at)
+    }
+
+    /// The log's state and the times of one moment: what the worker
+    /// showed together. Two calls, one for each, can be a request
+    /// apart.
+    pub fn shown(&self) -> (LogState, Timing) {
+        self.log.both()
     }
 
     /// Set or release the hold: see [`Store::set_hold`]. It takes
@@ -3188,8 +3236,9 @@ impl Served {
         }
     }
 
-    fn took(&mut self, taken: (Completion, Option<Lsn>), out: &mut Vec<Completion>) {
-        let (completion, start) = taken;
+    fn took(&mut self, taken: (Completion, Option<Lsn>, Instant), out: &mut Vec<Completion>) {
+        let (completion, start, ready) = taken;
+        self.ready.push((completion.id, ready));
         self.ids.remove(&completion.id);
         if let Some(start) = start {
             self.acknowledged = Some(start);
@@ -3247,6 +3296,7 @@ impl BlockTarget for Served {
 
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
         let mut taken = 0;
+        self.ready.clear();
         while let Ok(completion) = self.completions.try_recv() {
             self.took(completion, out);
             taken += 1;

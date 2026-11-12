@@ -451,29 +451,29 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 }
 
 /// The store's times as the status file holds them: the file keeps no
-/// count of the batches a step's parts were measured over and no
-/// longest wait behind a step, so those are left out here as a reader
-/// of the file finds them.
+/// count of the batches a step's parts were measured over, so those
+/// are left out here as a reader of the file finds them.
 fn shown_timing(mut timing: skyzfs_local::store::Timing) -> skyzfs_local::store::Timing {
     for part in [
+        &mut timing.step_walk,
         &mut timing.step_save,
         &mut timing.step_apply,
         &mut timing.step_home_sync,
         &mut timing.step_start,
+        &mut timing.step_end,
         &mut timing.step_own_sync,
     ] {
         part.count = 0;
     }
-    timing.behind_step.max_ns = 0;
-    timing.reads_behind_step.max_ns = 0;
     timing
 }
 
 /// The store's log state and times as the status file shows them.
 fn log_shown(served: &skyzfs_local::store::Served) -> LogShown {
-    let log = &served.log_state();
+    // The state and the times of one moment.
+    let (log, timing) = &served.shown();
     LogShown {
-        timing: Some(shown_timing(served.timing())),
+        timing: Some(shown_timing(*timing)),
         pump: None,
         live: log.live(),
         steps: log.steps,

@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1296
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1392
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -55,19 +55,17 @@
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
 //! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
 //! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it; the longest such wait; the summed time of the store's call for them; the longest such call |
-//! | 400 | 80 | the checkpoint steps' times, a sum and a longest for each part in the order: saving the neighbours of what a step writes; writing and deallocating in the home image; the home image's sync; the log's new start; the rule's own sync of the log before a step (`checkpoint_syncs` counts those) |
-//! | 480 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns; the longest |
-//! | 504 | 16 | the requests that began after a step that ended while they waited: how many, and their summed wait |
-//! | 520 | 16 | the reads among them: how many, and their summed wait |
-//! | 536 | 96 | the worker's whole time by what it did, twelve fields in the order: idle; the call of a read, a write, a flush (the log's sync), a discard, a write-zeroes; a step's four parts in the order above; the rule's own sync; anything else. They follow each other with no gap, so their sum is the time served |
-//! | 632 | 480 | for each kind of request, in the order above: twelve fields, its summed wait by what the worker did meanwhile, in the order of the worker's time. A kind's twelve add up to its summed wait |
-//! | 1112 | 40 | for each kind: of its longest wait, which of the twelve took the largest part, as a number from 0 |
-//! | 1152 | 40 | for each kind: how long that part was |
-//! | 1192 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
-//! | 1216 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the pump taking the completion to the commit; the longest |
-//! | 1240 | 24 | the same for every other request |
-//! | 1264 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
-//! | 1288 | 8 | the completions that were committed behind those stores |
+//! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync; the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
+//! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
+//! | 536 | 112 | the worker's whole time by what it did, fourteen fields in the order: idle; the call of a read, a write, a flush (the log's sync), a discard, a write-zeroes; a step's six parts in the order above; the rule's own sync; anything else. They follow each other with no gap, so their sum is the time served |
+//! | 648 | 560 | for each kind of request, in the order above: fourteen fields, its summed wait by what the worker did meanwhile, in the order of the worker's time. A kind's fourteen add up to its summed wait |
+//! | 1208 | 40 | for each kind: of its longest wait, which of the fourteen took the largest part, as a number from 0 |
+//! | 1248 | 40 | for each kind: how long that part was |
+//! | 1288 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
+//! | 1312 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the store's completion being ready to the commit; the longest |
+//! | 1336 | 24 | the same for every other request |
+//! | 1360 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
+//! | 1384 | 8 | the completions that were committed behind those stores |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -120,7 +118,7 @@ use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA5";
-const LEN: usize = 1296;
+const LEN: usize = 1392;
 /// The fourth version: without the times from offset 200 on.
 const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
 const FOURTH_LEN: usize = 200;
@@ -166,6 +164,8 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_zeroes_wait_max_ns",
     "time_zeroes_call_ns",
     "time_zeroes_call_max_ns",
+    "time_step_walk_ns",
+    "time_step_walk_max_ns",
     "time_step_save_ns",
     "time_step_save_max_ns",
     "time_step_apply_ns",
@@ -174,25 +174,25 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_step_home_sync_max_ns",
     "time_step_log_start_ns",
     "time_step_log_start_max_ns",
+    "time_step_end_ns",
+    "time_step_end_max_ns",
     "time_step_own_sync_ns",
     "time_step_own_sync_max_ns",
     "time_gate_count",
     "time_gate_ns",
     "time_gate_max_ns",
-    "time_behind_step_count",
-    "time_behind_step_wait_ns",
-    "time_reads_behind_step_count",
-    "time_reads_behind_step_wait_ns",
     "time_worker_idle_ns",
     "time_worker_read_ns",
     "time_worker_write_ns",
     "time_worker_flush_ns",
     "time_worker_discard_ns",
     "time_worker_zeroes_ns",
+    "time_worker_step_walk_ns",
     "time_worker_step_save_ns",
     "time_worker_step_apply_ns",
     "time_worker_step_home_sync_ns",
     "time_worker_step_log_start_ns",
+    "time_worker_step_end_ns",
     "time_worker_own_sync_ns",
     "time_worker_other_ns",
     "time_read_wait_by_idle_ns",
@@ -201,10 +201,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_read_wait_by_flush_ns",
     "time_read_wait_by_discard_ns",
     "time_read_wait_by_zeroes_ns",
+    "time_read_wait_by_step_walk_ns",
     "time_read_wait_by_step_save_ns",
     "time_read_wait_by_step_apply_ns",
     "time_read_wait_by_step_home_sync_ns",
     "time_read_wait_by_step_log_start_ns",
+    "time_read_wait_by_step_end_ns",
     "time_read_wait_by_own_sync_ns",
     "time_read_wait_by_other_ns",
     "time_write_wait_by_idle_ns",
@@ -213,10 +215,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_write_wait_by_flush_ns",
     "time_write_wait_by_discard_ns",
     "time_write_wait_by_zeroes_ns",
+    "time_write_wait_by_step_walk_ns",
     "time_write_wait_by_step_save_ns",
     "time_write_wait_by_step_apply_ns",
     "time_write_wait_by_step_home_sync_ns",
     "time_write_wait_by_step_log_start_ns",
+    "time_write_wait_by_step_end_ns",
     "time_write_wait_by_own_sync_ns",
     "time_write_wait_by_other_ns",
     "time_flush_wait_by_idle_ns",
@@ -225,10 +229,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_flush_wait_by_flush_ns",
     "time_flush_wait_by_discard_ns",
     "time_flush_wait_by_zeroes_ns",
+    "time_flush_wait_by_step_walk_ns",
     "time_flush_wait_by_step_save_ns",
     "time_flush_wait_by_step_apply_ns",
     "time_flush_wait_by_step_home_sync_ns",
     "time_flush_wait_by_step_log_start_ns",
+    "time_flush_wait_by_step_end_ns",
     "time_flush_wait_by_own_sync_ns",
     "time_flush_wait_by_other_ns",
     "time_discard_wait_by_idle_ns",
@@ -237,10 +243,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_discard_wait_by_flush_ns",
     "time_discard_wait_by_discard_ns",
     "time_discard_wait_by_zeroes_ns",
+    "time_discard_wait_by_step_walk_ns",
     "time_discard_wait_by_step_save_ns",
     "time_discard_wait_by_step_apply_ns",
     "time_discard_wait_by_step_home_sync_ns",
     "time_discard_wait_by_step_log_start_ns",
+    "time_discard_wait_by_step_end_ns",
     "time_discard_wait_by_own_sync_ns",
     "time_discard_wait_by_other_ns",
     "time_zeroes_wait_by_idle_ns",
@@ -249,10 +257,12 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_zeroes_wait_by_flush_ns",
     "time_zeroes_wait_by_discard_ns",
     "time_zeroes_wait_by_zeroes_ns",
+    "time_zeroes_wait_by_step_walk_ns",
     "time_zeroes_wait_by_step_save_ns",
     "time_zeroes_wait_by_step_apply_ns",
     "time_zeroes_wait_by_step_home_sync_ns",
     "time_zeroes_wait_by_step_log_start_ns",
+    "time_zeroes_wait_by_step_end_ns",
     "time_zeroes_wait_by_own_sync_ns",
     "time_zeroes_wait_by_other_ns",
     "time_read_longest_wait_cause",
@@ -458,11 +468,11 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 137;
+const TIME_FIELDS: usize = 149;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
-const CAUSE_FIELDS: std::ops::Range<usize> = 114..119;
+const CAUSE_FIELDS: std::ops::Range<usize> = 126..131;
 
 /// The times in the file's order: see the table at the top.
 fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
@@ -484,10 +494,12 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
         }
     }
     for part in [
+        timing.step_walk,
         timing.step_save,
         timing.step_apply,
         timing.step_home_sync,
         timing.step_start,
+        timing.step_end,
         timing.step_own_sync,
     ] {
         put(part.sum_ns);
@@ -496,10 +508,6 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
     put(timing.gate.count);
     put(timing.gate.sum_ns);
     put(timing.gate.max_ns);
-    put(timing.behind_step.count);
-    put(timing.behind_step.sum_ns);
-    put(timing.reads_behind_step.count);
-    put(timing.reads_behind_step.sum_ns);
     for value in timing.worker {
         put(value);
     }
@@ -528,7 +536,7 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
 
 /// The pump's times of a file of the fifth version.
 fn pump_at(bytes: &[u8]) -> PumpTiming {
-    let mut at = 1192;
+    let mut at = 1288;
     let mut spent = || {
         let fields = [
             u64_at(bytes, at),
@@ -547,15 +555,14 @@ fn pump_at(bytes: &[u8]) -> PumpTiming {
         read_to_commit: spent(),
         other_to_commit: spent(),
         store: spent(),
-        behind_store: u64_at(bytes, 1288),
+        behind_store: u64_at(bytes, 1384),
     }
 }
 
 /// The times of a file of the fifth version. What the file does not
 /// hold is filled in where another field says it (the count of a
 /// request's calls is that of its waits) and left zero where none
-/// does (how many batches a step's parts were measured over; the
-/// longest wait behind a step).
+/// does (how many batches a step's parts were measured over).
 fn timing_at(bytes: &[u8]) -> Timing {
     let mut at = 200;
     let mut take = || {
@@ -583,25 +590,17 @@ fn timing_at(bytes: &[u8]) -> Timing {
         sum_ns: take(),
         max_ns: take(),
     };
+    timing.step_walk = part();
     timing.step_save = part();
     timing.step_apply = part();
     timing.step_home_sync = part();
     timing.step_start = part();
+    timing.step_end = part();
     timing.step_own_sync = part();
     timing.gate = Spent {
         count: take(),
         sum_ns: take(),
         max_ns: take(),
-    };
-    timing.behind_step = Spent {
-        count: take(),
-        sum_ns: take(),
-        max_ns: 0,
-    };
-    timing.reads_behind_step = Spent {
-        count: take(),
-        sum_ns: take(),
-        max_ns: 0,
     };
     for value in &mut timing.worker {
         *value = take();

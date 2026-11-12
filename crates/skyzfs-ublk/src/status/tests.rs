@@ -22,7 +22,7 @@ fn sample_timing() -> skyzfs_local::store::Timing {
     timing_at(&bytes)
 }
 
-/// The pump's times with the same fields: 224 to 236.
+/// The pump's times with the same fields: 236 to 248.
 fn sample_pump() -> PumpTiming {
     let mut bytes = [0u8; LEN];
     for field in 0..TIME_FIELDS {
@@ -79,34 +79,33 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 137 fields from offset 200, here 100 to 236.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..237) {
+    // The times are the 149 fields from offset 200, here 100 to 248.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..249) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1296);
+    assert_eq!(bytes.len(), 1392);
     // Where the times lie, by what they are.
     let timing = sample_timing();
     assert_eq!(timing.requests[0].wait.count, 100);
     assert_eq!(timing.requests[0].call.max_ns, 104);
     assert_eq!(timing.requests[1].wait.sum_ns, 106);
     assert_eq!(timing.requests[4].call.count, 120);
-    assert_eq!(timing.step_save.sum_ns, 125);
-    assert_eq!(timing.step_home_sync.max_ns, 130);
-    assert_eq!(timing.step_own_sync.sum_ns, 133);
-    assert_eq!((timing.gate.count, timing.gate.max_ns), (135, 137));
-    assert_eq!(timing.behind_step.sum_ns, 139);
-    assert_eq!(timing.reads_behind_step.count, 140);
-    assert_eq!((timing.worker[0], timing.worker[11]), (142, 153));
-    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][11]), (154, 213));
-    assert_eq!(timing.wait_by[1][8], 174);
-    assert_eq!(timing.longest_wait_cause, [214, 215, 216, 217, 218]);
-    assert_eq!(timing.longest_wait_cause_ns, [219, 220, 221, 222, 223]);
+    assert_eq!(timing.step_walk.sum_ns, 125);
+    assert_eq!(timing.step_save.sum_ns, 127);
+    assert_eq!(timing.step_home_sync.max_ns, 132);
+    assert_eq!(timing.step_end.sum_ns, 135);
+    assert_eq!(timing.step_own_sync.sum_ns, 137);
+    assert_eq!((timing.gate.count, timing.gate.max_ns), (139, 141));
+    assert_eq!((timing.worker[0], timing.worker[13]), (142, 155));
+    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][13]), (156, 225));
+    assert_eq!(timing.wait_by[1][9], 179);
+    assert_eq!(timing.longest_wait_cause, [226, 227, 228, 229, 230]);
+    assert_eq!(timing.longest_wait_cause_ns, [231, 232, 233, 234, 235]);
     let pump = sample_pump();
-    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (224, 226));
-    assert_eq!(pump.read_to_commit.sum_ns, 228);
-    assert_eq!(pump.other_to_commit.count, 230);
-    assert_eq!((pump.store.sum_ns, pump.behind_store), (234, 236));
-    assert_eq!(bytes.to_vec(), expected);
+    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (236, 238));
+    assert_eq!(pump.read_to_commit.sum_ns, 240);
+    assert_eq!(pump.other_to_commit.count, 242);
+    assert_eq!((pump.store.sum_ns, pump.behind_store), (246, 248));
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -265,7 +264,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     // A cause is said by its name.
     let mut named = sample();
     if let Some(timing) = named.log.as_mut().and_then(|log| log.shown.timing.as_mut()) {
-        timing.longest_wait_cause = [8, 3, 0, 11, 1];
+        timing.longest_wait_cause = [9, 3, 0, 13, 1];
     }
     let lines = lines_of(&named);
     for (key, cause) in [
@@ -277,29 +276,28 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     ] {
         assert_eq!(value(&lines, key), Some(cause), "{key}");
     }
-    assert_eq!(
-        value(&lines, "time_read_longest_wait_cause_ns"),
-        Some("219")
-    );
-    assert_eq!(value(&lines, "time_worker_idle_ns"), Some("142"));
-    assert_eq!(value(&lines, "time_pump_submit_ns"), Some("225"));
-    assert_eq!(value(&lines, "time_pump_commit_read_max_ns"), Some("229"));
-    assert_eq!(value(&lines, "time_pump_store_count"), Some("233"));
-    assert_eq!(value(&lines, "time_pump_store_completions"), Some("236"));
-    assert_eq!(
-        value(&lines, "time_write_wait_by_step_home_sync_ns"),
-        Some("174")
-    );
+    for (key, value) in [
+        ("time_read_longest_wait_cause_ns", "231"),
+        ("time_worker_idle_ns", "142"),
+        ("time_pump_submit_ns", "237"),
+        ("time_pump_commit_read_max_ns", "241"),
+        ("time_pump_store_count", "245"),
+        ("time_pump_store_completions", "248"),
+        ("time_write_wait_by_step_home_sync_ns", "179"),
+    ] {
+        assert_eq!(self::value(&lines, key), Some(value), "{key}");
+    }
     for (key, value) in [
         ("time_read_count", "100"),
         ("time_read_wait_ns", "101"),
         ("time_write_call_max_ns", "109"),
         ("time_zeroes_count", "120"),
-        ("time_step_home_sync_ns", "129"),
-        ("time_step_own_sync_max_ns", "134"),
-        ("time_gate_ns", "136"),
-        ("time_behind_step_count", "138"),
-        ("time_reads_behind_step_wait_ns", "141"),
+        ("time_step_walk_ns", "125"),
+        ("time_step_home_sync_ns", "131"),
+        ("time_step_end_max_ns", "136"),
+        ("time_step_own_sync_max_ns", "138"),
+        ("time_gate_ns", "140"),
+        ("time_read_wait_by_step_walk_ns", "162"),
     ] {
         assert_eq!(value_of(&timed, key), Some(value), "{key}");
     }

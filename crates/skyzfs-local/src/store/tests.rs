@@ -4073,17 +4073,24 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
         "{timing:?}"
     );
     assert_eq!(read.wait.max_ns, read.wait.sum_ns);
-    // It waited for a step, and it is the only request.
-    assert_eq!(timing.behind_step, read.wait, "{timing:?}");
-    assert_eq!(timing.reads_behind_step, read.wait, "{timing:?}");
+    // It is the only request.
     for kind in 1..5 {
         assert_eq!(timing.requests[kind], RequestTiming::default());
     }
     // The step that was held: its time is in the part behind the
     // writes, and nowhere else.
     assert!(timing.step_home_sync.max_ns >= ns(HELD), "{timing:?}");
-    for part in [timing.step_save, timing.step_apply, timing.step_start] {
-        assert!(part.max_ns < ns(HELD), "{timing:?}");
+    // The other parts were measured for the same steps, and all the
+    // parts together fit into the test's own time: none of them took
+    // the held time as well.
+    let others = [
+        timing.step_walk,
+        timing.step_save,
+        timing.step_apply,
+        timing.step_start,
+        timing.step_end,
+    ];
+    for part in others {
         assert_eq!(part.count, timing.step_home_sync.count);
     }
     // The log was above the high mark after that step, so the read
@@ -4091,10 +4098,8 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
     assert!(timing.gate.count >= 1, "{timing:?}");
     assert!(timing.gate.sum_ns < read.wait.sum_ns, "{timing:?}");
     // No part is longer than the test.
-    let steps = timing.step_save.sum_ns
-        + timing.step_apply.sum_ns
+    let steps = others.iter().map(|part| part.sum_ns).sum::<u64>()
         + timing.step_home_sync.sum_ns
-        + timing.step_start.sum_ns
         + timing.step_own_sync.sum_ns;
     assert!(steps <= ns(total), "{timing:?}");
     // What the read waited for, by what the worker did meanwhile: the
@@ -4289,8 +4294,7 @@ fn every_kind_of_request_is_timed_under_its_kind() {
         ACTIVITIES[1..6],
         ["read", "write", "flush", "discard", "zeroes"]
     );
-    // No marks: no step, nobody waited for one, no gate.
-    assert_eq!(timing.behind_step, Spent::default());
+    // No marks: no step and no gate.
     assert_eq!(timing.gate, Spent::default());
     assert_eq!(timing.step_home_sync, Spent::default());
 }
@@ -5130,4 +5134,36 @@ fn clock_numbers() {
     let per_pair = began.elapsed().as_nanos() as f64 / f64::from(READS);
     println!("one clock read: {per_read:.1} ns; two reads and an add: {per_pair:.1} ns");
     assert_eq!(spent.count, u64::from(READS));
+}
+
+/// Prints how much of a worker's time that is not idle the step's
+/// parts account for when it does nothing but step, on the simulated
+/// disk: run by hand
+/// (`cargo test -p skyzfs-local -- --ignored step_parts_numbers --nocapture`).
+#[test]
+#[ignore = "prints numbers; run by hand"]
+fn step_parts_numbers() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    for n in 0..800u64 {
+        write(&mut store, (n % 60) * 16, 16, (n % 200) as u8 + 1).unwrap();
+    }
+    flush(&mut store).unwrap();
+    store.set_marks(Some(Marks { low: 1, ..MARKS }));
+    let served = store.serve().unwrap();
+    let state = comes_by_itself(&served, "the log worked off", |s| s.live() < MARKS.low);
+    let (_, timing) = served.shown();
+    let mut steps = 0;
+    for (name, ns) in ACTIVITIES.iter().zip(timing.worker) {
+        println!("{name}: {ns} ns");
+        if name.starts_with("step_") || *name == "own_sync" {
+            steps += ns;
+        }
+    }
+    let busy: u64 = timing.worker[1..].iter().sum();
+    println!(
+        "{} steps; the parts are {steps} ns of the {busy} ns the worker was not idle: {:.1}%",
+        state.steps,
+        100.0 * steps as f64 / busy as f64
+    );
 }
