@@ -5501,8 +5501,8 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     assert!(timing.reader.iter().sum::<u64>() <= total, "{timing:?}");
     // The worker did no read.
     assert_eq!(timing.worker[at("read")], 0, "{timing:?}");
-    for kind in 1..5 {
-        assert_eq!(timing.requests[kind], RequestTiming::default());
+    for kind in &timing.requests[1..5] {
+        assert_eq!(*kind, RequestTiming::default());
     }
 }
 
