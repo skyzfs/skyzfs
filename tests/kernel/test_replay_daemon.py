@@ -443,7 +443,11 @@ class Pass(unittest.TestCase):
                           'missed': dict(stopped_after_ready=True),
                           'unplanted': dict(ok=False, failed='start', detail='neither ready nor ended'),
                           'at once': dict(stopped_after_ready=True, ok=False, failed='device read',
-                                          detail='dd: error reading: Input/output error')}[stuck])
+                                          detail='dd: error reading: Input/output error'),
+                          'not reaped': dict(stopped_after_ready=True, ok=False, failed='device read',
+                                             detail='TIMEOUT after 20s; the reader not reaped 60 s after',
+                                             abort='dd of /dev/ublkb0 did not end 60 s after the daemon was killed')
+                          }[stuck])
                 return r
             if n in fail_at or (hooks and recover_caught) or (marks is not None and withheld_caught):
                 r.update(ok=False, failed='fsync: files', detail='f.1 checksum differs')
@@ -552,6 +556,11 @@ class Pass(unittest.TestCase):
         self.fake(stuck='at once')
         self.assertEqual(rd.check(self.args()), 2)
         self.assertIn('did not wait for the stopped daemon', self.summary_text())
+        # The reader outlived the daemon's death and its device's deletion:
+        # the run stops on the rig's error, and says it was this control.
+        self.fake(stuck='not reaped')
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('the stuck control at prefix', self.summary_text())
 
     def test_a_timed_out_zdb_at_the_end_in_a_stopped_run_is_the_rigs(self):
         # The stopped path, as test_exit_codes is for the passing one: a

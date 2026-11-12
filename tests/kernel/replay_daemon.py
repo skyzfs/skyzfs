@@ -1032,7 +1032,11 @@ def stuck_control(ck, n):
     ck.daemon.reset()
     ck.held = None
     r = ck.point(n, 'control', hooks=(STOP_AFTER_READY,))
-    abort_if(r)
+    if r.get('abort'):
+        # The rig stopped the daemon, killed it and deleted its device, and
+        # the read still did not end: the path was not shown to end, and
+        # the daemon had no part in it. The rig's error, naming the control.
+        raise RigError(f"the stuck control at prefix {n}: {r['abort']}")
     row = control_row('stuck', f'the daemon is stopped (SIGSTOP) once ready, at prefix {n}; its device is read '
                                f'with a limit of {STUCK_READ_S} s', [r])
     if not r.get('stopped_after_ready'):
