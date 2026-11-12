@@ -1698,6 +1698,15 @@ snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file 
 diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
 }
+work_disk() { # -> the kernel name of the block device under $WORK, or nothing
+    # By its device number, as disk-sync.py finds it: df names the
+    # runners' root filesystem /dev/root, which /proc/diskstats does not
+    # know.
+    local mm
+    mm=$(findmnt -n -o MAJ:MIN -T "$WORK" 2>/dev/null | tr -d ' ')
+    [ -n "$mm" ] && [ -e "/sys/dev/block/$mm" ] || return 0
+    basename "$(readlink -f "/sys/dev/block/$mm")"
+}
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
     local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
@@ -1774,7 +1783,7 @@ snapshot() { # file
         # The disk under the benchmark's work directory, which holds the
         # pool's images, the model's log device and the daemon's home
         # image and log: what all of it costs the one disk, per row.
-        wd=$(diskstats_line "$(basename "$(df --output=source "$WORK" 2>/dev/null | tail -n 1)")")
+        wd=$(work_disk); [ -z "$wd" ] || wd=$(diskstats_line "$wd")
         [ -z "$wd" ] || echo "dev workdisk $wd"
         echo "pg wal_bytes $(psqlq "select wal_bytes from pg_stat_wal" || echo 0)"
         echo "pg xact_commit $(psqlq "select xact_commit from pg_stat_database where datname='bench'" || echo 0)"
