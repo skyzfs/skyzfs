@@ -327,8 +327,13 @@ OUT=${TB_OUT:-/tmp/topology-bench}
 # Where skz_time.py is: the daemon's times, their differences and their
 # tables (tested by tests/bench/test_skz_time.py).
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# TB_SKZ_TIME_DIR: a directory with another skz_time.py to read the
+# daemon's times with (the workflow's TB_SKZ_TIME_REF puts a ref's copy
+# there): a daemon newer than this branch has keys its copy does not
+# know. Default: the one beside this script.
+SKZ_TIME_DIR=${TB_SKZ_TIME_DIR:-$HERE}
 summarize() { # dir -> summary.md on stdout (all *.json under dir, any depth)
-    python3 - "$1" "$HERE" <<'PY'
+    python3 - "$1" "$SKZ_TIME_DIR" <<'PY'
 import glob, json, os, sys
 out = sys.argv[1]
 sys.path.insert(0, sys.argv[2])
@@ -1869,7 +1874,7 @@ run_workload() { # topology workload [snapshot mode]
     # from its own image by a loop device, the reference server or the
     # daemon), whatever the knob says.
     case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$HERE" > "$OUT/$tag.json" <<'PY'
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 sys.path.insert(0, sys.argv[12])
 import skz_time
