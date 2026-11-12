@@ -124,7 +124,7 @@ SCRATCH=/dev/shm/skz-replay.$$
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 SLOG_LOOP=""; LOG_LOOP=""; UBLK_UP=""; WRITER=""
-LOWER_LOOP=""; LOWER_MOUNTED=""; SERVE_PID=""; PHASE=setup
+LOWER_LOOP=""; LOWER_MOUNTED=""; SERVE_PID=""; PHASE=setup; VERDICT=""
 # Through the daemon, an error before the check is the rig's own (exit
 # 2), and the summary says where it happened.
 rig_error() {
@@ -135,6 +135,19 @@ rig_error() {
     } > "$OUT/replay-summary.md"
     echo "$*" >&2
     exit 2
+}
+# The daemon failed at something it is judged on (its start, its stop,
+# its detach, the pool's writes through it) before the check: a verdict
+# against the daemon (exit 1), as the same events are in the check.
+daemon_verdict() {
+    { echo "## Power-cut replay through skyzfsd: a verdict against the daemon"
+      echo
+      echo "In the $PHASE phase: $*"
+      [ ! -s "$OUT/serve.log" ] || { echo; echo "The daemon's last lines:"; echo; echo '```'; tail -n 15 "$OUT/serve.log"; echo '```'; }
+    } > "$OUT/replay-summary.md"
+    echo "$*" >&2
+    VERDICT=1
+    exit 1
 }
 # Start `serve` on the volume and wait for its ready line: DEVICE.
 serve_up() {
@@ -149,22 +162,22 @@ serve_up() {
             st=0
             wait "$SERVE_PID" || st=$?
             SERVE_PID=""
-            rig_error "skyzfsd serve exited with status $st before it was ready"
+            daemon_verdict "skyzfsd serve exited with status $st before it was ready"
         fi
         sleep 0.25
     done
-    rig_error "skyzfsd serve was not ready after 120 s"
+    daemon_verdict "skyzfsd serve was not ready after 120 s"
 }
 # SIGTERM, then the device is deleted: an orderly stop and a detach.
 serve_down() {
     local i rc=0
     kill -TERM "$SERVE_PID" 2>/dev/null || true
     for i in $(seq 1 240); do kill -0 "$SERVE_PID" 2>/dev/null || break; sleep 0.25; done
-    if kill -0 "$SERVE_PID" 2>/dev/null; then kill -9 "$SERVE_PID"; SERVE_PID=""; rig_error "skyzfsd serve had not ended 60 s after SIGTERM"; fi
+    if kill -0 "$SERVE_PID" 2>/dev/null; then kill -9 "$SERVE_PID"; SERVE_PID=""; daemon_verdict "skyzfsd serve had not ended 60 s after SIGTERM"; fi
     wait "$SERVE_PID" || rc=$?
     SERVE_PID=""
-    [ "$rc" = 0 ] || rig_error "skyzfsd serve ended with status $rc after SIGTERM"
-    timeout 120 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >&2 || rig_error "skyzfsd detach failed"
+    [ "$rc" = 0 ] || daemon_verdict "skyzfsd serve ended with status $rc after SIGTERM"
+    timeout 120 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >&2 || daemon_verdict "skyzfsd detach failed"
 }
 # The writer is told to stop and waited for, 300 s at most: a write to
 # a pool whose device does not answer never returns, and a bare `wait`
@@ -207,7 +220,7 @@ cleanup() {
     [ -n "$UBLK_UP" ] && timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1
     for l in "$SLOG_LOOP" "$LOG_LOOP"; do [ -n "$l" ] && losetup -d "$l" 2>/dev/null; done
     [ -d "$SCRATCH" ] && find "$SCRATCH" -maxdepth 1 -type f -delete && rmdir "$SCRATCH"
-    if [ "$rc" -ne 0 ] && [ -n "$SKYZFSD" ] && [ "$PHASE" != check ] && [ "$rc" != 2 ] && [ "$rc" != 64 ]; then
+    if [ "$rc" -ne 0 ] && [ -n "$SKYZFSD" ] && [ "$PHASE" != check ] && [ "$rc" != 2 ] && [ "$rc" != 64 ] && [ -z "$VERDICT" ]; then
         # set -e ended a step of the rig's own before the check.
         { echo "## Power-cut replay through skyzfsd: the rig's own error, not a verdict"; echo
           echo "A command of the rig failed in the $PHASE phase (status $rc); see the job's log."; } > "$OUT/replay-summary.md"
@@ -352,14 +365,18 @@ for k in $(seq 1 "$SYNCS"); do
 done
 wrc=0; writer_end || wrc=$?
 if [ -n "$WRITER_KILLED" ]; then
-    echo "the writer had not ended 300 s after it was told to stop (pool $(cat "/proc/spl/kstat/zfs/$POOL/state" 2>/dev/null || echo unknown)): the workload did not finish, nothing is checked" >&2
+    why="the writer had not ended 300 s after it was told to stop (pool $(cat "/proc/spl/kstat/zfs/$POOL/state" 2>/dev/null || echo unknown)): the workload did not finish, nothing is checked"
+    [ -z "$SKYZFSD" ] || daemon_verdict "$why; the pool's device is the daemon's"
+    echo "$why" >&2
     exit 1
 fi
 # As the bare `wait` under errexit did before the limit: a writer whose
 # write, fsync or mark failed leaves a manifest that promises less than
 # was done, and nothing is judged on it.
 if [ "$wrc" -ne 0 ]; then
-    echo "the recording writer failed with status $wrc (a write, an fsync or a mark): the manifest is incomplete, nothing is checked" >&2
+    why="the recording writer failed with status $wrc (a write, an fsync or a mark): the manifest is incomplete, nothing is checked"
+    [ -z "$SKYZFSD" ] || daemon_verdict "$why; the pool's device is the daemon's, so a failed write or fsync is its (the writer's lines in the job's log say which)"
+    echo "$why" >&2
     exit "$wrc"
 fi
 c=$(wc -l < "$MANIFEST")
@@ -396,7 +413,11 @@ if [ -n "$SKYZFSD" ]; then
     [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
     [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)
     mkdir -p "$WORK/check"
-    exec python3 "$HERE/replay_daemon.py" "${args[@]}"
+    # Not exec: the EXIT trap still runs, for the kernel's messages after
+    # a failed check and the scratch directory.
+    crc=0
+    python3 "$HERE/replay_daemon.py" "${args[@]}" || crc=$?
+    exit "$crc"
 fi
 
 # ----------------------------------------------------------------- check

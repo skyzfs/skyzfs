@@ -172,8 +172,8 @@ class Pure(unittest.TestCase):
         self.assertEqual(rd.verdict([], [{'n': 2, 'failed': 'rig: losetup'}], True, [], True, 0)[0], 2)
         self.assertEqual(rd.verdict([], [], True, ['a prefix was not checked'], True, 0)[0], 2)
         self.assertEqual(rd.verdict([], [], True, [], False, 0)[0], 2)
-        # No final image to check is not by itself a verdict.
-        self.assertEqual(rd.verdict([], [], True, [], True, None)[0], 0)
+        # zdb -bcc that did not run is not a pass: the rig's error at least.
+        self.assertEqual(rd.verdict([], [], True, [], True, None)[0], 2)
 
     def test_controls_against_the_table(self):
         def ctl(name, caught, by=None):
@@ -198,6 +198,41 @@ class Pure(unittest.TestCase):
         for s in ('volume mount', 'start', 'device read', 'stop', 'import', 'fsync: files', 'copies: differ'):
             self.assertIn(s, rd.JUDGING)
         self.assertNotIn('rig: losetup', rd.JUDGING)
+
+
+class Cleanup(unittest.TestCase):
+    """Daemon.make: a cleanup that fails after a stage failed keeps the stage, and stops the run (abort)."""
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        d = self.dir.name
+        self.a = type('A', (), dict(work=d, base=os.path.join(d, 'base'), serve_arg=None))()
+        self.saved = (rd.run, rd.Daemon._make, rd.Daemon.advance)
+        rd.Daemon.advance = lambda daemon, n: 0.0
+
+        def run(cmd, timeout=300):
+            return (32, 'umount: target is busy', 0.0) if cmd[0] == 'umount' else (0, '', 0.0)
+        rd.run = run
+
+    def tearDown(self):
+        rd.run, rd.Daemon._make, rd.Daemon.advance = self.saved
+        self.dir.cleanup()
+
+    def make_with(self, result):
+        def _make(daemon, image, hooks, info, loops):
+            info['_mounted'] = True
+            return result
+        rd.Daemon._make = _make
+        return rd.Daemon(self.a, None).make(5, os.path.join(self.dir.name, 'img'))
+
+    def test_a_failed_stage_is_kept_and_the_run_told_to_stop(self):
+        failed, detail, info = self.make_with(('stop', 'not ended 60 s after SIGTERM'))
+        self.assertEqual(failed, 'stop')
+        self.assertIn('umount', info['abort'])
+
+    def test_a_failed_cleanup_after_a_pass_is_the_rigs_error(self):
+        with self.assertRaises(rd.RigError):
+            self.make_with((None, ''))
 
 
 class Pass(unittest.TestCase):
@@ -231,8 +266,12 @@ class Pass(unittest.TestCase):
         os.makedirs(a['out'], exist_ok=True)
         return type('A', (), a)()
 
-    def fake(self, fail_at=(), recover_caught=True, withheld_caught=True, hook_ops=None):
+    def fake(self, fail_at=(), recover_caught=True, withheld_caught=True, hook_ops=None, at=None, kinds=None,
+             txg_fn=None, deep_marks=True):
+        """at: {prefix: fields} and kinds: {kind: fields} set on that point's result (a failure, an abort);
+        txg_fn(n) replaces the txg; deep_marks=False leaves the deep check unrecorded."""
         deep_at = []
+        at, kinds = at or {}, kinds or {}
 
         def point(ck, n, kind, hooks=(), marks=None, fmarks=None):
             ck.daemon.advance(n)
@@ -242,12 +281,19 @@ class Pass(unittest.TestCase):
             r['start'] = {'operations': 100 + n, 'log_bytes': 1 << 20, 'recovery_ms': 5}
             if hooks and hook_ops is not None:
                 r['start']['operations'] = hook_ops(100 + n)
+            if txg_fn is not None:
+                r['txg'] = txg_fn(n)
+            if hooks and hook_ops is not None and hook_ops(100 + n) is None:
+                r['start'] = {}
             if n in fail_at or (hooks and recover_caught) or (marks is not None and withheld_caught):
                 r.update(ok=False, failed='fsync: files', detail='f.1 checksum differs')
+            if marks is None and not hooks:
+                r.update(kinds.get(kind, {}))
+                r.update(at.get(n, {}))
             return r
 
         def deep(ck, p, marks=None, fmarks=None):
-            p['deep'], p['t_deep'], p['t_copies'] = True, 1.0, 1.0
+            p['deep'], p['t_deep'], p['t_copies'] = deep_marks, 1.0, 1.0
             deep_at.append(p['n'])
             return p
 
@@ -294,6 +340,93 @@ class Pass(unittest.TestCase):
         self.assertEqual(rd.check(self.args(budget_s=0.001)), 1)
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             self.assertIn('prefixes FAILED', f.read())
+
+    def summary_text(self):
+        with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
+            return f.read()
+
+    def test_a_failure_at_the_end_made_for_zdb_counts(self):
+        # The main pass is clean; the end, made again for zdb -bcc, does not start.
+        self.fake(kinds={'end': {'ok': False, 'failed': 'start', 'detail': 'exit 1 before it was ready'}})
+        self.assertEqual(rd.check(self.args()), 1)
+
+    def test_a_failed_calibration_point_counts_even_if_it_passes_later(self):
+        self.fake(kinds={'calibration': {'ok': False, 'failed': 'start', 'detail': 'exit 1 before it was ready'}})
+        self.assertEqual(rd.check(self.args()), 1)
+
+    def test_a_rig_error_after_a_failure_keeps_the_verdict(self):
+        records = logwrites.index(self.log, 0)['records']
+        fm = replay_check.fsync_marks(records)
+        later = fm[-1][0]
+        self.fake(fail_at={fm[1][0]}, at={later: {'abort': 'prefix: cleaning up after the start failed: umount: busy'}})
+        self.assertEqual(rd.check(self.args()), 1)
+        text = self.summary_text()
+        self.assertIn('stopped by the rig', text)
+        self.assertIn('Exit 1', text)
+        self.assertIn(f'| {fm[1][0]} |', text)
+        self.assertTrue(os.path.exists(os.path.join(self.dir.name, 'out', 'replay-results.json')))
+
+    def test_a_rig_error_alone_is_the_rigs_error(self):
+        records = logwrites.index(self.log, 0)['records']
+        later = replay_check.fsync_marks(records)[-1][0]
+        self.fake(at={later: {'abort': 'umount: busy'}})
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('Exit 2', self.summary_text())
+
+    def test_a_stage_that_failed_survives_its_failed_cleanup(self):
+        records = logwrites.index(self.log, 0)['records']
+        later = replay_check.fsync_marks(records)[-1][0]
+        self.fake(at={later: {'ok': False, 'failed': 'stop', 'detail': 'not ended 60 s after SIGTERM',
+                              'abort': 'ublk del -n 3: busy'}})
+        self.assertEqual(rd.check(self.args()), 1)
+        self.assertIn('| stop |', self.summary_text())
+
+    def test_a_rig_stage_in_the_main_pass_is_the_rigs_error(self):
+        records = logwrites.index(self.log, 0)['records']
+        n = replay_check.fsync_marks(records)[1][0]
+        self.fake(at={n: {'ok': False, 'failed': 'rig: losetup', 'detail': 'no free loop device'}})
+        self.assertEqual(rd.check(self.args()), 2)
+
+    def test_a_passed_prefix_without_a_txg_is_a_coverage_error(self):
+        records = logwrites.index(self.log, 0)['records']
+        n = replay_check.fsync_marks(records)[1][0]
+        self.fake(at={n: {'txg': None}})
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('gave no transaction group', self.summary_text())
+
+    def test_a_missing_deep_check_is_a_coverage_error(self):
+        self.fake(deep_marks=False)
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('the deep checks did not run', self.summary_text())
+
+    def test_withheld_that_cannot_be_built_is_the_rigs_error(self):
+        saved = rd.withheld_schedule
+        rd.withheld_schedule = lambda records: None
+        try:
+            self.fake()
+            self.assertEqual(rd.check(self.args()), 2)
+            self.assertIn('the withheld control could not be built', self.summary_text())
+        finally:
+            rd.withheld_schedule = saved
+
+    def test_the_last_held_prefix_gets_its_deep_check(self):
+        # One transaction group for the whole log: its last prefix is
+        # deep-checked only by the step after the main pass.
+        records = logwrites.index(self.log, 0)['records']
+        deep_at = self.fake(txg_fn=lambda n: 7)
+        self.assertEqual(rd.check(self.args()), 0)
+        self.assertIn(len(records), deep_at)
+
+    def test_a_hooked_control_whose_starts_say_nothing_is_not_caught(self):
+        self.fake(recover_caught=True, hook_ops=lambda ops: None)
+        self.assertEqual(rd.check(self.args(recover_short=8)), 2)
+        self.assertIn('cannot be shown planted', self.summary_text())
+
+    def test_an_unexpected_exception_is_the_rigs_error_with_a_summary(self):
+        self.fake()
+        a = self.args(log=os.path.join(self.dir.name, 'no-such-log'))
+        self.assertEqual(rd.check(a), 2)
+        self.assertIn('stopped by the rig', self.summary_text())
 
     def test_a_control_not_caught_is_a_verdict(self):
         self.fake(withheld_caught=False)

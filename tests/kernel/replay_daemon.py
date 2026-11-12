@@ -95,6 +95,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -113,7 +114,7 @@ START_RE = re.compile(r'recovery (\d+) ms of a log of (\d+) bytes and (\d+) oper
 # The stages at which a failure is a verdict: the reference rig's, and
 # the provider's own steps that the daemon or the file system under it
 # decide. Anything else is the rig failing.
-JUDGING = rc.JUDGING | {'volume mount', 'start', 'device read', 'stop'}
+JUDGING = rc.JUDGING | {'volume mount', 'start', 'device read', 'stop', 'deep: mount (writable)'}
 CHECK_NAMES = dict(rc.CHECK_NAMES, **{
     'volume mount': "the volume's file system's mount",
     'start': "the daemon's start",
@@ -125,7 +126,7 @@ CHECK_NAMES = dict(rc.CHECK_NAMES, **{
 # vocabulary). Both plant a fault that a power cut must not be allowed
 # to cause, so both must be caught. Do not edit a control to fit.
 EXPECTED = {
-    'withheld': {'block': {'by': 'any'}},
+    'withheld': {'block': {'by': 'fsync'}},
 }
 # Only when asked for (--recover-short N); see the head of this file.
 EXPECTED_HOOKED = {
@@ -287,6 +288,8 @@ def verdict(failures, rig_errors, controls_ok, coverage_errors, witness_ok, zdb_
         against.append('a control is not as the table has it')
     if zdb_cc_rc not in (0, None):
         against.append(f'zdb -bcc on the final image: exit code {zdb_cc_rc}')
+    if zdb_cc_rc is None:
+        rig.append('zdb -bcc did not run on the final image')
     if rig_errors:
         rig.append(f'the rig failed at {len(rig_errors)} prefix(es), first: {rig_errors[0]["failed"]}')
     if coverage_errors:
@@ -340,30 +343,14 @@ class Daemon:
         """The pool's device at prefix n, into `image` -> (failed stage or None, detail, info)."""
         info = {'t_advance': self.advance(n)}
         t0 = time.monotonic()
-        loops, snap, mounted = [], False, False
+        loops = []
         res = (None, '')
         try:
-            with open(self.cow, 'wb') as f:
-                f.truncate(os.path.getsize(self.lower))
-            for cmd in (['losetup', '-r', '--find', '--show', self.lower], ['losetup', '--find', '--show', self.cow]):
-                rc_, out, _ = run(cmd, 60)
-                if rc_:
-                    return rc.stage('rig: losetup', rc_), out.strip()[-300:], info
-                loops.append(out.strip())
-            sectors = os.path.getsize(self.lower) // 512
-            rc_, out, _ = run(['dmsetup', 'create', SNAP, '--table', f'0 {sectors} snapshot {loops[0]} {loops[1]} N 8'], 60)
-            if rc_:
-                return rc.stage('rig: dm-snapshot', rc_), out.strip()[-300:], info
-            snap = True
-            # The journal is replayed here, as at the first mount after a power cut.
-            rc_, out, info['t_mount'] = run(['mount', '-o', 'nouuid', f'/dev/mapper/{SNAP}', self.mnt], 180)
-            if rc_:
-                return ('volume mount' if rc_ not in rc.RIG_RC else rc.stage('volume mount', rc_)), out.strip()[-400:], info
-            mounted = True
-            res = self.serve(image, hooks, info)
+            res = self._make(image, hooks, info, loops)
             return res[0], res[1], info
         finally:
             info['t_make'] = time.monotonic() - t0
+            snap, mounted = info.pop('_snap', False), info.pop('_mounted', False)
             undo = []
             if mounted:
                 rc_, out, _ = run(['umount', self.mnt], 120)
@@ -384,64 +371,56 @@ class Daemon:
             if os.path.exists(self.cow):
                 os.unlink(self.cow)
             if undo:
-                # A leftover makes every later prefix untrustworthy.
-                raise RigError(f'prefix {n}: cleaning up after the start failed: ' + '; '.join(undo))
+                # A leftover makes every later prefix untrustworthy, so the
+                # run stops; but a stage that failed before it is still this
+                # prefix's result, and is reported as such (abort).
+                why = f'prefix {n}: cleaning up after the start failed: ' + '; '.join(undo)
+                if res[0] and res[0] in JUDGING:
+                    info['abort'] = why
+                else:
+                    raise RigError(why)
+
+    def _make(self, image, hooks, info, loops):
+        """make()'s steps; it undoes what they set up -> (failed stage or None, detail)."""
+        with open(self.cow, 'wb') as f:
+            f.truncate(os.path.getsize(self.lower))
+        for cmd in (['losetup', '-r', '--find', '--show', self.lower], ['losetup', '--find', '--show', self.cow]):
+            rc_, out, _ = run(cmd, 60)
+            if rc_:
+                return rc.stage('rig: losetup', rc_), out.strip()[-300:]
+            loops.append(out.strip())
+        sectors = os.path.getsize(self.lower) // 512
+        rc_, out, _ = run(['dmsetup', 'create', SNAP, '--table', f'0 {sectors} snapshot {loops[0]} {loops[1]} N 8'], 60)
+        if rc_:
+            return rc.stage('rig: dm-snapshot', rc_), out.strip()[-300:]
+        info['_snap'] = True
+        # The journal is replayed here, as at the first mount after a power cut.
+        rc_, out, info['t_mount'] = run(['mount', '-o', 'nouuid', f'/dev/mapper/{SNAP}', self.mnt], 180)
+        if rc_:
+            return ('volume mount' if rc_ not in rc.RIG_RC else rc.stage('volume mount', rc_)), out.strip()[-400:]
+        info['_mounted'] = True
+        return self.serve(image, hooks, info)
 
     def serve(self, image, hooks, info):
         """Start the daemon as after a reboot, read its device, stop it -> (failed stage or None, detail)."""
         run_dir = tempfile.mkdtemp(prefix='skz-replay-run.', dir='/run')
-        boot = os.path.join(run_dir, '..', os.path.basename(run_dir) + '.boot')
+        # Beside the run directory, not through it: removed with it below.
+        boot = run_dir + '.boot'
         with open(boot, 'w') as f:
             f.write(str(uuid.uuid4()) + '\n')
         vol = os.path.join(self.mnt, self.a.volume)
         out_path, err_path = os.path.join(self.a.work, 'serve.out'), os.path.join(self.a.work, 'serve.err')
         cmd = ([self.a.skyzfsd, 'serve', '--dir', vol, '--run-dir', run_dir, '--boot-id-file', boot]
                + self.serve_args + list(hooks))
-        number = None
+        state = {'number': None}
         before = ublk_numbers()
         t0 = time.monotonic()
         with open(out_path, 'w') as o, open(err_path, 'w') as e:
             p = subprocess.Popen(cmd, stdout=o, stderr=e)
+        res = (None, '')
         try:
-            dev = None
-            while time.monotonic() - t0 < READY_S:
-                with open(out_path) as f:
-                    dev = ready_device(f.read())
-                if dev and os.path.exists(dev[0]):
-                    break
-                if p.poll() is not None:
-                    return 'start', f'exit {p.returncode} before it was ready: {said(err_path)}'
-                time.sleep(0.05)
-            else:
-                return 'start', f'neither ready nor ended {READY_S} s after it was started: {said(err_path)}'
-            info['t_start'] = time.monotonic() - t0
-            number = dev[1]
-            try:
-                with open(err_path, errors='replace') as f:
-                    info['start'] = start_values(f.read())
-            except OSError:
-                info['start'] = {}
-            if os.path.exists(image):
-                os.unlink(image)
-            t1 = time.monotonic()
-            rc_, out, _ = run([self.a.dd, f'if={dev[0]}', f'of={image}', 'bs=1M',
-                               'iflag=direct', 'conv=sparse', 'status=none'], 300)
-            info['t_read'] = time.monotonic() - t1
-            if rc_:
-                return ('device read' if rc_ not in rc.RIG_RC else rc.stage('device read', rc_)), \
-                    f'{out.strip()[-300:]}; the daemon said: {said(err_path)}'
-            with open(image, 'r+b') as f:
-                f.truncate(self.a.dev_bytes)
-            t1 = time.monotonic()
-            p.send_signal(signal.SIGTERM)
-            try:
-                code = p.wait(STOP_S)
-            except subprocess.TimeoutExpired:
-                return 'stop', f'not ended {STOP_S} s after SIGTERM: {said(err_path)}'
-            info['t_stop'] = time.monotonic() - t1
-            if code != 0:
-                return 'stop', f'exit {code} after SIGTERM: {said(err_path)}'
-            return None, ''
+            res = self._serve(p, image, info, out_path, err_path, t0, state)
+            return res
         finally:
             if p.poll() is None:
                 p.kill()
@@ -449,13 +428,67 @@ class Daemon:
             info['said'] = said(err_path, 3)
             # The start's device, and any other that appeared while it ran:
             # a start that fails after its device was added leaves it.
+            number = state['number']
+            left = []
             for k in sorted((ublk_numbers() - before) | ({number} if number is not None else set())):
                 rc_, out, _ = run([self.a.ublk, 'del', '-n', str(k)], 60)
                 if rc_ and k in ublk_numbers():
-                    raise RigError(f'ublk del -n {k}: {out.strip()[-200:]}')
+                    left.append(f'ublk del -n {k}: {out.strip()[-200:]}')
             shutil.rmtree(run_dir, ignore_errors=True)
             if os.path.exists(boot):
                 os.unlink(boot)
+            if left:
+                # As in make(): the run stops, and a stage that failed
+                # first is still this prefix's result.
+                if res[0] and res[0] in JUDGING:
+                    info['abort'] = '; '.join(left)
+                else:
+                    raise RigError('; '.join(left))
+
+    def _serve(self, p, image, info, out_path, err_path, t0, state):
+        """serve()'s steps on the started daemon p -> (failed stage or None, detail)."""
+        dev = None
+        while time.monotonic() - t0 < READY_S:
+            with open(out_path) as f:
+                dev = ready_device(f.read())
+            if dev and os.path.exists(dev[0]):
+                break
+            if p.poll() is not None:
+                return 'start', f'exit {p.returncode} before it was ready: {said(err_path)}'
+            time.sleep(0.05)
+        else:
+            return 'start', f'neither ready nor ended {READY_S} s after it was started: {said(err_path)}'
+        info['t_start'] = time.monotonic() - t0
+        state['number'] = dev[1]
+        try:
+            with open(err_path, errors='replace') as f:
+                info['start'] = start_values(f.read())
+        except OSError:
+            info['start'] = {}
+        if os.path.exists(image):
+            os.unlink(image)
+        t1 = time.monotonic()
+        rc_, out, _ = run([self.a.dd, f'if={dev[0]}', f'of={image}', 'bs=1M',
+                           'iflag=direct', 'conv=sparse', 'status=none'], 300)
+        info['t_read'] = time.monotonic() - t1
+        if rc_:
+            if re.search(r'error writing|No space left', out):
+                # dd could not write the image: the rig's disk, not the device.
+                return 'rig: writing the image', out.strip()[-300:]
+            return ('device read' if rc_ not in rc.RIG_RC else rc.stage('device read', rc_)), \
+                f'{out.strip()[-300:]}; the daemon said: {said(err_path)}'
+        with open(image, 'r+b') as f:
+            f.truncate(self.a.dev_bytes)
+        t1 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        try:
+            code = p.wait(STOP_S)
+        except subprocess.TimeoutExpired:
+            return 'stop', f'not ended {STOP_S} s after SIGTERM: {said(err_path)}'
+        info['t_stop'] = time.monotonic() - t1
+        if code != 0:
+            return 'stop', f'exit {code} after SIGTERM: {said(err_path)}'
+        return None, ''
 
 
 def ublk_numbers():
@@ -587,15 +620,77 @@ def main():
     rc.CHECK_NAMES.update(CHECK_NAMES)
     try:
         code = check(a)
-    except RigError as e:
-        print(f'::error title=replay rig (daemon)::the rig failed: {e}', flush=True)
+    except Exception as e:  # noqa: BLE001 -- whatever stops the rig is its own error, and says so
+        why = what_stopped(e)
+        print(f'::error title=replay rig (daemon)::the rig failed: {why}', flush=True)
         with open(os.path.join(a.out, 'replay-summary.md'), 'w') as f:
-            f.write(f"## Power-cut replay through skyzfsd: the rig's own error, not a verdict\n\n{e}\n")
+            f.write(f"## Power-cut replay through skyzfsd: the rig's own error, not a verdict\n\n{why}\n\nExit 2.\n")
         code = 2
     sys.exit(code)
 
 
+def what_stopped(e):
+    """An exception that stopped the rig, on one line: a RigError's own words, else its type, words and place."""
+    if isinstance(e, RigError):
+        return str(e)
+    tb = traceback.extract_tb(e.__traceback__)
+    where = f' at {os.path.basename(tb[-1].filename)}:{tb[-1].lineno}' if tb else ''
+    return f'{type(e).__name__}: {e}{where}'
+
+
+def classify(r, failures, rig_errors):
+    """A failed point -> a verdict against the daemon (failures) or the rig's error (rig_errors)."""
+    if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
+        failures.append(r)
+    else:
+        rig_errors.append(r)
+
+
+def abort_if(r):
+    """Stop the run when cleaning up after this point failed: its own result is kept by the caller first."""
+    if r.get('abort'):
+        raise RigError(r['abort'])
+
+
 def check(a):
+    """The run; when it stops on the rig's error, what was found before is still reported, a failure first."""
+    st = {'points': [], 'outside': [], 'res': {}}
+    try:
+        return _check(a, st)
+    except Exception as e:  # noqa: BLE001 -- see main()
+        why = what_stopped(e)
+    failures, rig_errors = [], []
+    for r in st['points'] + st['outside']:
+        if not r['ok']:
+            classify(r, failures, rig_errors)
+    code = 1 if failures else 2
+    res = dict(st['res'], stopped=why, exit=code,
+               failures=[{k: v for k, v in p.items() if k != 'dir'} for p in failures],
+               rig_errors=[{'n': p['n'], 'failed': p['failed'], 'detail': p['detail']} for p in rig_errors],
+               points=[{k: v for k, v in p.items() if k != 'dir'} for p in st['points']])
+    with open(os.path.join(a.out, 'replay-results.json'), 'w') as f:
+        json.dump(res, f, indent=1, default=str)
+    out = ['## Power-cut replay through skyzfsd: stopped by the rig\'s own error\n',
+           f'The run stopped: {why}\n',
+           f"Prefixes checked before it stopped: {len(st['points'])} in the main pass.\n"]
+    if failures:
+        out.append(f'Before it stopped, {len(failures)} prefix(es) failed a check. That is a verdict against the daemon, '
+                   'whatever stopped the rig after it:\n')
+        out.append('| prefix | kind | failed | detail |\n|---|---|---|---|')
+        for r in failures:
+            out.append(f"| {r['n']} | {r['kind']} | {r['failed']} | {r['detail'][:300]} |")
+        out.append('\nExit 1: a verdict against the daemon.\n')
+    else:
+        out.append('No prefix had failed a check before it. Exit 2: the rig\'s own error, not a verdict.\n')
+    text = '\n'.join(out)
+    with open(os.path.join(a.out, 'replay-summary.md'), 'w') as f:
+        f.write(text)
+    print(text)
+    print(f'::error title=replay rig (daemon)::the rig stopped: {why}', flush=True)
+    return code
+
+
+def _check(a, st):
     idx = logwrites.index(a.log, 0)
     records = idx['records']
     total = len(records)
@@ -604,6 +699,7 @@ def check(a):
     res = {'mode': 'daemon', 'records': total, 'marks': len(marks), 'fsync_marks': len(fmarks), 'files': len(ck.rig.manifest),
            'write_bytes': sum(r['bytes'] for r in records if rc.is_write(r)), 'steps': a.steps,
            'budget_name': a.budget_name, 'budget_s': a.budget_s}
+    st['res'] = res
     print(f"lower log: {total} records, {len(marks)} sync marks, {len(fmarks)} fsync marks, "
           f"{res['write_bytes'] >> 20} MiB written, {res['files']} files", flush=True)
     trouble = rc.manifest_trouble(marks, len(ck.rig.manifest))
@@ -615,22 +711,22 @@ def check(a):
     res['available'] = counts
 
     # Calibration: two flush boundaries, for the time a prefix takes.
-    # They are timed only; the main pass checks whatever it samples, and
-    # a calibration point that failed is put in the sample so that its
-    # failure is counted there.
+    # They are timed for the plan, and a calibration point that fails is
+    # counted like any other, whatever the main pass finds there later.
     ck.daemon.reset()
-    points, failures, rig_errors = [], [], []
-    t_cal, cal_failed = [], []
+    points, failures, rig_errors = st['points'], [], []
+    t_cal = []
     for n in spread(rest, 2) or spread(sorted(kind), 2):
         ck.held = None
         r = ck.point(n, 'calibration')
-        if not r['ok'] and n in rest:
-            cal_failed.append(n)
+        if not r['ok']:
+            st['outside'].append(r)
+        abort_if(r)
         t_cal.append(r['t_make'] + r.get('t_light', 0) + r.get('t_txg', 0))
         print(f"calibration {n}: {'ok' if r['ok'] else 'FAILED ' + r['failed']} {t_cal[-1]:.2f}s "
               f"(make {r['t_make']:.2f}, light {r.get('t_light', 0):.2f}, zdb -u {r.get('t_txg', 0):.2f})", flush=True)
     per = statistics.mean(t_cal) if t_cal else 8.0
-    sample = set(spread(rest, int(a.budget_s / per))) | set(cal_failed)
+    sample = set(spread(rest, int(a.budget_s / per)))
     for n in sample:
         kind[n] = 'flush'
     betw = between_points(records, kind, int(a.between_budget_s / per), a.seed)
@@ -659,6 +755,7 @@ def check(a):
             continue
         r = ck.point(n, kind[n])
         points.append(r)
+        abort_if(r)
         if r.get('txg') is not None:
             prev = ck.held
             if prev is None or prev['txg'] != r['txg']:
@@ -680,13 +777,9 @@ def check(a):
         ck.deep(ck.held)
     res['main_pass_s'] = time.monotonic() - start
     res['skipped_for_time'] = skipped
-    for r in points:
-        if r['ok']:
-            continue
-        if r['failed'] in JUDGING or r['failed'] == 'rig: zdb died with signal 6':
-            failures.append(r)
-        else:
-            rig_errors.append(r)
+    for r in points + st['outside']:
+        if not r['ok']:
+            classify(r, failures, rig_errors)
 
     # Coverage: every required prefix checked, a txg for every one that
     # imported, and the deep checks at the first and last of each txg.
@@ -741,6 +834,12 @@ def check(a):
     ck.daemon.reset()
     ck.held = None
     r = ck.point(total, 'end')
+    if not r['ok']:
+        # Made a second time, for zdb: a failure here counts as at any prefix.
+        r = dict(r, kind='end, for zdb -bcc')
+        st['outside'].append(r)
+        classify(r, failures, rig_errors)
+    abort_if(r)
     if r['ok']:
         rc_, out, t = run(['zdb', '-e', '-p', r['dir'], '-bcc', a.pool], 300)
         found = [ln.strip() for ln in out.splitlines() if re.search(r'ASSERT|VERIFY|PANIC|rror|cannot|leak', ln)][:3]
@@ -773,6 +872,7 @@ def check(a):
         for n in w['points']:
             ck.held = None
             results.append(ck.point(n, 'control', marks=smarks, fmarks=sfm))
+            abort_if(results[-1])
         ctl.append(dict(control_row('withheld', w['what'], results), victim=w['victim'], victims=w['victims']))
     res['controls'] = ctl
     res['control_rows'], res['gaps'], controls_ok = rc.judge_controls(ctl, expected=expected, absent=absent)
@@ -818,12 +918,16 @@ def hooked_control(ck, points, cov, name, hooks, pts, what):
     for n in pts:
         ck.held = None
         results.append(ck.point(n, 'control', hooks=hooks))
+        abort_if(results[-1])
     normal = {p['n']: p.get('start', {}).get('operations') for p in points}
     for x in results:
         x['operations_without_hook'] = normal.get(x['n'])
     row = control_row(name, f"the start at {len(pts)} sync and fsync marks runs with {' '.join(hooks)}: {what}", results)
-    if hook_took(results) is False:
-        why = 'with the hook every start recovered as many operations as without it: the fault was not planted'
+    took = hook_took(results)
+    if took is not True:
+        why = ('with the hook every start recovered as many operations as without it: the fault was not planted'
+               if took is False else
+               'no start with the hook said what it recovered beside one without it: the fault cannot be shown planted')
         row['rig_errors'].append({'n': results[0]['n'] if results else 0, 'failed': 'rig: the hook had no effect',
                                   'detail': why})
         cov['errors'].append(f'the {name} control: {why}')
