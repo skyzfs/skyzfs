@@ -342,7 +342,8 @@ own_device() {
             set_params_refused_once_started; do
             pin "$v" ERROR "the binding's add under the free number $OWN answered: ${ANSWER:-nothing}"
         done
-        obs killed_server_live_ms "not run: no device"; obs flags_beyond_the_mask "not run: no device"
+        obs killed_server_live_ms "not run: no device"; obs orderly_stop_live_ms "not run: no device"
+        obs flags_beyond_the_mask "not run: no device"
         obs serve_of_a_device_whose_adder_ended "not run: no device"
         OWN_PID_OK="not run: no device"
         return
@@ -367,7 +368,7 @@ own_device() {
             client_holds_plain_reader_unknown set_params_refused_once_started; do
             pin "$v" ERROR "the device $OWN was not started: ${SRV_LINE:-no answer}"
         done
-        obs killed_server_live_ms "not run: no server"
+        obs killed_server_live_ms "not run: no server"; obs orderly_stop_live_ms "not run: no server"
         OWN_PID_OK="not run: no server"
         return
     fi
@@ -402,12 +403,25 @@ own_device() {
     holder_end
 
     step "own: an orderly stop"
+    # The driver moves the device to waiting in a work item it queues
+    # when the server's char device is released, and with requests
+    # fetched through an io_uring that release can come from the ring's
+    # teardown after the process has gone (drivers/block/ublk_drv.c,
+    # ublk_ch_release and ublk_ch_release_work_fn). So the end of the
+    # process does not mean the device waits yet: it is given the kill's
+    # wait, the daemon's limit for a take-over (5 s), and the time is an
+    # observation.
     kill -TERM "$srv"
     if srv_end "$srv" "$srv_out" 30; then
-        info "$OWN"
-        { if [ "$STATE" = waiting ] && [ -b "/dev/ublkb$OWN" ]; then r=PASS; else r=FAIL; fi; pin orderly_stop_leaves_waiting "$r" "after SIGTERM the server said: ${SRV_SERVED:-nothing}; info: $ANSWER; /dev/ublkb$OWN $([ -b "/dev/ublkb$OWN" ] && echo 'is there' || echo 'IS GONE')"; }
+        if wait_state "$OWN" waiting 5; then
+            obs orderly_stop_live_ms "$WAITED_MS ms from the server's end until the binding's lookup said waiting"
+        else
+            obs orderly_stop_live_ms "after $WAITED_MS ms the lookup still said $STATE"
+        fi
+        { if [ "$STATE" = waiting ] && [ -b "/dev/ublkb$OWN" ]; then r=PASS; else r=FAIL; fi; pin orderly_stop_leaves_waiting "$r" "after SIGTERM the server said: ${SRV_SERVED:-nothing}; $WAITED_MS ms after its end, info: $ANSWER; /dev/ublkb$OWN $([ -b "/dev/ublkb$OWN" ] && echo 'is there' || echo 'IS GONE')"; }
     else
         pin orderly_stop_leaves_waiting ERROR "the server did not end within 30 s of SIGTERM"
+        obs orderly_stop_live_ms "not run: the server did not end"
         kill -9 "$srv" 2>/dev/null
     fi
 
