@@ -73,6 +73,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T11 | skyzfs/skyzfs#32 | The benchmark runs several builds of the daemon on one machine | The criterion |
 | M1.T12 | skyzfs/skyzfs#36 | The benchmark judges a daemon row against the model rows around it | The criterion: the rule |
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
+| M1.T16 | skyzfs/skyzfs#41 (open) | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
 
@@ -485,10 +486,41 @@ M1.3p took a third off the readers' CPU and their wait for a CPU, and the throug
 
 **The runners' work disk is mounted without barriers.** The disk declares a volatile write cache, and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
 
+#### With barriers on, the runners' flush costs nothing (M1.T16)
+
+One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
+
+Ubuntu 24.04 (work disk `nvme0n1p1`, disk-sync 200 MiB/s, the model rows 2.1% apart):
+
+| Row | tps | WAL fsync, µs | Work disk's flushes per transaction | ms per flush | Ratio |
+|---|---|---|---|---|---|
+| model | 4478 | 519 | 0.38 | 0.09 | |
+| daemon | 4144 | 587 | 0.37 | 0.10 | 0.916 |
+| daemon at 1 GiB | 4062 | 569 | 0.38 | 0.09 | 0.897 |
+| model | 4575 | 511 | 0.38 | 0.10 | |
+| ref | 4718 | 489 | 0.38 | 0.09 | |
+| model | 4872 | 474 | 0.38 | 0.10 | |
+
+Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart), where the work disk's flushes stayed at 0.00 per transaction in every row:
+
+| Row | tps | WAL fsync, µs | Ratio |
+|---|---|---|---|
+| model | 3339 | 677 | |
+| daemon | 3219 | 713 | 0.949 |
+| daemon at 1 GiB | 2920 | 760 | 0.861 |
+| model | 3445 | 656 | |
+| ref | 3613 | 605 | |
+| model | 3653 | 615 | |
+
+- **On 24.04 a flush reaches the device and costs about 0.1 ms.** There is about one per commit of the intent log, the same for the model and the daemon. A device that made data durable on flash would take longer, so this virtual disk most likely acknowledges a flush without doing that. The count rose and nothing got slower.
+- **On 26.04 no flush reaches the device even with barriers.** The likely cause is that the disk declares no volatile write cache, so the block layer completes a flush itself. Not confirmed: the job did not record the disk's `write_cache` yet (M1.T15 adds it).
+- **So the hosted runners cannot say what a flush costs on real flash**, with barriers or without. That measurement needs a machine with a local flash device (design §10). A comparison with and without barriers on one runner was not ordered: it would price a flush that costs nothing.
+- The ratios, 0.916 and 0.949 unbounded and 0.897 and 0.861 at 1 GiB, are in the range of the rows before them. They are not added to the criterion's medians, because the mount differs from those rows'.
+
 #### Open at this writing (2026-11-12)
 
 - M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
-- A benchmark row on a disk with barriers on, so that a sync costs a device flush: not built.
+- What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
@@ -592,3 +624,4 @@ Every independent read of the design and every review of a work package, with wh
 [^readerr]: `module/zfs/zio.c`, `zio_done`: a failed read is marked for suspension only when its error is `ENXIO`. Any other error on a zio issued with `ZIO_FLAG_CANFAIL`, which demand reads are (`module/zfs/dbuf.c`), is returned to the caller. `zio_vdev_io_assess` turns a leaf error into `ENXIO` only once the vdev is no longer accessible. Slow I/O is reported after `zfs_deadman_ziotime_ms` (`module/zfs/spa_misc.c`), and with the default `zfs_deadman_failmode=wait` it is only reported. Read in upstream master on 2026-11-10.
 [^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
 [^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.
+[^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.
