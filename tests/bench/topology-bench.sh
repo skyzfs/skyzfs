@@ -501,7 +501,8 @@ if skz:
         return here, len(rows) - len(here)
     print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
           '(the same boot id and host name); rows of other machines are counted and not compared. '
-          'The criterion is a ratio of at least 0.90 to zfs-slog; the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
+          'The criterion is a ratio of at least 0.90 to a zfs-slog row with no origin delay (TB_ORIGIN_DELAY_MS=0); '
+          'the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
     print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
     print('|---|---|---|---|---|---|---|---|')
     for r in skz:
@@ -517,8 +518,17 @@ if skz:
                   f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
         for o in model:
             q = r['tps'] / o['tps']
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | "
-                  f"{'at least 0.90' if q >= 0.90 else 'BELOW 0.90'} |")
+            # The daemon's row has no origin under it. A model row with
+            # an origin delay was slowed by it at every origin read, and
+            # a ratio to it would flatter the daemon: no verdict.
+            delay = o.get('origin_delay_ms')
+            if delay == 0:
+                verdict = 'at least 0.90' if q >= 0.90 else 'BELOW 0.90'
+            elif delay is None:
+                verdict = 'NO VERDICT: the model row does not say what origin delay it had'
+            else:
+                verdict = f'NO VERDICT: the model row had an origin delay of {delay} ms, the daemon row has no origin'
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | {verdict} |")
         for topo in ('zfs-loop', 'zfs-ublk'):
             for o in others(topo, r)[0]:
                 print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
@@ -1784,7 +1794,12 @@ run_workload() { # topology workload [snapshot mode]
         zfs destroy -r "$ZFS_POOL@$ZFS_WIN"
         ZFS_WIN=""
     fi
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" > "$OUT/$tag.json" <<'PY'
+    # The origin delay that was under this row: the knob's value where
+    # the topology has an origin, 0 where it has none (the pool served
+    # from its own image by a loop device, the reference server or the
+    # daemon), whatever the knob says.
+    case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
@@ -1817,6 +1832,7 @@ MB = 1 << 20
 r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {}}
 if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
+r['origin_delay_ms'] = int(sys.argv[11])
 # The machine the row ran on: this boot of this runner. Two rows are
 # compared only where it is the same.
 # The host name beside the boot id: machines resumed from one memory
