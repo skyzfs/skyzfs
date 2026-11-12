@@ -78,3 +78,16 @@ Reviewed: `origin/zfs-topology` ... `origin/skyzfs-coding` 78c204b.
   barrier.
 - Status version 6: 1568 bytes, the pump's fields 48 bytes further,
   version 5 still read.
+
+## Second look (head 9a3f5ca)
+
+- 1 dropped. The flag is set after the marker was tried (60e4c7c);
+  the new test holds the observer and its mutant is caught.
+- 2 dropped. `test_skz_time.py`: 24 tests pass; the keys the script
+  reads are in status.rs.
+- 3 kept in part, not blocking. The mutant takes the pin after the
+  read's pause. A pin between the lookup and the pause (my plant) still
+  passes all 212 tests. No hook can stand between the two today.
+- 4 dropped. The description says the cost.
+- `Mutants` at 64 bits: no bit changed; bit 24 was free.
+- fmt, clippy clean; skyzfs-local 212 pass, 3 ignored.
