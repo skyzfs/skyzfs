@@ -21,7 +21,11 @@
 #
 # Environment: BLK_SKYZFSD (the server; default the stand-in), BLK_WORK
 # (a directory for the volumes, required), BLK_SERVE_ARGS (options for
-# every serve), BLK_BYTES (volume size, default 64 MiB).
+# every serve), BLK_BYTES (volume size, default 64 MiB), BLK_PREFILL_MB
+# (after create, so many MiB of zero data are written to the new
+# volume by plain writes, over and over it: the volume still reads as
+# empty, and the server's log holds that much when the caller begins;
+# default 0).
 #
 # What it writes besides the device path goes to stderr and to
 # BLK_WORK/helper.log, with the time each verb took.
@@ -31,6 +35,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/../lib/lim.sh"
 # shellcheck source=tests/kernel/ublksrvd-look.sh
 . "$HERE/ublksrvd-look.sh"
+# shellcheck source=tests/lib/gnu-dd.sh
+. "$HERE/../lib/gnu-dd.sh"
 { [ $# = 2 ] && [[ $2 =~ ^[0-9]+$ ]]; } || { echo "usage: blkcheck-helper.sh create|pid|kill|fail|reopen|destroy N" >&2; exit 2; }
 VERB=$1; N=$2
 WORK=${BLK_WORK:?}
@@ -89,6 +95,13 @@ case $VERB in
 create)
     lim 60 "$SKYZFSD" create --dir "$DIR" --size "$BYTES" >&2 || die "create failed"
     DEV=$(serve) || exit 1
+    left=${BLK_PREFILL_MB:-0}
+    while [ "$left" -gt 0 ]; do
+        n=$((BYTES >> 20)); [ "$n" -le "$left" ] || n=$left
+        lim 120 "$DD" if=/dev/zero of="$DEV" bs=1M count="$n" oflag=direct conv=nocreat,fsync status=none >&2 || die "the pre-fill of ${BLK_PREFILL_MB} MiB failed with $left MiB to go"
+        left=$((left - n))
+    done
+    [ "${BLK_PREFILL_MB:-0}" = 0 ] || echo "prefill $N: ${BLK_PREFILL_MB} MiB of zero data; the server says log_live $(status_of log_live), checkpoint_steps $(status_of checkpoint_steps)" >> "$WORK/helper.log"
     ;;
 kill)
     serve_pid=$(cat "$DIR.serve.pid" 2>/dev/null)

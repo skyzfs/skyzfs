@@ -82,11 +82,9 @@ EXPECTED = {
     'pin_c_delay_cases': ('c', 'PASS', SERVER,
                           'every case of the suite ends with that delay as it does without it'),
 
-    # Checkpoints (design §5.1, "When the daemon checkpoints"): the four
-    # lines wait for M1.3c. They are WAITING on the stand-in for good,
-    # and on the daemon as long as they are named in WAITS_FOR_THE_DAEMON
-    # below; a name is taken out of that set on purpose, with the rig's
-    # code for the pin, when the daemon checkpoints.
+    # Checkpoints (design §5.1, "When the daemon checkpoints"): four
+    # lines, judged on the daemon since M1.T8 and WAITING on the
+    # stand-in for good, which has no log and no checkpoint.
     'pin_takeover_time_does_not_grow': ('b', 'PASS', WAITING,
                                         'over the kills of the kill test a take-over does not take longer and '
                                         'longer: the median of the last five is at most twice the median of '
@@ -95,15 +93,23 @@ EXPECTED = {
                                         'daemon\'s first runs)', 'WAITING'),
     'pin_log_stays_below_high_mark': ('b', 'PASS', WAITING,
                                       'under the kill test\'s load the write log never holds more than the '
-                                      'high mark (two segments of 64 MiB) plus one step (8 MiB of payload or '
-                                      '1024 records) plus one request (1 MiB)', 'WAITING'),
+                                      'high mark (two segments of 64 MiB) and what one request of 1 MiB adds '
+                                      '(its record, and a segment closed and the next opened: 128 MiB + 2 MiB + '
+                                      '20 KiB), by the status read five times a second and by what each new '
+                                      'server replayed. A step adds nothing to the bound. A test in which no '
+                                      'step was taken is a rig error', 'WAITING'),
     'pin_kills_inside_steps_lose_nothing': ('b', 'PASS', WAITING,
-                                            'kills that land inside a checkpoint step lose nothing: the pool '
-                                            'comes through as after any kill, and enough kills landed in a '
-                                            'step to say so (fewer is a rig error)', 'WAITING'),
+                                            'kills that land inside a checkpoint step lose nothing: ten '
+                                            'kills, each sent while a step waits at one of its five points '
+                                            '(blocks saved, home written, home synced, new start written, '
+                                            'new start durable; twice each, by the test hook '
+                                            '--step-pause-until), and the pool comes through as after any '
+                                            'kill. Fewer than ten is a rig error', 'WAITING'),
     'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
-                                 'every case of the suite ends as declared with the marks set low enough that '
-                                 'the daemon checkpoints while the suite runs (no step taken is a rig error)', 'WAITING'),
+                                 'every case of the suite ends as in the first pass while the daemon checkpoints: '
+                                 'the marks have no lower setting than the default, so each volume\'s log is '
+                                 'first filled to the high mark with zero data (no step taken is a rig error)',
+                                 'WAITING'),
     'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
                                                   'a volume that fails while the server holds a request (--hold '
                                                   'with --fail-log-after) still ends: serve exits with the failed '
@@ -262,6 +268,10 @@ OBSERVED = {
                                                 'on this runner: the pin on overlapping writes means as much as this shows'),
     'obs_b_takeover_ms': ('b', 'how long each take-over of the kill test took, in order, and the medians of '
                                'the first and the last five'),
+    'obs_b_takeover_starts': ('b', 'each take-over of the kill test by the new server\'s own account: how long '
+                                   'its start took and how much log it replayed'),
+    'obs_c_low_steps': ('c', 'the checkpoint steps taken while the suite ran on logs filled to the high mark, and on '
+                             'how many of its volumes'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
@@ -287,7 +297,8 @@ REFERENCE_ONLY = set()
 # Observations only the daemon can make: on the stand-in the rig writes
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
-DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device',
+DAEMON_ONLY_OBSERVED = {'obs_c_low_steps',
+                        'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
                         'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',
                         'obs_f_refused_start_zedreopen'}
@@ -334,10 +345,6 @@ NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 # Pins the daemon cannot carry yet: expected WAITING on the daemon too.
 WAITS_FOR_THE_DAEMON = {
-    'pin_takeover_time_does_not_grow': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_log_stays_below_high_mark': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_kills_inside_steps_lose_nothing': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_c_suite_with_low_marks': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
     'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
                                                  'path does while the pump holds a request',
 }

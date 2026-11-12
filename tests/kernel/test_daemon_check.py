@@ -42,6 +42,9 @@ def as_expected(impl='reference'):
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: seen'
         r['pin_volume_on_larger_blocks'] = 'PASS: seen'
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            r[name] = 'PASS: seen'
         r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: seen'
         # And those the daemon cannot carry yet.
         for name in dc.WAITS_FOR_THE_DAEMON:
@@ -154,6 +157,9 @@ class Cases(unittest.TestCase):
         r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: zeros'
         r['pin_volume_on_larger_blocks'] = 'PASS: refused and served'
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            r[name] = 'PASS: seen'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -368,12 +374,30 @@ class WaitsForTheDaemon(unittest.TestCase):
         self.assertEqual((differs, errors), ([], []))
         # PASS before its time is a difference: the table is changed on
         # purpose when the daemon can carry the pin.
-        r['pin_takeover_time_does_not_grow'] = 'PASS: early'
+        r['pin_failed_volume_while_a_request_is_held'] = 'PASS: early'
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual(len(differs), 1)
-        r['pin_takeover_time_does_not_grow'] = 'FAIL: grew'
+        r['pin_failed_volume_while_a_request_is_held'] = 'FAIL: did not end'
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual(len(differs), 1)
+
+    def test_the_checkpoint_pins_are_judged_on_the_daemon(self):
+        # Built with M1.T8: WAITING is no longer an answer there, and a
+        # FAIL differs from the table.
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            self.assertNotIn(name, dc.WAITS_FOR_THE_DAEMON)
+            r = as_expected('daemon')
+            r['ctl_recovered_log_too_short'] = 'FAIL: seen'
+            r.update({n: 'FAIL: seen' if n.startswith('ctl_') else 'seen' for n in F})
+            r[name] = 'WAITING: not built'
+            _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+            self.assertEqual(len(errors), 1, name)
+            r[name] = 'FAIL: seen'
+            _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+            self.assertEqual((len(differs), errors), (1, []), name)
+            # On the stand-in they wait for good.
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
 
     def test_every_such_pin_is_in_the_table_and_waits_on_the_stand_in(self):
         for name in dc.WAITS_FOR_THE_DAEMON:
