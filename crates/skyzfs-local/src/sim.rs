@@ -1182,16 +1182,16 @@ impl File for SimFile {
     /// A hint that changes nothing the disk holds or will hold: the
     /// simulated disk keeps no cache apart from what a sync makes
     /// durable, so there is nothing to start. It is recorded
-    /// ([`SimDisk::writebacks`]), and is no operation for
-    /// [`SimDisk::halt_after`]. A halted machine refuses it as it
-    /// refuses a write.
+    /// ([`SimDisk::writebacks`]), is no operation for
+    /// [`SimDisk::halt_after`], and does not fail on a halted machine:
+    /// it fails only where a test says so ([`SimDisk::set_writeback`],
+    /// [`SimDisk::fail_writeback_of`]), so that whatever a store does
+    /// on this disk, and what each request is answered, is the same
+    /// with the hint as without it.
     fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
         let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
-        if state.halted(false) {
-            return Err(injected("halt"));
-        }
         if state.no_writeback {
             return Err(io::ErrorKind::Unsupported.into());
         }
