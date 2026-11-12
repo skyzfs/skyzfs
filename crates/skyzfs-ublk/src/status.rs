@@ -74,6 +74,9 @@
 //! | 1432 | 8 | the completions that were committed behind those stores |
 //! | 1440 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
 //! | 1456 | 16 | the same for every other request |
+//! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
+//! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
+//! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -103,9 +106,6 @@
 //!   whoever watches the file sees a step while it is under way.
 //! - When the daemon stops in order, the last counters are written
 //!   before [`Board::publish`] returns, whatever the interval.
-//! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
-//! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
-//! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
 //!
 //! # The time
 //!

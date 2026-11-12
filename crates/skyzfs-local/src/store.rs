@@ -2162,7 +2162,7 @@ pub struct Timing {
     /// The reads that found a block in a record of the log that was
     /// not durable yet, whose payload the reader then read whole and
     /// checked against its checksum (a failed sync can take such a
-    /// record's content back: see [`Shared`]): how many reads; the
+    /// record's content back: see the design, §5.1): how many reads; the
     /// bytes they read beyond those asked for; how many records did not
     /// match, each of which failed the volume. A served store only.
     pub read_unflushed: [u64; 3],
