@@ -160,8 +160,8 @@ impl<F: FnMut() -> io::Result<Box<dyn Control>>> Lazy<F> {
 }
 
 impl<F: FnMut() -> io::Result<Box<dyn Control>>> Control for Lazy<F> {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        self.control()?.can_reissue()
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        self.control()?.features()
     }
     fn info(&mut self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
         self.control()?.info(number)

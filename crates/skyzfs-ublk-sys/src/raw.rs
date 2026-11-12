@@ -114,6 +114,22 @@ fn filled<T>(data: Option<T>) -> io::Result<T> {
     data.ok_or_else(|| io::Error::other("a control command lost its structure"))
 }
 
+/// The driver's features (`UBLK_U_CMD_GET_FEATURES`, Linux 6.5), asked
+/// for under a device number that is never a device's: `None` when the
+/// driver has no such command, which it then answers with `ENODEV` (see
+/// [`skyzfs_ublk::features`]).
+pub fn features() -> io::Result<Option<u64>> {
+    match command(sys::UBLK_U_CMD_GET_FEATURES, u32::MAX, 0, Some(0u64)) {
+        Ok((_, data)) => filled(data).map(Some),
+        Err(e) => match e.raw_os_error() {
+            Some(code) => {
+                skyzfs_ublk::features::answered(Err(code)).map_err(io::Error::from_raw_os_error)
+            }
+            None => Err(e),
+        },
+    }
+}
+
 /// Add a device under `number` with one queue of `depth`, the flags
 /// `flags` and the largest request `max_io` bytes, served by this
 /// process. An error is the driver's: `EEXIST` when the number is

@@ -4,7 +4,6 @@ use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 
-use libublk::ctrl::UblkCtrl;
 use libublk::sys;
 use skyzfs_ublk::lifecycle::{AddError, Control, DeviceInfo, DeviceState, Shape};
 
@@ -74,10 +73,8 @@ pub fn block_device(number: u32) -> String {
 }
 
 impl Control for Kernel {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        let features = UblkCtrl::get_features()
-            .ok_or_else(|| io::Error::other("the driver's features cannot be read"))?;
-        Ok(features & u64::from(sys::UBLK_F_USER_RECOVERY_REISSUE) != 0)
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        raw::features()
     }
 
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {

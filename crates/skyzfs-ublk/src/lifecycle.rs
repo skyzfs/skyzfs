@@ -326,8 +326,9 @@ pub struct Failure {
 /// daemon asks for, and the record holds what was asked. The fake in
 /// the tests reports what was asked for.
 pub trait Control {
-    /// Whether the driver can reissue requests after a recovery.
-    fn can_reissue(&mut self) -> io::Result<bool>;
+    /// The driver's features ([`crate::features`]): `None` when the
+    /// driver has no command that says them.
+    fn features(&mut self) -> io::Result<Option<u64>>;
     /// The device with this number, if there is one.
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>>;
     /// Add a device under this number.
@@ -353,8 +354,8 @@ pub trait Control {
 /// A borrowed control interface is one: so that a caller can hold the
 /// kernel's as a trait object (`&mut dyn Control`) and pass it on.
 impl<C: Control + ?Sized> Control for &mut C {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        (**self).can_reissue()
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        (**self).features()
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         (**self).info(number)
@@ -505,8 +506,9 @@ pub struct Ready<S> {
 /// The daemon does not serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stop {
-    /// The kernel cannot reissue requests after a recovery.
-    CannotReissue,
+    /// The kernel's ublk driver lacks something the daemon needs; the
+    /// start stopped before it touched anything.
+    Unsupported(crate::features::Unsupported),
     /// Another instance holds the volume's lock, or its device is live
     /// under another server. Nothing was changed. Exit status 5.
     Held,
@@ -668,11 +670,13 @@ pub(crate) fn start_with<C: Control, R: Records, V: Volume>(
     wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<Ready<V::Open>, Stop> {
-    let can = control
-        .can_reissue()
+    let features = control
+        .features()
         .map_err(error("reading the driver's features"))?;
-    if !can && !mutants.has(Mutants::NO_FEATURE_CHECK) {
-        return Err(Stop::CannotReissue);
+    if let Err(why) = crate::features::check(features) {
+        if !mutants.has(Mutants::NO_FEATURE_CHECK) {
+            return Err(Stop::Unsupported(why));
+        }
     }
     if mutants.has(Mutants::DEVICE_BEFORE_STORE) {
         // The defect: the device first.

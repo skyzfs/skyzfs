@@ -33,7 +33,8 @@ enum Event {
 #[derive(Clone)]
 struct World {
     events: Vec<Event>,
-    can_reissue: bool,
+    /// The driver's features: `None` when it cannot say them.
+    features: Option<u64>,
     devices: BTreeMap<u32, DeviceInfo>,
     /// Devices that appear between the daemon's look and its add.
     late: Vec<u32>,
@@ -135,7 +136,7 @@ impl World {
     fn new() -> Self {
         Self {
             events: Vec::new(),
-            can_reissue: true,
+            features: Some(u64::MAX),
             devices: BTreeMap::new(),
             late: Vec::new(),
             held: Vec::new(),
@@ -242,10 +243,10 @@ impl Drop for FakeLock {
 }
 
 impl Control for Fake {
-    fn can_reissue(&mut self) -> io::Result<bool> {
+    fn features(&mut self) -> io::Result<Option<u64>> {
         let mut w = self.0.borrow_mut();
         w.happens(Event::Features)?;
-        Ok(w.can_reissue)
+        Ok(w.features)
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         self.intrude();
@@ -1109,16 +1110,27 @@ fn a_record_of_another_boot_or_of_a_device_that_is_gone_means_a_fresh_device() {
     );
 }
 
-fn cannot_reissue(mutants: u32) -> Result<(), String> {
-    let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
-    world.can_reissue = false;
-    let outcome = run(world, mutants);
-    rules(&outcome)?;
-    check(outcome.result == Err(Stop::CannotReissue), "refused")?;
-    check(
-        outcome.world.events == [Event::Features],
-        "nothing else is done, and the store is not opened",
-    )
+fn lacks_a_feature(mutants: u32) -> Result<(), String> {
+    use crate::features::{Unsupported, NEEDED};
+    // Without each flag the daemon needs, and without the command that
+    // says the features: refused, naming what is missing.
+    let mut cases: Vec<(Option<u64>, Unsupported)> = NEEDED
+        .iter()
+        .map(|flag| (Some(!flag.bit), Unsupported::Missing(vec![*flag])))
+        .collect();
+    cases.push((None, Unsupported::NoFeatures));
+    for (features, why) in cases {
+        let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
+        world.features = features;
+        let outcome = run(world, mutants);
+        rules(&outcome)?;
+        check(outcome.result == Err(Stop::Unsupported(why)), "refused")?;
+        check(
+            outcome.world.events == [Event::Features],
+            "nothing else is done, and the store is not opened",
+        )?;
+    }
+    Ok(())
 }
 
 impl PartialEq for Ready<Opened> {
@@ -1128,9 +1140,9 @@ impl PartialEq for Ready<Opened> {
 }
 
 #[test]
-fn a_kernel_that_cannot_reissue_is_refused_before_anything_is_touched() {
+fn a_kernel_that_lacks_a_needed_feature_is_refused_before_anything_is_touched() {
     holds(
-        cannot_reissue,
+        lacks_a_feature,
         &[("no feature check", Mutants::NO_FEATURE_CHECK)],
     );
 }

@@ -115,6 +115,12 @@ pub const USAGE: &str = "usage:
 /// before using a command.
 pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk device.
 
+  It needs Linux 6.9 or later with the ublk driver, whose features
+  UBLK_F_USER_RECOVERY, UBLK_F_USER_RECOVERY_REISSUE and
+  UBLK_F_CMD_IOCTL_ENCODE it uses. A start asks the driver for its
+  features before it adds a device and refuses, naming what is
+  missing, on a kernel that lacks one.
+
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
       Make a new, empty volume in DIR. DIR is made if it is missing
       (its parent must exist) and must hold no volume and no file but

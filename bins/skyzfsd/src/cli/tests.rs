@@ -485,3 +485,14 @@ fn help_is_a_command_and_says_what_the_rig_asks_it_to_say() {
     // A figure that was measured wrongly and is not to be quoted.
     assert!(!HELP.contains("130"));
 }
+
+/// The help names the oldest kernel and every flag the start checks,
+/// as the one table of them says.
+#[test]
+fn help_names_the_oldest_kernel_and_the_flags() {
+    use skyzfs_ublk::features::{NEEDED, OLDEST_KERNEL};
+    assert!(HELP.contains(&format!("Linux {OLDEST_KERNEL} or later")));
+    for flag in NEEDED {
+        assert!(HELP.contains(flag.name), "help does not name {}", flag.name);
+    }
+}

@@ -35,8 +35,8 @@ struct Kernel {
 }
 
 impl Control for Kernel {
-    fn can_reissue(&mut self) -> io::Result<bool> {
-        Ok(true)
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        Ok(Some(u64::MAX))
     }
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
         Ok(self.devices.get(&number).copied())

@@ -633,13 +633,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     };
     let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
-        Err(Stop::CannotReissue) => {
-            return Err(
-                "the kernel's ublk driver cannot reissue requests after a recovery \
-                        (UBLK_F_USER_RECOVERY_REISSUE): not served"
-                    .into(),
-            )
-        }
+        Err(Stop::Unsupported(why)) => return Err(format!("{why}: not served")),
         Err(Stop::Held) => {
             say("another instance or a live server holds the volume");
             return Ok(Exit::RefusedHeld);
