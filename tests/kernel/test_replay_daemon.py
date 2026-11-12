@@ -260,7 +260,8 @@ class Pass(unittest.TestCase):
         a = dict(log=self.log, base=self.base, manifest=self.manifest, pool='p', mountpoint='/p', work=os.path.join(d, 'w'),
                  out=os.path.join(d, 'out'), skyzfsd='skyzfsd', ublk='ublk', dd='dd', volume='vol', serve_arg=None,
                  dev_bytes=1 << 20, budget_s=1000, budget_name='test', between_budget_s=0, recover_short=0,
-                 recover_points=3, steps='4', seed=1, replay_log='', require_witness=False, discard='zero')
+                 recover_points=3, steps='4', seed=1, replay_log='', require_witness=False, discard='zero',
+                 every_prefix=False)
         a.update(kw)
         os.makedirs(a['work'], exist_ok=True)
         os.makedirs(a['out'], exist_ok=True)
@@ -427,6 +428,36 @@ class Pass(unittest.TestCase):
         a = self.args(log=os.path.join(self.dir.name, 'no-such-log'))
         self.assertEqual(rd.check(a), 2)
         self.assertIn('stopped by the rig', self.summary_text())
+
+    def test_every_prefix_shows_the_criterion(self):
+        records = logwrites.index(self.log, 0)['records']
+        self.fake()
+        self.assertEqual(rd.check(self.args(every_prefix=True, budget_s=0.001)), 0)
+        text = self.summary_text()
+        n = len(records) + 1
+        self.assertIn(f'Every record prefix: {n} of {n} checked', text)
+        self.assertIn("criterion: shown by this run", text)
+
+    def test_the_pull_request_budget_does_not_show_the_criterion(self):
+        self.fake()
+        self.assertEqual(rd.check(self.args()), 0)
+        self.assertIn('criterion: not shown by this run', self.summary_text())
+
+    def test_every_prefix_asked_and_not_checked_is_a_coverage_error(self):
+        # A prefix between two flushes that the plan leaves out.
+        records = logwrites.index(self.log, 0)['records']
+        kind, rest, _ = rd.prefix_plan(records, base_max=len(records) + 1)
+        n = min(set(range(len(records) + 1)) - set(kind) - set(rest))
+        saved = rd.between_points
+        rd.between_points = lambda records, kind, k, seed=1: [x for x in saved(records, kind, k, seed) if x != n]
+        try:
+            self.fake()
+            self.assertEqual(rd.check(self.args(every_prefix=True)), 2)
+            text = self.summary_text()
+            self.assertIn('not shown by this run', text)
+            self.assertIn('1 prefixes were not checked', text)
+        finally:
+            rd.between_points = saved
 
     def test_a_control_not_caught_is_a_verdict(self):
         self.fake(withheld_caught=False)

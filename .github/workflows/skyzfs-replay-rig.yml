@@ -35,7 +35,7 @@ name: skyzfs-replay-rig
 #     25 minutes a job: every required prefix and every deep check, the
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
-#     `daemon_budget` (full: about 50 minutes a job).
+#     `daemon_budget` (full: every record prefix, about 45 minutes a job).
 on:
   workflow_dispatch:
     inputs:
@@ -59,7 +59,7 @@ on:
         options: [reference, daemon, both]
         default: reference
       daemon_budget:
-        description: "daemon jobs only: pull-request (about 25 minutes a job) or full (about 50)"
+        description: "daemon jobs only: pull-request (flush boundaries and marks, about 25 minutes a job) or full (every record prefix, design §9: about 45)"
         type: choice
         options: [pull-request, full]
         default: full
@@ -231,7 +231,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.daemon == 'true'
     runs-on: ${{ matrix.image }}
-    timeout-minutes: 80
+    # The full budget checks every record prefix (about 670 at 2.4 s).
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -280,17 +281,19 @@ jobs:
         run: |
           [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
           # The pull-request budget: every required prefix and every deep
-          # check, the light check on a sample of the flush boundaries.
-          # The full budget: more of them, and prefixes between flushes.
+          # check, the light check on a sample of the flush boundaries; it
+          # does not show design §9's criterion, and its summary says so.
+          # The full budget: every record prefix, with no time limit, which
+          # is what shows the criterion.
           case $BUDGET in
-            pull-request) syncs=8; budget_s=400; between_s=0 ;;
-            full) syncs=16; budget_s=900; between_s=900 ;;
+            pull-request) syncs=8; budget_s=400; between_s=0; every="" ;;
+            full) syncs=16; budget_s=900; between_s=0; every=1 ;;
             *) echo "::error::budget: $BUDGET"; exit 64 ;;
           esac
           {
             echo "export RIG_SKYZFSD=$PWD/target/release/skyzfsd"
             echo "export RIG_SYNCS=$syncs RIG_FILE_SLEEP=0.2 RIG_FILL_MB=160 RIG_VOLUME_MB=1024"
-            echo "export RIG_BUDGET_S=$budget_s RIG_BETWEEN_BUDGET_S=$between_s RIG_BUDGET_NAME=$BUDGET"
+            echo "export RIG_BUDGET_S=$budget_s RIG_BETWEEN_BUDGET_S=$between_s RIG_BUDGET_NAME=$BUDGET RIG_EVERY_PREFIX=$every"
             echo "export RIG_DISCARD=$DISCARD RIG_AUTOTRIM=on RIG_REQUIRE_WITNESS=1"
             printf 'export RIG_REPLAY_LOG=%q\n' "$RUNNER_TEMP/bin/replay-log"
           } > "$RUNNER_TEMP/rig.env"

@@ -69,7 +69,8 @@
 # written at the start of the workload and synced by the first sync, so
 # that the log passes the daemon's high mark and checkpoint steps fall
 # inside the recording), RIG_SERVE_ARGS (options for every serve,
-# split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME. A
+# split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME,
+# RIG_EVERY_PREFIX=1 (every record prefix, no time limit). A
 # recording in which the daemon took no checkpoint step is the rig's
 # error (exit 2): it would say nothing about a cut inside a step.
 set -euo pipefail
@@ -412,6 +413,7 @@ if [ -n "$SKYZFSD" ]; then
     for o in "${SERVE_ARGS[@]}"; do args+=("--serve-arg=$o"); done
     [ -z "${RIG_REPLAY_LOG:-}" ] || args+=(--replay-log "$RIG_REPLAY_LOG")
     [ -z "${RIG_REQUIRE_WITNESS:-}" ] || args+=(--require-witness)
+    [ -z "${RIG_EVERY_PREFIX:-}" ] || args+=(--every-prefix)
     mkdir -p "$WORK/check"
     # Not exec: the EXIT trap still runs, for the kernel's messages after
     # a failed check and the scratch directory.

@@ -607,6 +607,8 @@ def main():
     ap.add_argument('--budget-name', default='', help='what the budget is called in the summary')
     ap.add_argument('--between-budget-s', type=float, default=0,
                     help='seconds for random prefixes between two flushes (0: none)')
+    ap.add_argument('--every-prefix', action='store_true',
+                    help='check every record prefix, with no time limit (the full budget: design §9\'s criterion)')
     ap.add_argument('--recover-short', type=int, default=0,
                     help='N of the recover-short control; 0 (the default) does not build it, see the head of this file')
     ap.add_argument('--recover-points', type=int, default=8, help='marks the recover-short control checks')
@@ -707,8 +709,10 @@ def _check(a, st):
         raise RigError(trouble)
     if not fmarks:
         raise RigError('the log has no fsync marks')
-    kind, rest, counts = prefix_plan(records)
+    every = getattr(a, 'every_prefix', False)
+    kind, rest, counts = prefix_plan(records, base_max=total + 1 if every else BASE_MAX)
     res['available'] = counts
+    res['every_prefix'] = every
 
     # Calibration: two flush boundaries, for the time a prefix takes.
     # They are timed for the plan, and a calibration point that fails is
@@ -726,10 +730,10 @@ def _check(a, st):
         print(f"calibration {n}: {'ok' if r['ok'] else 'FAILED ' + r['failed']} {t_cal[-1]:.2f}s "
               f"(make {r['t_make']:.2f}, light {r.get('t_light', 0):.2f}, zdb -u {r.get('t_txg', 0):.2f})", flush=True)
     per = statistics.mean(t_cal) if t_cal else 8.0
-    sample = set(spread(rest, int(a.budget_s / per)))
+    sample = set(rest if every else spread(rest, int(a.budget_s / per)))
     for n in sample:
         kind[n] = 'flush'
-    betw = between_points(records, kind, int(a.between_budget_s / per), a.seed)
+    betw = between_points(records, kind, total if every else int(a.between_budget_s / per), a.seed)
     for n in betw:
         kind[n] = 'between'
     res['calibration'] = {'points': len(t_cal), 't_point': per, 'flush_sampled': len(sample)}
@@ -750,7 +754,7 @@ def _check(a, st):
     # the planned time; the required ones never do.
     planned = len(kind) * per
     for n in sorted(kind):
-        if kind[n] in ('flush', 'between') and time.monotonic() - start - deep_s > 2 * planned:
+        if not every and kind[n] in ('flush', 'between') and time.monotonic() - start - deep_s > 2 * planned:
             skipped += 1
             continue
         r = ck.point(n, kind[n])
@@ -799,6 +803,14 @@ def _check(a, st):
         cov['errors'].append(f'the deep checks did not run at {len(healthy_ends - deep_done)} of {len(ends)} first and last '
                              f'prefixes of a transaction group (first: {min(healthy_ends - deep_done)})')
     txgs = sorted({r['txg'] for r in points if r.get('txg') is not None})
+    # Design §9: every record prefix, and the deep checks at the first and
+    # last prefix of every transaction group. Shown only when every prefix
+    # was checked, so that the first and last checked are the true ones.
+    every_checked = len(checked & set(range(total + 1)))
+    cov['every'] = {'checked': every_checked, 'prefixes': total + 1,
+                    'ends_deep': not (healthy_ends - deep_done)}
+    if every and every_checked < total + 1:
+        cov['errors'].append(f'every record prefix was asked for and {every_checked} of {total + 1} were checked')
     flush_all = set(flush_points(records))
     cov.update(txgs=len(txgs), txg_first=min(txgs) if txgs else None, txg_last=max(txgs) if txgs else None,
                deep=len(deep_done), flush=len(flush_all), flush_checked=len(flush_all & checked),
@@ -955,6 +967,28 @@ def mean(xs):
     return statistics.mean(xs) if xs else float('nan')
 
 
+def criterion_line(res):
+    """Whether this run shows design §9's replay criterion: every record prefix checked, the deep checks at the
+    first and last prefix of every transaction group, and nothing against the run."""
+    ev = res.get('coverage', {}).get('every', {})
+    n, of, ends = ev.get('checked', 0), ev.get('prefixes', 0), ev.get('ends_deep', False)
+    head = (f"**Every record prefix: {n} of {of} checked; the first and last checked prefix of each transaction group "
+            f"deep-checked: {'yes' if ends else 'no'}.** ")
+    if not res.get('every_prefix'):
+        return head + ("Design §9's replay criterion: not shown by this run (this budget checks the marks and the flush "
+                       "boundaries, not every prefix; the full budget, by dispatch, does).")
+    if n == of and ends and res.get('exit') == 0:
+        return head + "Design §9's replay criterion: shown by this run."
+    why = []
+    if n < of:
+        why.append(f'{of - n} prefixes were not checked')
+    if not ends:
+        why.append('a transaction group\'s first or last prefix was not deep-checked')
+    if res.get('exit') != 0:
+        why.append(f"the run exits {res.get('exit')}")
+    return head + "Design §9's replay criterion: **not shown by this run** (" + '; '.join(why) + ')'
+
+
 def summary(res):
     pts = res['points']
     av = res['available']
@@ -968,7 +1002,11 @@ def summary(res):
                f"{res['marks']} sync marks, {res['fsync_marks']} fsync marks, {res['files']} files. "
                f"Checkpoint steps the daemon took while recording: **{res['steps'] or 'not said'}**.\n")
     budget = res.get('budget_name') or 'given'
-    out.append(f"Budget: {budget}, {res['budget_s']:.0f} s for the sampled flush boundaries.\n")
+    if res.get('every_prefix'):
+        out.append(f"Budget: {budget}, every record prefix, with no time limit.\n")
+    else:
+        out.append(f"Budget: {budget}, {res['budget_s']:.0f} s for the sampled flush boundaries.\n")
+    out.append(criterion_line(res) + '\n')
     fails = res['failures']
     word = ('every checked prefix passed' if not fails else f"**{len(fails)} prefixes FAILED**")
     out.append(f"Result: {word}. Main pass {res['main_pass_s']:.0f} s"
