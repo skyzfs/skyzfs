@@ -139,3 +139,17 @@ that uberblock N reaches and that changes before the cut.
   as M1's got; the notes show model rows 27% apart in one job.
 - After `zpool create`, have the agent read the first label at byte 0 and
   refuse otherwise, so a later libzfs that learns ublk cannot move it.
+
+## Second look, at 4707638 (the lead's answers)
+
+Read the design's diff from 887496c and checked the new footnotes against
+the 2.4.1 source. Nothing was run.
+
+- Findings 1 to 10: all dropped. 1, 2, 3, 4, 5, 7, 8 and 10 are stated or
+  ruled as asked; 6 and 9 are recorded as open, for M2 and M3.
+- The new footnotes are right: manual trim also skips extents under the
+  minimum, except a secure trim (`vdev_trim.c:904`, `:918`); the flush
+  switch is in `vdev_disk_io_start`.
+- Defects: fixed, footnotes and tables check clean. Two small ones are
+  left: the header's date is still 2026-11-10, and §4.2 "Kernels" still
+  says the ublk flags "must be pinned during M1" with no record of it.
