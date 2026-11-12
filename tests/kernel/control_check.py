@@ -97,6 +97,11 @@ EXPECTED = {
         'second time'),
     'control_test_program_steps': ('PASS', CRATE, 'none: the rig\'s own means',
                                    'the test program answers each step in one line'),
+    'control_test_program_self_delete': (
+        'PASS', CRATE, 'A failed volume: the daemon deletes its own device while it serves it',
+        'the test program deletes its own device 300 ms after it went live, with no request held: the '
+        'delete returns, the driver ends the queue, the program says so and ends by itself with 0, and a '
+        'lookup of the number then finds nothing (the test does not try an add under it)'),
 
     # The binding's own device, step by step.
     'pin_orderly_stop_leaves_waiting': (
@@ -209,6 +214,11 @@ OBSERVED = {
     'control_stop_under_writers_detail': 'the crate\'s test of stops under writers: writes finished, requests '
                                          'handed to the servers, rounds with none finished before the stop',
     'control_set_params_on_a_started_device': 'the crate\'s own word on set-parameters after a start',
+    'control_test_program_self_delete_detail': 'the crate\'s test of a delete by the serving process itself, '
+                                               'nothing held: how the program ended, after how long, and its '
+                                               'own lines (when the delete was sent and when it returned). '
+                                               'The time with a request held is the rig\'s '
+                                               'obs_delete_while_the_server_holds_a_request',
     'obs_delete_ms': 'how long the binding\'s delete took, held and unheld',
     'obs_delete_while_the_server_holds_a_request': 'a delete of a live device whose server holds a read for 20 s: how '
                                                    'long the delete took, what the reader got and when, and how long '
@@ -232,6 +242,7 @@ CRATE_OBSERVED = (
     'control_delete_frees_the_number_detail',
     'control_stop_under_writers_detail',
     'control_set_params_on_a_started_device',
+    'control_test_program_self_delete_detail',
 )
 
 
