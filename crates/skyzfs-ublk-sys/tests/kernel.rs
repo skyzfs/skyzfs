@@ -524,6 +524,16 @@ fn written_reads_back(file: &std::fs::File, at: u64, want: &Buf, what: &str) -> 
     Ok(())
 }
 
+/// Wait until udev has handled what it has queued, so that its reads
+/// of a device a writer has just closed are over. Whether it could be
+/// asked: a system without `udevadm` goes on without the wait.
+fn settle_udev() -> bool {
+    std::process::Command::new("udevadm")
+        .args(["settle", "--timeout=20"])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// The buffers across a take-over, by name: writes and reads of 4 KiB
 /// and of 1 MiB come back as written in the first life (where each
 /// tag's first request arrives in the library's buffer and every later
@@ -532,13 +542,15 @@ fn written_reads_back(file: &std::fs::File, at: u64, want: &Buf, what: &str) -> 
 /// lands elsewhere or is left from an earlier round is seen. A 1 MiB
 /// write arrives as one request.
 ///
-/// The first requests of the life after the take-over are `depth`
-/// writes of 1 MiB sent together, which the server holds until all are
-/// in its hands, so that all tags hold a first write at once. In every
-/// life the queue's count of first-write copies must equal the number
-/// of tags the server saw begin with a write: `depth` after the
-/// take-over, unless something else read the device first (the detail
-/// line gives the count).
+/// The first requests of a life after a take-over are `depth` writes
+/// of 1 MiB sent together, which the server holds until all are in its
+/// hands, so that all tags hold a first write at once. In every life
+/// the queue's count of first-write copies must equal the number of
+/// tags the server saw begin with a write: `depth` after a take-over,
+/// unless something else read the device first. If it read on every
+/// tag, the life has no first write: the device is then taken over
+/// again, up to three times, and the test fails only if no life had
+/// one (the detail line gives each life's count).
 ///
 /// The first life ends in order and not by a kill: the test is its own
 /// server. The device waits for a server either way, and the take-over
@@ -574,11 +586,10 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
                 write_and_read_back(&file, MIB, at, round, "1 MiB")?;
             }
         }
-        // What the first life leaves at the places the second reads.
-        let (left_large_8, left_large_16) = (
-            pattern(MIB, 8 << 20, round),
-            pattern(MIB, 16 << 20, round - 1),
-        );
+        // What the first life leaves at the places the next reads.
+        let left_large_8 = pattern(MIB, 8 << 20, round);
+        let mut left_large_16 = pattern(MIB, 16 << 20, round - 1);
+        let mut settled = settle_udev();
         let (longest, copies) = first.end()?;
         if longest != MIB as u64 {
             return Err(format!("the longest write handed over was {longest} bytes"));
@@ -589,83 +600,111 @@ fn data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over() {
         // no write of this life is a tag's first request (seen once:
         // run 43080463343, Ubuntu 24.04, 0 copies). `end` has compared
         // the count with the tags the server saw begin with a write.
-        // The life after the take-over sends `depth` writes together
-        // and must have first writes: the floor is there.
         if copies > u64::from(DEPTH) {
             return Err(format!("{copies} first-write copies in the first life"));
         }
-        until(&mut kernel, n, "waiting", |i| {
-            i.is_some_and(|i| i.state == DeviceState::Waiting)
-        })?;
 
-        kernel
-            .begin_recovery(n)
-            .map_err(|e| format!("begin of recovery: {e}"))?;
-        let second = life_gathering(n, true, &content, usize::from(DEPTH))?;
-        {
-            // The first requests of this life: one write of 1 MiB per
-            // tag, all in flight together.
-            let together = Arc::new(std::sync::Barrier::new(usize::from(DEPTH)));
-            let writers: Vec<_> = (0..u64::from(DEPTH))
-                .map(|w| {
-                    let together = together.clone();
-                    std::thread::spawn(move || -> Result<(), String> {
-                        let file = direct(n)?;
-                        let at = (24 + w) << 20;
-                        let data = pattern(MIB, at, 1000 + w);
-                        together.wait();
-                        file.write_all_at(&data, at)
-                            .map_err(|e| format!("a first write at {at}: {e}"))
+        // The lives after a take-over. Each sends `depth` writes
+        // together as its first requests and is checked exactly: the
+        // server held `depth` writes at once, and `end` compares the
+        // copies with the tags the server saw begin with a write. A
+        // life must also *have* a first write, and that is not in the
+        // test's hands: a request that waited through the take-over is
+        // a tag's first, and if every tag gets a read of somebody
+        // else's that way, no write is first (seen once: run
+        // 43130686991, Ubuntu 24.04, 0 copies with both exact checks
+        // passed). udev reads a device after a writer closes it, so
+        // the test waits for udev before a life ends; and it takes
+        // over again, up to `LIVES` times, until a life has a first
+        // write. It fails only if none has.
+        const LIVES: u32 = 3;
+        let mut tried = Vec::new();
+        for taken in 1..=LIVES {
+            until(&mut kernel, n, "waiting", |i| {
+                i.is_some_and(|i| i.state == DeviceState::Waiting)
+            })?;
+            kernel
+                .begin_recovery(n)
+                .map_err(|e| format!("begin of recovery {taken}: {e}"))?;
+            let next = life_gathering(n, true, &content, usize::from(DEPTH))?;
+            {
+                // The first requests of this life: one write of 1 MiB
+                // per tag, all in flight together.
+                let together = Arc::new(std::sync::Barrier::new(usize::from(DEPTH)));
+                let mark = 1000 * u64::from(taken);
+                let writers: Vec<_> = (0..u64::from(DEPTH))
+                    .map(|w| {
+                        let together = together.clone();
+                        std::thread::spawn(move || -> Result<(), String> {
+                            let file = direct(n)?;
+                            let at = (24 + w) << 20;
+                            let data = pattern(MIB, at, mark + w);
+                            together.wait();
+                            file.write_all_at(&data, at)
+                                .map_err(|e| format!("a first write at {at}: {e}"))
+                        })
                     })
-                })
-                .collect();
-            for writer in writers {
-                writer
-                    .join()
-                    .map_err(|_| "a writer panicked".to_owned())??;
-            }
-            let file = direct(n)?;
-            for w in 0..u64::from(DEPTH) {
-                let at = (24 + w) << 20;
-                written_reads_back(
-                    &file,
-                    at,
-                    &pattern(MIB, at, 1000 + w),
-                    "a first write of the life after the take-over",
-                )?;
-            }
-            // What the first life was written.
-            written_reads_back(&file, 8 << 20, &left_large_8, "1 MiB of the first life")?;
-            written_reads_back(&file, 16 << 20, &left_large_16, "1 MiB of the first life")?;
-            written_reads_back(&file, 0, &left_small, "4 KiB of the first life")?;
-            for turn in 0..2 * u64::from(DEPTH) {
+                    .collect();
+                for writer in writers {
+                    writer
+                        .join()
+                        .map_err(|_| "a writer panicked".to_owned())??;
+                }
+                let file = direct(n)?;
+                for w in 0..u64::from(DEPTH) {
+                    let at = (24 + w) << 20;
+                    written_reads_back(
+                        &file,
+                        at,
+                        &pattern(MIB, at, mark + w),
+                        "a first write of the life after the take-over",
+                    )?;
+                }
+                // What the lives before were written.
+                written_reads_back(&file, 8 << 20, &left_large_8, "1 MiB of the first life")?;
+                written_reads_back(&file, 16 << 20, &left_large_16, "1 MiB of the life before")?;
+                written_reads_back(&file, 0, &left_small, "4 KiB of the first life")?;
+                for turn in 0..2 * u64::from(DEPTH) {
+                    round += 1;
+                    let at = (40 << 20) + (turn % 5) * 8192;
+                    write_and_read_back(&file, 4096, at, round, "4 KiB after the take-over")?;
+                }
                 round += 1;
-                let at = (40 << 20) + (turn % 5) * 8192;
-                write_and_read_back(&file, 4096, at, round, "4 KiB after the take-over")?;
+                write_and_read_back(&file, MIB, 16 << 20, round, "1 MiB after the take-over")?;
+                left_large_16 = pattern(MIB, 16 << 20, round);
             }
-            round += 1;
-            write_and_read_back(&file, MIB, 16 << 20, round, "1 MiB after the take-over")?;
+            // The server did hold `depth` writes at once: without that
+            // the rest of this life shows nothing about first writes
+            // sent together.
+            let gathered = next.gathered();
+            if gathered != u64::from(DEPTH) {
+                return Err(format!(
+                    "the server held {gathered} writes at once after take-over {taken}, not \
+                     the {DEPTH} that were sent together"
+                ));
+            }
+            settled &= settle_udev();
+            // `end` has compared the copies with the tags the server
+            // saw begin with a write.
+            let (_, copies) = next.end()?;
+            if copies > u64::from(DEPTH) {
+                return Err(format!(
+                    "{copies} first-write copies after take-over {taken}"
+                ));
+            }
+            tried.push(copies);
+            if copies > 0 {
+                break;
+            }
         }
-        // The server did hold `depth` writes at once: without that the
-        // rest of this life shows nothing about first writes sent
-        // together.
-        let gathered = second.gathered();
-        if gathered != u64::from(DEPTH) {
+        if tried.last() == Some(&0) {
             return Err(format!(
-                "the server held {gathered} writes at once after the take-over, not the \
-                 {DEPTH} that were sent together"
+                "no first-write copy in any of {} lives after a take-over",
+                tried.len()
             ));
         }
-        // `end` has compared the copies with the tags the server saw
-        // begin with a write. All of them did, unless something else
-        // read the device first (udev, when a device appears): such a
-        // tag has no first write, and the line below says how many.
-        let (_, copies2) = second.end()?;
-        if copies2 == 0 || copies2 > u64::from(DEPTH) {
-            return Err(format!("{copies2} first-write copies after the take-over"));
-        }
         println!(
-            "control_buffers_detail\tfirst-write copies {copies} in the first life and {copies2} after the take-over, depth {DEPTH}; longest write {longest} bytes"
+            "control_buffers_detail\tfirst-write copies {copies} in the first life and {tried:?} in the lives after a take-over (one per life, until one has some), depth {DEPTH}; longest write {longest} bytes; udev waited for: {settled}"
         );
         Ok(())
     })();
