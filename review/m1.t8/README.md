@@ -54,3 +54,21 @@ Reviewed: `origin/zfs-topology` 4b1868d ... `origin/skyzfs-testing` 06dce94.
 - lim.sh under errexit and pipefail; the `sudo cp`.
 - The judge's tables and tests: the four pins are judged on the
   daemon, WAITING there is a rig error, f is never a default.
+
+## Second look (head 5db8604)
+
+- 1 dropped. The pre-fill now stops within one 4 KiB write below the
+  mark with no step taken, and each volume is classed from the trace
+  and the helper's step counts. By `tend` and the worker's loop the
+  rule is asked in the same turn as the request that crossed the mark,
+  so a step comes before the next request. A wrong `inside` needs a
+  first adding call that does not cross (a discard) and the crossing
+  write as the case's last call: narrow. Every other doubt (a status
+  100 ms old, a failed volume with no status) leans to `no_step`,
+  which is the rig's error and not a pass. Not yet run on a kernel.
+- 2 (Codex's): the writer's own status is returned; killed at the
+  limit is told apart.
+- 3 dropped: a dead server's reading keeps its columns (my made-up
+  case now gives FAIL); the take-over bound is 1.5 times plus 500 ms;
+  the checked reads' text says what it counts.
+- test_daemon_check.py 40 pass, test_lim.sh passes.
