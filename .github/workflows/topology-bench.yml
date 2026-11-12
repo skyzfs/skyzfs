@@ -102,6 +102,15 @@ on:
       opencas_ref:
         description: "Open CAS Linux git ref to build (only when topologies include opencas)"
         default: "v26.03.4"
+      barriers:
+        # The runners' work disk is ext4 mounted nobarrier over a disk with a
+        # volatile cache (M1.T15), so no fsync there sends the disk a flush.
+        # `on` remounts it with barriers before the first row, so that every
+        # row of the job runs on that mount.
+        description: "Work disk barriers: off leaves the runner's mount as it is (nobarrier on the runners seen so far); on remounts it with barriers before the first row"
+        type: choice
+        options: ["off", "on"]
+        default: "off"
       ublksrv_ref:
         description: "ublk-org/ublksrv git ref to build (only when topologies include zfs-ublk). The default is v1.9, the commit the kernel probe built and served a pool with on both runner images"
         default: "6d0d922614ec18e6f2b5d476af8d540a1d9c1de8"
@@ -275,6 +284,32 @@ jobs:
           sudo modprobe cas_cache
           casadm --version
 
+      - name: Barriers on the work disk
+        # Only when asked. Remounts the file system that holds TB_WORK with
+        # barriers, before the disk-sync line and the first row. If the
+        # remount fails or nobarrier is still in force, the job stops
+        # here: its rows would not be what was asked for.
+        if: inputs.barriers == 'on'
+        run: |
+          sudo mkdir -p "$TB_WORK"
+          mp=$(findmnt -n -o TARGET -T "$TB_WORK")
+          fs=$(findmnt -n -o FSTYPE -T "$TB_WORK")
+          before=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "work disk: $mp ($fs), super block options before: $before"
+          rc=0; sudo mount -o remount,barrier "$mp" || rc=$?
+          after=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "after (mount rc $rc): $after"
+          {
+            echo "### Work disk barriers"
+            echo
+            echo "\`$mp\` ($fs). Before: \`$before\`. After \`mount -o remount,barrier\` (exit $rc): \`$after\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$rc" -ne 0 ] || [[ ",$after," == *,nobarrier,* ]]; then
+            echo "::error::the work disk could not be remounted with barriers; the job stops before its rows"
+            echo "The remount did not take: the job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
       - name: Disk sync of the work disk
         # One observation of the disk the daemon's files sit on, at the
         # start of the job: 64 MiB written through the page cache and
@@ -322,6 +357,15 @@ jobs:
               "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}"
             echo "::endgroup::"
           done
+
+      - name: Work disk mount at the end
+        # That the barriers asked for were in force to the last row.
+        if: always() && inputs.barriers == 'on'
+        run: |
+          after=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "super block options at the end: $after"
+          echo "At the end of the job: \`$after\`." >> "$GITHUB_STEP_SUMMARY"
+          if [[ ",$after," == *,nobarrier,* ]]; then echo "::error::nobarrier was back by the end of the job"; exit 1; fi
 
       - name: Evidence on failure
         if: failure()
