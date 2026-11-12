@@ -91,6 +91,9 @@ def bracketed(row, rows, model=MODEL, criterion=0.90, widest=WIDEST):
     if row.get('syscalls'):
         out['verdict'] = 'NO VERDICT: its system calls were traced (TB_SYSCALLS), which slows the daemon'
         return out
+    if row.get('perf_record'):
+        out['verdict'] = 'NO VERDICT: the daemon was recorded by perf (TB_PERF_RECORD), which slows it'
+        return out
     if row.get('_seq') is None:
         out['verdict'] = 'NO VERDICT: the row is not in a sequence, so no model rows enclose it'
         return out

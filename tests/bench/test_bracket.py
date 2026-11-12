@@ -133,6 +133,13 @@ class Bracketed(unittest.TestCase):
         self.assertIsNone(b['ratio'])
         self.assertIn('NO VERDICT: its system calls were traced', b['verdict'])
 
+    def test_a_recorded_row_has_no_verdict(self):
+        rows = [row(1, 'zfs-slog', 1000), row(2, 'zfs-skyzfsd', 950, perf_record={'threads': {}}),
+                row(3, 'zfs-slog', 1000)]
+        b = bk.bracketed(rows[1], rows)
+        self.assertIsNone(b['ratio'])
+        self.assertIn('NO VERDICT: the daemon was recorded by perf', b['verdict'])
+
 
 if __name__ == '__main__':
     unittest.main()
