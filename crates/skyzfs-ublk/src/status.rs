@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1392
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1424
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -66,6 +66,8 @@
 //! | 1336 | 24 | the same for every other request |
 //! | 1360 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
 //! | 1384 | 8 | the completions that were committed behind those stores |
+//! | 1392 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
+//! | 1408 | 16 | the same for every other request |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -118,7 +120,7 @@ use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA5";
-const LEN: usize = 1392;
+const LEN: usize = 1424;
 /// The fourth version: without the times from offset 200 on.
 const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
 const FOURTH_LEN: usize = 200;
@@ -288,6 +290,10 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_pump_store_ns",
     "time_pump_store_max_ns",
     "time_pump_store_completions",
+    "time_pump_taken_read_ns",
+    "time_pump_taken_read_max_ns",
+    "time_pump_taken_other_ns",
+    "time_pump_taken_other_max_ns",
 ];
 
 /// What the file holds.
@@ -468,7 +474,7 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 149;
+const TIME_FIELDS: usize = 153;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
@@ -531,6 +537,10 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
         put(spent.max_ns);
     }
     put(pump.behind_store);
+    for spent in [pump.read_to_taken, pump.other_to_taken] {
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
     fields
 }
 
@@ -550,11 +560,20 @@ fn pump_at(bytes: &[u8]) -> PumpTiming {
             max_ns: fields[2],
         }
     };
+    let (to_submit, read_to_commit, other_to_commit, store) = (spent(), spent(), spent(), spent());
+    // The file has no count for these: each is counted with a commit.
+    let taken = |at: usize, count: u64| Spent {
+        count,
+        sum_ns: u64_at(bytes, at),
+        max_ns: u64_at(bytes, at + 8),
+    };
     PumpTiming {
-        to_submit: spent(),
-        read_to_commit: spent(),
-        other_to_commit: spent(),
-        store: spent(),
+        to_submit,
+        read_to_commit,
+        other_to_commit,
+        read_to_taken: taken(1392, read_to_commit.count),
+        other_to_taken: taken(1408, other_to_commit.count),
+        store,
         behind_store: u64_at(bytes, 1384),
     }
 }

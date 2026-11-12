@@ -1722,11 +1722,18 @@ impl Spans {
         self.last = now;
     }
 
-    /// The parts of a batch that the core noted: what lies between
-    /// them and before the first is "other".
-    fn take(&mut self, parts: &mut Option<Vec<(Instant, Instant, usize)>>, timing: &mut Timing) {
+    /// The parts of a batch that the core noted since the last span's
+    /// end: what lies between them and before the first is `around`,
+    /// which is "other" for the rule's steps and a request's kind for
+    /// a batch that its call made room with.
+    fn take(
+        &mut self,
+        parts: &mut Option<Vec<(Instant, Instant, usize)>>,
+        around: usize,
+        timing: &mut Timing,
+    ) {
         for (began, ended, activity) in parts.iter_mut().flat_map(|parts| parts.drain(..)) {
-            self.close(Activity::OTHER, began, timing);
+            self.close(around, began, timing);
             self.close(activity, ended, timing);
         }
     }
@@ -1809,7 +1816,10 @@ pub struct Timing {
     /// The parts of a checkpoint's batch, which follow each other:
     /// every step is one batch (an explicit checkpoint's batches count
     /// too, and so does one a write makes inside its own call to make
-    /// room). First: reading the log to choose the batch. For an
+    /// room: there too the parts are the step's in the worker's time
+    /// and in the waits, and the write's activity is the rest of its
+    /// call, the sync of the log before the checkpoint included; the
+    /// write's `call` is its whole call). First: reading the log to choose the batch. For an
     /// explicit checkpoint this is one walk for all its batches.
     pub step_walk: Spent,
     /// Saving the neighbours of what the batch writes, with that
@@ -2943,7 +2953,7 @@ where
                             } else {
                                 core.checkpoint()
                             };
-                            spans.take(&mut core.parts, &mut core.timing);
+                            spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
                             held = false;
                             busy = true;
                             // As for a completion: whoever is answered
@@ -3009,6 +3019,12 @@ where
                         // What it waited for, before its own call is
                         // among the spans.
                         let by = executed.is_ok().then(|| spans.between(at));
+                        // A call that made room in the log took a
+                        // whole checkpoint inside itself: those parts
+                        // are the step's in the worker's time, and in
+                        // the wait of a request behind this one, and
+                        // the kind's is the time outside them.
+                        spans.take(&mut core.parts, Activity::call(kind), &mut core.timing);
                         spans.close(Activity::call(kind), ended, &mut core.timing);
                         match executed {
                             Ok((result, buf)) => {
@@ -3074,7 +3090,7 @@ where
                         shown.begin();
                         wake();
                     });
-                    spans.take(&mut core.parts, &mut core.timing);
+                    spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
                     if let Some(turn) = turn.filter(|_| stepped != Ok(false)) {
                         core.timing.gate.add(turn.elapsed());
                     }
@@ -3295,16 +3311,13 @@ impl BlockTarget for Served {
     }
 
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
-        let mut taken = 0;
         self.ready.clear();
-        while let Ok(completion) = self.completions.try_recv() {
-            self.took(completion, out);
-            taken += 1;
-        }
-        taken
+        self.take_ready(out)
     }
 
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        // The stamps of the last call are forgotten once, here in
+        // `poll`: what this call takes after its wait keeps its stamp.
         let taken = self.poll(out);
         if taken > 0 || self.ids.is_empty() {
             return taken;
@@ -3312,10 +3325,22 @@ impl BlockTarget for Served {
         match self.completions.recv_timeout(timeout) {
             Ok(completion) => {
                 self.took(completion, out);
-                1 + self.poll(out)
+                1 + self.take_ready(out)
             }
             Err(_) => 0,
         }
+    }
+}
+
+impl Served {
+    /// Take every completion that is ready now.
+    fn take_ready(&mut self, out: &mut Vec<Completion>) -> usize {
+        let mut taken = 0;
+        while let Ok(completion) = self.completions.try_recv() {
+            self.took(completion, out);
+            taken += 1;
+        }
+        taken
     }
 }
 

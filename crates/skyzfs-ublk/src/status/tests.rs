@@ -22,7 +22,7 @@ fn sample_timing() -> skyzfs_local::store::Timing {
     timing_at(&bytes)
 }
 
-/// The pump's times with the same fields: 236 to 248.
+/// The pump's times with the same fields: 236 to 252.
 fn sample_pump() -> PumpTiming {
     let mut bytes = [0u8; LEN];
     for field in 0..TIME_FIELDS {
@@ -79,11 +79,11 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 149 fields from offset 200, here 100 to 248.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..249) {
+    // The times are the 153 fields from offset 200, here 100 to 252.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..253) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1392);
+    assert_eq!(bytes.len(), 1424);
     // Where the times lie, by what they are.
     let timing = sample_timing();
     assert_eq!(timing.requests[0].wait.count, 100);
@@ -106,6 +106,17 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(pump.read_to_commit.sum_ns, 240);
     assert_eq!(pump.other_to_commit.count, 242);
     assert_eq!((pump.store.sum_ns, pump.behind_store), (246, 248));
+    // The times to the taking have no count in the file: it is the
+    // commits'.
+    let taken = (pump.read_to_taken, pump.other_to_taken);
+    assert_eq!(
+        (taken.0.count, taken.0.sum_ns, taken.0.max_ns),
+        (239, 249, 250)
+    );
+    assert_eq!(
+        (taken.1.count, taken.1.sum_ns, taken.1.max_ns),
+        (242, 251, 252)
+    );
     assert_eq!(decode(&bytes), Some(sample()));
 }
 

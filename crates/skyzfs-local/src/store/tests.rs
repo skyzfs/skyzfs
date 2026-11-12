@@ -4209,6 +4209,173 @@ fn a_read_behind_a_step_and_two_writes_has_its_wait_split_among_them() {
     );
 }
 
+/// A write that finds the log full makes room inside its own call: a
+/// sync of the log and a whole checkpoint. The checkpoint's parts are
+/// the step's, in the worker's time and in the wait of a read queued
+/// behind that write, and the write's activity is only the rest of its
+/// call. The checkpoint is held 200 ms in the home image's part, so
+/// that part is at least that long and the time under "write" is
+/// shorter than the write's call by at least that.
+#[test]
+fn a_read_behind_a_write_that_makes_room_waits_for_the_steps_parts() {
+    const HELD: Duration = Duration::from_millis(200);
+    let env = Env {
+        segments: Some(2),
+        ..environments(0)[0]
+    };
+    let (_disk, mut store) = env.fresh().unwrap();
+    let gate = std::env::temp_dir().join(format!("skyzfs-room-gate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Written);
+    // No marks: the worker takes no step of its own, and the only
+    // checkpoint is the one a write makes when the log is full.
+    let mut served = store.serve().unwrap();
+    let reached = StepPause::reached(&gate);
+    let began = std::time::Instant::now();
+    let mut done = Vec::new();
+    let mut writes = 0u64;
+    // Megabytes, one at a time, until one of them is making room.
+    'filling: loop {
+        assert!(writes < 20, "the log never filled");
+        served
+            .submit(Request {
+                id: RequestId(writes),
+                op: Op::Write {
+                    offset: (writes % 3) * 256 * BLOCK,
+                    data: Buf::filled(256, writes as u8 + 1),
+                },
+            })
+            .unwrap();
+        writes += 1;
+        while done.len() < writes as usize {
+            if reached.exists() {
+                break 'filling;
+            }
+            served.wait(&mut done, Duration::from_millis(1));
+            assert!(began.elapsed() < Duration::from_secs(20), "no answer");
+        }
+    }
+    let before = served.timing();
+    let read = RequestId(100);
+    served
+        .submit(Request {
+            id: read,
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(1),
+            },
+        })
+        .unwrap();
+    std::thread::sleep(HELD);
+    std::fs::write(&gate, b"").unwrap();
+    while done.len() < writes as usize + 1 {
+        served.wait(&mut done, Duration::from_secs(1));
+        assert!(began.elapsed() < Duration::from_secs(40), "no answer");
+    }
+    served.position().unwrap();
+    let timing = served.timing();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(&reached);
+
+    let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
+    let ns = HELD.as_nanos() as u64;
+    // No step before the write that made room.
+    assert_eq!(before.step_apply.count, 0, "{before:?}");
+    assert_eq!(before.requests[1].call.count, writes - 1, "{before:?}");
+    let (reads, wrote) = (timing.requests[0], timing.requests[1]);
+    assert_eq!((reads.wait.count, wrote.call.count), (1, writes));
+    // The write that made room is the longest, and its call holds the
+    // checkpoint whole.
+    let made_room = wrote.call.max_ns;
+    assert!(made_room >= ns, "{timing:?}");
+    // The read's wait: the checkpoint's parts under their names, the
+    // held one the largest, and under "write" only the rest of that
+    // one write's call.
+    let by = timing.wait_by[0];
+    assert_eq!(by.iter().sum::<u64>(), reads.wait.sum_ns, "{timing:?}");
+    assert!(by[at("step_home_sync")] >= ns, "{timing:?}");
+    assert!(by[at("write")] <= made_room - ns, "{timing:?}");
+    assert_eq!(timing.longest_wait_cause[0], at("step_home_sync") as u64);
+    // Nothing under a call that did not happen. (The worker's receive
+    // of the read, after the write, is a moment under "idle".)
+    for none in ["read", "flush", "discard", "zeroes", "own_sync"] {
+        assert_eq!(by[at(none)], 0, "{none}: {timing:?}");
+    }
+    // The worker's time: every part of the checkpoint is there as the
+    // step's sums have it, and the writes' activity is their calls
+    // less those parts.
+    let parts = [
+        ("step_walk", timing.step_walk),
+        ("step_save", timing.step_save),
+        ("step_apply", timing.step_apply),
+        ("step_home_sync", timing.step_home_sync),
+        ("step_log_start", timing.step_start),
+        ("step_end", timing.step_end),
+    ];
+    let mut in_parts = 0;
+    for (name, part) in parts {
+        assert_eq!(timing.worker[at(name)], part.sum_ns, "{name}: {timing:?}");
+        in_parts += part.sum_ns;
+    }
+    assert!(timing.step_apply.count >= 1, "{timing:?}");
+    assert_eq!(
+        timing.worker[at("write")],
+        wrote.call.sum_ns - in_parts,
+        "{timing:?}"
+    );
+}
+
+/// A completion that `wait` takes after waiting for it has its stamp,
+/// as one that `poll` takes has. The worker is held in a step while
+/// the read is submitted, so `wait` finds nothing at first and takes
+/// the completion when it comes.
+#[test]
+fn a_completion_taken_by_wait_has_its_ready_time() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    flush(&mut store).unwrap();
+    store.set_marks(Some(MARKS));
+    let gate = std::env::temp_dir().join(format!("skyzfs-stamp-gate-{}", std::process::id()));
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    store.set_step_pause_at(StepPause::Until(gate.clone()), StepPoint::Written);
+    let mut served = store.serve().unwrap();
+    at_the_point(&gate, "the first step");
+    let submitted = std::time::Instant::now();
+    served
+        .submit(Request {
+            id: RequestId(5),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::zeroed(1),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    // Nothing is ready while the step is held.
+    assert_eq!(served.poll(&mut done), 0);
+    let release = gate.clone();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(release, b"").unwrap();
+    });
+    let taken = served.wait(&mut done, Duration::from_secs(20));
+    let after = std::time::Instant::now();
+    let ready = served.ready_at(RequestId(5));
+    releaser.join().unwrap();
+    drop(served);
+    let _ = std::fs::remove_file(&gate);
+    let _ = std::fs::remove_file(StepPause::reached(&gate));
+    assert_eq!((taken, done.len()), (1, 1));
+    let ready = ready.expect("the completion that wait took has no stamp");
+    assert!(ready >= submitted && ready <= after);
+}
+
 /// Every kind of request is counted under its own kind, once per
 /// request that completed, with a wait and a call each; a request that
 /// waited for no step is not among those that did; and the sums and
