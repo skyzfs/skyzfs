@@ -146,3 +146,18 @@ Per finding:
    no errno; planted to let `ENODEV` through, its test fails.
 
 The probe was not taken, by the lead's decision; nothing to add.
+
+## Third look, at 0f5b7dc (one commit on f1b4d52)
+
+**Verdict: can merge; nothing blocks, and both non-blocking points of the
+second look are settled.** Posted on the pull request:
+https://github.com/skyzfs/skyzfs/pull/38#issuecomment-6833977073
+
+- Tests of the three packages: 205 pass, 9 kernel tests ignored here.
+- The option is offered only when the release is all that is lacking;
+  planted back to "among the lacks", `a_refused_start_says_a_waiting_device_is_left`
+  fails.
+- The message says what was not done, not that nothing was touched.
+- The ENOTSUPP mapping is `features::delete_answered`, with a test; planted
+  out, `the_answer_to_the_delete_is_read` fails.
+- Nothing ran on a kernel; no clippy or fmt.
