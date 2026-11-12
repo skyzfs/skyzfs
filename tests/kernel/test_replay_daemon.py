@@ -441,7 +441,9 @@ class Pass(unittest.TestCase):
                 r.update({'caught': dict(stopped_after_ready=True, ok=False, failed='device read',
                                          detail='TIMEOUT after 20s; the reader ended once the server was killed'),
                           'missed': dict(stopped_after_ready=True),
-                          'unplanted': dict(ok=False, failed='start', detail='neither ready nor ended')}[stuck])
+                          'unplanted': dict(ok=False, failed='start', detail='neither ready nor ended'),
+                          'at once': dict(stopped_after_ready=True, ok=False, failed='device read',
+                                          detail='dd: error reading: Input/output error')}[stuck])
                 return r
             if n in fail_at or (hooks and recover_caught) or (marks is not None and withheld_caught):
                 r.update(ok=False, failed='fsync: files', detail='f.1 checksum differs')
@@ -545,6 +547,11 @@ class Pass(unittest.TestCase):
         self.fake(stuck='unplanted')
         self.assertEqual(rd.check(self.args()), 2)
         self.assertIn('the daemon was not stopped', self.summary_text())
+        # A read that failed at once, not at the limit, did not wait for the
+        # stopped daemon: it shows nothing, the rig's error.
+        self.fake(stuck='at once')
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('did not wait for the stopped daemon', self.summary_text())
 
     def test_a_timed_out_zdb_at_the_end_in_a_stopped_run_is_the_rigs(self):
         # The stopped path, as test_exit_codes is for the passing one: a

@@ -1038,6 +1038,12 @@ def stuck_control(ck, n):
     if not r.get('stopped_after_ready'):
         row['rig_errors'].append({'n': n, 'failed': 'rig: the daemon was not stopped',
                                   'detail': f"it did not get to ready: {r.get('failed')}: {r.get('detail', '')[:200]}"})
+    elif not r['ok'] and not (r.get('failed') == 'device read' and 'TIMEOUT after' in r.get('detail', '')):
+        # A stopped daemon answers nothing, so its read can only end at the
+        # limit. One that failed otherwise (at once, with an I/O error, or
+        # at another stage) did not show the path: the rig's error.
+        row['rig_errors'].append({'n': n, 'failed': 'rig: the read did not wait for the stopped daemon',
+                                  'detail': f"{r.get('failed')}: {r.get('detail', '')[:200]}"})
     return row
 
 

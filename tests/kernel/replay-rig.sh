@@ -185,6 +185,8 @@ pool_step() {
     if [ -z "$SKYZFSD" ]; then "$@"; return; fi
     lim "$secs" "$@" || rc=$?
     [ "$rc" = 0 ] && return 0
+    # The command could not start (127), or lim could not (125): the rig's.
+    [ "$rc" != 127 ] && [ "$rc" != 125 ] || rig_error "$what could not be started (status $rc)"
     [ "$rc" != 124 ] || daemon_verdict "$what had not ended after $secs s (left behind), and the pool's device is the daemon's"
     daemon_verdict "$what failed with status $rc, and the pool's device is the daemon's"
 }
