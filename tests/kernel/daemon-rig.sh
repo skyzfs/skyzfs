@@ -1403,13 +1403,13 @@ check_f() {
     local c tag ld course zed_was zed_ok="" said="" worst=FAIL
     rec f_courses "$F_COURSES"
     for c in $F_ALL; do
-        tag=f${c:0:1}; ld=yes; course=$c
+        tag=f${c:0:1}; ld="yes"; course=$c
         case $c in
             zedreopen) tag=fy ;;
             # Check b's arms as they were until M1.T8: 300 s, a second
             # writer, a read that must reach the device, a scrub.
             long) course=long ;;
-            longnolog) tag=fg; ld=no; course=long ;;
+            longnolog) tag=fg; ld="no"; course=long ;;
         esac
         # A course that was not asked for has its line, and the line
         # says so: one that is missing is the rig's error.
