@@ -207,6 +207,13 @@ when it merges.
   the `sequence` input with every entry on one runner and
   `origin_delay_ms: 0` (the workflow's default is 10). Anything else
   ends with NO VERDICT, which is not a failure of the run.
+  Since M1.T11 an entry may name `TB_SKYZFSD_REF=<commit or branch>`
+  and runs that build of the daemon, so several builds are compared in
+  one job; `TB_SKZ_TIME_REF=<ref>` reads the job's times with that
+  ref's `skz_time.py` (name the newest daemon's). Only the first model
+  row of a sequence is judged against; a model row at the end shows
+  whether the machine drifted. Each job starts with a disk-sync line
+  that says whether the machine's syncs are slow or fast.
   `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own. The
   script records and exits 0 whatever the ratio.
 - **Runner noise.** Two GitHub runner VMs differ by more than most
