@@ -182,6 +182,9 @@ impl Mutants {
     /// A reader that finds the readers' queue empty lets go of its lock
     /// before it waits: a read pushed between the two wakes nobody.
     pub(crate) const READ_WAKE_LOST: u64 = 1 << 37;
+    /// A serve that cannot start a later thread leaves the readers it
+    /// started as they are: nothing closes their queue.
+    pub(crate) const STARTED_READERS_LEFT: u64 = 1 << 38;
 
     fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -948,6 +951,9 @@ struct Core<D: Dir> {
     /// then the worker).
     #[cfg(test)]
     spawn_fails_at: Option<usize>,
+    /// For tests: how many of this store's reader threads have ended.
+    #[cfg(test)]
+    readers_ended: Arc<std::sync::atomic::AtomicUsize>,
     /// For test rigs: how a sync of the log for a flush waits before
     /// it begins.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -3348,6 +3354,8 @@ impl<D: Dir> Store<D> {
                 readers: options.readers.max(1),
                 #[cfg(test)]
                 spawn_fails_at: None,
+                #[cfg(test)]
+                readers_ended: Arc::default(),
                 #[cfg(any(test, feature = "test-hooks"))]
                 sync_pause: None,
                 mutants: options.mutants,
@@ -3888,6 +3896,7 @@ struct Starting {
     reads: Arc<ReadQueue<ToReader>>,
     readers: Vec<thread::JoinHandle<()>>,
     handed: bool,
+    mutants: Mutants,
 }
 
 impl Starting {
@@ -3900,13 +3909,25 @@ impl Starting {
 
 impl Drop for Starting {
     fn drop(&mut self) {
-        if self.handed {
+        if self.handed || self.mutants.has(Mutants::STARTED_READERS_LEFT) {
             return;
         }
         self.reads.close();
         for reader in self.readers.drain(..) {
             let _ = reader.join();
         }
+    }
+}
+
+/// For tests: counts a reader's thread as ended when it is dropped, at
+/// the thread's end, however it ends.
+#[cfg(test)]
+struct Leaving(Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl Drop for Leaving {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -4478,6 +4499,7 @@ where
             reads: reads.clone(),
             readers: Vec::new(),
             handed: false,
+            mutants: core.mutants,
         };
         for (at_index, (mut reader, read_spans)) in readers.into_iter().zip(read_spans).enumerate()
         {
@@ -4488,10 +4510,14 @@ where
             let (outbox, waker, shown) = (outbox.clone(), waker.clone(), shown.clone());
             let failures = commands.clone();
             let read_inbox = reads.clone();
+            #[cfg(test)]
+            let leaving = core.readers_ended.clone();
             let spawned = thread::Builder::new()
                 .name(format!("skyzfs-reader-{at_index}"))
                 .spawn_unless(refused == Some(at_index), move || {
                     let _ending = ending;
+                    #[cfg(test)]
+                    let _leaving = Leaving(leaving);
                     // What the reader did, for the waits of its reads:
                     // idle, the call of a read, anything else.
                     let mut spans = read_spans;

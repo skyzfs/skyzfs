@@ -8091,30 +8091,53 @@ fn a_read_pushed_while_every_reader_is_busy_is_taken_by_the_first_free() {
 
 /// A served store whose later thread cannot be started leaves no reader
 /// waiting. With two readers, the second reader's start fails, and then
-/// the worker's: the serve returns the error, and it returns only once
-/// the readers it had started have ended, which they do because the
-/// queue of reads is closed on that way out. The store opens again on
-/// the same disk. Shown by hand: without the close the serve does not
+/// the worker's: the serve returns the error, and by then every reader
+/// it started has ended (a count of the store's own readers that left
+/// their threads), because the queue of reads is closed and they are
+/// joined on that way out. The store opens again on the same disk.
+/// Mutant: nothing closes the queue; the serve returns with a reader
+/// still waiting. Shown by hand: a join without the close does not
 /// return, and the test fails at its limit.
 #[test]
 fn a_thread_that_cannot_be_started_leaves_no_reader_waiting() {
-    let env = environments(0)[0];
-    for fails_at in [1, 2] {
-        let (disk, mut store) = env.fresh().unwrap();
-        write(&mut store, 0, 1, 0x11).unwrap();
-        flush(&mut store).unwrap();
-        store.core.readers = 2;
-        store.core.spawn_fails_at = Some(fails_at);
-        let (done, served) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = done.send(store.serve().err().map(|e| e.to_string()));
-        });
-        let served = served.recv_timeout(Duration::from_secs(20));
-        assert!(
-            matches!(&served, Ok(Some(why)) if why.contains("refused")),
-            "thread {fails_at}: {served:?}"
-        );
-        let mut store = env.reopen(&disk).unwrap();
-        expect(&mut store, 0, 1, 0x11, "after the failed serve").unwrap();
+    fn scenario(mutants: u64) -> Outcome {
+        let env = Env {
+            mutants,
+            ..environments(0)[0]
+        };
+        for fails_at in [1, 2] {
+            let (disk, mut store) = env.fresh()?;
+            write(&mut store, 0, 1, 0x11)?;
+            flush(&mut store)?;
+            store.core.readers = 2;
+            store.core.spawn_fails_at = Some(fails_at);
+            let ended = store.core.readers_ended.clone();
+            let (done, served) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = done.send(store.serve().err().map(|e| e.to_string()));
+            });
+            let served = served
+                .recv_timeout(Duration::from_secs(20))
+                .map_err(|e| format!("thread {fails_at}: the serve did not return: {e}"))?;
+            if !matches!(&served, Some(why) if why.contains("refused")) {
+                return Err(format!("thread {fails_at}: {served:?}"));
+            }
+            // The readers started: those before the one refused.
+            let started = fails_at.min(2);
+            let left = ended.load(std::sync::atomic::Ordering::SeqCst);
+            if left != started {
+                return Err(format!(
+                    "thread {fails_at}: {left} of {started} readers ended when the serve returned"
+                ));
+            }
+            let mut store = env.reopen(&disk)?;
+            expect(&mut store, 0, 1, 0x11, "after the failed serve")?;
+        }
+        Ok(())
     }
+    assert_eq!(scenario(0), Ok(()));
+    assert!(
+        scenario(Mutants::STARTED_READERS_LEFT).is_err(),
+        "readers left"
+    );
 }
