@@ -289,8 +289,9 @@ jobs:
       - name: Barriers on the work disk
         # Only when asked. Remounts the file system that holds TB_WORK with
         # barriers, before the disk-sync line and the first row. If the
-        # remount fails or nobarrier is still in force, the job stops
-        # here: its rows would not be what was asked for.
+        # remount fails, nobarrier is still in force, or the disk is write
+        # through (no flush reaches it either way), the job stops here: its
+        # rows would not be what was asked for.
         if: inputs.barriers == 'on'
         run: |
           sudo mkdir -p "$TB_WORK"
@@ -316,12 +317,13 @@ jobs:
             echo "### Work disk barriers"
             echo
             echo "\`$mp\` ($fs) on \`$src\`, disk \`$disk\` (queue \`write_cache\`: **$wc**). Before: \`$before\`. After \`mount -o remount,barrier\` (exit $rc): \`$after\`."
-            if [ "$wc" = "write through" ]; then
-              echo
-              echo "**This disk declares no volatile cache: the block layer completes every flush without sending it, so no flush reaches it, barriers or not.** The rows of this job say nothing about what a flush costs."
-            fi
           } >> "$GITHUB_STEP_SUMMARY"
-          [ "$wc" != "write through" ] || echo "::warning::the work disk $disk is write through: no flush reaches it, with barriers or without"
+          if [ "$wc" = "write through" ]; then
+            # As when the remount does not take: the job stops before its rows.
+            echo "::error::the work disk $disk is write through: barriers can do nothing on it; the job stops before its rows"
+            echo "**The input \`barriers\` can do nothing on this disk:** it declares no volatile cache (\`write through\`), so the block layer completes every flush without sending it, barriers or not. The job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           if [ "$rc" -ne 0 ] || [[ ",$after," == *,nobarrier,* ]]; then
             echo "::error::the work disk could not be remounted with barriers; the job stops before its rows"
             echo "The remount did not take: the job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
