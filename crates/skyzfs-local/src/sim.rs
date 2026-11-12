@@ -612,8 +612,6 @@ impl SimDisk {
     /// that was not made durable; what is left is durable. Every open
     /// handle is dead, and pending faults are cleared.
     pub fn power_cut(&self, mut cut: impl Cut) {
-        // A sync held at its end finds its handle dead.
-        self.released.notify_all();
         let mut guard = self.lock();
         let state = &mut *guard;
         state.close_all();
@@ -677,6 +675,11 @@ impl SimDisk {
         }
         state.names = state.durable_names.clone();
         state.drop_unreachable();
+        // A sync held at its end wakes once the state has changed, and
+        // finds its handle dead: woken before, it could take the lock
+        // first, find nothing changed, and wait for good.
+        drop(guard);
+        self.released.notify_all();
     }
 
     /// The write after the next `after` writes fails, and, if `sticky`,
@@ -2345,6 +2348,33 @@ mod tests {
         f.write_at(0, &[2; S]).unwrap();
         // The halt took the write; the end is refused.
         assert!(f.sync_end(true).unwrap().is_err());
+    }
+
+    /// A caller waiting at the end of a held sync is let go by a power
+    /// cut or a kill, and finds its handle dead.
+    #[test]
+    fn a_power_cut_or_a_kill_lets_a_waiter_at_a_held_sync_go() {
+        for cut in [true, false] {
+            let disk = SimDisk::new(1);
+            let mut f = disk.create("f").unwrap();
+            f.write_at(0, &[1; S]).unwrap();
+            disk.hold_syncs_of("f");
+            f.sync_begin(Box::new(|| {})).unwrap();
+            let (done, ended) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = done.send(f.sync_end(true).map(|r| r.is_err()));
+            });
+            while disk.held_waiters() == 0 {
+                std::thread::yield_now();
+            }
+            if cut {
+                disk.power_cut(LoseAll);
+            } else {
+                disk.kill();
+            }
+            let ended = ended.recv_timeout(std::time::Duration::from_secs(20));
+            assert_eq!(ended, Ok(Some(true)), "cut {cut}");
+        }
     }
 
     /// A held sync is under way for a call that does not wait, and ends
