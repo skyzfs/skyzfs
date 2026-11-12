@@ -1776,6 +1776,11 @@ snapshot() { # file
         [ -n "$CACHE_LOOP" ] && echo "dev cache $(diskstats_line "$(basename "$CACHE_LOOP")")"
         [ -n "$SLOG_LOOP" ] && echo "dev slog $(diskstats_line "$(basename "$SLOG_LOOP")")"
         echo "dev fs $(diskstats_line "$(basename "$(readlink -f "$FS_DEV")")")"
+        # The disk under the benchmark's work directory, which holds the
+        # pool's images, the model's log device and the daemon's home
+        # image and log: what all of it costs the one disk, per row.
+        wd=$(diskstats_line "$(basename "$(df --output=source "$WORK" 2>/dev/null | tail -n 1)")")
+        [ -z "$wd" ] || echo "dev workdisk $wd"
         echo "pg wal_bytes $(psqlq "select wal_bytes from pg_stat_wal" || echo 0)"
         echo "pg xact_commit $(psqlq "select xact_commit from pg_stat_database where datname='bench'" || echo 0)"
         echo "pg blks_read $(psqlq "select blks_read from pg_stat_database where datname='bench'" || echo 0)"
