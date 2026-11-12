@@ -523,6 +523,37 @@ class CLowSteps(unittest.TestCase):
         classes['11'] = 'not_set'
         self.assertIn('verdict=TOO_MANY', cls.report(classes, {}, {})[0])
 
+    # Volumes 49 and 52 of run 43206698581 (24.04, daemon), programs of
+    # prop_failures_match_model: 49's log was failed before its first
+    # call that adds to the log, 52's after its first writes.
+    FAILED = [
+        '220869\t49\topen\t-\t64\t16',
+        '220988\t49\tfail\t-\t',
+        '221205\t49\tsubmit\t1\twrite_zeroes\t16\t5\t',
+        '221205\t49\tkill\t-\tsignal sent by the tool: None',
+        '221215\t49\tsubmit\t2\twrite\t4\t3\t46366a8693a08b25,d7405ff88277f325,d998b4286b1b9b25',
+        '221215\t49\tsubmit\t3\tread\t10\t1\t',
+        '235767\t52\topen\t-\t64\t16',
+        '235770\t52\tsubmit\t1\twrite_zeroes\t0\t4\t',
+        '235771\t52\tsubmit\t2\twrite\t4\t4\th',
+        '235822\t52\tfail\t-\t',
+        '235830\t52\tsubmit\t3\twrite\t8\t4\th',
+    ]
+    FAILED_HELPER = [
+        'prefill 49: set: log_live 134209536, 8192 bytes below the high mark 134217728; a 4 KiB write adds 8192; checkpoint_steps 0',
+        'steps 49 destroy: checkpoint_steps 0 gate 0',
+        'prefill 52: set: log_live 134209536, 8192 bytes below the high mark 134217728; a 4 KiB write adds 8192; checkpoint_steps 0',
+        'steps 52 destroy: checkpoint_steps 1 gate 0',
+    ]
+
+    def test_a_log_failed_before_the_first_write_is_counted_apart(self):
+        classes, _, _ = cls.classify(self.FAILED, self.FAILED_HELPER)
+        self.assertEqual(classes, {'49': 'failed_first', '52': 'inside'})
+        out = cls.report(classes, {}, {})
+        self.assertIn('failed_first=1', out[0])
+        self.assertIn('verdict=OK', out[0])
+        self.assertIn('c_low volume 49 failed_first', out)
+
     def test_no_volume_that_could_is_too_many(self):
         self.assertIn('verdict=TOO_MANY', cls.report({'1': 'no_write'}, {}, {})[0])
 

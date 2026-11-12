@@ -110,7 +110,7 @@ EXPECTED = {
                                  'its calls: each volume\'s log is first filled with zero data to within one 4 KiB '
                                  'write of the high mark, so the case\'s first write takes it over and the daemon '
                                  'steps before its next request. Cases that make no write, or only as their last '
-                                 'call, are counted apart; more volumes that could hold a step and did not than a '
+                                 'call, and volumes whose log is failed before their first write are counted apart; more volumes that could hold a step and did not than a '
                                  'tenth of those that could is a rig error',
                                  'WAITING'),
     'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
@@ -276,7 +276,7 @@ OBSERVED = {
     'obs_b_takeover_starts': ('b', 'each take-over of the kill test by the new server\'s own account: how long '
                                    'its start took and how much log it replayed'),
     'obs_c_low_steps': ('c', 'the volumes of that pass by class: a step between the case\'s calls, no write, a '
-                             'write only as the last call, the pre-fill not set, no step; and the steps read from '
+                             'write only as the last call, the log failed before the first write, the pre-fill not set, no step; and the steps read from '
                              'the status five times a second'),
     'obs_c_checked_reads': ('c', 'the reads that found a record of the log not yet durable and checked its payload '
                                  '(status version 6), summed over the suite\'s volumes in its three passes; a mismatch on '
