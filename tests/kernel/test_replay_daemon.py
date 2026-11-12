@@ -4,6 +4,7 @@
     python3 tests/kernel/test_replay_daemon.py
 """
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -271,14 +272,14 @@ class Serve(unittest.TestCase):
         d = self.dir.name
         self.a = type('A', (), dict(work=d, base=os.path.join(d, 'base'), serve_arg=None, skyzfsd='true',
                                     ublk='ublk', volume='vol', dd='dd', dev_bytes=1 << 20))()
-        self.saved = (rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT)
+        self.saved = (rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT, rd.read_bounded)
         rd.RUN_PARENT = d               # not /run: the tests do not run as root
         self.devices = set()
         rd.ublk_numbers = lambda: set(self.devices)
         rd.run = lambda cmd, timeout=300: (1, 'ublk del: busy', 0.0)   # the delete fails, the device stays
 
     def tearDown(self):
-        rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT = self.saved
+        rd.run, rd.Daemon._serve, rd.ublk_numbers, rd.RUN_PARENT, rd.read_bounded = self.saved
         self.dir.cleanup()
 
     def serve_with(self, result):
@@ -309,7 +310,7 @@ class Serve(unittest.TestCase):
         open(err_path, 'w').close()
         saved_exists = rd.os.path.exists
         rd.os.path.exists = lambda path: True if path == '/dev/ublkb7' else saved_exists(path)
-        rd.run = lambda cmd, timeout=300: result
+        rd.read_bounded = lambda cmd, timeout, unstick: result
         try:
             p = type('P', (), {'poll': lambda self: None})()
             failed, _ = rd.Daemon(self.a, None)._serve(p, os.path.join(d, 'img'), {}, out_path, err_path,
@@ -328,6 +329,50 @@ class Serve(unittest.TestCase):
         self.assertEqual(self.read_with((124, '', 300.0)), 'device read')
         self.assertIn('device read', rd.JUDGING)
         self.assertEqual(self.read_with((127, 'dd: not found', 0.0)), 'rig: device read could not start')
+
+    def test_a_reader_left_behind_stops_the_run_with_the_verdict(self):
+        info = {}
+        rd.read_bounded = lambda cmd, timeout, unstick: (124, '\nTIMEOUT after 300s; the reader not reaped 60 s', 0.0)
+        d = self.dir.name
+        out_path, err_path = os.path.join(d, 'out'), os.path.join(d, 'err')
+        with open(out_path, 'w') as f:
+            f.write('ready /dev/ublkb7\n')
+        open(err_path, 'w').close()
+        saved_exists = rd.os.path.exists
+        rd.os.path.exists = lambda path: True if path == '/dev/ublkb7' else saved_exists(path)
+        rd.Daemon._serve = self.saved[1]
+        try:
+            p = type('P', (), {'poll': lambda self: None})()
+            failed, _ = rd.Daemon(self.a, None)._serve(p, os.path.join(d, 'img'), info, out_path, err_path,
+                                                        rd.time.monotonic(), {'number': None})
+        finally:
+            rd.os.path.exists = saved_exists
+        self.assertEqual(failed, 'device read')
+        self.assertIn('did not end', info['abort'])
+
+    def test_read_bounded(self):
+        rd.read_bounded = self.saved[4]
+        self.assertEqual(rd.read_bounded(['true'], 5, lambda: self.fail('no timeout'))[0], 0)
+        self.assertEqual(rd.read_bounded(['/nonexistent/dd'], 5, lambda: None)[0], 127)
+        calls = []
+        rc_, out, _ = rd.read_bounded(['sleep', '30'], 0.2, lambda: calls.append('unstick'))
+        self.assertEqual((rc_, calls), (124, ['unstick']))
+        self.assertIn('ended once the server was killed', out)
+        saved = rd.REAP_S
+        rd.REAP_S = 0.2
+        try:
+            # A reader that outlives SIGKILL, as a queued direct read does: a
+            # process that kill() does not reach stands in for it.
+            saved_kill = subprocess.Popen.kill
+            subprocess.Popen.kill = lambda self: None
+            try:
+                rc_, out, _ = rd.read_bounded(['sleep', '2'], 0.2, lambda: None)
+            finally:
+                subprocess.Popen.kill = saved_kill
+        finally:
+            rd.REAP_S = saved
+        self.assertEqual(rc_, 124)
+        self.assertIn('not reaped', out)
 
 
 class Pass(unittest.TestCase):

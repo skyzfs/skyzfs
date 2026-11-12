@@ -108,6 +108,8 @@ SNAP = 'skz-lower-snap'
 READY_S = 120
 STOP_S = 60
 RUN_PARENT = '/run'             # where a start's run directory goes, as after a reboot
+READ_S = 300                    # the read of the whole device
+REAP_S = 60                     # a read that timed out, after its daemon was killed and its device deleted
 READY_RE = re.compile(r'^ready (/dev/ublkb(\d+))$', re.M)
 TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
 START_RE = re.compile(r'recovery (\d+) ms of a log of (\d+) bytes and (\d+) operations')
@@ -426,14 +428,17 @@ class Daemon:
             res = self._serve(p, image, info, out_path, err_path, t0, state)
             return res
         finally:
+            left = []
             if p.poll() is None:
                 p.kill()
-                p.wait()
+                try:
+                    p.wait(STOP_S)
+                except subprocess.TimeoutExpired:
+                    left.append(f'the daemon did not end {STOP_S} s after SIGKILL')
             info['said'] = said(err_path, 3)
             # The start's device, and any other that appeared while it ran:
             # a start that fails after its device was added leaves it.
             number = state['number']
-            left = []
             for k in sorted((ublk_numbers() - before) | ({number} if number is not None else set())):
                 rc_, out, _ = run([self.a.ublk, 'del', '-n', str(k)], 60)
                 if rc_ and k in ublk_numbers():
@@ -472,8 +477,20 @@ class Daemon:
         if os.path.exists(image):
             os.unlink(image)
         t1 = time.monotonic()
-        rc_, out, _ = run([self.a.dd, f'if={dev[0]}', f'of={image}', 'bs=1M',
-                           'iflag=direct', 'conv=sparse', 'status=none'], 300)
+        def unstick():
+            # A direct read queued on a device whose server is gone cannot
+            # be killed; deleting the device fails it.
+            p.kill()
+            try:
+                p.wait(STOP_S)
+            except subprocess.TimeoutExpired:
+                pass
+            run([self.a.ublk, 'del', '-n', str(dev[1])], 60)
+        rc_, out, _ = read_bounded([self.a.dd, f'if={dev[0]}', f'of={image}', 'bs=1M',
+                                    'iflag=direct', 'conv=sparse', 'status=none'], READ_S, unstick)
+        if rc_ == 124 and 'not reaped' in out:
+            # A judged stage, but a reader is left on this machine: stop the run.
+            info['abort'] = f'dd of {dev[0]} did not end {REAP_S} s after the daemon was killed and its device deleted'
         info['t_read'] = time.monotonic() - t1
         if rc_:
             if re.search(r'error writing|No space left', out):
@@ -496,6 +513,33 @@ class Daemon:
         if code != 0:
             return 'stop', f'exit {code} after SIGTERM: {said(err_path)}'
         return None, ''
+
+
+def read_bounded(cmd, timeout, unstick):
+    """Run a reader of a device -> (exit code, output, seconds), as run() does, but never hang.
+
+    On a timeout, unstick() (kill the server, delete the device) runs
+    before the reader is killed and reaped, since a read queued on a
+    device can outlive SIGKILL. A reader still there REAP_S later is left,
+    and the output says 'not reaped'."""
+    t0 = time.monotonic()
+    try:
+        r = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+    except OSError as e:
+        return 127, f'{cmd[0]}: {e}', time.monotonic() - t0
+    try:
+        out, _ = r.communicate(timeout=timeout)
+        return r.returncode, out, time.monotonic() - t0
+    except subprocess.TimeoutExpired:
+        pass
+    unstick()
+    r.kill()
+    try:
+        out, _ = r.communicate(timeout=REAP_S)
+        note = f'TIMEOUT after {timeout}s; the reader ended once the server was killed'
+    except subprocess.TimeoutExpired:
+        out, note = '', f'TIMEOUT after {timeout}s; the reader not reaped {REAP_S} s after the server was killed'
+    return 124, (out or '') + '\n' + note, time.monotonic() - t0
 
 
 def ublk_numbers():
