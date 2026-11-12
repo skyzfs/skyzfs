@@ -4097,6 +4097,25 @@ fn a_read_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step()
         + timing.step_start.sum_ns
         + timing.step_own_sync.sum_ns;
     assert!(steps <= ns(total), "{timing:?}");
+    // What the read waited for, by what the worker did meanwhile: the
+    // parts are the whole wait, the largest is the home image's sync,
+    // which the step was held in, and that is what the longest wait
+    // is put down to.
+    let home_sync = ACTIVITIES
+        .iter()
+        .position(|a| *a == "step_home_sync")
+        .unwrap();
+    let by = timing.wait_by[0];
+    assert_eq!(by.iter().sum::<u64>(), read.wait.sum_ns, "{timing:?}");
+    assert!(by[home_sync] >= ns(HELD), "{timing:?}");
+    assert_eq!(timing.longest_wait_cause[0], home_sync as u64);
+    assert_eq!(timing.longest_wait_cause_ns[0], by[home_sync]);
+    assert_eq!(by[0], 0, "the worker was not idle while the read waited");
+    // The worker's own time: no more than the test's, and the sync it
+    // was held in is in it.
+    assert!(timing.worker.iter().sum::<u64>() <= ns(total), "{timing:?}");
+    assert!(timing.worker[home_sync] >= timing.step_home_sync.max_ns);
+    assert_eq!(timing.worker[home_sync], timing.step_home_sync.sum_ns);
     assert!(timing.step_home_sync.count <= state.steps);
 }
 
@@ -4168,6 +4187,23 @@ fn every_kind_of_request_is_timed_under_its_kind() {
             assert!(spent.sum_ns <= spent.max_ns * spent.count, "{timing:?}");
         }
     }
+    // Each kind's waits, by what the worker did meanwhile, are its
+    // whole wait; the worker was idle between the requests, and its
+    // calls are in its own time under their kinds.
+    for (kind, by) in timing.wait_by.iter().enumerate() {
+        assert_eq!(
+            by.iter().sum::<u64>(),
+            timing.requests[kind].wait.sum_ns,
+            "{timing:?}"
+        );
+        assert_eq!(timing.worker[1 + kind], timing.requests[kind].call.sum_ns);
+    }
+    assert!(timing.worker[0] > 0, "{timing:?}");
+    assert_eq!(ACTIVITIES[0], "idle");
+    assert_eq!(
+        ACTIVITIES[1..6],
+        ["read", "write", "flush", "discard", "zeroes"]
+    );
     // No marks: no step, nobody waited for one, no gate.
     assert_eq!(timing.behind_step, Spent::default());
     assert_eq!(timing.gate, Spent::default());

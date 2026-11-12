@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 536
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1192
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -59,6 +59,10 @@
 //! | 480 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns; the longest |
 //! | 504 | 16 | the requests that began after a step that ended while they waited: how many, and their summed wait |
 //! | 520 | 16 | the reads among them: how many, and their summed wait |
+//! | 536 | 96 | the worker's whole time by what it did, twelve fields in the order: idle; the call of a read, a write, a flush (the log's sync), a discard, a write-zeroes; a step's four parts in the order above; the rule's own sync; anything else. They follow each other with no gap, so their sum is the time served |
+//! | 632 | 480 | for each kind of request, in the order above: twelve fields, its summed wait by what the worker did meanwhile, in the order of the worker's time. A kind's twelve add up to its summed wait |
+//! | 1112 | 40 | for each kind: of its longest wait, which of the twelve took the largest part, as a number from 0 |
+//! | 1152 | 40 | for each kind: how long that part was |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -105,13 +109,13 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::Counters;
 use crate::records::StoredFailure;
-use skyzfs_local::store::{RequestTiming, Spent, Timing};
+use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA5";
-const LEN: usize = 536;
+const LEN: usize = 1192;
 /// The fourth version: without the times from offset 200 on.
 const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
 const FOURTH_LEN: usize = 200;
@@ -126,7 +130,9 @@ const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
 const OLD_LEN: usize = 128;
 
 /// The keys of the times in `status`, in the file's order. All values
-/// are nanoseconds but the counts. A key ending in `_max_ns` is the
+/// are nanoseconds but the counts and the five `*_longest_wait_cause`,
+/// which name what the worker did
+/// ([`skyzfs_local::store::ACTIVITIES`]). A key ending in `_max_ns` is the
 /// longest since the daemon started serving; every other value only
 /// grows, and a script takes the difference of two looks.
 pub const TIME_KEYS: [&str; TIME_FIELDS] = [
@@ -172,6 +178,88 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_behind_step_wait_ns",
     "time_reads_behind_step_count",
     "time_reads_behind_step_wait_ns",
+    "time_worker_idle_ns",
+    "time_worker_read_ns",
+    "time_worker_write_ns",
+    "time_worker_flush_ns",
+    "time_worker_discard_ns",
+    "time_worker_zeroes_ns",
+    "time_worker_step_save_ns",
+    "time_worker_step_apply_ns",
+    "time_worker_step_home_sync_ns",
+    "time_worker_step_log_start_ns",
+    "time_worker_own_sync_ns",
+    "time_worker_other_ns",
+    "time_read_wait_by_idle_ns",
+    "time_read_wait_by_read_ns",
+    "time_read_wait_by_write_ns",
+    "time_read_wait_by_flush_ns",
+    "time_read_wait_by_discard_ns",
+    "time_read_wait_by_zeroes_ns",
+    "time_read_wait_by_step_save_ns",
+    "time_read_wait_by_step_apply_ns",
+    "time_read_wait_by_step_home_sync_ns",
+    "time_read_wait_by_step_log_start_ns",
+    "time_read_wait_by_own_sync_ns",
+    "time_read_wait_by_other_ns",
+    "time_write_wait_by_idle_ns",
+    "time_write_wait_by_read_ns",
+    "time_write_wait_by_write_ns",
+    "time_write_wait_by_flush_ns",
+    "time_write_wait_by_discard_ns",
+    "time_write_wait_by_zeroes_ns",
+    "time_write_wait_by_step_save_ns",
+    "time_write_wait_by_step_apply_ns",
+    "time_write_wait_by_step_home_sync_ns",
+    "time_write_wait_by_step_log_start_ns",
+    "time_write_wait_by_own_sync_ns",
+    "time_write_wait_by_other_ns",
+    "time_flush_wait_by_idle_ns",
+    "time_flush_wait_by_read_ns",
+    "time_flush_wait_by_write_ns",
+    "time_flush_wait_by_flush_ns",
+    "time_flush_wait_by_discard_ns",
+    "time_flush_wait_by_zeroes_ns",
+    "time_flush_wait_by_step_save_ns",
+    "time_flush_wait_by_step_apply_ns",
+    "time_flush_wait_by_step_home_sync_ns",
+    "time_flush_wait_by_step_log_start_ns",
+    "time_flush_wait_by_own_sync_ns",
+    "time_flush_wait_by_other_ns",
+    "time_discard_wait_by_idle_ns",
+    "time_discard_wait_by_read_ns",
+    "time_discard_wait_by_write_ns",
+    "time_discard_wait_by_flush_ns",
+    "time_discard_wait_by_discard_ns",
+    "time_discard_wait_by_zeroes_ns",
+    "time_discard_wait_by_step_save_ns",
+    "time_discard_wait_by_step_apply_ns",
+    "time_discard_wait_by_step_home_sync_ns",
+    "time_discard_wait_by_step_log_start_ns",
+    "time_discard_wait_by_own_sync_ns",
+    "time_discard_wait_by_other_ns",
+    "time_zeroes_wait_by_idle_ns",
+    "time_zeroes_wait_by_read_ns",
+    "time_zeroes_wait_by_write_ns",
+    "time_zeroes_wait_by_flush_ns",
+    "time_zeroes_wait_by_discard_ns",
+    "time_zeroes_wait_by_zeroes_ns",
+    "time_zeroes_wait_by_step_save_ns",
+    "time_zeroes_wait_by_step_apply_ns",
+    "time_zeroes_wait_by_step_home_sync_ns",
+    "time_zeroes_wait_by_step_log_start_ns",
+    "time_zeroes_wait_by_own_sync_ns",
+    "time_zeroes_wait_by_other_ns",
+    "time_read_longest_wait_cause",
+    "time_write_longest_wait_cause",
+    "time_flush_longest_wait_cause",
+    "time_discard_longest_wait_cause",
+    "time_zeroes_longest_wait_cause",
+    "time_read_longest_wait_cause_ns",
+    "time_write_longest_wait_cause_ns",
+    "time_flush_longest_wait_cause_ns",
+    "time_discard_longest_wait_cause_ns",
+    "time_zeroes_longest_wait_cause_ns",
 ];
 
 /// What the file holds.
@@ -346,7 +434,11 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 42;
+const TIME_FIELDS: usize = 124;
+
+/// Where the five fields begin that name an activity: the largest
+/// cause of each kind's longest wait.
+const CAUSE_FIELDS: std::ops::Range<usize> = 114..119;
 
 /// The times in the file's order: see the table at the top.
 fn time_fields(timing: &Timing) -> [u64; TIME_FIELDS] {
@@ -384,6 +476,18 @@ fn time_fields(timing: &Timing) -> [u64; TIME_FIELDS] {
     put(timing.behind_step.sum_ns);
     put(timing.reads_behind_step.count);
     put(timing.reads_behind_step.sum_ns);
+    for value in timing.worker {
+        put(value);
+    }
+    for value in timing.wait_by.iter().flatten() {
+        put(*value);
+    }
+    for value in timing.longest_wait_cause {
+        put(value);
+    }
+    for value in timing.longest_wait_cause_ns {
+        put(value);
+    }
     fields
 }
 
@@ -439,6 +543,18 @@ fn timing_at(bytes: &[u8]) -> Timing {
         sum_ns: take(),
         max_ns: 0,
     };
+    for value in &mut timing.worker {
+        *value = take();
+    }
+    for value in timing.wait_by.iter_mut().flatten() {
+        *value = take();
+    }
+    for value in &mut timing.longest_wait_cause {
+        *value = take();
+    }
+    for value in &mut timing.longest_wait_cause_ns {
+        *value = take();
+    }
     timing
 }
 
@@ -975,8 +1091,16 @@ pub fn report(
                 lines.push(("zeroes_applied", said.to_string()));
             }
             if let Some(timing) = &log.shown.timing {
-                for (key, value) in TIME_KEYS.iter().zip(time_fields(timing)) {
-                    lines.push((key, value.to_string()));
+                let fields = time_fields(timing);
+                for (at, (key, value)) in TIME_KEYS.iter().zip(fields).enumerate() {
+                    // A cause is said by its name; a number this
+                    // version has no name for is printed as it is.
+                    let name = usize::try_from(value)
+                        .ok()
+                        .filter(|_| CAUSE_FIELDS.contains(&at))
+                        .and_then(|cause| ACTIVITIES.get(cause));
+                    let said = name.map_or_else(|| value.to_string(), |name| (*name).to_string());
+                    lines.push((key, said));
                 }
             }
         }

@@ -68,11 +68,11 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 42 fields from offset 200, here 100 to 141.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..142) {
+    // The times are the 124 fields from offset 200, here 100 to 223.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..224) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 536);
+    assert_eq!(bytes.len(), 1192);
     // Where the times lie, by what they are.
     let timing = sample_timing();
     assert_eq!(timing.requests[0].wait.count, 100);
@@ -85,6 +85,11 @@ fn the_file_has_the_documented_layout() {
     assert_eq!((timing.gate.count, timing.gate.max_ns), (135, 137));
     assert_eq!(timing.behind_step.sum_ns, 139);
     assert_eq!(timing.reads_behind_step.count, 140);
+    assert_eq!((timing.worker[0], timing.worker[11]), (142, 153));
+    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][11]), (154, 213));
+    assert_eq!(timing.wait_by[1][8], 174);
+    assert_eq!(timing.longest_wait_cause, [214, 215, 216, 217, 218]);
+    assert_eq!(timing.longest_wait_cause_ns, [219, 220, 221, 222, 223]);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
 }
@@ -235,8 +240,33 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     assert_eq!(timed.len(), TIME_FIELDS);
     for (n, (key, value)) in timed.iter().enumerate() {
         assert_eq!(*key, TIME_KEYS[n]);
+        // A cause the reader has no name for is printed as its number.
         assert_eq!(*value, (100 + n).to_string(), "{key}");
     }
+    // A cause is said by its name.
+    let mut named = sample();
+    if let Some(timing) = named.log.as_mut().and_then(|log| log.shown.timing.as_mut()) {
+        timing.longest_wait_cause = [8, 3, 0, 11, 1];
+    }
+    let lines = lines_of(&named);
+    for (key, cause) in [
+        ("time_read_longest_wait_cause", "step_home_sync"),
+        ("time_write_longest_wait_cause", "flush"),
+        ("time_flush_longest_wait_cause", "idle"),
+        ("time_discard_longest_wait_cause", "other"),
+        ("time_zeroes_longest_wait_cause", "read"),
+    ] {
+        assert_eq!(value(&lines, key), Some(cause), "{key}");
+    }
+    assert_eq!(
+        value(&lines, "time_read_longest_wait_cause_ns"),
+        Some("219")
+    );
+    assert_eq!(value(&lines, "time_worker_idle_ns"), Some("142"));
+    assert_eq!(
+        value(&lines, "time_write_wait_by_step_home_sync_ns"),
+        Some("174")
+    );
     for (key, value) in [
         ("time_read_count", "100"),
         ("time_read_wait_ns", "101"),

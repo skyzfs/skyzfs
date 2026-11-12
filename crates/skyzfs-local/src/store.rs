@@ -600,6 +600,11 @@ struct Core<D: Dir> {
     own_syncs: u64,
     /// Where the time went: see [`Timing`].
     timing: Timing,
+    /// For a served store: the parts of the batches applied since the
+    /// worker last took them, each with its begin and its end, so that
+    /// the worker can say what it was doing when. `None` for a store
+    /// that is not served, which has nobody to take them.
+    parts: Option<Vec<(Instant, Instant, usize)>>,
     /// How a write-zeroes record reaches the home image.
     zeroes: Zeroes,
     /// For test rigs: how and where every batch of a checkpoint waits.
@@ -992,6 +997,13 @@ impl<D: Dir> Core<D> {
         !self.failed && self.marks.is_some_and(|marks| live >= marks.high)
     }
 
+    /// Note a part of a batch for the worker, if there is one.
+    fn part(&mut self, began: Instant, ended: Instant, activity: usize) {
+        if let Some(parts) = &mut self.parts {
+            parts.push((began, ended, activity));
+        }
+    }
+
     /// The rule of the marks after a request, for a store that is not
     /// served: one step, and further steps for as long as the log is
     /// at or above the high mark and a step took something. The worker
@@ -1043,7 +1055,9 @@ impl<D: Dir> Core<D> {
             before();
             let began = Instant::now();
             let synced = self.flush();
-            self.timing.step_own_sync.add(began.elapsed());
+            let ended = Instant::now();
+            self.timing.step_own_sync.add(ended - began);
+            self.part(began, ended, Activity::OWN_SYNC);
             synced?;
             self.own_syncs += 1;
         }
@@ -1114,6 +1128,7 @@ impl<D: Dir> Core<D> {
         }
         let saved_at = Instant::now();
         self.timing.step_save.add(saved_at - began);
+        self.part(began, saved_at, Activity::STEP_SAVE);
         // (1) The neighbours are saved and durable; the home image is
         // as it was.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1197,6 +1212,7 @@ impl<D: Dir> Core<D> {
         let target = cut.map_or(target, |cut| cut.end);
         let written_at = Instant::now();
         self.timing.step_apply.add(written_at - saved_at);
+        self.part(saved_at, written_at, Activity::STEP_APPLY);
         // (2) The middle of a step: the home image holds the batch and
         // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1207,6 +1223,7 @@ impl<D: Dir> Core<D> {
         }
         let synced_at = Instant::now();
         self.timing.step_home_sync.add(synced_at - written_at);
+        self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
         // (3) The home image is durable, and the log starts where it
         // did: a start now applies the batch again from the log.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1236,7 +1253,9 @@ impl<D: Dir> Core<D> {
         if early && self.home.sync().is_err() {
             return Err(self.fail());
         }
-        self.timing.step_start.add(synced_at.elapsed());
+        let started_at = Instant::now();
+        self.timing.step_start.add(started_at - synced_at);
+        self.part(synced_at, started_at, Activity::STEP_LOG_START);
         if self.mutants.has(Mutants::INDEX_SWITCH_EARLY) {
             self.index.drop_below(self.log.durable());
         } else {
@@ -1595,6 +1614,144 @@ fn timed_kind(op: &Op) -> usize {
     }
 }
 
+/// What a store's worker can be doing, as numbers into
+/// [`ACTIVITIES`], [`Timing::worker`] and [`Timing::wait_by`].
+struct Activity;
+
+impl Activity {
+    /// Waiting for a request with nothing to do.
+    const IDLE: usize = 0;
+    /// The call of a request of kind `kind` ([`TIMED_KINDS`]).
+    const fn call(kind: usize) -> usize {
+        1 + kind
+    }
+    const STEP_SAVE: usize = 6;
+    const STEP_APPLY: usize = 7;
+    const STEP_HOME_SYNC: usize = 8;
+    const STEP_LOG_START: usize = 9;
+    const OWN_SYNC: usize = 10;
+    /// Everything else: the loop's own work between two of the above,
+    /// a step's reading of the log before its first part, commands
+    /// that are no request.
+    const OTHER: usize = 11;
+}
+
+/// The names of what a worker can be doing, in the order of
+/// [`Timing::worker`]: idle; the call of a read, a write, a flush (the
+/// log's sync), a discard, a write-zeroes; the four parts of a step
+/// and the rule's own sync of the log; anything else.
+pub const ACTIVITIES: [&str; 12] = [
+    "idle",
+    "read",
+    "write",
+    "flush",
+    "discard",
+    "zeroes",
+    "step_save",
+    "step_apply",
+    "step_home_sync",
+    "step_log_start",
+    "own_sync",
+    "other",
+];
+
+/// What the worker did, span after span, for as far back as a request
+/// that is still waiting can have been submitted: a request's wait is
+/// attributed by laying it over these.
+///
+/// Exact, and without anything shared between threads: the request
+/// carries the time of its submission, the worker knows what it did
+/// since. The cost is one entry per span, in a queue that is reused,
+/// and for a request a walk back over the spans of its wait.
+struct Spans {
+    /// Where the last span ended.
+    last: Instant,
+    /// The end of each span and what it was, oldest first. A span
+    /// begins where the one before it ended.
+    spans: VecDeque<(Instant, usize)>,
+}
+
+impl Spans {
+    /// At most this many spans are kept. A wait that reaches further
+    /// back has the rest counted under the oldest span that is kept.
+    const KEPT: usize = 1 << 16;
+
+    fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            spans: VecDeque::new(),
+        }
+    }
+
+    /// The worker did `activity` from the last span's end until `now`.
+    fn close(&mut self, activity: usize, now: Instant, timing: &mut Timing) {
+        let Some(time) = now
+            .checked_duration_since(self.last)
+            .filter(|t| !t.is_zero())
+        else {
+            return;
+        };
+        let ns = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
+        timing.worker[activity] = timing.worker[activity].saturating_add(ns);
+        if self.spans.len() == Self::KEPT {
+            self.spans.pop_front();
+        }
+        self.spans.push_back((now, activity));
+        self.last = now;
+    }
+
+    /// The parts of a batch that the core noted: what lies between
+    /// them and before the first is "other".
+    fn take(&mut self, parts: &mut Option<Vec<(Instant, Instant, usize)>>, timing: &mut Timing) {
+        for (began, ended, activity) in parts.iter_mut().flat_map(|parts| parts.drain(..)) {
+            self.close(Activity::OTHER, began, timing);
+            self.close(activity, ended, timing);
+        }
+    }
+
+    /// What the worker did between `from` and the last span's end, by
+    /// activity, in nanoseconds. The oldest span that is kept is taken
+    /// to reach back as far as `from`: its begin was forgotten because
+    /// no request that waits was submitted before it.
+    fn between(&self, from: Instant) -> [u64; 12] {
+        let mut by = [0u64; 12];
+        for at in (0..self.spans.len()).rev() {
+            let (end, activity) = self.spans[at];
+            if end <= from {
+                break;
+            }
+            let began = match at.checked_sub(1) {
+                Some(before) => self.spans[before].0.max(from),
+                None => from,
+            };
+            let ns = u64::try_from(end.saturating_duration_since(began).as_nanos());
+            by[activity] = by[activity].saturating_add(ns.unwrap_or(u64::MAX));
+        }
+        by
+    }
+
+    /// Forget the spans no wait can reach any more. Called when the
+    /// worker has just found nothing more arrived, so every request
+    /// that waits is in its queue and `oldest` is the submission of
+    /// the first of them: spans that ended before it are forgotten.
+    /// With none waiting, a request can still come whose submission
+    /// was stamped a moment before now and handed over after: the
+    /// spans of the last millisecond are kept for it, and the last
+    /// span always.
+    fn forget(&mut self, oldest: Option<Instant>) {
+        const MARGIN: Duration = Duration::from_millis(1);
+        let oldest = oldest.or_else(|| Instant::now().checked_sub(MARGIN));
+        while self.spans.len() > 1
+            && self
+                .spans
+                .front()
+                .is_some_and(|(end, _)| oldest.is_none_or(|oldest| *end <= oldest))
+        {
+            self.spans.pop_front();
+        }
+    }
+}
+
 /// What one kind of request waited and took.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RequestTiming {
@@ -1614,9 +1771,14 @@ pub struct RequestTiming {
 ///
 /// The cost is one read of the monotonic clock per boundary: three per
 /// request (its submission, its begin, its end), five per batch of a
-/// checkpoint, two per sync of the rule's own, and two per turn of the
-/// worker at the gate. No allocation, and no lock but the one the
-/// worker already takes to show the log's state, held for a copy.
+/// checkpoint, two per sync of the rule's own, two per turn of the
+/// worker at the gate, and two around each wait for a request. What
+/// the worker did is kept as one entry per span in a queue that is
+/// reused (no allocation once it has grown to the longest wait seen),
+/// and a request's wait is laid over the spans since its submission:
+/// a walk of as many entries as the worker did things meanwhile. No
+/// lock but the one the worker already takes to show the log's state,
+/// held for a copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Timing {
     /// By kind, in the order of [`TIMED_KINDS`]. Requests that
@@ -1644,6 +1806,23 @@ pub struct Timing {
     pub behind_step: Spent,
     /// The reads among them.
     pub reads_behind_step: Spent,
+    /// The worker's whole time since it started, by what it did, in
+    /// nanoseconds and in the order of [`ACTIVITIES`], idle included:
+    /// the spans follow each other with no gap, so the sum is the time
+    /// served, and one entry over the sum is the share of the worker's
+    /// time that went there.
+    pub worker: [u64; 12],
+    /// For each kind of request ([`TIMED_KINDS`]): the summed waits of
+    /// [`RequestTiming::wait`] by what the worker did meanwhile
+    /// ([`ACTIVITIES`]). Each request's wait is laid over the worker's
+    /// spans, so a row's sum is that kind's summed wait. "Idle" here is
+    /// the time the worker took to wake for a request.
+    pub wait_by: [[u64; 12]; 5],
+    /// For each kind: of its longest wait, the activity that took the
+    /// largest part of it, as a number into [`ACTIVITIES`].
+    pub longest_wait_cause: [u64; 5],
+    /// And how long that part was.
+    pub longest_wait_cause_ns: [u64; 5],
 }
 
 /// The log as a store shows it to its owner.
@@ -2240,6 +2419,7 @@ impl<D: Dir> Store<D> {
                 steps: 0,
                 own_syncs: 0,
                 timing: Timing::default(),
+                parts: None,
                 zeroes: Zeroes::Untried,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
@@ -2670,6 +2850,9 @@ where
                 // queue's order. What the open left queued counts from
                 // here.
                 let mut arrived: VecDeque<Instant> = queue.iter().map(|_| Instant::now()).collect();
+                // What the worker did, for the waits of the requests.
+                let mut spans = Spans::new();
+                core.parts = Some(Vec::new());
                 // When the last step ended.
                 let mut step_ended: Option<Instant> = None;
                 loop {
@@ -2677,7 +2860,10 @@ where
                     // Take what has arrived; wait if there is nothing
                     // to do.
                     let command = if (queue.is_empty() || held) && !busy {
-                        match inbox.recv() {
+                        spans.close(Activity::OTHER, Instant::now(), &mut core.timing);
+                        let command = inbox.recv();
+                        spans.close(Activity::IDLE, Instant::now(), &mut core.timing);
+                        match command {
                             Ok(command) => Some(command),
                             Err(_) => return,
                         }
@@ -2717,6 +2903,7 @@ where
                             } else {
                                 core.checkpoint()
                             };
+                            spans.take(&mut core.parts, &mut core.timing);
                             held = false;
                             busy = true;
                             // As for a completion: whoever is answered
@@ -2755,7 +2942,9 @@ where
                             let _ = reply.send(());
                             continue;
                         }
-                        None => {}
+                        // Nothing more has arrived: every request
+                        // that waits is in the queue.
+                        None => spans.forget(arrived.front().copied()),
                     }
                     // At or above the high mark no request is executed
                     // while the rule still takes steps: `busy` says
@@ -2774,12 +2963,34 @@ where
                     if let Some((Request { id, op }, at)) = next {
                         let kind = timed_kind(&op);
                         let began = Instant::now();
-                        match core.execute(op) {
+                        spans.close(Activity::OTHER, began, &mut core.timing);
+                        let executed = core.execute(op);
+                        let ended = Instant::now();
+                        // What it waited for, before its own call is
+                        // among the spans.
+                        let by = executed.is_ok().then(|| spans.between(at));
+                        spans.close(Activity::call(kind), ended, &mut core.timing);
+                        match executed {
                             Ok((result, buf)) => {
                                 let wait = began.saturating_duration_since(at);
                                 let timing = &mut core.timing;
+                                if let Some(by) = by {
+                                    let longest = wait.as_nanos()
+                                        >= u128::from(timing.requests[kind].wait.max_ns);
+                                    let mut most = 0;
+                                    for (activity, ns) in by.iter().enumerate() {
+                                        timing.wait_by[kind][activity] += ns;
+                                        if *ns > by[most] {
+                                            most = activity;
+                                        }
+                                    }
+                                    if longest {
+                                        timing.longest_wait_cause[kind] = most as u64;
+                                        timing.longest_wait_cause_ns[kind] = by[most];
+                                    }
+                                }
                                 timing.requests[kind].wait.add(wait);
-                                timing.requests[kind].call.add(began.elapsed());
+                                timing.requests[kind].call.add(ended - began);
                                 if step_ended.is_some_and(|ended| ended > at) {
                                     timing.behind_step.add(wait);
                                     if kind == 0 {
@@ -2830,6 +3041,7 @@ where
                         shown.begin();
                         wake();
                     });
+                    spans.take(&mut core.parts, &mut core.timing);
                     if stepped != Ok(false) {
                         let now = Instant::now();
                         step_ended = Some(now);
