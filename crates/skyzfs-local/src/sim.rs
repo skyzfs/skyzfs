@@ -50,6 +50,9 @@
 //!   write unit set, every sector of every unit a write touches counts
 //!   as written again, with the same content, and so is the power
 //!   cut's to lose or to turn into garbage.
+//! - **The file system's block** ([`SimDisk::set_block_size`]). A file
+//!   system writes back whole blocks: where its block is larger than
+//!   the write unit, the block is what a write rewrites.
 //!
 //! What it does not model: a disk that reports a sync it did not do, a
 //! write that lands in the wrong place, corruption of durable data on its
@@ -363,6 +366,8 @@ struct State {
     no_holes: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
+    /// The page size the system reports.
+    page_size: u64,
     /// The next deallocation fails, having zeroed any part of its range.
     hole_fault: bool,
     /// The machine stops after this many more writes and syncs.
@@ -474,6 +479,7 @@ impl SimDisk {
                 read_fault: None,
                 no_holes: false,
                 block_size: Some(SECTOR),
+                page_size: SECTOR,
                 hole_fault: false,
                 halt: None,
                 lock: None,
@@ -705,12 +711,24 @@ impl SimDisk {
         self.lock().no_holes = !supported;
     }
 
-    /// The block size the file system reports ([`File::block_size`]),
-    /// or `None` for one that cannot be asked. One sector unless set.
-    /// A deallocation that ends inside a block rewrites the block's
-    /// other sectors, as it does a write unit's.
+    /// The block size the file system reports ([`Dir::block_size`],
+    /// [`File::block_size`]), or `None` for one that cannot be asked.
+    /// One sector unless set. A write, and a deallocation that ends
+    /// inside a block, rewrite the other sectors of every block they
+    /// touch, as they do a write unit's: the larger of the two counts.
+    /// Like the write unit, it is a property of where the files are
+    /// and not of the files: it can be set anew at any time, as when a
+    /// directory is copied to another file system.
     pub fn set_block_size(&self, bytes: Option<u64>) {
         self.lock().block_size = bytes;
+    }
+
+    /// The page size the system reports ([`Dir::page_size`]). One
+    /// sector unless set. It only says what the system would answer:
+    /// how far a write reaches is the write unit's
+    /// ([`SimDisk::set_write_unit`]), which a test sets with it.
+    pub fn set_page_size(&self, bytes: u64) {
+        self.lock().page_size = bytes;
     }
 
     /// The next deallocation fails with an I/O error, having zeroed any
@@ -794,6 +812,16 @@ impl Drop for SimLock {
 impl Dir for SimDisk {
     type File = SimFile;
     type Lock = SimLock;
+
+    fn page_size(&self) -> u64 {
+        self.lock().page_size
+    }
+
+    fn block_size(&self) -> io::Result<u64> {
+        self.lock()
+            .block_size
+            .ok_or_else(|| io::Error::other("the file system does not say"))
+    }
 
     /// The lock is no file here: taking it leaves the disk as it was.
     fn try_lock(&self) -> io::Result<SimLock> {
@@ -995,10 +1023,11 @@ impl File for SimFile {
             .checked_add(data.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         let rng = &mut state.rng;
-        let unit = state.write_unit;
+        let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
-        // The units the write touches are rewritten as a whole: their
-        // other sectors are written again as they are.
+        // The units the write touches, or the file system's blocks if
+        // those are larger, are rewritten as a whole: their other
+        // sectors are written again as they are.
         if unit > SECTOR && !data.is_empty() {
             let first = offset / unit * unit;
             let last = (end.div_ceil(unit) * unit).min(inode.len.max(end));
@@ -1843,6 +1872,34 @@ mod tests {
             );
         }
         assert!(dirty > 0 && dropped > 0 && only_cached > 0);
+    }
+
+    /// The file system's block: where it is larger than the write
+    /// unit, a small write puts the durable sectors of the whole block
+    /// around it at risk, in whatever file, and the directory says the
+    /// same size as its files.
+    #[test]
+    fn a_write_rewrites_its_whole_file_system_block() {
+        let disk = disk_with(32, 1);
+        disk.set_write_unit(2 * SECTOR);
+        disk.set_block_size(Some(16 * SECTOR));
+        assert_eq!(Dir::block_size(&disk).unwrap(), 16 * SECTOR);
+        let mut f = disk.open("f").unwrap();
+        // One byte in the second block (sectors 16 to 31).
+        f.write_at(20 * SECTOR + 7, &[2]).unwrap();
+        assert_eq!(disk.unsynced_sectors(), 16);
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let got = read(&disk, "f", 0, 32 * S);
+        assert_eq!(got[..16 * S], vec![1; 16 * S][..]);
+        for sector in 16..32 {
+            assert_ne!(
+                got[sector * S..(sector + 1) * S],
+                vec![1; S][..],
+                "{sector}"
+            );
+        }
+        disk.set_block_size(None);
+        assert!(Dir::block_size(&disk).is_err());
     }
 
     /// Write unit: with one set, a small write puts the durable sectors

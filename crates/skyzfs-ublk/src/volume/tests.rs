@@ -135,6 +135,22 @@ fn the_stores_errors_are_sorted_into_the_four_kinds() {
     );
     // A read that failed may pass.
     assert!(matches!(classify(&io(false)), OpenError::Other(_)));
+    // A file system with larger blocks than the write unit: a refusal
+    // with its reason, and no failure of the volume.
+    let blocks = StoreError::Blocks {
+        what: skyzfs_local::store::Under::Directory,
+        block: 16384,
+        unit: 4096,
+    };
+    match classify(&blocks) {
+        OpenError::Other(why) => assert!(
+            why.contains("blocks of 16384 bytes")
+                && why.contains("write unit of 4096")
+                && why.contains("is left as it is; `skyzfsd detach` removes it"),
+            "{why}"
+        ),
+        other => panic!("{other:?}"),
+    }
     for passing in [
         StoreError::Log(LogError::NotFound),
         StoreError::Log(LogError::Corrupt(Corruption::NoSuperblock)),

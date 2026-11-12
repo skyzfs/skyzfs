@@ -160,12 +160,18 @@
 //! Nothing on the disk is assumed to be written atomically. A sector
 //! that is being written when the power fails may hold the old bytes,
 //! the new bytes, or neither. And a small write rewrites everything
-//! around it: a kernel writes back whole pages, a disk whole physical
-//! sectors. The **write unit** is the largest thing that is rewritten
-//! as a whole. It is stored in the superblock, because it belongs to
-//! the machine and not to the format: 4096 on most, 16384 where pages
-//! are 16 KiB (Apple silicon, some arm64 kernels). A new log should
-//! take [`format::Identity::system_write_unit`].
+//! around it: a kernel writes back whole pages, a file system whole
+//! blocks, a disk whole physical sectors. The **write unit** is the
+//! largest thing that is rewritten as a whole. It is stored in the
+//! superblock, because it belongs to the machine and the file system
+//! and not to the format: 4096 on most, 16384 where pages are 16 KiB
+//! (Apple silicon, some arm64 kernels), more where the file system's
+//! block is larger than a page. A new log should take
+//! [`format::Identity::write_unit_for`] the block size of its
+//! directory's file system. A store is not created, and not opened,
+//! where a file system's block is larger than its write unit
+//! ([`store::StoreError::Blocks`]): the directory may have been moved
+//! since.
 //!
 //! A record appended into the unit that holds the end of a durable
 //! record would put that record at risk again. So the first record

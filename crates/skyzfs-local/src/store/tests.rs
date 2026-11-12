@@ -4192,106 +4192,290 @@ fn a_file_system_without_holes_has_the_zeros_written() {
     caught(scenario, Mutants::WRITTEN_ZEROES_FREE);
 }
 
-/// A range is deallocated only on a file system whose block is no
-/// larger than the store's write unit. On one with larger blocks, and
-/// on one that does not say how large its blocks are, zeros are
-/// written and the store says why: a hole that ends inside a block has
-/// the file system rewrite that block, and the store saves a range's
-/// neighbours only as far as its write unit reaches. Mutant: the block
-/// size is not asked.
+/// A store is created only in a directory whose file system has
+/// blocks no larger than the store's write unit, and only where that
+/// size can be read. A refused creation makes nothing, not even the
+/// lock file. Mutant: the check at the creation is not made.
 #[test]
-fn a_range_is_deallocated_only_where_blocks_are_no_larger_than_the_write_unit() {
+fn a_store_is_created_only_where_blocks_are_no_larger_than_the_write_unit() {
     fn scenario(env: &Env) -> Outcome {
         let unit = u64::from(env.unit);
-        let cases = [
-            (Some(4 * unit), Zeroes::WrittenForBlocks),
-            (Some(2 * unit), Zeroes::WrittenForBlocks),
-            (None, Zeroes::WrittenForBlocks),
-            (Some(unit), Zeroes::Deallocated),
-            (Some(512), Zeroes::Deallocated),
-        ];
-        for (block, want) in cases {
-            let (disk, mut store) = env.fresh()?;
+        let create = |block: Option<u64>| {
+            let disk = SimDisk::new(7);
+            disk.set_write_unit(unit);
             disk.set_block_size(block);
-            write(&mut store, 0, 256, 9)?;
-            flush(&mut store)?;
-            checkpoint(&mut store)?;
-            for n in 0..4 {
-                zeroes(&mut store, 16 + n * 32, 16)?;
+            let key = Key(*b"a key for tests!");
+            let made = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+            (disk, made.map(|_| ()))
+        };
+        for block in [512, 4096, unit] {
+            let (_, made) = create(Some(block));
+            made.map_err(|e| format!("blocks of {block}: {e}"))?;
+        }
+        for block in [2 * unit, 4 * unit, 1 << 20] {
+            let (disk, made) = create(Some(block));
+            let want = StoreError::Blocks {
+                what: Under::Directory,
+                block,
+                unit,
+            };
+            if made != Err(want) {
+                return Err(format!("blocks of {block}: {made:?}"));
             }
-            flush(&mut store)?;
-            let before = disk.stats();
-            checkpoint(&mut store)?;
-            let after = disk.stats();
-            let said = store.log_state().zeroes;
-            if said != want {
-                return Err(format!("blocks of {block:?}: the store says {said:?}"));
+            let (names, stats) = (disk.list().map_err(|e| e.to_string())?, disk.stats());
+            if !names.is_empty() || stats.writes != 0 {
+                return Err(format!("a refused creation left {names:?}, {stats:?}"));
             }
-            let holes = after.deallocated - before.deallocated;
-            let written = after.written - before.written;
-            match want {
-                Zeroes::Deallocated if holes != 4 * 16 * BLOCK => {
-                    return Err(format!("blocks of {block:?}: {holes} bytes deallocated"));
-                }
-                Zeroes::WrittenForBlocks if holes != 0 || written < 4 * 16 * BLOCK => {
-                    return Err(format!(
-                        "blocks of {block:?}: {holes} bytes deallocated, {written} written"
-                    ));
-                }
-                _ => {}
-            }
-            if store.is_failed() {
-                return Err("the volume failed".into());
-            }
-            for n in 0..4 {
-                expect(&mut store, n * 32, 16, 9, "between the ranges")?;
-                expect(&mut store, 16 + n * 32, 16, 0, "the ranges")?;
-            }
-            expect(&mut store, 128, 128, 9, "after the ranges")?;
+        }
+        let (disk, made) = create(None);
+        if !matches!(
+            made,
+            Err(StoreError::BlocksUnknown {
+                what: Under::Directory,
+                ..
+            })
+        ) {
+            return Err(format!("a block size that cannot be read: {made:?}"));
+        }
+        if !disk.list().map_err(|e| e.to_string())?.is_empty() {
+            return Err("a refused creation left files".into());
         }
         Ok(())
     }
-    caught(scenario, Mutants::HOLES_IN_LARGE_BLOCKS);
+    caught(scenario, Mutants::CREATE_ON_ANY_BLOCKS);
 }
 
-/// What the rule above is for. The file system's block is four write
-/// units, and a write-zeroes covers one unit in the middle of a block.
-/// The steps are stopped anywhere and the power is cut, with what was
-/// not synced reading as garbage. The rest of the block holds what it
-/// held: zeros were written into the one unit, and the file system
-/// had no reason to rewrite the block. Mutant: the block size is not
-/// asked, the range is deallocated, the file system rewrites the
-/// block, and the units beside the range, which no preimage covers,
-/// are lost.
+/// A store whose directory now is on a file system with larger blocks
+/// than its write unit (it was copied or moved), or one whose block
+/// size cannot be read, is not opened: nothing is written, synced,
+/// made or marked, and the same store opens again, whole, where the
+/// blocks fit. Mutant: the check at an open is not made.
 #[test]
-fn a_write_zeroes_inside_a_larger_block_can_be_cut_anywhere() {
+fn an_open_is_refused_where_blocks_are_larger_than_the_write_unit() {
     fn scenario(env: &Env) -> Outcome {
         let unit = u64::from(env.unit);
-        let per_unit = unit / BLOCK;
-        let all = Fate::Garbage;
-        for stop in 0..12 {
-            let (disk, mut store) = env.fresh()?;
-            disk.set_block_size(Some(4 * unit));
-            write(&mut store, 0, 256, 9)?;
-            flush(&mut store)?;
-            checkpoint(&mut store)?;
-            zeroes(&mut store, 16 + per_unit, per_unit)?;
-            flush(&mut store)?;
-            disk.halt_after(stop);
-            let _ = store.checkpoint();
-            drop(store);
-            disk.power_cut(BySector(move |_: Option<&str>, _| all));
-            disk.set_write_unit(unit);
-            disk.set_block_size(Some(4 * unit));
-            let mut store = env.reopen_ack(&disk)?;
-            let what = format!("a cut at {stop}");
-            expect(&mut store, 0, 16 + per_unit as usize, 9, &what)?;
-            expect(&mut store, 16 + per_unit, per_unit as usize, 0, &what)?;
-            expect(&mut store, 16 + 2 * per_unit, 64, 9, &what)?;
+        let (disk, mut store) = env.fresh()?;
+        write(&mut store, 3, 5, 9)?;
+        flush(&mut store)?;
+        write(&mut store, 40, 2, 8)?;
+        drop(store);
+        disk.kill();
+        let names = disk.list().map_err(|e| e.to_string())?;
+        let before = disk.stats();
+        for block in [Some(2 * unit), Some(1 << 20), None] {
+            disk.set_block_size(block);
+            let opened = Store::open(disk.clone(), env.options()).map(|_| ());
+            let refused = match (block, &opened) {
+                (
+                    Some(block),
+                    Err(StoreError::Blocks {
+                        what,
+                        block: b,
+                        unit: u,
+                    }),
+                ) => *what == Under::Directory && *b == block && *u == unit,
+                (None, Err(StoreError::BlocksUnknown { .. })) => true,
+                _ => false,
+            };
+            if !refused {
+                return Err(format!("blocks of {block:?}: {opened:?}"));
+            }
+            let after = disk.stats();
+            if (after.writes, after.syncs, after.dir_syncs)
+                != (before.writes, before.syncs, before.dir_syncs)
+            {
+                return Err(format!("a refused open wrote: {before:?} then {after:?}"));
+            }
+            if disk.list().map_err(|e| e.to_string())? != names {
+                return Err("a refused open changed the directory".into());
+            }
         }
-        Ok(())
+        disk.set_block_size(Some(unit));
+        let (mut store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        expect(&mut store, 3, 5, 9, "what was flushed")?;
+        expect(&mut store, 40, 2, 8, "what a kill does not lose")
     }
-    caught(scenario, Mutants::HOLES_IN_LARGE_BLOCKS);
+    caught(scenario, Mutants::OPEN_ON_ANY_BLOCKS);
+}
+
+/// The other measure of how far a write reaches: the page of the
+/// system that writes. A store is not created with a write unit below
+/// the system's page, and one made where pages were no larger than its
+/// unit is not opened where they are larger: nothing is written, and
+/// it opens again, whole, where the pages fit. Mutant: the page size
+/// is not asked.
+#[test]
+fn a_store_is_refused_where_pages_are_larger_than_the_write_unit() {
+    fn scenario(env: &Env) -> Outcome {
+        let unit = u64::from(env.unit);
+        let disk = SimDisk::new(7);
+        disk.set_write_unit(4 * unit);
+        disk.set_page_size(4 * unit);
+        let key = Key(*b"a key for tests!");
+        let made = Store::create_keyed(disk.clone(), &env.config(), key, env.options());
+        let want = StoreError::Pages {
+            page: 4 * unit,
+            unit,
+        };
+        if made.as_ref().err() != Some(&want) {
+            return Err(format!("a creation under larger pages: {:?}", made.err()));
+        }
+        if !disk.list().map_err(|e| e.to_string())?.is_empty() {
+            return Err("a refused creation left files".into());
+        }
+
+        let (disk, mut store) = env.fresh()?;
+        disk.set_page_size(unit);
+        write(&mut store, 3, 5, 9)?;
+        flush(&mut store)?;
+        drop(store);
+        disk.kill();
+        let names = disk.list().map_err(|e| e.to_string())?;
+        let before = disk.stats();
+        disk.set_page_size(4 * unit);
+        let opened = Store::open(disk.clone(), env.options()).map(|_| ());
+        if opened != Err(want) {
+            return Err(format!("an open under larger pages: {opened:?}"));
+        }
+        let after = disk.stats();
+        if (after.writes, after.syncs, after.dir_syncs)
+            != (before.writes, before.syncs, before.dir_syncs)
+            || disk.list().map_err(|e| e.to_string())? != names
+        {
+            return Err(format!("a refused open wrote: {before:?} then {after:?}"));
+        }
+        disk.set_page_size(unit);
+        let (mut store, _) = Store::open(disk.clone(), env.options()).map_err(|e| e.to_string())?;
+        expect(&mut store, 3, 5, 9, "what was flushed")
+    }
+    caught(scenario, Mutants::UNDER_ANY_PAGES);
+}
+
+/// What the two refusals are for. The disk rewrites the whole block of
+/// its file system around every write, in every file, and a power cut
+/// leaves what was not synced as the environment says (as it was, or
+/// garbage). The store runs on a disk whose block is `block`.
+///
+/// First the log: a write is flushed, a second is not, the power is
+/// cut. The second write went into the file system block that holds
+/// the first, durable record, unless the log leaves a unit that holds
+/// a durable record alone and the unit is at least the block. Then the
+/// checkpoint: single blocks are written and ranges zeroed beside
+/// blocks that only the home image holds, the steps are stopped
+/// anywhere (so also between the preimage file's sync and the home
+/// image's), the power is cut, and cut again inside the open.
+///
+/// `log_stage` false leaves the first stage out: every record is then
+/// durable before any cut, so what is lost is lost by a checkpoint's
+/// writes.
+fn on_blocks_of(env: &Env, block: u64, log_stage: bool) -> Outcome {
+    let lost = env.lost();
+    let cut = |disk: &SimDisk| {
+        disk.power_cut(BySector(move |_: Option<&str>, _| lost));
+        disk.set_write_unit(SECTOR);
+        disk.set_block_size(Some(block));
+    };
+    let bound = StepBound {
+        payload: 16 * BLOCK,
+        records: 16,
+    };
+    for stop in (0..30).chain([44, 61, 90, 150]) {
+        let (disk, mut store) = env.fresh()?;
+        // The block of the file system alone says how far a write
+        // reaches: the device's own unit is one sector.
+        disk.set_write_unit(SECTOR);
+        disk.set_block_size(Some(block));
+        write(&mut store, 0, 256, 9)?;
+        write(&mut store, 256, 256, 9)?;
+        flush(&mut store)?;
+        if log_stage {
+            write(&mut store, 300, 1, 5)?;
+            write(&mut store, 301, 1, 6)?;
+            drop(store);
+            cut(&disk);
+            store = env.reopen_ack(&disk)?;
+            let what = "flushed, after a cut behind a later write";
+            expect(&mut store, 0, 256, 9, what)?;
+            expect(&mut store, 256, 256, 9, what)?;
+        }
+        checkpoint(&mut store)?;
+        // Groups of 32 blocks, of which the first eight are touched:
+        // the other 24 are held by the home image alone, in write
+        // units no record of the batch touches.
+        for group in 0..16u64 {
+            zeroes(&mut store, group * 32 + 1, 5)?;
+            write(&mut store, group * 32 + 7, 1, group as u8 + 10)?;
+        }
+        flush(&mut store)?;
+        disk.halt_after(stop);
+        while store.checkpoint_step(bound).is_ok_and(|done| done.more) {}
+        drop(store);
+        cut(&disk);
+        disk.halt_after(stop % 7);
+        drop(Store::open(disk.clone(), env.options()));
+        cut(&disk);
+        let mut store = env.reopen_ack(&disk)?;
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            for group in 0..16u64 {
+                let what = format!("group {group} {when} a cut at {stop}");
+                expect(store, group * 32, 1, 9, &what)?;
+                expect(store, group * 32 + 1, 5, 0, &what)?;
+                expect(store, group * 32 + 6, 1, 9, &what)?;
+                expect(store, group * 32 + 7, 1, group as u8 + 10, &what)?;
+                expect(store, group * 32 + 8, 24, 9, &what)?;
+            }
+            Ok(())
+        };
+        check(&mut store, "after")?;
+        while step(&mut store, bound)?.more {}
+        check(&mut store, "and the remaining steps after")?;
+    }
+    Ok(())
+}
+
+/// A volume whose write unit is at least the block of its file system
+/// survives power cuts anywhere, in every environment, on a disk that
+/// rewrites whole blocks around every write.
+#[test]
+fn a_volume_whose_unit_is_at_least_the_block_survives_cuts_anywhere() {
+    fn scenario(env: &Env) -> Outcome {
+        on_blocks_of(env, u64::from(env.unit), true)?;
+        on_blocks_of(env, 512, true)
+    }
+    holds(scenario);
+}
+
+/// The exposure, which is the store as it was before a volume's write
+/// unit was held against the file system's block: with neither check
+/// made, a volume on a file system with blocks of four write units
+/// loses, at a power cut that leaves garbage, a block that nobody was
+/// writing: a flushed record in the log, behind a later write, and,
+/// with the log left out of it, a block of the home image beside a
+/// checkpoint's write. Both in every such environment.
+#[test]
+fn a_volume_whose_unit_is_below_the_block_loses_what_nobody_wrote() {
+    let unchecked = Mutants::CREATE_ON_ANY_BLOCKS | Mutants::OPEN_ON_ANY_BLOCKS;
+    let mut ran = 0;
+    for env in environments(unchecked) {
+        if !env.garbage {
+            continue;
+        }
+        ran += 1;
+        let block = 4 * u64::from(env.unit);
+        let in_the_log = on_blocks_of(&env, block, true).expect_err("a loss");
+        assert!(
+            in_the_log.contains("after a cut behind a later write"),
+            "{in_the_log} in {env:?}"
+        );
+        // And with every record durable before the first cut: the
+        // loss is then the checkpoint's, in the home image.
+        let by_a_checkpoint = on_blocks_of(&env, block, false).expect_err("a loss");
+        assert!(
+            by_a_checkpoint.contains("a cut at"),
+            "{by_a_checkpoint} in {env:?}"
+        );
+    }
+    assert_eq!(ran, 4);
 }
 
 /// A file system that deallocated and then refuses: the step was sized

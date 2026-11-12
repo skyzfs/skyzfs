@@ -182,7 +182,9 @@ pub enum ZeroesShown {
     /// Zeros are written: the file system cannot deallocate.
     Written,
     /// Zeros are written: the file system's blocks are larger than the
-    /// store's write unit, or their size could not be read.
+    /// store's write unit, or their size could not be read. No store
+    /// says this any more: one is not opened on such a file system
+    /// (M1.3g). The value stays readable.
     WrittenForBlocks,
 }
 

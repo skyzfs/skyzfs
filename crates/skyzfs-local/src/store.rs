@@ -132,11 +132,18 @@ impl Mutants {
     /// A write-zeroes record counts no bytes in a step's bound also
     /// where its zeros are written.
     pub(crate) const WRITTEN_ZEROES_FREE: u32 = 1 << 23;
-    /// A range is deallocated whatever the file system's block size.
-    pub(crate) const HOLES_IN_LARGE_BLOCKS: u32 = 1 << 24;
     /// A step goes on past the record at which the file system first
     /// refused to deallocate.
     pub(crate) const REFUSAL_ENDS_NO_STEP: u32 = 1 << 25;
+    /// A store is created whatever the block size of the directory's
+    /// file system.
+    pub(crate) const CREATE_ON_ANY_BLOCKS: u32 = 1 << 26;
+    /// A store is opened whatever the block size of the file systems
+    /// its files are on.
+    pub(crate) const OPEN_ON_ANY_BLOCKS: u32 = 1 << 27;
+    /// A store is created and opened whatever the page size of the
+    /// system it runs on.
+    pub(crate) const UNDER_ANY_PAGES: u32 = 1 << 28;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -315,6 +322,124 @@ pub enum StoreError {
     /// The store's files do not fit together.
     #[error("the store is damaged: {0}")]
     Damaged(&'static str),
+    /// `create` and every open: a file system under the store has
+    /// blocks larger than the store's write unit. Nothing was written.
+    ///
+    /// The write unit is the store's one assumption about how far a
+    /// write reaches beside what it writes: the log never writes again
+    /// into a unit that holds a durable record, and a checkpoint saves
+    /// the other blocks of each unit it writes in part. The files are
+    /// written through the operating system's cache, and a file system
+    /// writes back whole blocks: where its block is larger than the
+    /// unit, a write rewrites sectors beyond its unit, which a power
+    /// cut can then lose with nothing to restore them from.
+    #[error(
+        "{what} is on a file system with blocks of {block} bytes, larger than the volume's \
+         write unit of {unit} bytes: a write there reaches beyond what the store protects"
+    )]
+    Blocks {
+        /// What is there.
+        what: Under,
+        /// The file system's block size.
+        block: u64,
+        /// The store's write unit.
+        unit: u64,
+    },
+    /// `create` and every open: the system's page is larger than the
+    /// store's write unit. Nothing was written. A kernel writes back
+    /// whole pages, so this is the same exposure by the other measure:
+    /// a volume made where pages are 4 KiB and opened where they are
+    /// 16 or 64 KiB.
+    #[error(
+        "this system's pages are {page} bytes, larger than the volume's write unit of {unit} \
+         bytes: a write here reaches beyond what the store protects"
+    )]
+    Pages {
+        /// The system's page size.
+        page: u64,
+        /// The store's write unit.
+        unit: u64,
+    },
+    /// The same, where the block size could not be read: the
+    /// assumption cannot be checked, and the store is refused.
+    #[error(
+        "the block size of the file system under {what} could not be read ({kind:?}): \
+         whether a write there stays within the volume's write unit cannot be checked"
+    )]
+    BlocksUnknown {
+        /// What is there.
+        what: Under,
+        /// The error's kind.
+        kind: io::ErrorKind,
+    },
+}
+
+/// What of a store a file system's block size was read for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Under {
+    /// The volume's directory: where every file of the store is made.
+    Directory,
+    /// The home image.
+    Home,
+    /// A segment file of the write log, by its number: `log.000003`
+    /// is 3.
+    Segment(usize),
+    /// Another file of the write log: its superblock, its marker.
+    Log,
+    /// The file of preimages.
+    Preimages,
+}
+
+impl Under {
+    /// What the store's file of this name is, or `None` for a name
+    /// under which the store writes nothing: its lock, and whatever
+    /// else is in the directory.
+    fn of(name: &str) -> Option<Self> {
+        if name == HOME_NAME || name == HOME_NEW_NAME {
+            Some(Self::Home)
+        } else if name == PREIMAGE_NAME {
+            Some(Self::Preimages)
+        } else if let Some(index) = crate::log::slot_index(name) {
+            Some(Self::Segment(index))
+        } else if name.starts_with("log.") {
+            Some(Self::Log)
+        } else {
+            None
+        }
+    }
+}
+
+impl std::fmt::Display for Under {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Directory => "the volume's directory",
+            Self::Home => "the volume's home image (home.img)",
+            Self::Preimages => "the volume's file of preimages (home.pre)",
+            Self::Segment(index) => return write!(f, "the volume's log file log.{index:06}"),
+            Self::Log => "the superblock or the marker of the volume's write log",
+        })
+    }
+}
+
+/// Refuse a system whose page is larger than `unit`.
+fn pages_within_unit(page: u64, unit: u64, mutants: Mutants) -> Result<(), StoreError> {
+    if page <= unit || mutants.has(Mutants::UNDER_ANY_PAGES) {
+        Ok(())
+    } else {
+        Err(StoreError::Pages { page, unit })
+    }
+}
+
+/// Refuse a block size that is not at most `unit`.
+fn within_unit(what: Under, block: io::Result<u64>, unit: u64) -> Result<(), StoreError> {
+    match block {
+        Ok(block) if block <= unit => Ok(()),
+        Ok(block) => Err(StoreError::Blocks { what, block, unit }),
+        Err(e) => Err(StoreError::BlocksUnknown {
+            what,
+            kind: e.kind(),
+        }),
+    }
 }
 
 fn io_error(during: &'static str) -> impl Fn(io::Error) -> StoreError {
@@ -992,8 +1117,6 @@ impl<D: Dir> Core<D> {
             self.mutants.has(Mutants::ZEROES_WRITTEN),
             self.mutants.has(Mutants::NO_HOLES_FAILS),
         );
-        let unit = self.log.identity().unit();
-        let any_block = self.mutants.has(Mutants::HOLES_IN_LARGE_BLOCKS);
         let goes_on = self.mutants.has(Mutants::REFUSAL_ENDS_NO_STEP);
         let mut written = Ok(());
         // Where the batch ends early, and what it took until there.
@@ -1009,20 +1132,7 @@ impl<D: Dir> Core<D> {
                     payload += record.length;
                     home.write_at(record.offset, record.data)
                 }
-                Kind::WriteZeroes if always_written || zeroes.written() => {
-                    write_zeros(home, record.offset, record.length)
-                }
-                // The first one since the open, and the file system's
-                // blocks are larger than the write unit, or it does
-                // not say: a hole that ends inside a block would have
-                // the file system rewrite blocks of the volume that
-                // no preimage covers. Zeros are written.
-                Kind::WriteZeroes
-                    if *zeroes == Zeroes::Untried
-                        && !any_block
-                        && !home.block_size().is_ok_and(|block| block <= unit) =>
-                {
-                    *zeroes = Zeroes::WrittenForBlocks;
+                Kind::WriteZeroes if always_written || *zeroes == Zeroes::Written => {
                     write_zeros(home, record.offset, record.length)
                 }
                 // The range is deallocated: nothing is written for it.
@@ -1470,9 +1580,8 @@ pub struct LogState {
 /// ([`Marks`], "what it costs a client").
 ///
 /// Which of the two holds for a volume is found out by the first
-/// write-zeroes record that a checkpoint applies after an open (the
-/// file system's block size is asked first, then the call is tried),
-/// and holds until the store is closed. Until then such a record counts
+/// write-zeroes record that a checkpoint applies after an open, and
+/// holds until the store is closed. Until then such a record counts
 /// its length, so that a step keeps to its bound whichever it turns
 /// out to be.
 ///
@@ -1483,9 +1592,9 @@ pub struct LogState {
 ///   before the range is deallocated, exactly as for a write there. A
 ///   range that covers whole units, and every range where the unit is
 ///   one block, has no neighbours and saves nothing. This reaches as
-///   far as the write unit and no further, so a range is deallocated
-///   only on a file system whose block is no larger than the write
-///   unit ([`Zeroes::WrittenForBlocks`] otherwise).
+///   far as the write unit and no further, which is enough because no
+///   store is open on a file system whose block is larger than its
+///   write unit ([`StoreError::Blocks`]).
 /// - **Durability.** A hole is durable when the home image's sync has
 ///   returned, like a write, and the log keeps the record until then.
 ///   A power cut before that leaves each block of the range as it was
@@ -1509,21 +1618,6 @@ pub enum Zeroes {
     Deallocated,
     /// The file system cannot deallocate: zeros are written.
     Written,
-    /// The file system's blocks are larger than the store's write
-    /// unit, or it does not say how large they are: zeros are written.
-    /// A range deallocated there could end inside a block of the file
-    /// system, which then rewrites that block; the store saves the
-    /// neighbours of a range only as far as its write unit reaches,
-    /// so blocks the volume never asked to change would be at a power
-    /// cut's mercy.
-    WrittenForBlocks,
-}
-
-impl Zeroes {
-    /// Whether zeros are written for a write-zeroes record.
-    pub fn written(self) -> bool {
-        matches!(self, Self::Written | Self::WrittenForBlocks)
-    }
 }
 
 impl LogState {
@@ -1773,6 +1867,14 @@ impl<D: Dir> Store<D> {
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
         let identity = config.identity().ok_or(StoreError::InvalidConfig)?;
+        // Before anything is made: the write unit must be at least the
+        // block of the directory's file system. Every file of a store
+        // is created in this directory, under a name that did not
+        // exist, so it is on this file system.
+        pages_within_unit(dir.page_size(), identity.unit(), options.mutants)?;
+        if !options.mutants.has(Mutants::CREATE_ON_ANY_BLOCKS) {
+            within_unit(Under::Directory, dir.block_size(), identity.unit())?;
+        }
         // Before the lock, which makes a file: a directory with a file
         // of somebody else is refused and left exactly as it was. A
         // directory that holds a store has its lock file already, and
@@ -1895,8 +1997,45 @@ impl<D: Dir> Store<D> {
         Ok((store, recovery))
     }
 
+    /// Before an open reads, recovers or writes anything: the system's
+    /// page is no larger than the store's write unit, and every file
+    /// the store writes, and the directory itself, where files are
+    /// made later, is on a file system whose block is no larger
+    /// either. The directory may have been copied or moved since the
+    /// store was created, to another file system or to a machine with
+    /// larger pages, and a name in it may lead to another file system.
+    /// Names under which the store writes nothing are not asked: the
+    /// lock, and whatever else somebody put there. A directory with no
+    /// readable superblock is left to the log's own open, which says
+    /// what is wrong with it.
+    fn writes_stay_within_the_unit(dir: &D, mutants: Mutants) -> Result<(), StoreError> {
+        let reading = io_error("reading the superblock");
+        let Some(unit) = crate::log::unit_of(dir).map_err(&reading)? else {
+            return Ok(());
+        };
+        pages_within_unit(dir.page_size(), unit, mutants)?;
+        if mutants.has(Mutants::OPEN_ON_ANY_BLOCKS) {
+            return Ok(());
+        }
+        within_unit(Under::Directory, dir.block_size(), unit)?;
+        for name in dir.list().map_err(io_error("listing the directory"))? {
+            let Some(what) = Under::of(&name) else {
+                continue;
+            };
+            let block = match dir.open(&name) {
+                Ok(file) => file.block_size(),
+                // Gone since the listing.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                Err(e) => Err(e),
+            };
+            within_unit(what, block, unit)?;
+        }
+        Ok(())
+    }
+
     /// The open, without the lock.
     fn recover(dir: D, options: OpenOptions) -> Result<(Self, Recovery), StoreError> {
+        Self::writes_stay_within_the_unit(&dir, options.mutants)?;
         let log_options = Options {
             acknowledge_failure: options.acknowledge_failure,
             must_reach: options.must_reach,
