@@ -32,6 +32,7 @@ use crate::format::siphash24;
 use crate::format::{Identity, Key, Kind, Lsn};
 use crate::io::{Dir, File};
 use crate::log::{Log, LogError, Observer, Options, Recovery};
+use crate::writeback::{Hinted, Writeback};
 
 /// The home image's file.
 pub const HOME_NAME: &str = "home.img";
@@ -286,6 +287,11 @@ pub struct OpenOptions {
     pub must_reach_identity: Option<[u8; 16]>,
     /// For test rigs: see [`Options::pretend_short_by`]. Leave it 0.
     pub pretend_short_by: u32,
+    /// Hand a file's writes to the device once this many bytes of them
+    /// wait, before the sync that must wait for them: the log's
+    /// segment files and the home image (see [`crate::writeback`]).
+    /// 0 is never. A hint: nothing that is durable, or when, changes.
+    pub writeback_unit: u64,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -301,6 +307,7 @@ impl Default for OpenOptions {
             must_reach: None,
             must_reach_identity: None,
             pretend_short_by: 0,
+            writeback_unit: crate::writeback::DEFAULT_UNIT,
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -670,6 +677,11 @@ struct PinState {
     generation: u64,
     /// The readers under way, by the generation they entered under.
     under_way: BTreeMap<u64, usize>,
+    /// For tests: how many barriers found a reader to wait for, so
+    /// that a test waits for a step to be at its barrier, not for a
+    /// time.
+    #[cfg(test)]
+    waited: u64,
 }
 
 /// A reader's pin: it leaves when this is dropped.
@@ -699,16 +711,29 @@ impl Pins {
         let mut state = self.state();
         let before = state.generation;
         state.generation += 1;
+        #[cfg(test)]
+        let mut counted = false;
         while state
             .under_way
             .iter()
             .any(|(generation, readers)| *readers > 0 && (all || *generation <= before))
         {
+            #[cfg(test)]
+            if !counted {
+                state.waited += 1;
+                counted = true;
+            }
             state = self
                 .left
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+    }
+
+    /// For tests: how many barriers have waited for a reader.
+    #[cfg(test)]
+    fn waited(&self) -> u64 {
+        self.state().waited
     }
 }
 
@@ -765,6 +790,9 @@ type Done = (Result<(), BlkError>, Option<Buf>);
 struct Core<D: Dir> {
     log: Log<D>,
     home: D::File,
+    /// The home image's writes since its last sync, and the hint that
+    /// hands them to the device early.
+    home_writeback: Writeback,
     /// The preimage file, once a checkpoint has needed one.
     preimages: Option<D::File>,
     /// The directory's lock, held for as long as the store lives.
@@ -838,7 +866,7 @@ impl<D: Dir> Core<D> {
                 let result = self.read(offset, &mut buf);
                 Ok((result, Some(buf)))
             }
-            Op::Flush => Ok((self.flush(), None)),
+            Op::Flush => Ok((self.flush(SyncKind::FLUSH), None)),
             op if self.geometry.read_only() => Ok((Err(BlkError::ReadOnly), buffer_of(op))),
             Op::Write { offset, data } => {
                 match self.mutate(Kind::Write, offset, data.len() as u64, &data) {
@@ -991,7 +1019,9 @@ impl<D: Dir> Core<D> {
     }
 
     /// A flush: every record appended so far is durable when it returns.
-    fn flush(&mut self) -> Result<(), BlkError> {
+    /// `why` is the kind of sync it is ([`SYNC_KINDS`]), under which
+    /// what it had to wait for is counted.
+    fn flush(&mut self, why: usize) -> Result<(), BlkError> {
         if self.mutants.has(Mutants::FLUSH_NO_SYNC) {
             return Ok(());
         }
@@ -1003,9 +1033,16 @@ impl<D: Dir> Core<D> {
         if let Some(pause) = &self.sync_pause {
             pause.wait();
         }
+        let (before, began) = (self.log.backlog(), Instant::now());
         let synced = self.with_log(|log| log.sync().map(|_| ()));
         match synced {
             Ok(()) => {
+                let after = self.log.backlog();
+                self.timing.syncs[why].add(
+                    began.elapsed(),
+                    after.bytes - before.bytes,
+                    after.handed - before.handed,
+                );
                 self.unsynced.clear();
                 Ok(())
             }
@@ -1052,7 +1089,7 @@ impl<D: Dir> Core<D> {
     /// Make room in a full log: make the log durable, so that all of it
     /// can be applied, and checkpoint.
     fn make_room(&mut self) -> Result<(), BlkError> {
-        self.flush()?;
+        self.flush(SyncKind::ROOM)?;
         self.checkpoint().map(|_| ())
     }
 
@@ -1269,7 +1306,32 @@ impl<D: Dir> Core<D> {
         self.shared
             .durable
             .store(self.log.durable().0, Ordering::SeqCst);
+        self.note_log();
         done
+    }
+
+    /// What the log counts of the hint and of its superblock's syncs,
+    /// into the times.
+    fn note_log(&mut self) {
+        self.timing.writeback[0] = self.log.writeback();
+        self.timing.writeback[1] = self.home_writeback.done;
+        let backlog = self.log.backlog();
+        self.timing.syncs[SyncKind::SUPERBLOCK] = Synced {
+            count: backlog.superblock_syncs,
+            sum_ns: backlog.superblock_ns,
+            bytes: backlog.superblock_bytes,
+            handed: 0,
+        };
+    }
+
+    /// The home image's sync, begun at `began`: what it had to wait
+    /// for is counted.
+    fn sync_home(&mut self, began: Instant) -> io::Result<()> {
+        self.home.sync()?;
+        let (bytes, handed) = self.home_writeback.synced();
+        self.timing.syncs[SyncKind::HOME].add(began.elapsed(), bytes, handed);
+        self.timing.writeback[1] = self.home_writeback.done;
+        Ok(())
     }
 
     /// Note a part of a batch for the worker, if there is one.
@@ -1329,7 +1391,7 @@ impl<D: Dir> Core<D> {
             // unless the sync fails the volume.
             before();
             let began = Instant::now();
-            let synced = self.flush();
+            let synced = self.flush(SyncKind::OWN);
             let ended = Instant::now();
             self.timing.step_own_sync.add(ended - began);
             self.part(began, ended, Activity::OWN_SYNC);
@@ -1424,6 +1486,7 @@ impl<D: Dir> Core<D> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.pause_at(StepPoint::Saved);
         let home = &mut self.home;
+        let hint = &mut self.home_writeback;
         let zeroes = &mut self.zeroes;
         #[cfg(any(test, feature = "test-hooks"))]
         let refused = self.refuse_holes;
@@ -1447,9 +1510,11 @@ impl<D: Dir> Core<D> {
                 Kind::Write => {
                     payload += record.length;
                     home.write_at(record.offset, record.data)
+                        .and_then(|()| hint.wrote(home, record.offset, record.length))
                 }
                 Kind::WriteZeroes if always_written || *zeroes == Zeroes::Written => {
                     write_zeros(home, record.offset, record.length)
+                        .and_then(|()| hint.wrote(home, record.offset, record.length))
                 }
                 // The range is deallocated: nothing is written for it.
                 // Its first and last write unit may be covered only in
@@ -1487,6 +1552,7 @@ impl<D: Dir> Core<D> {
                             }
                             *zeroes = Zeroes::Written;
                             write_zeros(home, record.offset, record.length)
+                                .and_then(|()| hint.wrote(home, record.offset, record.length))
                         }
                         // A failed write, as any other.
                         Err(e) => Err(e),
@@ -1508,7 +1574,7 @@ impl<D: Dir> Core<D> {
         #[cfg(any(test, feature = "test-hooks"))]
         self.pause_at(StepPoint::Written);
         let early = self.mutants.has(Mutants::RECLAIM_BEFORE_HOME_SYNC);
-        if !early && self.home.sync().is_err() {
+        if !early && self.sync_home(written_at).is_err() {
             return Err(self.fail());
         }
         let synced_at = Instant::now();
@@ -1540,9 +1606,10 @@ impl<D: Dir> Core<D> {
         };
         #[cfg(any(test, feature = "test-hooks"))]
         self.pause_at(StepPoint::StartDurable);
-        if early && self.home.sync().is_err() {
+        if early && self.sync_home(Instant::now()).is_err() {
             return Err(self.fail());
         }
+        self.note_log();
         let started_at = Instant::now();
         self.timing.step_start.add(started_at - synced_at);
         self.part(synced_at, started_at, Activity::STEP_LOG_START);
@@ -1677,8 +1744,13 @@ impl<D: Dir> Core<D> {
         let volume = self.log.identity().volume;
         let image = Preimages::encode(self.log.key(), &volume, floor, &neighbours, &blocks);
         file.write_at(0, &image).map_err(|_| ())?;
+        // Written whole and synced at once: the hint would hand over
+        // nothing the sync does not. Only what the sync waited for is
+        // counted.
         if !self.mutants.has(Mutants::PREIMAGES_UNSYNCED) {
+            let began = Instant::now();
             file.sync().map_err(|_| ())?;
+            self.timing.syncs[SyncKind::PREIMAGE].add(began.elapsed(), image.len() as u64, 0);
         }
         Ok(())
     }
@@ -2206,6 +2278,68 @@ pub struct Timing {
     pub worker_as_of_ns: u64,
     /// The same for the reader's activities ([`Timing::reader`]).
     pub reader_as_of_ns: u64,
+    /// The hint that hands writes to the device before their sync
+    /// ([`crate::writeback`]): for the log's segment files, and for the
+    /// home image. Its time lies inside the activity it is made from:
+    /// the log's in the call of the write, the write-zeroes or the
+    /// discard that appended (or in a step's own sync of a log that
+    /// rolled there), the home image's in a step's apply.
+    pub writeback: [Hinted; 2],
+    /// Each kind of sync, in the order of [`SYNC_KINDS`]: how many,
+    /// their time, the bytes written to the file since its sync before,
+    /// and of those how many the hint had handed over. The superblock's
+    /// are since the store was opened.
+    pub syncs: [Synced; 6],
+}
+
+/// One kind of sync: see [`Timing::syncs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Synced {
+    /// How many.
+    pub count: u64,
+    /// Their time together, in nanoseconds.
+    pub sum_ns: u64,
+    /// The bytes written to the file since the sync before each.
+    pub bytes: u64,
+    /// Of those, the bytes the hint had handed over.
+    pub handed: u64,
+}
+
+impl Synced {
+    fn add(&mut self, time: Duration, bytes: u64, handed: u64) {
+        self.count += 1;
+        self.sum_ns = self
+            .sum_ns
+            .saturating_add(u64::try_from(time.as_nanos()).unwrap_or(u64::MAX));
+        self.bytes += bytes;
+        self.handed += handed;
+    }
+}
+
+/// The kinds of sync [`Timing::syncs`] tells apart: a client's flush
+/// (and [`Store::sync_log`]); the checkpoint rule's own sync of the
+/// log; a sync of the log that makes room in a full log for a write;
+/// a step's sync of the home image; of the preimage file; of the log's
+/// superblock.
+pub const SYNC_KINDS: [&str; 6] = [
+    "flush",
+    "own_sync",
+    "room",
+    "home",
+    "preimage",
+    "superblock",
+];
+
+/// Numbers into [`SYNC_KINDS`].
+struct SyncKind;
+
+impl SyncKind {
+    const FLUSH: usize = 0;
+    const OWN: usize = 1;
+    const ROOM: usize = 2;
+    const HOME: usize = 3;
+    const PREIMAGE: usize = 4;
+    const SUPERBLOCK: usize = 5;
 }
 
 /// The log as a store shows it to its owner.
@@ -2724,6 +2858,7 @@ impl<D: Dir> Store<D> {
         lock: Option<D::Lock>,
         options: OpenOptions,
     ) -> Result<Self, StoreError> {
+        log.set_writeback_unit(options.writeback_unit);
         if let Some(FailureObserver(call)) = options.on_failure.clone() {
             log.set_observer(Observer::new(move || call()));
         }
@@ -2799,6 +2934,7 @@ impl<D: Dir> Store<D> {
             core: Core {
                 log,
                 home,
+                home_writeback: Writeback::new(options.writeback_unit),
                 preimages,
                 _lock: lock,
                 shared: Arc::new(shared),
@@ -2869,7 +3005,7 @@ impl<D: Dir> Store<D> {
         if self.core.failed {
             return Err(BlkError::Failed);
         }
-        self.core.flush()
+        self.core.flush(SyncKind::FLUSH)
     }
 
     /// Let the store checkpoint by itself, by `marks`, or not at all.

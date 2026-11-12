@@ -262,6 +262,10 @@ pub struct Stats {
     pub written: u64,
     /// Bytes deallocated by [`File::deallocate`].
     pub deallocated: u64,
+    /// Calls of [`File::start_writeback`] that succeeded.
+    pub writebacks: u64,
+    /// The bytes those calls named.
+    pub writeback_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -370,6 +374,16 @@ struct State {
     page_size: u64,
     /// The next deallocation fails, having zeroed any part of its range.
     hole_fault: bool,
+    /// The file system has no call that starts writeback.
+    no_writeback: bool,
+    /// The file whose every call that starts writeback fails.
+    writeback_fault_of: Option<String>,
+    /// How many of the next calls that start writeback the system
+    /// declines this time, short of memory.
+    writeback_refusals: u64,
+    /// Every call that started writeback: the file's name, the offset
+    /// and the length.
+    writebacks: Vec<(String, u64, u64)>,
     /// The machine stops after this many more writes and syncs.
     halt: Option<u64>,
     /// Who holds the directory's lock, and the next holder's number.
@@ -481,6 +495,10 @@ impl SimDisk {
                 block_size: Some(SECTOR),
                 page_size: SECTOR,
                 hole_fault: false,
+                no_writeback: false,
+                writeback_fault_of: None,
+                writeback_refusals: 0,
+                writebacks: Vec::new(),
                 halt: None,
                 lock: None,
                 next_lock: 0,
@@ -519,6 +537,7 @@ impl SimDisk {
         state.sync_fault = None;
         state.sync_fault_of = None;
         state.write_fault_of = None;
+        state.writeback_fault_of = None;
         state.read_fault_of = None;
         state.halt = None;
         state.read_fault = None;
@@ -699,6 +718,7 @@ impl SimDisk {
         state.sync_fault = None;
         state.sync_fault_of = None;
         state.write_fault_of = None;
+        state.writeback_fault_of = None;
         state.read_fault_of = None;
         state.halt = None;
         state.read_fault = None;
@@ -735,6 +755,31 @@ impl SimDisk {
     /// part of its range.
     pub fn fail_deallocation(&self) {
         self.lock().hole_fault = true;
+    }
+
+    /// Whether the file system can start writeback of a range
+    /// ([`File::start_writeback`]). It can, unless this says otherwise.
+    pub fn set_writeback(&self, supported: bool) {
+        self.lock().no_writeback = !supported;
+    }
+
+    /// The next `calls` calls that start writeback, of any file, are
+    /// declined this time ([`io::ErrorKind::OutOfMemory`], as `ENOMEM`)
+    /// and do nothing; they are not recorded.
+    pub fn refuse_writeback(&self, calls: u64) {
+        self.lock().writeback_refusals = calls;
+    }
+
+    /// Every call that starts writeback of the file named `name` fails
+    /// with an I/O error, and does nothing.
+    pub fn fail_writeback_of(&self, name: &str) {
+        self.lock().writeback_fault_of = Some(name.to_string());
+    }
+
+    /// Every call that started writeback so far, in order: the file's
+    /// name (where it still has one), the offset and the length.
+    pub fn writebacks(&self) -> Vec<(String, u64, u64)> {
+        self.lock().writebacks.clone()
     }
 
     /// Operation counts so far.
@@ -1132,6 +1177,39 @@ impl File for SimFile {
     fn extend(&mut self, len: u64) -> io::Result<()> {
         // The simulated disk reserves nothing in either case.
         self.preallocate(len)
+    }
+
+    /// A hint that changes nothing the disk holds or will hold: the
+    /// simulated disk keeps no cache apart from what a sync makes
+    /// durable, so there is nothing to start. It is recorded
+    /// ([`SimDisk::writebacks`]), is no operation for
+    /// [`SimDisk::halt_after`], and does not fail on a halted machine:
+    /// it fails only where a test says so ([`SimDisk::set_writeback`],
+    /// [`SimDisk::fail_writeback_of`], [`SimDisk::refuse_writeback`]),
+    /// so that whatever a store does
+    /// on this disk, and what each request is answered, is the same
+    /// with the hint as without it.
+    fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        let mut guard = self.disk.lock();
+        let state = &mut *guard;
+        self.check(state)?;
+        if state.no_writeback {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        let name = state.name_of(self.inode).map(str::to_string);
+        if state.writeback_fault_of.is_some() && state.writeback_fault_of == name {
+            return Err(injected("writeback"));
+        }
+        if state.writeback_refusals > 0 {
+            state.writeback_refusals -= 1;
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        state.stats.writebacks += 1;
+        state.stats.writeback_bytes += len;
+        state
+            .writebacks
+            .push((name.unwrap_or_default(), offset, len));
+        Ok(())
     }
 
     /// A hole that is not synced yet is one more version of each of

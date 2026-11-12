@@ -31,6 +31,47 @@ READER_ACTIVITIES = ('idle', 'read', 'other')
 # and before a segment file the step freed is used again.
 BARRIERS = ('home', 'reuse')
 STEP_PARTS = ('walk', 'save', 'apply', 'home_sync', 'log_start', 'end')
+# The kinds of sync and the files of the hint (status version 7).
+SYNC_KINDS = ('flush', 'own_sync', 'room', 'home', 'preimage', 'superblock')
+WRITEBACK_FILES = ('log', 'home')
+MIB = float(1 << 20)
+# The time keys each status version added, by version: a newer `skyzfsd
+# status` prints them for an older file too, as zeros, and a reading
+# that says its file's version (`status_version`) has them dropped.
+KEYS_ADDED = {
+    6: frozenset({'time_worker_step_barrier_ns'} | {f'time_{k}_wait_by_step_barrier_ns' for k in KINDS}
+                 | {f'time_barrier_{b}_{f}' for b in BARRIERS for f in ('count', 'ns', 'max_ns')}
+                 | {f'time_reader_{a}_ns' for a in READER_ACTIVITIES}
+                 | {f'time_read_unflushed_{f}' for f in ('count', 'extra_bytes', 'mismatched')}
+                 | {'time_worker_as_of_ns', 'time_reader_as_of_ns'}),
+    7: frozenset({f'time_writeback_{f}_{x}' for f in WRITEBACK_FILES for x in ('count', 'bytes', 'ns', 'off', 'refused')}
+                 | {f'time_sync_{k}_{x}' for k in SYNC_KINDS for x in ('count', 'ns', 'bytes', 'handed')}),
+}
+
+
+def version_of(reading):
+    """The status version the reading's file had, or None where `status` did not say (before version 7)."""
+    v = reading.get('status_version')
+    return int(v) if v is not None and v.isdigit() else None
+
+
+def as_of_version(times, version):
+    """The time keys a file of `version` has: without those later versions added. None: all of them."""
+    if version is None:
+        return times
+    later = set().union(*(keys for v, keys in KEYS_ADDED.items() if v > version))
+    return {k: v for k, v in times.items() if k not in later}
+
+
+
+
+def _int(v):
+    """A count or sum from a delta (an int) or from a reading (text); None if neither."""
+    if isinstance(v, int):
+        return v
+    return int(v) if isinstance(v, str) and v.isdigit() else None
+
+
 # A kind's name in a header that counts requests of it.
 PLURALS = {'read': 'reads', 'write': 'writes', 'flush': 'flushes', 'discard': 'discards', 'zeroes': 'write-zeroes'}
 
@@ -50,9 +91,13 @@ def delta(before, after, before_at_ns=None, after_at_ns=None):
     changed or a value that went down, since the sums are since the
     daemon started.
     """
-    tb = {k: v for k, v in before.items() if k.startswith('time_')}
-    ta = {k: v for k, v in after.items() if k.startswith('time_')}
-    out = {'ok': False, 'why': '', 'delta': {}, 'end': {}, 'before': tb, 'after': ta, 'window_ns': None}
+    # What the reading has is decided by the version its file says it
+    # had, where `status` says it; else by which keys are there.
+    vb, va = version_of(before), version_of(after)
+    tb = as_of_version({k: v for k, v in before.items() if k.startswith('time_')}, vb)
+    ta = as_of_version({k: v for k, v in after.items() if k.startswith('time_')}, va)
+    out = {'ok': False, 'why': '', 'delta': {}, 'end': {}, 'before': tb, 'after': ta, 'window_ns': None,
+           'version': va}
     if before_at_ns is not None and after_at_ns is not None:
         out['window_ns'] = after_at_ns - before_at_ns
     if not tb or not ta:
@@ -61,6 +106,8 @@ def delta(before, after, before_at_ns=None, after_at_ns=None):
                       'or the status is older than version 5')
         return out
     why = []
+    if vb != va:
+        why.append(f'the status version changed ({vb} then {va})')
     if before.get('pid') != after.get('pid'):
         why.append(f"the pid changed ({before.get('pid')} then {after.get('pid')}): the sums are not of one daemon")
     missing = sorted(set(tb) ^ set(ta))
@@ -120,7 +167,10 @@ def life(d, kind):
 
 
 def has_reader(d):
-    """Whether the reading is of a daemon whose reads have a reader of their own (status version 6)."""
+    """Whether the reading is of a daemon whose reads have a reader of their own (status version 6 on).
+
+    By the reader's keys, which `delta` has dropped from a reading whose file says it is older.
+    """
     return d.get('time_reader_idle_ns') is not None
 
 
@@ -362,6 +412,45 @@ def render(rows):
                 n, ns, mx = d.get(f'time_barrier_{b}_count'), d.get(f'time_barrier_{b}_ns'), e.get(f'time_barrier_{b}_max_ns')
                 cells += [_f(n, 'd') if n is not None else 'n/a', _f(None if ns is None else ns / 1e6, '.1f'),
                           _f(_per(ns, n)), _f(mx / 1e6, '.2f') if isinstance(mx, int) else 'n/a']
+            out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
+        out += ['', "The syncs in the window, by kind (status version 7; n/a for an older daemon): how many, the MiB "
+                'written to the file since the sync before each (what the sync had to have written), the rate that '
+                'gives, and the share of those bytes that the hint had already handed to the device. The superblock\'s '
+                'are since the daemon started serving and are not set against the window\'s other syncs:', '',
+                '| workload | daemon row | ' + ' | '.join(f'{k}: count | {k}: MiB each | {k}: MiB/s | {k}: handed'
+                                                            for k in SYNC_KINDS) + ' |',
+                '|---|---|' + '---|' * (4 * len(SYNC_KINDS))]
+        for r in usable:
+            d, e = r['time']['delta'], r['time']['end']
+            cells = []
+            for k in SYNC_KINDS:
+                src = r['time']['after'] if k == 'superblock' else d
+                n, ns = _int(src.get(f'time_sync_{k}_count')), _int(src.get(f'time_sync_{k}_ns'))
+                b, h = _int(src.get(f'time_sync_{k}_bytes')), _int(src.get(f'time_sync_{k}_handed'))
+                cells += [_f(n, 'd') if n is not None else 'n/a',
+                          _f(None if not n or b is None else b / n / MIB, '.2f'),
+                          _f(None if not ns or b is None else b / MIB / (ns / 1e9), '.0f'),
+                          _share(h, b)]
+            out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
+        out += ['', 'The hint that hands a file\'s writes to the device before their sync (status version 7; n/a for an '
+                'older daemon), by file: calls, MiB handed over, the calls\' time in ms (inside the activity the hint '
+                'was made from: the calls of writes for the log, `step_apply` for the home image), and whether the file '
+                'system said it has no such call (`off`), and the calls it declined this time (`refused`: short of '
+                'memory, interrupted, busy; the volume went on and the bytes were offered again or left to the sync):', '',
+                '| workload | daemon row | ' + ' | '.join(f'{f}: calls | {f}: MiB | {f}: ms | {f}: off | {f}: refused'
+                                                            for f in WRITEBACK_FILES) + ' |',
+                '|---|---|' + '---|' * (5 * len(WRITEBACK_FILES))]
+        for r in usable:
+            d, after = r['time']['delta'], r['time']['after']
+            cells = []
+            for f in WRITEBACK_FILES:
+                n, b, ns = d.get(f'time_writeback_{f}_count'), d.get(f'time_writeback_{f}_bytes'), d.get(f'time_writeback_{f}_ns')
+                off = after.get(f'time_writeback_{f}_off')
+                refused = d.get(f'time_writeback_{f}_refused')
+                cells += [_f(n, 'd') if n is not None else 'n/a', _f(None if b is None else b / MIB, '.1f'),
+                          _f(None if ns is None else ns / 1e6, '.1f'),
+                          'n/a' if off is None else ('yes' if off == '1' else 'no'),
+                          _f(refused, 'd') if refused is not None else 'n/a']
             out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
         out += ['', "The pump's store of what was acknowledged:", '',
                 '| workload | daemon row | stores | ms each | completions behind one store |', '|---|---|---|---|---|']

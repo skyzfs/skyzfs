@@ -61,10 +61,18 @@ pub fn page_size() -> u32 {
     }
 }
 
+/// The call that starts the writeback of a range of a file
+/// ([`File::start_writeback`]): given by whoever opens the store, since
+/// it is a system call this crate does not make itself. It answers
+/// [`io::ErrorKind::Unsupported`] where the file system has none.
+pub type WritebackCall = fn(&fs::File, u64, u64) -> io::Result<()>;
+
 /// A directory on a real file system.
 #[derive(Debug, Clone)]
 pub struct FsDir {
     path: PathBuf,
+    /// Given to every file opened here: see [`FsDir::with_writeback`].
+    writeback: Option<WritebackCall>,
 }
 
 impl FsDir {
@@ -77,7 +85,20 @@ impl FsDir {
                 "not a directory",
             ));
         }
-        Ok(Self { path })
+        Ok(Self {
+            path,
+            writeback: None,
+        })
+    }
+
+    /// The same directory, whose files start writeback with `call`.
+    /// Without it, [`File::start_writeback`] of its files answers
+    /// unsupported, and a store's hint is off.
+    pub fn with_writeback(self, call: WritebackCall) -> Self {
+        Self {
+            writeback: Some(call),
+            ..self
+        }
     }
 
     /// Where the directory is.
@@ -228,13 +249,13 @@ impl Dir for FsDir {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let path = self.path.join(name);
         let file = options.open(&path)?;
-        FsFile::new(file, &path)
+        FsFile::new(file, &path, self.writeback)
     }
 
     fn open(&self, name: &str) -> io::Result<FsFile> {
         let path = self.path.join(name);
         let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
-        FsFile::new(file, &path)
+        FsFile::new(file, &path, self.writeback)
     }
 
     fn remove(&self, name: &str) -> io::Result<()> {
@@ -300,6 +321,8 @@ fn said_block_size<T: TryInto<u64>>(size: T) -> io::Result<u64> {
 #[derive(Debug)]
 pub struct FsFile {
     file: fs::File,
+    /// See [`FsDir::with_writeback`].
+    writeback: Option<WritebackCall>,
     /// A second descriptor on the same file that bypasses the cache.
     /// `None`: the file system, or this system, has none to give.
     direct: Option<fs::File>,
@@ -311,9 +334,13 @@ const DIRECT_ALIGN: usize = 4096;
 
 impl FsFile {
     /// `file`, which was just opened as `path`.
-    fn new(file: fs::File, path: &Path) -> io::Result<Self> {
+    fn new(file: fs::File, path: &Path, writeback: Option<WritebackCall>) -> io::Result<Self> {
         let direct = open_direct(&file, path)?;
-        Ok(Self { file, direct })
+        Ok(Self {
+            file,
+            writeback,
+            direct,
+        })
     }
 
     fn direct(&self) -> io::Result<&fs::File> {
@@ -457,6 +484,13 @@ impl File for FsFile {
 
     fn sync(&mut self) -> io::Result<()> {
         self.file.sync_data()
+    }
+
+    fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        match self.writeback {
+            Some(call) => call(&self.file, offset, len),
+            None => Err(io::ErrorKind::Unsupported.into()),
+        }
     }
 
     fn preallocate(&mut self, len: u64) -> io::Result<()> {

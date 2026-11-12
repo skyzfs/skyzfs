@@ -73,6 +73,8 @@ pub mod raw;
 pub mod signals;
 #[cfg(target_os = "linux")]
 mod wake;
+#[cfg(target_os = "linux")]
+mod writeback;
 // In test builds only: no library and no daemon holds this module.
 // The kernel tests include the same file for their own binary.
 #[cfg(all(test, target_os = "linux"))]
@@ -88,6 +90,9 @@ pub use mem::lock_all as lock_all_memory;
 
 #[cfg(target_os = "linux")]
 pub use wake::Wake;
+
+#[cfg(target_os = "linux")]
+pub use writeback::start_writeback;
 
 /// The driver flags the daemon asks for when it adds a device: user
 /// recovery, with reissue. They are also the mask under which a

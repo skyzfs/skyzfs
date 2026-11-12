@@ -13,6 +13,8 @@ use crate::format::{
     RECORD_HEADER, SECTOR_LEN, SUPER_COPY_STRIDE,
 };
 use crate::io::{Dir, File};
+use crate::writeback::{Backlog, Hinted, Writeback};
+use std::time::Instant;
 
 /// The name of the file that holds the two superblock copies.
 pub const SUPER_NAME: &str = "log.super";
@@ -711,6 +713,13 @@ pub struct Log<D: Dir> {
     live: BTreeMap<u64, usize>,
     /// How often `live` has changed.
     segments_changed: u64,
+    /// Writes of the segment files handed to the device early, and the
+    /// segment whose writes wait to be: see [`crate::writeback`].
+    writeback: Writeback,
+    writeback_at: Option<usize>,
+    /// What the syncs of the segment files and of the superblock had to
+    /// wait for: see [`Backlog`].
+    backlog: Backlog,
     /// The end of the last record.
     tail: Lsn,
     chain: u64,
@@ -1098,6 +1107,9 @@ impl<D: Dir> Log<D> {
             slots,
             live,
             segments_changed: 0,
+            writeback: Writeback::new(0),
+            writeback_at: None,
+            backlog: Backlog::default(),
             tail: end,
             chain: cursor.chain,
             durable: end,
@@ -1348,21 +1360,37 @@ impl<D: Dir> Log<D> {
         } else {
             1 - self.copy
         };
-        let written = self
-            .superblock
-            .write_at(copy * SUPER_COPY_STRIDE, &next.encode());
+        let encoded = next.encode();
+        let written = self.superblock.write_at(copy * SUPER_COPY_STRIDE, &encoded);
         // The new superblock is written and not durable.
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(SuperblockPause(pause)) = &self.superblock_pause {
             pause();
         }
+        let began = Instant::now();
         let written = written.and_then(|()| self.superblock.sync());
         if let Err(e) = written {
             return Err(self.fail("writing the superblock", &e));
         }
+        self.backlog.superblock_syncs += 1;
+        self.backlog.superblock_ns = self
+            .backlog
+            .superblock_ns
+            .saturating_add(u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX));
+        self.backlog.superblock_bytes += encoded.len() as u64;
         self.current = next;
         self.copy = copy;
         Ok(())
+    }
+
+    /// Every segment file's writes so far are synced: what they were,
+    /// and how much of them the hint had handed over, go to the
+    /// backlog of the log's syncs.
+    fn covered(&mut self) {
+        let (written, handed) = self.writeback.synced();
+        self.writeback_at = None;
+        self.backlog.bytes += written;
+        self.backlog.handed += handed;
     }
 
     /// Where the next record starts.
@@ -1406,7 +1434,54 @@ impl<D: Dir> Log<D> {
             return Err(self.fail(during, &e));
         }
         self.dirty.insert(index);
+        self.wrote(index, start.0 % size, bytes.len() as u64, during)?;
         Ok((index, start, crc))
+    }
+
+    /// `len` bytes were written at `offset` of segment file `index`:
+    /// hand them to the device once a unit waits, and what waits for
+    /// another file first. The hint's error is a failed write.
+    fn wrote(
+        &mut self,
+        index: usize,
+        offset: u64,
+        len: u64,
+        during: &'static str,
+    ) -> Result<(), LogError> {
+        if self.writeback_at != Some(index) {
+            if let Some(old) = self.writeback_at {
+                if let Err(e) = self.writeback.hand(&mut self.slots[old].file) {
+                    return Err(self.fail(during, &e));
+                }
+                // Declined, it is left to the sync: what waits next is
+                // another file's.
+                self.writeback.forget();
+            }
+            self.writeback_at = Some(index);
+        }
+        if let Err(e) = self
+            .writeback
+            .wrote(&mut self.slots[index].file, offset, len)
+        {
+            return Err(self.fail(during, &e));
+        }
+        Ok(())
+    }
+
+    /// From now on hand a segment file's writes to the device once
+    /// `unit` bytes of them wait; 0 is never (see [`crate::writeback`]).
+    pub fn set_writeback_unit(&mut self, unit: u64) {
+        self.writeback.set_unit(unit);
+    }
+
+    /// What the hint has done for the segment files.
+    pub fn writeback(&self) -> Hinted {
+        self.writeback.done
+    }
+
+    /// What the log's syncs had to wait for, since it was opened.
+    pub fn backlog(&self) -> Backlog {
+        self.backlog
     }
 
     /// Recovery: put a record of the current epoch where the next record
@@ -1424,6 +1499,7 @@ impl<D: Dir> Log<D> {
             return Err(self.fail("sealing the tail", &e));
         }
         self.dirty.remove(&index);
+        self.covered();
         if room {
             self.tail = Lsn(start.0 + align);
             self.chain = crc;
@@ -1471,17 +1547,25 @@ impl<D: Dir> Log<D> {
             epoch: self.current.epoch,
         };
         let slot = &mut self.slots[next_index];
-        let prepared = if slot.sized {
+        let sized = slot.sized;
+        let encoded = header.encode(&self.key);
+        let prepared = if sized {
             Ok(())
         } else {
             slot.file.preallocate(size)
         }
-        .and_then(|()| slot.file.write_at(0, &header.encode(&self.key)));
+        .and_then(|()| slot.file.write_at(0, &encoded));
         if let Err(e) = prepared {
             return Err(self.fail("starting a segment", &e));
         }
         self.slots[next_index].sized = true;
         self.dirty.insert(next_index);
+        // The closing pad of the segment left goes out with what waits
+        // there, and a new file's zeros with its header.
+        if !sized {
+            self.wrote(next_index, 0, size, "starting a segment")?;
+        }
+        self.wrote(next_index, 0, encoded.len() as u64, "starting a segment")?;
         self.live.insert(next, next_index);
         self.segments_changed += 1;
         self.closed = false;
@@ -1568,6 +1652,7 @@ impl<D: Dir> Log<D> {
             return Err(self.fail("appending a record", &e));
         }
         self.dirty.insert(index);
+        self.wrote(index, start.0 % size, record, "appending a record")?;
         self.fresh_block = false;
         self.tail = Lsn(start.0 + record);
         self.chain = crc;
@@ -1617,6 +1702,7 @@ impl<D: Dir> Log<D> {
             }
         }
         self.dirty.clear();
+        self.covered();
         if self.dir_dirty && !self.mutants.has(Mutants::SYNC_NO_DIR) {
             if let Err(e) = self.dir.sync() {
                 return Err(self.fail("syncing the directory", &e));
