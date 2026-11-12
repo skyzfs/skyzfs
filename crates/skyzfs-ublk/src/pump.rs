@@ -100,6 +100,9 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::time::{Duration, Instant};
+
+use skyzfs_local::store::Spent;
 
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId, BLOCK_SIZE};
 
@@ -182,6 +185,14 @@ pub trait Positions: BlockTarget {
     /// Whether the target can no longer complete anything: the thread
     /// that executes its requests has ended.
     fn gone(&self) -> bool;
+
+    /// When the target had the completion of request `id` ready, for a
+    /// completion the last poll returned, if the target says: the pump
+    /// then counts a completion's wait from there and not from when it
+    /// took the completion.
+    fn ready_at(&self, _id: RequestId) -> Option<Instant> {
+        None
+    }
 }
 
 /// Where the position of the newest acknowledged record is kept (design
@@ -248,6 +259,65 @@ pub struct Counters {
     /// Completions that are waiting because the acknowledged position
     /// could not be stored.
     pub unstored: u64,
+}
+
+/// Where a request's time goes in the pump, before the target has it
+/// and after the target is done with it. Measurement only. One read
+/// of the monotonic clock per turn that fetched something, per
+/// request submitted, per request finished and per batch committed,
+/// and two around a position that is stored; the times are kept by
+/// tag, in a table as long as the queue is deep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PumpTiming {
+    /// From the queue's wait returning with a request to the target
+    /// having it: the translation, a first write's copy, and the time
+    /// in the backlog while the target had no room. What the request
+    /// waited in the kernel before the pump's thread came back to the
+    /// queue is before this and in no number.
+    pub to_submit: Spent,
+    /// Reads: from the request being finished to its commit to the
+    /// queue. Finished is when the target had the completion ready, if
+    /// the target says so (the store does: the end of its call), else
+    /// when the pump took the completion or refused the request. So it
+    /// holds the time until the pump's thread came to take the
+    /// completion, and the storing of the acknowledged position if a
+    /// mutation completed in the same batch: a commit waits for that.
+    pub read_to_commit: Spent,
+    /// The same for every other request.
+    pub other_to_commit: Spent,
+    /// Reads: the first part of [`PumpTiming::read_to_commit`] alone,
+    /// from the target having the completion ready to the pump taking
+    /// it, which is the hand-over from the target's thread to the
+    /// pump's. Counted at the commit, so the count is that of
+    /// `read_to_commit`, and the rest of that time is what the commit
+    /// waited for after the pump had the completion: the other
+    /// completions of the batch and the storing of the position. Zero
+    /// for a request the target never had, and where the target does
+    /// not say when a completion was ready. A write that is followed
+    /// by a flush of the pump's own counts the flush's completion.
+    pub read_to_taken: Spent,
+    /// The same for every other request.
+    pub other_to_taken: Spent,
+    /// The storing of the acknowledged position, when it had moved:
+    /// how often, how long together, the longest. A store that failed
+    /// is counted too.
+    pub store: Spent,
+    /// The completions that were committed behind those stores.
+    pub behind_store: u64,
+}
+
+/// What the pump notes for a tag in flight.
+#[derive(Debug, Clone, Copy)]
+struct Stamp {
+    /// When the queue's wait returned with it.
+    fetched: Instant,
+    /// When it was finished.
+    finished: Instant,
+    /// From the target having its completion ready to the pump taking
+    /// it.
+    taken: Duration,
+    /// Whether it is a read.
+    read: bool,
 }
 
 /// Defects, for the tests that show each rule is tested.
@@ -354,6 +424,9 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     failed_answers: u64,
     stop_tries: u32,
     counters: Counters,
+    timing: PumpTiming,
+    /// By tag.
+    stamps: Vec<Stamp>,
     mutants: Mutants,
 }
 
@@ -363,6 +436,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     pub fn new(queue: Q, target: T, ack: A) -> Self {
         let translator = Translator::new(&target.geometry());
         let slots = (0..queue.depth()).map(|_| Slot::Idle).collect();
+        let now = Instant::now();
+        let stamp = Stamp {
+            fetched: now,
+            finished: now,
+            taken: Duration::ZERO,
+            read: false,
+        };
+        let stamps = (0..queue.depth()).map(|_| stamp).collect();
         Self {
             queue,
             target,
@@ -379,6 +460,8 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             failed_answers: 0,
             stop_tries: Self::STOP_TRIES,
             counters: Counters::default(),
+            timing: PumpTiming::default(),
+            stamps,
             mutants: Mutants::default(),
         }
     }
@@ -404,6 +487,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     /// What the pump has done so far.
     pub fn counters(&self) -> Counters {
         self.counters
+    }
+
+    /// Where the requests' time went in the pump: see [`PumpTiming`].
+    pub fn timing(&self) -> PumpTiming {
+        self.timing
     }
 
     /// The queue.
@@ -538,6 +626,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
         if !self.stopping {
             self.counters.in_flight += fetched.len() as u64;
+            if !fetched.is_empty() {
+                let now = Instant::now();
+                for request in &fetched {
+                    if let Some(stamp) = self.stamps.get_mut(usize::from(request.tag)) {
+                        stamp.fetched = now;
+                    }
+                }
+            }
             self.backlog.extend(fetched);
         }
         // Completions make room, and room lets more be submitted.
@@ -698,13 +794,19 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                 }
                 self.counters.refused += 1;
                 self.slots[usize::from(tag)] = Slot::Finished;
+                self.stamps[usize::from(tag)] = Stamp {
+                    finished: Instant::now(),
+                    taken: Duration::ZERO,
+                    read: false,
+                    ..self.stamps[usize::from(tag)]
+                };
                 self.finished
                     .push((tag, self.translator.refused(desc), None));
                 return Ok(true);
             }
         };
         if matches!(plan.action, Action::Flush) && self.mutants.has(Mutants::FLUSH_NOT_SUBMITTED) {
-            self.finish(tag, &plan, &Ok(()), None);
+            self.finish(tag, &plan, &Ok(()), None, None);
             return Ok(true);
         }
         let blocks = |len: u64| (len / BLOCK_SIZE) as usize;
@@ -723,7 +825,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                     None => {
                         // The queue has no buffer with this request's
                         // data: it fails, and the target sees nothing.
-                        self.finish(tag, &plan, &Err(BlkError::Failed), None);
+                        self.finish(tag, &plan, &Err(BlkError::Failed), None, None);
                         return Ok(true);
                     }
                 }
@@ -750,6 +852,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return Err(self.refused());
         }
         self.in_target += 1;
+        self.timing
+            .to_submit
+            .add(self.stamps[usize::from(tag)].fetched.elapsed());
         self.slots[usize::from(tag)] = Slot::Running(plan);
         let mutation = !matches!(plan.action, Action::Read { .. } | Action::Flush);
         if mutation && self.mutants.has(Mutants::ACK_AT_SUBMIT) {
@@ -764,6 +869,10 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         let Completion { id, result, buf } = completion;
         let tag = (id.0 & (FLUSH_ID - 1)) as u16;
         let is_flush = id.0 & FLUSH_ID != 0;
+        // When the target had this completion ready. It goes with this
+        // completion alone: a request that finishes without one (it
+        // is refused, or needs nothing of the target) has none.
+        let ready = self.target.ready_at(id);
         let Some(slot) = self.slots.get_mut(usize::from(tag)) else {
             return Err(Stopped::TargetFault);
         };
@@ -775,12 +884,12 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                     *slot = Slot::WantsFlush(plan, buf);
                     self.wants_flush.push_back(tag);
                 } else {
-                    self.finish(tag, &plan, &result, buf);
+                    self.finish(tag, &plan, &result, buf, ready);
                 }
                 Ok(())
             }
             Slot::Flushing(plan, kept) if is_flush => {
-                self.finish(tag, &plan, &result, kept);
+                self.finish(tag, &plan, &result, kept, ready);
                 Ok(())
             }
             other if self.mutants.has(Mutants::STRAY_IGNORED) => {
@@ -791,8 +900,17 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         }
     }
 
-    /// A request is finished: it waits to be committed.
-    fn finish(&mut self, tag: u16, plan: &Plan, outcome: &Result<(), BlkError>, buf: Option<Buf>) {
+    /// A request is finished: it waits to be committed. `ready` is
+    /// when the target had the completion ready that finishes it, and
+    /// `None` for a request that is finished without one.
+    fn finish(
+        &mut self,
+        tag: u16,
+        plan: &Plan,
+        outcome: &Result<(), BlkError>,
+        buf: Option<Buf>,
+        ready: Option<Instant>,
+    ) {
         match plan.action {
             Action::Read { .. } => self.counters.reads += 1,
             Action::Write { .. } => self.counters.writes += 1,
@@ -809,6 +927,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             drop(buf);
             return;
         }
+        let now = Instant::now();
+        let stamp = &mut self.stamps[usize::from(tag)];
+        stamp.finished = ready.unwrap_or(now);
+        stamp.taken = now.saturating_duration_since(stamp.finished);
+        stamp.read = matches!(plan.action, Action::Read { .. });
         self.finished
             .push((tag, self.translator.result(plan, outcome), buf));
     }
@@ -825,9 +948,19 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return;
         }
         self.counters.unstored = 0;
+        let now = Instant::now();
         for (tag, result, buf) in self.finished.drain(..) {
             self.slots[usize::from(tag)] = Slot::Idle;
             self.counters.in_flight = self.counters.in_flight.saturating_sub(1);
+            let stamp = self.stamps[usize::from(tag)];
+            let waited = now.saturating_duration_since(stamp.finished);
+            if stamp.read {
+                self.timing.read_to_commit.add(waited);
+                self.timing.read_to_taken.add(stamp.taken);
+            } else {
+                self.timing.other_to_commit.add(waited);
+                self.timing.other_to_taken.add(stamp.taken);
+            }
             self.queue.commit(tag, result, buf);
         }
         if after {
@@ -842,7 +975,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if self.stored.is_some_and(|stored| position <= stored) {
             return Ok(());
         }
-        self.ack.advance(position)?;
+        let began = Instant::now();
+        let advanced = self.ack.advance(position);
+        self.timing.store.add(began.elapsed());
+        advanced?;
+        self.timing.behind_store += self.finished.len() as u64;
         self.stored = Some(position);
         Ok(())
     }
@@ -855,6 +992,10 @@ impl Positions for skyzfs_local::store::Served {
 
     fn gone(&self) -> bool {
         skyzfs_local::store::Served::gone(self)
+    }
+
+    fn ready_at(&self, id: RequestId) -> Option<Instant> {
+        skyzfs_local::store::Served::ready_at(self, id)
     }
 }
 

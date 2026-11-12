@@ -21,7 +21,7 @@ use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skyzfs_blk::{
     Base, BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId, SubmitError,
@@ -598,6 +598,13 @@ struct Core<D: Dir> {
     /// The times the rule made the log durable itself, with no flush
     /// of the client's, to have something to take.
     own_syncs: u64,
+    /// Where the time went: see [`Timing`].
+    timing: Timing,
+    /// For a served store: the parts of the batches applied since the
+    /// worker last took them, each with its begin and its end, so that
+    /// the worker can say what it was doing when. `None` for a store
+    /// that is not served, which has nobody to take them.
+    parts: Option<Vec<(Instant, Instant, usize)>>,
     /// How a write-zeroes record reaches the home image.
     zeroes: Zeroes,
     /// For test rigs: how and where every batch of a checkpoint waits.
@@ -850,6 +857,7 @@ impl<D: Dir> Core<D> {
             return Ok(floor);
         }
         let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        let walk_began = Instant::now();
         let ends = if per_unit <= 1 {
             vec![target]
         } else {
@@ -858,6 +866,7 @@ impl<D: Dir> Core<D> {
                 Err(()) => return Err(self.fail()),
             }
         };
+        self.walked(walk_began);
         let mut start = floor;
         for end in ends {
             let (reached, cut) = self.apply(start, end, limit, hold)?;
@@ -895,6 +904,8 @@ impl<D: Dir> Core<D> {
             return Ok(nothing);
         }
         let per_unit = self.log.identity().unit() / BLOCK_SIZE;
+        // The step's first part: reading the log to choose the batch.
+        let walk_began = Instant::now();
         let mut end = target;
         let (mut saved, mut records, mut payload) = (0u64, 0u64, 0u64);
         let free_zeroes = !self.mutants.has(Mutants::ZEROES_WRITTEN)
@@ -939,6 +950,7 @@ impl<D: Dir> Core<D> {
         if scanned.is_err() {
             return Err(self.fail());
         }
+        self.walked(walk_began);
         let (start, cut) = self.apply(floor, end, limit, hold)?;
         // A step that ended early, at the record where the file system
         // first refused to deallocate, says what it took.
@@ -990,6 +1002,21 @@ impl<D: Dir> Core<D> {
         !self.failed && self.marks.is_some_and(|marks| live >= marks.high)
     }
 
+    /// The walk of the log that chose a batch, or a checkpoint's
+    /// batches, is over: it began at `began`.
+    fn walked(&mut self, began: Instant) {
+        let ended = Instant::now();
+        self.timing.step_walk.add(ended - began);
+        self.part(began, ended, Activity::STEP_WALK);
+    }
+
+    /// Note a part of a batch for the worker, if there is one.
+    fn part(&mut self, began: Instant, ended: Instant, activity: usize) {
+        if let Some(parts) = &mut self.parts {
+            parts.push((began, ended, activity));
+        }
+    }
+
     /// The rule of the marks after a request, for a store that is not
     /// served: one step, and further steps for as long as the log is
     /// at or above the high mark and a step took something. The worker
@@ -1039,7 +1066,12 @@ impl<D: Dir> Core<D> {
             // More becomes durable below the hold, so a step follows
             // unless the sync fails the volume.
             before();
-            self.flush()?;
+            let began = Instant::now();
+            let synced = self.flush();
+            let ended = Instant::now();
+            self.timing.step_own_sync.add(ended - began);
+            self.part(began, ended, Activity::OWN_SYNC);
+            synced?;
             self.own_syncs += 1;
         }
         if reach(self.log.durable()) <= floor {
@@ -1100,9 +1132,16 @@ impl<D: Dir> Core<D> {
         limit: Lsn,
         hold: Option<Lsn>,
     ) -> Result<(Lsn, Option<Cut>), BlkError> {
+        // The batch's time, in four parts that follow each other with
+        // no gap: one clock read at each boundary. A batch that fails
+        // leaves its last part uncounted: the volume has failed.
+        let began = Instant::now();
         if self.protect_neighbours(floor, target, limit).is_err() {
             return Err(self.fail());
         }
+        let saved_at = Instant::now();
+        self.timing.step_save.add(saved_at - began);
+        self.part(began, saved_at, Activity::STEP_SAVE);
         // (1) The neighbours are saved and durable; the home image is
         // as it was.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1184,6 +1223,9 @@ impl<D: Dir> Core<D> {
             return Err(self.fail());
         }
         let target = cut.map_or(target, |cut| cut.end);
+        let written_at = Instant::now();
+        self.timing.step_apply.add(written_at - saved_at);
+        self.part(saved_at, written_at, Activity::STEP_APPLY);
         // (2) The middle of a step: the home image holds the batch and
         // is not durable, and the log still holds it too.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1192,6 +1234,9 @@ impl<D: Dir> Core<D> {
         if !early && self.home.sync().is_err() {
             return Err(self.fail());
         }
+        let synced_at = Instant::now();
+        self.timing.step_home_sync.add(synced_at - written_at);
+        self.part(written_at, synced_at, Activity::STEP_HOME_SYNC);
         // (3) The home image is durable, and the log starts where it
         // did: a start now applies the batch again from the log.
         #[cfg(any(test, feature = "test-hooks"))]
@@ -1221,11 +1266,19 @@ impl<D: Dir> Core<D> {
         if early && self.home.sync().is_err() {
             return Err(self.fail());
         }
+        let started_at = Instant::now();
+        self.timing.step_start.add(started_at - synced_at);
+        self.part(synced_at, started_at, Activity::STEP_LOG_START);
         if self.mutants.has(Mutants::INDEX_SWITCH_EARLY) {
             self.index.drop_below(self.log.durable());
         } else {
             self.index.drop_below(start);
         }
+        // The batch's last part: the index lets go of what is now in
+        // the home image.
+        let ended_at = Instant::now();
+        self.timing.step_end.add(ended_at - started_at);
+        self.part(started_at, ended_at, Activity::STEP_END);
         Ok((start, cut))
     }
 }
@@ -1542,6 +1595,280 @@ pub struct Marks {
     pub low: u64,
     /// What one step may take.
     pub step: StepBound,
+}
+
+/// A count of things that took time, their summed time and the
+/// longest of them, in nanoseconds of the monotonic clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Spent {
+    /// How many.
+    pub count: u64,
+    /// Their time together.
+    pub sum_ns: u64,
+    /// The longest.
+    pub max_ns: u64,
+}
+
+impl Spent {
+    /// Count one more thing that took `time`.
+    pub fn add(&mut self, time: Duration) {
+        let ns = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
+        self.count += 1;
+        self.sum_ns = self.sum_ns.saturating_add(ns);
+        self.max_ns = self.max_ns.max(ns);
+    }
+}
+
+/// The kinds of request the timing tells apart, in the order of
+/// [`Timing::requests`].
+pub const TIMED_KINDS: [&str; 5] = ["read", "write", "flush", "discard", "write_zeroes"];
+
+fn timed_kind(op: &Op) -> usize {
+    match op {
+        Op::Read { .. } => 0,
+        Op::Write { .. } => 1,
+        Op::Flush => 2,
+        Op::Discard { .. } => 3,
+        Op::WriteZeroes { .. } => 4,
+    }
+}
+
+/// What a store's worker can be doing, as numbers into
+/// [`ACTIVITIES`], [`Timing::worker`] and [`Timing::wait_by`].
+struct Activity;
+
+impl Activity {
+    /// Waiting for a request with nothing to do.
+    const IDLE: usize = 0;
+    /// The call of a request of kind `kind` ([`TIMED_KINDS`]).
+    const fn call(kind: usize) -> usize {
+        1 + kind
+    }
+    const STEP_WALK: usize = 6;
+    const STEP_SAVE: usize = 7;
+    const STEP_APPLY: usize = 8;
+    const STEP_HOME_SYNC: usize = 9;
+    const STEP_LOG_START: usize = 10;
+    const STEP_END: usize = 11;
+    const OWN_SYNC: usize = 12;
+    /// Everything else: the loop's own work between two of the above
+    /// and commands that are no request.
+    const OTHER: usize = 13;
+}
+
+/// The names of what a worker can be doing, in the order of
+/// [`Timing::worker`]: idle; the call of a read, a write, a flush (the
+/// log's sync), a discard, a write-zeroes; the six parts of a step
+/// and the rule's own sync of the log; anything else.
+pub const ACTIVITIES: [&str; 14] = [
+    "idle",
+    "read",
+    "write",
+    "flush",
+    "discard",
+    "zeroes",
+    "step_walk",
+    "step_save",
+    "step_apply",
+    "step_home_sync",
+    "step_log_start",
+    "step_end",
+    "own_sync",
+    "other",
+];
+
+/// What the worker did, span after span, for as far back as a request
+/// that is still waiting can have been submitted: a request's wait is
+/// attributed by laying it over these.
+///
+/// Exact, and without anything shared between threads: the request
+/// carries the time of its submission, the worker knows what it did
+/// since. The cost is one entry per span, in a queue that is reused,
+/// and for a request a walk back over the spans of its wait.
+struct Spans {
+    /// Where the last span ended.
+    last: Instant,
+    /// The end of each span and what it was, oldest first. A span
+    /// begins where the one before it ended.
+    spans: VecDeque<(Instant, usize)>,
+}
+
+impl Spans {
+    /// At most this many spans are kept. A wait that reaches further
+    /// back has the rest counted under the oldest span that is kept.
+    const KEPT: usize = 1 << 16;
+
+    fn new() -> Self {
+        Self {
+            last: Instant::now(),
+            spans: VecDeque::new(),
+        }
+    }
+
+    /// The worker did `activity` from the last span's end until `now`.
+    fn close(&mut self, activity: usize, now: Instant, timing: &mut Timing) {
+        let Some(time) = now
+            .checked_duration_since(self.last)
+            .filter(|t| !t.is_zero())
+        else {
+            return;
+        };
+        let ns = u64::try_from(time.as_nanos()).unwrap_or(u64::MAX);
+        timing.worker[activity] = timing.worker[activity].saturating_add(ns);
+        if self.spans.len() == Self::KEPT {
+            self.spans.pop_front();
+        }
+        self.spans.push_back((now, activity));
+        self.last = now;
+    }
+
+    /// The parts of a batch that the core noted since the last span's
+    /// end: what lies between them and before the first is `around`,
+    /// which is "other" for the rule's steps and a request's kind for
+    /// a batch that its call made room with.
+    fn take(
+        &mut self,
+        parts: &mut Option<Vec<(Instant, Instant, usize)>>,
+        around: usize,
+        timing: &mut Timing,
+    ) {
+        for (began, ended, activity) in parts.iter_mut().flat_map(|parts| parts.drain(..)) {
+            // Whatever notes parts is followed by a take before the
+            // worker closes another span. Where one is missing, the
+            // parts would lie before the last span's end and `close`
+            // would drop them without a word: the time would be under
+            // whatever span was closed over them. A debug build, which
+            // the tests are, stops here.
+            debug_assert!(
+                began >= self.last,
+                "a part of a batch (activity {activity}) began before the last span's end: \
+                 parts were noted and not taken before the worker closed a span"
+            );
+            self.close(around, began, timing);
+            self.close(activity, ended, timing);
+        }
+    }
+
+    /// What the worker did between `from` and the last span's end, by
+    /// activity, in nanoseconds. The oldest span that is kept is taken
+    /// to reach back as far as `from`: its begin was forgotten because
+    /// no request that waits was submitted before it.
+    fn between(&self, from: Instant) -> [u64; 14] {
+        let mut by = [0u64; 14];
+        for at in (0..self.spans.len()).rev() {
+            let (end, activity) = self.spans[at];
+            if end <= from {
+                break;
+            }
+            let began = match at.checked_sub(1) {
+                Some(before) => self.spans[before].0.max(from),
+                None => from,
+            };
+            let ns = u64::try_from(end.saturating_duration_since(began).as_nanos());
+            by[activity] = by[activity].saturating_add(ns.unwrap_or(u64::MAX));
+        }
+        by
+    }
+
+    /// Forget the spans no wait can reach any more. Called when the
+    /// worker has just found nothing more arrived, so every request
+    /// that waits is in its queue and `oldest` is the submission of
+    /// the first of them: spans that ended before it are forgotten.
+    /// With none waiting, a request can still come whose submission
+    /// was stamped a moment before now and handed over after: the
+    /// spans of the last millisecond are kept for it, and the last
+    /// span always.
+    fn forget(&mut self, oldest: Option<Instant>) {
+        const MARGIN: Duration = Duration::from_millis(1);
+        let oldest = oldest.or_else(|| Instant::now().checked_sub(MARGIN));
+        while self.spans.len() > 1
+            && self
+                .spans
+                .front()
+                .is_some_and(|(end, _)| oldest.is_none_or(|oldest| *end <= oldest))
+        {
+            self.spans.pop_front();
+        }
+    }
+}
+
+/// What one kind of request waited and took.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RequestTiming {
+    /// From the request's submission to the served store until the
+    /// worker began it: the time in the worker's queue, behind other
+    /// requests, behind checkpoint steps and at the high mark's gate.
+    pub wait: Spent,
+    /// The store's call for it: from when the worker began it until
+    /// its completion was ready. The two counts are the same.
+    pub call: Spent,
+}
+
+/// Where a served store's time went since the open: what each kind of
+/// request waited and took, what the checkpoint steps took by part,
+/// and what requests waited for steps. It is measurement only: nothing
+/// in the store reads it.
+///
+/// The cost is one read of the monotonic clock per boundary: three per
+/// request (its submission, its begin, its end), eight per batch of a
+/// checkpoint, two per sync of the rule's own, two per turn of the
+/// worker at the gate, and two around each wait for a request. What
+/// the worker did is kept as one entry per span in a queue that is
+/// reused (no allocation once it has grown to the longest wait seen),
+/// and a request's wait is laid over the spans since its submission:
+/// a walk of as many entries as the worker did things meanwhile. No
+/// lock but the one the worker already takes to show the log's state,
+/// held for a copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Timing {
+    /// By kind, in the order of [`TIMED_KINDS`]. Requests that
+    /// completed, whatever their result. A served store only.
+    pub requests: [RequestTiming; 5],
+    /// The parts of a checkpoint's batch, which follow each other:
+    /// every step is one batch (an explicit checkpoint's batches count
+    /// too, and so does one a write makes inside its own call to make
+    /// room: there too the parts are the step's in the worker's time
+    /// and in the waits, and the write's activity is the rest of its
+    /// call, the sync of the log before the checkpoint included; the
+    /// write's `call` is its whole call). First: reading the log to choose the batch. For an
+    /// explicit checkpoint this is one walk for all its batches.
+    pub step_walk: Spent,
+    /// Saving the neighbours of what the batch writes, with that
+    /// file's sync.
+    pub step_save: Spent,
+    /// Writing and deallocating in the home image.
+    pub step_apply: Spent,
+    /// The home image's sync.
+    pub step_home_sync: Spent,
+    /// The log's new start, written and made durable.
+    pub step_start: Spent,
+    /// The index letting go of what is now in the home image.
+    pub step_end: Spent,
+    /// The rule's own syncs of the log, before a step that found too
+    /// little of the log durable. Not part of the six above.
+    pub step_own_sync: Spent,
+    /// Turns of the worker in which a request was waiting and none
+    /// was taken because the log was at the high mark: the time of
+    /// the step taken in that turn (its own sync included). This
+    /// overlaps the parts above: it is a share of them, not more time.
+    pub gate: Spent,
+    /// The worker's whole time since it started, by what it did, in
+    /// nanoseconds and in the order of [`ACTIVITIES`], idle included:
+    /// the spans follow each other with no gap, so the sum is the time
+    /// served, and one entry over the sum is the share of the worker's
+    /// time that went there.
+    pub worker: [u64; 14],
+    /// For each kind of request ([`TIMED_KINDS`]): the summed waits of
+    /// [`RequestTiming::wait`] by what the worker did meanwhile
+    /// ([`ACTIVITIES`]). Each request's wait is laid over the worker's
+    /// spans, so a row's sum is that kind's summed wait. "Idle" here is
+    /// the time the worker took to wake for a request.
+    pub wait_by: [[u64; 14]; 5],
+    /// For each kind: of its longest wait, the activity that took the
+    /// largest part of it, as a number into [`ACTIVITIES`].
+    pub longest_wait_cause: [u64; 5],
+    /// And how long that part was.
+    pub longest_wait_cause_ns: [u64; 5],
 }
 
 /// The log as a store shows it to its owner.
@@ -2137,6 +2464,8 @@ impl<D: Dir> Store<D> {
                 working: false,
                 steps: 0,
                 own_syncs: 0,
+                timing: Timing::default(),
+                parts: None,
                 zeroes: Zeroes::Untried,
                 #[cfg(any(test, feature = "test-hooks"))]
                 pause: None,
@@ -2220,6 +2549,12 @@ impl<D: Dir> Store<D> {
     /// fails the volume, an error.
     pub fn tend(&mut self) -> Result<bool, BlkError> {
         self.core.tend(&mut || {})
+    }
+
+    /// Where the time of the checkpoint's batches went: see [`Timing`].
+    /// A store that is not served times nothing else.
+    pub fn timing(&self) -> Timing {
+        self.core.timing
     }
 
     /// The log's start, end and durable position, and the steps taken.
@@ -2418,7 +2753,8 @@ impl<D: Dir> BlockTarget for Store<D> {
 
 /// What the owner of a [`Served`] store asks of its worker.
 enum Command {
-    Request(Request),
+    /// A request, and when it was submitted.
+    Request(Request, Instant),
     Hold(Option<Lsn>, mpsc::Sender<Result<(), NotABoundary>>),
     Checkpoint(mpsc::Sender<Result<Lsn, BlkError>>),
     Position(mpsc::Sender<Lsn>),
@@ -2447,7 +2783,10 @@ pub struct Served {
     geometry: Geometry,
     identity: [u8; 16],
     commands: Option<mpsc::Sender<Command>>,
-    completions: mpsc::Receiver<(Completion, Option<Lsn>)>,
+    completions: mpsc::Receiver<(Completion, Option<Lsn>, Instant)>,
+    /// When the worker had each completion of the last
+    /// [`BlockTarget::poll`] or [`BlockTarget::wait`] ready.
+    ready: Vec<(RequestId, Instant)>,
     ids: BTreeSet<RequestId>,
     acknowledged: Option<Lsn>,
     /// Set by the worker as it ends, however it ends.
@@ -2465,18 +2804,20 @@ pub struct Served {
 /// start beyond the end (a step can move the start past the end that
 /// was published before it), never a step that has ended as under way.
 #[derive(Debug, Default)]
-struct Shown(Mutex<LogState>);
+struct Shown(Mutex<(LogState, Timing)>);
 
 impl Shown {
     fn publish<D: Dir>(&self, core: &Core<D>, stepping: bool) {
-        self.set(LogState {
+        let state = LogState {
             stepping,
             ..core.log_state()
-        });
+        };
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = (state, core.timing);
     }
 
+    #[cfg(test)]
     fn set(&self, state: LogState) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = state;
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).0 = state;
     }
 
     /// A step begins: everything else stays, and it is under way.
@@ -2484,10 +2825,19 @@ impl Shown {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .0
             .stepping = true;
     }
 
     fn state(&self) -> LogState {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).0
+    }
+
+    fn timing(&self) -> Timing {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).1
+    }
+
+    fn both(&self) -> (LogState, Timing) {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -2535,7 +2885,7 @@ where
         let geometry = core.geometry;
         let identity = core.identity();
         let (commands, inbox) = mpsc::channel::<Command>();
-        let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>)>();
+        let (outbox, completions) = mpsc::channel::<(Completion, Option<Lsn>, Instant)>();
         let ended = Arc::new(AtomicBool::new(false));
         let shown = Arc::new(Shown::default());
         shown.publish(&core, false);
@@ -2555,12 +2905,27 @@ where
                 // or no request: at the start, for a long log that the
                 // open found, and after every step it took.
                 let mut busy = true;
+                // The requests that wait, each with the time of its
+                // submission, in one queue: a request that is put back
+                // goes back with its time. What the open left queued
+                // counts from here.
+                let served_at = Instant::now();
+                let mut queue: VecDeque<(Request, Instant)> = queue
+                    .drain(..)
+                    .map(|request| (request, served_at))
+                    .collect();
+                // What the worker did, for the waits of the requests.
+                let mut spans = Spans::new();
+                core.parts = Some(Vec::new());
                 loop {
                     shown.publish(&core, false);
                     // Take what has arrived; wait if there is nothing
                     // to do.
                     let command = if (queue.is_empty() || held) && !busy {
-                        match inbox.recv() {
+                        spans.close(Activity::OTHER, Instant::now(), &mut core.timing);
+                        let command = inbox.recv();
+                        spans.close(Activity::IDLE, Instant::now(), &mut core.timing);
+                        match command {
                             Ok(command) => Some(command),
                             Err(_) => return,
                         }
@@ -2572,8 +2937,8 @@ where
                         }
                     };
                     match command {
-                        Some(Command::Request(request)) => {
-                            queue.push_back(request);
+                        Some(Command::Request(request, at)) => {
+                            queue.push_back((request, at));
                             continue;
                         }
                         Some(Command::Hold(hold, reply)) => {
@@ -2599,6 +2964,7 @@ where
                             } else {
                                 core.checkpoint()
                             };
+                            spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
                             held = false;
                             busy = true;
                             // As for a completion: whoever is answered
@@ -2637,7 +3003,9 @@ where
                             let _ = reply.send(());
                             continue;
                         }
-                        None => {}
+                        // Nothing more has arrived: every request
+                        // that waits is in the queue.
+                        None => spans.forget(queue.front().map(|(_, at)| *at)),
                     }
                     // At or above the high mark no request is executed
                     // while the rule still takes steps: `busy` says
@@ -2647,14 +3015,49 @@ where
                     // a request waiting: the request is executed, and
                     // is held or refused by what it finds.
                     let steps_first = busy && core.at_the_high_mark();
+                    let gated = steps_first && !held && !queue.is_empty();
                     let next = if held || steps_first {
                         None
                     } else {
                         queue.pop_front()
                     };
-                    if let Some(Request { id, op }) = next {
-                        match core.execute(op) {
+                    if let Some((Request { id, op }, at)) = next {
+                        let kind = timed_kind(&op);
+                        let began = Instant::now();
+                        spans.close(Activity::OTHER, began, &mut core.timing);
+                        let executed = core.execute(op);
+                        let ended = Instant::now();
+                        // What it waited for, before its own call is
+                        // among the spans.
+                        let by = executed.is_ok().then(|| spans.between(at));
+                        // A call that made room in the log took a
+                        // whole checkpoint inside itself: those parts
+                        // are the step's in the worker's time, and in
+                        // the wait of a request behind this one, and
+                        // the kind's is the time outside them.
+                        spans.take(&mut core.parts, Activity::call(kind), &mut core.timing);
+                        spans.close(Activity::call(kind), ended, &mut core.timing);
+                        match executed {
                             Ok((result, buf)) => {
+                                let wait = began.saturating_duration_since(at);
+                                let timing = &mut core.timing;
+                                if let Some(by) = by {
+                                    let longest = wait.as_nanos()
+                                        >= u128::from(timing.requests[kind].wait.max_ns);
+                                    let mut most = 0;
+                                    for (activity, ns) in by.iter().enumerate() {
+                                        timing.wait_by[kind][activity] += ns;
+                                        if *ns > by[most] {
+                                            most = activity;
+                                        }
+                                    }
+                                    if longest {
+                                        timing.longest_wait_cause[kind] = most as u64;
+                                        timing.longest_wait_cause_ns[kind] = by[most];
+                                    }
+                                }
+                                timing.requests[kind].wait.add(wait);
+                                timing.requests[kind].call.add(ended - began);
                                 let start = core.appended.take();
                                 let completion = Completion { id, result, buf };
                                 // Shown before the completion can be
@@ -2666,7 +3069,7 @@ where
                                 // once, and stayed so while nothing
                                 // else woke it.
                                 shown.publish(&core, false);
-                                if outbox.send((completion, start)).is_err() {
+                                if outbox.send((completion, start, ended)).is_err() {
                                     return;
                                 }
                                 if let Some(Waker(wake)) = &waker {
@@ -2674,7 +3077,7 @@ where
                                 }
                             }
                             Err(op) => {
-                                queue.push_front(Request { id, op });
+                                queue.push_front((Request { id, op }, at));
                                 held = true;
                             }
                         }
@@ -2692,11 +3095,16 @@ where
                         }
                     };
                     let mut begun = false;
+                    let turn = gated.then(Instant::now);
                     let stepped = core.tend(&mut || {
                         begun = true;
                         shown.begin();
                         wake();
                     });
+                    spans.take(&mut core.parts, Activity::OTHER, &mut core.timing);
+                    if let Some(turn) = turn.filter(|_| stepped != Ok(false)) {
+                        core.timing.gate.add(turn.elapsed());
+                    }
                     busy = stepped == Ok(true);
                     // `begun` is a safeguard and cannot decide today: the
                     // rule tells the owner of a step before its own sync
@@ -2724,6 +3132,7 @@ where
             identity,
             commands: Some(commands),
             completions,
+            ready: Vec::new(),
             ids,
             acknowledged,
             ended,
@@ -2749,6 +3158,32 @@ impl Served {
     /// waits in its hook is.
     pub fn log_state(&self) -> LogState {
         self.log.state()
+    }
+
+    /// Where the time went, as the worker last showed it with the
+    /// log's state: see [`Timing`]. Like [`Served::log_state`] it asks
+    /// the worker nothing and returns at once.
+    pub fn timing(&self) -> Timing {
+        self.log.timing()
+    }
+
+    /// When the worker had the completion of request `id` ready: the
+    /// end of the store's call for it. Known for the completions that
+    /// the last [`BlockTarget::poll`] or [`BlockTarget::wait`]
+    /// returned, so that their taker can say how long each waited to
+    /// be taken.
+    pub fn ready_at(&self, id: RequestId) -> Option<Instant> {
+        self.ready
+            .iter()
+            .find(|(ready, _)| *ready == id)
+            .map(|(_, at)| *at)
+    }
+
+    /// The log's state and the times of one moment: what the worker
+    /// showed together. Two calls, one for each, can be a request
+    /// apart.
+    pub fn shown(&self) -> (LogState, Timing) {
+        self.log.both()
     }
 
     /// Set or release the hold: see [`Store::set_hold`]. It takes
@@ -2828,8 +3263,9 @@ impl Served {
         }
     }
 
-    fn took(&mut self, taken: (Completion, Option<Lsn>), out: &mut Vec<Completion>) {
-        let (completion, start) = taken;
+    fn took(&mut self, taken: (Completion, Option<Lsn>, Instant), out: &mut Vec<Completion>) {
+        let (completion, start, ready) = taken;
+        self.ready.push((completion.id, ready));
         self.ids.remove(&completion.id);
         if let Some(start) = start {
             self.acknowledged = Some(start);
@@ -2866,13 +3302,13 @@ impl BlockTarget for Served {
         }
         let id = request.id;
         match self.commands.as_ref() {
-            Some(commands) => match commands.send(Command::Request(request)) {
+            Some(commands) => match commands.send(Command::Request(request, Instant::now())) {
                 Ok(()) => {
                     self.ids.insert(id);
                     Ok(())
                 }
                 // The worker is gone, which only a panic in it does.
-                Err(mpsc::SendError(Command::Request(request))) => Err(SubmitError {
+                Err(mpsc::SendError(Command::Request(request, _))) => Err(SubmitError {
                     kind: SubmitErrorKind::Busy,
                     request,
                 }),
@@ -2886,15 +3322,13 @@ impl BlockTarget for Served {
     }
 
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
-        let mut taken = 0;
-        while let Ok(completion) = self.completions.try_recv() {
-            self.took(completion, out);
-            taken += 1;
-        }
-        taken
+        self.ready.clear();
+        self.take_ready(out)
     }
 
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        // The stamps of the last call are forgotten once, here in
+        // `poll`: what this call takes after its wait keeps its stamp.
         let taken = self.poll(out);
         if taken > 0 || self.ids.is_empty() {
             return taken;
@@ -2902,10 +3336,22 @@ impl BlockTarget for Served {
         match self.completions.recv_timeout(timeout) {
             Ok(completion) => {
                 self.took(completion, out);
-                1 + self.poll(out)
+                1 + self.take_ready(out)
             }
             Err(_) => 0,
         }
+    }
+}
+
+impl Served {
+    /// Take every completion that is ready now.
+    fn take_ready(&mut self, out: &mut Vec<Completion>) -> usize {
+        let mut taken = 0;
+        while let Ok(completion) = self.completions.try_recv() {
+            self.took(completion, out);
+            taken += 1;
+        }
+        taken
     }
 }
 
