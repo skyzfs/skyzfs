@@ -491,26 +491,55 @@ async fn duplicate_content_in_a_batch_uploads_once() {
     assert_eq!(r.cp.c.attach.load(Ordering::SeqCst), 1);
 }
 
-/// The measurement gate in miniature: publish wall time for a fixed
-/// delta at a simulated per-call RTT, depth 1 vs depth 16. Recorded for
-/// the PR, and asserted only loosely (the ideal is ~depth×) so a noisy
-/// runner cannot flake it.
-#[tokio::test(flavor = "multi_thread")]
-async fn pipelining_compresses_publish_wall_time_at_rtt() {
+/// The measurement gate in miniature: publish time for a fixed delta at
+/// a simulated per-call RTT, depth 1 vs depth 16, and depth 16 must be
+/// at least twelve times faster (it is 21.4 times: 1.542 s and 72 ms).
+///
+/// Why twelve. The factor used to be three, loose for a noisy runner;
+/// the clock below is exact, so the factor can say what it means. With
+/// the effective depth capped in the engine the same publish at "depth
+/// 16" takes 520 ms at an effective depth of 2 (a factor of 2.97),
+/// 264 ms at 4 (5.8) and 136 ms at 8 (11.3). Three caught a pipeline
+/// that had fallen back to depth 1 or 2 and nothing less; twelve fails
+/// one that works at half its depth. (The capped figures are the
+/// reviewer's, measured for skyzfs/skyzfs#26.)
+///
+/// The time judged is the runtime's clock, paused: it moves only when
+/// every task waits, and then straight to the next timer. So it counts
+/// the waits for the control plane (the RTTs, as many as the pipeline
+/// left one after another) and nothing of the machine: the same number
+/// on every run. The test used to compare two wall clocks, and under
+/// the coverage build on a shared runner the CPU time of 256 ops, which
+/// no depth shortens, brought the factor to 2.5 (run 43154941145). The
+/// wall clocks are still printed, for the record.
+#[tokio::test(start_paused = true)]
+async fn pipelining_compresses_publish_time_at_rtt() {
     let rtt = Duration::from_millis(2);
-    let mut walls = Vec::new();
+    let mut at_rtt = Vec::new();
     for depth in [1usize, 16] {
         let mut r = rig(depth, rtt).await;
         fill_distinct(&r.stack, 3);
-        let t = Instant::now();
+        let wall = Instant::now();
+        let t = tokio::time::Instant::now();
         r.eng.run_cycle().await.unwrap();
-        let wall = t.elapsed();
-        println!("depth={depth} ops={CHUNKS} rtt={rtt:?} publish_wall={wall:?}");
-        walls.push(wall);
+        let waited = t.elapsed();
+        println!(
+            "depth={depth} ops={CHUNKS} rtt={rtt:?} publish_time_at_rtt={waited:?} wall={:?}",
+            wall.elapsed()
+        );
+        // The clock is the simulated one: a publish of 256 ops that
+        // waited for less than one RTT per batch did not go through
+        // the probe's waits, and the comparison below would be of
+        // nothing.
+        assert!(
+            waited >= rtt * (CHUNKS / depth as u64) as u32,
+            "depth {depth}: {waited:?} is less than one RTT per batch"
+        );
+        at_rtt.push(waited);
     }
     assert!(
-        walls[1] * 3 < walls[0],
-        "depth 16 should be several times faster: {walls:?}"
+        at_rtt[1] * 12 < at_rtt[0],
+        "depth 16 should be at least twelve times faster: {at_rtt:?}"
     );
 }
 
@@ -551,9 +580,23 @@ async fn consecutive_batches_overlap_but_attaches_stay_serial_and_ordered() {
 /// a batch is ensure + uploads (2 RTTs) then attach (1): ~3 RTTs per
 /// batch staged-then-attached, ~2 when batch k+1 stages beside batch k's
 /// attach. Measured as a ratio of the same publish with overlap off, so
-/// per-call scheduling cost and the cycle's non-backfill round trips
-/// weigh on both sides alike: ideal ≈ 0.7 here, asserted < 0.85.
-#[tokio::test(flavor = "multi_thread")]
+/// the cycle's non-backfill round trips weigh on both sides alike.
+///
+/// The time is the runtime's paused clock, as in
+/// `pipelining_compresses_publish_time_at_rtt`: the waits for the
+/// control plane and nothing of the machine. It gives 1.98 s with
+/// overlap off and 1.36 s with it on, the same on every run: 620 ms
+/// saved, one 20 ms round trip at each of the 31 places where a batch
+/// follows another.
+///
+/// What is asserted is the saving, at least 30 round trips: it fails
+/// when two of the 31 are lost and passes with one. Not the ratio
+/// (0.687 today, printed): the cycle's round trips outside the backfill
+/// are in both times, so the ratio moves with them, and five more of
+/// them would bring it to 0.70 with the overlap intact. The ratio
+/// catches nothing that the difference does not. The test used to
+/// assert a ratio under 0.85 of two wall clocks.
+#[tokio::test(start_paused = true)]
 async fn overlap_saves_a_round_trip_per_batch() {
     let rtt = Duration::from_millis(20);
     let depth = 8usize;
@@ -563,9 +606,11 @@ async fn overlap_saves_a_round_trip_per_batch() {
         r.eng = r.eng.with_publish_overlap(overlap);
         fill_distinct(&r.stack, 9);
         let img = r.stack.origin_image();
-        let t = Instant::now();
+        let wall = Instant::now();
+        let t = tokio::time::Instant::now();
         let target = r.eng.run_cycle().await.unwrap();
-        let wall = t.elapsed();
+        let waited = t.elapsed();
+        let wall = wall.elapsed();
         assert_eq!(r.cp.read_snapshot(&target, 0, VOL).await.unwrap(), img);
         assert_eq!(
             r.cp.c.overlapped.load(Ordering::SeqCst),
@@ -573,15 +618,18 @@ async fn overlap_saves_a_round_trip_per_batch() {
             "staging under an in-flight attach"
         );
         println!(
-            "depth={depth} batches={} rtt={rtt:?} overlap={overlap} publish_wall={wall:?}",
+            "depth={depth} batches={} rtt={rtt:?} overlap={overlap} publish_time_at_rtt={waited:?} wall={wall:?}",
             CHUNKS / depth as u64
         );
-        walls.push(wall);
+        walls.push(waited);
     }
     let ratio = walls[1].as_secs_f64() / walls[0].as_secs_f64();
+    let saved = walls[0].saturating_sub(walls[1]);
+    println!("overlap saved {saved:?}, a ratio of {ratio:.3}");
     assert!(
-        ratio < 0.85,
-        "overlap saved too little: {walls:?} ({ratio:.2})"
+        saved >= rtt * 30,
+        "overlap saved too little: {saved:?} of {walls:?} ({ratio:.3}), wanted at least {:?}",
+        rtt * 30
     );
 }
 
