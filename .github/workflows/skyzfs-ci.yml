@@ -81,6 +81,7 @@ jobs:
         run: bash tests/lib/apt-fallback.sh
       - run: bash tests/lib/test_apt_fallback.sh
       - run: bash tests/lib/test_lim.sh
+      - run: python3 tests/bench/test_skz_time.py
       - name: shellcheck
         run: git ls-files '*.sh' | xargs -r shellcheck
       - uses: dtolnay/rust-toolchain@stable

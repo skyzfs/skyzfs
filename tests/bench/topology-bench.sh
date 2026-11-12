@@ -305,10 +305,15 @@ fi
 
 OUT=${TB_OUT:-/tmp/topology-bench}
 
+# Where skz_time.py is: the daemon's times, their differences and their
+# tables (tested by tests/bench/test_skz_time.py).
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 summarize() { # dir -> summary.md on stdout (all *.json under dir, any depth)
-    python3 - "$1" <<'PY'
+    python3 - "$1" "$HERE" <<'PY'
 import glob, json, os, sys
 out = sys.argv[1]
+sys.path.insert(0, sys.argv[2])
+import skz_time
 runs = [json.load(open(p)) for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True))]
 order = ['nocache', 'baseline', 'twovol', 'twovol-origin', 'twovol-hydrated', 'bcache', 'opencas',
          'zfs', 'zfs-plain', 'zfs-l2arc', 'zfs-slog', 'zfs-slog-l2arc', 'zfs-slog-rcache',
@@ -532,6 +537,18 @@ if skz:
               f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
               f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
               f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} |")
+    # Where a request's time goes, by the daemon's own account.
+    def rel_read_us(r):
+        io = lambda k: sum(v for n, v in r.get('pg', {}).items() if n.startswith('io_relation_') and n.endswith('_' + k))
+        return (io('read_us') / io('reads') if io('reads') else None), io('reads')
+    print('\n'.join(skz_time.render([
+        {'label': label(r), 'workload': r['workload'], 'tps': r.get('tps'), 'time': r.get('skyzfsd', {}).get('time'),
+         'steps': r.get('skyzfsd', {}).get('steps'), 'syncs': r.get('skyzfsd', {}).get('syncs'),
+         'relation_read_us': rel_read_us(r)[0],
+         'relation_reads': rel_read_us(r)[1], 'duration_s': r.get('duration_s'),
+         'ages': (r.get('skyzfsd', {}).get('before', {}).get('age_ms'), r.get('skyzfsd', {}).get('after', {}).get('age_ms')),
+         'model_relation_read_us': next((rel_read_us(o)[0] for o in others('zfs-slog', r)[0]), None)}
+        for r in skz])))
 PY
 }
 if [ "${1:-}" = summarize ]; then
@@ -1713,6 +1730,9 @@ snapshot() { # file
         esac
         # The daemon's whole status, "skz key value" (a value of two
         # words joined by _).
+        # The clock just before the reading: the worker's times of two
+        # readings must add up to the time between them.
+        [ -z "$SKZ_UP" ] || echo "skz read_at_ns $(date +%s%N)"
         [ -z "$SKZ_UP" ] || skz_status | awk '{ k = $1; $1 = ""; sub(/^ /, ""); gsub(/ /, "_"); print "skz", k, $0 }'
         # Whether the pool has seen an error on the daemon's device: a
         # server that returned wrong data shows here first (a checksum
@@ -1786,8 +1806,10 @@ run_workload() { # topology workload [snapshot mode]
     # from its own image by a loop device, the reference server or the
     # daemon), whatever the knob says.
     case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" > "$OUT/$tag.json" <<'PY'
+    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$HERE" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
+sys.path.insert(0, sys.argv[12])
+import skz_time
 base, topo, wl, dur = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 fsync_file, run_label = sys.argv[8], sys.argv[9]
@@ -1849,6 +1871,11 @@ if skz[base + '.after']:
     k = {'before': sb, 'after': sa, 'steps': diff('checkpoint_steps'), 'syncs': diff('checkpoint_syncs'),
          'writes': diff('writes'), 'log_live_before': num(sb, 'log_live'), 'log_live_after': num(sa, 'log_live'),
          'pid_same': sb.get('pid') == sa.get('pid'), 'info': {}}
+    # Where a request's time goes: the difference of every time_* key
+    # over the window, the end value of the longest ones and their
+    # causes, and the two readings as they were. A reading that failed
+    # or a status without the keys is said in the row; the run goes on.
+    k['time'] = skz_time.delta(sb, sa, num(sb, 'read_at_ns'), num(sa, 'read_at_ns'))
     samples = []
     if os.path.exists(base + '.skz'):
         for line in open(base + '.skz'):
