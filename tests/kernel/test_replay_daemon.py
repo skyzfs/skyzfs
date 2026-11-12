@@ -174,6 +174,13 @@ class Pure(unittest.TestCase):
         self.assertEqual(rd.verdict([], [], True, [], False, 0)[0], 2)
         # zdb -bcc that did not run is not a pass: the rig's error at least.
         self.assertEqual(rd.verdict([], [], True, [], True, None)[0], 2)
+        # zdb -bcc that timed out or could not start judged nothing: the rig's,
+        # unless something else stands against the daemon.
+        for rc_ in (124, 127):
+            code, why = rd.verdict([], [], True, [], True, rc_)
+            self.assertEqual(code, 2)
+            self.assertIn('did not finish', why[0])
+            self.assertEqual(rd.verdict([{'n': 1}], [], True, [], True, rc_)[0], 1)
 
     def test_controls_against_the_table(self):
         def ctl(name, caught, by=None):
@@ -292,8 +299,8 @@ class Serve(unittest.TestCase):
         with self.assertRaises(rd.RigError):
             self.serve_with((None, ''))
 
-    def test_dd_that_cannot_write_the_image_is_the_rigs_error(self):
-        # _serve itself, up to the read: a ready line, a device that exists, dd failing to write.
+    def read_with(self, result):
+        """_serve itself, up to the read: a ready line, a device that exists, dd giving `result`."""
         rd.Daemon._serve = self.saved[1]
         d = self.dir.name
         out_path, err_path = os.path.join(d, 'out'), os.path.join(d, 'err')
@@ -302,14 +309,25 @@ class Serve(unittest.TestCase):
         open(err_path, 'w').close()
         saved_exists = rd.os.path.exists
         rd.os.path.exists = lambda path: True if path == '/dev/ublkb7' else saved_exists(path)
-        rd.run = lambda cmd, timeout=300: (1, "dd: error writing '/w/img': No space left on device", 0.0)
+        rd.run = lambda cmd, timeout=300: result
         try:
             p = type('P', (), {'poll': lambda self: None})()
             failed, _ = rd.Daemon(self.a, None)._serve(p, os.path.join(d, 'img'), {}, out_path, err_path,
                                                         rd.time.monotonic(), {'number': None})
         finally:
             rd.os.path.exists = saved_exists
-        self.assertEqual(failed, 'rig: writing the image')
+        return failed
+
+    def test_dd_that_cannot_write_the_image_is_the_rigs_error(self):
+        self.assertEqual(self.read_with((1, "dd: error writing '/w/img': No space left on device", 0.0)),
+                         'rig: writing the image')
+
+    def test_a_read_that_hangs_is_a_verdict(self):
+        # The daemon said it was ready and then did not answer reads: that is
+        # the daemon's hang, not the rig's. A dd that could not start is the rig's.
+        self.assertEqual(self.read_with((124, '', 300.0)), 'device read')
+        self.assertIn('device read', rd.JUDGING)
+        self.assertEqual(self.read_with((127, 'dd: not found', 0.0)), 'rig: device read could not start')
 
 
 class Pass(unittest.TestCase):

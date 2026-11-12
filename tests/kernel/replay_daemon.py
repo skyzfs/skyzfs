@@ -287,10 +287,13 @@ def verdict(failures, rig_errors, controls_ok, coverage_errors, witness_ok, zdb_
         against.append(f'{len(failures)} prefix(es) failed a check')
     if not controls_ok:
         against.append('a control is not as the table has it')
-    if zdb_cc_rc not in (0, None):
+    if zdb_cc_rc not in (0, None) and zdb_cc_rc not in rc.RIG_RC:
         against.append(f'zdb -bcc on the final image: exit code {zdb_cc_rc}')
     if zdb_cc_rc is None:
         rig.append('zdb -bcc did not run on the final image')
+    elif zdb_cc_rc in rc.RIG_RC:
+        rig.append(f'zdb -bcc on the final image did not finish (exit code {zdb_cc_rc}: '
+                   f'{"timed out" if zdb_cc_rc == 124 else "could not start"})')
     if rig_errors:
         rig.append(f'the rig failed at {len(rig_errors)} prefix(es), first: {rig_errors[0]["failed"]}')
     if coverage_errors:
@@ -476,7 +479,10 @@ class Daemon:
             if re.search(r'error writing|No space left', out):
                 # dd could not write the image: the rig's disk, not the device.
                 return 'rig: writing the image', out.strip()[-300:]
-            return ('device read' if rc_ not in rc.RIG_RC else rc.stage('device read', rc_)), \
+            # A read that times out on a device the daemon said was ready is
+            # the daemon's (a hang in recovery is what this checks); only a
+            # dd that could not start is the rig's.
+            return ('device read' if rc_ != 127 else rc.stage('device read', rc_)), \
                 f'{out.strip()[-300:]}; the daemon said: {said(err_path)}'
         with open(image, 'r+b') as f:
             f.truncate(self.a.dev_bytes)
