@@ -15,8 +15,16 @@
 //! # What `create` fixes
 //!
 //! A new volume has 4096-byte record alignment, log segments of
-//! [`SEGMENT_SIZE`], and the write unit of the system it is made on
-//! ([`Identity::system_write_unit`]). None of them is an option: they
+//! [`SEGMENT_SIZE`], and a write unit that is the larger of the
+//! system's page size and the block size of the file system the
+//! directory is on ([`Identity::write_unit_for`]): the files are
+//! written through the page cache, and a file system writes back
+//! whole blocks, so that is how far a write can reach. A directory
+//! whose file system has blocks above 65536 bytes (a network file
+//! system that reports its transfer size, for one), blocks that are no
+//! power of two, or a block size that cannot be read is refused: the
+//! format carries no such unit, and the store's protection against a
+//! power cut rests on it. None of them is an option: they
 //! are recorded with the volume, and a later version that wants others
 //! makes new volumes with others. If the directory is missing, `create`
 //! makes it (its last component only, mode 0700); a missing parent, a
@@ -379,14 +387,17 @@ fn hex(bytes: &[u8; 16]) -> String {
 /// ([`Store::identity`]): what tells this volume from another made
 /// later in the same directory.
 pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
-    let made = match in_directory(&create.dir, |dir| make(create, dir, id)) {
+    let (made, write_unit) = match in_directory(&create.dir, |dir| make(create, dir, id)) {
         Ok(made) => made,
         Err(output) => return output,
     };
     let shown = create.dir.display();
-    let warning = boot
+    let mut warning = boot
         .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
         .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
+    if let Some(note) = write_unit_note(write_unit, Identity::system_write_unit()) {
+        let _ = writeln!(warning, "skyzfsd: {shown}: {note}");
+    }
     Output {
         exit: Exit::Done,
         out: format!(
@@ -467,19 +478,56 @@ fn unmake(path: &Path) {
     let _ = std::fs::remove_dir(path);
 }
 
-/// Make the store of `create` in `dir`; its identity.
-fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
+/// The write unit of a new volume in a directory whose file system
+/// says `block` for its block size, or why no volume is made there
+/// (words that follow the directory's path).
+fn write_unit_on(block: io::Result<u64>) -> Result<u32, String> {
+    match block {
+        Ok(block) => Identity::write_unit_for(block).ok_or_else(|| {
+            format!(
+                "is on a file system with blocks of {block} bytes: a volume's write unit must \
+                 be at least the file system's block, and it is a power of two of at most \
+                 65536 bytes"
+            )
+        }),
+        Err(e) => Err(format!(
+            "is on a file system whose block size could not be read ({e}): whether a write \
+             there stays within a volume's write unit cannot be checked"
+        )),
+    }
+}
+
+/// What `create` says, on standard error, about a write unit that is
+/// not the system's page size: the volume then pads its log and saves
+/// neighbours by a larger unit than a volume on this system otherwise
+/// would, and whoever made it should know why. Nothing for the usual
+/// case, so that the line `created ...` stays all there is to read.
+fn write_unit_note(unit: u32, page: u32) -> Option<String> {
+    (unit != page).then(|| {
+        format!(
+            "the volume's write unit is {unit} bytes, the block size of the directory's file \
+             system; this system's pages are {page} bytes"
+        )
+    })
+}
+
+/// Make the store of `create` in `dir`; its identity and the write
+/// unit it was given.
+fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Output> {
+    use skyzfs_local::io::Dir as _;
     let shown = create.dir.display();
+    let write_unit = write_unit_on(dir.block_size())
+        .map_err(|why| Output::error(format_args!("{shown} {why}. Nothing was done")))?;
     let config = StoreConfig {
         volume: id,
         size_mib: create.size >> 20,
         base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
         align: ALIGN,
         segment_size: SEGMENT_SIZE,
-        write_unit: Identity::system_write_unit(),
+        write_unit,
     };
     match Store::create(dir, &config, OpenOptions::default()) {
-        Ok(store) => Ok(store.identity()),
+        Ok(store) => Ok((store.identity(), write_unit)),
         Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),

@@ -54,6 +54,22 @@ pub trait Dir {
     /// What holds the directory's lock: dropping it releases the lock.
     type Lock;
 
+    /// The block size of the file system the directory is on, in
+    /// bytes: the least that file system allocates, deallocates and
+    /// rewrites at once, and so how far a write into a file created
+    /// here can reach beside what it writes. Linux: `f_bsize` of
+    /// `statfs`. An error where the platform has no such call or the
+    /// file system does not say: a caller that depends on the size
+    /// must then refuse, not assume.
+    fn block_size(&self) -> io::Result<u64>;
+
+    /// The page size of the system that writes this directory's
+    /// files, in bytes: what its cache writes back as a whole,
+    /// whatever the file system. It belongs to the running kernel and
+    /// not to the files: the same directory can be opened under
+    /// another.
+    fn page_size(&self) -> u64;
+
     /// Take the directory's exclusive lock, without waiting. While the
     /// lock is held a second call fails with
     /// [`io::ErrorKind::WouldBlock`] and changes nothing. The lock is
@@ -107,8 +123,8 @@ pub trait File {
     /// file system (or write unit of the device), the file system
     /// zeroes that part by a write, which rewrites the block around it
     /// as any write does: a caller that protects the neighbours of a
-    /// write protects them here in the same way, and must know how far
-    /// they reach ([`File::block_size`]).
+    /// write protects them here in the same way, as far as the larger
+    /// of the two reaches ([`File::block_size`]).
     ///
     /// Fails with [`io::ErrorKind::Unsupported`] where the file system
     /// or the platform has no such call, and has then changed nothing:
@@ -122,9 +138,11 @@ pub trait File {
     /// until they are those platforms answer "unsupported".
     fn deallocate(&mut self, offset: u64, len: u64) -> io::Result<()>;
 
-    /// The block size of the file system the file is on, in bytes:
-    /// the least the file system allocates, deallocates and rewrites
-    /// at once. Linux: `f_bsize` of `fstatfs`.
+    /// The block size of the file system the file is on, in bytes,
+    /// as [`Dir::block_size`] gives it for a directory: a file can be
+    /// on another file system than the directory that names it (a
+    /// symbolic link, a file mounted over a name). Linux: `f_bsize` of
+    /// `fstatfs`.
     fn block_size(&self) -> io::Result<u64>;
 
     /// The file's length in bytes.

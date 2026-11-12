@@ -62,6 +62,14 @@ pub fn classify(error: &StoreError) -> OpenError {
         StoreError::Log(LogError::Failed) | StoreError::Log(LogError::Io { failed: true, .. }) => {
             OpenError::SyncFailed
         }
+        // The volume is not where the store's protection holds: a
+        // refusal that wrote nothing, and no failure of the volume.
+        refused @ (StoreError::Blocks { .. }
+        | StoreError::BlocksUnknown { .. }
+        | StoreError::Pages { .. }) => OpenError::Other(format!(
+            "{refused}. Nothing was written and the volume is not failed. A device of this \
+             volume that waits for a server is left as it is; `skyzfsd detach` removes it"
+        )),
         other => OpenError::Other(other.to_string()),
     }
 }

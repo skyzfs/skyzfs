@@ -908,3 +908,29 @@ fn status_does_not_show_the_status_file_of_another_volume_in_the_same_directory(
     let output = setup.status();
     assert_eq!(value(&output.out, "reads"), Some("5"));
 }
+
+/// `create` takes the write unit from the block size of the
+/// directory's file system and refuses, in plain words, a size the
+/// format does not carry and one that cannot be read.
+#[test]
+fn create_chooses_the_write_unit_by_the_file_systems_block_or_refuses() {
+    let system = Identity::system_write_unit();
+    assert_eq!(write_unit_on(Ok(4096)), Ok(system));
+    assert_eq!(write_unit_on(Ok(65536)), Ok(65536));
+    let large = write_unit_on(Ok(1 << 20)).expect_err("blocks of 1 MiB");
+    assert!(
+        large.contains("blocks of 1048576 bytes") && large.contains("at most 65536"),
+        "{large}"
+    );
+    let odd = write_unit_on(Ok(12288)).expect_err("blocks of 12288");
+    assert!(odd.contains("blocks of 12288 bytes"), "{odd}");
+    let unread = write_unit_on(Err(io::ErrorKind::Unsupported.into())).expect_err("unreadable");
+    assert!(unread.contains("could not be read"), "{unread}");
+    // A unit that is not the page size is said; the usual one is not.
+    assert_eq!(write_unit_note(4096, 4096), None);
+    let note = write_unit_note(16384, 4096).expect("a note");
+    assert!(
+        note.contains("write unit is 16384 bytes") && note.contains("pages are 4096 bytes"),
+        "{note}"
+    );
+}
