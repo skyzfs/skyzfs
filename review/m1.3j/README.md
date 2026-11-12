@@ -25,3 +25,56 @@
    the mark in the log is the worker's.
 5. Discards are not in the index and change nothing a read sees; no
    hole there.
+
+# M1.3j (skyzfs/skyzfs#29): reads leave the worker
+
+Reviewed: `origin/zfs-topology` ... `origin/skyzfs-coding` 78c204b.
+
+## What was done
+
+- Diff of log.rs, format.rs, store.rs and status.rs read before the
+  description. fmt, clippy -D warnings, tests of skyzfs-local,
+  skyzfs-ublk, skyzfsd: clean, all pass; the store's 210 tests four
+  times in a row.
+- One temporary test of the failure order; three plants of my own.
+- Not done: no kernel run; the tests' file not read line by line; the
+  description not compared claim by claim.
+
+## Findings
+
+1. Blocking. A read is answered `Failed` before the log is marked.
+   `Core::fail` sets the flag the reader looks at, then marks the log
+   (the observer, then the marker file and two syncs). A read that
+   begins in between is refused by the reader, which sends the
+   completion itself. Temporary test: the volume fails on the worker,
+   the observer is held, a read is submitted: one completion,
+   `Err(Failed)`, no marker in the directory. With the flag set after
+   the mark the same read is answered `Ok`. Before this package no
+   completion could leave before the mark.
+2. Blocking for a green merge. `python3 tests/bench/test_skz_time.py`
+   fails at this head (171 keys where 153 are asked; 2 failures). CI's
+   lint job runs it. The benchmark's script also does not know the
+   fifteenth activity, so its worker identity and its read tables do
+   not hold for a version 6 status.
+3. Not blocking. "The pin from just before the lookup" has no test:
+   with the pin taken after the lookup all 210 tests pass.
+4. Not blocking. A read of a block in a record that is not durable
+   reads the record's whole payload (up to 1 MiB for 4 KiB). Counted
+   in the status; the cost is not in the description's numbers.
+5. Not blocking. A version 5 file is printed with the eighteen new
+   keys as zeros.
+
+## Agreed with
+
+- The pin's generations: a reader that entered before a barrier began
+  is waited for, one that entered after is not; both under one mutex.
+  Plant "misses the current generation": caught, 4 tests.
+- The segments beside the index are changed in the same hold at the
+  insert, at the step's end and at the open. Plant "insert without
+  following": caught, 4 tests.
+- The durable position is told after the sync returned; the open
+  syncs every file before it calls anything durable.
+- No write or deallocation in the home image before the first
+  barrier.
+- Status version 6: 1568 bytes, the pump's fields 48 bytes further,
+  version 5 still read.
