@@ -173,20 +173,23 @@ def identities(t):
         rows, total, wait = wait_by(d, kind)
         if rows and wait is not None:
             out.append((f"{kind}: the wait's causes sum to the wait (ns)", total, wait, total - wait))
-    # Since the daemon says when it looked (time_as_of_ns), a thread's
-    # activities are set against the time between its two looks, and
-    # sum to it exactly; before, against the time between the two
-    # readings, to within the span open at each.
-    looked = d.get('time_as_of_ns')
-    if looked is not None:
-        span, between = looked, "the daemon's two looks (time_as_of_ns)"
-    else:
-        span, between = t.get('window_ns'), 'the two readings'
+    # Since the daemon says up to when each thread's sums are complete
+    # (time_worker_as_of_ns, time_reader_as_of_ns), a thread's
+    # activities are set against the difference of its own, and sum to
+    # it exactly; before, against the time between the two readings, to
+    # within the span open at each.
+    def against(who):
+        complete = d.get(f'time_{who}_as_of_ns')
+        if complete is not None:
+            return complete, f"the {who}'s two moments of completeness (time_{who}_as_of_ns)"
+        return t.get('window_ns'), 'the two readings'
     worker = [d.get(f'time_worker_{a}_ns') for a in worker_activities(d)]
+    span, between = against('worker')
     if worker and span is not None:
         out.append((f"the worker's activities sum to the time between {between} (ns)",
                     sum(worker), span, sum(worker) - span))
     reader = [d.get(f'time_reader_{a}_ns') for a in READER_ACTIVITIES]
+    span, between = against('reader')
     if all(v is not None for v in reader) and span is not None:
         out.append((f"the reader's activities sum to the time between {between} (ns)",
                     sum(reader), span, sum(reader) - span))
@@ -381,13 +384,15 @@ def render(rows):
                        + ' | ' + ' | '.join(ms(e.get(f'time_{k}_call_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(cause(k) for k in KINDS[:3]) + ' |')
         out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly: that is '
-                'the guard that counts. The worker\'s activities, and the reader\'s, are set against the time between '
-                'the daemon\'s two looks at its own times (`time_as_of_ns`): each thread\'s span open at a look is '
-                'counted to it up to the look, so these too hold exactly, and a difference is a fault of the daemon '
-                'or of the reading. A daemon without `time_as_of_ns` (version 5, and version 6 before it) is set '
-                'against the time between the two readings, taken just before each: its sums leave out the span '
-                'open at each reading, so that identity holds only to within one open span (with reads off the '
-                'worker, an idle span of up to seconds) and the status file\'s age at each end:', '',
+                'the guard that counts. The worker\'s activities, and the reader\'s, are each set against the time '
+                'between the two moments up to which that thread\'s sums are complete (`time_worker_as_of_ns`, '
+                '`time_reader_as_of_ns`: the look\'s moment for a thread waiting for work, whose wait is counted as '
+                'idle up to it; the end of its last span for a thread doing something), so these too hold exactly, '
+                'and a difference is a fault of the daemon or of the reading. A daemon without those keys (version 5, '
+                'and version 6 before them) is set against the time between the two readings, taken just before '
+                'each: its sums leave out the span open at each reading, so that identity holds only to within one '
+                'open span (with reads off the worker, an idle span of up to seconds) and the status file\'s age at '
+                'each end:', '',
                 '| workload | daemon row | identity | left | right | difference |', '|---|---|---|---|---|---|']
         for r in usable:
             ids = identities(r['time'])

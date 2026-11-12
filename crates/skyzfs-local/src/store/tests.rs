@@ -6413,12 +6413,13 @@ fn step_parts_numbers() {
 }
 
 /// The times of a served store hold at every look, and not only
-/// between two spans: the span each thread has open at a look (an idle
-/// wait for work, or what it does now) is counted to it up to the
-/// look, and the look says when it was (`Timing::as_of_ns`). So the
-/// worker's activities and the reader's sum, between any two looks, to
-/// the time between them exactly, with requests between the looks or
-/// none.
+/// between two spans. A thread that waits for work has its wait
+/// counted as idle up to the look; a thread that is doing something
+/// has its sums complete up to the end of its last span, and says up
+/// to when (`Timing::worker_as_of_ns`, `Timing::reader_as_of_ns`). So
+/// the worker's activities and the reader's each sum, between any two
+/// looks, to the difference of their own moment exactly, with
+/// requests between the looks or none.
 ///
 /// And a thread that waits for work shows the wait as idle, whole:
 /// with nothing submitted, there come two looks between which every
@@ -6432,7 +6433,6 @@ fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
     write(&mut store, 0, 4, 9).unwrap();
     flush(&mut store).unwrap();
     let mut served = store.serve().unwrap();
-    let sums = |t: &Timing| (t.worker.iter().sum::<u64>(), t.reader.iter().sum::<u64>());
     let mut before = served.timing();
     let mut done = Vec::new();
     for round in 0..40u64 {
@@ -6448,11 +6448,7 @@ fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
             .unwrap();
         }
         let now = served.timing();
-        let between = now.as_of_ns - before.as_of_ns;
-        assert!(between > 0, "two looks at one moment: {now:?}");
-        let (after, earlier) = (sums(&now), sums(&before));
-        assert_eq!(after.0 - earlier.0, between, "the worker, round {round}");
-        assert_eq!(after.1 - earlier.1, between, "the reader, round {round}");
+        identities_hold(&before, &now, &format!("round {round}"));
         before = now;
     }
     // Nothing more is submitted: both threads go to wait for work, and
@@ -6460,19 +6456,124 @@ fn the_threads_times_sum_to_the_time_between_two_looks_exactly() {
     let began = std::time::Instant::now();
     loop {
         let now = served.timing();
-        let between = now.as_of_ns - before.as_of_ns;
+        let between = (
+            now.worker_as_of_ns - before.worker_as_of_ns,
+            now.reader_as_of_ns - before.reader_as_of_ns,
+        );
         let idle = (
             now.worker[0] - before.worker[0],
             now.reader[0] - before.reader[0],
         );
-        if between > 0 && idle == (between, between) {
+        if between.0 > 0 && between.1 > 0 && idle == between {
             break;
         }
         assert!(
             began.elapsed() < Duration::from_secs(20),
-            "no two looks with both threads idle between them: {idle:?} of {between}"
+            "no two looks with both threads idle between them: {idle:?} of {between:?}"
         );
         before = now;
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// Between two looks, each thread's activities sum to the difference of
+/// its own moment, and no sum or count went down.
+fn identities_hold(before: &Timing, now: &Timing, when: &str) {
+    let worker = now.worker.iter().sum::<u64>() - before.worker.iter().sum::<u64>();
+    let reader = now.reader.iter().sum::<u64>() - before.reader.iter().sum::<u64>();
+    assert_eq!(
+        worker,
+        now.worker_as_of_ns - before.worker_as_of_ns,
+        "the worker, {when}"
+    );
+    assert_eq!(
+        reader,
+        now.reader_as_of_ns - before.reader_as_of_ns,
+        "the reader, {when}"
+    );
+    let (earlier, later) = (monotonic(before), monotonic(now));
+    for (at, (e, l)) in earlier.iter().zip(&later).enumerate() {
+        assert!(
+            l >= e,
+            "{when}: sum {at} went down from {e} to {l}: {before:?} then {now:?}"
+        );
+    }
+}
+
+/// Every sum and count of a [`Timing`], which can only grow.
+fn monotonic(t: &Timing) -> Vec<u64> {
+    let mut out = Vec::new();
+    for kind in &t.requests {
+        out.extend([kind.wait.count, kind.wait.sum_ns, kind.call.sum_ns]);
+    }
+    for part in [
+        t.step_walk,
+        t.step_save,
+        t.step_apply,
+        t.step_home_sync,
+        t.step_start,
+        t.step_end,
+        t.step_own_sync,
+        t.gate,
+        t.barrier_home,
+        t.barrier_reuse,
+    ] {
+        out.extend([part.count, part.sum_ns]);
+    }
+    out.extend(t.worker);
+    out.extend(t.wait_by.iter().flatten());
+    out.extend(t.reader);
+    out.extend(t.read_unflushed);
+    out.extend([t.worker_as_of_ns, t.reader_as_of_ns]);
+    out
+}
+
+/// No sum goes down from one look to the next, with the worker held
+/// inside a step and the reader inside a read: a look does not count
+/// what a thread is doing to an activity it did before, which the next
+/// look would take back. Shown by hand, not by a mutant: a look that
+/// closed a busy thread's open span under the activity it last showed
+/// ("other" for the worker, "idle" for a reader whose read is under
+/// way) fails here, as `time_worker_other_ns` goes down once the step
+/// shows its parts.
+#[test]
+fn no_sum_goes_down_between_looks_taken_inside_a_step_and_a_read() {
+    let env = environments(0)[0];
+    let (_disk, mut store) = env.fresh().unwrap();
+    write(&mut store, 0, 4, 9).unwrap();
+    write(&mut store, 8, 4, 3).unwrap();
+    flush(&mut store).unwrap();
+    let (step, reader) = (Gate::new("looks-step"), Gate::new("looks-read"));
+    store.set_step_pause_at(step.pause(), StepPoint::Written);
+    store.set_read_pause(reader.pause());
+    let mut served = store.serve().unwrap();
+    let _opened = Opened(&[&step, &reader]);
+    let mut looks = vec![served.timing()];
+    let (reply, checkpointed) = mpsc::channel();
+    assert!(served.send(Command::Checkpoint(reply)));
+    step.wait_reached("the step").unwrap();
+    submit(&mut served, read_request(1, 8, 2)).unwrap();
+    reader.wait_reached("the read").unwrap();
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(5));
+        looks.push(served.timing());
+    }
+    reader.open();
+    let mut done = Vec::new();
+    take(&mut served, &mut done, 1, "the read").unwrap();
+    looks.push(served.timing());
+    step.open();
+    assert!(matches!(
+        checkpointed.recv_timeout(Duration::from_secs(20)),
+        Ok(Ok(_))
+    ));
+    looks.push(served.timing());
+    // And once both wait for work again.
+    std::thread::sleep(Duration::from_millis(5));
+    looks.push(served.timing());
+    for (at, pair) in looks.windows(2).enumerate() {
+        identities_hold(&pair[0], &pair[1], &format!("look {at} to {}", at + 1));
+    }
+    let (first, last) = (&looks[0], &looks[looks.len() - 1]);
+    assert!(last.step_apply.sum_ns > first.step_apply.sum_ns, "{last:?}");
 }

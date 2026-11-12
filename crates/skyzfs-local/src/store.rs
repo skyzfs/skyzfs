@@ -2193,15 +2193,19 @@ pub struct Timing {
     /// bytes they read beyond those asked for; how many records did not
     /// match, each of which failed the volume. A served store only.
     pub read_unflushed: [u64; 3],
-    /// When these times were looked at, in nanoseconds since the store
-    /// began to be served. The span that each thread has open at the
-    /// look is counted to it up to this moment, under what the thread
-    /// last said it was doing: idle while it waits for work, else
-    /// "other" (a step under way shows as "other" until it ends). So
-    /// between two looks, the worker's activities ([`Timing::worker`])
-    /// and the reader's ([`Timing::reader`]) each sum to the difference
-    /// of this, exactly. A served store only.
-    pub as_of_ns: u64,
+    /// Up to when the worker's activities ([`Timing::worker`]) are
+    /// complete, in nanoseconds since the store began to be served.
+    /// A worker that waits for work at the look has the wait counted
+    /// as idle up to the look, and this is the look's moment; a worker
+    /// that is doing something has its sums up to the end of its last
+    /// span and this is that end: what it is doing now is counted when
+    /// it is done, under what it was, and never first under something
+    /// else. So between two looks the worker's activities sum to the
+    /// difference of this exactly, and no sum goes down. A served
+    /// store only.
+    pub worker_as_of_ns: u64,
+    /// The same for the reader's activities ([`Timing::reader`]).
+    pub reader_as_of_ns: u64,
 }
 
 /// The log as a store shows it to its owner.
@@ -3400,8 +3404,12 @@ pub struct Served {
 /// was published before it), never a step that has ended as under way.
 ///
 /// With the times, each thread shows the span it has open (since when,
-/// and doing what), which a look closes: see [`Timing::as_of_ns`]. The
-/// last field is the moment the times are counted from.
+/// and whether it is a wait for work, which a look closes): see
+/// [`Timing::worker_as_of_ns`]. A thread that wakes from a wait closes
+/// it and shows that in one hold of its lock, which is the lock a look
+/// holds while it reads the clock: so a look never counts more of a
+/// wait than the thread then does. The last field is the moment the
+/// times are counted from.
 #[derive(Debug)]
 struct Shown(Mutex<(LogState, Timing, Open)>, Mutex<ReaderShown>, Instant);
 
@@ -3448,36 +3456,53 @@ impl Shown {
         *self.1.lock().unwrap_or_else(PoisonError::into_inner) = reader;
     }
 
+    /// The worker woke from a wait for work: the wait is closed and
+    /// shown in one hold of the lock (see [`Shown`]).
+    fn worker_woke(&self, spans: &mut Spans, timing: &mut Timing) {
+        let mut shown = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        spans.close(Activity::IDLE, Instant::now(), timing);
+        shown.1 = *timing;
+        shown.2 = spans.open(Activity::OTHER);
+    }
+
+    /// The reader woke from a wait for work: `close` closes the wait at
+    /// the moment it is given and says what the reader shows then, in
+    /// one hold of the lock (see [`Shown`]).
+    fn reader_woke(&self, close: impl FnOnce(Instant) -> ReaderShown) {
+        let mut shown = self.1.lock().unwrap_or_else(PoisonError::into_inner);
+        *shown = close(Instant::now());
+    }
+
     fn timing(&self) -> Timing {
         self.both().1
     }
 
     /// The log's state and the worker's times of one moment, with the
     /// reader's times as it last showed them: reads are the reader's.
-    /// Each thread's open span is closed at the look, which is taken
-    /// with both shown values held, so that neither can show a span
-    /// that begins after it.
+    /// A thread's wait for work is closed at the look, which reads the
+    /// clock with both shown values held; anything else a thread has
+    /// open is left to it.
     fn both(&self) -> (LogState, Timing) {
         let worker = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let reader = self.1.lock().unwrap_or_else(PoisonError::into_inner);
         let now = Instant::now();
         let (state, mut timing, open) = *worker;
         let mut reader = *reader;
-        let open_for = |since: Instant| {
-            u64::try_from(now.saturating_duration_since(since).as_nanos()).unwrap_or(u64::MAX)
+        let ns = |from: Instant, to: Instant| {
+            u64::try_from(to.saturating_duration_since(from).as_nanos()).unwrap_or(u64::MAX)
         };
-        if let Some((since, activity)) = open {
-            timing.worker[activity] = timing.worker[activity].saturating_add(open_for(since));
-        }
-        if let Some((since, activity)) = reader.open {
-            let at = match activity {
-                Activity::IDLE => 0,
-                Activity::OTHER => 2,
-                _ => 1,
-            };
-            reader.time[at] = reader.time[at].saturating_add(open_for(since));
-        }
-        timing.as_of_ns = open_for(self.2);
+        // Up to when a thread's sums are complete, the wait it is in
+        // counted.
+        let complete = |open: Open, idle: &mut u64| match open {
+            Some((since, Activity::IDLE)) => {
+                *idle = idle.saturating_add(ns(since, now));
+                ns(self.2, now)
+            }
+            Some((since, _)) => ns(self.2, since),
+            None => 0,
+        };
+        timing.worker_as_of_ns = complete(open, &mut timing.worker[Activity::IDLE]);
+        timing.reader_as_of_ns = complete(reader.open, &mut reader.time[0]);
         timing.requests[0] = reader.requests;
         timing.wait_by[0] = reader.wait_by;
         timing.longest_wait_cause[0] = reader.longest_wait_cause;
@@ -3622,7 +3647,10 @@ where
                                     spans.open(Activity::IDLE),
                                 ));
                                 let next = read_inbox.recv();
-                                spans.close(Activity::IDLE, Instant::now(), &mut timing);
+                                shown.reader_woke(|now| {
+                                    spans.close(Activity::IDLE, now, &mut timing);
+                                    show(&timing, reader.unflushed, spans.open(Activity::OTHER))
+                                });
                                 match next {
                                     Ok(next) => next,
                                     Err(_) => return,
@@ -3716,7 +3744,7 @@ where
                     shown.publish(&core, false, spans.open(doing));
                     let command = if waits {
                         let command = inbox.recv();
-                        spans.close(Activity::IDLE, Instant::now(), &mut core.timing);
+                        shown.worker_woke(&mut spans, &mut core.timing);
                         match command {
                             Ok(command) => Some(command),
                             Err(_) => return,

@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1576
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1584
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -77,7 +77,7 @@
 //! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
 //! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
 //! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
-//! | 1568 | 8 | when the times were looked at, in nanoseconds since the store began to be served. Each thread's span open at the look is counted to it up to then, so between two files the worker's fifteen activities sum to the difference of this exactly, and the reader's three likewise |
+//! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's fifteen activities sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -130,7 +130,7 @@ use skyzfs_local::store::{RequestTiming, Spent, Timing, ACTIVITIES};
 pub const STATUS: &str = "status";
 
 const MAGIC: &[u8; 8] = b"SKYZSTA6";
-const LEN: usize = 1576;
+const LEN: usize = 1584;
 /// The fifth version: fourteen activities, and nothing from the
 /// barriers on.
 const FIFTH_MAGIC: &[u8; 8] = b"SKYZSTA5";
@@ -326,7 +326,8 @@ pub const TIME_KEYS: [&str; TIME_FIELDS] = [
     "time_read_unflushed_count",
     "time_read_unflushed_extra_bytes",
     "time_read_unflushed_mismatched",
-    "time_as_of_ns",
+    "time_worker_as_of_ns",
+    "time_reader_as_of_ns",
 ];
 
 /// What the file holds.
@@ -507,7 +508,7 @@ fn encode(status: &Status) -> [u8; LEN] {
 }
 
 /// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 172;
+const TIME_FIELDS: usize = 173;
 
 /// Where the five fields begin that name an activity: the largest
 /// cause of each kind's longest wait.
@@ -582,7 +583,8 @@ fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
     for value in timing.reader.iter().chain(&timing.read_unflushed) {
         put(*value);
     }
-    put(timing.as_of_ns);
+    put(timing.worker_as_of_ns);
+    put(timing.reader_as_of_ns);
     fields
 }
 
@@ -702,7 +704,8 @@ fn timing_at(bytes: &[u8], fifth: bool) -> Timing {
         {
             *value = take();
         }
-        timing.as_of_ns = take();
+        timing.worker_as_of_ns = take();
+        timing.reader_as_of_ns = take();
     }
     timing
 }

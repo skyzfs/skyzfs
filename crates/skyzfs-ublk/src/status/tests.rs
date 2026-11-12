@@ -79,11 +79,11 @@ fn the_file_has_the_documented_layout() {
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 172 fields from offset 200, here 100 to 271.
-    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..272) {
+    // The times are the 173 fields from offset 200, here 100 to 272.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]).chain(100..273) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 1576);
+    assert_eq!(bytes.len(), 1584);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -126,7 +126,7 @@ fn the_file_has_the_documented_layout() {
     assert_eq!(barriers.1.max_ns, 264);
     assert_eq!(timing.reader, [265, 266, 267]);
     assert_eq!(timing.read_unflushed, [268, 269, 270]);
-    assert_eq!(timing.as_of_ns, 271);
+    assert_eq!((timing.worker_as_of_ns, timing.reader_as_of_ns), (271, 272));
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -323,7 +323,8 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
         ("time_reader_other_ns", "267"),
         ("time_read_unflushed_count", "268"),
         ("time_read_unflushed_mismatched", "270"),
-        ("time_as_of_ns", "271"),
+        ("time_worker_as_of_ns", "271"),
+        ("time_reader_as_of_ns", "272"),
     ] {
         assert_eq!(self::value(&lines, key), Some(value), "{key}");
     }
