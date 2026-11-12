@@ -214,7 +214,9 @@
 #   TB_SKYZFSD_REF=         what TB_SKYZFSD was built from (a commit or
 #                           ref; the workflow sets it, and builds that ref
 #                           when a sequence entry names it): written down
-#                           and printed beside the row, nothing else
+#                           and printed beside the row, with the name and
+#                           hash of the binary that read the row's status
+#                           (always the row's own)
 #   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
 #                           ("--depth,128,--log-high,8,--log-low,4"; the
 #                           marks are in segments of 64 MiB, default 2 and 1)
@@ -1442,6 +1444,11 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKYZFSD_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
             echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
+            # Every status of this row is read by skz_status, with this
+            # row's own binary: a newer `status` prints an older status
+            # file's missing keys as zeros, which skz_time.py would read
+            # as that daemon's (a reader thread that never ran).
+            echo "status_reader $(basename "$SKYZFSD") sha256:$(sha256sum "$SKYZFSD" | cut -c1-12)" >> "$OUT/$TOPO.skzinfo"
             skz_settle
             ;;
         *) echo "build_zfs_direct: $1?" >&2; return 1 ;;
@@ -1948,6 +1955,8 @@ if skz[base + '.after']:
             if key: k['info'][key] = value
     k['serve_args'] = k['info'].get('serve_args', '')
     k['build'] = k['info'].get('build', 'not said')
+    if k['info'].get('status_reader'):
+        k['build'] += f" (status read by {k['info']['status_reader']})"
     said = ao.get('skzpool', [''])[0].split(None, 1)
     k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k
