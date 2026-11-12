@@ -78,3 +78,49 @@ itself is right.**
   count of waiting readers kept outside `cfg(test)` would let `push` skip it.
 - No test of the idle account is new; the existing timing tests cover the
   path (they passed).
+
+## Second look, at cc4b1a0 (af7b09c and cc4b1a0 on top of 00f4440)
+
+**Verdict: the code is right, both the fix and the new wake logic. One thing
+still blocks, and it is small: the new test passes with the fix taken out.**
+
+What I did: read both commits before the answers on the pull request (those
+I did not read). Store lib tests: 243 pass, 3 ignored. Plants, each removed
+after. Six tests of the queue and of several readers looped for two minutes
+with twelve busy loops on four CPUs: 210 runs, no failure. No clippy or fmt.
+
+Per finding:
+
+1. **The fix: right. Its test: kept, blocking.**
+   - `Starting` closes the queue and joins the started readers on both early
+     returns and on a panic; `hand_over` is the last field of the `Served`,
+     so nothing can return between. With my own count of threads named
+     `skyzfs-reader*` after a failed `serve`: none left, for the second
+     reader's start and for the worker's.
+   - `a_thread_that_cannot_be_started_leaves_no_reader_waiting` passes when
+     `Starting`'s drop does nothing (planted: `if self.handed || true`),
+     which is the store as it was before the fix. `serve` returns its error
+     at once and the store reopens while a reader still waits. The test
+     fails only for a join without the close. My count of threads fails
+     with the same plant (`readers left ... left: 1 right: 0`).
+   - I drop it when a test fails with the guard taken out: a count of the
+     readers that have ended, or of the threads, after `serve` returned.
+2. Dropped. The comment says what can happen and why it is left.
+3. Unchanged, not blocking.
+
+The suggestion, now code (cc4b1a0): **no push can skip a wake that a reader
+needed.**
+
+- A reader is counted in `waiting` under the hold of the lock in which it
+  found the queue empty, and counted out under the hold in which it looks
+  again. So `waiting == 0` at a push means no reader is in a wait or on its
+  way into one; each reader looks before it waits.
+- A reader woken and not yet running is still counted, so a second push
+  wakes again; that wake goes to another waiting reader or to nobody, and
+  the first reader finds what is queued when it looks. Nobody waits beside
+  a queued read.
+- The close always wakes all. `look` followed by `next` looks again under
+  the lock.
+- Planted: wake only when more than one waits, and never counting a
+  waiter. `no_wake_is_lost_between_a_readers_look_and_its_wait` fails for
+  the first, it and `a_read_wakes_one_waiting_reader` for the second.
