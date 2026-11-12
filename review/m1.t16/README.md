@@ -114,3 +114,16 @@ to the summary, raises `::error::` and exits 1, before the remount check.
   runners. The shell form has not run on a runner: no job at this head.
 - Left as it is, not blocking: a device number with no sysfs entry names the
   disk `block` in the summary.
+
+## Fourth look, at 25309e5: nothing blocks
+
+One commit on top of 0e81e82: when the device number has no entry under
+`/sys/dev/block`, the step names no disk ("none for 8:1") and reads nothing.
+
+- The step now tests the sysfs path itself, which a stub cannot stand in for,
+  so `stop-rule.sh` was reworked: it points the step's `/sys` paths at a fake
+  tree with symlinks laid out as sysfs has them, and the step's own test,
+  `readlink` and `cat` run unchanged. It gives the same results as before on
+  adb32bc and 0e81e82.
+- At 25309e5, sixteen cases: no sysfs entry gives `none for 8:1` and
+  `not said`, exit 0; `write through` exits 1; the rest are unchanged.
