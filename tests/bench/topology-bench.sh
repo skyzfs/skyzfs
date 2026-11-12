@@ -553,10 +553,11 @@ if skz:
     # Where a request's time goes, by the daemon's own account.
     def rel_read_us(r):
         io = lambda k: sum(v for n, v in r.get('pg', {}).items() if n.startswith('io_relation_') and n.endswith('_' + k))
-        return io('read_us') / io('reads') if io('reads') else None
+        return (io('read_us') / io('reads') if io('reads') else None), io('reads')
     print('\n'.join(skz_time.render([
         {'label': label(r), 'workload': r['workload'], 'tps': r.get('tps'), 'time': r.get('skyzfsd', {}).get('time'),
-         'steps': r.get('skyzfsd', {}).get('steps'), 'relation_read_us': rel_read_us(r)} for r in skz])))
+         'steps': r.get('skyzfsd', {}).get('steps'), 'relation_read_us': rel_read_us(r)[0],
+         'relation_reads': rel_read_us(r)[1], 'duration_s': r.get('duration_s')} for r in skz])))
 PY
 }
 if [ "${1:-}" = summarize ]; then

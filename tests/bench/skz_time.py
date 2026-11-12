@@ -110,6 +110,22 @@ def wait_by(d, kind):
     return rows, sum(v for _, v in rows), d.get(f'time_{kind}_wait_ns')
 
 
+# A wait's causes in groups: the hand-over to the worker; a checkpoint
+# step and the rule's own sync; the log's sync for a flush; requests
+# that write; other reads; the rest.
+GROUPS = (('idle (hand-over to the worker)', ('idle',)),
+          ('a step and the own sync', tuple('step_' + p for p in STEP_PARTS) + ('own_sync',)),
+          ('flush', ('flush',)),
+          ('write, discard, zeroes', ('write', 'discard', 'zeroes')),
+          ('read', ('read',)),
+          ('other', ('other',)))
+
+
+def wait_groups(d, kind):
+    """-> [(group, ns)] in the order of GROUPS; every activity is in exactly one group."""
+    return [(name, sum(d.get(f'time_{kind}_wait_by_{a}_ns') or 0 for a in acts)) for name, acts in GROUPS]
+
+
 def identities(t):
     """-> [(what, left, right, difference)]: the guard on the reading."""
     d, out = t['delta'], []
@@ -125,7 +141,8 @@ def identities(t):
 
 
 def render(rows):
-    """rows: [{'label', 'workload', 'tps', 'time': delta(), 'steps', 'relation_read_us'}] -> markdown lines."""
+    """rows: [{'label', 'workload', 'tps', 'time': delta(), 'steps', 'relation_read_us', 'relation_reads',
+    'duration_s'}] -> markdown lines."""
     out = []
     if not rows:
         return out
@@ -142,22 +159,37 @@ def render(rows):
             usable.append(r)
             if not t.get('ok'):
                 out.append(f"- {r['workload']}, {r['label']}: THE READING IS DOUBTFUL: {t.get('why')}")
+    if usable:
+        out += ['', 'The window of each reading: the two readings are taken after a `sync` and 2 s on each side of '
+                'pgbench, so they are further apart than pgbench ran, and the worker\'s idle time includes the rest:', '',
+                '| workload | daemon row | the readings apart, s | pgbench ran, s |', '|---|---|---|---|']
+        for r in usable:
+            w = r['time'].get('window_ns')
+            out.append(f"| {r['workload']} | {r['label']} | {_f(None if w is None else w / 1e9, '.1f')} | {_f(r.get('duration_s'), '.0f')} |")
     for kind in ('read', 'write', 'flush'):
         heads = None
         for r in usable:
             stages, n = life(r['time']['delta'], kind)
             if heads is None:
                 heads = [s for s, _ in stages]
-                extra = ' relation read by pg_stat_io, µs |' if kind == 'read' else ''
-                out += ['', f"A {kind}'s life, mean µs per {kind}:", '',
+                extra = (' postgres: relation reads | postgres: µs per relation read | that less the sum |'
+                         if kind == 'read' else '')
+                note = ('' if kind != 'read' else
+                        ' The last three columns are postgres\'s own account (pg_stat_io, object relation: reads and '
+                        'read time, with track_io_timing): a relation read is 8 KiB asked of ZFS, which the ARC may '
+                        'answer without the device, so the two counts differ and the remainder is only an indication of '
+                        'the time outside the daemon (kernel, ring, ZFS).')
+                out += ['', f"A {kind}'s life, mean µs per {kind}.{note}", '',
                         f"| workload | daemon row | tps | {kind}s | " + ' | '.join(heads) + f' | sum |{extra}',
-                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (1 if extra else 0))]
+                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (3 if extra else 0))]
             vals = [v for _, v in stages]
             total = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
             line = (f"| {r['workload']} | {r['label']} | {_f(r.get('tps'), '.0f')} | {_f(n, 'd') if n is not None else 'n/a'} | "
                     + ' | '.join(_f(v) for v in vals) + f' | {_f(total)} |')
             if kind == 'read':
-                line += f" {_f(r.get('relation_read_us'))} |"
+                pg = r.get('relation_read_us')
+                line += (f" {_f(r.get('relation_reads'), '.0f')} | {_f(pg)} | "
+                         f"{_f(None if pg is None or total is None else pg - total)} |")
             out.append(line)
         if not usable:
             continue
@@ -170,26 +202,44 @@ def render(rows):
             n = d.get(f'time_{kind}_count')
             said = ', '.join(f'{a} {_f(_per(v, n))} ({_share(v, wait)})' for a, v in causes if v) or 'nothing waited'
             out.append(f"| {r['workload']} | {r['label']} | {_f(_per(wait, n))} | {said} |")
+        out += ['', f"The same wait in groups, µs per {kind} and share:", '',
+                '| workload | daemon row | ' + ' | '.join(g for g, _ in GROUPS) + ' |', '|---|---|' + '---|' * len(GROUPS)]
+        for r in usable:
+            d = r['time']['delta']
+            n, wait = d.get(f'time_{kind}_count'), d.get(f'time_{kind}_wait_ns')
+            out.append(f"| {r['workload']} | {r['label']} | "
+                       + ' | '.join(f'{_f(_per(v, n))} ({_share(v, wait)})' for _, v in wait_groups(d, kind)) + ' |')
     if usable:
-        out += ['', "The worker's time by activity, as shares of all it counted in the window:", '',
-                '| workload | daemon row | ' + ' | '.join(ACTIVITIES) + ' |', '|---|---|' + '---|' * len(ACTIVITIES)]
+        out += ['', 'Flushes beside reads:', '', '| workload | daemon row | flushes | flushes per read | mean flush call, µs |',
+                '|---|---|---|---|---|']
+        for r in usable:
+            d = r['time']['delta']
+            nf_, nr = d.get('time_flush_count'), d.get('time_read_count')
+            out.append(f"| {r['workload']} | {r['label']} | {_f(nf_, 'd') if nf_ is not None else 'n/a'} | "
+                       f"{_f(None if not nr or nf_ is None else nf_ / nr, '.3f')} | {_f(_per(d.get('time_flush_call_ns'), nf_))} |")
+        out += ['', "The worker's time by activity, as shares of all it counted in the window; `busy` is all but idle:", '',
+                '| workload | daemon row | busy | ' + ' | '.join(ACTIVITIES) + ' |', '|---|---|---|' + '---|' * len(ACTIVITIES)]
         for r in usable:
             d = r['time']['delta']
             w = [d.get(f'time_worker_{a}_ns') for a in ACTIVITIES]
             whole = sum(v for v in w if v is not None)
-            out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(_share(v, whole) for v in w) + ' |')
+            busy = None if w[0] is None else whole - w[0]
+            out.append(f"| {r['workload']} | {r['label']} | {_share(busy, whole)} | " + ' | '.join(_share(v, whole) for v in w) + ' |')
         out += ['', 'Checkpoint steps in the window: ms per step of each part, the sync the step does itself, and the '
-                'gate (requests held back while the log is above its high mark):', '',
-                '| workload | daemon row | steps | ' + ' | '.join(STEP_PARTS) + ' | own sync | all parts | gate count | gate, ms in all |',
-                '|---|---|---|' + '---|' * (len(STEP_PARTS) + 4)]
+                'gate (turns of the worker in which a request waited and none was taken because the log was at its high '
+                'mark; its time is a share of the parts, not more time), beside all the reads\' wait:', '',
+                '| workload | daemon row | steps | ' + ' | '.join(STEP_PARTS) + ' | own sync | all parts | the walk, of the six parts | gate count | gate, ms in all | all reads\' wait, ms |',
+                '|---|---|---|' + '---|' * (len(STEP_PARTS) + 6)]
         for r in usable:
             d, steps = r['time']['delta'], r.get('steps')
             parts = [d.get(f'time_step_{p}_ns') for p in STEP_PARTS] + [d.get('time_step_own_sync_ns')]
             whole = sum(v for v in parts if v is not None)
             out.append(f"| {r['workload']} | {r['label']} | {_f(steps, 'd') if steps is not None else 'n/a'} | "
                        + ' | '.join(_f(_per(v, steps, 1e6), '.2f') for v in parts)
-                       + f" | {_f(_per(whole, steps, 1e6), '.2f')} | {_f(d.get('time_gate_count'), 'd') if d.get('time_gate_count') is not None else 'n/a'} | "
-                       f"{_f(None if d.get('time_gate_ns') is None else d['time_gate_ns'] / 1e6, '.1f')} |")
+                       + f" | {_f(_per(whole, steps, 1e6), '.2f')} | {_share(parts[0], sum(v for v in parts[:6] if v is not None))} | "
+                       f"{_f(d.get('time_gate_count'), 'd') if d.get('time_gate_count') is not None else 'n/a'} | "
+                       f"{_f(None if d.get('time_gate_ns') is None else d['time_gate_ns'] / 1e6, '.1f')} | "
+                       f"{_f(None if d.get('time_read_wait_ns') is None else d['time_read_wait_ns'] / 1e6, '.1f')} |")
         out += ['', "The pump's store of what was acknowledged:", '',
                 '| workload | daemon row | stores | ms each | completions behind one store |', '|---|---|---|---|---|']
         for r in usable:

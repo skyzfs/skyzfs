@@ -132,6 +132,13 @@ class Tables(unittest.TestCase):
         self.assertEqual((total, wait), (100, 100))
         self.assertEqual(len(rows), len(st.ACTIVITIES))
 
+    def test_the_groups_hold_every_activity_once(self):
+        acts = [a for _, group in st.GROUPS for a in group]
+        self.assertEqual(sorted(acts), sorted(st.ACTIVITIES))
+        d = self.d(time_read_wait_by_idle_ns=10, time_read_wait_by_step_apply_ns=60, time_read_wait_by_own_sync_ns=5,
+                   time_read_wait_by_flush_ns=30, time_read_wait_by_discard_ns=2, time_read_wait_by_read_ns=1)
+        self.assertEqual([v for _, v in st.wait_groups(d, 'read')], [10, 65, 30, 2, 1, 0])
+
     def test_the_identities(self):
         b, a = reading(1), reading(3)
         worker = sum(2 * (status_keys().index(f'time_worker_{x}_ns') + 1) for x in st.ACTIVITIES)
@@ -150,7 +157,7 @@ class Tables(unittest.TestCase):
     def test_render(self):
         b, a = reading(1), reading(3)
         good = {'label': 'zfs-skyzfsd', 'workload': 'tpcb', 'tps': 4321.0, 'time': st.delta(b, a, 0, 10 ** 9), 'steps': 4,
-                'relation_read_us': 345.6}
+                'relation_read_us': 345.6, 'relation_reads': 777, 'duration_s': 120}
         none = {'label': 'old daemon', 'workload': 'tpcb', 'tps': 1.0, 'time': st.delta({}, {}), 'steps': None,
                 'relation_read_us': None}
         bare = {'label': 'no reading', 'workload': 'tpcb', 'tps': 1.0, 'time': None, 'steps': None, 'relation_read_us': None}
@@ -163,6 +170,9 @@ class Tables(unittest.TestCase):
                      'Checkpoint steps', "The pump's store", 'The identities', 'The longest of each'):
             self.assertIn(head, text)
         self.assertIn('345.6', text)
+        for head in ('The window of each reading', 'The same wait in groups', 'Flushes beside reads', '`busy` is all but idle',
+                     'the walk, of the six parts', "all reads' wait, ms"):
+            self.assertIn(head, text)
         # every table's rows have as many cells as its header
         lines = text.split('\n')
         for i, line in enumerate(lines):
@@ -178,7 +188,9 @@ class Tables(unittest.TestCase):
         # the worker's shares add up to 100
         w = lines[lines.index(next(x for x in lines if x.startswith("The worker's time"))) + 4]
         shares = [float(c.strip().rstrip('%')) for c in w.split('|')[3:-1]]
-        self.assertAlmostEqual(sum(shares), 100.0, delta=0.8)
+        # busy first, then the fourteen: they add up to 100, and busy is all but idle
+        self.assertAlmostEqual(sum(shares[1:]), 100.0, delta=0.8)
+        self.assertAlmostEqual(shares[0] + shares[1], 100.0, delta=0.11)
         self.assertEqual(st.render([]), [])
         # a window with no request of any kind renders, with n/a
         zero = dict(good, label='idle', time=st.delta(b, b, 0, 5))
