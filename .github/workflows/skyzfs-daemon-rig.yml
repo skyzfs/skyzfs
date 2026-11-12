@@ -196,7 +196,9 @@ jobs:
           rc=0
           python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d e}" > summary.md || rc=$?
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
-          cp summary.md rig-out/ 2>/dev/null || true
+          # rig-out is root's (the rig runs under sudo): the judge's table
+          # goes into the artifact with sudo, or it is silently left out.
+          sudo cp summary.md rig-out/ || echo "::warning::the judge's table could not be put into the artifact"
           case $rc in
             0) ;;
             1) echo "::error title=daemon rig::results differ from the table EXPECTED"; exit 1 ;;
