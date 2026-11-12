@@ -320,11 +320,15 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # know. Default: the one beside this script.
 SKZ_TIME_DIR=${TB_SKZ_TIME_DIR:-$HERE}
 summarize() { # dir -> summary.md on stdout (all *.json under dir, any depth)
-    python3 - "$1" "$SKZ_TIME_DIR" <<'PY'
+    python3 - "$1" "$SKZ_TIME_DIR" "$HERE" <<'PY'
 import glob, json, os, sys
 out = sys.argv[1]
 sys.path.insert(0, sys.argv[2])
 import skz_time
+# The bracketed ratio is always this branch's (tested by
+# tests/bench/test_bracket.py), whatever TB_SKZ_TIME_DIR names.
+sys.path.insert(0, sys.argv[3])
+import bracket
 runs = []
 for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True)):
     r = json.load(open(p))
@@ -354,14 +358,14 @@ if disk:
     print('The work disk, measured at the start of the job (tests/bench/disk-sync.py): 64 MiB written through the page cache '
           'and the fdatasync after it, then 64 MiB with O_DIRECT and its fdatasync. The daemon\'s files are on this disk, '
           'and its syncs wait for what the page cache holds of them; an observation, not judged:\n')
-    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | the rows of this machine |')
-    print('|---|---|---|---|---|---|---|---|')
+    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes | the rows of this machine |')
+    print('|---|---|---|---|---|---|---|---|---|')
     for d in disk:
         m = d.get('machine', '')
         m = m[:36] + ' ' + m[37:] if len(m) > 37 else m
         here = sorted({r.get('label', r['topology']) for r in runs if r.get('machine') == m})
         print(f"| {m} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
-              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {', '.join(here) or 'none'} |")
+              f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {d.get('dev', '-')}; {d.get('stable_writes', 'not said')} | {', '.join(here) or 'none'} |")
     print()
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
       '`flash write` = pool + cache (+ ZFS log) device writes; '
@@ -449,9 +453,106 @@ if drows:
               f"{nf(ft / 1000 if ft else None, '.3f')} | {nf(rr / txn if txn else None)} | {nf(rus / rr / 1000 if rr else None, '.3f')} | "
               f"{cp.get('user', 0):.0f}/{cp.get('system', 0):.0f}/{cp.get('iowait', 0):.0f}/{cp.get('idle', 0):.0f} | "
               f"{nf(g.get('ctxt', 0) / txn if txn else None, '.1f')} | {top} |")
+    # What a commit costs, beside what the disks under the commit did:
+    # the slog (the model's and the daemon's log device alike) and the
+    # one work disk under every image. A sum of request times can
+    # exceed the window when requests overlap.
+    print('\nWhat a commit costs. `WAL fsync` is postgres\'s own timer (pg_stat_io for object wal where the '
+          'server has it, else pg_stat_wal); latency is over every transaction of pgbench\'s log; the devices\' '
+          'counts and times are /proc/diskstats over the window (`flush ms` is the time the device spent on '
+          'flushes, per flush); ZIL commits from the zil kstat:\n')
+    print('| workload | topology | tps | latency mean / stddev ms | WAL fsyncs per commit | µs per WAL fsync | '
+          'slog writes / flushes per txn | slog flush ms | work disk writes / flushes per txn | work disk flush ms | '
+          'work disk KiB written per txn | ZIL commits per txn |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|')
+    for r, d in drows:
+        txn = r['pg'].get('xact_commit', 0) or 0
+        if not txn:
+            continue
+        wf = pgsum(r, 'wal', 'fsyncs') or r['pg'].get('walstat_sync', 0)
+        wus = pgsum(r, 'wal', 'fsync_us') or r['pg'].get('walstat_sync_us', 0)
+        lat = r.get('latency', {})
+        def io(name):
+            v = r['devices'].get(name)
+            if not v:
+                return 'n/a', 'n/a', 'n/a'
+            fl = v.get('flushes', 0)
+            fms = 'n/a' if 'flush_ms' not in v else nf(v['flush_ms'] / fl if fl else None, '.2f')
+            return f"{v['write_ios'] / txn:.2f} / {fl / txn:.2f}", fms, f"{v['write_mb'] * 1024 / txn:.1f}"
+        sw, sf, _ = io('slog'); ww, wfm, wkb = io('workdisk')
+        zil = r.get('zfs', {}).get('delta', {}).get('zil.zil_commit_count')
+        print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(lat.get('mean_ms'), '.3f')} / {nf(lat.get('stddev_ms'), '.3f')} | "
+              f"{nf(wf / txn if wf else None, '.3f')} | {nf(wus / wf if wf else None, '.0f')} | {sw} | {sf} | {ww} | {wfm} | {wkb} | "
+              f"{nf(zil / txn if zil is not None else None)} |")
+    # What a transaction writes besides its commit, and whether ZFS made
+    # a writer wait (the write throttle) in the window.
+    print('\nWhat a transaction writes besides its commit: postgres\'s WAL write time per commit, and its relation '
+          'writes per transaction by who wrote them (µs each), from pg_stat_io (checkpointer and background writer '
+          'together in runs before they were told apart); `tx delayed` sums dmu_tx_delay and the dmu_tx_dirty_* '
+          'counters per 1000 transactions; the dirty limit is zfs_dirty_data_max and the delay starts at '
+          'zfs_delay_min_dirty_percent of it:\n')
+    print('| workload | topology | tps | WAL write µs per commit | client backend writes | checkpointer writes | '
+          'background writer writes | other writes | tx delayed per 1000 txn | dirty MB per txg | dirty limit MB; delay from % |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|')
+    for r, d in drows:
+        g = r['pg']; txn = g.get('xact_commit', 0) or 0
+        if not txn:
+            continue
+        ww = pgsum(r, 'wal', 'write_us') or g.get('walstat_write_us', 0)
+        def rel(grp):
+            n = g.get(f'io_relation_{grp}_writes')
+            if n is None:
+                return 'n/a'
+            return f"{n / txn:.3f} ({g.get(f'io_relation_{grp}_write_us', 0) / n:.0f})" if n else '0'
+        old = 'io_relation_bg_writes' in g
+        zd = r.get('zfs', {}).get('delta', {}); za = r.get('zfs', {}).get('after', {})
+        dl = [k for k in zd if k in ('dmutx.dmu_tx_delay', 'dmutx.dmu_tx_dirty_delay', 'dmutx.dmu_tx_dirty_throttle',
+                                     'dmutx.dmu_tx_dirty_over_max')]
+        txd = nf(sum(zd[k] for k in dl) * 1000 / txn) if dl else 'n/a'
+        lim_ = ('n/a' if 'param.zfs_dirty_data_max' not in za else
+                f"{za['param.zfs_dirty_data_max'] / (1 << 20):.0f}; {za.get('param.zfs_delay_min_dirty_percent', 'n/a')}")
+        print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(ww / txn if ww else None, '.1f')} | {rel('backend')} | "
+              f"{rel('bg') + ' (with the background writer)' if old else rel('ckpt')} | {'-' if old else rel('bgw')} | {rel('other')} | "
+              f"{txd} | {nf(r.get('zfs', {}).get('txg', {}).get('dirty_mb_mean'), '.0f')} | {lim_} |")
+    # Waiting for a CPU: pressure stall shares of the window, for the
+    # machine and for postgres's and the daemon's cgroups (a backend is
+    # made and ended inside the window, so only its cgroup sees it), the
+    # cgroups' CPU, the context switches, and the daemon's threads by
+    # name (they live through the window): run delay, user and system.
+    cr = [(r, d) for r, d in drows if r['diag'].get('psi_pct')]
+    if cr:
+        print('\nWaiting for a CPU. Pressure is /proc/pressure, and cpu.pressure of a cgroup (`some`: at least one '
+              'task of it was runnable and not running; for io, waiting for I/O), as a share of the time from the '
+              'look before the window to the look right after pgbench returned (rows recorded before that look was '
+              'taken: of pgbench\'s duration, over looks 2 s and a sync further apart, which overstates it); the '
+              'cgroups\' CPU is over the same time. Postgres is its cgroup, its backends included (n/a where not '
+              'every postgres process could be moved into it). The daemon\'s threads are those named skyzfs*, with '
+              'their run delay (schedstat: runnable and not running) and their user and system time, over the looks '
+              'before and after the window, which also hold the sync and the 2 s after it:\n')
+        print('| workload | topology | tps | machine cpu some % | machine io some / full % | postgres cpu some % | '
+              'postgres io some % | postgres CPU ms per txn, user / system | daemon cpu some % | all switches per txn | '
+              'daemon run delay ms by thread | daemon user / system s by thread |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|')
+        for r, d in cr:
+            g = r['diag']; txn = r['pg'].get('xact_commit', 0) or 0
+            if not txn:
+                continue
+            ps = g.get('psi_pct', {}); cs = g.get('cgroup_cpu_s', {})
+            pp = lambda k: nf(ps.get(k), '.1f')
+            pcpu = ('n/a' if 'pg.user_usec' not in cs else
+                    f"{cs['pg.user_usec'] * 1000 / txn:.3f} / {cs.get('pg.system_usec', 0) * 1000 / txn:.3f}")
+            rd = g.get('run_delay_ms_by_thread', {}); us, sy = g.get('user_s_by_thread', {}), g.get('system_s_by_thread', {})
+            skz_ = sorted({k for k in list(rd) + list(us) + list(sy) if k.startswith('skyzfs')})
+            nr = lambda d, k, f: format(d[k], f) if k in d else 'not recorded'
+            drd = ', '.join(f"{k} {nr(rd, k, '.0f')}" for k in skz_) or '-'
+            dus = ', '.join(f"{k} {nr(us, k, '.1f')} / {nr(sy, k, '.1f')}" for k in skz_) or '-'
+            print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {pp('cpu.some')} | {pp('io.some')} / {pp('io.full')} | "
+                  f"{pp('pg.cpu.some')} | {pp('pg.io.some')} | {pcpu} | {pp('skz.cpu.some') if 'skz.cpu.some' in ps else '-'} | "
+                  f"{nf(g.get('ctxt', 0) / txn if 'ctxt' in g else None, '.1f')} | {drd} | {dus} |")
     md = [(r, d) for r, d in drows if r['diag'].get('mem_mb')]
     if md:
-        print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
+        print('\nMemory at the end of the window, MiB. The cgroup is postgres\'s (its memory.max is TB_MEM_LIMIT, or '
+              'none when it is unset); its `file` is the '
               'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
               'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0. '
               'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
@@ -517,12 +618,15 @@ if any(mode(r) != 'none' for r in runs):
               f"{flash / (txn / 1000) if txn else float('nan'):.1f} |")
 # The daemon against the benchmark model (design §9, M1: tpcb within
 # 10% of the benchmark model on the same machine). The model is the
-# zfs-slog row. A ratio, and with it a verdict, is only formed between
-# two rows of one machine: each row carries the boot id and the host
-# name of the machine it ran on, and rows are compared only where it is the same. The
-# workflow's summary job puts the rows of every matrix runner in one
-# directory; those end with NO VERDICT, and so does a row that does not
-# say where it ran.
+# zfs-slog row. A ratio is only formed between rows of one machine:
+# each row carries the boot id and the host name of the machine it ran
+# on. A daemon row is judged by its bracketed ratio (bracket.py): its
+# tps over the mean of the model rows just before and just after it in
+# its sequence, because a machine can change over a job by as much as
+# is judged. A row that no two model rows enclose ends with NO VERDICT;
+# so does a row outside a sequence (the matrix's runners) and a row
+# that does not say where it ran. The ratio to each model row of the
+# machine is printed below it, not judged.
 skz = [r for r in runs if r['topology'] == 'zfs-skyzfsd' and mode(r) == 'none']
 if skz:
     def others(topo, r):
@@ -530,62 +634,54 @@ if skz:
         rows = [o for o in runs if o['topology'] == topo and o['workload'] == r['workload'] and mode(o) == 'none' and o['tps']]
         here = [o for o in rows if r.get('machine') and o.get('machine') == r['machine']]
         return here, len(rows) - len(here)
-    print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
-          '(the same boot id and host name); rows of other machines are counted and not compared. '
-          'The criterion is a ratio of at least 0.90 to a zfs-slog row with no origin delay (TB_ORIGIN_DELAY_MS=0); '
-          'the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
-    print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio | verdict |')
-    print('|---|---|---|---|---|---|---|---|')
-    for r in skz:
+    def lim(r):
         k_ = r.get('skyzfsd', {})
-        lim_ = (f"{k_.get('build', 'not said')}; {k_.get('serve_args') or 'defaults'}; "
+        return (f"{k_.get('build', 'not said')}; {k_.get('serve_args') or 'defaults'}; "
                 f"{k_.get('info', {}).get('mem_max', 'n/a')}")
-        if not r['tps']:
-            print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
+    print('\nThe daemon against the benchmark model (`zfs-slog`). A daemon row is judged by its bracketed ratio: '
+          'its tps over the mean tps of the model rows just before and just after it in its sequence, on its machine '
+          '(the same boot id and host name). The criterion is a bracketed ratio of at least 0.90, with both model rows '
+          'run with no origin delay (TB_ORIGIN_DELAY_MS=0). A row that no two model rows enclose has no verdict, '
+          'and neither has a row whose two model rows differ by more than a tenth of their mean (bracket too wide): '
+          'the machine moved by more than is judged while it ran.\n')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracket width | bracketed ratio | verdict |')
+    print('|---|---|---|---|---|---|---|---|---|')
+    mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
+    for r in sorted(skz, key=lambda r: (r['workload'], r.get('machine') or '', r.get('_seq') or 0)):
+        b = bracket.bracketed(r, runs)
+        tps_ = 'none' if not r['tps'] else f"{r['tps']:.0f}"
+        rat = '-' if b['ratio'] is None else f"{b['ratio']:.3f}"
+        wid = '-' if b['width'] is None else f"{b['width']:.1%}"
+        where = '' if r.get('_seq') is None else f" (row {r['_seq']})"
+        print(f"| {r['workload']} | {label(r)}{where} | {lim(r)} | {tps_} | {mrow(b['before'])} | {mrow(b['after'])} | {wid} | {rat} | {b['verdict']} |")
+    print('\nThe daemon\'s rows against each row of the model and of the other stacks on their machine (not judged; '
+          'rows of other machines are counted and not compared):\n')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio |')
+    print('|---|---|---|---|---|---|---|')
+    for r in skz:
+        if not r['tps'] or not r.get('machine'):
             continue
         model, elsewhere = others('zfs-slog', r)
-        if not r.get('machine'):
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | - | - | NO VERDICT: this row does not say what machine it ran on |")
-        elif not model:
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none on this machine | - | "
-                  f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
-        # In a sequence the first model row of the machine is the one
-        # judged against; a later one (run to see whether the machine
-        # changed over the job) is reported beside it.
-        first = min((o['_seq'] for o in model if o.get('_seq') is not None), default=None)
-        for o in model:
-            q = r['tps'] / o['tps']
-            if first is not None and o.get('_seq') is not None and o['_seq'] != first:
-                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} (row {o['_seq']} of the sequence) | {o['tps']:.0f} | {q:.3f} | "
-                      f"not judged: the first model row of the sequence (row {first}) is the one judged against |")
-                continue
-            # The daemon's row has no origin under it. A model row with
-            # an origin delay was slowed by it at every origin read, and
-            # a ratio to it would flatter the daemon: no verdict.
-            delay = o.get('origin_delay_ms')
-            if delay == 0:
-                verdict = 'at least 0.90' if q >= 0.90 else 'BELOW 0.90'
-            elif delay is None:
-                verdict = 'NO VERDICT: the model row does not say what origin delay it had'
-            else:
-                verdict = f'NO VERDICT: the model row had an origin delay of {delay} ms, the daemon row has no origin'
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | {verdict} |")
-        for topo in ('zfs-loop', 'zfs-ublk'):
-            for o in others(topo, r)[0]:
-                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
+        if not model:
+            print(f"| {r['workload']} | {label(r)} | {lim(r)} | {r['tps']:.0f} | zfs-slog | none on this machine ({elsewhere} from other machines) | - |")
+        for topo in ('zfs-slog', 'zfs-loop', 'zfs-ublk'):
+            for o in sorted(others(topo, r)[0], key=lambda o: (o.get('_seq') is None, o.get('_seq') or 0)):
+                seq_ = '' if o.get('_seq') is None else f" (row {o['_seq']})"
+                print(f"| {r['workload']} | {label(r)} | {lim(r)} | {r['tps']:.0f} | {label(o)}{seq_} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
-    print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import | nr_dirty MiB mean / max | nr_writeback MiB mean / max |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in skz:
         k = r.get('skyzfsd', {})
         w = k.get('window', {})
         mib = lambda v: 'n/a' if v is None else f'{v / (1 << 20):.0f}'
         nn = lambda v: 'n/a' if v is None else str(v)
+        vm = lambda v: 'n/a' if not v else f"{v['mean'] * 4 / 1024:.1f} / {v['max'] * 4 / 1024:.1f}"
         print(f"| {r['workload']} | {label(r)} | {k.get('build', 'not said')}; {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
               f"{nn(k.get('steps'))} | {nn(k.get('syncs'))} | {nn(k.get('writes'))} | {mib(w.get('log_live_min'))} | {mib(w.get('log_live_max'))} | "
               f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
               f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
-              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} |")
+              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} | {vm(w.get('nr_dirty'))} | {vm(w.get('nr_writeback'))} |")
     # Where a request's time goes, by the daemon's own account.
     def rel_read_us(r):
         io = lambda k: sum(v for n, v in r.get('pg', {}).items() if n.startswith('io_relation_') and n.endswith('_' + k))
@@ -763,7 +859,7 @@ MNT="$WORK/mnt"; MNT_WAL="$WORK/mnt-wal"; SOCK="$WORK/sock"
 mkdir -p "$MNT" "$MNT_WAL" "$SOCK"
 chown "$PG_USER" "$SOCK" "$WORK"
 PGDATA="$MNT/data"
-CGROUP=""
+CGROUP=""; PG_CG_OK=""
 # postgres's own I/O timers, as "name value" rows. One file for every
 # server version: a statement that names a column this version lacks
 # fails by itself and the rest still run. pg_stat_io carries WAL rows
@@ -772,7 +868,8 @@ cat > "$WORK/io-stats.sql" <<'SQL'
 select 'io_' || object || '_' || grp || '_' || k, v::bigint
 from (select replace(object, ' ', '') as object,
              case when backend_type = 'client backend' then 'backend'
-                  when backend_type in ('checkpointer', 'background writer') then 'bg'
+                  when backend_type = 'checkpointer' then 'ckpt'
+                  when backend_type = 'background writer' then 'bgw'
                   else 'other' end as grp,
              sum(reads) as reads, sum(read_time) * 1000 as read_us,
              sum(writes) as writes, sum(write_time) * 1000 as write_us,
@@ -794,11 +891,17 @@ from pg_stat_checkpointer,
                      ('buffers', buffers_written::float8)) t(k, v);
 SQL
 chmod 644 "$WORK/io-stats.sql"
-if [ -n "$MEM_LIMIT" ]; then
-    [ -f /sys/fs/cgroup/cgroup.controllers ] || { echo "TB_MEM_LIMIT needs cgroup v2 at /sys/fs/cgroup" >&2; exit 64; }
+# Postgres runs in a cgroup of its own wherever there is cgroup v2:
+# with TB_MEM_LIMIT as its memory.max, else with none. Its backends are
+# made and ended inside a row's window, so only the cgroup can say how
+# long they waited for a CPU (cpu.pressure) and what they used
+# (cpu.stat).
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
     CGROUP=/sys/fs/cgroup/topology-bench
     mkdir -p "$CGROUP"
-    echo "$MEM_LIMIT" > "$CGROUP/memory.max"
+    echo "${MEM_LIMIT:-max}" > "$CGROUP/memory.max"
+elif [ -n "$MEM_LIMIT" ]; then
+    echo "TB_MEM_LIMIT needs cgroup v2 at /sys/fs/cgroup" >&2; exit 64
 fi
 
 for m in dm_thin_pool dm_cache dm_cache_smq; do modprobe "$m" 2>/dev/null || true; done
@@ -1000,12 +1103,18 @@ start_pg() {
     # `su` opens a PAM session, and pam_systemd parks it in a fresh
     # scope, so a cgroup joined before the su is silently escaped.
     # Backends forked later inherit the postmaster's cgroup.
+    PG_CG_OK=""
     if [ -n "$CGROUP" ]; then
-        local p
+        local p missed=0
         for p in $(pgrep -u "$PG_USER" postgres); do
             echo "$p" > "$CGROUP/cgroup.procs" 2>/dev/null || true
+            grep -qx "$p" "$CGROUP/cgroup.procs" || missed=$((missed + 1))
         done
-        log "memory cap $MEM_LIMIT on $(wc -l < "$CGROUP/cgroup.procs") postgres processes"
+        # Only a cgroup that holds every postgres process speaks for
+        # postgres: otherwise its pressure and CPU are left out (n/a).
+        if [ "$missed" = 0 ]; then PG_CG_OK=1
+        else log "postgres's cgroup: $missed postgres processes could not be moved in; its pressure and CPU are not recorded"; fi
+        log "postgres's cgroup: memory.max ${MEM_LIMIT:-max} on $(wc -l < "$CGROUP/cgroup.procs") postgres processes"
     fi
 }
 prepare_origin() {
@@ -1388,7 +1497,11 @@ skz_sample() { # file: one line a second, "epoch key=value ...", until killed
             pkill -9 -x pgbench 2>/dev/null || true
             return 0
         fi
-        printf '%s %s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" >> "$1"
+        # With the kernel's pages dirty and under writeback (in pages,
+        # /proc/vmstat): what the daemon's hints and syncs leave to the
+        # page cache, machine-wide. An observation.
+        printf '%s %s%s\n' "$(date +%s)" "$(skz_status | awk '$1 ~ /^(log_live|checkpoint_steps|checkpoint_syncs|checkpoint_step|writes|unstored|held)$/ { v = $2; if ($3 != "") v = v "_" $3; printf "%s=%s ", $1, v }')" \
+            "$(awk '$1 == "nr_dirty" || $1 == "nr_writeback" { printf "%s=%s ", $1, $2 }' /proc/vmstat 2>/dev/null)" >> "$1"
         sleep 1
     done
 }
@@ -1463,6 +1576,12 @@ zfs_stats() { # counters as "zfsc key n" (the window's delta), gauges as "zfsg k
         /proc/spl/kstat/zfs/arcstats
     # Transactions that were made to wait, and why.
     awk 'NR > 2 { print "zfsc dmutx." $1, $3 }' /proc/spl/kstat/zfs/dmu_tx 2>/dev/null
+    # The write throttle in force: the dirty limit, where the delay
+    # starts and where a txg is pushed out early.
+    local prm
+    for prm in zfs_dirty_data_max zfs_delay_min_dirty_percent zfs_dirty_data_sync_percent zfs_delay_scale zfs_txg_timeout; do
+        [ ! -r "/sys/module/zfs/parameters/$prm" ] || echo "zfsg param.$prm $(cat "/sys/module/zfs/parameters/$prm")"
+    done
     # Per-dataset counters: ZIL bytes by dataset tell WAL commits from
     # the checkpointer's fsync of data files.
     local f
@@ -1695,8 +1814,45 @@ snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file 
 }
 
 # --------------------------------------------------------- measuring
-diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
-    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
+diskstats_line() { # kernel device name -> "reads rsect writes wsect flush write_ms flush_ms"
+    # Fields 4 to 20 of /proc/diskstats; the flushes and their time are
+    # there since kernel 5.5, 0 where a line is shorter.
+    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; fm = (NF >= 20) ? $20 : 0; print $4, $6, $8, $10, f, $11, fm }' /proc/diskstats
+}
+work_disk() { # -> the kernel name of the disk under $WORK, or nothing
+    # By its device number, as disk-sync.py finds it: df names the
+    # runners' root filesystem /dev/root, which /proc/diskstats does not
+    # know. For a partition, the whole disk: the kernel counts flushes
+    # on the disk and leaves a partition's at 0, so the counts are the
+    # whole disk's, whatever else is on it.
+    local mm d
+    mm=$(findmnt -n -o MAJ:MIN -T "$WORK" 2>/dev/null | tr -d ' ')
+    [ -n "$mm" ] && [ -e "/sys/dev/block/$mm" ] || return 0
+    d=$(readlink -f "/sys/dev/block/$mm")
+    [ ! -e "$d/partition" ] || d=$(dirname "$d")
+    basename "$d"
+}
+pressure_look() { # the pressure stall totals and the cgroups' CPU, and when they were read
+    # Pressure stall information: the time some (and, for io and
+    # memory, all) runnable tasks waited for the resource, in us: the
+    # machine's, postgres's cgroup's (pg.) and the daemon's (skz.).
+    # Postgres's only when it is known to be in its cgroup (PG_CG_OK).
+    # A file that cannot be read (PSI off: it is there and its read
+    # fails) leaves its keys out.
+    local res cg pre f
+    echo "clock now $(date +%s%N)"
+    for cg in "/proc/pressure:" "$([ -z "${PG_CG_OK:-}" ] || echo "${CGROUP:-}"):pg." "${SKZ_CGROUP:-}:skz."; do
+        pre=${cg##*:}; cg=${cg%:*}
+        [ -n "$cg" ] || continue
+        for res in cpu io memory; do
+            if [ "$cg" = /proc/pressure ]; then f="$cg/$res"; else f="$cg/$res.pressure"; fi
+            [ -r "$f" ] || continue
+            awk -v r="$pre$res" '{ for (i = 2; i <= NF; i++) if ($i ~ /^total=/) { sub("total=", "", $i); print "psi", r "." $1, $i } }' "$f" 2>/dev/null || true
+        done
+        # The cgroup's CPU: usage, user and system, in us.
+        [ "$cg" = /proc/pressure ] || [ ! -r "$cg/cpu.stat" ] \
+            || awk -v p="$pre" '$1 ~ /^(usage_usec|user_usec|system_usec)$/ { print "cgs", p $1, $2 }' "$cg/cpu.stat" 2>/dev/null || true
+    done
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
     local skzmax
@@ -1708,6 +1864,10 @@ diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O 
     python3 - <<'PY' || true
 import collections, glob, re
 c = collections.Counter()
+# By thread name as well: user and system ticks, the time runnable but
+# not running (schedstat's second field, ns), and the voluntary and
+# involuntary context switches of the threads alive at the look.
+ext = {k: collections.Counter() for k in ('thu', 'ths', 'rdl', 'csv', 'csi')}
 def parse(path):
     s = open(path).read()
     return s[s.index('(') + 1:s.rindex(')')], s[s.rindex(')') + 2:].split()
@@ -1717,14 +1877,30 @@ for p in glob.glob('/proc/[0-9]*'):
     try:
         for t in glob.glob(p + '/task/[0-9]*/stat'):
             comm, f = parse(t)
-            c[norm(comm)] += int(f[11]) + int(f[12])
+            n = norm(comm)
+            c[n] += int(f[11]) + int(f[12])
+            ext['thu'][n] += int(f[11]); ext['ths'][n] += int(f[12])
+            d = t[:-len('stat')]
+            try:
+                ext['rdl'][n] += int(open(d + 'schedstat').read().split()[1])
+                for line in open(d + 'status'):
+                    if line.startswith('voluntary_ctxt_switches:'): ext['csv'][n] += int(line.split()[1])
+                    elif line.startswith('nonvoluntary_ctxt_switches:'): ext['csi'][n] += int(line.split()[1])
+            except (OSError, ValueError, IndexError):
+                pass
         comm, f = parse(p + '/stat')
         c[norm(comm) + '(reaped)'] += int(f[13]) + int(f[14])
     except (OSError, ValueError, IndexError):
         pass
 for k, v in c.most_common():
-    if v: print('thr', k, v)
+    # The daemon's threads and postgres at 0 too, so that 0 is told
+    # from "not recorded".
+    if v or k.startswith('skyzfs') or k == 'postgres': print('thr', k, v)
+for kind, cc in ext.items():
+    for k, v in cc.items():
+        if v or k.startswith('skyzfs') or k == 'postgres': print(kind, k, v)
 PY
+    pressure_look
     as_pg "'$PG_BIN/psql' -h '$SOCK' -d bench -Atq -F ' ' -f '$WORK/io-stats.sql'" 2>/dev/null | sed 's/^/pg /' || true
     # Who holds the memory: the host's page cache (a buffered loop
     # would put the images there, outside the cap), postgres's cgroup
@@ -1771,6 +1947,11 @@ snapshot() { # file
         [ -n "$CACHE_LOOP" ] && echo "dev cache $(diskstats_line "$(basename "$CACHE_LOOP")")"
         [ -n "$SLOG_LOOP" ] && echo "dev slog $(diskstats_line "$(basename "$SLOG_LOOP")")"
         echo "dev fs $(diskstats_line "$(basename "$(readlink -f "$FS_DEV")")")"
+        # The disk under the benchmark's work directory, which holds the
+        # pool's images, the model's log device and the daemon's home
+        # image and log: what all of it costs the one disk, per row.
+        wd=$(work_disk); [ -z "$wd" ] || wd=$(diskstats_line "$wd")
+        [ -z "$wd" ] || echo "dev workdisk $wd"
         echo "pg wal_bytes $(psqlq "select wal_bytes from pg_stat_wal" || echo 0)"
         echo "pg xact_commit $(psqlq "select xact_commit from pg_stat_database where datname='bench'" || echo 0)"
         echo "pg blks_read $(psqlq "select blks_read from pg_stat_database where datname='bench'" || echo 0)"
@@ -1835,6 +2016,9 @@ run_workload() { # topology workload [snapshot mode]
     fi
     log "$tag: measuring ${DURATION}s$([ "$mode" = none ] || echo ", a $mode snapshot every ${SNAP_INTERVAL}s, keeping $SNAP_KEEP")"
     as_pg "'$PGBENCH' -h '$SOCK' -T $DURATION -c $CLIENTS -j $JOBS -P 30 -l --log-prefix='$plog' -b $builtin bench" > "$OUT/$tag.pgbench" 2>&1
+    # The pressure and the cgroups' CPU at the end of the window, before
+    # anything after it (the sync, the wait, the after-look) adds its own.
+    pressure_look > "$OUT/$tag.pressure"
     if [ -n "$SNAP_PID" ]; then
         touch "$SNAP_STOP"; wait "$SNAP_PID" || true; SNAP_PID=""
         rm -f "$SNAP_STOP"
@@ -1861,7 +2045,7 @@ run_workload() { # topology workload [snapshot mode]
     # from its own image by a loop device, the reference server or the
     # daemon), whatever the knob says.
     case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
-    python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
+    TB_ROW_MEM_LIMIT="$MEM_LIMIT" python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 sys.path.insert(0, sys.argv[12])
 import skz_time
@@ -1870,19 +2054,21 @@ snap_mode, snap_interval, plog = sys.argv[5], int(sys.argv[6]), sys.argv[7]
 fsync_file, run_label = sys.argv[8], sys.argv[9]
 zc, zg = {}, {}   # ZFS counters / gauges, keyed by file
 skz = {}          # the daemon's status, keyed by file
-cpu, thr, txgs, mem, loops = {}, {}, {}, {}, {}
+cpu, thr, txgs, mem, loops, ext = {}, {}, {}, {}, {}, {}
 def load(p):
     dev, pg, other = {}, {}, {}
     zc[p], zg[p] = {}, {}
     skz[p] = {}
     cpu[p], thr[p], txgs[p], mem[p], loops[p] = {}, {}, {}, {}, {}
+    ext[p] = {k: {} for k in ('thu', 'ths', 'rdl', 'csv', 'csi', 'psi', 'cgs', 'clock')}
     for line in open(p):
         f = line.split()
         if not f: continue
-        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:7]]
+        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:9]]
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
         elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
         elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
+        elif f[0] in ext[p] and len(f) > 2 and f[2].isdigit(): ext[p][f[0]][f[1]] = int(f[2])
         elif f[0] == 'mem' and len(f) > 2 and f[2].isdigit(): mem[p][f[1]] = int(f[2])
         elif f[0] == 'loop' and len(f) > 2: loops[p][f[1]] = {'dio': f[2] == '1', 'ro': len(f) > 3 and f[3] == '1'}
         elif f[0] == 'zfstxg' and len(f) >= 8: txgs[p][int(f[1])] = [int(x) for x in f[2:8]]
@@ -1897,6 +2083,8 @@ r = {'topology': topo, 'workload': wl, 'duration_s': dur, 'devices': {}, 'pg': {
 if run_label: r['label'] = f'{topo} [{run_label}]'
 r['clients'] = int(sys.argv[10])
 r['origin_delay_ms'] = int(sys.argv[11])
+# Postgres's memory limit, a setting a bracketing model row must share.
+r['mem_limit'] = os.environ.get('TB_ROW_MEM_LIMIT') or 'none'
 # The machine the row ran on: this boot of this runner. Two rows are
 # compared only where it is the same.
 # The host name beside the boot id: machines resumed from one memory
@@ -1906,9 +2094,15 @@ try:
 except OSError:
     pass
 for name in ad:
-    d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*5))]
+    d = [a - b for a, b in zip(ad[name], bd.get(name, [0]*len(ad[name])))]
     r['devices'][name] = {'read_ios': d[0], 'read_mb': d[1]*512/MB, 'write_ios': d[2],
                           'write_mb': d[3]*512/MB, 'flushes': d[4]}
+    # Since the times were added: the ms the device spent on writes
+    # and on flushes in the window (a sum over requests, so it can
+    # exceed the window when requests overlap).
+    if len(d) >= 7:
+        r['devices'][name]['write_ms'] = d[5]
+        r['devices'][name]['flush_ms'] = d[6]
 for k in ap:
     r['pg'][k] = ap[k] - bp.get(k, 0)
 r['pg']['wal_mb'] = r['pg'].get('wal_bytes', 0) / MB
@@ -1940,6 +2134,9 @@ if skz[base + '.after']:
     k['window'] = {'samples': len(samples), 'step_under_way': sum(1 for x in samples if x.get('checkpoint_step') not in (None, 'none')),
                    'log_live_min': min(live) if live else None, 'log_live_max': max(live) if live else None,
                    'unstored_max': max([int(x['unstored']) for x in samples if x.get('unstored', '').isdigit()] or [0])}
+    for key in ('nr_dirty', 'nr_writeback'):  # pages of 4 KiB, machine-wide
+        v = [int(x[key]) for x in samples if x.get(key, '').isdigit()]
+        k['window'][key] = {'mean': sum(v) / len(v), 'max': max(v), 'n': len(v)} if v else None
     info = os.path.join(os.path.dirname(base), topo + '.skzinfo')
     if os.path.exists(info):
         for line in open(info):
@@ -1976,6 +2173,9 @@ if lats:
     r['latency'] = {'p50_ms': q(0.50), 'p99_ms': q(0.99), 'p999_ms': q(0.999), 'max_ms': lats[-1] / 1000,
                     'min_tps_1s': min((per_s.get(x, 0) for x in secs), default=None),
                     'stalled_s': sum(1 for x in secs if per_s.get(x, 0) == 0)}
+    mean = sum(lats) / len(lats)
+    r['latency']['mean_ms'] = mean / 1000
+    r['latency']['stddev_ms'] = (sum((x - mean) ** 2 for x in lats) / len(lats)) ** 0.5 / 1000
 if zc[base + '.after'] or zg[base + '.after']:
     zb, za = zc[base + '.before'], zc[base + '.after']
     r['zfs'] = {'delta': {k: za[k] - zb.get(k, 0) for k in za}, 'after': zg[base + '.after']}
@@ -1999,15 +2199,67 @@ if 'total' in ca and 'total' in cb:
     diag['cpu_s_total'] = tot / HZ
 if 'ctxt' in ca and 'ctxt' in cb: diag['ctxt'] = ca['ctxt'][0] - cb['ctxt'][0]
 tb, ta = thr[base + '.before'], thr[base + '.after']
+# The daemon's threads (skyzfs*) and postgres are always kept; the
+# twenty largest of the others beside them. A cut of all names at
+# twenty could drop a daemon thread from one metric on a runner where
+# other threads did more.
+def kept(name): return name.startswith('skyzfs') or name == 'postgres'
+def top(counter, n=20):
+    out = {k: v for k, v in counter.items() if kept(k)}
+    out.update([c for c in counter.most_common() if not kept(c[0])][:n])
+    return out
 by = collections.Counter()
 for k, v in ta.items():
     dv = v - tb.get(k, 0)
-    if dv <= 0: continue
+    if dv <= 0 and not (kept(k) and k in tb): continue
+    dv = max(dv, 0)
     name = k.replace('(reaped)', '')
     # pgbench and the helpers of this script all end up as some shell's children.
     if name in ('su', 'bash', 'sh', 'sudo', 'pgbench', 'python', 'runuser', 'awk', 'sed'): name = 'pgbench+harness'
     by[name] += dv / HZ
-diag['cpu_s_by_thread'] = dict(by.most_common(20))
+diag['cpu_s_by_thread'] = top(by)
+# By thread name, over the window, of the threads alive at both looks:
+# user and system CPU seconds, the time runnable but not running (ms),
+# and the context switches. A thread that ended inside the window is
+# missing from these, as are its counts.
+eb, ea = ext[base + '.before'], ext[base + '.after']
+def per_name(kind, scale):
+    out = collections.Counter()
+    for k, v in ea.get(kind, {}).items():
+        dv = v - eb.get(kind, {}).get(k, 0)
+        # A kept name is kept at 0 too, so that 0 and "not recorded"
+        # can be told apart.
+        if dv > 0 or (kept(k) and k in eb.get(kind, {})): out[k] += max(dv, 0) * scale
+    return top(out)
+if ea.get('rdl'):
+    diag['user_s_by_thread'] = per_name('thu', 1 / HZ)
+    diag['system_s_by_thread'] = per_name('ths', 1 / HZ)
+    diag['run_delay_ms_by_thread'] = per_name('rdl', 1e-6)
+    diag['voluntary_csw_by_thread'] = per_name('csv', 1)
+    diag['involuntary_csw_by_thread'] = per_name('csi', 1)
+# Pressure as a share, %: the machine's, and postgres's and the
+# daemon's cgroups' (keys pg.* and skz.*), and the cgroups' CPU, s. Both
+# from the before-look to the look right after pgbench returned (the
+# .pressure file), so that nothing after the window (the sync, the
+# wait, the after-look) is counted; the share is of the time between
+# those two looks by the clock they carry. Rows recorded before that
+# look was taken use the after-look and pgbench's duration, which
+# overstates the share by the 2 s and the sync between them.
+pe = ext[base + '.after']; span = None
+if os.path.exists(base + '.pressure'):
+    load(base + '.pressure'); pe = ext[base + '.pressure']
+    t0, t1 = eb.get('clock', {}).get('now'), pe.get('clock', {}).get('now')
+    if t0 and t1 and t1 > t0:
+        span = (t1 - t0) / 1e9
+if pe.get('psi') and span:
+    diag['psi_span_s'] = span
+    diag['psi_pct'] = {k: 100 * (v - eb.get('psi', {}).get(k, 0)) / (span * 1e6) for k, v in pe['psi'].items()
+                       if k in eb.get('psi', {})}
+elif ea.get('psi'):
+    diag['psi_pct'] = {k: 100 * (v - eb.get('psi', {}).get(k, 0)) / (dur * 1e6) for k, v in ea['psi'].items()}
+if pe.get('cgs'):
+    diag['cgroup_cpu_s'] = {k: (v - eb.get('cgs', {}).get(k, 0)) / 1e6 for k, v in pe['cgs'].items()
+                            if k in eb.get('cgs', {})}
 # Memory at the end of the window, MiB, and how the loops are attached.
 if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
 # The cgroup counts the times it reached its limit since it was made,

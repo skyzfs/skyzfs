@@ -94,7 +94,7 @@ on:
         description: "zfs module parameters for the ZFS topologies, name=value separated by spaces (e.g. l2arc_noprefetch=0 l2arc_headroom=0)"
         default: ""
       sequence:
-        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. Replaces the per-topology matrix when set"
+        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. A daemon row is judged against the mean of the zfs-slog rows just before and after it, so begin and end with one and put one at least every third row. Replaces the per-topology matrix when set"
         default: ""
       cas_mode:
         description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
@@ -221,6 +221,11 @@ jobs:
           # TB_SKYZFSD_REF=<commit, short commit or branch>: each one
           # named is built here, from its own worktree, into a binary of
           # its own, so that one machine runs them all.
+          # An entry with an empty ref would run the branch's own build
+          # under a row that says otherwise: refused before anything runs.
+          if grep -qE 'TB_(SKYZFSD|SKZ_TIME)_REF=($|[ ;])' <<< "$TB_SEQUENCE"; then
+            echo "::error::the sequence names an empty TB_SKYZFSD_REF= or TB_SKZ_TIME_REF="; exit 64
+          fi
           refs=$(grep -oE 'TB_SKYZFSD_REF=[A-Za-z0-9_.,:=+-]+' <<< "$TB_SEQUENCE" | cut -d= -f2- | sort -u || true)
           # TB_SKZ_TIME_REF=<ref> in any entry, for the whole job: the
           # daemon's times are read with that ref's
