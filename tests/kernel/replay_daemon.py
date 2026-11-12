@@ -57,22 +57,21 @@ mark.
 Negative controls, judged against EXPECTED (and the reference rig's
 four controls, which pick pool blocks in a log of the pool's device,
 are not built here; the summary says so):
-  recover-short   at an even sample of the fsync and sync marks, the
-                  start runs with `--recover-short N`: the recovery
-                  counts the log N records shorter than it found it,
-                  the fault of a recovery that loses the log's tail.
-                  N is more than one: at a mark the log's last records
-                  need not be the ones the mark depends on, since the
-                  daemon has the kernel write its log back before it
-                  syncs, and a later write of the pool can already be
-                  on the disk. Each start's line says how many
-                  operations it recovered, beside the start without
-                  the hook at the same prefix
   withheld        the lower disk's writes between two fsync marks are
                   held back until after the second mark: the disk
                   acknowledged the flushes of that fsync over data that
                   is not there. The file of that fsync is then due at
                   its mark and is not on the disk
+Not built by default: recover-short, the start with the test hook
+`--recover-short N`. The hook moves only the end of the log that is
+compared with the acknowledged position, and after a reboot there is
+none, so here it plants nothing (run 43279006013: with the hook and
+without it, every start recovered the same operations). It is built
+only when --recover-short N is given, and then a guard applies: a
+hooked control whose starts recover as many operations as the starts
+without the hook at the same prefixes is the rig's error, not a
+control that was not caught. A hook that makes the recovery itself end
+early (`--recover-drop`, not in the daemon yet) would be judged so.
 
 Exit codes: 0 every check passed and every control is as the table
 says; 1 a verdict against the daemon (a prefix failed, a control
@@ -126,9 +125,15 @@ CHECK_NAMES = dict(rc.CHECK_NAMES, **{
 # vocabulary). Both plant a fault that a power cut must not be allowed
 # to cause, so both must be caught. Do not edit a control to fit.
 EXPECTED = {
-    'recover-short': {'block': {'by': 'any'}},
     'withheld': {'block': {'by': 'any'}},
 }
+# Only when asked for (--recover-short N); see the head of this file.
+EXPECTED_HOOKED = {
+    'recover-short': {'block': {'by': 'any'}},
+}
+RECOVER_SHORT_NOT_HERE = ('the hook --recover-short moves only the end of the log that is compared with the '
+                          'acknowledged position, and after a reboot there is none, so it plants nothing here '
+                          '(run 43279006013: the same operations recovered with it and without it)')
 NOT_HERE = ("each picks pool blocks (labels, uberblocks, a file's block, an intent-log block) in a log of the pool's own "
             "device; this log is the lower disk's, whose writes are the volume file system's")
 ABSENT = {name: NOT_HERE for name in ('drop', 'reorder', 'data', 'intent')}
@@ -569,7 +574,8 @@ def main():
     ap.add_argument('--budget-name', default='', help='what the budget is called in the summary')
     ap.add_argument('--between-budget-s', type=float, default=0,
                     help='seconds for random prefixes between two flushes (0: none)')
-    ap.add_argument('--recover-short', type=int, default=8, help='N of the recover-short control')
+    ap.add_argument('--recover-short', type=int, default=0,
+                    help='N of the recover-short control; 0 (the default) does not build it, see the head of this file')
     ap.add_argument('--recover-points', type=int, default=8, help='marks the recover-short control checks')
     ap.add_argument('--steps', default='', help='checkpoint steps the daemon took while recording')
     ap.add_argument('--seed', type=int, default=1)
@@ -742,26 +748,16 @@ def check(a):
 
     # Negative controls.
     ctl = []
-    pts = spread(sorted(ck.fsync_at | {p for p, _, _ in marks}), a.recover_points)
-    ck.daemon.reset()
-    results = []
-    for n in pts:
-        ck.held = None
-        results.append(ck.point(n, 'control', hooks=('--recover-short', str(a.recover_short))))
-    normal = {p['n']: p.get('start', {}).get('operations') for p in points}
-    for x in results:
-        x['operations_without_hook'] = normal.get(x['n'])
-    row = control_row('recover-short', f'the start at {len(pts)} sync and fsync marks runs with --recover-short '
-                      f'{a.recover_short}: its recovery counts the log {a.recover_short} record(s) shorter', results)
-    took = hook_took(results)
-    if took is False:
-        # Not "not caught": the fault was never planted.
-        why = 'with the hook every start recovered as many operations as without it: the fault was not planted'
-        row['rig_errors'].append({'n': results[0]['n'], 'failed': 'rig: the hook had no effect', 'detail': why})
-        cov['errors'].append(f'the recover-short control: {why}')
-    ctl.append(row)
-    w = withheld_schedule(records)
     absent = dict(ABSENT)
+    expected = dict(EXPECTED)
+    if a.recover_short > 0:
+        expected.update(EXPECTED_HOOKED)
+        ctl.append(hooked_control(ck, points, cov, 'recover-short', ('--recover-short', str(a.recover_short)),
+                                  spread(sorted(ck.fsync_at | {p for p, _, _ in marks}), a.recover_points),
+                                  f'its recovery counts the log {a.recover_short} record(s) shorter'))
+    else:
+        absent['recover-short'] = RECOVER_SHORT_NOT_HERE
+    w = withheld_schedule(records)
     if w is None:
         why = 'no two fsync marks in the log have no sync mark between them'
         absent['withheld'] = why
@@ -776,7 +772,7 @@ def check(a):
             results.append(ck.point(n, 'control', marks=smarks, fmarks=sfm))
         ctl.append(dict(control_row('withheld', w['what'], results), victim=w['victim'], victims=w['victims']))
     res['controls'] = ctl
-    res['control_rows'], res['gaps'], controls_ok = rc.judge_controls(ctl, expected=EXPECTED, absent=absent)
+    res['control_rows'], res['gaps'], controls_ok = rc.judge_controls(ctl, expected=expected, absent=absent)
     for row in res['control_rows']:
         if not row['match']:
             print(f"::error title=replay rig (daemon)::control {row['name']}: expected {row['expected']}, "
@@ -804,6 +800,31 @@ def check(a):
     for x in against:
         print(f'the job fails: {x}', flush=True)
     return code
+
+
+def hooked_control(ck, points, cov, name, hooks, pts, what):
+    """A control that starts the daemon with a test hook at prefixes `pts` of the true log.
+
+    With the guard: if every start recovered as many operations as the
+    start without the hook at the same prefix, the fault was never
+    planted, and that is the rig's error, not a control that was not
+    caught.
+    """
+    ck.daemon.reset()
+    results = []
+    for n in pts:
+        ck.held = None
+        results.append(ck.point(n, 'control', hooks=hooks))
+    normal = {p['n']: p.get('start', {}).get('operations') for p in points}
+    for x in results:
+        x['operations_without_hook'] = normal.get(x['n'])
+    row = control_row(name, f"the start at {len(pts)} sync and fsync marks runs with {' '.join(hooks)}: {what}", results)
+    if hook_took(results) is False:
+        why = 'with the hook every start recovered as many operations as without it: the fault was not planted'
+        row['rig_errors'].append({'n': results[0]['n'] if results else 0, 'failed': 'rig: the hook had no effect',
+                                  'detail': why})
+        cov['errors'].append(f'the {name} control: {why}')
+    return row
 
 
 def control_row(name, what, results):

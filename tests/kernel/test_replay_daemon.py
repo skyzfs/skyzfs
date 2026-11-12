@@ -178,17 +178,21 @@ class Pure(unittest.TestCase):
     def test_controls_against_the_table(self):
         def ctl(name, caught, by=None):
             return {'name': name, 'caught': caught, 'failed_by': by or {}, 'rig_errors': []}
-        rows, _, ok = replay_check.judge_controls([ctl('recover-short', True, {'fsync': 2}), ctl('withheld', True, {'start': 1})],
-                                                  expected=rd.EXPECTED, absent=rd.ABSENT)
+        absent = dict(rd.ABSENT, **{'recover-short': rd.RECOVER_SHORT_NOT_HERE})
+        rows, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1})], expected=rd.EXPECTED, absent=absent)
         self.assertTrue(ok)
-        self.assertEqual(sorted(r['name'] for r in rows if r.get('not_built')), ['data', 'drop', 'intent', 'reorder'])
-        _, _, ok = replay_check.judge_controls([ctl('recover-short', False), ctl('withheld', True, {'fsync': 1})],
-                                               expected=rd.EXPECTED, absent=rd.ABSENT)
+        self.assertEqual(sorted(r['name'] for r in rows if r.get('not_built')),
+                         ['data', 'drop', 'intent', 'recover-short', 'reorder'])
+        _, _, ok = replay_check.judge_controls([ctl('withheld', False)], expected=rd.EXPECTED, absent=absent)
         self.assertFalse(ok)
         # A control of the table that did not run fails, unless it is said why it was not built.
-        _, _, ok = replay_check.judge_controls([ctl('recover-short', True, {'fsync': 1})], expected=rd.EXPECTED,
-                                               absent=rd.ABSENT)
+        _, _, ok = replay_check.judge_controls([], expected=rd.EXPECTED, absent=rd.ABSENT)
         self.assertFalse(ok)
+        # Asked for, the hooked control is judged as well.
+        hooked = dict(rd.EXPECTED, **rd.EXPECTED_HOOKED)
+        _, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1}), ctl('recover-short', True, {'fsync': 1})],
+                                               expected=hooked, absent=rd.ABSENT)
+        self.assertTrue(ok)
 
     def test_the_provider_stages_are_verdicts(self):
         for s in ('volume mount', 'start', 'device read', 'stop', 'import', 'fsync: files', 'copies: differ'):
@@ -220,14 +224,14 @@ class Pass(unittest.TestCase):
         d = self.dir.name
         a = dict(log=self.log, base=self.base, manifest=self.manifest, pool='p', mountpoint='/p', work=os.path.join(d, 'w'),
                  out=os.path.join(d, 'out'), skyzfsd='skyzfsd', ublk='ublk', dd='dd', volume='vol', serve_arg=None,
-                 dev_bytes=1 << 20, budget_s=1000, budget_name='test', between_budget_s=0, recover_short=8,
+                 dev_bytes=1 << 20, budget_s=1000, budget_name='test', between_budget_s=0, recover_short=0,
                  recover_points=3, steps='4', seed=1, replay_log='', require_witness=False, discard='zero')
         a.update(kw)
         os.makedirs(a['work'], exist_ok=True)
         os.makedirs(a['out'], exist_ok=True)
         return type('A', (), a)()
 
-    def fake(self, fail_at=(), recover_caught=True):
+    def fake(self, fail_at=(), recover_caught=True, withheld_caught=True, hook_ops=None):
         deep_at = []
 
         def point(ck, n, kind, hooks=(), marks=None, fmarks=None):
@@ -235,7 +239,10 @@ class Pass(unittest.TestCase):
             txg = sum(1 for p, _, _ in (marks if marks is not None else ck.marks) if p <= n)
             r = {'n': n, 'kind': kind, 'files': 0, 'dir': 'x', 't_make': 1.0, 't_light': 0.5, 't_txg': 0.1, 'txg': txg,
                  'ok': True}
-            if n in fail_at or (hooks and recover_caught):
+            r['start'] = {'operations': 100 + n, 'log_bytes': 1 << 20, 'recovery_ms': 5}
+            if hooks and hook_ops is not None:
+                r['start']['operations'] = hook_ops(100 + n)
+            if n in fail_at or (hooks and recover_caught) or (marks is not None and withheld_caught):
                 r.update(ok=False, failed='fsync: files', detail='f.1 checksum differs')
             return r
 
@@ -257,9 +264,8 @@ class Pass(unittest.TestCase):
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             text = f.read()
         self.assertIn('every checked prefix passed', text)
-        # The withheld control is not caught in this fake (its points pass), so the table differs.
-        self.assertEqual(code, 1)
-        self.assertIn('withheld', text)
+        self.assertEqual(code, 0)
+        self.assertIn('`recover-short` was not built: the hook --recover-short', text.replace('`data`', ''))
         records = logwrites.index(self.log, 0)['records']
         marks = replay_check.parse_marks(records)
         # Deep checks at the first and last checked prefix of each txg.
@@ -277,6 +283,22 @@ class Pass(unittest.TestCase):
         self.assertEqual(code, 1)
         with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
             self.assertIn('prefixes FAILED', f.read())
+
+    def test_a_control_not_caught_is_a_verdict(self):
+        self.fake(withheld_caught=False)
+        self.assertEqual(rd.check(self.args()), 1)
+
+    def test_a_hook_that_plants_nothing_is_the_rigs_error(self):
+        self.fake(recover_caught=False, hook_ops=lambda ops: ops)
+        self.assertEqual(rd.check(self.args(recover_short=8)), 2)
+        with open(os.path.join(self.dir.name, 'out', 'replay-summary.md')) as f:
+            self.assertIn('the fault was not planted', f.read())
+
+    def test_a_hook_that_plants_a_fault_is_judged(self):
+        self.fake(recover_caught=True, hook_ops=lambda ops: ops - 8)
+        self.assertEqual(rd.check(self.args(recover_short=8)), 0)
+        self.fake(recover_caught=False, hook_ops=lambda ops: ops - 8)
+        self.assertEqual(rd.check(self.args(recover_short=8)), 1)
 
 
 if __name__ == '__main__':
