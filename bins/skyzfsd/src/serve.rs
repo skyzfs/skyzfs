@@ -619,8 +619,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // device is started and before the ready line, so a long log that
     // this start found is worked off without waiting for the first
     // request. The start itself does not wait for a step: it goes on
-    // while the worker steps. The first request can wait for the one
-    // step that is under way when it arrives.
+    // while the worker steps. The first requests can wait for those
+    // steps: while the log is at or above the high mark the worker
+    // takes steps before it executes a request.
     ready.store.set_marks(Some(Marks {
         high: u64::from(serve.log_high) * SEGMENT_SIZE,
         low: u64::from(serve.log_low) * SEGMENT_SIZE,

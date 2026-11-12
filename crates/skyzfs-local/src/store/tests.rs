@@ -3719,3 +3719,290 @@ fn a_hold_that_goes_or_moves_lets_the_idle_worker_checkpoint() {
     assert!(rests.live() >= MARKS.low, "{rests:?}");
     assert_eq!(rests.steps, state.steps, "no step beyond the hold");
 }
+
+/// What fills the log in the tests of a log whose records are short:
+/// write-zeroes of four blocks, eight of which are one step by
+/// [`MARKS`] as eight of 1 MiB are one step of the daemon's, or
+/// discards, eight of which are one step by the records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Short {
+    Zeroes,
+    Discards,
+}
+
+impl Short {
+    /// The `n`-th of them: over blocks 512 and up, four at a time.
+    fn op(self, n: u64) -> Op {
+        let (offset, len) = ((512 + (n % 128) * 4) * BLOCK, 4 * BLOCK);
+        match self {
+            Self::Zeroes => Op::WriteZeroes { offset, len },
+            Self::Discards => Op::Discard { offset, len },
+        }
+    }
+}
+
+/// A store whose log holds short records up to the high mark of
+/// [`MARKS`], with no marks set yet: blocks 512 to 528 were written
+/// with nines and are in the home image, and the records zero or
+/// discard blocks 512 to 1024 again and again. Returns how many
+/// records there are.
+fn a_log_of_short_records(env: &Env, short: Short) -> Result<(SimDisk, SimStore, u64), String> {
+    let (disk, mut store) = env.fresh()?;
+    write(&mut store, 512, 16, 9)?;
+    flush(&mut store)?;
+    checkpoint(&mut store)?;
+    let mut records = 0;
+    while store.log_state().live() < MARKS.high {
+        ok(&mut store, short.op(records))?;
+        records += 1;
+    }
+    Ok((disk, store, records))
+}
+
+/// What blocks 512 to 528 read as after the short records.
+fn under_short_records(short: Short) -> u8 {
+    match short {
+        Short::Zeroes => 0,
+        Short::Discards => 9,
+    }
+}
+
+/// A log that reached the high mark with records that are short in
+/// the log (a write-zeroes covers much of the volume with one header,
+/// a discard writes nothing) stays at the high mark under writes: the
+/// step's bound counts what a step writes into the home image and how
+/// many records it walks, so a step takes eight such records, a few
+/// hundred bytes or a few KiB of log, and a write adds more than
+/// 64 KiB. One step after every request let such a log grow by nearly
+/// a request with every request. The rule takes steps until the log is
+/// below the high mark before the next request is executed.
+#[test]
+fn a_log_of_short_records_stays_at_the_high_mark_under_writes() {
+    fn scenario(env: &Env, short: Short) -> Outcome {
+        let (disk, mut store, records) = a_log_of_short_records(env, short)?;
+        store.set_marks(Some(MARKS));
+        let mut newest = [0u8; 32];
+        let mut steps_of_one_write = 0;
+        for n in 0..40u64 {
+            let slot = (n * 5) % 32;
+            let byte = (n % 250) as u8 + 1;
+            let before = store.log_state();
+            write(&mut store, slot * 16, 16, byte)?;
+            newest[slot as usize] = byte;
+            let after = store.log_state();
+            steps_of_one_write = steps_of_one_write.max(after.steps - before.steps);
+            // After the request and its steps the log is below the
+            // high mark again, or within what the request added.
+            if after.live() >= MARKS.high + ONE_REQUEST {
+                return Err(format!(
+                    "after write {n}, behind {records} short records, the log holds {} bytes: {after:?}",
+                    after.live()
+                ));
+            }
+        }
+        // The load was what the test is about: a write was followed
+        // by several steps, because one did not take what it added.
+        if steps_of_one_write < 2 {
+            return Err(format!(
+                "no write needed more than {steps_of_one_write} steps: {:?}",
+                store.log_state()
+            ));
+        }
+        let check = |store: &mut SimStore, when: &str| -> Outcome {
+            for (slot, byte) in newest.iter().enumerate() {
+                expect(store, slot as u64 * 16, 16, *byte, when)?;
+            }
+            expect(store, 512, 16, under_short_records(short), when)
+        };
+        check(&mut store, "under the load")?;
+        drop(store);
+        disk.kill();
+        let mut store = env.reopen_ack(&disk)?;
+        check(&mut store, "after a kill")
+    }
+    for short in [Short::Zeroes, Short::Discards] {
+        for env in environments(0) {
+            if let Err(why) = scenario(&env, short) {
+                panic!("{short:?}, {env:?}: {why}");
+            }
+        }
+    }
+}
+
+/// The same on a served store, which is where requests wait in a
+/// queue while the worker steps: sixteen writes are queued before the
+/// worker starts, so that it has a request to execute after every
+/// step whatever the scheduling, and three more rounds of sixteen
+/// follow. A waker that looks at the log shown at every wake, on the
+/// worker's thread, never finds it a request above the high mark. The
+/// worker shows the log before each completion's wake, so the largest
+/// state is seen, and nothing asserted rests on timing: the bound is
+/// an upper one and holds at every moment.
+#[test]
+fn a_served_log_of_short_records_stays_at_the_high_mark_under_queued_writes() {
+    use std::sync::Mutex;
+    for (short, env) in [
+        (Short::Zeroes, environments(0)[0]),
+        (Short::Zeroes, environments(0)[4]),
+        (Short::Discards, environments(0)[0]),
+        (Short::Discards, environments(0)[4]),
+    ] {
+        let (_disk, mut store, records) = a_log_of_short_records(&env, short).unwrap();
+        store.set_marks(Some(MARKS));
+        let write_of = |n: u64| Request {
+            id: RequestId(n),
+            op: Op::Write {
+                offset: (n % 32) * 16 * BLOCK,
+                data: Buf::filled(16, (n % 250) as u8 + 1),
+            },
+        };
+        for n in 0..16 {
+            store.submit(write_of(n)).unwrap();
+        }
+        let shown: Arc<Mutex<Option<Arc<Shown>>>> = Arc::default();
+        let seen: Arc<Mutex<Vec<LogState>>> = Arc::default();
+        let waker = Waker::new({
+            let (shown, seen) = (shown.clone(), seen.clone());
+            move || {
+                // The worker's first wakes can come before the test
+                // has the store's shown state in hand: they wait for
+                // it, so that none is missed.
+                let asked = std::time::Instant::now();
+                loop {
+                    if let Some(shown) = shown.lock().unwrap().as_ref() {
+                        seen.lock().unwrap().push(shown.state());
+                        return;
+                    }
+                    if asked.elapsed() > Duration::from_secs(10) {
+                        return;
+                    }
+                    std::thread::yield_now();
+                }
+            }
+        });
+        let mut served = store.serve_with(Some(waker)).unwrap();
+        *shown.lock().unwrap() = Some(served.log.clone());
+        let mut done = Vec::new();
+        let mut collect = |served: &mut Served, upto: usize| {
+            let asked = std::time::Instant::now();
+            while done.len() < upto {
+                served.wait(&mut done, Duration::from_secs(1));
+                assert!(
+                    asked.elapsed() < Duration::from_secs(60),
+                    "{short:?}, {env:?}: {} of {upto} writes completed",
+                    done.len()
+                );
+            }
+        };
+        collect(&mut served, 16);
+        for round in 1..4u64 {
+            for n in 0..16 {
+                served.submit(write_of(round * 16 + n)).unwrap();
+            }
+            collect(&mut served, (round as usize + 1) * 16);
+        }
+        assert!(
+            done.iter().all(|c| c.result == Ok(())),
+            "{short:?}, {env:?}"
+        );
+        // Answered behind the last completion's wake.
+        served.position().unwrap();
+        let seen = seen.lock().unwrap().clone();
+        assert!(seen.len() >= 64, "{} wakes for 64 writes", seen.len());
+        let largest = seen.iter().map(LogState::live).max().unwrap();
+        assert!(
+            largest < MARKS.high + ONE_REQUEST,
+            "{short:?}, {env:?}: behind {records} short records the log was seen at {largest} bytes, \
+             the high mark is {}",
+            MARKS.high
+        );
+        let state = served.log_state();
+        // The writes added more than the log may hold, so every short
+        // record was taken, at most eight of them a step.
+        assert!(
+            state.steps >= records / MARKS.step.records,
+            "{short:?}, {env:?}: {state:?}"
+        );
+        // The last write of each slot is what the volume holds.
+        for slot in 0..32u64 {
+            served
+                .submit(Request {
+                    id: RequestId(1000 + slot),
+                    op: Op::Read {
+                        offset: slot * 16 * BLOCK,
+                        buf: Buf::filled(16, 0xEE),
+                    },
+                })
+                .unwrap();
+            let mut read = Vec::new();
+            assert_eq!(served.wait(&mut read, Duration::from_secs(10)), 1);
+            let n = 32 + slot;
+            let want = (n % 250) as u8 + 1;
+            let buf = read.pop().unwrap().buf.expect("a read's data");
+            assert!(
+                buf.iter().all(|b| *b == want),
+                "{short:?}, {env:?}: slot {slot}"
+            );
+        }
+    }
+}
+
+/// The rule's own sync of the log is shown as the beginning of its
+/// step: a log that passed the high mark with nothing flushed needs
+/// that sync before anything can be taken, and it can take as long as
+/// any sync. The owner is woken with a step under way before the disk
+/// has seen that sync, so whoever looks during the sync finds a step
+/// under way, and not a log at the high mark with nothing happening.
+/// The waker reads the shown state and the disk's count of syncs on
+/// the worker's thread, so what is compared is of the moment of the
+/// wake; the test waits for the first step to end.
+#[test]
+fn the_rules_own_sync_is_shown_as_the_beginning_of_its_step() {
+    use std::sync::Mutex;
+    let env = environments(0)[0];
+    let (disk, mut store) = env.fresh().unwrap();
+    for n in 0..12u64 {
+        write(&mut store, n * 16, 16, n as u8 + 1).unwrap();
+    }
+    let unflushed = store.log_state();
+    assert!(unflushed.live() > MARKS.high, "{unflushed:?}");
+    assert!(
+        unflushed.durable - unflushed.start < MARKS.step.payload,
+        "{unflushed:?}"
+    );
+    store.set_marks(Some(MARKS));
+    let syncs_before = disk.stats().syncs;
+    let shown: Arc<Mutex<Option<Arc<Shown>>>> = Arc::default();
+    let seen: Arc<Mutex<Vec<(LogState, u64)>>> = Arc::default();
+    let waker = Waker::new({
+        let (shown, seen, disk) = (shown.clone(), seen.clone(), disk.clone());
+        move || {
+            let asked = std::time::Instant::now();
+            loop {
+                if let Some(shown) = shown.lock().unwrap().as_ref() {
+                    seen.lock()
+                        .unwrap()
+                        .push((shown.state(), disk.stats().syncs));
+                    return;
+                }
+                if asked.elapsed() > Duration::from_secs(10) {
+                    return;
+                }
+                std::thread::yield_now();
+            }
+        }
+    });
+    let served = store.serve_with(Some(waker)).unwrap();
+    *shown.lock().unwrap() = Some(served.log.clone());
+    let after = comes_by_itself(&served, "the first step", |s| s.steps > 0);
+    assert!(after.own_syncs > 0, "the step needed no sync: {after:?}");
+    let seen = seen.lock().unwrap().clone();
+    let (first, syncs) = seen
+        .iter()
+        .find(|(state, _)| state.stepping)
+        .unwrap_or_else(|| panic!("no step was shown under way: {seen:?}"));
+    assert_eq!(
+        *syncs, syncs_before,
+        "the owner was told of the step after the rule's sync of the log: {first:?}"
+    );
+}
