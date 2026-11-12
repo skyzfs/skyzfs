@@ -4364,7 +4364,11 @@ fn a_store_is_refused_where_pages_are_larger_than_the_write_unit() {
 /// blocks that only the home image holds, the steps are stopped
 /// anywhere (so also between the preimage file's sync and the home
 /// image's), the power is cut, and cut again inside the open.
-fn on_blocks_of(env: &Env, block: u64) -> Outcome {
+///
+/// `log_stage` false leaves the first stage out: every record is then
+/// durable before any cut, so what is lost is lost by a checkpoint's
+/// writes.
+fn on_blocks_of(env: &Env, block: u64, log_stage: bool) -> Outcome {
     let lost = env.lost();
     let cut = |disk: &SimDisk| {
         disk.power_cut(BySector(move |_: Option<&str>, _| lost));
@@ -4382,23 +4386,25 @@ fn on_blocks_of(env: &Env, block: u64) -> Outcome {
         disk.set_write_unit(SECTOR);
         disk.set_block_size(Some(block));
         write(&mut store, 0, 256, 9)?;
+        write(&mut store, 256, 256, 9)?;
         flush(&mut store)?;
-        write(&mut store, 300, 1, 5)?;
-        write(&mut store, 301, 1, 6)?;
-        drop(store);
-        cut(&disk);
-        let mut store = env.reopen_ack(&disk)?;
-        expect(
-            &mut store,
-            0,
-            256,
-            9,
-            "flushed, after a cut behind a later write",
-        )?;
+        if log_stage {
+            write(&mut store, 300, 1, 5)?;
+            write(&mut store, 301, 1, 6)?;
+            drop(store);
+            cut(&disk);
+            store = env.reopen_ack(&disk)?;
+            let what = "flushed, after a cut behind a later write";
+            expect(&mut store, 0, 256, 9, what)?;
+            expect(&mut store, 256, 256, 9, what)?;
+        }
         checkpoint(&mut store)?;
-        for group in 0..32u64 {
-            zeroes(&mut store, group * 8 + 1, 5)?;
-            write(&mut store, group * 8 + 7, 1, (group % 200) as u8 + 10)?;
+        // Groups of 32 blocks, of which the first eight are touched:
+        // the other 24 are held by the home image alone, in write
+        // units no record of the batch touches.
+        for group in 0..16u64 {
+            zeroes(&mut store, group * 32 + 1, 5)?;
+            write(&mut store, group * 32 + 7, 1, group as u8 + 10)?;
         }
         flush(&mut store)?;
         disk.halt_after(stop);
@@ -4410,12 +4416,13 @@ fn on_blocks_of(env: &Env, block: u64) -> Outcome {
         cut(&disk);
         let mut store = env.reopen_ack(&disk)?;
         let check = |store: &mut SimStore, when: &str| -> Outcome {
-            for group in 0..32u64 {
+            for group in 0..16u64 {
                 let what = format!("group {group} {when} a cut at {stop}");
-                expect(store, group * 8, 1, 9, &what)?;
-                expect(store, group * 8 + 1, 5, 0, &what)?;
-                expect(store, group * 8 + 6, 1, 9, &what)?;
-                expect(store, group * 8 + 7, 1, (group % 200) as u8 + 10, &what)?;
+                expect(store, group * 32, 1, 9, &what)?;
+                expect(store, group * 32 + 1, 5, 0, &what)?;
+                expect(store, group * 32 + 6, 1, 9, &what)?;
+                expect(store, group * 32 + 7, 1, group as u8 + 10, &what)?;
+                expect(store, group * 32 + 8, 24, 9, &what)?;
             }
             Ok(())
         };
@@ -4432,8 +4439,8 @@ fn on_blocks_of(env: &Env, block: u64) -> Outcome {
 #[test]
 fn a_volume_whose_unit_is_at_least_the_block_survives_cuts_anywhere() {
     fn scenario(env: &Env) -> Outcome {
-        on_blocks_of(env, u64::from(env.unit))?;
-        on_blocks_of(env, 512)
+        on_blocks_of(env, u64::from(env.unit), true)?;
+        on_blocks_of(env, 512, true)
     }
     holds(scenario);
 }
@@ -4442,7 +4449,9 @@ fn a_volume_whose_unit_is_at_least_the_block_survives_cuts_anywhere() {
 /// unit was held against the file system's block: with neither check
 /// made, a volume on a file system with blocks of four write units
 /// loses, at a power cut that leaves garbage, a block that nobody was
-/// writing. In every such environment.
+/// writing: a flushed record in the log, behind a later write, and,
+/// with the log left out of it, a block of the home image beside a
+/// checkpoint's write. Both in every such environment.
 #[test]
 fn a_volume_whose_unit_is_below_the_block_loses_what_nobody_wrote() {
     let unchecked = Mutants::CREATE_ON_ANY_BLOCKS | Mutants::OPEN_ON_ANY_BLOCKS;
@@ -4452,10 +4461,18 @@ fn a_volume_whose_unit_is_below_the_block_loses_what_nobody_wrote() {
             continue;
         }
         ran += 1;
-        let outcome = on_blocks_of(&env, 4 * u64::from(env.unit));
+        let block = 4 * u64::from(env.unit);
+        let in_the_log = on_blocks_of(&env, block, true).expect_err("a loss");
         assert!(
-            outcome.is_err(),
-            "blocks of four units lost nothing in {env:?}"
+            in_the_log.contains("after a cut behind a later write"),
+            "{in_the_log} in {env:?}"
+        );
+        // And with every record durable before the first cut: the
+        // loss is then the checkpoint's, in the home image.
+        let by_a_checkpoint = on_blocks_of(&env, block, false).expect_err("a loss");
+        assert!(
+            by_a_checkpoint.contains("a cut at"),
+            "{by_a_checkpoint} in {env:?}"
         );
     }
     assert_eq!(ran, 4);

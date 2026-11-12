@@ -387,14 +387,17 @@ fn hex(bytes: &[u8; 16]) -> String {
 /// ([`Store::identity`]): what tells this volume from another made
 /// later in the same directory.
 pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
-    let made = match in_directory(&create.dir, |dir| make(create, dir, id)) {
+    let (made, write_unit) = match in_directory(&create.dir, |dir| make(create, dir, id)) {
         Ok(made) => made,
         Err(output) => return output,
     };
     let shown = create.dir.display();
-    let warning = boot
+    let mut warning = boot
         .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
         .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
+    if let Some(note) = write_unit_note(write_unit, Identity::system_write_unit()) {
+        let _ = writeln!(warning, "skyzfsd: {shown}: {note}");
+    }
     Output {
         exit: Exit::Done,
         out: format!(
@@ -494,8 +497,23 @@ fn write_unit_on(block: io::Result<u64>) -> Result<u32, String> {
     }
 }
 
-/// Make the store of `create` in `dir`; its identity.
-fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
+/// What `create` says, on standard error, about a write unit that is
+/// not the system's page size: the volume then pads its log and saves
+/// neighbours by a larger unit than a volume on this system otherwise
+/// would, and whoever made it should know why. Nothing for the usual
+/// case, so that the line `created ...` stays all there is to read.
+fn write_unit_note(unit: u32, page: u32) -> Option<String> {
+    (unit != page).then(|| {
+        format!(
+            "the volume's write unit is {unit} bytes, the block size of the directory's file \
+             system; this system's pages are {page} bytes"
+        )
+    })
+}
+
+/// Make the store of `create` in `dir`; its identity and the write
+/// unit it was given.
+fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Output> {
     use skyzfs_local::io::Dir as _;
     let shown = create.dir.display();
     let write_unit = write_unit_on(dir.block_size())
@@ -509,7 +527,7 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<[u8; 16], Output> {
         write_unit,
     };
     match Store::create(dir, &config, OpenOptions::default()) {
-        Ok(store) => Ok(store.identity()),
+        Ok(store) => Ok((store.identity(), write_unit)),
         Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),

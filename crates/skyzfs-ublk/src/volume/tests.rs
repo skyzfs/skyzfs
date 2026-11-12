@@ -144,7 +144,9 @@ fn the_stores_errors_are_sorted_into_the_four_kinds() {
     };
     match classify(&blocks) {
         OpenError::Other(why) => assert!(
-            why.contains("blocks of 16384 bytes") && why.contains("write unit of 4096"),
+            why.contains("blocks of 16384 bytes")
+                && why.contains("write unit of 4096")
+                && why.contains("is left as it is; `skyzfsd detach` removes it"),
             "{why}"
         ),
         other => panic!("{other:?}"),

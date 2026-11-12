@@ -381,7 +381,10 @@ pub enum Under {
     Directory,
     /// The home image.
     Home,
-    /// A file of the write log: its superblock or a segment.
+    /// A segment file of the write log, by its number: `log.000003`
+    /// is 3.
+    Segment(usize),
+    /// Another file of the write log: its superblock, its marker.
     Log,
     /// The file of preimages.
     Preimages,
@@ -396,6 +399,8 @@ impl Under {
             Some(Self::Home)
         } else if name == PREIMAGE_NAME {
             Some(Self::Preimages)
+        } else if let Some(index) = crate::log::slot_index(name) {
+            Some(Self::Segment(index))
         } else if name.starts_with("log.") {
             Some(Self::Log)
         } else {
@@ -408,9 +413,10 @@ impl std::fmt::Display for Under {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Directory => "the volume's directory",
-            Self::Home => "the volume's home image",
-            Self::Preimages => "the volume's file of preimages",
-            Self::Log => "a file of the volume's write log",
+            Self::Home => "the volume's home image (home.img)",
+            Self::Preimages => "the volume's file of preimages (home.pre)",
+            Self::Segment(index) => return write!(f, "the volume's log file log.{index:06}"),
+            Self::Log => "the superblock or the marker of the volume's write log",
         })
     }
 }

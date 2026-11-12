@@ -95,7 +95,7 @@ pub fn slot_name(index: usize) -> String {
     format!("log.{index:06}")
 }
 
-fn slot_index(name: &str) -> Option<usize> {
+pub(crate) fn slot_index(name: &str) -> Option<usize> {
     let digits = name.strip_prefix("log.")?;
     if digits.len() == 6 && digits.bytes().all(|b| b.is_ascii_digit()) {
         digits.parse().ok()

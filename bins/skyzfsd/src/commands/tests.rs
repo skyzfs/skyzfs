@@ -926,4 +926,11 @@ fn create_chooses_the_write_unit_by_the_file_systems_block_or_refuses() {
     assert!(odd.contains("blocks of 12288 bytes"), "{odd}");
     let unread = write_unit_on(Err(io::ErrorKind::Unsupported.into())).expect_err("unreadable");
     assert!(unread.contains("could not be read"), "{unread}");
+    // A unit that is not the page size is said; the usual one is not.
+    assert_eq!(write_unit_note(4096, 4096), None);
+    let note = write_unit_note(16384, 4096).expect("a note");
+    assert!(
+        note.contains("write unit is 16384 bytes") && note.contains("pages are 4096 bytes"),
+        "{note}"
+    );
 }
