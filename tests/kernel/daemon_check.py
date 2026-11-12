@@ -87,8 +87,8 @@ EXPECTED = {
     # stand-in for good, which has no log and no checkpoint.
     'pin_takeover_time_does_not_grow': ('b', 'PASS', WAITING,
                                         'over the kills of the kill test a take-over does not take longer and '
-                                        'longer: the median of the last five is at most twice the median of '
-                                        'the first five plus 1 s. Without checkpoints the log replayed at a '
+                                        'longer: the median of the last five is at most 1.5 times the median of '
+                                        'the first five plus 500 ms. Without checkpoints the log replayed at a '
                                         'start grows from kill to kill (2.8 s to 23 s over 20 kills in the '
                                         'daemon\'s first runs)', 'WAITING'),
     'pin_log_stays_below_high_mark': ('b', 'PASS', WAITING,
@@ -280,7 +280,9 @@ OBSERVED = {
                              'the status five times a second'),
     'obs_c_checked_reads': ('c', 'the reads that found a record of the log not yet durable and checked its payload '
                                  '(status version 6), summed over the suite\'s volumes in its three passes; a mismatch on '
-                                 'a healthy volume would be a defect. Not judged until a run has shown the keys'),
+                                 'a healthy volume would be a defect. Each volume\'s count is its last server\'s, read '
+                                 'when the volume is destroyed: a killed server\'s count is lost. "Not recorded" (no '
+                                 'status read at the end) is not a rig error. Not judged until a run has shown the keys'),
     'obs_a_overlap_checked_reads': ('a', 'the same for the two volumes of the overlap test'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),

@@ -599,13 +599,16 @@ kill_test() {
     ( while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do zpool sync "$pool" 2>/dev/null; sleep 0.1; done ) &
     KT_SYNCER=$!
     # The log's size and the steps taken, by the daemon's status, five
-    # times a second: "pid log_live checkpoint_steps under|none". The
+    # times a second: "pid log_live checkpoint_steps under|none", the pid
+    # "-" when the status has none (a server that has died: without the
+    # mark the columns would move left and the steps be read as
+    # log_live). The
     # pin on the log's bound reads them (log_bound_pin).
     : > "$WORK/$name.logsamples"; KT_STARTS=""
     if [ "$IMPL" = daemon ] && [ "$impl" = "$SKYZFSD" ]; then
         ( while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do
               vol_status "$impl" "$dir" | awk '$1 == "pid" { p = $2 } $1 == "log_live" { l = $2 } $1 == "checkpoint_steps" { s = $2 } $1 == "checkpoint_step" { u = $2 }
-                  END { if (l != "") print p, l, s, u }' >> "$WORK/$name.logsamples"
+                  END { if (l != "") print (p == "" ? "-" : p), l, s, u }' >> "$WORK/$name.logsamples"
               sleep 0.2
           done ) &
     fi
@@ -759,8 +762,10 @@ takeover_pin() {
     if [ $# -lt 10 ]; then pin takeover_time_does_not_grow ERROR "only $# take-overs; ten are needed for two medians of five"; return; fi
     first=$(printf '%s\n' "${@:1:5}" | sort -n | sed -n 3p)
     last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
-    pin_is takeover_time_does_not_grow "over $# take-overs the median of the first five is $first ms and of the last five $last ms; allowed for the last five: twice the first plus 1 s, $((2 * first + 1000)) ms" \
-        [ "$last" -le $((2 * first + 1000)) ]
+    # 1.5 times plus 500 ms: the rig reads the ready line every 250 ms,
+    # so two medians of a steady take-over can differ by that much.
+    pin_is takeover_time_does_not_grow "over $# take-overs the median of the first five is $first ms and of the last five $last ms; allowed for the last five: 1.5 times the first plus 500 ms, $((3 * first / 2 + 500)) ms" \
+        [ "$last" -le $((3 * first / 2 + 500)) ]
 }
 # name: the pin on the log's bound, from the samples of the kill test
 # `name` and from what each new server replayed. The rule (design
@@ -777,7 +782,7 @@ takeover_pin() {
 # and says nothing: the rig's error.
 log_bound_pin() {
     local f=$WORK/$1.logsamples bound=$(( (128 << 20) + 2 * ((1 << 20) + 4096) + 3 * 4096 )) n max steps under rmax=0 rn=0 i
-    read -r n max steps under <<< "$(awk '{ n++; if ($2 + 0 > m) m = $2 + 0; if ($3 + 0 > s[$1]) s[$1] = $3 + 0; if ($4 == "under") u++ }
+    read -r n max steps under <<< "$(awk '{ n++; if ($2 + 0 > m) m = $2 + 0; if ($1 != "-" && $3 + 0 > s[$1]) s[$1] = $3 + 0; if ($4 == "under") u++ }
         END { for (p in s) t += s[p]; printf "%d %d %d %d", n, m, t, u }' "$f" 2>/dev/null)"
     for i in $KT_STARTS; do
         i=${i##*:}
@@ -2408,11 +2413,11 @@ unflushed_obs() {
     local c x m np
     read -r c x m np <<< "$(echo "$2" | tr ';' '\n' | awk '$2 == "count" { c += $3; x += $5; m += $7; n++ } $2 == "not" { np++ } END { printf "%d %d %d %d", c, x, m, np }')"
     if [ -z "$(echo "$2" | tr -d ' ;')" ]; then
-        obs "${1}_checked_reads" "not recorded: no status was read at the end"
+        obs "${1}_checked_reads" "not recorded: no status was read at the end (an observation missing, not an error of the rig)"
     elif [ "$c$x$m" = 000 ] && [ "$np" -gt 0 ] && ! echo "$2" | grep -q ' count '; then
         obs "${1}_checked_reads" "the server does not print time_read_unflushed_* (a daemon before status version 6, or the stand-in): nothing to say; $2"
     else
-        obs "${1}_checked_reads" "reads that found a record not yet durable and checked its payload: $c, $x bytes read beyond those asked for, $m MISMATCHED$([ "$m" -gt 0 ] && echo ' (a mismatch on a healthy volume is a DEFECT of the server: the record did not match its checksum)'); volumes that did not print the keys: $np; the volumes with a checked read: $(echo "$2" | tr ';' '\n' | awk '$2 == "count" && $3 != 0' | tr -s ' \n' ' ' | cut -c1-600). The suite makes some of its volumes fail on purpose (fail-log): a mismatch there is to be read beside that case"
+        obs "${1}_checked_reads" "reads that found a record not yet durable and checked its payload: $c, $x bytes read beyond those asked for, $m MISMATCHED$([ "$m" -gt 0 ] && echo ' (a mismatch on a healthy volume is a DEFECT of the server: the record did not match its checksum)'); volumes that did not print the keys: $np; each volume's count is its last server's, read when it was destroyed (a killed server's count is lost); the volumes with a checked read: $(echo "$2" | tr ';' '\n' | awk '$2 == "count" && $3 != 0' | tr -s ' \n' ' ' | cut -c1-600). The suite makes some of its volumes fail on purpose (fail-log): a mismatch there is to be read beside that case"
     fi
 }
 # The suite a third time, with checkpoint steps between the calls of
@@ -2449,7 +2454,7 @@ check_c_low() {
               [ -d "$n" ] || continue
               lim 30 "$SKYZFSD" status --dir "$n" --run-dir "$work/run${n##*/c}" 2>/dev/null | awk -v v="${n##*/c}" '
                   $1 == "pid" { p = $2 } $1 == "log_live" { l = $2 } $1 == "checkpoint_steps" { s = $2 } $1 == "checkpoint_step" { u = $2 }
-                  END { if (l != "") print v, p, l, s, u }' >> "$WORK/cl.samples"
+                  END { if (l != "") print v, (p == "" ? "-" : p), l, s, u }' >> "$WORK/cl.samples"
           done
           sleep 0.2
       done ) &
@@ -2467,7 +2472,7 @@ check_c_low() {
     # Steps: each server's count is its last reading; the sum over the
     # servers of the pass. Volumes: how many were seen, how many with a
     # step taken by any of their servers.
-    read -r n steps vols under most <<< "$(awk '{ n++; k = $1 " " $2; if ($4 + 0 > s[k]) s[k] = $4 + 0; seen[$1] = 1; if ($5 == "under") u++; if ($3 + 0 > m) m = $3 + 0 }
+    read -r n steps vols under most <<< "$(awk '{ n++; k = $1 " " $2; if ($2 != "-" && $4 + 0 > s[k]) s[k] = $4 + 0; seen[$1] = 1; if ($5 == "under") u++; if ($3 + 0 > m) m = $3 + 0 }
         END { for (k in s) { t += s[k]; split(k, a, " "); if (s[k] > 0) with[a[1]] = 1 } for (v in seen) nv++; for (v in with) nw++
               printf "%d %d %d/%d %d %d", n, t, nw, nv, u, m }' "$WORK/cl.samples")"
     counts=$(sed -n 's/^c_low counts //p' "$OUT/cl-volumes.txt" | head -n 1)
