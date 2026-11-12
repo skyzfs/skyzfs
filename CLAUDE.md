@@ -171,6 +171,21 @@ there, and the user decides when it merges.
   rig catches means changing that table on purpose. A newer push to a
   pull request cancels the older run. The dispatch input `discard`
   chooses whether a discarded range is zeroed or left as it was.
+  Since M1.T14 the workflow also has the jobs "through skyzfsd", one
+  per image (`tests/kernel/replay_daemon.py`): the cut is below the
+  daemon, on the disk under its files, and each prefix is checked
+  through a daemon started as after a reboot. A pull request that
+  touches `tests/kernel/`, `tests/lib/` or the workflow runs both kinds
+  of job; one that touches `crates/skyzfs-local/`, `crates/skyzfs-ublk/`,
+  `crates/skyzfs-ublk-sys/` or `bins/skyzfsd/` runs the daemon jobs.
+  On a pull request they check the marks and every flush boundary,
+  about twenty-five minutes a job. By dispatch, `server` chooses
+  `reference` (the default), `daemon` or `both`, and `daemon_budget`
+  `full` (the default: every record prefix, about forty-five minutes)
+  or `pull-request`. The summary's line "Every record prefix: N of N"
+  says whether a run shows design §9's criterion; only a full run
+  does. Exit 1 is a verdict against the daemon, exit 2 the rig's own
+  error.
 - **The daemon rig.** `skyzfs-daemon-rig.yml` runs on a pull request
   that touches `tests/kernel/`, `tests/lib/`, `bins/skyzfsd/`,
   `bins/skyzfs-blkcheck/`, `crates/skyzfs-ublk/`,

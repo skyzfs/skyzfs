@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. M1 still lacks two things: the power-cut replay has run on the ublk project's reference server and not yet on `skyzfsd`, and the throughput criterion is not met (§9). |
+| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. M1 still lacks two things: the power-cut replay now runs through `skyzfsd` and has passed every prefix it checked, but the run that checks every prefix is still to be made, and the throughput criterion is not met (§9). |
 | Date | 2026-11-12. First draft 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
@@ -451,7 +451,7 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 
 **Where M1 stands (2026-11-12).** M1 still lacks two of its exit criteria.
 
-**The power-cut replay has not been run on `skyzfsd`.** The replay rig that this criterion rests on has so far run against the ublk project's reference server. What the daemon's own log does at a power cut is covered by the store's tests on a simulated disk, and what it does at `kill -9` by the daemon rig on the kernel; neither is the criterion. Running the rig on the daemon is the next testing package.
+**The power-cut replay on `skyzfsd` is not shown yet.** The replay rig now takes the cut below the daemon: it records the disk under the daemon's files, and at a prefix it mounts that disk, starts the daemon as after a reboot and checks the pool it serves (M1.T14). Every prefix checked so far passed on both images: every flush boundary, every fsync mark, and in one run a fifth of the prefixes between flushes. The criterion says every record prefix, and no run has checked them all; the run that does, on the merged daemon, is the next step.
 
 **The throughput criterion is not met.**
 
