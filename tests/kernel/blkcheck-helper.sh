@@ -196,6 +196,12 @@ pid)
     exit 0
     ;;
 destroy)
+    # The checked reads of this volume's server (status version 6: a
+    # read of a record not yet durable): the rig sums them over the
+    # pass. A server that does not print the keys says so.
+    c=$(status_of time_read_unflushed_count); x=$(status_of time_read_unflushed_extra_bytes); m=$(status_of time_read_unflushed_mismatched)
+    if [ -n "$c" ]; then echo "unflushed $N: count $c extra $x mismatched $m" >> "$WORK/helper.log"
+    else echo "unflushed $N: not printed" >> "$WORK/helper.log"; fi
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null

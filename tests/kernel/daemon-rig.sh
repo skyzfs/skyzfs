@@ -407,6 +407,7 @@ overlap_test() {
     lim $((secs + 60)) python3 -I "$HERE/overlap-tear.py" "$BDEV" "$secs" > "$OUT/$name-overlap.out" 2> "$OUT/$name-overlap.err"; rc=$?
     OV_SAID=$(tail -n 1 "$OUT/$name-overlap.out")
     read -r _ OV_ROUNDS _ OV_TORN _ OV_TOGETHER _ <<< "$OV_SAID"
+    vol_status "$impl" "$dir" > "$OUT/$name-status-end.txt"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$impl" "$dir"
     [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]] && [[ ${OV_TOGETHER:-} =~ ^[0-9]+$ ]]
@@ -442,6 +443,7 @@ check_a_overlap() {
     else
         pin overlapping_writes_apply_whole ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao-overlap.err" 2>/dev/null)"
     fi
+    unflushed_obs a_overlap "$(for t in ao aod; do unflushed_said "$t" < "$OUT/$t-status-end.txt"; done 2>/dev/null)"
     # The control: a server that tears on purpose, whatever the storage
     # under it does. FAIL means torn rounds were seen, which shows in
     # every run that the pin above can fail.
@@ -2388,6 +2390,31 @@ check_c_delay() {
     fi
 }
 
+# The checked reads (status version 6, M1.3j): a read that finds a
+# record of the log not yet durable reads its whole payload and checks
+# it against the record's checksum. tpcb never reaches that path; the
+# suite and the overlap test read before the flush that follows a
+# write, and may. Observations, not judged until a run has shown the
+# keys: a mismatch above 0 on a healthy volume is a defect of the
+# server (a record that does not match fails the volume).
+#   unflushed_said NAME < status  -> "NAME count C extra X mismatched M; "
+#   or "NAME not printed; "
+unflushed_said() {
+    awk -v n="$1" '$1 == "time_read_unflushed_count" { c = $2 } $1 == "time_read_unflushed_extra_bytes" { x = $2 } $1 == "time_read_unflushed_mismatched" { m = $2 }
+        END { if (c == "") printf "%s not printed; ", n; else printf "%s count %s extra %s mismatched %s; ", n, c, x, m }'
+}
+# name "NAME count C extra X mismatched M; ..." -> one observation line.
+unflushed_obs() {
+    local c x m np
+    read -r c x m np <<< "$(echo "$2" | tr ';' '\n' | awk '$2 == "count" { c += $3; x += $5; m += $7; n++ } $2 == "not" { np++ } END { printf "%d %d %d %d", c, x, m, np }')"
+    if [ -z "$(echo "$2" | tr -d ' ;')" ]; then
+        obs "${1}_checked_reads" "not recorded: no status was read at the end"
+    elif [ "$c$x$m" = 000 ] && [ "$np" -gt 0 ] && ! echo "$2" | grep -q ' count '; then
+        obs "${1}_checked_reads" "the server does not print time_read_unflushed_* (a daemon before status version 6, or the stand-in): nothing to say; $2"
+    else
+        obs "${1}_checked_reads" "reads that found a record not yet durable and checked its payload: $c, $x bytes read beyond those asked for, $m MISMATCHED$([ "$m" -gt 0 ] && echo ' (a mismatch on a healthy volume is a DEFECT of the server: the record did not match its checksum)'); volumes that did not print the keys: $np; the volumes with a checked read: $(echo "$2" | tr ';' '\n' | awk '$2 == "count" && $3 != 0' | tr -s ' \n' ' ' | cut -c1-600). The suite makes some of its volumes fail on purpose (fail-log): a mismatch there is to be read beside that case"
+    fi
+}
 # The suite a third time, with the daemon checkpointing while it runs.
 # The marks cannot be set below their defaults (high 2 segments, low
 # 1: 128 MiB) and a case writes far less to its 64 MiB volume, so each
@@ -2466,7 +2493,8 @@ case $CHECKS in *" a "*) check_a; check_a_overlap; check_a_zeroes; check_a_xfs16
 case $CHECKS in *" b "*) check_b ;; esac
 case $CHECKS in *" c "*)
     check_c
-    check_c_low ;;
+    check_c_low
+    unflushed_obs c "$(for f in c cd cl; do awk -v p="$f" '$1 == "unflushed" { sub(/^unflushed /, ""); printf "%s/%s; ", p, $0 }' "$OUT/$f-helper.log" 2>/dev/null; done | sed 's|/\([0-9]*\): |\1 |g')" ;;
 esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.

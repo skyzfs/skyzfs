@@ -274,6 +274,10 @@ OBSERVED = {
                                    'its start took and how much log it replayed'),
     'obs_c_low_steps': ('c', 'the checkpoint steps taken while the suite ran on logs filled to the high mark, and on '
                              'how many of its volumes'),
+    'obs_c_checked_reads': ('c', 'the reads that found a record of the log not yet durable and checked its payload '
+                                 '(status version 6), summed over the suite\'s volumes in its three passes; a mismatch on '
+                                 'a healthy volume would be a defect. Not judged until a run has shown the keys'),
+    'obs_a_overlap_checked_reads': ('a', 'the same for the two volumes of the overlap test'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
