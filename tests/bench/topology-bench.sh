@@ -589,8 +589,9 @@ if drows:
         print('\nWhere the daemon\'s CPU went (TB_PERF_RECORD): `perf record -g` of its pid at 999 Hz in the middle of the '
               'window, by thread name (the readers together). `kernel` is the share of the thread\'s samples in the '
               'kernel; the next column divides those by the first rule of tests/bench/perfcat.py that their call chain '
-              'meets (a copy inside the ublk driver or the page cache counts as a copy, and ZFS's handling of a finished request, which runs in the daemon's thread when it ends the request, as ZFS completion); then the ten commonest kernel '
-              'leaf symbols, % of the kernel samples. The recording slows the daemon, so the row has no verdict:\n')
+              'meets (a copy inside the ublk driver or the page cache counts as a copy, and ZFS\'s handling of a finished '
+              'request, which runs in the daemon\'s thread when it ends the request, as ZFS completion); then the ten '
+              'commonest kernel leaf symbols, % of the kernel samples. The recording slows the daemon, so the row has no verdict:\n')
         print('| workload | daemon row | thread | samples | kernel | kernel samples by kind, % | top kernel symbols, % |')
         print('|---|---|---|---|---|---|---|')
         for r in pr:
@@ -1045,6 +1046,14 @@ teardown_topology() {
     if [ -n "$SKZ_SAMPLER" ]; then
         kill "$SKZ_SAMPLER" 2>/dev/null; SKZ_SAMPLER=""
     fi
+    # A trace or recording still running after an early exit: stopped,
+    # so that nothing writes into the output once the job is done.
+    for bgp in "$SC_PID" "$PR_PID"; do
+        [ -n "$bgp" ] || continue
+        pkill -INT -P "$bgp" 2>/dev/null || true; kill "$bgp" 2>/dev/null || true
+        wait "$bgp" 2>/dev/null || true
+    done
+    SC_PID=""; PR_PID=""
     stop_pg
     if [ -n "$SKZ_UP" ]; then
         # The pool is on the daemon's device. If the daemon is gone the
@@ -1815,11 +1824,11 @@ syscall_trace() {
     sleep $(( DURATION > SYSCALLS_S ? (DURATION - SYSCALLS_S) / 2 : 0 ))
     kill -0 "$SKZ_PID" 2>/dev/null || { log "syscall trace: the daemon is gone"; return 0; }
     for t in /proc/"$SKZ_PID"/task/*; do echo "${t##*/} $(cat "$t/comm" 2>/dev/null)"; done > "$base.threads"
-    if command -v perf >/dev/null && timeout -s INT "$SYSCALLS_S" perf trace -s -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
+    if command -v perf >/dev/null && timeout -s INT -k 10 "$SYSCALLS_S" perf trace -s -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
         || { [ -s "$base.trace" ] && grep -q 'events' "$base.trace"; }; then
         tool=perf
     elif command -v strace >/dev/null; then
-        timeout -s INT "$SYSCALLS_S" strace -f -qq -T -p "$SKZ_PID" -o "$base.trace" 2>> "$base.trace.err" || true
+        timeout -s INT -k 10 "$SYSCALLS_S" strace -f -qq -T -p "$SKZ_PID" -o "$base.trace" 2>> "$base.trace.err" || true
         tool=strace
     else
         log "syscall trace: neither perf nor strace is installed"; return 0
@@ -2111,12 +2120,12 @@ run_workload() { # topology workload [snapshot mode]
         skz_sample "$OUT/$tag.skz" &
         SKZ_SAMPLER=$!
         if [ "$SYSCALLS" = 1 ]; then
-            rm -f "$OUT/$tag.syscalls"
+            rm -f "$OUT/$tag.syscalls" "$OUT/$tag.trace" "$OUT/$tag.threads"
             syscall_trace "$OUT/$tag" &
             SC_PID=$!
         fi
         if [ "$PERF_RECORD" = 1 ]; then
-            rm -f "$OUT/$tag.perfrec"
+            rm -f "$OUT/$tag.perfrec" "$OUT/$tag.perfscript.gz"
             perf_record "$OUT/$tag" &
             PR_PID=$!
         fi
@@ -2140,7 +2149,7 @@ run_workload() { # topology workload [snapshot mode]
         [ -n "$bgp" ] || continue
         for _ in $(seq 1 1200); do kill -0 "$bgp" 2>/dev/null || break; sleep 0.25; done
         if kill -0 "$bgp" 2>/dev/null; then
-            pkill -INT -P "$bgp" 2>/dev/null; kill "$bgp" 2>/dev/null
+            pkill -INT -P "$bgp" 2>/dev/null || true; kill "$bgp" 2>/dev/null || true
             log "a trace or recording of the daemon had not ended 300 s after the window; stopped"
         fi
         wait "$bgp" 2>/dev/null || true
@@ -2164,6 +2173,7 @@ run_workload() { # topology workload [snapshot mode]
     # from its own image by a loop device, the reference server or the
     # daemon), whatever the knob says.
     case $topo in zfs-loop|zfs-ublk|zfs-skyzfsd) i=0 ;; *) i=$ORIGIN_DELAY_MS ;; esac
+    TB_ROW_SLOWED="$([ -z "$SKZ_UP" ] || { [ "$SYSCALLS" != 1 ] || printf 'TB_SYSCALLS '; [ "$PERF_RECORD" != 1 ] || printf 'TB_PERF_RECORD'; })" \
     TB_ROW_MEM_LIMIT="$MEM_LIMIT" python3 - "$OUT/$tag" "$topo" "$wl" "$DURATION" "$mode" "$SNAP_INTERVAL" "$plog" "$OUT/$topo.fsync" "$LABEL" "$CLIENTS" "$i" "$SKZ_TIME_DIR" > "$OUT/$tag.json" <<'PY'
 import collections, glob, json, os, re, sys
 sys.path.insert(0, sys.argv[12])
@@ -2392,6 +2402,10 @@ for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events
             m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
+# A row whose daemon was traced or recorded, by its setting: marked even
+# when the trace wrote nothing, so that it never counts for a ratio.
+if os.environ.get('TB_ROW_SLOWED', '').strip():
+    r['slowed_by'] = os.environ['TB_ROW_SLOWED'].split()
 # The daemon's system calls, where the row traced them (TB_SYSCALLS).
 if os.path.exists(base + '.syscalls'):
     try:

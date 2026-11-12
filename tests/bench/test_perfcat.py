@@ -78,5 +78,33 @@ class Parse(unittest.TestCase):
         self.assertEqual(t['iou-wrk']['categories'], {'other': 1})
 
 
+class RunnerKernel(unittest.TestCase):
+    """Samples cut from a real recording (run 43285245364, ubuntu-24.04): the symbols this kernel prints."""
+
+    def setUp(self):
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'perfscript-24.04.txt')) as f:
+            self.samples = pc.samples(f.read())
+
+    def kinds(self):
+        return [(comm, pc.category([s for _, s in frames])) for comm, frames in self.samples]
+
+    def test_each_sample_is_put_in_its_kind(self):
+        self.assertEqual(self.kinds(), [
+            ('skyzfsd-queue', 'wake and switch'),         # futex_wake -> try_to_wake_up
+            ('skyzfsd-queue', 'ZFS completion'),          # zio_interrupt -> taskq_dispatch_ent
+            ('skyzfsd-queue', 'copy, ublk'),              # check_heap_object under ublk_copy_user_pages
+            ('skyzfs-store', 'copy, page cache'),         # copy_folio_from_iter_atomic, a buffered write
+            ('skyzfs-reader-1', 'wake and switch'),       # eventfd_write
+            ('skyzfs-reader-3', 'wake and switch'),       # schedule under futex_wait
+            ('skyzfs-store', 'copy, page cache'),         # _copy_to_iter under filemap_read
+            ('skyzfsd-queue', 'wake and switch'),         # schedule under io_cqring_wait
+        ])
+
+    def test_a_copy_is_judged_by_its_leaf_outside_the_ublk_copy(self):
+        # A wait that the page cache's read path makes is no copy.
+        self.assertEqual(pc.category(['finish_task_switch', 'schedule', 'io_schedule', 'folio_wait_bit_common',
+                                      'filemap_read', '_copy_to_iter']), 'wake and switch')
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -74,8 +74,6 @@ def strace(text):
     """`strace -f -T` -> {tid: {call: [calls, total ms]}}. A call cut in two counts once, at its end."""
     per = {}
     for line in text.splitlines():
-        if line.rstrip().endswith('<unfinished ...>'):
-            continue
         m = STRACE_LINE.match(line)
         if not m:
             continue

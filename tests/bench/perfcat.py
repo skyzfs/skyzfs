@@ -31,11 +31,15 @@ import sys
 
 KERNEL = 0xffff800000000000
 COPY = re.compile(r'^(copy_user|rep_movs|_?copy_(to|from)_user|_copy_(to|from)_iter|copy_page_(to|from)_iter|'
+                  r'copy_folio_|copy_page_from_iter_atomic|'
                   r'copy_mc|__?memcpy|memcpy|memmove|__memmove|ublk_copy)')
 PAGE_CACHE = re.compile(r'^(filemap_|iomap_|generic_perform_write|generic_file_|xfs_|ext4_|folio|__folio|'
                         r'page_cache|__filemap|writeback|__writeback|sync_file_range|do_writepages|'
                         r'file_write_and_wait|vfs_fsync|__x64_sys_fdatasync|__x64_sys_pread|__x64_sys_pwrite)')
 UBLK = re.compile(r'^(ublk_|__ublk)')
+# The ublk driver's copy of a request's data: a sample anywhere under it
+# (the copy itself, or its checks of the user buffer) is that copy.
+UBLK_COPY = re.compile(r'^ublk_copy_user')
 WAKE = re.compile(r'^(futex_|__futex|do_futex|eventfd|try_to_wake_up|ttwu_|wake_up|__wake_up|schedule|__schedule|'
                   r'finish_task_switch|enqueue_task|dequeue_task|pick_next_task|select_task_rq|'
                   r'__x64_sys_futex|__x64_sys_eventfd)')
@@ -45,7 +49,7 @@ ZFS_DONE = re.compile(r'^(zio_|taskq_|spa_taskq|vdev_disk_io_done|vdev_disk_bio_
 IO_URING = re.compile(r'^(io_uring|__io_|io_[a-z_]+$|__x64_sys_io_uring)')
 # (name, rule over the chain's symbols, leaf first). The first that holds wins.
 CATEGORIES = (
-    ('copy, ublk', lambda c: COPY.match(c[0]) and any(UBLK.match(s) for s in c)),
+    ('copy, ublk', lambda c: any(UBLK_COPY.match(s) for s in c) or (COPY.match(c[0]) and any(UBLK.match(s) for s in c))),
     ('copy, page cache', lambda c: COPY.match(c[0]) and any(PAGE_CACHE.match(s) for s in c)),
     ('copy, other', lambda c: COPY.match(c[0])),
     ('ZFS completion', lambda c: any(ZFS_DONE.match(s) for s in c)),

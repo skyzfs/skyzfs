@@ -85,6 +85,7 @@ jobs:
       - run: python3 tests/bench/test_bracket.py
       - run: python3 tests/bench/test_syscalls.py
       - run: python3 tests/bench/test_perfcat.py
+      - run: python3 tests/bench/test_embedded_python.py
       - name: shellcheck
         run: git ls-files '*.sh' | xargs -r shellcheck
       - uses: dtolnay/rust-toolchain@stable
