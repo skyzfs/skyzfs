@@ -38,7 +38,7 @@ request.
 | skyzfs lead | Plans work packages, merges pull requests, owns `docs/skyzfs-design.md` and `docs/skyzfs-impl-notes.md` | `zfs-topology` (integration) |
 | skyzfs coding | Implements work packages | `skyzfs-coding` |
 | skyzfs testing | CI, test rigs and benchmarks, and running them | `skyzfs-testing` |
-| skyzfs review | Reviews pull requests. Does not change product code | none |
+| skyzfs review | Reviews pull requests and posts its findings on them. Does not change product code | none |
 
 - The user may join any session and redirect it. The user's instructions
   take precedence over a work package. Tell the lead what changed.
@@ -53,20 +53,28 @@ Codex, and other people can take part.
    `git fetch origin zfs-topology && git checkout -B <branch> origin/zfs-topology`,
    then push with `--force-with-lease`. Never stack new work on merged
    history.
-2. **Open the pull request** when the work package is ready for review:
-   your branch into `zfs-topology`, never into `main`. The title starts
-   with the work package id (`M1.1: ...`). The description follows
-   `.github/pull_request_template.md`. Then send the lead the link.
-   GraphQL is not available in cloud sessions, so use the REST API:
+2. **Open the pull request yourself** when the work package is ready
+   for review: your branch into `zfs-topology`, never into `main`. The
+   title starts with the work package id (`M1.1: ...`). The description
+   follows `.github/pull_request_template.md`. GraphQL is not available
+   in cloud sessions, so use the REST API:
    `gh api repos/skyzfs/skyzfs/pulls -f title=... -f head=<branch> -f base=zfs-topology -F body=@file`.
+   Then ask the review session for a review, with the link, the head
+   and what you want judged in particular, and send the lead a digest.
 3. **Review.** Codex reviews on its own. The review session posts its
-   findings on the pull request, most severe first, and says which ones
-   block the merge. Answer every finding on the pull request, from
-   whoever it comes: fix it with a new commit, or say why not. Do not
-   force-push a branch that is under review.
-4. **Merge.** The lead merges, with a merge commit, once CI is green and
-   every blocking finding is settled. The author does not merge their
-   own pull request.
+   findings on the pull request itself, most severe first, says which
+   ones block the merge, and sends the author and the lead a digest. The
+   author answers every finding on the pull request, from whoever it
+   comes: fix it with a new commit, or say why not; answer Codex on its
+   thread and resolve what is settled; then ask the reviewer for the
+   next look. Check a finding against the code before acting on it, a
+   bot's above all. Do not force-push a branch that is under review.
+4. **Merge.** When the review says it can merge, CI is green on the
+   head and every blocking finding is settled, the author sends the lead
+   a digest that says so. The lead reads the rigs' tables and merges,
+   with a merge commit. The author does not merge their own pull
+   request. A finding that needs a decision (the design, scope, what a
+   criterion means) goes to the lead when it comes up, not at the end.
 5. **One open pull request per branch.** If the next work package must
    start before the last has merged, branch off as `<branch>-<package>`
    (for example `skyzfs-coding-m1.2`) and tell the lead if your session
@@ -74,6 +82,32 @@ Codex, and other people can take part.
 
 The lead's own changes to the design document, the implementation
 notes and this guide go straight to `zfs-topology`.
+
+### Between sessions: digests and pointers
+
+The pull request is the record. A message to another session points at
+it and does not repeat it.
+
+- **A digest is a few lines:** the pull request's link and head, what
+  state it is in (opened, reviewed with or without blocking findings,
+  answered, ready to merge, blocked), and what needs a decision from
+  the one you write to. No pasted description, review or log; give the
+  link to the comment or the run.
+- **Who is told what.** The author tells the reviewer when there is
+  something to look at, and the reviewer tells the author the verdict.
+  The lead gets a digest when a pull request opens, when a review has a
+  blocking finding or a question of design, and when it is ready to
+  merge. Measurements that the design rests on (a benchmark round, a
+  rig's first run on something new) still go to the lead in full, as
+  figures, since the lead writes them into the notes.
+- **Do not subscribe to a pull request's events.** Every event wakes
+  the session and makes it read its whole context again, and most
+  events are a bot editing its status line. Wait for CI with a
+  background loop on the head's runs, and read Codex's findings once
+  when CI is done and once more before you say "ready to merge".
+- The lead does not post for other sessions and does not pass findings
+  on. If a session may not open pull requests or post on GitHub by its
+  own standing instructions, it says so once and waits for the user.
 
 The design is also open for outside review as a documents-only pull
 request into `main`, from the branch `skyzfs-design-docs`
