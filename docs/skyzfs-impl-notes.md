@@ -425,12 +425,51 @@ Two thirds of the daemon's CPU is in the kernel, and the pump waits for a CPU fo
 
 The model rows of the 24.04 job ran about 25% below those of the M1.3n round's 24.04 job (3553 to 4150 against 5055 to 5556). It is another machine, and postgres has run in a cgroup of its own since M1.T12, so the two are not compared.
 
+#### Where the daemon's system time goes (M1.T15)
+
+Two jobs on Ubuntu 24.04 on 2026-11-12, each row once, both on slow-sync machines[^t15runs]. One traced the daemon's system calls on a daemon from before M1.3p; the other took a `perf record` profile with call graphs of the merged daemon, with M1.3p, and ran the daemons before and after M1.3p side by side. A traced or recorded row counts for no ratio.
+
+**System calls per transaction** (the trace; times are elapsed, waits included, not CPU):
+
+- the pump makes about two: `io_uring_enter` 0.92, a `read` of its eventfd 0.52, a `futex` 0.51 that wakes a reader, `pwrite64` 0.034;
+- the four readers together about 1.1: 0.57 `pread64` of 21 to 28 µs, and as many `write`s of 8 µs, the eventfd that wakes the pump;
+- the worker: `pread64` 0.108, `pwrite64` 0.081 at 112 µs.
+
+So a read costs two wakes, the pump's of a reader and the reader's of the pump.
+
+**Where the CPU went** (the profile, 3461 samples in 20 s; "kernel" is the share of a thread's samples in the kernel, the kinds are shares of those):
+
+| Thread | Samples | Kernel | Kernel samples by kind, % |
+|---|---|---|---|
+| `skyzfsd-queue`, the pump | 1679 | 77% | wake and switch 42, io_uring 19, ZFS's completion 16, ublk driver 14, copy in ublk 4, other 4, page cache 1 |
+| `skyzfs-reader`, the four | 940 | 66% | wake and switch 63, page cache 18, other 13, copy from the page cache 4 |
+| `skyzfs-store`, the worker | 744 | 51% | page cache 68, copy to and from the page cache 24, wake and switch 6 |
+
+- **The daemon's system time is wakes and switches, not copies.** A copy is 4% of the pump's kernel samples and 4% of the readers'. That is gate G1's answer once more: the zero-copy modes would not buy what is missing.
+- "ZFS's completion" is `zio_interrupt` and its dispatch to a ZFS task queue: the kernel runs ZFS's completion of each request in the thread that ends it, which is the pump, and wakes a ZFS thread from there. That part is any ublk server's.
+- The runner has no hardware counters, so perf samples by a timer, and a sample taken with interrupts off is charged where they come back on. The kinds are from the whole call chain and are the better guide than the leaf symbols.
+
+**M1.3p before and after, on one machine**, one row each, so an indication and not a median:
+
+| | With M1.3p | Before it (dd4fcf8) |
+|---|---|---|
+| tps | 4715 | 4715 |
+| Ratio bracketed by model rows of 5337 and 5276 (1.2% apart) | 0.889 | 0.889 |
+| Readers' system time | 3.7 s | 5.4 s |
+| Readers' user time | 1.6 s | 2.5 s |
+| Readers' run delay | 8478 ms | 11209 ms |
+| Pump's system time | 7.0 s | 7.0 s |
+
+M1.3p took a third off the readers' CPU and their wait for a CPU, and the throughput did not move. Per transaction the pump now spends about 12 µs in the kernel and the readers 6.5 µs (9.5 before). What a transaction lacks against the model is about 190 µs at eight clients, so the daemon's own CPU is a tenth of the gap at most, and a read served by the pump itself where the data is in memory, which would save both wakes, is worth about 20 µs of it. No such package is planned on this evidence.
+
+**The runners' work disk is mounted without barriers.** The disk declares a volatile write cache, and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
+
 #### Open at this writing (2026-11-12)
 
-- M1.3p is merged and not yet measured on a runner: the benchmark rows above are all of daemons before it.
+- M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
+- A benchmark row on a disk with barriers on, so that a sync costs a device flush: not built.
 - The power-cut replay rig on `skyzfsd` (found by the review of the design pull request): the rig takes a device or a provider command, and no workflow sets either to the daemon. The next testing package.
 - The ublk feature flags and their kernel versions (design §4.2, "Kernels"): to be pinned against the kernel's documentation and source, with a clear refusal by the daemon on a kernel that lacks one. Not yet a package.
-- Where the daemon's system time goes (the pump's and the readers' system calls and wakes): not measured yet. A profile or a count of system calls on one benchmark row would say.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -531,3 +570,4 @@ Every independent read of the design and every review of a work package, with wh
 [^zfsnozero]: OpenZFS 2.4.1 has no use of `REQ_OP_WRITE_ZEROES` or `blkdev_issue_zeroout` under `module/` or `include/`. Its disk vdev trims with `__blkdev_issue_discard` and `blkdev_issue_secure_erase` (`module/os/linux/zfs/vdev_disk.c`).
 [^readerr]: `module/zfs/zio.c`, `zio_done`: a failed read is marked for suspension only when its error is `ENXIO`. Any other error on a zio issued with `ZIO_FLAG_CANFAIL`, which demand reads are (`module/zfs/dbuf.c`), is returned to the caller. `zio_vdev_io_assess` turns a leaf error into `ENXIO` only once the vdev is no longer accessible. Slow I/O is reported after `zfs_deadman_ziotime_ms` (`module/zfs/spa_misc.c`), and with the default `zfs_deadman_failmode=wait` it is only reported. Read in upstream master on 2026-11-10.
 [^roundde]: `topology-bench.yml` by dispatch from the testing branch at 1b8887d, daemon de83464: runs 43265803362 (Ubuntu 24.04) and 43265811438 (Ubuntu 26.04), 120 s per row. The M1.3n round's 24.04 job is run 43250509791.
+[^t15runs]: `topology-bench.yml` by dispatch from the branch of M1.T15: run 43278672091 (the trace; daemon as at dd4fcf8; disk-sync 193 MiB/s) and run 43285245364 (the profile and the M1.3p pair; daemon 7d8b91c merged; disk-sync 150 MiB/s), 120 s per row, four readers.
