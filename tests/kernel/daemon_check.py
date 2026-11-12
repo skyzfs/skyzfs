@@ -36,6 +36,18 @@ EXPECTED = {
     'pin_write_zeroes': ('a', 'PASS', SERVER, 'write_zeroes is offered (§4.1)'),
     'pin_discard_carried_out': ('a', 'PASS', SERVER, 'a discard issued to the device reaches the server (its own count)'),
     'pin_write_zeroes_carried_out': ('a', 'PASS', SERVER, 'a write of zeros issued to the device reaches the server as one'),
+    'pin_write_zeroes_through_a_checkpoint': ('a', 'PASS', WAITING,
+                                              'zeros written over the middle of data read back as zeros, with the data '
+                                              'around them, before a checkpoint, after it and after a kill -9 and a new '
+                                              'serve; the status then says how the checkpoint applied them: '
+                                              'zeroes_applied "deallocated in the home image" as served by default on '
+                                              'the runner\'s file system, "written as zeros: the file system ... '
+                                              'cannot deallocate" with --refuse-holes', 'WAITING'),
+    'pin_volume_on_larger_blocks': ('a', 'PASS', WAITING,
+                                    'on an XFS with 16 KiB blocks: create makes a volume whose write unit is the '
+                                    'block and says so; a volume made on 4 KiB blocks and copied there is refused '
+                                    'by serve with exit 1, the reason, and its files untouched; the volume made '
+                                    'there serves a pool that takes a synced write and scrubs clean', 'WAITING'),
     'pin_no_fua': ('a', 'PASS', SERVER, 'forced-unit-access writes are not advertised (§4.1)'),
     'pin_label_at_byte_0': ('a', 'PASS', KERNEL, 'the pool is on the bare device, its first label at byte 0 (§4.2)'),
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
@@ -70,28 +82,37 @@ EXPECTED = {
     'pin_c_delay_cases': ('c', 'PASS', SERVER,
                           'every case of the suite ends with that delay as it does without it'),
 
-    # Checkpoints (design §5.1, "When the daemon checkpoints"): the four
-    # lines wait for M1.3c. They are WAITING on the stand-in for good,
-    # and on the daemon as long as they are named in WAITS_FOR_THE_DAEMON
-    # below; a name is taken out of that set on purpose, with the rig's
-    # code for the pin, when the daemon checkpoints.
+    # Checkpoints (design §5.1, "When the daemon checkpoints"): four
+    # lines, judged on the daemon since M1.T8 and WAITING on the
+    # stand-in for good, which has no log and no checkpoint.
     'pin_takeover_time_does_not_grow': ('b', 'PASS', WAITING,
                                         'over the kills of the kill test a take-over does not take longer and '
-                                        'longer: the median of the last five is at most twice the median of '
-                                        'the first five plus 1 s. Without checkpoints the log replayed at a '
+                                        'longer: the median of the last five is at most 1.5 times the median of '
+                                        'the first five plus 500 ms. Without checkpoints the log replayed at a '
                                         'start grows from kill to kill (2.8 s to 23 s over 20 kills in the '
                                         'daemon\'s first runs)', 'WAITING'),
     'pin_log_stays_below_high_mark': ('b', 'PASS', WAITING,
                                       'under the kill test\'s load the write log never holds more than the '
-                                      'high mark (two segments of 64 MiB) plus one step (8 MiB of payload or '
-                                      '1024 records) plus one request (1 MiB)', 'WAITING'),
+                                      'high mark (two segments of 64 MiB) and what one request of 1 MiB adds '
+                                      '(its record, and a segment closed and the next opened: 128 MiB + 2 MiB + '
+                                      '20 KiB), by the status read five times a second and by what each new '
+                                      'server replayed. A step adds nothing to the bound. A test in which no '
+                                      'step was taken is a rig error', 'WAITING'),
     'pin_kills_inside_steps_lose_nothing': ('b', 'PASS', WAITING,
-                                            'kills that land inside a checkpoint step lose nothing: the pool '
-                                            'comes through as after any kill, and enough kills landed in a '
-                                            'step to say so (fewer is a rig error)', 'WAITING'),
+                                            'kills that land inside a checkpoint step lose nothing: ten '
+                                            'kills, each sent while a step waits at one of its five points '
+                                            '(blocks saved, home written, home synced, new start written, '
+                                            'new start durable; twice each, by the test hook '
+                                            '--step-pause-until), and the pool comes through as after any '
+                                            'kill. Fewer than ten is a rig error', 'WAITING'),
     'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
-                                 'every case of the suite ends as declared with the marks set low enough that '
-                                 'the daemon checkpoints while the suite runs (no step taken is a rig error)', 'WAITING'),
+                                 'every case of the suite ends as in the first pass with checkpoint steps between '
+                                 'its calls: each volume\'s log is first filled with zero data to within one 4 KiB '
+                                 'write of the high mark, so the case\'s first write takes it over and the daemon '
+                                 'steps before its next request. Cases that make no write, or only as their last '
+                                 'call, are counted apart; more volumes that could hold a step and did not than a '
+                                 'tenth of those that could is a rig error',
+                                 'WAITING'),
     'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
                                                   'a volume that fails while the server holds a request (--hold '
                                                   'with --fail-log-after) still ends: serve exits with the failed '
@@ -132,13 +153,20 @@ EXPECTED = {
     'pin_serve_after_kill_accepts_log': ('b', 'PASS', WAITING,
                                          'no serve after a kill is refused by the check of what was acknowledged '
                                          '(§4.2): a false alarm would suspend a healthy pool'),
+    'ctl_f_starts_refused': ('f', 'FAIL', WAITING,
+                             'control of check f (asked for by name, never by default): before each course of '
+                             'obs_f_refused_start_*, the start that drops the log\'s last record is refused as in '
+                             'ctl_recovered_log_too_short, on a pool and a volume of the course\'s own. FAIL is '
+                             'every start refused; one that served is PASS; a course that did not happen is the '
+                             'rig\'s error', 'WAITING'),
     'ctl_recovered_log_too_short': ('b', 'FAIL', WAITING,
                                     'control: a recovery that drops the last record (serve --recover-short 1) is '
                                     'refused with status 4, with the daemon\'s own reason for it ("the log is '
                                     'shorter than what was acknowledged"), and serves nothing: no ready line, '
-                                    'the device live at no look until the pool suspended or 300 s had passed. '
+                                    'the device live at no look in the 20 s after the refusal, looked at about once a second (until M1.T8 '
+                                    'the looks went on until the pool suspended or 300 s had passed; that course is check f\'s long). '
                                     'What the pool does then is ZFS\'s reaction to what it had in flight '
-                                    'and is reported in obs_b_refused_start_under_writes, not judged (with only '
+                                    'and is reported by check f\'s course long, not judged (with only '
                                     'writes waiting it did not suspend in 118 s, run 43086281904). The server is killed at rest '
                                     '(writer stopped, pool synced, writes and requests in flight still for a '
                                     'second, unstored 0), so that the log\'s last data record is the newest '
@@ -150,9 +178,10 @@ EXPECTED = {
                                     'WAITING'),
     'ctl_recovered_log_too_short_no_log_device': ('b', 'FAIL', WAITING,
                                                   'the same control on a pool without a separate log device, the second '
-                                                  'arm of the course after a refused start: judged by the same rule, so '
+                                                  'arm: judged by the same rule and looked at for the same 20 s, so '
                                                   'that an arm that did not happen (ERROR) or whose start served (PASS) '
-                                                  'does not leave the run green behind an observation',
+                                                  'does not leave the run green (the long course on such a pool is check '
+                                                  'f\'s longnolog)',
                                                   'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
@@ -217,15 +246,26 @@ EXPECTED = {
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
-    'obs_b_refused_start_under_writes': ('b', 'after a start is refused (the short-recovery control), with a writer\'s '
+    'obs_f_refused_start_long': ('f', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
                                               'by second for 300 s; what waited at the device; the transaction '
                                               'groups; whether the pool goes on acknowledging synced writes; whether '
                                               'a second writer (120 s), a read of an uncached file (180 s) and a '
                                               'scrub (240 s) fail or hang; what an operator would see'),
-    'obs_b_refused_start_no_log_device': ('b', 'the same course on a pool without a separate log device: does a synced '
+    'obs_f_refused_start_longnolog': ('f', 'the same course on a pool without a separate log device: does a synced '
                                                'write then hang, fail, or still return?'),
     'b_dead_server_live_ms': ('b', "how long a killed server's device is still reported LIVE"),
+    'obs_f_refused_start_scrub': ('f', 'after a refused start, a scrub alone at 10 s: does it suspend the pool, how '
+                                       'soon, does the command return, and does the pool let go of the device?'),
+    'obs_f_refused_start_export': ('f', 'after a refused start, zpool export at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_reopen': ('f', 'after a refused start, zpool reopen at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_clear': ('f', 'after a refused start, zpool clear at 10 s: does it return, and with what?'),
+    'obs_f_refused_start_writers': ('f', 'after a refused start, on a pool with a log device and nothing read: which '
+                                         'synced writers return, by when they were sent and how much the pool held '
+                                         'dirty then?'),
+    'obs_f_refused_start_zed': ('f', 'the scrub at 10 s again with zed running: does zed change the course?'),
+    'obs_f_refused_start_zedreopen': ('f', 'zpool reopen at 10 s with zed running: where the pool has suspended by '
+                                           'itself and holds the device, does a reopen free it or is it refused?'),
     'obs_device_back_without_clear': ('d', 'does zed bring the vdev back when the device reappears, with no zpool clear?'),
     'obs_returned_device_with_older_content': ('d', 'the device comes back holding less than ZFS was told'),
     'obs_scrub_in_progress_at_failure': ('d', 'what a scrub in progress records before the pool suspends'),
@@ -233,6 +273,17 @@ OBSERVED = {
                                                 'on this runner: the pin on overlapping writes means as much as this shows'),
     'obs_b_takeover_ms': ('b', 'how long each take-over of the kill test took, in order, and the medians of '
                                'the first and the last five'),
+    'obs_b_takeover_starts': ('b', 'each take-over of the kill test by the new server\'s own account: how long '
+                                   'its start took and how much log it replayed'),
+    'obs_c_low_steps': ('c', 'the volumes of that pass by class: a step between the case\'s calls, no write, a '
+                             'write only as the last call, the pre-fill not set, no step; and the steps read from '
+                             'the status five times a second'),
+    'obs_c_checked_reads': ('c', 'the reads that found a record of the log not yet durable and checked its payload '
+                                 '(status version 6), summed over the suite\'s volumes in its three passes; a mismatch on '
+                                 'a healthy volume would be a defect. Each volume\'s count is its last server\'s, read '
+                                 'when the volume is destroyed: a killed server\'s count is lost. "Not recorded" (no '
+                                 'status read at the end) is not a rig error. Not judged until a run has shown the keys'),
+    'obs_a_overlap_checked_reads': ('a', 'the same for the two volumes of the overlap test'),
     'obs_b_device_waits_for_a_server': ('b', 'a killed server\'s device left waiting 300 s under a pool, then taken over'),
     'obs_c_delay_kills': ('c', 'calls in flight at a death beside what the next server found applied and unacknowledged'),
     'obs_e_kernel_log': ('e', 'the kernel log while a request was held'),
@@ -258,10 +309,16 @@ REFERENCE_ONLY = set()
 # Observations only the daemon can make: on the stand-in the rig writes
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
-DAEMON_ONLY_OBSERVED = {'obs_b_refused_start_under_writes', 'obs_b_refused_start_no_log_device'}
+DAEMON_ONLY_OBSERVED = {'obs_c_low_steps',
+                        'obs_f_refused_start_long', 'obs_f_refused_start_longnolog',
+                        'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
+                        'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',
+                        'obs_f_refused_start_zedreopen'}
 
 
-CHECKS = ('a', 'b', 'c', 'd', 'e')
+# f is asked for by name: it is not among the default of a run.
+CHECKS = ('a', 'b', 'c', 'd', 'e', 'f')
+DEFAULT_CHECKS = 'a b c d e'
 JUDGED = ('pin_', 'ctl_', 'case_')
 
 
@@ -300,10 +357,6 @@ NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 # Pins the daemon cannot carry yet: expected WAITING on the daemon too.
 WAITS_FOR_THE_DAEMON = {
-    'pin_takeover_time_does_not_grow': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_log_stays_below_high_mark': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_kills_inside_steps_lose_nothing': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
-    'pin_c_suite_with_low_marks': 'M1.T8: the rig\'s code for it (the daemon checkpoints since M1.3c)',
     'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
                                                  'path does while the pump holds a request',
 }
@@ -423,7 +476,7 @@ def render(results, rows, differs, errors, checks):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('out')
-    ap.add_argument('--checks', default='a b c d e')
+    ap.add_argument('--checks', default=DEFAULT_CHECKS)
     args = ap.parse_args(argv)
     checks, asked_wrong = parse_checks(args.checks)
     path = os.path.join(args.out, 'results.tsv')

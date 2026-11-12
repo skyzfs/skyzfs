@@ -9,8 +9,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daemon_check as dc  # noqa: E402
+import c_low_steps as cls  # noqa: E402
 
+# The checks of a run by default. Check f is asked for by name, and a
+# result of a check that was not asked for is a rig error: F below is
+# what the tables hold for it.
 ALL = {'a', 'b', 'c', 'd', 'e'}
+F = [name for name, (check, *_) in list(dc.EXPECTED.items()) + list(dc.OBSERVED.items()) if check == 'f']
 
 
 def cases(impl='reference'):
@@ -24,8 +29,8 @@ def cases(impl='reference'):
 
 
 def as_expected(impl='reference'):
-    r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
-    r.update({name: 'seen' for name in dc.OBSERVED})
+    r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items() if name not in F}
+    r.update({name: 'seen' for name in dc.OBSERVED if name not in F})
     r.update(impl='reference: x', setup='ok', dev_strays='none')
     r.update(c_run='ok: 26 cases', c_declared=dc.C_DECLARED[impl])
     r.update({f'case_{k}': v for k, v in cases(impl).items()})
@@ -36,6 +41,11 @@ def as_expected(impl='reference'):
         r['pin_detach_of_held_says_6'] = 'PASS: seen'
         r['pin_orderly_stop_under_load'] = 'PASS: seen'
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
+        r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: seen'
+        r['pin_volume_on_larger_blocks'] = 'PASS: seen'
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            r[name] = 'PASS: seen'
         r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: seen'
         # And those the daemon cannot carry yet.
         for name in dc.WAITS_FOR_THE_DAEMON:
@@ -92,7 +102,7 @@ class Cases(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_an_observation_only_the_daemon_makes(self):
-        name = 'obs_b_refused_start_under_writes'
+        name = 'obs_c_low_steps'
         self.assertIn(name, dc.DAEMON_ONLY_OBSERVED)
         # the stand-in writes no line for it and none is asked for
         r = as_expected()
@@ -118,7 +128,6 @@ class Cases(unittest.TestCase):
             r = as_expected('daemon')
             r['ctl_recovered_log_too_short'] = 'FAIL: refused'
             r[name] = value
-            r['obs_b_refused_start_no_log_device'] = 'nothing to report: this arm ended before a refusal'
             return dc.judge(r, self.C, impl='daemon')[1:]
 
         self.assertEqual(daemon_run('FAIL: refused, served nothing'), ([], []))
@@ -146,6 +155,11 @@ class Cases(unittest.TestCase):
         r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: refused'
         r['pin_orderly_stop_under_load'] = 'PASS: exit 0'
         r['pin_serve_on_zfs_refused'] = 'PASS: refused'
+        r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: zeros'
+        r['pin_volume_on_larger_blocks'] = 'PASS: refused and served'
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            r[name] = 'PASS: seen'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -195,7 +209,8 @@ class Judge(unittest.TestCase):
         self.assertEqual(len(errors), 2)
 
     def test_a_missing_line_is_a_rig_error(self):
-        for name in list(dc.EXPECTED) + list(dc.OBSERVED):
+        # check f's lines have a test of their own below
+        for name in [n for n in list(dc.EXPECTED) + list(dc.OBSERVED) if n not in F]:
             r = as_expected()
             del r[name]
             _, differs, errors = dc.judge(r, ALL)
@@ -229,7 +244,8 @@ class Judge(unittest.TestCase):
         self.assertEqual(len(errors), 1)
 
     def test_an_observation_not_run_is_a_rig_error_however_it_says_so(self):
-        name = next(iter(dc.OBSERVED))
+        # The first observation of a default check (check f's need asking for).
+        name = next(n for n, (check, _) in dc.OBSERVED.items() if check != 'f')
         for text in ('not run: no pool', 'Not run', 'the scenario was not run, the pool was gone'):
             r = as_expected()
             r[name] = text
@@ -290,10 +306,44 @@ class Judge(unittest.TestCase):
 
     def test_an_observation_that_did_not_run_is_a_rig_error(self):
         for name in dc.OBSERVED:
+            # with the check of the observation asked for, and the
+            # judged line that check f then needs
             r = as_expected()
             r[name] = 'not run: the serve did not start'
-            _, differs, errors = dc.judge(r, ALL)
+            checks = ALL
+            if name in F:
+                checks = ALL | {'f'}
+                r['ctl_f_starts_refused'] = 'WAITING: the stand-in'
+            _, differs, errors = dc.judge(r, checks)
             self.assertEqual((differs, len(errors)), ([], 1), name)
+
+    def test_check_f_is_asked_for_by_name_and_is_the_daemons(self):
+        f = [name for name, (check, _) in dc.OBSERVED.items() if check == 'f']
+        # seven short courses, and check b's two long courses since M1.T8
+        self.assertEqual(len(f), 9)
+        self.assertIn('obs_f_refused_start_long', f)
+        self.assertIn('obs_f_refused_start_longnolog', f)
+        # one judged line: the courses' control
+        self.assertEqual([n for n, (check, *_) in dc.EXPECTED.items() if check == 'f'], ['ctl_f_starts_refused'])
+        self.assertEqual(dc.parse_checks('f'), ({'f'}, []))
+        # on the daemon each course's line must be there
+        r = dict(impl='daemon: x', setup='ok', dev_strays='none', ctl_f_starts_refused='FAIL: refused', **{name: 'seen' for name in f})
+        self.assertEqual(dc.judge(r, {'f'}, impl='daemon')[1:], ([], []))
+        for name in f:
+            q = dict(r)
+            del q[name]
+            self.assertEqual(dc.judge(q, {'f'}, impl='daemon')[2], [f'{name}: no observation'], name)
+        # a run of the default checks does not ask for them, and a
+        # line of check f in such a run is the rig's error
+        self.assertEqual(dc.parse_checks(dc.DEFAULT_CHECKS)[0], ALL)
+        q = as_expected()
+        self.assertEqual([k for k in q if k in F], [])
+        self.assertEqual(dc.judge(q, ALL)[1:], ([], []))
+        q['ctl_f_starts_refused'] = 'WAITING: the stand-in'
+        self.assertEqual(len(dc.judge(q, ALL)[2]), 1)
+        # the stand-in has no log to come out short: no line is asked for
+        q = dict(impl='reference: x', setup='ok', dev_strays='none', ctl_f_starts_refused='WAITING: the stand-in')
+        self.assertEqual(dc.judge(q, {'f'})[1:], ([], []))
 
     def test_a_pin_the_table_does_not_know_is_a_rig_error(self):
         for name, value in (('pin_new_thing', 'PASS: fine'), ('ctl_new_thing', 'FAIL: caught'), ('pin_new_thing', 'FAIL: x')):
@@ -313,7 +363,7 @@ class Judge(unittest.TestCase):
 
     def test_every_pin_says_what_it_rests_on(self):
         for name, (check, want, basis, claim, *_) in dc.EXPECTED.items():
-            self.assertIn(check, ALL, name)
+            self.assertIn(check, dc.CHECKS, name)
             self.assertIn(basis, (dc.KERNEL, dc.SERVER, dc.WAITING), name)
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
             self.assertTrue(claim, name)
@@ -323,16 +373,35 @@ class WaitsForTheDaemon(unittest.TestCase):
     def test_a_pin_the_daemon_cannot_carry_yet_is_waiting_there_and_nothing_else(self):
         r = as_expected('daemon')
         r['ctl_recovered_log_too_short'] = 'FAIL: seen'       # the control only the daemon runs
+        r.update({name: 'FAIL: seen' if name.startswith('ctl_') else 'seen' for name in F})
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual((differs, errors), ([], []))
         # PASS before its time is a difference: the table is changed on
         # purpose when the daemon can carry the pin.
-        r['pin_takeover_time_does_not_grow'] = 'PASS: early'
+        r['pin_failed_volume_while_a_request_is_held'] = 'PASS: early'
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual(len(differs), 1)
-        r['pin_takeover_time_does_not_grow'] = 'FAIL: grew'
+        r['pin_failed_volume_while_a_request_is_held'] = 'FAIL: did not end'
         _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
         self.assertEqual(len(differs), 1)
+
+    def test_the_checkpoint_pins_are_judged_on_the_daemon(self):
+        # Built with M1.T8: WAITING is no longer an answer there, and a
+        # FAIL differs from the table.
+        for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
+                     'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
+            self.assertNotIn(name, dc.WAITS_FOR_THE_DAEMON)
+            r = as_expected('daemon')
+            r['ctl_recovered_log_too_short'] = 'FAIL: seen'
+            r.update({n: 'FAIL: seen' if n.startswith('ctl_') else 'seen' for n in F})
+            r[name] = 'WAITING: not built'
+            _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+            self.assertEqual(len(errors), 1, name)
+            r[name] = 'FAIL: seen'
+            _, differs, errors = dc.judge(r, set(dc.CHECKS), 'daemon')
+            self.assertEqual((len(differs), errors), (1, []), name)
+            # On the stand-in they wait for good.
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
 
     def test_every_such_pin_is_in_the_table_and_waits_on_the_stand_in(self):
         for name in dc.WAITS_FOR_THE_DAEMON:
@@ -403,6 +472,59 @@ class Main(unittest.TestCase):
         # the same result twice is the same result
         self.assertEqual(self.run_main(lines + ['pin_discard\tPASS: again\n'])[0], 0)
 
+
+
+class CLowSteps(unittest.TestCase):
+    """c_low_steps.py: each volume of check c's third pass in its class."""
+
+    TRACE = [
+        '0\t1\topen\t-\t64\t16',
+        '1\t1\tsubmit\t1\twrite\t0\t4\th',
+        '2\t1\tsubmit\t2\tread\t0\t4\t',
+        '3\t2\topen\t-\t64\t16',
+        '4\t2\tsubmit\t1\tread\t0\t4\t',
+        '5\t3\topen\t-\t64\t16',
+        '6\t3\tsubmit\t1\tread\t0\t4\t',
+        '7\t3\tsubmit\t2\tdiscard\t0\t4\t',
+        '8\t4\topen\t-\t64\t16',
+        '9\t4\tsubmit\t1\twrite_zeroes\t0\t4\t',
+        '10\t4\tsubmit\t2\tflush\t0\t0\t',
+        '11\t5\topen\t-\t64\t16',
+        '12\t5\tsubmit\t1\twrite\t0\t4\th',
+        '13\t5\tsubmit\t2\twrite\t4\t4\th',
+    ]
+    HELPER = [
+        'prefill 1: set: log_live 134213632, 4096 bytes below the high mark 134217728; a 4 KiB write adds 8192; checkpoint_steps 0',
+        'steps 1 kill: checkpoint_steps 2 gate 1',
+        'steps 1 destroy: checkpoint_steps 3 gate 0',
+        'prefill 2: set: ...',
+        'prefill 3: set: ...',
+        'prefill 4: NOT SET: log_live 1 is not within 8192 bytes below the high mark 134217728',
+        'prefill 5: set: ...',
+        'steps 5 destroy: checkpoint_steps 0 gate 0',
+    ]
+
+    def test_classes(self):
+        classes, steps, gate = cls.classify(self.TRACE, self.HELPER)
+        self.assertEqual(classes, {'1': 'inside', '2': 'no_write', '3': 'last_write', '4': 'not_set', '5': 'no_step'})
+        self.assertEqual(steps['1'], 5)
+        self.assertEqual(gate['1'], 1)
+
+    def test_too_many_missed_is_said(self):
+        out = cls.report(*cls.classify(self.TRACE, self.HELPER))
+        self.assertIn('inside=1', out[0])
+        self.assertIn('verdict=TOO_MANY', out[0])
+        self.assertIn('c_low volume 5 no_step', out)
+
+    def test_one_miss_in_ten_is_ok(self):
+        classes = {str(v): 'inside' for v in range(1, 10)}
+        classes['10'] = 'no_step'
+        self.assertIn('verdict=OK', cls.report(classes, {}, {})[0])
+        classes['11'] = 'not_set'
+        self.assertIn('verdict=TOO_MANY', cls.report(classes, {}, {})[0])
+
+    def test_no_volume_that_could_is_too_many(self):
+        self.assertIn('verdict=TOO_MANY', cls.report({'1': 'no_write'}, {}, {})[0])
 
 if __name__ == '__main__':
     unittest.main()

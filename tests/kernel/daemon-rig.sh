@@ -62,14 +62,27 @@ UBLKSRVD_SEEN=$OUT/ublksrvd-seen.log; : > "$UBLKSRVD_SEEN"
 # For check c's helper: it looks only when the server is the daemon.
 BLK_UBLKSRVD_SEEN=""; [ "$IMPL" = reference ] || BLK_UBLKSRVD_SEEN=$UBLKSRVD_SEEN
 export BLK_UBLKSRVD_SEEN
+# f is not among the default: observations of what follows a refused
+# start, one short course each, asked for by name.
 CHECKS=" ${RIG_CHECKS:-a b c d e} "
 # Every word is a check and there is at least one: a run that checks
 # nothing must not look like a run.
 n=0
 for c in $CHECKS; do
-    case $c in a|b|c|d|e) n=$((n + 1)) ;; *) echo "RIG_CHECKS: '$c' is not a check; the checks are a b c d e" >&2; exit 64 ;; esac
+    case $c in a|b|c|d|e|f) n=$((n + 1)) ;; *) echo "RIG_CHECKS: '$c' is not a check; the checks are a b c d e f" >&2; exit 64 ;; esac
 done
 [ $n -gt 0 ] || { echo "RIG_CHECKS names no check" >&2; exit 64; }
+# Check f's courses, all by default. Each leaves a pool that is
+# suspended or hung, and the machine's zpool commands slow down with
+# each such pool (run 43157965159: the sixth course's looks were minutes
+# apart), so a course is best run alone: one job, one course.
+F_ALL="scrub export reopen clear writers zed zedreopen long longnolog"
+F_COURSES=${RIG_F_COURSES:-$F_ALL}
+n=0
+for c in $F_COURSES; do
+    case " $F_ALL " in *" $c "*) n=$((n + 1)) ;; *) echo "RIG_F_COURSES: '$c' is not a course; the courses are $F_ALL" >&2; exit 64 ;; esac
+done
+[ $n -gt 0 ] || { echo "RIG_F_COURSES names no course" >&2; exit 64; }
 KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
 # Options for every serve, split at spaces: for the daemon on a runner,
@@ -394,6 +407,7 @@ overlap_test() {
     lim $((secs + 60)) python3 -I "$HERE/overlap-tear.py" "$BDEV" "$secs" > "$OUT/$name-overlap.out" 2> "$OUT/$name-overlap.err"; rc=$?
     OV_SAID=$(tail -n 1 "$OUT/$name-overlap.out")
     read -r _ OV_ROUNDS _ OV_TORN _ OV_TOGETHER _ <<< "$OV_SAID"
+    vol_status "$impl" "$dir" > "$OUT/$name-status-end.txt"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$impl" "$dir"
     [ $rc = 0 ] && [[ ${OV_ROUNDS:-} =~ ^[0-9]+$ ]] && [[ ${OV_TORN:-} =~ ^[0-9]+$ ]] && [[ ${OV_TOGETHER:-} =~ ^[0-9]+$ ]]
@@ -429,6 +443,7 @@ check_a_overlap() {
     else
         pin overlapping_writes_apply_whole ERROR "${OV_SAID:-no output} $(tail -n 1 "$OUT/ao-overlap.err" 2>/dev/null)"
     fi
+    unflushed_obs a_overlap "$(for t in ao aod; do unflushed_said "$t" < "$OUT/$t-status-end.txt"; done 2>/dev/null)"
     # The control: a server that tears on purpose, whatever the storage
     # under it does. FAIL means torn rounds were seen, which shows in
     # every run that the pin above can fail.
@@ -564,7 +579,7 @@ PY
 # again. Sets KT_* for the caller to judge.
 KT_SERVE_EXTRA=()      # more arguments for every serve of a kill test
 kill_test() {
-    local impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
+    local tk impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
     KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
     KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_REFUSED=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_MS=""; KT_QUIESCE=""
@@ -583,6 +598,20 @@ kill_test() {
     # writes to the data vdev in flight for a kill to land on.
     ( while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do zpool sync "$pool" 2>/dev/null; sleep 0.1; done ) &
     KT_SYNCER=$!
+    # The log's size and the steps taken, by the daemon's status, five
+    # times a second: "pid log_live checkpoint_steps under|none", the pid
+    # "-" when the status has none (a server that has died: without the
+    # mark the columns would move left and the steps be read as
+    # log_live). The
+    # pin on the log's bound reads them (log_bound_pin).
+    : > "$WORK/$name.logsamples"; KT_STARTS=""
+    if [ "$IMPL" = daemon ] && [ "$impl" = "$SKYZFSD" ]; then
+        ( while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do
+              vol_status "$impl" "$dir" | awk '$1 == "pid" { p = $2 } $1 == "log_live" { l = $2 } $1 == "checkpoint_steps" { s = $2 } $1 == "checkpoint_step" { u = $2 }
+                  END { if (l != "") print (p == "" ? "-" : p), l, s, u }' >> "$WORK/$name.logsamples"
+              sleep 0.2
+          done ) &
+    fi
     sleep 5
     for n in $(seq 1 "$kills"); do
         pid=$(server_pid "$impl" "$dir")
@@ -595,6 +624,7 @@ kill_test() {
             sleep 0.01
         done
         kill -9 "$pid" 2>/dev/null || { KT_ERR="kill $n: kill -9 $pid failed"; break; }
+        tk=$(now_ms)
         # How long the kernel reports the device LIVE after its server
         # died: watched beside the serve that follows, which must cope
         # with it. The driver reports pid -1 once the server's task is
@@ -651,6 +681,16 @@ kill_test() {
         done
         i=$(vol_stat "$impl" "$dir" recovered_unacknowledged)
         if [[ $i =~ ^[0-9]+$ ]]; then KT_RECOVERED=$((KT_RECOVERED + i)); else KT_RECOVERED_UNSAID=$((KT_RECOVERED_UNSAID + 1)); fi
+        # The new server's own account of its start: how long it took
+        # and how much log it replayed ("-" from a server that does
+        # not say).
+        # kill to the new serve's launch (the old server's exit and the
+        # rig's own steps), the launch to its ready line, and within
+        # that the daemon's own start: what is left is the process
+        # before the daemon's clock and the rig's polling (0.25 s).
+        KT_STARTS+="$(( t0 - tk ))+$ms:"
+        i=$(vol_stat "$impl" "$dir" start_ms); KT_STARTS+="${i:--}:"
+        i=$(vol_stat "$impl" "$dir" replayed_bytes); KT_STARTS+="${i:--} "
         read -r live gone looks saw < "$WORK/$name.quiesce" 2>/dev/null || { live=""; gone=""; looks=0; saw="no record"; }
         KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; last seen LIVE with the dead server at $live ms, first seen otherwise at $gone ms ($saw, $looks looks); "
         KT_QUIESCE+="${live:--1}:${gone:--1} "
@@ -713,6 +753,54 @@ medians() {
     first=$(printf '%s\n' "${@:1:5}" | sort -n | sed -n 3p)
     last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
     echo "$# take-overs; median of the first five $first ms, of the last five $last ms; all, in order: $*"
+}
+# "MS MS ...": the pin on the take-over times of a kill test.
+takeover_pin() {
+    # shellcheck disable=SC2086  # a list of numbers
+    set -- $1
+    local first last
+    if [ $# -lt 10 ]; then pin takeover_time_does_not_grow ERROR "only $# take-overs; ten are needed for two medians of five"; return; fi
+    first=$(printf '%s\n' "${@:1:5}" | sort -n | sed -n 3p)
+    last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
+    # 1.5 times plus 500 ms: the rig reads the ready line every 250 ms,
+    # so two medians of a steady take-over can differ by that much.
+    pin_is takeover_time_does_not_grow "over $# take-overs the median of the first five is $first ms and of the last five $last ms; allowed for the last five: 1.5 times the first plus 500 ms, $((3 * first / 2 + 500)) ms" \
+        [ "$last" -le $((3 * first / 2 + 500)) ]
+}
+# name: the pin on the log's bound, from the samples of the kill test
+# `name` and from what each new server replayed. The rule (design
+# §5.1; skyzfs-local, the checkpoint rule's own words): before every
+# request the log is below the high mark, so it never holds more than
+# the mark and what one request adds. One request of at most 1 MiB
+# adds its record, 1 MiB and a header of one alignment unit (4096);
+# and, when the record does not fit what is left of a segment, what
+# closes that segment and opens the next: less than one more record
+# left unused, the closing marker and the next segment's header (a
+# write unit each, 4096 on a file system of 4096-byte blocks). So:
+# 128 MiB + 2 * (1 MiB + 4096) + 3 * 4096. A step adds nothing: it
+# takes out. A test in which no step was taken never came to the mark
+# and says nothing: the rig's error.
+log_bound_pin() {
+    local f=$WORK/$1.logsamples bound=$(( (128 << 20) + 2 * ((1 << 20) + 4096) + 3 * 4096 )) n max steps under rmax=0 rn=0 i
+    read -r n max steps under <<< "$(awk '{ n++; if ($2 + 0 > m) m = $2 + 0; if ($1 != "-" && $3 + 0 > s[$1]) s[$1] = $3 + 0; if ($4 == "under") u++ }
+        END { for (p in s) t += s[p]; printf "%d %d %d %d", n, m, t, u }' "$f" 2>/dev/null)"
+    for i in $KT_STARTS; do
+        i=${i##*:}
+        [[ $i =~ ^[0-9]+$ ]] || continue
+        rn=$((rn + 1)); [ "$i" -le "$rmax" ] || rmax=$i
+    done
+    i="$n readings of the status 0.2 s apart: log_live at most $max bytes; $steps checkpoint steps taken by the servers of the test, a step under way at $under readings; the most a new server replayed: $rmax bytes ($rn servers said); the bound is $bound bytes (the high mark of 128 MiB and what one request of 1 MiB can add: its record, and a segment closed and opened)"
+    if [ "${n:-0}" -lt 20 ]; then
+        pin log_stays_below_high_mark ERROR "the status was read only ${n:-0} times with a log_live in it: $i"
+    elif [ "$rn" = 0 ]; then
+        pin log_stays_below_high_mark ERROR "no new server said what it replayed (status key replayed_bytes): $i"
+    elif [ "$steps" = 0 ]; then
+        pin log_stays_below_high_mark ERROR "no checkpoint step was taken in the whole test, so the log never came to its high mark and the bound was not tried: $i"
+    elif [ "$max" -le "$bound" ] && [ "$rmax" -le "$bound" ]; then
+        pin log_stays_below_high_mark PASS "$i"
+    else
+        pin log_stays_below_high_mark FAIL "$i"
+    fi
 }
 # The four judgments of a kill test, as pins or as one control line.
 kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
@@ -798,13 +886,112 @@ txg_say() {
 vdev_say() {
     awk -v d="ublkb$2" '$1 == d { printf "read %s write %s cksum %s (state %s)", $3, $4, $5, $2; f = 1 } END { if (!f) printf "not in the status (which gave %d lines)", NR }' "$1" 2>/dev/null || printf 'no status file'
 }
+# A short course after a refused start (check f): what is done 10 s
+# after the refusal, with the first writer's synced writes the only I/O
+# until then. Uses the locals of refused_start_arm. The command's exit
+# and time go to $WORK/$tag.act; a command that has not returned leaves
+# no such file.
+rs_act() {
+    local cmd
+    case $course in
+        scrub|zed) cmd=(zpool scrub "$pool") ;;
+        zedreopen) cmd=(zpool reopen "$pool") ;;
+        export) cmd=(zpool export "$pool") ;;
+        reopen) cmd=(zpool reopen "$pool") ;;
+        clear) cmd=(zpool clear "$pool") ;;
+        *) return ;;
+    esac
+    act="${cmd[*]}"
+    amark=$(klog_mark)
+    ( t=$(now_ms); lim 130 "${cmd[@]}" > "$OUT/$tag-act.log" 2>&1; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/$tag.act" ) &
+}
+# The course "writers": a synced writer of 4 MiB every 30 s, each to a
+# file of its own, with what the pool held in memory when it was sent
+# (the txgs kstat's ndirty of the groups not yet committed) and how far
+# the first writer had come.
+rs_writers() {
+    local k
+    for k in 1 2 3 4 5 6 7 8 9; do
+        if rs_due $((k * 30)) "w$k"; then
+            cp "/proc/spl/kstat/zfs/$pool/txgs" "$OUT/$tag-w$k-txgs.txt" 2>/dev/null
+            echo "sent at $EL s, the first writer then at $(grep -c . "$WORK/$tag.record") acknowledged files, $(dirty_say "$OUT/$tag-w$k-txgs.txt"), $(mem_say)" > "$WORK/$tag.w$k.sent"
+            ( t=$(now_ms); lim $((330 - k * 30)) "$DD" if=/dev/zero of="$WORK/mnt/$pool/writer-$k" bs=1M count=4 conv=fsync status=none 2> "$OUT/$tag-w$k.err"; echo "exit $? after $(( $(now_ms) - t )) ms" > "$WORK/$tag.w$k" ) &
+        fi
+    done
+}
+# txgs file -> the bytes dirty in the groups not committed, and the
+# limit ZFS delays and then stops writers at.
+dirty_say() {
+    awk -v max="$(cat /sys/module/zfs/parameters/zfs_dirty_data_max 2>/dev/null)" \
+        'NR > 1 && $3 != "C" { d += $4; n++; st = st $3 } END { printf "%d MiB dirty in %d groups not committed (states %s; zfs_dirty_data_max %s)", d / 1048576, n, st == "" ? "none" : st, max == "" ? "not read" : int(max / 1048576) " MiB" }' "$1" 2>/dev/null \
+        || printf 'transaction groups not read'
+}
+# What ZFS holds that is not yet on disk, machine-wide (the ARC's
+# anonymous buffers are the dirty ones), and how often a transaction
+# was delayed or made to wait so far: the txgs kstat's ndirty read 0 at
+# every look in run 43157965159 and cannot be what says it.
+mem_say() {
+    local anon
+    anon=$(awk '$1 == "anon_size" { print int($3 / 1048576) }' /proc/spl/kstat/zfs/arcstats 2>/dev/null)
+    printf 'ARC anon_size %s MiB, dmu_tx counters above 0: %s' "${anon:-not read}" \
+        "$(awk 'NR > 2 && $3 > 0 && $1 != "dmu_tx_assigned" { printf "%s %s ", $1, $3 }' /proc/spl/kstat/zfs/dmu_tx 2>/dev/null || true)"
+}
+# Where a process waits in the kernel: the first frames of its stack
+# that are ZFS's or the block layer's, in one line; the whole stack
+# goes to the file.
+stack_say() { # pid file
+    cat "/proc/$1/stack" > "$2" 2>/dev/null
+    if [ -s "$2" ]; then
+        sed -n 's/^\[<[^>]*>\] *\([A-Za-z0-9_.]*\)+.*/\1/p' "$2" | head -n 8 | tr '\n' ' '
+    else
+        printf 'stack not read'
+    fi
+}
+# Seconds between two lines of a kernel log file, by its own stamps:
+# from the line that holds MARK to the first line after it that matches
+# RE. "none" when there is no such line, "not read" without the mark.
+klog_gap() { # file mark re
+    awk -v m="$2" -v re="$3" '
+        function stamp(l) { if (match(l, /^\[ *[0-9]+\.[0-9]+\]/)) return substr(l, 2, RLENGTH - 2) + 0; return -1 }
+        !f && index($0, m) { f = 1; t0 = stamp($0); next }
+        f && $0 ~ re { t1 = stamp($0); if (t0 >= 0 && t1 >= 0) printf "%.1f s", t1 - t0; else printf "found, stamps not read"; done = 1; exit }
+        END { if (!f) printf "not read"; else if (!done) printf "none" }' "$1" 2>/dev/null
+}
+# Does the pool let go of the device, at the end of a course: what the
+# driver says of the number, who holds the block device, and whether a
+# device can be added under the number (only tried when the driver no
+# longer knows it; the device added is a null device and is deleted).
+rs_release() { # num tag
+    local num=$1 tag=$2 a="" h f
+    if [ -e "/dev/ublkb$num" ]; then a="block node there"; else a="no block node"; fi
+    if lim 20 ublk list -n "$num" > "$OUT/$tag-end-ublk.txt" 2>&1 && grep -q '^dev id' "$OUT/$tag-end-ublk.txt"; then
+        a+=", the driver lists number $num as '$(sed -n 's/.*state \([A-Z_]*\).*/\1/p' "$OUT/$tag-end-ublk.txt" | head -n 1)'"
+        a+=", so no add under the number was tried"
+    else
+        a+=", the driver does not know number $num"
+        if lim 60 ublk add -t null -n "$num" > "$OUT/$tag-end-add.log" 2>&1; then
+            a+=", and an add under it SUCCEEDED (a null device, deleted again: $(lim 60 ublk del -n "$num" > /dev/null 2>&1 && echo 'deleted' || echo 'THE DELETE DID NOT RETURN 0'))"
+        else
+            a+=", and an add under it failed: $(tail -n 1 "$OUT/$tag-end-add.log" | cut -c1-160)"
+        fi
+    fi
+    h=""; for f in "/sys/block/ublkb$num/holders"/*; do [ -e "$f" ] && h+="${f##*/} "; done
+    if [ -d "/sys/block/ublkb$num" ]; then a+="; /sys/block/ublkb$num/holders: ${h:-empty}"; else a+="; no /sys/block/ublkb$num"; fi
+    printf '%s' "$a"
+}
 # The daemon's own words when a start finds the log shorter than what
 # was acknowledged: `Reason::Short` in crates/skyzfs-ublk/src/lifecycle.rs.
 # A change of that message must change this line on purpose.
 SHORT_LOG_SAID="the log is shorter than what was acknowledged"
 # The course after a refused start. With the daemon only.
-#   refused_start_arm TAG LOGDEV    TAG bs: the control's pool, with a
-#   separate log device (yes). TAG bn: the same with none (no).
+#   refused_start_arm TAG LOGDEV [COURSE]   TAG bs: the control's pool,
+#   with a separate log device (yes). TAG bn: the same with none (no).
+#   COURSE: "long" (the default) is the course described below. The
+#   others are check f's, each on a pool and a volume of its own with
+#   nothing but the first writer until the one thing the course does:
+#   scrub, export, reopen, clear (that zpool command 10 s after the
+#   refusal), zed (the scrub, with zed running), zedreopen (the
+#   reopen, with zed running), writers (rs_writers).
 # The server is killed at rest, so that the log's last mutation is an
 # acknowledged one and `serve --recover-short 1` must refuse. The
 # control judges that answer and nothing of the pool. The rest is
@@ -818,7 +1005,9 @@ SHORT_LOG_SAID="the log is shorter than what was acknowledged"
 refused_start_arm() {
     local w tag=$1 logdev=$2 dir=$WORK/vol-$1 pool=skzd-$1 slog="" pid rc i st w0 w1 held unst quiet="" num t0 dev was line="" fails mark zios
     local n0 n1 live="" end io="" inflight sus="" ev seen did="" ll steps step logsay said tw="" tr="" ts="" cold pc
+    local course=${3:-long} limit=300 act="" amark="" acted="" ret="" k rel hung="" said_at=-10
     RS_CTL=""; RS_OBS=""
+    case $course in long|writers) ;; short) limit=20 ;; *) limit=200 ;; esac
     if ! vol_up "$SKYZFSD" "$dir"; then RS_CTL="ERROR not created or served"; return; fi
     if [ "$logdev" = yes ]; then
         slog=$(new_slog "$tag")
@@ -928,14 +1117,36 @@ refused_start_arm() {
     n0=$(grep -c . "$WORK/$tag.record")
     t0=$(now_ms); was=""
     RS_DID=""; EL=0
-    while [ "$EL" -lt 300 ]; do
+    while [ "$EL" -lt "$limit" ]; do
         EL=$(( ($(now_ms) - t0) / 1000 ))
         st=$(pool_state "$pool")
         if [ -e "/dev/ublkb$num" ]; then dev="block node there"; else dev="no block node"; fi
         if lim 20 ublk list -n "$num" 2>/dev/null | grep -q '^dev id'; then dev+=", the driver lists it as '$(ublk_state "/dev/ublkb$num")'"; else dev+=", unknown to the driver"; fi
         case $dev in *LIVE*) live=yes ;; esac
         if [ "$st; $dev" != "$was" ]; then was="$st; $dev"; line+="at $EL s: pool $st, device $num: $dev. "; fi
-        if [ "$st" = SUSPENDED ]; then sus=$EL; break; fi
+        if [ "$st" = SUSPENDED ] && [ -z "$sus" ]; then sus=$EL; fi
+        # A line every 10 s, so that a reader of the job's log while
+        # it runs sees the arm alive.
+        if [ "$EL" -ge $((said_at + 10)) ]; then said_at=$EL; echo "-- $tag ($course): $EL s after the refusal: pool $st, device $num: $dev"; fi
+        # The short course (check b's arms) only looks: the control
+        # needs the refusal and the device live at no look, and its
+        # looks are those of these $limit s.
+        if [ "$course" = short ]; then sleep 1; continue; fi
+        if [ -n "$sus" ] && [ "$course" = long ]; then break; fi
+        # A short course goes on for 120 s after the pool suspended, to
+        # see whether its command returns and what becomes of the
+        # device (20 s were too few to say that a scrub does not
+        # return, run 43157965159); when the command returned and the
+        # pool has not suspended, for 60 s after the return.
+        if [ -n "$sus" ] && [ "$EL" -ge $((sus + 120)) ]; then break; fi
+        if [ -z "$ret" ] && [ -e "$WORK/$tag.act" ]; then ret=$EL; fi
+        if [ -n "$ret" ] && [ "$EL" -ge $((ret + 60)) ]; then break; fi
+        if [ "$course" = writers ]; then rs_writers; sleep 1; continue; fi
+        if [ "$course" != long ]; then
+            if rs_due 8 s8; then refused_snap "$pool" "$tag" 8s; fi
+            if rs_due 10 act; then acted=$EL; rs_act; fi
+            sleep 1; continue
+        fi
         # Each snapshot is taken before the probe that follows it.
         if rs_due 10 s10; then refused_snap "$pool" "$tag" 10s; fi
         if rs_due 60 s60; then refused_snap "$pool" "$tag" 60s; fi
@@ -969,8 +1180,26 @@ refused_start_arm() {
     case $did in *writer2*) io+="a second writer (4 MiB, synced) at $tw s: $(cat "$WORK/$tag.writer2" 2>/dev/null || echo "had not ended at $end s (hung)"); " ;; esac
     case $did in *reader*) io+="a read of the uncached file (32 MiB, primarycache=metadata, checked before the kill) at $tr s: $(cat "$WORK/$tag.reader" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-reader.err" 2>/dev/null | tr '\n' ' '); " ;; esac
     case $did in *scrub*) io+="a scrub at $ts s: $(cat "$WORK/$tag.scrub" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 120 "$OUT/$tag-scrub.log" 2>/dev/null | tr '\n' ' '); " ;; esac
+    if [ "$course" = writers ]; then
+        for k in 1 2 3 4 5 6 7 8 9; do
+            [ -s "$WORK/$tag.w$k.sent" ] || continue
+            io+="writer $k $(cat "$WORK/$tag.w$k.sent"): $(cat "$WORK/$tag.w$k" 2>/dev/null || echo "had not ended at $end s (hung)") $(head -c 100 "$OUT/$tag-w$k.err" 2>/dev/null | tr '\n' ' '); "
+            # Where the first writer that hangs waits, by its dd's stack.
+            if [ ! -e "$WORK/$tag.w$k" ] && [ -z "$hung" ]; then
+                hung=$(pgrep -f "of=$WORK/mnt/$pool/writer-$k " | head -n 1)
+                [ -z "$hung" ] || hung="writer $k's dd (pid $hung) waits in: $(stack_say "$hung" "$OUT/$tag-w$k-stack.txt")"
+            fi
+        done
+        RS_OBS="pool with a separate log device, nothing read and nothing scrubbed; a synced writer of 4 MiB to a file of its own every 30 s. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")The writers: ${io:-none was sent}${hung:+Where a hung one waits: $hung. }The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. At the end: $(dirty_say "$OUT/$tag-end-txgs.txt"); $(txg_say "$OUT/$tag-end-txgs.txt"). Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}"
+    elif [ "$course" = short ]; then
+        RS_OBS=""
+    elif [ "$course" != long ]; then
+        rel=$(rs_release "$num" "$tag")
+        RS_OBS="pool with a separate log device$([[ $course == zed* ]] && echo ", zed $(zed_state) with $(pgrep -c -x zed 2>/dev/null || echo 0) process(es)"); only the first writer's synced writes until '$act' at ${acted:-never} s after the refusal (exit $SERVE_RC). The command: $(cat "$WORK/$tag.act" 2>/dev/null || echo "HAD NOT RETURNED at $end s") $(head -c 200 "$OUT/$tag-act.log" 2>/dev/null | tr '\n' ' '). ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s by the rig's clock; by the kernel log, 'has been suspended' came $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended") after the command was sent. " || echo "Never suspended in $end s (the kernel log's 'has been suspended' after the command: $(klog_gap "$OUT/$tag-klog.txt" "$amark" "$pool.*has been suspended")). ")At the end, $end s: pool $st, its file system $(mountpoint -q "$WORK/mnt/$pool" && echo 'still mounted' || echo 'NO LONGER MOUNTED (what the first writer wrote after that went to the directory under it)'). Does the pool let go of the device: the vdev in zpool status: $(vdev_say "$OUT/$tag-end-status.txt" "$num"); $rel. Before the command (8 s): vdev $(vdev_say "$OUT/$tag-8s-status.txt" "$num"), $(txg_say "$OUT/$tag-8s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen"
+    else
     RS_OBS="pool $([ "$logdev" = yes ] && echo 'with a separate log device' || echo 'WITHOUT a separate log device'). Before the refused start, 2 s after a writer began with no server: $inflight. After the refusal (exit $SERVE_RC): ${line}$([ -n "$sus" ] && echo "SUSPENDED at $sus s. " || echo "Never suspended in $end s. ")At the end, $end s: pool $st, the device: $dev. The device's error counters in zpool status at 10 s: $(vdev_say "$OUT/$tag-10s-status.txt" "$num"); 60 s: $(vdev_say "$OUT/$tag-60s-status.txt" "$num"); 110 s: $(vdev_say "$OUT/$tag-110s-status.txt" "$num"); 170 s: $(vdev_say "$OUT/$tag-170s-status.txt" "$num"); 230 s: $(vdev_say "$OUT/$tag-230s-status.txt" "$num"); the end: $(vdev_say "$OUT/$tag-end-status.txt" "$num"). Transaction groups at 10 s: $(txg_say "$OUT/$tag-10s-txgs.txt"); at 60 s: $(txg_say "$OUT/$tag-60s-txgs.txt"); at the end: $(txg_say "$OUT/$tag-end-txgs.txt"). The first writer, which writes 4 MiB files and syncs each: $fails failed writes, $n0 files acknowledged at the refusal and $n1 at the end$([ "$n1" -gt "$n0" ] && echo ' (ACKNOWLEDGED BY THE POOL WITH NO SERVER BEHIND ITS DEVICE)'). Started while it lasted: ${io:-nothing (the pool suspended first)}. Failed I/O of the pool in the kernel log since the kill, by zio type (1 read, 2 write, 5 flush): ${zios:-none}. What an operator would see at the end: $seen. Stacks of ZFS's threads, events and status at 10 s, 60 s and the end (and just before each of the three probes) are in the files $tag-*-stacks.txt, -events.txt, -status.txt"
     # Exit 4 is every refusal of a failed volume. The control is about
+    fi
     # this one, so the daemon must have given its own reason for it.
     if [ "$SERVE_RC" = "$EXIT_REFUSED_FAILED" ] && ! grep -q -F "$SHORT_LOG_SAID" "$dir.serve.log"; then
         RS_CTL="ERROR the control did not happen: serve --recover-short 1 exited $SERVE_RC, but not for a log that is too short: its log does not say '$SHORT_LOG_SAID'; its last line: $(tail -n 1 "$dir.serve.log" | cut -c1-300)"
@@ -985,6 +1214,176 @@ refused_start_arm() {
     sed -n '1,/^== [0-9]/p' "$OUT/$tag-end-stacks.txt" 2>/dev/null | sed '$d'
     awk '/^== [0-9]+ (txg_sync|spa_async)/ { n = 0; p = 1; print; next } /^== / { p = 0 } p && ++n <= 15' "$OUT/$tag-end-stacks.txt" 2>/dev/null | head -n 200
 }
+# a: a write of zeros through a checkpoint. 8 MiB of random data, zeros
+# over its middle 4 MiB (BLKZEROOUT), then 200 MiB elsewhere so that
+# the log passes its high mark and a checkpoint applies the zeros to
+# the home image. The 8 MiB are read through the device before the
+# checkpoint, after it, and after a kill -9 and a new serve: each time
+# the data with zeros in the middle. Once as served by default, where
+# the status must then say that the ranges were deallocated, and once
+# with --refuse-holes, where it must say that zeros were written
+# because the file system cannot deallocate (the status's own words).
+#   zero_arm TAG [serve arguments] -> ZA_BAD ("" or what was wrong),
+#   ZA_SAID; ZA_ERR set when the arm did not happen.
+zero_arm() {
+    local tag=$1 dir=$WORK/vol-$1 at=$((1 << 30)) r s0 s1 st za i pid rc
+    shift
+    ZA_BAD=""; ZA_SAID=""; ZA_ERR=""
+    if ! vol_up "$SKYZFSD" "$dir" "$@"; then ZA_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return; fi
+    "$DD" if=/dev/urandom of="$WORK/$tag.data" bs=1M count=8 status=none
+    cp "$WORK/$tag.data" "$WORK/$tag.want"
+    "$DD" if=/dev/zero of="$WORK/$tag.want" bs=1M seek=2 count=4 conv=notrunc status=none
+    if ! lim 60 "$DD" if="$WORK/$tag.data" of="$BDEV" bs=1M seek=$((at >> 20)) oflag=direct conv=nocreat,fsync status=none 2> "$OUT/$tag-write.err"; then
+        ZA_ERR="the 8 MiB were not written: $(tail -n 1 "$OUT/$tag-write.err" | cut -c1-200)"; kill_cleanup "$tag"; return
+    fi
+    lim 30 blkdiscard -f -z -o $((at + (2 << 20))) -l $((4 << 20)) "$BDEV" > "$OUT/$tag-zeroout.log" 2>&1; rc=$?
+    if [ $rc != 0 ]; then ZA_ERR="blkdiscard -z exit $rc: $(tail -n 1 "$OUT/$tag-zeroout.log" | cut -c1-200)"; kill_cleanup "$tag"; return; fi
+    za_read() { # label: the 8 MiB through the device against what they must be
+        if ! lim 60 "$DD" if="$BDEV" of="$WORK/$tag.got" bs=1M skip=$((at >> 20)) count=8 iflag=direct status=none 2> "$OUT/$tag-read.err"; then
+            ZA_BAD+="the read $1 failed: $(tail -n 1 "$OUT/$tag-read.err" | cut -c1-160); "; ZA_SAID+="read $1: failed; "
+        elif cmp -s "$WORK/$tag.got" "$WORK/$tag.want"; then
+            ZA_SAID+="read $1: the data with zeros in its middle 4 MiB; "
+        else
+            ZA_BAD+="the read $1 DIFFERS from the data with zeros in the middle (first difference: $(cmp "$WORK/$tag.got" "$WORK/$tag.want" 2>&1 | cut -c1-120)); "; ZA_SAID+="read $1: DIFFERS; "
+        fi
+    }
+    za_read "before a checkpoint"
+    s0=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps)
+    ZA_SAID+="zeroes_applied then '$(vol_status "$SKYZFSD" "$dir" | sed -n 's/^zeroes_applied  *//p' | head -n 1 | cut -c1-60)', checkpoint_steps '${s0:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
+    if ! lim 300 "$DD" if=/dev/urandom of="$BDEV" bs=1M seek=$(((at >> 20) + 1024)) count=200 oflag=direct conv=nocreat,fsync status=none 2> "$OUT/$tag-fill.err"; then
+        ZA_ERR="the 200 MiB that bring the checkpoint were not written: $(tail -n 1 "$OUT/$tag-fill.err" | cut -c1-200)"; kill_cleanup "$tag"; return
+    fi
+    # The checkpoint has taken the zeros when steps were counted and
+    # none is under way, at two looks a second apart.
+    r=""
+    for i in $(seq 1 120); do
+        s1=$(vol_stat "$SKYZFSD" "$dir" checkpoint_steps); st=$(vol_stat "$SKYZFSD" "$dir" checkpoint_step)
+        if [[ $s1 =~ ^[0-9]+$ ]] && [ "$s1" -gt "${s0:-0}" ] && [ "$st" = none ]; then
+            if [ "$r" = "$s1" ]; then rc=rest; break; fi
+            r=$s1
+        else
+            r=""
+        fi
+        sleep 1
+    done
+    if [ "$rc" != rest ]; then
+        ZA_ERR="no checkpoint came to rest within 120 s of 200 MiB written (checkpoint_steps '${s0:-}' then '${s1:-}', checkpoint_step '${st:-}', log_live '$(vol_stat "$SKYZFSD" "$dir" log_live)')"
+        kill_cleanup "$tag"; return
+    fi
+    # The line's whole text: the status says it in words (`said` of
+    # the zeroes in crates/skyzfs-ublk/src/status.rs), and the two
+    # ways of writing zeros begin alike.
+    za=$(vol_status "$SKYZFSD" "$dir" | sed -n 's/^zeroes_applied  *//p' | head -n 1 | cut -c1-120)
+    ZA_SAID+="after 200 MiB more: checkpoint_steps $s1, log_live $(vol_stat "$SKYZFSD" "$dir" log_live), zeroes_applied '${za:-no such key}', the home image $(du -m "$dir/home.img" 2>/dev/null | cut -f1) MiB on disk; "
+    ZA_APPLIED=$za
+    za_read "after the checkpoint"
+    pid=$(server_pid "$SKYZFSD" "$dir")
+    kill -9 "$pid" 2>/dev/null
+    [ -z "$SERVE_PID" ] || serve_wait 30
+    if ! serve_start "$SKYZFSD" "$dir" "$@"; then
+        ZA_BAD+="after a kill -9 the volume was not served again (serve rc ${SERVE_RC:-none}); "
+    else
+        za_read "after a kill -9 and a new serve"
+    fi
+    kill_cleanup "$tag"
+}
+check_a_zeroes() {
+    local plain hard bad=""
+    step "a: a write of zeros through a checkpoint"
+    if [ "$IMPL" = reference ]; then
+        pin write_zeroes_through_a_checkpoint WAITING "the stand-in has no checkpoint and no home image"
+        return
+    fi
+    ZA_APPLIED=""; zero_arm az
+    if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "served by default: $ZA_ERR"; return; fi
+    plain="served by default: $ZA_SAID"; bad+=$ZA_BAD
+    [[ $ZA_APPLIED == "deallocated in the home image"* ]] || bad+="served by default the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 'deallocated in the home image'; "
+    ZA_APPLIED=""; zero_arm azr --refuse-holes
+    if [ -n "$ZA_ERR" ]; then pin write_zeroes_through_a_checkpoint ERROR "with --refuse-holes: $ZA_ERR ($plain)"; return; fi
+    hard="with --refuse-holes: $ZA_SAID"; bad+=$ZA_BAD
+    [[ $ZA_APPLIED == "written as zeros: the file system of the volume's directory cannot deallocate"* ]] || bad+="with --refuse-holes the status said zeroes_applied '${ZA_APPLIED:-nothing}' after the checkpoint, not 'written as zeros: the file system of the volume's directory cannot deallocate'; "
+    if [ -z "$bad" ]; then pin write_zeroes_through_a_checkpoint PASS "$plain $hard"; else pin write_zeroes_through_a_checkpoint FAIL "$bad $plain $hard"; fi
+}
+# a: a volume on a file system whose blocks are larger than the page
+# (XFS with 16 KiB blocks, on a loop device). `create` there makes a
+# volume whose write unit is the file system's block and says so; a
+# volume made on 4 KiB blocks and copied there is refused by `serve`,
+# with the reason and with its files untouched; the volume made there
+# serves a pool that takes a synced write and scrubs clean.
+check_a_xfs16k() {
+    local img=$WORK/x16.img mnt=$WORK/x16 loop dir=$WORK/x16/vol small=$WORK/vol-ax copy=$WORK/x16/copied pool=skzd-ax
+    local a="" bad="" rc said before after st i bs
+    step "a: a volume on a file system with 16 KiB blocks"
+    if [ "$IMPL" = reference ]; then
+        pin volume_on_larger_blocks WAITING "the stand-in has no write unit"
+        return
+    fi
+    ax_end() { # everything this check made, each step under a limit
+        [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool" > /dev/null 2>&1
+        [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
+        vol_detach "$SKYZFSD" "$dir"
+        lim 60 umount "$mnt" > /dev/null 2>&1
+        [ -z "${loop:-}" ] || lim 30 losetup -d "$loop" > /dev/null 2>&1
+    }
+    modprobe xfs 2>/dev/null
+    truncate -s 20G "$img"; mkdir -p "$mnt"
+    loop=$(losetup --find --show --direct-io=on "$img" 2> "$OUT/ax-setup.log") || loop=""
+    if [ -z "$loop" ] || ! lim 300 mkfs.xfs -q -f -b size=16k "$loop" >> "$OUT/ax-setup.log" 2>&1 || ! lim 60 mount "$loop" "$mnt" >> "$OUT/ax-setup.log" 2>&1; then
+        pin volume_on_larger_blocks ERROR "an XFS with 16 KiB blocks was not made and mounted here: $(tail -n 1 "$OUT/ax-setup.log" | cut -c1-200)"
+        ax_end; return
+    fi
+    bs=$(stat -f -c %S "$mnt")
+    if [ "$bs" != 16384 ]; then
+        pin volume_on_larger_blocks ERROR "the file system made says a block of '$bs' bytes, not 16384"
+        ax_end; return
+    fi
+    # 1: create there
+    lim 120 "$SKYZFSD" create --dir "$dir" --size "$VOL_BYTES" > "$OUT/ax-create.out" 2> "$OUT/ax-create.err"; rc=$?
+    said=$(grep -m 1 "write unit is 16384 bytes" "$OUT/ax-create.err" | cut -c1-200)
+    a+="create on it: exit $rc, $([ -n "$said" ] && echo "said: $said" || echo "did NOT say the write unit is 16384 bytes (stderr: $(tail -n 1 "$OUT/ax-create.err" | cut -c1-200))"); "
+    { [ $rc = 0 ] && [ -n "$said" ]; } || bad+="create; "
+    # 2: a volume of 4 KiB units, copied there, must not be served
+    if ! vol_create "$SKYZFSD" "$small" > "$OUT/ax-small.log" 2>&1 || ! lim 300 cp -a --sparse=always "$small" "$copy"; then
+        pin volume_on_larger_blocks ERROR "the volume to copy was not made or not copied: $(tail -n 1 "$OUT/ax-small.log" | cut -c1-200) ($a)"
+        ax_end; return
+    fi
+    before=$(cd "$copy" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    serve_start "$SKYZFSD" "$copy"; rc=$?
+    said=$(grep -m 1 "larger than the volume's write unit" "$copy.serve.log" | cut -c1-240)
+    if [ $rc = 0 ]; then
+        a+="the copied volume (unit of the copy's source: 4096) WAS SERVED as $BDEV; "; bad+="the copy was served; "
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 60; vol_detach "$SKYZFSD" "$copy"
+    else
+        a+="serve of a volume made on 4 KiB blocks and copied there: exit ${SERVE_RC:-none}, $([ -n "$said" ] && echo "said: $said" || echo "did NOT give the reason (its last line: $(tail -n 1 "$copy.serve.log" | cut -c1-200))"); "
+        { [ $rc = 1 ] && [ "$SERVE_RC" = 1 ] && [ -n "$said" ]; } || bad+="the refusal; "
+    fi
+    after=$(cd "$copy" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    a+="the copy's files after it: $([ "$before" = "$after" ] && echo 'as before' || echo 'CHANGED'); "
+    [ "$before" = "$after" ] || bad+="the copy's files changed; "
+    # 3: the volume made there, under a pool
+    if ! serve_start "$SKYZFSD" "$dir"; then
+        a+="the volume made there was NOT served (serve rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" | cut -c1-200)); "; bad+="serve; "
+    else
+        a+="the volume made there serves as $BDEV with logical blocks of $(cat "/sys/block/${BDEV#/dev/}/queue/logical_block_size" 2>/dev/null) and physical of $(cat "/sys/block/${BDEV#/dev/}/queue/physical_block_size" 2>/dev/null); "
+        mkdir -p "$WORK/mnt/$pool"
+        if ! lim 180 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$WORK/mnt/$pool" -O compression=off "$pool" "$BDEV" > "$OUT/ax-pool.log" 2>&1; then
+            a+="zpool create FAILED: $(tail -n 1 "$OUT/ax-pool.log" | cut -c1-200); "; bad+="the pool; "
+        else
+            lim 120 "$DD" if=/dev/urandom of="$WORK/mnt/$pool/file" bs=1M count=64 conv=fsync status=none 2> "$OUT/ax-write.err"; rc=$?
+            lim 60 zpool scrub "$pool" > "$OUT/ax-scrub.log" 2>&1
+            for i in $(seq 1 120); do
+                lim 30 zpool status "$pool" > "$OUT/ax-status.txt" 2>&1
+                grep -q 'scrub repaired' "$OUT/ax-status.txt" && break
+                sleep 1
+            done
+            st=$(pool_errors "$pool")
+            a+="a pool on it: 64 MiB written and synced with exit $rc, then a scrub: $st; "
+            { [ $rc = 0 ] && grep -q 'scrub repaired 0B' "$OUT/ax-status.txt" && [[ $st == "vdev errors 0 "* ]] && [[ $st == *"No known data errors" ]]; } || bad+="the write or the scrub; "
+        fi
+    fi
+    ax_end
+    if [ -z "$bad" ]; then pin volume_on_larger_blocks PASS "$a"; else pin volume_on_larger_blocks FAIL "wrong: $bad$a"; fi
+}
 # With the daemon: the short-recovery control and what follows a refused
 # start, on a pool with a separate log device and on one without.
 check_b_short() {
@@ -995,12 +1394,67 @@ check_b_short() {
     # arm ended before a refusal: the control's line carries why, and
     # no outcome but "refused, and the course observed" leaves the run
     # green.
-    refused_start_arm bs yes
+    refused_start_arm bs yes short
     ctl recovered_log_too_short "${RS_CTL%% *}" "${RS_CTL#* }"
-    obs b_refused_start_under_writes "${RS_OBS:-nothing to report: the control ended before a refusal (see ctl_recovered_log_too_short)}"
-    refused_start_arm bn no
+    refused_start_arm bn no short
     ctl recovered_log_too_short_no_log_device "${RS_CTL%% *}" "${RS_CTL#* }"
-    obs b_refused_start_no_log_device "${RS_OBS:-nothing to report: this arm ended before a refusal (see ctl_recovered_log_too_short_no_log_device)}"
+}
+# f: what follows a refused start, one short course each. Observations
+# only, with the daemon only. Each course is the control of check b
+# again on a pool of its own (a kill at rest, `serve --recover-short 1`
+# refused), and an observation is made only if the start was refused
+# as the control wants: otherwise the line says "not run" and why,
+# which is the rig's error. The control itself is one judged line for
+# all the courses, ctl_f_starts_refused.
+check_f() {
+    local c tag ld course zed_was zed_ok="" said="" worst=FAIL
+    rec f_courses "$F_COURSES"
+    for c in $F_ALL; do
+        tag=f${c:0:1}; ld="yes"; course=$c
+        case $c in
+            zedreopen) tag=fy ;;
+            # Check b's arms as they were until M1.T8: 300 s, a second
+            # writer, a read that must reach the device, a scrub.
+            long) course=long ;;
+            longnolog) tag="fg"; ld="no"; course=long ;;
+        esac
+        # A course that was not asked for has its line, and the line
+        # says so: one that is missing is the rig's error.
+        if [[ " $F_COURSES " != *" $c "* ]]; then
+            obs "f_refused_start_$c" "not asked for in this run, whose courses are: $F_COURSES"
+            continue
+        fi
+        step "f: after a refused start, the course '$c'"
+        if [ "$c" = zed ] || [ "$c" = zedreopen ]; then
+            # zed is not among the rig's packages: it is installed for
+            # this course, runs during it alone and is stopped after.
+            zed_was=$(zed_state)
+            if net_try apt-get install -y --no-install-recommends zfs-zed > "$OUT/f-zed-apt.log" 2>&1 \
+                && lim 60 systemctl start zfs-zed > "$OUT/f-zed-start.log" 2>&1 && [ "$(zed_state)" = active ]; then
+                zed_ok=yes
+            else
+                obs "f_refused_start_$c" "not run: zed could not be installed and started (it was '$zed_was' before): $(tail -n 1 "$OUT/f-zed-apt.log" | cut -c1-160); $(tail -n 1 "$OUT/f-zed-start.log" 2>/dev/null | cut -c1-160)"
+                continue
+            fi
+        fi
+        refused_start_arm "$tag" "$ld" "$course"
+        # The courses' control, one judged line for all: FAIL when
+        # every start was refused, as check b's control has it; PASS if
+        # one served; ERROR if one did not happen.
+        said+="$c: ${RS_CTL%% *}; "
+        case ${RS_CTL%% *} in
+            FAIL) ;;
+            PASS) [ "$worst" = ERROR ] || worst=PASS; said+="(${RS_CTL#* }) " ;;
+            *) worst=ERROR; said+="(${RS_CTL#* }) " ;;
+        esac
+        if [ "${RS_CTL%% *}" = FAIL ]; then
+            obs "f_refused_start_$c" "$RS_OBS"
+        else
+            obs "f_refused_start_$c" "not run: the start was not refused as the control wants: $RS_CTL"
+        fi
+        if [ -n "$zed_ok" ]; then lim 60 systemctl stop zfs-zed > /dev/null 2>&1; rec "f_zed_after_$c" "$(zed_state)"; zed_ok=""; fi
+    done
+    ctl f_starts_refused "$worst" "the start before each course (serve --recover-short 1 after a kill at rest), by course: $said"
 }
 # b: the daemon keeps its files off any pool. A volume directory or a
 # run directory on a ZFS dataset is refused by `serve` before a device
@@ -1103,6 +1557,95 @@ check_b_stop_under_load() {
 # finds nothing (the two differ by some milliseconds; see the control
 # rig's free_for_add).
 EXIT_DELETED_HELD=6
+# b: kill -9 while a checkpoint step waits at a point (test hook
+# --step-pause-until with --step-pause-at), at each of the five points
+# twice. Every kill is sent only when the daemon has made PATH.reached,
+# its own word that a step stands at the point; what the status said of
+# a step is written down beside it and not relied on. The verdict is a
+# kill test's: no application write failed, no vdev error, a clean
+# scrub, every file as recorded. Fewer than ten such kills is the rig's
+# error. 192 MiB are written first, so that the log passes its high
+# mark and steps begin.
+check_b_steps() {
+    local dir=$WORK/vol-bk pool=skzd-bk mnt=$WORK/mnt/skzd-bk p=$WORK/bk.pause slog i pid w syncer t0 ms under wr rc
+    local landed=0 said="" err="" state vdev scrub files fw why=""
+    local -a pts=(saved written synced start-written start-durable saved written synced start-written start-durable)
+    if [ "$IMPL" != daemon ]; then pin kills_inside_steps_lose_nothing WAITING "the stand-in has no checkpoint"; return; fi
+    step "b: kill -9 while a checkpoint step waits, at each of its five points, twice"
+    unlink "$p" 2>/dev/null; unlink "$p.reached" 2>/dev/null
+    if ! vol_up "$SKYZFSD" "$dir" --step-pause-until "$p" --step-pause-at "${pts[0]}"; then
+        pin kills_inside_steps_lose_nothing ERROR "not created or served (serve rc ${SERVE_RC:-none}): $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-200)"; return
+    fi
+    slog=$(new_slog bk)
+    if ! pool_create "$pool" "$BDEV" "$slog" > "$OUT/bk-create.log" 2>&1; then pin kills_inside_steps_lose_nothing ERROR "zpool create failed"; return; fi
+    : > "$WORK/bk.record"; : > "$OUT/bk-writer.log"
+    [ ! -e "$WORK/bk.stop" ] || unlink "$WORK/bk.stop"
+    writer "$mnt" "$WORK/bk.record" "$OUT/bk-writer.log" "$WORK/bk.stop" &
+    w=$!
+    ( while [ ! -e "$WORK/bk.stop" ] && [ ! -e "$WORK/stop-all" ]; do zpool sync "$pool" 2>/dev/null; sleep 0.1; done ) &
+    syncer=$!
+    # The fill, recorded like the writer's files: it is in flight
+    # across kills and must come through whole.
+    ( "$DD" if=/dev/urandom of=/dev/shm/skz-bk-fill bs=1M count=192 status=none
+      i=$(sha256sum < /dev/shm/skz-bk-fill | cut -d' ' -f1)
+      if lim 1200 "$DD" if=/dev/shm/skz-bk-fill of="$mnt/fill" bs=1M conv=fsync status=none 2>> "$OUT/bk-writer.log"; then echo "fill $i" >> "$WORK/bk.record"
+      else echo "write of fill failed" >> "$OUT/bk-writer.log"; fi
+      unlink /dev/shm/skz-bk-fill 2>/dev/null ) &
+    for i in 0 1 2 3 4 5 6 7 8 9; do
+        t0=$(now_ms)
+        while [ ! -e "$p.reached" ] && [ $(( $(now_ms) - t0 )) -lt 300000 ] && kill -0 "$SERVE_PID" 2>/dev/null; do sleep 0.1; done
+        ms=$(( $(now_ms) - t0 ))
+        if [ ! -e "$p.reached" ]; then
+            err="kill $((i + 1)), point ${pts[i]}: no step arrived at the point in $ms ms (the server $(kill -0 "$SERVE_PID" 2>/dev/null && echo 'alive' || echo 'gone'); log_live $(vol_stat "$SKYZFSD" "$dir" log_live), checkpoint_steps $(vol_stat "$SKYZFSD" "$dir" checkpoint_steps); its log's end: $(tail -n 1 "$dir.serve.log" | cut -c1-200))"
+            break
+        fi
+        under=$(vol_status "$SKYZFSD" "$dir" | awk '$1 == "checkpoint_step" { $1 = ""; print; exit }' | tr -s ' ')
+        read -r _ wr < "/sys/block/$(basename "$BDEV")/inflight" 2>/dev/null || wr="?"
+        pid=$(server_pid "$SKYZFSD" "$dir")
+        if ! kill -9 "$pid" 2>/dev/null; then err="kill $((i + 1)), point ${pts[i]}: kill -9 '$pid' failed"; break; fi
+        [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
+        unlink "$p" 2>/dev/null; unlink "$p.reached" 2>/dev/null
+        landed=$((landed + 1))
+        said+="${pts[i]}: a step stood there after $ms ms, the status said of a step '${under# }', $wr writes in flight at the device; "
+        t0=$(now_ms)
+        if [ "$i" -lt 9 ]; then serve_start "$SKYZFSD" "$dir" --step-pause-until "$p" --step-pause-at "${pts[i + 1]}"; rc=$?
+        else serve_start "$SKYZFSD" "$dir"; rc=$?; fi
+        said+="served again rc $rc in $(( $(now_ms) - t0 )) ms. "
+        if [ $rc != 0 ]; then
+            err="after kill $((i + 1)) at ${pts[i]}: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none}): $(tail -n 1 "$dir.serve.log" | cut -c1-200)"
+            break
+        fi
+    done
+    touch "$WORK/bk.stop"
+    if job_end "$w" 120; then fw=$(grep -c failed "$OUT/bk-writer.log" || true); else fw=stuck; fi
+    kill -9 "$syncer" 2>/dev/null; pkill -9 -f "zpool sync $pool" 2>/dev/null
+    # The fill may still be on its way: it has until the scrub's end.
+    for i in $(seq 1 240); do grep -q '^fill \|of fill failed' "$WORK/bk.record" "$OUT/bk-writer.log" && break; sleep 0.5; done
+    state=$(pool_state "$pool"); vdev=$(pool_errors "$pool")
+    [ "$state" = ONLINE ] || lim 120 zpool clear "$pool" > /dev/null 2>&1
+    lim 900 zpool scrub -w "$pool" > "$OUT/bk-scrub.log" 2>&1
+    scrub=$(pool_errors "$pool")
+    files=$(lim 300 files_match "$mnt" "$WORK/bk.record" 2>&1)
+    [ $? != 124 ] || files="not read: the pool ($state after the kills, $(pool_state "$pool") now) did not answer in 300 s"
+    grep -q '^fill ' "$WORK/bk.record" || files+="; the fill of 192 MiB is not among them: it had not ended"
+    rec bk_rounds "${said:-none}"
+    if [ -n "$err" ]; then
+        pin kills_inside_steps_lose_nothing ERROR "$err; kills sent with a step at its point before that: $landed"
+    elif [ "$landed" -lt 10 ]; then
+        pin kills_inside_steps_lose_nothing ERROR "only $landed kills were sent with a step at its point; ten are needed"
+    else
+        [ "$fw" = 0 ] || why+="application writes failed: $fw; "
+        case "$state/$vdev" in "ONLINE/vdev errors 0 "*) ;; *) why+="after the kills: pool $state, $vdev; " ;; esac
+        case "$scrub" in "vdev errors 0 "*"with 0 errors"*) ;; *) why+="scrub: $scrub; " ;; esac
+        case "$files" in ok*";"*) why+="files: $files; " ;; ok*) ;; *) why+="files: $files; " ;; esac
+        if [ -z "$why" ]; then
+            pin kills_inside_steps_lose_nothing PASS "ten kills, each sent while a step stood at its point by the daemon's own mark (saved, written, synced, start-written, start-durable, twice): no application write failed, no error on the vdev, scrub clean, $files (the 192 MiB fill among them); see bk_rounds"
+        else
+            pin kills_inside_steps_lose_nothing FAIL "after ten kills, each sent while a step stood at its point: $why see bk_rounds"
+        fi
+    fi
+    kill_cleanup bk
+}
 check_b_detach_held() {
     local dir=$WORK/vol-b6 num holder rc st t0 ms said taken=0 free="" a
     step "b: detach of a stopped device a process holds open"
@@ -1209,9 +1752,17 @@ check_b() {
     # then the times are an observation, and the medians are those the
     # pin will compare: the last five against the first five.
     obs b_takeover_ms "$(medians "$KT_MS")"
-    for v in takeover_time_does_not_grow log_stays_below_high_mark kills_inside_steps_lose_nothing; do
-        pin "$v" WAITING "the rig's code for this pin is not built (M1.T8); the daemon checkpoints since M1.3c, and a green rig says nothing of it yet; see obs_b_takeover_ms"
-    done
+    # Each take-over by the new server's own account, beside the
+    # rig's clock above: start_ms is the daemon's start until the
+    # device served, the rest of a take-over is before and after it.
+    obs b_takeover_starts "per take-over, in order, ms from the kill to the new serve's launch + from the launch to its ready line : the daemon's own start_ms : replayed_bytes: ${KT_STARTS:-none}"
+    if [ "$IMPL" = daemon ]; then
+        takeover_pin "$KT_MS"
+        log_bound_pin b
+    else
+        pin takeover_time_does_not_grow WAITING "the stand-in has no log to replay"
+        pin log_stays_below_high_mark WAITING "the stand-in has no log and no checkpoint"
+    fi
     # The check of what was acknowledged (§4.2) must not refuse a log
     # that a kill left whole. Kills around a change of log segment and
     # right after a checkpoint are the daemon's to arrange; here every
@@ -1300,6 +1851,7 @@ check_b() {
     check_b_detach_held
     check_b_stop_under_load
     check_b_on_zfs
+    check_b_steps
 
     step "b, control: recovery without reissue"
     SKZ_REF_REISSUE=0 kill_test "$REF" b0 5
@@ -1731,6 +2283,7 @@ check_c() {
         lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
+    C_RC=$rc
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
     # At each kill the tool sorts the calls it has outstanding: those
     # the old server had completed (their resubmission is issued) and
@@ -1768,7 +2321,7 @@ check_c() {
     rec c_cost "$(awk '$1 ~ /^(create|kill|fail|reopen|destroy)$/ && $4 == "ms" { n[$1]++; t[$1] += $3 }
         END { for (v in n) printf "%s x%d, mean %d ms; ", v, n[v], t[v] / n[v] }' "$OUT/c-helper.log" 2>/dev/null)the whole suite $(( $(date +%s) - t0 )) s"
     if [ $rc != 0 ]; then
-        rec c_run "ERROR: skyzfs-blkcheck exit $rc after $n cases: $(tail -n 1 "$OUT/c-blkcheck.err")"
+        rec c_run "ERROR: skyzfs-blkcheck exit $rc after $n cases: $(tail -n 1 "$OUT/c-blkcheck.err"). This line cannot tell a tool that stopped from a server that never answered a call (124 is the rig's limit of 2400 s): the run's artifact has c-trace.tsv.gz, and \`skyzfs-blkcheck --replay c-trace.tsv VOLUME\` on the last volume shows the last call that was sent and whether it was answered"
     else
         rec c_run "ok: $n cases, cases=${RIG_C_CASES:-16} rounds=${RIG_C_ROUNDS:-4}; the harness: ${can[*]}. After the log is made to fail the server deletes its device and exits, so what a failed volume answers is the kernel's answer for a deleted device that the suite still holds open, and a kill after it finds no server ($(grep -c 'nothing to kill' "$OUT/c-helper.log" 2>/dev/null) such kills)"
     fi
@@ -1818,7 +2371,7 @@ check_c_delay() {
         END { printf "%d %s", n, bad ? "?" : t + 0 }' "$OUT/cd-helper.log" 2>/dev/null)"
     obs c_delay_kills "${n_live:-0} kills of a live server with a commit delay of $ms ms: ${n_at_death:-0} calls of the tool (reads and writes) were in flight at a death; the next server found ${found:-?} requests applied and not acknowledged over ${asked:-0} take-overs. The two count different things: a call may reach the server as several requests, and a read is never counted by the server. The whole pass took $(( $(date +%s) - t0 )) s"
     if [ $rc != 0 ]; then
-        pin c_delay_cases ERROR "skyzfs-blkcheck exit $rc with the delay: $(tail -n 1 "$OUT/cd-blkcheck.err")"
+        pin c_delay_cases ERROR "skyzfs-blkcheck exit $rc with the delay: $(tail -n 1 "$OUT/cd-blkcheck.err"). Whether the tool stopped or the server never answered a call: cd-trace.tsv.gz in the run's artifact, through \`skyzfs-blkcheck --replay\`"
         pin c_kill_with_applied_unacknowledged ERROR "the pass with the delay did not end"
         return
     fi
@@ -1842,6 +2395,113 @@ check_c_delay() {
     fi
 }
 
+# The checked reads (status version 6, M1.3j): a read that finds a
+# record of the log not yet durable reads its whole payload and checks
+# it against the record's checksum. tpcb never reaches that path; the
+# suite and the overlap test read before the flush that follows a
+# write, and may. Observations, not judged until a run has shown the
+# keys: a mismatch above 0 on a healthy volume is a defect of the
+# server (a record that does not match fails the volume).
+#   unflushed_said NAME < status  -> "NAME count C extra X mismatched M; "
+#   or "NAME not printed; "
+unflushed_said() {
+    awk -v n="$1" '$1 == "time_read_unflushed_count" { c = $2 } $1 == "time_read_unflushed_extra_bytes" { x = $2 } $1 == "time_read_unflushed_mismatched" { m = $2 }
+        END { if (c == "") printf "%s not printed; ", n; else printf "%s count %s extra %s mismatched %s; ", n, c, x, m }'
+}
+# name "NAME count C extra X mismatched M; ..." -> one observation line.
+unflushed_obs() {
+    local c x m np
+    read -r c x m np <<< "$(echo "$2" | tr ';' '\n' | awk '$2 == "count" { c += $3; x += $5; m += $7; n++ } $2 == "not" { np++ } END { printf "%d %d %d %d", c, x, m, np }')"
+    if [ -z "$(echo "$2" | tr -d ' ;')" ]; then
+        obs "${1}_checked_reads" "not recorded: no status was read at the end (an observation missing, not an error of the rig)"
+    elif [ "$c$x$m" = 000 ] && [ "$np" -gt 0 ] && ! echo "$2" | grep -q ' count '; then
+        obs "${1}_checked_reads" "the server does not print time_read_unflushed_* (a daemon before status version 6, or the stand-in): nothing to say; $2"
+    else
+        obs "${1}_checked_reads" "reads that found a record not yet durable and checked its payload: $c, $x bytes read beyond those asked for, $m MISMATCHED$([ "$m" -gt 0 ] && echo ' (a mismatch on a healthy volume is a DEFECT of the server: the record did not match its checksum)'); volumes that did not print the keys: $np; each volume's count is its last server's, read when it was destroyed (a killed server's count is lost); the volumes with a checked read: $(echo "$2" | tr ';' '\n' | awk '$2 == "count" && $3 != 0' | tr -s ' \n' ' ' | cut -c1-600). The suite makes some of its volumes fail on purpose (fail-log): a mismatch there is to be read beside that case"
+    fi
+}
+# The suite a third time, with checkpoint steps between the calls of
+# its cases. The marks cannot be set below their defaults (high 2
+# segments of 64 MiB, low 1) and a case writes far less than that, so
+# each new volume's log is first filled with zero data to within one
+# 4 KiB write of the high mark and no further (BLK_PREFILL_TO_HIGH; the
+# volume still reads as empty, and no step has been taken). The case's
+# first call that adds to the log (a write, discard or write-zeroes)
+# takes it over the mark, and by the daemon's rule a step comes before
+# the next request is executed, and one before each later one until
+# the log is below the low mark. (A pre-fill past the mark, as before,
+# had the daemon step back below the low mark by itself before the case
+# began: steps were taken in the pass and none inside a case.)
+# c_low_steps.py puts each volume in a class from the call trace and
+# the helper's lines: `inside` (the pre-fill was set, the case made a
+# call after its first write, and its servers took steps), `no_write`
+# and `last_write` (no call could follow a step: counted and shown),
+# `not_set` and `no_step` (it could, and did not). More of the last two
+# than a tenth of the volumes that could hold a step is the rig's
+# error, not a verdict. The verdict is each case's result beside the
+# first pass's. The status of every volume is also read five times a
+# second, for the observation line.
+check_c_low() {
+    local tool=${RIG_BLKCHECK:-} work=$WORK/cl rc t0 differ n sampler steps vols under most counts
+    local -a can=(--can fail-log)
+    if [ "$IMPL" != daemon ]; then pin c_suite_with_low_marks WAITING "the stand-in has no log and no checkpoint"; return; fi
+    if [ "${C_RC:-1}" != 0 ]; then pin c_suite_with_low_marks ERROR "not run: the first pass of the suite did not end"; return; fi
+    step "c: the suite again, with checkpoint steps between the calls of each case (each volume's log filled to just below the high mark first)"
+    mkdir -p "$work"; : > "$WORK/cl.samples"
+    [ ! -e "$WORK/cl.stop" ] || unlink "$WORK/cl.stop"
+    ( while [ ! -e "$WORK/cl.stop" ] && [ ! -e "$WORK/stop-all" ]; do
+          for n in "$work"/c[0-9]*; do
+              [ -d "$n" ] || continue
+              lim 30 "$SKYZFSD" status --dir "$n" --run-dir "$work/run${n##*/c}" 2>/dev/null | awk -v v="${n##*/c}" '
+                  $1 == "pid" { p = $2 } $1 == "log_live" { l = $2 } $1 == "checkpoint_steps" { s = $2 } $1 == "checkpoint_step" { u = $2 }
+                  END { if (l != "") print v, (p == "" ? "-" : p), l, s, u }' >> "$WORK/cl.samples"
+          done
+          sleep 0.2
+      done ) &
+    sampler=$!
+    t0=$(date +%s)
+    BLKCHECK_TRACE=$OUT/cl-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} BLK_PREFILL_TO_HIGH=1 \
+        lim 3600 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
+        --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
+        > "$OUT/cl-cases.tsv" 2> "$OUT/cl-blkcheck.err"; rc=$?
+    touch "$WORK/cl.stop"; job_end "$sampler" 60
+    cp "$work/helper.log" "$OUT/cl-helper.log" 2>/dev/null
+    python3 -I "$HERE/c_low_steps.py" "$OUT/cl-trace.tsv" "$OUT/cl-helper.log" > "$OUT/cl-volumes.txt" 2>&1 || echo "c_low_steps.py failed: $(tail -n 1 "$OUT/cl-volumes.txt")" >> "$OUT/cl-volumes.txt"
+    gzip -f "$OUT/cl-trace.tsv" 2>/dev/null
+    for n in "$work"/*.serve.log; do [ -s "$n" ] && cp "$n" "$OUT/cl-$(basename "$n")"; done
+    # Steps: each server's count is its last reading; the sum over the
+    # servers of the pass. Volumes: how many were seen, how many with a
+    # step taken by any of their servers.
+    read -r n steps vols under most <<< "$(awk '{ n++; k = $1 " " $2; if ($2 != "-" && $4 + 0 > s[k]) s[k] = $4 + 0; seen[$1] = 1; if ($5 == "under") u++; if ($3 + 0 > m) m = $3 + 0 }
+        END { for (k in s) { t += s[k]; split(k, a, " "); if (s[k] > 0) with[a[1]] = 1 } for (v in seen) nv++; for (v in with) nw++
+              printf "%d %d %d/%d %d %d", n, t, nw, nv, u, m }' "$WORK/cl.samples")"
+    counts=$(sed -n 's/^c_low counts //p' "$OUT/cl-volumes.txt" | head -n 1)
+    obs c_low_steps "volumes by class (cl-volumes.txt): ${counts:-none: $(tail -n 1 "$OUT/cl-volumes.txt" | cut -c1-200)}; pre-fills set $(grep -c '^prefill [0-9]*: set' "$OUT/cl-helper.log" 2>/dev/null), not set $(grep -c '^prefill [0-9]*: NOT SET' "$OUT/cl-helper.log" 2>/dev/null)$(grep -m 1 '^prefill [0-9]*: NOT SET' "$OUT/cl-helper.log" 2>/dev/null | sed 's/^/ (first: /; s/$/)/' | cut -c1-200); not_set and no_step volumes: $(awk '$1 == "c_low" && $2 == "volume" && ($4 == "not_set" || $4 == "no_step") { printf "%s ", $3 }' "$OUT/cl-volumes.txt" | cut -c1-200); ${n:-0} readings of the status: ${steps:-0} steps, on ${vols:-0/0} of the volumes seen, a step under way at ${under:-0} readings, log_live at most ${most:-0} bytes; the whole pass $(( $(date +%s) - t0 )) s"
+    if [ $rc != 0 ]; then
+        pin c_suite_with_low_marks ERROR "skyzfs-blkcheck exit $rc in this pass: $(tail -n 1 "$OUT/cl-blkcheck.err" | cut -c1-300). Whether the tool stopped or the server never answered a call: cl-trace.tsv.gz in the run's artifact, through \`skyzfs-blkcheck --replay\`"
+        return
+    fi
+    if [ -z "$counts" ]; then
+        pin c_suite_with_low_marks ERROR "the volumes were not classed: $(tail -n 1 "$OUT/cl-volumes.txt" | cut -c1-300)"
+        return
+    fi
+    case $counts in
+        *verdict=OK*) ;;
+        *) pin c_suite_with_low_marks ERROR "too few volumes had a step between their calls: $counts. Not a verdict on the server: the pass did not run its cases beside a checkpoint (cl-volumes.txt, cl-helper.log)"; return ;;
+    esac
+    differ=$(join -t $'\t' -j 1 \
+        <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/c-cases.tsv" | sort) \
+        <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/cl-cases.tsv" | sort) |
+        awk -F'\t' '$2 != $3 { printf "%s %s, while checkpointing %s; ", $1, $2, $3 }')
+    n=$(grep -c '^case' "$OUT/cl-cases.tsv")
+    if [ "$n" != "$(grep -c '^case' "$OUT/c-cases.tsv")" ]; then
+        pin c_suite_with_low_marks ERROR "$n cases in this pass, $(grep -c '^case' "$OUT/c-cases.tsv") in the first"
+    elif [ -n "$differ" ]; then
+        pin c_suite_with_low_marks FAIL "$differ$(grep -m 3 -h 'FAIL' "$OUT/cl-cases.tsv" | cut -f 2,4 | tr '\t\n' ' ;' | cut -c 1-600)"
+    else
+        pin c_suite_with_low_marks PASS "all $n cases as in the first pass, with checkpoint steps between the calls of their cases: $counts"
+    fi
+}
 check_e() {
     local v
     step "e: one request held $HOLD_S s"
@@ -1852,13 +2512,12 @@ check_e() {
     case $v in 0) ctl hold_too_short PASS "$HT_WHY" ;; 1) ctl hold_too_short FAIL "$HT_WHY" ;; *) ctl hold_too_short ERROR "$HT_ERR" ;; esac
 }
 
-case $CHECKS in *" a "*) check_a; check_a_overlap ;; esac
+case $CHECKS in *" a "*) check_a; check_a_overlap; check_a_zeroes; check_a_xfs16k ;; esac
 case $CHECKS in *" b "*) check_b ;; esac
 case $CHECKS in *" c "*)
     check_c
-    # A third pass of the suite with the daemon's marks set low, so
-    # that it checkpoints while the suite runs: waits for M1.3c.
-    pin c_suite_with_low_marks WAITING "the rig's code for this pin is not built (M1.T8); the daemon checkpoints since M1.3c, and a green rig says nothing of it yet" ;;
+    check_c_low
+    unflushed_obs c "$(for f in c cd cl; do awk -v p="$f" '$1 == "unflushed" { sub(/^unflushed /, ""); printf "%s/%s; ", p, $0 }' "$OUT/$f-helper.log" 2>/dev/null; done | sed 's|/\([0-9]*\): |\1 |g')" ;;
 esac
 case $CHECKS in *" e "*) check_e ;; esac
 # Last: it leaves suspended pools behind.
@@ -1882,6 +2541,16 @@ case $CHECKS in *" b "*)
         ctl recovered_log_too_short_no_log_device WAITING "the stand-in has no log whose recovery could come out short"
     else
         check_b_short
+    fi ;;
+esac
+
+# Check f after that, for the same reason: each of its courses leaves a
+# suspended pool. With the stand-in there is nothing to refuse a start.
+case $CHECKS in *" f "*)
+    if [ "$IMPL" = reference ]; then
+        ctl f_starts_refused WAITING "the stand-in has no log whose recovery could come out short"
+    else
+        check_f
     fi ;;
 esac
 
