@@ -91,3 +91,23 @@ Reviewed: `origin/zfs-topology` ... `origin/skyzfs-coding` 78c204b.
 - 4 dropped. The description says the cost.
 - `Mutants` at 64 bits: no bit changed; bit 24 was free.
 - fmt, clippy clean; skyzfs-local 212 pass, 3 ignored.
+
+## Third look (head 90e7c88, one commit)
+
+- Can merge. Nothing new that blocks.
+- Exact sums: `Spans::close` only moves `last` forward and adds
+  exactly the time since it, so the closed sums are `last - start`;
+  the look adds `now - last`. The worker's clock start and the look's
+  differ by a constant, which a difference removes.
+- No torn pair: sums and open span are replaced in one assignment
+  under the thread's lock; the look reads the clock with both held.
+- Plants: reader's wait shown as "other": caught. Open span stamped
+  at the publish and not at the last span's end: caught.
+- The reader's extra publish is one uncontended lock, only when it
+  found its queue empty.
+- A 1568-byte version 6 file is read as no status (length and magic
+  both). Only an unmerged build wrote one, on a memory file system.
+- Gap, not blocking: the exactness test has no checkpoint step, so
+  the step's parts and the barrier are not in it.
+- fmt, clippy clean; skyzfs-local 213 pass, skyzfs-ublk 123 pass,
+  test_skz_time.py 24 pass.
