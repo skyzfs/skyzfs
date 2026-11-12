@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests of the control rig's judge. No kernel: python3 tests/kernel/test_control_check.py"""
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -106,6 +107,30 @@ class Table(unittest.TestCase):
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)
             self.assertTrue(row and claim, name)
             self.assertIn(who, (cc.CRATE, cc.RIG), name)
+
+
+class TheCratesTests(unittest.TestCase):
+    """The table against the source of the crate's kernel tests.
+
+    A kernel test added by another pull request printed a verdict the
+    table did not know, and both pull requests were green alone: the
+    rig then refused the line on the integration branch. This test has
+    no kernel in it and runs in the control rig workflow's job without
+    a kernel, which a pull request that touches the crate starts: one
+    that adds a kernel test fails here, by itself, until the table
+    knows its line.
+    """
+    SOURCE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
+                          'crates', 'skyzfs-ublk-sys', 'tests', 'kernel.rs')
+
+    def test_every_verdict_of_the_kernel_tests_is_in_the_table(self):
+        with open(self.SOURCE, encoding='utf-8') as f:
+            source = f.read()
+        said = {'control_' + n for n in re.findall(r'property\(\s*"([a-z0-9_]+)"', source)}
+        self.assertTrue(said)
+        table = {n for n, (_, who, *_rest) in cc.EXPECTED.items() if who == cc.CRATE}
+        self.assertEqual(said - table, set(), 'verdicts of the kernel tests that the table does not know')
+        self.assertEqual(table - said, set(), 'lines the table expects of the kernel tests that none prints')
 
 
 class Main(unittest.TestCase):
