@@ -128,6 +128,70 @@ fn the_store_round_trips_on_real_files() {
     }
 }
 
+/// Real files: a write-zeroes over data that is in the home image gives
+/// the space back. 8 MiB are written and checkpointed, 6 MiB of them
+/// are zeroed and checkpointed: the home image then holds about 2 MiB,
+/// the range reads as zeros and the rest as written, also after a
+/// reopen, and the store says that it deallocates. On a file system
+/// that cannot, the store says that it writes zeros, and only the
+/// content is checked.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_zeroes_gives_the_home_images_space_back_on_real_files() {
+    use skyzfs_local::store::Zeroes;
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = FsDir::new(tmp.path()).unwrap();
+    let store = Store::create(dir.clone(), &config(16, 4096), OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    for mib in 0..8 {
+        write(&mut store, mib * 256, Buf::filled(256, 7));
+    }
+    flush(&mut store);
+    store.checkpoint().unwrap();
+    let home = tmp.path().join("home.img");
+    let before = std::fs::metadata(&home).unwrap().blocks() * 512;
+    assert!(before >= 8 << 20, "the home image holds {before} bytes");
+    for mib in 1..7 {
+        let zeroes = Op::WriteZeroes {
+            offset: mib << 20,
+            len: 1 << 20,
+        };
+        assert_eq!(run(&mut store, zeroes).result, Ok(()));
+    }
+    flush(&mut store);
+    store.checkpoint().unwrap();
+    let after = std::fs::metadata(&home).unwrap().blocks() * 512;
+    match store.log_state().zeroes {
+        Zeroes::Deallocated => assert!(
+            after <= before - (5 << 20),
+            "the home image held {before} bytes and holds {after}"
+        ),
+        Zeroes::Written => eprintln!("this file system cannot deallocate: zeros were written"),
+        Zeroes::WrittenForBlocks => eprintln!(
+            "this file system's blocks are larger than the write unit: zeros were written"
+        ),
+        Zeroes::Untried => {
+            panic!("a checkpoint applied write-zeroes and the store does not say how")
+        }
+    }
+    let check = |store: &mut Served, what: &str| {
+        assert!(read(store, 0, 256).iter().all(|b| *b == 7), "{what}");
+        for mib in 1..7 {
+            assert!(
+                read(store, mib * 256, 256).iter().all(|b| *b == 0),
+                "{what}"
+            );
+        }
+        assert!(read(store, 7 * 256, 256).iter().all(|b| *b == 7), "{what}");
+    };
+    check(&mut store, "after the checkpoint");
+    drop(store);
+    let (store, _) = Store::open(dir, OpenOptions::default()).unwrap();
+    let mut store = store.serve().unwrap();
+    check(&mut store, "after a reopen");
+}
+
 /// Real files, a volume above 4 GiB: the home image is sparse, and
 /// writes and reads beyond the 32-bit boundary land where they belong,
 /// in the log and in the home image, without touching the same offsets
