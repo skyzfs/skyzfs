@@ -557,7 +557,9 @@ if skz:
     print('\n'.join(skz_time.render([
         {'label': label(r), 'workload': r['workload'], 'tps': r.get('tps'), 'time': r.get('skyzfsd', {}).get('time'),
          'steps': r.get('skyzfsd', {}).get('steps'), 'relation_read_us': rel_read_us(r)[0],
-         'relation_reads': rel_read_us(r)[1], 'duration_s': r.get('duration_s')} for r in skz])))
+         'relation_reads': rel_read_us(r)[1], 'duration_s': r.get('duration_s'),
+         'ages': (r.get('skyzfsd', {}).get('before', {}).get('age_ms'), r.get('skyzfsd', {}).get('after', {}).get('age_ms'))}
+        for r in skz])))
 PY
 }
 if [ "${1:-}" = summarize ]; then

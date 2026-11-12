@@ -142,7 +142,7 @@ def identities(t):
 
 def render(rows):
     """rows: [{'label', 'workload', 'tps', 'time': delta(), 'steps', 'relation_read_us', 'relation_reads',
-    'duration_s'}] -> markdown lines."""
+    'duration_s', 'ages': (age_ms before, after)}] -> markdown lines."""
     out = []
     if not rows:
         return out
@@ -172,24 +172,27 @@ def render(rows):
             stages, n = life(r['time']['delta'], kind)
             if heads is None:
                 heads = [s for s, _ in stages]
-                extra = (' postgres: relation reads | postgres: µs per relation read | that less the sum |'
+                extra = (' all reads in the daemon, s | postgres: relation reads | postgres: s in relation reads | the daemon\'s share of it |'
                          if kind == 'read' else '')
                 note = ('' if kind != 'read' else
-                        ' The last three columns are postgres\'s own account (pg_stat_io, object relation: reads and '
-                        'read time, with track_io_timing): a relation read is 8 KiB asked of ZFS, which the ARC may '
-                        'answer without the device, so the two counts differ and the remainder is only an indication of '
-                        'the time outside the daemon (kernel, ring, ZFS).')
+                        ' The last four columns set the daemon\'s account beside postgres\'s own (pg_stat_io, object '
+                        'relation: reads and read time, with track_io_timing), as totals over the window and not per '
+                        'read: a relation read is 8 KiB asked of ZFS, which the ARC may answer without the device, so '
+                        'postgres counts more reads than the daemon and the two means are not of the same reads. What '
+                        'of postgres\'s read time is not in the daemon\'s account is outside the daemon: the kernel, '
+                        'the ring, ZFS, and the reads the ARC answered.')
                 out += ['', f"A {kind}'s life, mean µs per {kind}.{note}", '',
                         f"| workload | daemon row | tps | {kind}s | " + ' | '.join(heads) + f' | sum |{extra}',
-                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (3 if extra else 0))]
+                        '|---|---|---|---|' + '---|' * (len(heads) + 1 + (4 if extra else 0))]
             vals = [v for _, v in stages]
             total = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
             line = (f"| {r['workload']} | {r['label']} | {_f(r.get('tps'), '.0f')} | {_f(n, 'd') if n is not None else 'n/a'} | "
                     + ' | '.join(_f(v) for v in vals) + f' | {_f(total)} |')
             if kind == 'read':
-                pg = r.get('relation_read_us')
-                line += (f" {_f(r.get('relation_reads'), '.0f')} | {_f(pg)} | "
-                         f"{_f(None if pg is None or total is None else pg - total)} |")
+                pg, pgn = r.get('relation_read_us'), r.get('relation_reads')
+                ours = None if total is None or not n else total * n / 1e6
+                theirs = None if pg is None or not pgn else pg * pgn / 1e6
+                line += (f" {_f(ours)} | {_f(pgn, '.0f')} | {_f(theirs)} | {_share(ours, theirs)} |")
             out.append(line)
         if not usable:
             continue
@@ -260,12 +263,19 @@ def render(rows):
             out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(ms(e.get(f'time_{k}_wait_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(ms(e.get(f'time_{k}_call_max_ns')) for k in KINDS[:3])
                        + ' | ' + ' | '.join(cause(k) for k in KINDS[:3]) + ' |')
-        out += ['', 'The identities, as a guard on the reading (a difference in the worker\'s line of a few ms is the two '
-                'readings not being taken at the instants their times were noted):', '',
+        out += ['', 'The identities, as a guard on the reading. A kind\'s causes must sum to its wait exactly. The worker\'s '
+                'activities are set against the time between the two looks at the clock, taken just before each '
+                'reading: the status file is rewritten by the daemon on its own schedule, so each reading is as old '
+                'as the age it states, and the status command takes its own time after the look at the clock: a '
+                'difference of the order of those ages (up to 141 ms in the first runs) is expected and is not a '
+                'fault of the reading:', '',
                 '| workload | daemon row | identity | left | right | difference |', '|---|---|---|---|---|---|']
         for r in usable:
             ids = identities(r['time'])
             for what, left, right, diff in ids:
+                ages = r.get('ages') or (None, None)
+                if what.startswith("the worker's"):
+                    what += f" (the readings' ages: {ages[0] if ages[0] is not None else 'not said'} ms and {ages[1] if ages[1] is not None else 'not said'} ms)"
                 out.append(f"| {r['workload']} | {r['label']} | {what} | {left} | {right} | {diff} |")
             if not ids:
                 out.append(f"| {r['workload']} | {r['label']} | none could be formed | | | |")

@@ -157,7 +157,7 @@ class Tables(unittest.TestCase):
     def test_render(self):
         b, a = reading(1), reading(3)
         good = {'label': 'zfs-skyzfsd', 'workload': 'tpcb', 'tps': 4321.0, 'time': st.delta(b, a, 0, 10 ** 9), 'steps': 4,
-                'relation_read_us': 345.6, 'relation_reads': 777, 'duration_s': 120}
+                'relation_read_us': 345.6, 'relation_reads': 777, 'duration_s': 120, 'ages': ('12', '340')}
         none = {'label': 'old daemon', 'workload': 'tpcb', 'tps': 1.0, 'time': st.delta({}, {}), 'steps': None,
                 'relation_read_us': None}
         bare = {'label': 'no reading', 'workload': 'tpcb', 'tps': 1.0, 'time': None, 'steps': None, 'relation_read_us': None}
@@ -169,7 +169,9 @@ class Tables(unittest.TestCase):
         for head in ("A read's life", "A write's life", "A flush's life", "A read's wait", "The worker's time",
                      'Checkpoint steps', "The pump's store", 'The identities', 'The longest of each'):
             self.assertIn(head, text)
-        self.assertIn('345.6', text)
+        self.assertIn("the readings' ages: 12 ms and 340 ms", text)
+        self.assertIn("the daemon's share of it", text)
+        self.assertIn(' 0.3 |', text)     # 777 relation reads of 345.6 µs: 0.3 s
         for head in ('The window of each reading', 'The same wait in groups', 'Flushes beside reads', '`busy` is all but idle',
                      'the walk, of the six parts', "all reads' wait, ms"):
             self.assertIn(head, text)
