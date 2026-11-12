@@ -587,9 +587,15 @@ async fn consecutive_batches_overlap_but_attaches_stay_serial_and_ordered() {
 /// control plane and nothing of the machine. It gives 1.98 s with
 /// overlap off and 1.36 s with it on, the same on every run: 620 ms
 /// saved, one 20 ms round trip at each of the 31 places where a batch
-/// follows another, a ratio of 0.687. Asserted below 0.70, which fails
-/// when two of those 31 are lost (0.707). The threshold used to be 0.85
-/// against two wall clocks.
+/// follows another.
+///
+/// What is asserted is the saving, at least 30 round trips: it fails
+/// when two of the 31 are lost and passes with one. Not the ratio
+/// (0.687 today, printed): the cycle's round trips outside the backfill
+/// are in both times, so the ratio moves with them, and five more of
+/// them would bring it to 0.70 with the overlap intact. The ratio
+/// catches nothing that the difference does not. The test used to
+/// assert a ratio under 0.85 of two wall clocks.
 #[tokio::test(start_paused = true)]
 async fn overlap_saves_a_round_trip_per_batch() {
     let rtt = Duration::from_millis(20);
@@ -618,9 +624,12 @@ async fn overlap_saves_a_round_trip_per_batch() {
         walls.push(waited);
     }
     let ratio = walls[1].as_secs_f64() / walls[0].as_secs_f64();
+    let saved = walls[0].saturating_sub(walls[1]);
+    println!("overlap saved {saved:?}, a ratio of {ratio:.3}");
     assert!(
-        ratio < 0.70,
-        "overlap saved too little: {walls:?} ({ratio:.2})"
+        saved >= rtt * 30,
+        "overlap saved too little: {saved:?} of {walls:?} ({ratio:.3}), wanted at least {:?}",
+        rtt * 30
     );
 }
 
