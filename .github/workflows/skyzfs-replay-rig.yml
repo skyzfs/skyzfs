@@ -18,8 +18,24 @@ name: skyzfs-replay-rig
 # device that is not under test, and one with no log device, where the
 # intent log lands on the device under test too.
 #
-# Built against the reference ublk server, so that it is ready and
-# trusted when skyzfsd exists.
+# Two servers behind the pool's device:
+#   - the reference ublk server over a file (the jobs `replay`), which
+#     is what showed the rig catches what it should;
+#   - skyzfsd, built with its test hooks (the jobs `daemon`, on both
+#     images). There the cut falls below the daemon: its volume
+#     directory is on xfs on dm-log-writes, and each prefix is checked
+#     through the daemon's real start after a reboot
+#     (`tests/kernel/replay_daemon.py`). Its controls are `EXPECTED` in
+#     that file. Exit 2 is the rig's own error, not a verdict.
+# Which run, by the job `plan`:
+#   - a pull request: the reference jobs when it touches the rig
+#     (tests/kernel/, tests/lib/, this file); the daemon jobs when it
+#     touches the rig or the daemon (crates/skyzfs-local/,
+#     bins/skyzfsd/, the ublk crates), on the pull-request budget (about
+#     25 minutes a job: every required prefix and every deep check, the
+#     light check on an even sample of the flush boundaries);
+#   - by dispatch: the input `server`, and for the daemon the input
+#     `daemon_budget` (full: about 50 minutes a job).
 on:
   workflow_dispatch:
     inputs:
@@ -37,11 +53,25 @@ on:
         type: choice
         options: [zero, skip]
         default: zero
+      server:
+        description: "what serves the pool's device: reference (the reference ublk server), daemon (skyzfsd, the cut below it) or both"
+        type: choice
+        options: [reference, daemon, both]
+        default: reference
+      daemon_budget:
+        description: "daemon jobs only: pull-request (about 25 minutes a job) or full (about 50)"
+        type: choice
+        options: [pull-request, full]
+        default: full
   pull_request:
     paths:
       - tests/kernel/**
       - tests/lib/**
       - .github/workflows/skyzfs-replay-rig.yml
+      - crates/skyzfs-local/**
+      - crates/skyzfs-ublk/**
+      - crates/skyzfs-ublk-sys/**
+      - bins/skyzfsd/**
 
 # A newer push to a pull request supersedes the run of the older one; a
 # dispatched run is left alone.
@@ -61,9 +91,58 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_replay.py -v
+      - run: python3 tests/kernel/test_replay_daemon.py -v
+
+  # Which servers this run replays through; see the head of this file.
+  plan:
+    name: which server
+    runs-on: ubuntu-latest
+    outputs:
+      reference: ${{ steps.plan.outputs.reference }}
+      daemon: ${{ steps.plan.outputs.daemon }}
+      budget: ${{ steps.plan.outputs.budget }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          SERVER: ${{ inputs.server }}
+          BUDGET: ${{ inputs.daemon_budget }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          ref=false; dmn=false; budget=pull-request
+          case $EVENT in
+            workflow_dispatch)
+              case $SERVER in
+                reference) ref=true ;;
+                daemon) dmn=true ;;
+                both) ref=true; dmn=true ;;
+                *) echo "::error::server is reference, daemon or both: '$SERVER'"; exit 64 ;;
+              esac
+              case $BUDGET in pull-request|full) budget=$BUDGET ;; *) echo "::error::daemon_budget is pull-request or full: '$BUDGET'"; exit 64 ;; esac
+              why="by dispatch: server $SERVER" ;;
+            pull_request)
+              # If the changed files cannot be told, everything runs.
+              if changed=$(git diff --name-only "$BASE...HEAD"); then
+                rig='^(tests/kernel/|tests/lib/|\.github/workflows/skyzfs-replay-rig\.yml$)'
+                daemon='^(crates/skyzfs-local/|crates/skyzfs-ublk/|crates/skyzfs-ublk-sys/|bins/skyzfsd/)'
+                printf '%s\n' "$changed" | grep -q -E "$rig" && { ref=true; dmn=true; }
+                printf '%s\n' "$changed" | grep -q -E "$daemon" && dmn=true
+              else
+                ref=true; dmn=true
+              fi
+              why="a pull request" ;;
+            *) ref=true; why="$EVENT" ;;
+          esac
+          { echo "reference=$ref"; echo "daemon=$dmn"; echo "budget=$budget"; } >> "$GITHUB_OUTPUT"
+          echo "Replay through: reference server $ref, skyzfsd $dmn (budget $budget); $why." | tee -a "$GITHUB_STEP_SUMMARY"
 
   replay:
     name: replay, ${{ matrix.layout == 'slog' && 'product layout (local log device)' || 'whole-pool layout (no log device)' }}
+    needs: plan
+    if: needs.plan.outputs.reference == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
@@ -144,5 +223,93 @@ jobs:
         if: always()
         with:
           name: replay-rig-${{ matrix.layout }}
+          path: replay-out/
+          retention-days: 90
+
+  daemon:
+    name: through skyzfsd, ${{ matrix.image }}
+    needs: plan
+    if: needs.plan.outputs.daemon == 'true'
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ubuntu-26.04, ubuntu-24.04]
+    env:
+      UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS, build the ublk tool, replay-log and skyzfsd
+        # As in the job above: a step that needs the network and fails
+        # three times ends the job with exit 2, the rig's own error.
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p replay-out
+          setup() { # NAME COMMAND...
+            local name=$1 log; shift
+            log=replay-out/setup-$name.log
+            net_try "$@" > "$log" 2>&1 && return 0
+            tail -n 40 "$log"
+            {
+              echo "## Power-cut replay through skyzfsd: the rig's own error, not a verdict"
+              echo
+              echo "Setup step \`$name\` failed in $NET_TRIES tries: $(net_why "$log")"
+            } > replay-out/replay-summary.md
+            echo "::error::setup ($name): $(net_why "$log")"
+            exit 2
+          }
+          # The workspace's system packages and libclang build the daemon.
+          setup apt sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup xfsprogs python3-numpy libdevmapper-dev libudev-dev libclang-dev'
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          setup ublksrv sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          sudo modprobe ublk_drv
+          sudo modprobe dm_log_writes
+          sudo modprobe dm_snapshot
+          setup replay-log tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
+          # Not retried: a build that fails is no network fault.
+          cargo build --release --locked -p skyzfsd --features test-hooks
+          uname -r; sudo zfs version
+      - name: Record and replay
+        env:
+          BUDGET: ${{ needs.plan.outputs.budget }}
+          DISCARD: ${{ inputs.discard || 'zero' }}
+        run: |
+          [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
+          # The pull-request budget: every required prefix and every deep
+          # check, the light check on a sample of the flush boundaries.
+          # The full budget: more of them, and prefixes between flushes.
+          case $BUDGET in
+            pull-request) syncs=8; budget_s=240; between_s=0 ;;
+            full) syncs=16; budget_s=900; between_s=300 ;;
+            *) echo "::error::budget: $BUDGET"; exit 64 ;;
+          esac
+          {
+            echo "export RIG_SKYZFSD=$PWD/target/release/skyzfsd"
+            echo "export RIG_SYNCS=$syncs RIG_FILE_SLEEP=0.2 RIG_FILL_MB=160 RIG_VOLUME_MB=1024"
+            echo "export RIG_BUDGET_S=$budget_s RIG_BETWEEN_BUDGET_S=$between_s RIG_BUDGET_NAME=$BUDGET"
+            echo "export RIG_DISCARD=$DISCARD RIG_AUTOTRIM=on RIG_REQUIRE_WITNESS=1"
+            printf 'export RIG_REPLAY_LOG=%q\n' "$RUNNER_TEMP/bin/replay-log"
+          } > "$RUNNER_TEMP/rig.env"
+          rc=0
+          sudo bash -c '. "$1" && exec tests/kernel/replay-rig.sh "$2" /mnt/skz-replay' \
+            rig "$RUNNER_TEMP/rig.env" "$PWD/replay-out" || rc=$?
+          case $rc in
+            0) ;;
+            1) echo "::error title=replay through skyzfsd::a verdict against the daemon: see the summary"; exit 1 ;;
+            *) echo "::error title=replay through skyzfsd::the rig itself failed (exit $rc); this is not a verdict on the daemon"; exit 2 ;;
+          esac
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX replay-out 2>/dev/null || true
+          cat replay-out/replay-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: replay-rig-daemon-${{ matrix.image }}
           path: replay-out/
           retention-days: 90
