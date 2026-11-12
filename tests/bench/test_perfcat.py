@@ -62,6 +62,8 @@ class Parse(unittest.TestCase):
         self.assertEqual(pc.category(['blk_mq_end_request', 'ublk_commit_completion']), 'ublk driver')
         self.assertEqual(pc.category(['io_submit_sqes', '__x64_sys_io_uring_enter']), 'io_uring')
         self.assertEqual(pc.category(['native_queued_spin_lock_slowpath']), 'other')
+        self.assertEqual(pc.category(['_raw_spin_unlock_irqrestore', 'taskq_dispatch_ent', 'zio_interrupt',
+                                      'blk_mq_end_request', 'try_to_wake_up']), 'ZFS completion')
 
     def test_summarize(self):
         t = pc.summarize(SCRIPT)

@@ -8,7 +8,13 @@ daemon's pid: per sample a line "comm tid", then one line per frame,
 leaf first, "ip symbol". A sample is the kernel's when its leaf frame
 is a kernel address. Each kernel sample is put in the first category
 of CATEGORIES whose rule matches its call chain, so a copy made for
-the page cache is counted as a copy, of the page cache. The JSON gives
+the page cache is counted as a copy, of the page cache, and ZFS's
+handling of a finished request (which the kernel runs in the thread that
+ends it, the daemon's) is counted as that and not as the wakes it makes.
+On a runner VM perf samples by a timer, so a sample taken while
+interrupts were off is charged where they are turned back on
+(_raw_spin_unlock_irqrestore, finish_task_switch): the kind, from the
+whole chain, is the better guide than the leaf symbol. The JSON gives
 by thread name (a trailing -N is dropped, so the readers are one):
 
     {"seconds": 20, "threads": {"skyzfs-reader": {"samples": 1234,
@@ -33,12 +39,16 @@ UBLK = re.compile(r'^(ublk_|__ublk)')
 WAKE = re.compile(r'^(futex_|__futex|do_futex|eventfd|try_to_wake_up|ttwu_|wake_up|__wake_up|schedule|__schedule|'
                   r'finish_task_switch|enqueue_task|dequeue_task|pick_next_task|select_task_rq|'
                   r'__x64_sys_futex|__x64_sys_eventfd)')
+# ZFS's handling of a finished request, which the kernel runs in the
+# thread that ends the request: the daemon's, when it commits a result.
+ZFS_DONE = re.compile(r'^(zio_|taskq_|spa_taskq|vdev_disk_io_done|vdev_disk_bio_done)')
 IO_URING = re.compile(r'^(io_uring|__io_|io_[a-z_]+$|__x64_sys_io_uring)')
 # (name, rule over the chain's symbols, leaf first). The first that holds wins.
 CATEGORIES = (
     ('copy, ublk', lambda c: COPY.match(c[0]) and any(UBLK.match(s) for s in c)),
     ('copy, page cache', lambda c: COPY.match(c[0]) and any(PAGE_CACHE.match(s) for s in c)),
     ('copy, other', lambda c: COPY.match(c[0])),
+    ('ZFS completion', lambda c: any(ZFS_DONE.match(s) for s in c)),
     ('wake and switch', lambda c: any(WAKE.match(s) for s in c)),
     ('page cache', lambda c: any(PAGE_CACHE.match(s) for s in c)),
     ('ublk driver', lambda c: any(UBLK.match(s) for s in c)),

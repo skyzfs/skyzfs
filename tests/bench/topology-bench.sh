@@ -589,7 +589,7 @@ if drows:
         print('\nWhere the daemon\'s CPU went (TB_PERF_RECORD): `perf record -g` of its pid at 999 Hz in the middle of the '
               'window, by thread name (the readers together). `kernel` is the share of the thread\'s samples in the '
               'kernel; the next column divides those by the first rule of tests/bench/perfcat.py that their call chain '
-              'meets (a copy inside the ublk driver or the page cache counts as a copy); then the ten commonest kernel '
+              'meets (a copy inside the ublk driver or the page cache counts as a copy, and ZFS's handling of a finished request, which runs in the daemon's thread when it ends the request, as ZFS completion); then the ten commonest kernel '
               'leaf symbols, % of the kernel samples. The recording slows the daemon, so the row has no verdict:\n')
         print('| workload | daemon row | thread | samples | kernel | kernel samples by kind, % | top kernel symbols, % |')
         print('|---|---|---|---|---|---|---|')
