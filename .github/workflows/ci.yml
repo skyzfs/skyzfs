@@ -55,6 +55,7 @@ jobs:
       - run: bash tests/lib/test_apt_fallback.sh
       - run: bash tests/lib/test_lim.sh
       - run: python3 tests/bench/test_skz_time.py
+      - run: python3 tests/bench/test_bracket.py
       # First: needs no toolchain or cache, and the shell harness is
       # ~4.6k lines nothing else lints. Preinstalled on ubuntu runners.
       # No blanket excludes — deliberate idioms carry a targeted

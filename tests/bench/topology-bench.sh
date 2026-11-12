@@ -320,11 +320,15 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # know. Default: the one beside this script.
 SKZ_TIME_DIR=${TB_SKZ_TIME_DIR:-$HERE}
 summarize() { # dir -> summary.md on stdout (all *.json under dir, any depth)
-    python3 - "$1" "$SKZ_TIME_DIR" <<'PY'
+    python3 - "$1" "$SKZ_TIME_DIR" "$HERE" <<'PY'
 import glob, json, os, sys
 out = sys.argv[1]
 sys.path.insert(0, sys.argv[2])
 import skz_time
+# The bracketed ratio is always this branch's (tested by
+# tests/bench/test_bracket.py), whatever TB_SKZ_TIME_DIR names.
+sys.path.insert(0, sys.argv[3])
+import bracket
 runs = []
 for p in sorted(glob.glob(os.path.join(out, '**', '*.json'), recursive=True)):
     r = json.load(open(p))
@@ -517,12 +521,15 @@ if any(mode(r) != 'none' for r in runs):
               f"{flash / (txn / 1000) if txn else float('nan'):.1f} |")
 # The daemon against the benchmark model (design §9, M1: tpcb within
 # 10% of the benchmark model on the same machine). The model is the
-# zfs-slog row. A ratio, and with it a verdict, is only formed between
-# two rows of one machine: each row carries the boot id and the host
-# name of the machine it ran on, and rows are compared only where it is the same. The
-# workflow's summary job puts the rows of every matrix runner in one
-# directory; those end with NO VERDICT, and so does a row that does not
-# say where it ran.
+# zfs-slog row. A ratio is only formed between rows of one machine:
+# each row carries the boot id and the host name of the machine it ran
+# on. A daemon row is judged by its bracketed ratio (bracket.py): its
+# tps over the mean of the model rows just before and just after it in
+# its sequence, because a machine can change over a job by as much as
+# is judged. A row that no two model rows enclose ends with NO VERDICT;
+# so does a row outside a sequence (the matrix's runners) and a row
+# that does not say where it ran. The ratio to each model row of the
+# machine is printed below it, not judged.
 skz = [r for r in runs if r['topology'] == 'zfs-skyzfsd' and mode(r) == 'none']
 if skz:
     def others(topo, r):
@@ -530,49 +537,37 @@ if skz:
         rows = [o for o in runs if o['topology'] == topo and o['workload'] == r['workload'] and mode(o) == 'none' and o['tps']]
         here = [o for o in rows if r.get('machine') and o.get('machine') == r['machine']]
         return here, len(rows) - len(here)
-    print('\nThe daemon against the benchmark model (`zfs-slog`). A ratio is formed only between two rows of one machine '
-          '(the same boot id and host name); rows of other machines are counted and not compared. '
-          'The criterion is a ratio of at least 0.90 to a zfs-slog row with no origin delay (TB_ORIGIN_DELAY_MS=0); '
-          'the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
-    print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio | verdict |')
-    print('|---|---|---|---|---|---|---|---|')
-    for r in skz:
+    def lim(r):
         k_ = r.get('skyzfsd', {})
-        lim_ = (f"{k_.get('build', 'not said')}; {k_.get('serve_args') or 'defaults'}; "
+        return (f"{k_.get('build', 'not said')}; {k_.get('serve_args') or 'defaults'}; "
                 f"{k_.get('info', {}).get('mem_max', 'n/a')}")
-        if not r['tps']:
-            print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
+    print('\nThe daemon against the benchmark model (`zfs-slog`). A daemon row is judged by its bracketed ratio: '
+          'its tps over the mean tps of the model rows just before and just after it in its sequence, on its machine '
+          '(the same boot id and host name). The criterion is a bracketed ratio of at least 0.90, with both model rows '
+          'run with no origin delay (TB_ORIGIN_DELAY_MS=0). A row that no two model rows enclose has no verdict.\n')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | model row before (row: tps) | model row after (row: tps) | bracketed ratio | verdict |')
+    print('|---|---|---|---|---|---|---|---|')
+    mrow = lambda o: '-' if o is None else f"{label(o)} ({o['_seq']}: {o['tps']:.0f})"
+    for r in sorted(skz, key=lambda r: (r['workload'], r.get('machine') or '', r.get('_seq') or 0)):
+        b = bracket.bracketed(r, runs)
+        tps_ = 'none' if not r['tps'] else f"{r['tps']:.0f}"
+        rat = '-' if b['ratio'] is None else f"{b['ratio']:.3f}"
+        where = '' if r.get('_seq') is None else f" (row {r['_seq']})"
+        print(f"| {r['workload']} | {label(r)}{where} | {lim(r)} | {tps_} | {mrow(b['before'])} | {mrow(b['after'])} | {rat} | {b['verdict']} |")
+    print('\nThe daemon\'s rows against each row of the model and of the other stacks on their machine (not judged; '
+          'rows of other machines are counted and not compared):\n')
+    print('| workload | daemon row | its build; serve arguments; memory limit | tps | against | its tps | ratio |')
+    print('|---|---|---|---|---|---|---|')
+    for r in skz:
+        if not r['tps'] or not r.get('machine'):
             continue
         model, elsewhere = others('zfs-slog', r)
-        if not r.get('machine'):
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | - | - | NO VERDICT: this row does not say what machine it ran on |")
-        elif not model:
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none on this machine | - | "
-                  f"NO VERDICT: no zfs-slog row of this workload from the same machine ({elsewhere} from other machines, not compared) |")
-        # In a sequence the first model row of the machine is the one
-        # judged against; a later one (run to see whether the machine
-        # changed over the job) is reported beside it.
-        first = min((o['_seq'] for o in model if o.get('_seq') is not None), default=None)
-        for o in model:
-            q = r['tps'] / o['tps']
-            if first is not None and o.get('_seq') is not None and o['_seq'] != first:
-                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} (row {o['_seq']} of the sequence) | {o['tps']:.0f} | {q:.3f} | "
-                      f"not judged: the first model row of the sequence (row {first}) is the one judged against |")
-                continue
-            # The daemon's row has no origin under it. A model row with
-            # an origin delay was slowed by it at every origin read, and
-            # a ratio to it would flatter the daemon: no verdict.
-            delay = o.get('origin_delay_ms')
-            if delay == 0:
-                verdict = 'at least 0.90' if q >= 0.90 else 'BELOW 0.90'
-            elif delay is None:
-                verdict = 'NO VERDICT: the model row does not say what origin delay it had'
-            else:
-                verdict = f'NO VERDICT: the model row had an origin delay of {delay} ms, the daemon row has no origin'
-            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | {verdict} |")
-        for topo in ('zfs-loop', 'zfs-ublk'):
-            for o in others(topo, r)[0]:
-                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
+        if not model:
+            print(f"| {r['workload']} | {label(r)} | {lim(r)} | {r['tps']:.0f} | zfs-slog | none on this machine ({elsewhere} from other machines) | - |")
+        for topo in ('zfs-slog', 'zfs-loop', 'zfs-ublk'):
+            for o in sorted(others(topo, r)[0], key=lambda o: (o.get('_seq') is None, o.get('_seq') or 0)):
+                seq_ = '' if o.get('_seq') is None else f" (row {o['_seq']})"
+                print(f"| {r['workload']} | {label(r)} | {lim(r)} | {r['tps']:.0f} | {label(o)}{seq_} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
     print('| workload | daemon row | build; serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import | nr_dirty MiB mean / max | nr_writeback MiB mean / max |')
     print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')

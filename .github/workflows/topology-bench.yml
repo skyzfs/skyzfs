@@ -94,7 +94,7 @@ on:
         description: "zfs module parameters for the ZFS topologies, name=value separated by spaces (e.g. l2arc_noprefetch=0 l2arc_headroom=0)"
         default: ""
       sequence:
-        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. Replaces the per-topology matrix when set"
+        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. A daemon row is judged against the mean of the zfs-slog rows just before and after it, so begin and end with one and put one at least every third row. Replaces the per-topology matrix when set"
         default: ""
       cas_mode:
         description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
