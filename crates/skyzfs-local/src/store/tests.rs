@@ -7614,14 +7614,16 @@ fn a_read_held_in_one_reader_leaves_the_others_reading() {
 
 /// Release the two held readers, `first` first: after the first has
 /// completed and the barrier has woken and looked again, the barrier
-/// still waits (none has passed since `passed`) and nothing the worker
-/// does has completed. Then the second.
+/// still waits (none has passed since `passed`), and `alone` checks
+/// what else must hold while the second reader is still held: it is
+/// called before the second is released, as anything that the second
+/// reader's release lets go may complete from then on.
 fn release_one_after_the_other(
     served: &mut Served,
     shared: &Shared,
     gates: [&Gate; 2],
     done: &mut Vec<Completion>,
-    alone: impl Fn() -> Outcome,
+    alone: impl FnOnce(&mut Served, &mut Vec<Completion>) -> Outcome,
 ) -> Outcome {
     let (woke, passed) = shared.pin.woke_and_passed();
     let before = done.len();
@@ -7637,7 +7639,7 @@ fn release_one_after_the_other(
     if shared.pin.woke_and_passed().1 != passed {
         return Err("the barrier passed with a reader still pinned".into());
     }
-    alone()?;
+    alone(served, done)?;
     gates[1].open();
     Ok(())
 }
@@ -7695,7 +7697,7 @@ fn two_held_readers_at_the_first_barrier(env: &Env) -> Outcome {
             first[1].open();
         } else {
             at_a_barrier(&shared, 0, "the first barrier")?;
-            release_one_after_the_other(&mut served, &shared, first, &mut done, || {
+            release_one_after_the_other(&mut served, &shared, first, &mut done, |_, _| {
                 if step.reached() {
                     return Err("the step wrote the home image with a reader held".into());
                 }
@@ -7774,14 +7776,15 @@ fn two_held_readers_at_the_second_barrier(env: &Env) -> Outcome {
             first[1].open();
         } else {
             at_a_barrier(&shared, waited, "the second barrier")?;
-            let mut more = Vec::new();
-            release_one_after_the_other(&mut served, &shared, first, &mut done, || Ok(()))?;
-            // The worker waits at the barrier, and nothing behind it
-            // completed while the second reader was held.
-            if done.len() != 1 || served.poll(&mut more) > 1 {
-                return Err("the write completed with a reader held".into());
-            }
-            done.append(&mut more);
+            release_one_after_the_other(&mut served, &shared, first, &mut done, |served, done| {
+                // The worker waits at the barrier, and nothing behind it
+                // has completed: only the read released first.
+                let mut more = Vec::new();
+                if done.len() != 1 || served.poll(&mut more) != 0 {
+                    return Err("the write completed with a reader held".into());
+                }
+                Ok(())
+            })?;
         }
         take(&mut served, &mut done, 3, "both reads and the write")?;
         let checkpointed = checkpointed.recv_timeout(Duration::from_secs(20));
