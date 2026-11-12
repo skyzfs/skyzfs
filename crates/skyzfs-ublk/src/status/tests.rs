@@ -38,6 +38,7 @@ fn sample() -> Status {
                 steps: 14,
                 stepping: true,
                 own_syncs: 18,
+                zeroes: ZeroesShown::Written,
             },
             start_ms: 16,
             replayed_bytes: 17,
@@ -49,15 +50,16 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA3");
+    expected.extend(b"SKYZSTA4");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
-    for field in (1..=14u64).chain([1, 16, 17, 18]) {
+    // How write-zeroes are applied is 2, written, at offset 192.
+    for field in (1..=14u64).chain([1, 16, 17, 18, 2]) {
         expected.extend(field.to_le_bytes());
     }
-    assert_eq!(bytes.len(), 192);
+    assert_eq!(bytes.len(), 200);
     assert_eq!(bytes.to_vec(), expected);
     assert_eq!(decode(&bytes), Some(sample()));
 }
@@ -93,6 +95,60 @@ fn a_file_of_the_second_version_is_read_without_the_log() {
     second[..8].copy_from_slice(b"SKYZSTA3");
     fs::write(&path, &second).expect("write");
     assert!(super::read(&path).is_err());
+}
+
+/// A file of the third version (192 bytes, `SKYZSTA3`) is still read:
+/// everything it has, and nothing on how write-zeroes are applied, of
+/// which the report then has no line. The fourth version says it, in
+/// each of its three states, and a value it does not know is read as
+/// not said.
+#[test]
+fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applied() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut third = encode(&sample())[..192].to_vec();
+    third[..8].copy_from_slice(b"SKYZSTA3");
+    fs::write(&path, &third).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let mut unsaid = sample();
+    if let Some(log) = unsaid.log.as_mut() {
+        log.shown.zeroes = ZeroesShown::Unsaid;
+    }
+    assert_eq!(read, unsaid);
+    let lines_of = |status: &Status| {
+        report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(status),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        )
+    };
+    let lines = lines_of(&read);
+    assert_eq!(value(&lines, "checkpoint_syncs"), Some("18"));
+    assert_eq!(value(&lines, "zeroes_applied"), None);
+    // The fourth version's magic at the third's length is no file.
+    third[..8].copy_from_slice(b"SKYZSTA4");
+    fs::write(&path, &third).expect("write");
+    assert!(super::read(&path).is_err());
+
+    for (zeroes, says) in [
+        (ZeroesShown::Untried, "not yet"),
+        (ZeroesShown::Deallocated, "deallocated in the home image"),
+        (ZeroesShown::Written, "written as zeros: the file system"),
+    ] {
+        let mut status = sample();
+        if let Some(log) = status.log.as_mut() {
+            log.shown.zeroes = zeroes;
+        }
+        assert_eq!(decode(&encode(&status)), Some(status));
+        let lines = lines_of(&status);
+        let said = value(&lines, "zeroes_applied").unwrap_or_default();
+        assert!(said.starts_with(says), "{zeroes:?}: {said}");
+    }
+    let mut unknown = encode(&sample());
+    unknown[192..200].copy_from_slice(&7u64.to_le_bytes());
+    assert_eq!(decode(&unknown), Some(unsaid));
 }
 
 /// The report shows the log: its live size, the steps taken, whether
@@ -151,6 +207,7 @@ fn a_steps_begin_and_end_are_written_at_once() {
         steps: 0,
         stepping: true,
         own_syncs: 0,
+        ..LogShown::default()
     };
     board.post_log(begun, true);
     assert_eq!(written.recv_timeout(wait), Ok(begun));
@@ -159,6 +216,7 @@ fn a_steps_begin_and_end_are_written_at_once() {
         steps: 1,
         stepping: false,
         own_syncs: 1,
+        ..LogShown::default()
     };
     board.post_log(ended, true);
     assert_eq!(written.recv_timeout(wait), Ok(ended));
@@ -483,6 +541,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "checkpoint_step",
             "start_ms",
             "replayed_bytes",
+            "zeroes_applied",
             "pid",
             "counters"
         ]

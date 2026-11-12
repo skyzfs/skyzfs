@@ -270,7 +270,7 @@ fn serve_has_the_agreed_defaults_and_options() {
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20",
+         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes",
     )
     .hooks;
     assert_eq!(
@@ -286,8 +286,10 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             step_pause: None,
             step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
+            refuse_holes: true,
         }
     );
+    assert!(!serve("serve --dir /v/a").hooks.refuse_holes);
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))
             .hooks
