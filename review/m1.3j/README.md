@@ -123,3 +123,24 @@ look. The totals stay exact, which is all the new test and my plants
 looked at. `skz_time.py`'s `delta()` rejects a window with a sum that
 went down. I saw the shift between activities while reading and did
 not follow it to a sum that decreases.
+
+## Fourth look (head 8380fd9, one commit)
+
+- Can merge. The decreasing sum is fixed.
+- A look adds only a wait for work, to idle. A busy thread's sums stay
+  as it published them until it publishes again, so none goes down.
+- The wake: the clock is read and the wait closed under the lock a
+  look holds while it reads the clock, so the wake's moment is not
+  before an earlier look's. Idle and the as-of both only grow.
+- Each thread's as-of is the look (waiting) or its last span's end
+  (busy); the sums are that minus a constant. Exact.
+- Plant: a look counts a busy thread's open span: caught by both
+  timing tests.
+- Plant: the worker's wake closes before it takes the lock: not
+  caught in three runs. The author says so; by reading the code is
+  right.
+- The exactness test still has no checkpoint step; the new test has
+  one, with looks inside it and the same checks. Enough.
+- skz_time.py: each identity against its own thread's key.
+- fmt, clippy clean; skyzfs-local 214 pass, skyzfs-ublk 123,
+  test_skz_time.py 24.
