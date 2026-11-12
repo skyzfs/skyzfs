@@ -2415,21 +2415,33 @@ unflushed_obs() {
         obs "${1}_checked_reads" "reads that found a record not yet durable and checked its payload: $c, $x bytes read beyond those asked for, $m MISMATCHED$([ "$m" -gt 0 ] && echo ' (a mismatch on a healthy volume is a DEFECT of the server: the record did not match its checksum)'); volumes that did not print the keys: $np; the volumes with a checked read: $(echo "$2" | tr ';' '\n' | awk '$2 == "count" && $3 != 0' | tr -s ' \n' ' ' | cut -c1-600). The suite makes some of its volumes fail on purpose (fail-log): a mismatch there is to be read beside that case"
     fi
 }
-# The suite a third time, with the daemon checkpointing while it runs.
-# The marks cannot be set below their defaults (high 2 segments, low
-# 1: 128 MiB) and a case writes far less to its 64 MiB volume, so each
-# new volume is first given 130 MiB of zero data by plain writes
-# (BLK_PREFILL_MB): it still reads as empty, and its log is at the high
-# mark when the case begins. The steps taken are read from the status
-# of every volume of the pass five times a second; a pass in which no
-# step was taken is the rig's error. The verdict is each case's result
-# beside the first pass's.
+# The suite a third time, with checkpoint steps between the calls of
+# its cases. The marks cannot be set below their defaults (high 2
+# segments of 64 MiB, low 1) and a case writes far less than that, so
+# each new volume's log is first filled with zero data to within one
+# 4 KiB write of the high mark and no further (BLK_PREFILL_TO_HIGH; the
+# volume still reads as empty, and no step has been taken). The case's
+# first call that adds to the log (a write, discard or write-zeroes)
+# takes it over the mark, and by the daemon's rule a step comes before
+# the next request is executed, and one before each later one until
+# the log is below the low mark. (A pre-fill past the mark, as before,
+# had the daemon step back below the low mark by itself before the case
+# began: steps were taken in the pass and none inside a case.)
+# c_low_steps.py puts each volume in a class from the call trace and
+# the helper's lines: `inside` (the pre-fill was set, the case made a
+# call after its first write, and its servers took steps), `no_write`
+# and `last_write` (no call could follow a step: counted and shown),
+# `not_set` and `no_step` (it could, and did not). More of the last two
+# than a tenth of the volumes that could hold a step is the rig's
+# error, not a verdict. The verdict is each case's result beside the
+# first pass's. The status of every volume is also read five times a
+# second, for the observation line.
 check_c_low() {
-    local tool=${RIG_BLKCHECK:-} work=$WORK/cl rc t0 differ n sampler steps vols under most
+    local tool=${RIG_BLKCHECK:-} work=$WORK/cl rc t0 differ n sampler steps vols under most counts
     local -a can=(--can fail-log)
     if [ "$IMPL" != daemon ]; then pin c_suite_with_low_marks WAITING "the stand-in has no log and no checkpoint"; return; fi
     if [ "${C_RC:-1}" != 0 ]; then pin c_suite_with_low_marks ERROR "not run: the first pass of the suite did not end"; return; fi
-    step "c: the suite again, the daemon checkpointing while it runs (each volume's log filled to the high mark first)"
+    step "c: the suite again, with checkpoint steps between the calls of each case (each volume's log filled to just below the high mark first)"
     mkdir -p "$work"; : > "$WORK/cl.samples"
     [ ! -e "$WORK/cl.stop" ] || unlink "$WORK/cl.stop"
     ( while [ ! -e "$WORK/cl.stop" ] && [ ! -e "$WORK/stop-all" ]; do
@@ -2443,12 +2455,13 @@ check_c_low() {
       done ) &
     sampler=$!
     t0=$(date +%s)
-    BLKCHECK_TRACE=$OUT/cl-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} BLK_PREFILL_MB=130 \
+    BLKCHECK_TRACE=$OUT/cl-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} BLK_PREFILL_TO_HIGH=1 \
         lim 3600 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/cl-cases.tsv" 2> "$OUT/cl-blkcheck.err"; rc=$?
     touch "$WORK/cl.stop"; job_end "$sampler" 60
     cp "$work/helper.log" "$OUT/cl-helper.log" 2>/dev/null
+    python3 -I "$HERE/c_low_steps.py" "$OUT/cl-trace.tsv" "$OUT/cl-helper.log" > "$OUT/cl-volumes.txt" 2>&1 || echo "c_low_steps.py failed: $(tail -n 1 "$OUT/cl-volumes.txt")" >> "$OUT/cl-volumes.txt"
     gzip -f "$OUT/cl-trace.tsv" 2>/dev/null
     for n in "$work"/*.serve.log; do [ -s "$n" ] && cp "$n" "$OUT/cl-$(basename "$n")"; done
     # Steps: each server's count is its last reading; the sum over the
@@ -2457,15 +2470,20 @@ check_c_low() {
     read -r n steps vols under most <<< "$(awk '{ n++; k = $1 " " $2; if ($4 + 0 > s[k]) s[k] = $4 + 0; seen[$1] = 1; if ($5 == "under") u++; if ($3 + 0 > m) m = $3 + 0 }
         END { for (k in s) { t += s[k]; split(k, a, " "); if (s[k] > 0) with[a[1]] = 1 } for (v in seen) nv++; for (v in with) nw++
               printf "%d %d %d/%d %d %d", n, t, nw, nv, u, m }' "$WORK/cl.samples")"
-    obs c_low_steps "${n:-0} readings of the status of the pass's volumes: ${steps:-0} checkpoint steps taken, on ${vols:-0/0} of the volumes seen; a step under way at ${under:-0} readings; log_live at most ${most:-0} bytes; pre-fills: $(grep -c '^prefill' "$OUT/cl-helper.log" 2>/dev/null); the whole pass $(( $(date +%s) - t0 )) s"
+    counts=$(sed -n 's/^c_low counts //p' "$OUT/cl-volumes.txt" | head -n 1)
+    obs c_low_steps "volumes by class (cl-volumes.txt): ${counts:-none: $(tail -n 1 "$OUT/cl-volumes.txt" | cut -c1-200)}; pre-fills set $(grep -c '^prefill [0-9]*: set' "$OUT/cl-helper.log" 2>/dev/null), not set $(grep -c '^prefill [0-9]*: NOT SET' "$OUT/cl-helper.log" 2>/dev/null)$(grep -m 1 '^prefill [0-9]*: NOT SET' "$OUT/cl-helper.log" 2>/dev/null | sed 's/^/ (first: /; s/$/)/' | cut -c1-200); not_set and no_step volumes: $(awk '$1 == "c_low" && $2 == "volume" && ($4 == "not_set" || $4 == "no_step") { printf "%s ", $3 }' "$OUT/cl-volumes.txt" | cut -c1-200); ${n:-0} readings of the status: ${steps:-0} steps, on ${vols:-0/0} of the volumes seen, a step under way at ${under:-0} readings, log_live at most ${most:-0} bytes; the whole pass $(( $(date +%s) - t0 )) s"
     if [ $rc != 0 ]; then
         pin c_suite_with_low_marks ERROR "skyzfs-blkcheck exit $rc in this pass: $(tail -n 1 "$OUT/cl-blkcheck.err" | cut -c1-300). Whether the tool stopped or the server never answered a call: cl-trace.tsv.gz in the run's artifact, through \`skyzfs-blkcheck --replay\`"
         return
     fi
-    if [ "${steps:-0}" = 0 ]; then
-        pin c_suite_with_low_marks ERROR "no checkpoint step was seen in the whole pass (${n:-0} readings, log_live at most ${most:-0} bytes): the suite did not run beside a checkpoint"
+    if [ -z "$counts" ]; then
+        pin c_suite_with_low_marks ERROR "the volumes were not classed: $(tail -n 1 "$OUT/cl-volumes.txt" | cut -c1-300)"
         return
     fi
+    case $counts in
+        *verdict=OK*) ;;
+        *) pin c_suite_with_low_marks ERROR "too few volumes had a step between their calls: $counts. Not a verdict on the server: the pass did not run its cases beside a checkpoint (cl-volumes.txt, cl-helper.log)"; return ;;
+    esac
     differ=$(join -t $'\t' -j 1 \
         <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/c-cases.tsv" | sort) \
         <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/cl-cases.tsv" | sort) |
@@ -2476,7 +2494,7 @@ check_c_low() {
     elif [ -n "$differ" ]; then
         pin c_suite_with_low_marks FAIL "$differ$(grep -m 3 -h 'FAIL' "$OUT/cl-cases.tsv" | cut -f 2,4 | tr '\t\n' ' ;' | cut -c 1-600)"
     else
-        pin c_suite_with_low_marks PASS "all $n cases as in the first pass, with $steps checkpoint steps taken on $vols of the volumes while the suite ran"
+        pin c_suite_with_low_marks PASS "all $n cases as in the first pass, with checkpoint steps between the calls of their cases: $counts"
     fi
 }
 check_e() {

@@ -106,9 +106,12 @@ EXPECTED = {
                                             '--step-pause-until), and the pool comes through as after any '
                                             'kill. Fewer than ten is a rig error', 'WAITING'),
     'pin_c_suite_with_low_marks': ('c', 'PASS', WAITING,
-                                 'every case of the suite ends as in the first pass while the daemon checkpoints: '
-                                 'the marks have no lower setting than the default, so each volume\'s log is '
-                                 'first filled to the high mark with zero data (no step taken is a rig error)',
+                                 'every case of the suite ends as in the first pass with checkpoint steps between '
+                                 'its calls: each volume\'s log is first filled with zero data to within one 4 KiB '
+                                 'write of the high mark, so the case\'s first write takes it over and the daemon '
+                                 'steps before its next request. Cases that make no write, or only as their last '
+                                 'call, are counted apart; more volumes that could hold a step and did not than a '
+                                 'tenth of those that could is a rig error',
                                  'WAITING'),
     'pin_failed_volume_while_a_request_is_held': ('d', 'PASS', WAITING,
                                                   'a volume that fails while the server holds a request (--hold '
@@ -272,8 +275,9 @@ OBSERVED = {
                                'the first and the last five'),
     'obs_b_takeover_starts': ('b', 'each take-over of the kill test by the new server\'s own account: how long '
                                    'its start took and how much log it replayed'),
-    'obs_c_low_steps': ('c', 'the checkpoint steps taken while the suite ran on logs filled to the high mark, and on '
-                             'how many of its volumes'),
+    'obs_c_low_steps': ('c', 'the volumes of that pass by class: a step between the case\'s calls, no write, a '
+                             'write only as the last call, the pre-fill not set, no step; and the steps read from '
+                             'the status five times a second'),
     'obs_c_checked_reads': ('c', 'the reads that found a record of the log not yet durable and checked its payload '
                                  '(status version 6), summed over the suite\'s volumes in its three passes; a mismatch on '
                                  'a healthy volume would be a defect. Not judged until a run has shown the keys'),

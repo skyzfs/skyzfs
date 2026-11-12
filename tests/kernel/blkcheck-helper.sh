@@ -25,7 +25,15 @@
 # (after create, so many MiB of zero data are written to the new
 # volume by plain writes, over and over it: the volume still reads as
 # empty, and the server's log holds that much when the caller begins;
-# default 0).
+# default 0), BLK_PREFILL_TO_HIGH (the daemon only: after create the
+# log is filled with zero data to within one 4 KiB write of its high
+# mark and no further, so that the caller's first write takes it over
+# the mark and the daemon steps between that call and the next; the
+# line "prefill N" says where the log was left. The mark is read from
+# --log-high in BLK_SERVE_ARGS, default 2 segments of 64 MiB). The lines
+# "steps N kill" and "steps N destroy" give each server's checkpoint
+# steps and its gate count (time_gate_count: turns in which a request
+# waited because a step had the log) when it goes.
 #
 # What it writes besides the device path goes to stderr and to
 # BLK_WORK/helper.log, with the time each verb took.
@@ -82,6 +90,59 @@ serve() {
     done
     die "serve was not ready after 60 s"
 }
+# log_live once the status has stopped changing: it is written every
+# 100 ms, so two equal readings 0.25 s apart (5 s at most).
+live_settled() {
+    local a b _
+    a=$(status_of log_live)
+    for _ in $(seq 1 20); do
+        sleep 0.25; b=$(status_of log_live)
+        [ "$a" = "$b" ] && break
+        a=$b
+    done
+    echo "$b"
+}
+# "steps N VERB: checkpoint_steps S gate G" of the server there is, or
+# was (its status file outlives it, at most 100 ms behind).
+steps_line() {
+    local st gt
+    st=$(status_of checkpoint_steps); gt=$(status_of time_gate_count)
+    echo "steps $N $1: checkpoint_steps ${st:-?} gate ${gt:-?}" >> "$WORK/helper.log"
+}
+# Fill the log to within one 4 KiB write of the high mark: 1 MiB writes
+# to about 2 MiB below it, then one 4 KiB write to learn what such a
+# write adds, then as many more as keep the log below the mark.
+prefill_to_high() {
+    local seg=2 high big d n l0 l1 l2 st why="" i
+    local -a a=("${SERVE_ARGS[@]}")
+    for ((i = 0; i + 1 < ${#a[@]}; i++)); do [ "${a[i]}" = --log-high ] && seg=${a[i + 1]}; done
+    high=$((seg << 26))
+    big=$(( (high - (2 << 20)) / ((1 << 20) + 4096) ))
+    left=$big
+    while [ "$left" -gt 0 ]; do
+        n=$((BYTES >> 20)); [ "$n" -le "$left" ] || n=$left
+        lim 120 "$DD" if=/dev/zero of="$DEV" bs=1M count="$n" oflag=direct conv=nocreat,fsync status=none >&2 || die "the pre-fill to the high mark failed with $left MiB to go"
+        left=$((left - n))
+    done
+    l0=$(live_settled)
+    lim 60 "$DD" if=/dev/zero of="$DEV" bs=4096 count=1 oflag=direct conv=nocreat status=none >&2 || die "the pre-fill's 4 KiB write failed"
+    l1=$(live_settled)
+    d=$(( ${l1:-0} - ${l0:-0} ))
+    if [ "$d" -le 0 ]; then
+        why="one 4 KiB write did not add to log_live (${l0:-?} then ${l1:-?})"
+    else
+        n=$(( (high - 1 - l1) / d ))
+        [ "$n" -le 0 ] || lim 60 "$DD" if=/dev/zero of="$DEV" bs=4096 count="$n" seek=1 oflag=direct conv=nocreat status=none >&2 || die "the pre-fill's $n writes of 4 KiB failed"
+        l2=$(live_settled); st=$(status_of checkpoint_steps)
+        if [ -z "$l2" ] || [ "$l2" -ge "$high" ] || [ $((high - l2)) -gt "$d" ]; then why="log_live ${l2:-?} is not within $d bytes below the high mark $high"
+        elif [ "${st:-x}" != 0 ]; then why="checkpoint_steps ${st:-?} after the pre-fill, not 0"; fi
+    fi
+    if [ -n "$why" ]; then
+        echo "prefill $N: NOT SET: $why" >> "$WORK/helper.log"
+    else
+        echo "prefill $N: set: log_live $l2, $((high - l2)) bytes below the high mark $high; a 4 KiB write adds $d; checkpoint_steps 0" >> "$WORK/helper.log"
+    fi
+}
 stop_serve() { # SIGTERM to serve, and wait for it to go
     local pid
     pid=$(cat "$DIR.serve.pid" 2>/dev/null) || return 0
@@ -102,6 +163,7 @@ create)
         left=$((left - n))
     done
     [ "${BLK_PREFILL_MB:-0}" = 0 ] || echo "prefill $N: ${BLK_PREFILL_MB} MiB of zero data; the server says log_live $(status_of log_live), checkpoint_steps $(status_of checkpoint_steps)" >> "$WORK/helper.log"
+    [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || prefill_to_high
     ;;
 kill)
     serve_pid=$(cat "$DIR.serve.pid" 2>/dev/null)
@@ -143,6 +205,9 @@ kill)
     read -r -t 60 reply || die "the caller did not answer the 'dead' line within 60 s"
     [ "$reply" = sorted ] || die "the caller answered '$reply' to the 'dead' line, not 'sorted'"
     echo "kill $N: sorted with the kernel counting ${in_r:-?} reads and ${in_w:-?} writes in flight" >> "$WORK/helper.log"
+    # The killed server's steps, from its status file (at most 100 ms
+    # behind): the next server counts from 0.
+    [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || steps_line kill
     DEV=$(serve) || exit 1
     # What the new server found applied and not acknowledged, by its own
     # account; "?" from a server that does not say.
@@ -202,6 +267,7 @@ destroy)
     c=$(status_of time_read_unflushed_count); x=$(status_of time_read_unflushed_extra_bytes); m=$(status_of time_read_unflushed_mismatched)
     if [ -n "$c" ]; then echo "unflushed $N: count $c extra $x mismatched $m" >> "$WORK/helper.log"
     else echo "unflushed $N: not printed" >> "$WORK/helper.log"; fi
+    [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || steps_line destroy
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null

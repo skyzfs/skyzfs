@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import daemon_check as dc  # noqa: E402
+import c_low_steps as cls  # noqa: E402
 
 # The checks of a run by default. Check f is asked for by name, and a
 # result of a check that was not asked for is a rig error: F below is
@@ -471,6 +472,59 @@ class Main(unittest.TestCase):
         # the same result twice is the same result
         self.assertEqual(self.run_main(lines + ['pin_discard\tPASS: again\n'])[0], 0)
 
+
+
+class CLowSteps(unittest.TestCase):
+    """c_low_steps.py: each volume of check c's third pass in its class."""
+
+    TRACE = [
+        '0\t1\topen\t-\t64\t16',
+        '1\t1\tsubmit\t1\twrite\t0\t4\th',
+        '2\t1\tsubmit\t2\tread\t0\t4\t',
+        '3\t2\topen\t-\t64\t16',
+        '4\t2\tsubmit\t1\tread\t0\t4\t',
+        '5\t3\topen\t-\t64\t16',
+        '6\t3\tsubmit\t1\tread\t0\t4\t',
+        '7\t3\tsubmit\t2\tdiscard\t0\t4\t',
+        '8\t4\topen\t-\t64\t16',
+        '9\t4\tsubmit\t1\twrite_zeroes\t0\t4\t',
+        '10\t4\tsubmit\t2\tflush\t0\t0\t',
+        '11\t5\topen\t-\t64\t16',
+        '12\t5\tsubmit\t1\twrite\t0\t4\th',
+        '13\t5\tsubmit\t2\twrite\t4\t4\th',
+    ]
+    HELPER = [
+        'prefill 1: set: log_live 134213632, 4096 bytes below the high mark 134217728; a 4 KiB write adds 8192; checkpoint_steps 0',
+        'steps 1 kill: checkpoint_steps 2 gate 1',
+        'steps 1 destroy: checkpoint_steps 3 gate 0',
+        'prefill 2: set: ...',
+        'prefill 3: set: ...',
+        'prefill 4: NOT SET: log_live 1 is not within 8192 bytes below the high mark 134217728',
+        'prefill 5: set: ...',
+        'steps 5 destroy: checkpoint_steps 0 gate 0',
+    ]
+
+    def test_classes(self):
+        classes, steps, gate = cls.classify(self.TRACE, self.HELPER)
+        self.assertEqual(classes, {'1': 'inside', '2': 'no_write', '3': 'last_write', '4': 'not_set', '5': 'no_step'})
+        self.assertEqual(steps['1'], 5)
+        self.assertEqual(gate['1'], 1)
+
+    def test_too_many_missed_is_said(self):
+        out = cls.report(*cls.classify(self.TRACE, self.HELPER))
+        self.assertIn('inside=1', out[0])
+        self.assertIn('verdict=TOO_MANY', out[0])
+        self.assertIn('c_low volume 5 no_step', out)
+
+    def test_one_miss_in_ten_is_ok(self):
+        classes = {str(v): 'inside' for v in range(1, 10)}
+        classes['10'] = 'no_step'
+        self.assertIn('verdict=OK', cls.report(classes, {}, {})[0])
+        classes['11'] = 'not_set'
+        self.assertIn('verdict=TOO_MANY', cls.report(classes, {}, {})[0])
+
+    def test_no_volume_that_could_is_too_many(self):
+        self.assertIn('verdict=TOO_MANY', cls.report({'1': 'no_write'}, {}, {})[0])
 
 if __name__ == '__main__':
     unittest.main()
