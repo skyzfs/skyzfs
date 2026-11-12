@@ -104,6 +104,27 @@ pub trait File {
     /// everything written so far would survive a power cut.
     fn sync(&mut self) -> io::Result<()>;
 
+    /// Ask the system to start writing `len` bytes at `offset`, written
+    /// and not yet synced, to the device, and return without waiting
+    /// for it. A hint: it promises nothing about durability or order,
+    /// and only [`File::sync`] makes anything durable. What it changes
+    /// is how much a later sync has left to wait for.
+    ///
+    /// Fails with [`io::ErrorKind::Unsupported`] where the file system
+    /// or the platform has no such call, having done nothing: the
+    /// caller stops asking for this file. Any other error is a failed
+    /// write of the file.
+    ///
+    /// Linux: `sync_file_range` with `SYNC_FILE_RANGE_WRITE` alone,
+    /// which starts the writeback of the dirty pages of the range and
+    /// does not wait for it or take the file's writeback error that a
+    /// later `fdatasync` reports. Elsewhere: unsupported. This default
+    /// is unsupported.
+    fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        let _ = (offset, len);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Set the file's length to `len` with real, zero-filled space behind
     /// it, so that a later write inside it allocates nothing.
     fn preallocate(&mut self, len: u64) -> io::Result<()>;

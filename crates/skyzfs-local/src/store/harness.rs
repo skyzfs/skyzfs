@@ -374,7 +374,7 @@ impl Harness for SimHarness {
             if !read_only && rng.next().is_multiple_of(3) {
                 // Half of these checkpoints have everything to apply.
                 if rng.next().is_multiple_of(2) {
-                    let _ = store.core.flush();
+                    let _ = store.core.flush(SyncKind::FLUSH);
                 }
                 disk_of.halt_after(rng.next() % 12);
                 let _ = store.checkpoint();
@@ -465,7 +465,7 @@ impl Harness for SimHarness {
                 let _ = store.checkpoint();
             }
             1 => {
-                let _ = store.core.flush();
+                let _ = store.core.flush(SyncKind::FLUSH);
                 let _ = store.checkpoint();
             }
             // A hold where the log now ends, for later calls to stop
@@ -474,7 +474,7 @@ impl Harness for SimHarness {
             // write that waits for a hold would wait for a later call
             // of this hook, which the suite does not promise.
             2 => {
-                let _ = store.core.flush();
+                let _ = store.core.flush(SyncKind::FLUSH);
                 if bounded {
                     store
                         .set_hold(mark.filter(|mark| *mark >= store.log_start()))

@@ -6641,3 +6641,196 @@ fn no_sum_goes_down_between_looks_taken_inside_a_step_and_a_read() {
         "{looks:?}"
     );
 }
+
+/// A store on a new disk whose hint hands writes over once `unit`
+/// bytes wait (0: never).
+fn hinted(unit: u64) -> (SimDisk, SimStore) {
+    hinted_in(environments(0)[0], unit)
+}
+
+/// The same in `env`.
+fn hinted_in(env: Env, unit: u64) -> (SimDisk, SimStore) {
+    let disk = SimDisk::new(7);
+    disk.set_write_unit(u64::from(env.unit));
+    let options = OpenOptions {
+        writeback_unit: unit,
+        ..env.options()
+    };
+    let key = Key(*b"a key for tests!");
+    let store = Store::create_keyed(disk.clone(), &env.config(), key, options).unwrap();
+    (disk, store)
+}
+
+/// The hints made for files whose names start with `prefix`.
+fn hints_of(disk: &SimDisk, prefix: &str) -> Vec<(u64, u64)> {
+    disk.writebacks()
+        .into_iter()
+        .filter(|(name, _, _)| name.starts_with(prefix))
+        .map(|(_, offset, len)| (offset, len))
+        .collect()
+}
+
+/// The log's writes are handed to the device once a unit of them waits,
+/// and as often as the unit says: 64 writes of a block, records of
+/// 4160 bytes with an alignment of 64, are 260 KiB in one segment,
+/// handed over in ranges that follow each other, each the first run of
+/// records to reach the unit (16 records), and less than a unit is left
+/// waiting. The flush then waits for less than a unit that was not
+/// handed over, and says so.
+#[test]
+fn the_logs_writes_are_handed_over_once_a_unit_waits() {
+    const UNIT: u64 = 64 << 10;
+    let (disk, mut store) = hinted(UNIT);
+    let before = hints_of(&disk, "log.").len();
+    let first = store.timing().writeback[0];
+    for block in 0..64 {
+        write(&mut store, block, 1, 5).unwrap();
+    }
+    let hints = hints_of(&disk, "log.");
+    let new = &hints[before..];
+    const RECORD: u64 = 4160;
+    let run = UNIT.div_ceil(RECORD) * RECORD;
+    assert_eq!(new.len() as u64, 64 * RECORD / run, "{new:?}");
+    for pair in new.windows(2) {
+        assert_eq!(pair[0].0 + pair[0].1, pair[1].0, "{new:?}");
+    }
+    assert!(new.iter().all(|(_, len)| *len == run), "{new:?}");
+    assert!(64 * RECORD - new.len() as u64 * run < UNIT);
+    let timing = store.timing();
+    assert_eq!(timing.writeback[0].count - first.count, new.len() as u64);
+    assert_eq!(
+        timing.writeback[0].bytes - first.bytes,
+        new.len() as u64 * run
+    );
+    assert!(!timing.writeback[0].off);
+    flush(&mut store).unwrap();
+    let synced = store.timing().syncs[0];
+    assert_eq!(synced.count, 1);
+    assert!(synced.bytes >= 64 * RECORD, "{synced:?}");
+    assert!(synced.bytes - synced.handed < UNIT, "{synced:?}");
+}
+
+/// The home image's writes in a step's apply are handed over once a
+/// unit of them waits; what the step's sync of the home image waited
+/// for is counted, and so is the preimage file's (a write unit of
+/// 16 KiB, so that the step saves the neighbours of its blocks).
+#[test]
+fn the_home_images_writes_are_handed_over_in_the_apply() {
+    const UNIT: u64 = 64 << 10;
+    let env = environments(0)[2];
+    assert_eq!(env.unit, 16384);
+    let (disk, mut store) = hinted_in(env, UNIT);
+    // Every other block of the first 128, so that the step saves
+    // neighbours in a preimage file.
+    for block in (0..128).step_by(2) {
+        write(&mut store, block, 1, 6).unwrap();
+    }
+    flush(&mut store).unwrap();
+    store.checkpoint().unwrap();
+    let hints = hints_of(&disk, HOME_NAME);
+    // 64 blocks of 4 KiB: four units.
+    assert_eq!(hints.len(), 4, "{hints:?}");
+    let timing = store.timing();
+    assert_eq!(timing.writeback[1].count, 4);
+    assert_eq!(timing.writeback[1].bytes, 4 * UNIT);
+    let home = timing.syncs[3];
+    assert!(home.count >= 1);
+    assert_eq!(
+        (home.bytes, home.handed),
+        (64 * BLOCK, 4 * UNIT),
+        "{home:?}"
+    );
+    let preimage = timing.syncs[4];
+    assert!(preimage.count >= 1 && preimage.bytes > 0, "{preimage:?}");
+    // The step's own superblock write.
+    assert!(timing.syncs[5].count >= 1 && timing.syncs[5].bytes > 0);
+    // The preimage file is written whole and synced at once: no hint.
+    assert!(hints_of(&disk, PREIMAGE_NAME).is_empty());
+}
+
+/// With the unit 0 the hint is never made, and nothing else differs:
+/// the same writes, flush and step read back the same.
+#[test]
+fn with_the_unit_zero_the_hint_is_never_made() {
+    let (disk, mut store) = hinted(0);
+    for block in 0..512 {
+        write(&mut store, block, 1, 7).unwrap();
+    }
+    megabyte(&mut store, 2, 8).unwrap();
+    flush(&mut store).unwrap();
+    store.checkpoint().unwrap();
+    assert!(disk.writebacks().is_empty(), "{:?}", disk.writebacks());
+    assert_eq!(disk.stats().writebacks, 0);
+    let timing = store.timing();
+    assert_eq!(timing.writeback, [Hinted::default(); 2]);
+    assert_eq!(timing.syncs[0].handed, 0);
+    assert!(timing.syncs[0].bytes > 0);
+    assert_eq!(read(&mut store, 511, 1).unwrap(), vec![7u8; BLOCK as usize]);
+}
+
+/// A file system without the call: the hint answers "unsupported", is
+/// switched off for that file and says so, and the volume goes on and
+/// keeps what it was given.
+#[test]
+fn an_unsupported_hint_switches_off_and_the_volume_goes_on() {
+    let (disk, mut store) = hinted(64 << 10);
+    disk.set_writeback(false);
+    for block in 0..200 {
+        write(&mut store, block, 1, 9).unwrap();
+    }
+    flush(&mut store).unwrap();
+    store.checkpoint().unwrap();
+    let timing = store.timing();
+    assert!(
+        timing.writeback[0].off && timing.writeback[1].off,
+        "{timing:?}"
+    );
+    assert_eq!(
+        (timing.writeback[0].count, timing.writeback[1].count),
+        (0, 0)
+    );
+    assert!(disk.writebacks().is_empty());
+    // Asked again it is not: the file's hint is off.
+    disk.set_writeback(true);
+    for block in 200..400 {
+        write(&mut store, block, 1, 9).unwrap();
+    }
+    assert!(hints_of(&disk, "log.").is_empty());
+    flush(&mut store).unwrap();
+    assert_eq!(read(&mut store, 399, 1).unwrap(), vec![9u8; BLOCK as usize]);
+    let env = environments(0)[0];
+    let mut again = env.reopen(&disk).unwrap();
+    assert_eq!(read(&mut again, 0, 1).unwrap(), vec![9u8; BLOCK as usize]);
+}
+
+/// Any other error of the hint is a failed write of the file: the
+/// volume fails, the request that made the hint is answered as failed,
+/// every later one too, and the next open finds the log marked.
+#[test]
+fn a_hint_that_fails_fails_the_volume() {
+    for name in [crate::log::slot_name(0), HOME_NAME.to_string()] {
+        let (disk, mut store) = hinted(64 << 10);
+        disk.fail_writeback_of(&name);
+        let mut failed = None;
+        for block in 0..64 {
+            if write(&mut store, block, 1, 3).is_err() {
+                failed = Some(block);
+                break;
+            }
+        }
+        if name == HOME_NAME {
+            assert_eq!(failed, None, "the log's hint failed: {name}");
+            flush(&mut store).unwrap();
+            assert!(store.checkpoint().is_err(), "{name}");
+        } else {
+            assert!(failed.is_some(), "{name}");
+        }
+        assert!(write(&mut store, 100, 1, 3).is_err(), "{name}");
+        assert!(read(&mut store, 0, 1).is_err(), "{name}");
+        let env = environments(0)[0];
+        disk.clear_faults();
+        let reopened = env.reopen(&disk);
+        assert!(reopened.is_err(), "{name}: the log was not marked");
+        assert!(env.reopen_ack(&disk).is_ok(), "{name}");
+    }
+}
