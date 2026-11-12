@@ -214,6 +214,21 @@
 #   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
 #                           ("--depth,128,--log-high,8,--log-low,4"; the
 #                           marks are in segments of 64 MiB, default 2 and 1)
+#   TB_SKYZFSD_MEM=         cgroup v2 memory.max for the daemon (e.g. 1G).
+#                           The daemon's files (home image and log) go
+#                           through the host's page cache, which is
+#                           outside postgres's TB_MEM_LIMIT: unset, the
+#                           daemon rows have a cache under the pool as
+#                           large as the machine's free memory, which the
+#                           other rows (direct I/O under the pool) have
+#                           not. Set, the daemon runs in a cgroup of its
+#                           own from its first instruction, so the pages
+#                           of its files are charged there and bounded.
+#                           This bounds the cache; it is NOT what direct
+#                           I/O would cost: at the limit the kernel
+#                           reclaims and throttles the daemon's
+#                           write-back. The daemon's resident memory and
+#                           its cgroup's file pages are recorded either way
 #   TB_ZFS_L2ARC_MB=        size of zfs-slog-l2arc's cache device (default
 #                           twice the ARC cap, or twice the database when
 #                           the ARC is uncapped)
@@ -407,16 +422,21 @@ if drows:
     if md:
         print('\nMemory at the end of the window, MiB. The cgroup is postgres under TB_MEM_LIMIT; its `file` is the '
               'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
-              'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0:\n')
-        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | host page cache | host dirty | buffered loops |')
-        print('|---|---|---|---|---|---|---|---|---|')
+              'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0. '
+              'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
+              'the page cache its files were charged for there, and how many times the cgroup reached its limit '
+              '(a count, not MiB):\n')
+        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in md:
             m = r['diag']['mem_mb']; lp = r['diag'].get('loops', {})
             arc = r.get('zfs', {}).get('after', {}).get('arc.size')
             print(f"| {r['workload']} | {label(r)} | {nf(m.get('cgroup.current'), '.0f')} | {nf(m.get('cgroup.file'), '.0f')} | "
                   f"{nf(m.get('cgroup.anon', 0) + m.get('cgroup.shmem', 0) if 'cgroup.anon' in m else None, '.0f')} | "
-                  f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
-                  f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} |")
+                  f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('zfs.arc_max'), '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
+                  f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} | "
+                  f"{nf(m.get('skz.VmRSS'), '.0f')} | {nf(m.get('skz.cgroup.max'), '.0f') if 'skz.cgroup.max' in m else ('none' if 'skz.VmRSS' in m else 'n/a')} | "
+                  f"{nf(m.get('skz.cgroup.file'), '.0f')} | {nf(m.get('skz.cgroup.events.max'), '.0f')} |")
     zd = [(r, d) for r, d in drows if r.get('zfs')]
     if zd:
         MB = 1 << 20
@@ -473,22 +493,23 @@ if skz:
         return [r for r in runs if r['topology'] == topo and r['workload'] == wl and mode(r) == 'none' and r['tps']]
     print('\nThe daemon against the benchmark model (`zfs-slog`), rows of this directory only. '
           'The criterion is a ratio of at least 0.90 to zfs-slog; the ratios to zfs-loop and zfs-ublk are reported and not judged.\n')
-    print('| workload | daemon row | tps | against | its tps | ratio | verdict |')
-    print('|---|---|---|---|---|---|---|')
+    print('| workload | daemon row | its memory limit | tps | against | its tps | ratio | verdict |')
+    print('|---|---|---|---|---|---|---|---|')
     for r in skz:
+        lim_ = r.get('skyzfsd', {}).get('info', {}).get('mem_max', 'n/a')
         if not r['tps']:
-            print(f"| {r['workload']} | {label(r)} | none | - | - | - | no tps: the run did not measure |")
+            print(f"| {r['workload']} | {label(r)} | {lim_} | none | - | - | - | no tps: the run did not measure |")
             continue
         model = others('zfs-slog', r['workload'])
         if not model:
-            print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | zfs-slog | none here | - | NO VERDICT: no zfs-slog row of this workload in this directory |")
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | zfs-slog | none here | - | NO VERDICT: no zfs-slog row of this workload in this directory |")
         for o in model:
             q = r['tps'] / o['tps']
-            print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | "
+            print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {q:.3f} | "
                   f"{'at least 0.90' if q >= 0.90 else 'BELOW 0.90'} |")
         for topo in ('zfs-loop', 'zfs-ublk'):
             for o in others(topo, r['workload']):
-                print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
+                print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
     print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | before the import |')
     print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
@@ -581,6 +602,7 @@ UBLK_ARGS=${TB_UBLK_ARGS:-}
 UBLK_ID=${TB_UBLK_ID:-7}
 SKYZFSD=${TB_SKYZFSD:-}
 SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
+SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 ZFS_PARAMS=${TB_ZFS_PARAMS:-}
 ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
@@ -762,7 +784,7 @@ WAL_ORIGIN_LOOP=""; WAL_ORIGIN_DEV=""
 BCACHE_DEV=""; BCACHE_CSET=""; CAS_STARTED=""
 ZFS_UP=""; ZORIGIN_LOOP=""; ZSRC_LOOP=""; ZFS_WIN=""; ZFS_ARC_SAVED=""; SLOG_LOOP=""
 SNAP_PID=""; SNAP_STOP=""; ZFS_RCACHE=""; ZFS_PARAMS_SAVED=""; UBLK_UP=""
-SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
+SKZ_PID=""; SKZ_UP=""; SKZ_DEV=""; SKZ_SAMPLER=""; SKZ_CGROUP=""; SKZ_DIR=$WORK/skyzfsd-vol; SKZ_RUN=$WORK/skyzfsd-run
 STAT_ORIGIN=""; STAT_POOL=""   # diskstats names, when not the thin stack's
 DB_MB=0
 
@@ -1192,7 +1214,23 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
     : > "$WORK/skyzfsd.ready"
-    "$SKYZFSD" serve --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" "${args[@]}" > "$WORK/skyzfsd.ready" 2>> "$OUT/skyzfsd-serve.log" &
+    # A cgroup of the daemon's own, with or without a limit: its file
+    # pages (the home image and the log, through the page cache) are
+    # then counted apart from everything else on the machine. The shell
+    # joins it before it becomes the daemon, so the first page the
+    # daemon touches is charged there.
+    SKZ_CGROUP=""
+    if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+        SKZ_CGROUP=/sys/fs/cgroup/topology-bench-skyzfsd
+        mkdir -p "$SKZ_CGROUP"
+        echo "${SKYZFSD_MEM:-max}" > "$SKZ_CGROUP/memory.max"
+    elif [ -n "$SKYZFSD_MEM" ]; then
+        echo "TB_SKYZFSD_MEM needs cgroup v2 at /sys/fs/cgroup" >&2
+        return 1
+    fi
+    # shellcheck disable=SC2016  # the inner shell expands them
+    bash -c '[ -z "$1" ] || echo $$ > "$1/cgroup.procs" || exit 97; shift; exec "$@"' skz "$SKZ_CGROUP" \
+        "$SKYZFSD" serve --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" "${args[@]}" > "$WORK/skyzfsd.ready" 2>> "$OUT/skyzfsd-serve.log" &
     SKZ_PID=$!
     for i in $(seq 1 240); do
         SKZ_DEV=$(sed -n 's/^ready \(\/dev\/ublkb[0-9]*\)$/\1/p' "$WORK/skyzfsd.ready" | head -n 1)
@@ -1224,6 +1262,7 @@ skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the v
     blim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
         || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(blim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
     rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
+    if [ -n "$SKZ_CGROUP" ]; then rmdir "$SKZ_CGROUP" 2>/dev/null; SKZ_CGROUP=""; fi
 }
 # Wait for the daemon to be at rest after the copy, so that a window
 # does not begin on the copy's backlog: no checkpoint step under way,
@@ -1307,7 +1346,8 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
-            log "skyzfsd: $("$SKYZFSD" help 2>/dev/null | head -n 1 || true) serve ${SKYZFSD_ARGS//,/ } -> $dev"
+            log "skyzfsd: serve ${SKYZFSD_ARGS//,/ } -> $dev, pid $SKZ_PID, memory.max of its cgroup: $(cat "$SKZ_CGROUP/memory.max" 2>/dev/null || echo 'no cgroup') (cgroup of the pid: $(cut -d: -f3 "/proc/$SKZ_PID/cgroup" 2>/dev/null | tr '\n' ' '))"
+            echo "mem_max ${SKYZFSD_MEM:-none}" >> "$OUT/$TOPO.skzinfo"
             # The exported image onto the served device, through the
             # daemon. A 1 MiB block of zeros is left out, so what the
             # image never held the daemon is never given.
@@ -1576,6 +1616,7 @@ diskstats_line() { # kernel device name -> "reads rsect writes wsect flush"
     awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; print $4, $6, $8, $10, f }' /proc/diskstats
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
+    local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
          $1 == "ctxt" { print "cpu ctxt", $2 }' /proc/stat
     # CPU ticks by thread name (kernel threads included). A process's
@@ -1609,6 +1650,19 @@ PY
     if [ -n "${CGROUP:-}" ] && [ -f "$CGROUP/memory.stat" ]; then
         echo "mem cgroup.current $(cat "$CGROUP/memory.current")"
         awk '$1 ~ /^(anon|file|shmem|kernel|slab|file_dirty|file_writeback)$/ { print "mem cgroup." $1, $2 }' "$CGROUP/memory.stat"
+    fi
+    # The ARC's limit: the cache the model allows under postgres.
+    [ ! -r /sys/module/zfs/parameters/zfs_arc_max ] || echo "mem zfs.arc_max $(cat /sys/module/zfs/parameters/zfs_arc_max)"
+    # The daemon: its own resident memory, and what its cgroup holds
+    # (file = the page cache of its home image and log).
+    if [ -n "$SKZ_PID" ]; then
+        awk '$1 ~ /^(VmRSS|VmLck|RssAnon|RssFile|RssShmem):$/ { sub(":", "", $1); print "mem skz." $1, $2 * 1024 }' "/proc/$SKZ_PID/status" 2>/dev/null || true
+        if [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ]; then
+            echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
+            skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
+            awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
+            awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
+        fi
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
         | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
