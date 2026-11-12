@@ -424,10 +424,11 @@ if drows:
               'page cache it was charged for, and the ARC is outside it. `host page cache` is the whole machine\'s: '
               'a buffered loop device would put the images there, outside any cap. `buffered loops` should be 0. '
               'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
-              'the page cache its files were charged for there, and how many times the cgroup reached its limit '
-              '(a count, not MiB):\n')
-        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit |')
-        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+              'the page cache its files were charged for there, and how many times the cgroup reached its limit, '
+              'during the window and since the daemon started, which includes the copy of the pool image and the '
+              'warm-up (counts, not MiB):\n')
+        print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit in the window | since the daemon started |')
+        print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in md:
             m = r['diag']['mem_mb']; lp = r['diag'].get('loops', {})
             arc = r.get('zfs', {}).get('after', {}).get('arc.size')
@@ -436,7 +437,8 @@ if drows:
                   f"{nf(arc / (1 << 20) if arc else None, '.0f')} | {nf(m.get('zfs.arc_max'), '.0f')} | {nf(m.get('host.Cached'), '.0f')} | {nf(m.get('host.Dirty'), '.0f')} | "
                   f"{sum(1 for v in lp.values() if not v['dio'])} of {len(lp)} | "
                   f"{nf(m.get('skz.VmRSS'), '.0f')} | {nf(m.get('skz.cgroup.max'), '.0f') if 'skz.cgroup.max' in m else ('none' if 'skz.VmRSS' in m else 'n/a')} | "
-                  f"{nf(m.get('skz.cgroup.file'), '.0f')} | {nf(m.get('skz.cgroup.events.max'), '.0f')} |")
+                  f"{nf(m.get('skz.cgroup.file'), '.0f')} | {nf(m.get('skz.cgroup.events.max.window'), '.0f')} | "
+                  f"{nf(m.get('skz.cgroup.events.max.since_start'), '.0f')} |")
     zd = [(r, d) for r, d in drows if r.get('zfs')]
     if zd:
         MB = 1 << 20
@@ -521,8 +523,8 @@ if skz:
             for o in others(topo, r)[0]:
                 print(f"| {r['workload']} | {label(r)} | {lim_} | {r['tps']:.0f} | {label(o)} | {o['tps']:.0f} | {r['tps'] / o['tps']:.3f} | not judged |")
     print('\nWhat the daemon\'s status showed (sampled every second during the window; `log_live` in MiB):\n')
-    print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | before the import |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
+    print('| workload | daemon row | serve arguments | samples | with a step under way | steps in the window | syncs in the window | writes in the window | log_live min | max | at the start | at the end | most unstored in a sample | one server throughout | the pool at the end | before the import |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r in skz:
         k = r.get('skyzfsd', {})
         w = k.get('window', {})
@@ -530,7 +532,9 @@ if skz:
         nn = lambda v: 'n/a' if v is None else str(v)
         print(f"| {r['workload']} | {label(r)} | {k.get('serve_args') or 'defaults'} | {nn(w.get('samples'))} | {nn(w.get('step_under_way'))} | "
               f"{nn(k.get('steps'))} | {nn(k.get('syncs'))} | {nn(k.get('writes'))} | {mib(w.get('log_live_min'))} | {mib(w.get('log_live_max'))} | "
-              f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {k.get('info', {}).get('settle', 'n/a')} |")
+              f"{mib(k.get('log_live_before'))} | {mib(k.get('log_live_after'))} | {nn(w.get('unstored_max'))} | "
+              f"{'n/a' if 'pid_same' not in k else 'yes' if k['pid_same'] else 'NO: the pid changed'} | "
+              f"{k.get('pool_status', 'not asked')} | {k.get('info', {}).get('settle', 'n/a')} |")
 PY
 }
 if [ "${1:-}" = summarize ]; then
@@ -1713,6 +1717,12 @@ snapshot() { # file
         # The daemon's whole status, "skz key value" (a value of two
         # words joined by _).
         [ -z "$SKZ_UP" ] || skz_status | awk '{ k = $1; $1 = ""; sub(/^ /, ""); gsub(/ /, "_"); print "skz", k, $0 }'
+        # Whether the pool has seen an error on the daemon's device: a
+        # server that returned wrong data shows here first (a checksum
+        # error), and it is the one check on correctness this benchmark
+        # has. `zpool status -x` says "pool 'NAME' is healthy" or what
+        # is wrong.
+        [ -z "$SKZ_UP" ] || echo "skzpool $(blim 60 zpool status -x "$ZFS_POOL" 2>&1 | tr -s ' \t\n' ' ' | cut -c1-300)"
     } > "$1"
 }
 
@@ -1849,6 +1859,8 @@ if skz[base + '.after']:
             key, _, value = line.strip().partition(' ')
             if key: k['info'][key] = value
     k['serve_args'] = k['info'].get('serve_args', '')
+    said = ao.get('skzpool', [''])[0].split(None, 1)
+    k['pool_status'] = said[1] if len(said) > 1 else 'not asked'
     r['skyzfsd'] = k
 # Snapshots taken during the window: "epoch-s bracket-ms rc" per line.
 r['snap'] = {'mode': snap_mode, 'interval_s': snap_interval, 'ms': [], 'pre_ms': [], 'failed': 0}
@@ -1908,6 +1920,15 @@ for k, v in ta.items():
 diag['cpu_s_by_thread'] = dict(by.most_common(20))
 # Memory at the end of the window, MiB, and how the loops are attached.
 if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
+# The cgroup counts the times it reached its limit since it was made,
+# which is before the copy and the warm-up: the window's count is the
+# difference of the two snapshots. (The counts travel as n MiB.)
+for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events.oom', 'skz.cgroup.events.oom_kill'):
+    if ev in mem[base + '.after']:
+        m_ = diag['mem_mb']
+        m_[ev + '.since_start'] = m_.pop(ev)
+        if ev in mem[base + '.before']:
+            m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
 # pg_test_fsync, first table: one 8 kB write per sync, by wal_sync_method.
