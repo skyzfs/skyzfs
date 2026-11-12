@@ -154,9 +154,15 @@ when it merges.
   request merged with its base as the base was when the pull request
   was last pushed**: after another pull request has merged, the daemon
   they drove is not the one on `zfs-topology`, and the rig is dispatched
-  there after the merge. A green run on the daemon is not a verdict on
-  its checkpoints or on a failure with a request held: five pins are
-  WAITING until M1.T8 builds them, and the summary says so. The summary
+  there after the merge. A green run on the daemon is a verdict on
+  its checkpoints (four pins: the take-over time does not grow, the log
+  stays within its bound, kills inside a step lose nothing, the suite
+  passes with each log left at the high mark so that steps fall inside
+  its cases) but not on a failure with a request held: that one pin is
+  WAITING, and the summary says so. Check f (what a pool does after a
+  refused start; the input `f_courses` names the courses) runs by
+  dispatch only, one course per job, and judges nothing but its
+  control. The summary
   says for each line whether it rests on the kernel, on the server, or
   only shows that the check works. Exit 2 is an error of the rig and
   not a verdict on the server. Read the summary's table and not the
