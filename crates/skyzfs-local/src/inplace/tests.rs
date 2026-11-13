@@ -1782,9 +1782,21 @@ fn a_start_refuses_where_the_count_cannot_see_the_file() {
 /// under I/O, and the start would refuse a healthy volume, as it did on
 /// a pool's label (the third look at M1.3s). A start that looks first
 /// is noticed: it refuses.
+///
+/// The look now reads its block alone, with no read-ahead
+/// (`a_start_right_after_a_start_serves`), and a look before the drop
+/// would then leave nothing the drop cannot take. The order still
+/// stands where a read alone reads ahead after all (the advice is
+/// advisory, and a system without it reads as usual), so the look
+/// before the drop is planted with the look that reads ahead.
 #[test]
 fn the_look_comes_after_the_drop() {
-    for (mutants, serves) in [(0, true), (Mutants::LOOK_BEFORE_DROP, false)] {
+    let ahead = Mutants::LOOK_READS_AHEAD;
+    for (mutants, serves) in [
+        (0, true),
+        (ahead, true),
+        (ahead | Mutants::LOOK_BEFORE_DROP, false),
+    ] {
         let disk = created(17, 0);
         let opened = opened(&disk, false, IoMode::default()).unwrap();
         disk.hold_read_ahead_of(HOME_NAME, 3);
@@ -1795,6 +1807,28 @@ fn the_look_comes_after_the_drop() {
                 assert!(why.contains("two drops"), "{why}");
             }
             Err(e) => panic!("{mutants:#x}: {e:?}"),
+        }
+    }
+}
+
+/// The look reads its block alone: it leaves no read-ahead under I/O,
+/// which the next start's drop could not take, so a start right after
+/// a start serves. A look that reads ahead is noticed: the second
+/// start refuses.
+#[test]
+fn a_start_right_after_a_start_serves() {
+    for (mutants, serves) in [(0, true), (Mutants::LOOK_READS_AHEAD, false)] {
+        let disk = created(18, 0);
+        disk.hold_read_ahead_of(HOME_NAME, 3);
+        if let Err(e) = enter(&disk, mutants) {
+            panic!("{mutants:#x}: the first start: {e:?}");
+        }
+        match enter(&disk, mutants) {
+            Ok(_) => assert!(serves, "{mutants:#x}: the second start served"),
+            Err(StartError::CacheKept(why)) if !serves => {
+                assert!(why.contains("two drops"), "{why}");
+            }
+            Err(e) => panic!("{mutants:#x}: the second start: {e:?}"),
         }
     }
 }

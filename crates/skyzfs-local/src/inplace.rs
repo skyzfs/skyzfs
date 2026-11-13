@@ -270,6 +270,9 @@ impl Mutants {
     pub(crate) const ACK_BEFORE_WRITE: u32 = 1 << 25;
     /// A failure writes no marker: the next start serves the volume.
     pub(crate) const FAIL_UNMARKED: u32 = 1 << 26;
+    /// The start's look reads with the kernel's read-ahead, which the
+    /// next start's drop cannot take while it is under I/O.
+    pub(crate) const LOOK_READS_AHEAD: u32 = 1 << 27;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -841,11 +844,23 @@ impl<D: Dir> InPlace<D> {
     /// run, 731 of 1500 starts refused on such an image
     /// (`every_start_serves_where_the_image_begins_with_a_hole` in
     /// `tests/inplace_real.rs`).
+    ///
+    /// After the drop it still left the read-ahead under I/O for the
+    /// next start: a start that came right after one (as that test's
+    /// do, or a daemon's quick restart) found the pages under I/O and
+    /// refused, start 4 of that test's 200 in one CI run. So the look
+    /// reads its block alone ([`File::read_alone_at`], with read-ahead
+    /// off for the file on Linux), and leaves nothing behind but that
+    /// block's page, which the next drop takes
+    /// (`a_start_right_after_a_start_serves`).
     fn count_sees_the_file(&mut self) -> Result<(), String> {
         let mut block = vec![0u8; skyzfs_blk::BLOCK_USIZE];
-        self.home
-            .read_at(0, &mut block)
-            .map_err(|e| format!("reading a block of it failed: {e}"))?;
+        let read = if self.mutants.has(Mutants::LOOK_READS_AHEAD) {
+            self.home.read_at(0, &mut block)
+        } else {
+            self.home.read_alone_at(0, &mut block)
+        };
+        read.map_err(|e| format!("reading a block of it failed: {e}"))?;
         if self.cached_pages()? == 0 {
             return Err(
                 "the file system's cache cannot be observed through this file: a block \

@@ -549,6 +549,21 @@ impl File for FsFile {
         read_exact_at(&self.file, buf, offset)
     }
 
+    fn read_alone_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::{fadvise, Advice};
+            fadvise(&self.file, 0, None, Advice::Random)?;
+            let read = read_exact_at(&self.file, buf, offset);
+            let restored = fadvise(&self.file, 0, None, Advice::Normal);
+            read?;
+            restored?;
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        read_exact_at(&self.file, buf, offset)
+    }
+
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         let direct = self.direct()?;
         // Direct reads take whole aligned blocks into aligned memory, so

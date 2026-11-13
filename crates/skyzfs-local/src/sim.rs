@@ -901,7 +901,8 @@ impl SimDisk {
     /// [`File::cached_pages`] counts them, until a power cut. Where the
     /// block read is a hole, the kernel answers it at once while its
     /// read-ahead is still being read from the disk, and a drop leaves
-    /// pages under I/O.
+    /// pages under I/O. A read alone ([`File::read_alone_at`]) asks for
+    /// no read-ahead, and does not take this one.
     pub fn hold_read_ahead_of(&self, name: &str, pages: u64) {
         self.lock().read_ahead_of = Some((name.to_string(), pages));
     }
@@ -1503,7 +1504,9 @@ impl SimFile {
         assert!(!panics, "injected panic in direct I/O");
     }
 
-    fn read(&self, offset: u64, buf: &mut [u8], how: Through) -> io::Result<()> {
+    /// Read through `how`; `ahead` lets a read through the cache take
+    /// a held read-ahead ([`SimDisk::hold_read_ahead_of`]).
+    fn read(&self, offset: u64, buf: &mut [u8], how: Through, ahead: bool) -> io::Result<()> {
         if how == Through::Direct {
             self.direct_gate();
         }
@@ -1550,7 +1553,9 @@ impl SimFile {
         // read-ahead's under I/O where one is held.
         if !device {
             let ahead = match &state.read_ahead_of {
-                Some((name, pages)) if state.name_of(self.inode) == Some(name.as_str()) => {
+                Some((name, pages))
+                    if ahead && state.name_of(self.inode) == Some(name.as_str()) =>
+                {
                     let pages = *pages;
                     state.read_ahead_of = None;
                     pages
@@ -1569,11 +1574,17 @@ impl SimFile {
 
 impl File for SimFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Cache)
+        self.read(offset, buf, Through::Cache, true)
+    }
+
+    /// A read through the cache that takes no held read-ahead, as with
+    /// `POSIX_FADV_RANDOM`.
+    fn read_alone_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read(offset, buf, Through::Cache, false)
     }
 
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Device)
+        self.read(offset, buf, Through::Device, false)
     }
 
     fn direct_align(&self) -> io::Result<DirectAlign> {
@@ -1585,7 +1596,7 @@ impl File for SimFile {
     }
 
     fn read_direct_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Direct)
+        self.read(offset, buf, Through::Direct, false)
     }
 
     fn write_direct_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
