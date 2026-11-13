@@ -29,6 +29,30 @@ fn until_held(disk: &SimDisk) {
     }
 }
 
+/// Wait, for at most 10 s, until request `id` is among `done`: for a
+/// planted defect that lets a request run on the threads, where it ends
+/// when a thread gets to it and not at once. Says whether it ended.
+fn until_done(store: &mut InPlace<SimDisk>, done: &mut Vec<Completion>, id: u64) -> bool {
+    let began = std::time::Instant::now();
+    while !done.iter().any(|c| c.id.0 == id) {
+        if began.elapsed() > Duration::from_secs(10) {
+            return false;
+        }
+        store.wait(done, Duration::from_millis(10));
+    }
+    true
+}
+
+/// Let what the disk holds go and take every completion: done before a
+/// test asserts, so that a failed assertion fails the test and does not
+/// leave a thread held under a store that waits for it when dropped.
+fn release_and_drain(disk: &SimDisk, store: &mut InPlace<SimDisk>, done: &mut Vec<Completion>) {
+    disk.release_direct_io();
+    while store.in_flight() > 0 {
+        store.wait(done, WAIT);
+    }
+}
+
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
     harnesses_io(mutants, IoMode::default())
 }
@@ -422,16 +446,19 @@ fn a_flush_waits_for_the_writes_on_the_threads() {
             .unwrap();
         let mut done = Vec::new();
         store.poll(&mut done);
-        let flushed = done.iter().any(|c| c.id.0 == 3);
+        // With the writes still held: the flush waits; with the defect
+        // it runs, and ends when its sync does.
+        let (flushed, syncing) = if mutant == 0 {
+            (done.iter().any(|c| c.id.0 == 3), store.syncing())
+        } else {
+            (until_done(&mut store, &mut done, 3), false)
+        };
+        release_and_drain(&disk, &mut store, &mut done);
         if mutant == 0 {
             assert!(!flushed, "the flush did not wait for the writes");
-            assert!(!store.syncing(), "a sync began before the writes ended");
+            assert!(!syncing, "a sync began before the writes ended");
         } else {
             assert!(flushed, "the defect is not noticed");
-        }
-        disk.release_direct_io();
-        while store.in_flight() > 0 {
-            store.wait(&mut done, WAIT);
         }
         assert!(done.iter().all(|c| c.result.is_ok()));
     }
@@ -479,16 +506,20 @@ fn an_overlapping_request_waits_for_the_one_on_the_threads() {
             .unwrap();
         let mut done = Vec::new();
         store.poll(&mut done);
-        let read_done = done.iter().any(|c| c.id.0 == 3);
+        // With the first write still held: the two wait; with the defect
+        // they run on the threads, and the read ends when a thread gets
+        // to it.
+        let (read_done, waiting) = if mutant == 0 {
+            (done.iter().any(|c| c.id.0 == 3), store.io_queue().waiting)
+        } else {
+            (until_done(&mut store, &mut done, 3), 0)
+        };
+        release_and_drain(&disk, &mut store, &mut done);
         if mutant == 0 {
             assert!(!read_done, "a request passed the write it overlaps");
-            assert_eq!(store.io_queue().waiting, 2, "the two wait");
+            assert_eq!(waiting, 2, "the two wait");
         } else {
             assert!(read_done, "the defect is not noticed");
-        }
-        disk.release_direct_io();
-        while store.in_flight() > 0 {
-            store.wait(&mut done, WAIT);
         }
         assert!(done.iter().all(|c| c.result.is_ok()));
     }
@@ -607,13 +638,10 @@ fn the_io_queue_counts_what_is_on_the_threads() {
             })
             .unwrap();
     }
-    let q = store.io_queue();
-    assert_eq!((q.in_flight, q.waiting), (1, 2), "{q:?}");
-    disk.release_direct_io();
+    let held = store.io_queue();
     let mut done = Vec::new();
-    while store.in_flight() > 0 {
-        store.wait(&mut done, WAIT);
-    }
+    release_and_drain(&disk, &mut store, &mut done);
+    assert_eq!((held.in_flight, held.waiting), (1, 2), "{held:?}");
     let q = store.io_queue();
     assert_eq!((q.in_flight, q.waiting), (0, 0), "{q:?}");
     assert!(
