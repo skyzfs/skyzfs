@@ -91,3 +91,60 @@ For the second look:
 - Plants to run: a drop that does nothing (the reopen case must fail); a check
   that always passes (a test of the refusal must fail); `plants.sh` h2 is now
   the harness as it should be.
+
+## Second look, at 2eb79ec (2026-11-13)
+
+Posted: https://github.com/skyzfs/skyzfs/pull/46#issuecomment-6843979599
+
+Verdict: one new finding blocks as §4.1 is worded (A); the first look's
+findings are answered (9e goes with M1.3t).
+
+Heads: 1280579 (the answer to the review; the plants and probes ran here) and
+2eb79ec (finding 9d, `model.rs` only; read, tests run).
+
+- **A (blocks).** On an overlay file system `cachestat` through the file's
+  descriptor reads 0 whatever the cache holds: it counts the descriptor's own
+  mapping, and an overlay file's pages live in the file below. The drop is
+  passed down and works. So the start's check passes where the drop left every
+  page. Run here on 6.18, overlay over ext4 (`cachestat.py DIR`,
+  `cachestat2.py MERGED UPPER`): 0 through the overlay, 256 through the file
+  below after a write of 1 MiB. Probe S (`probe-s.rs`, appended to
+  `tests/inplace_real.rs`, with `PROBE_DIR` and `PROBE_BELOW`): another process
+  maps the home image; on ext4 the start refuses ("4096 pages of it stay"), on
+  the overlay it serves with 4096 pages of the file below cached before and
+  after. Plant c6 (the real count answers 0): all 23 in-place tests and the 3
+  real-file tests pass. Remedy offered: read a block through the cache first
+  and require the count to see it.
+- **B.** Inside the recovery window the discard's freedom is judged read by
+  read against any world (Codex's thread; probe Q in `probe-q.rs`): block 0 as
+  0, 1, 2 all accepted; after the window 1 then 2 is refused.
+- **C.** tmpfs: 2 of 3 real-file tests and the count's own test fail (the start
+  refuses, rightly). Overlay: the real-file tests pass, the count's test fails.
+- **D.** Not pinned: the lock before the marker in `FailedStart::write` (f2),
+  the second try of the drop (c4). The two marker tests wait without a bound.
+  The refusal's message; the parked thread's 2 MiB stack under `mlockall`.
+
+`plants2.sh` (run from a clean checkout of 1280579): c1 no drop: 5 in-place
+tests fail. c2 check always passes: 1. c3 drop and check before the sync: the
+in-place suite. c4 one try: passes. c5 real drop does nothing: 2 of 3
+real-file tests. c6 real count answers 0: passes. f1 the failure waits for the
+marker: 1 (by its 60 s bound). f2 lock before the marker: passes. f3 a failed
+start writes its marker before it returns: 1. m1 `SECTOR = 256`: 1. m4 a
+second answer never refused: 1. m7 no discard freedom after a cut: 1. The
+first look's h1 (the harness's cut as a process loss) now fails
+`the_suite_notices_the_defects`.
+
+On finding 2: at a take-over of a volume served in place the log is empty, the
+checkpoint returns at once (`store.rs:1242`), so the first sync that carries
+the dead instance's unflushed writes is the in-place store's own, which is the
+one that now hands the marker back.
+
+For the lead, not in the review: the design says nothing at a start can show
+that the file holds less than the kernel was told. `syncfs` on a newly opened
+descriptor reports a writeback error on the file system that no `syncfs` has
+reported yet (the superblock's error sequence, Linux 5.8), also one the dead
+instance's `fdatasync` already took. From memory, not tried: no device here
+can fail a write.
+
+Not done: nothing on ublk; the cost of the drop at a take-over; clippy and the
+feature builds; the rigs of both heads were still running.
