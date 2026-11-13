@@ -46,3 +46,22 @@ and at a failed create in `fail_setup`.
 
 Suggestions: count by function when the list is long; d.3's clear and
 `pool_errors` stay bare.
+
+## Second look, at 6c29614
+
+Posted: https://github.com/skyzfs/skyzfs/pull/53#issuecomment-6849318433
+Verdict: it can merge; all four findings dropped, both suggestions taken.
+
+- The function is in `tests/kernel/zfs-stuck.sh` (`ZS_PROC` for a made-up
+  tree); `test_zfs_stuck.sh` runs in `ci`, `skyzfs-ci` and the judge's job.
+- `stuck_plants.py WORKTREE`: eleven plants, each caught.
+- `say2.sh RIG_DIR DMESG_FILE [mark]`: the function from its own file over
+  a real log. The arm64 job, cut at d.1's end: 28 reports, txg_sync shown 6
+  and running in 6, zpool:405492 x12, txg_sync:403031 x6.
+- Left, not blocking: `mktemp -d` unchecked before `rm -rf "$T/proc"`; the
+  fifo case hangs if the limit is lost.
+
+A trap met: a shell loop that feeds plants from a here-document with `|`
+separators and quotes cannot be parsed by the harness's check for
+removals and is refused, though it removes nothing. A Python driver with
+the plants as a list runs.
