@@ -33,11 +33,12 @@ use crate::io::{Dir, File, HelperEnded, NotBegun};
 /// back as a whole, and so the least write unit a log on buffered files
 /// should have here ([`Identity::write_unit`]).
 ///
-/// Linux: `AT_PAGESZ` of the process's auxiliary vector, through libc's
-/// `getauxval`, which every process has and which cannot fail as a read
-/// of `/proc/self/auxv` can (where `/proc` is not mounted, a 16 KiB
-/// kernel would have been taken for 4 KiB without a word). Apple
-/// silicon: 16 KiB, other Macs 4 KiB.
+/// Linux: libc's `sysconf(_SC_PAGESIZE)`, through `rustix` (its feature
+/// `use-libc-auxv`). The C library takes it from `AT_PAGESZ` of the
+/// process's auxiliary vector at start, which every process has, so it
+/// cannot fail as a read of `/proc/self/auxv` can (where `/proc` is not
+/// mounted, a 16 KiB kernel would have been taken for 4 KiB without a
+/// word). Apple silicon: 16 KiB, other Macs 4 KiB.
 ///
 /// [`Identity::write_unit`]: crate::format::Identity::write_unit
 pub fn page_size() -> u32 {

@@ -96,9 +96,11 @@
 //! **A stated limit there (design §10): a disk that garbles.** On a
 //! disk that leaves a sector neither old nor new at a power cut, the
 //! rewrite of a page exposes its other blocks, so a cut can damage a
-//! block a completed flush covered: in the store's power-cut test with
-//! such a disk, 0 of 200 seeds at 4 KiB pages, 120 at 16 KiB and 113 at
-//! 64 KiB (`a_cut_with_garbage_may_reach_a_neighbour_on_large_pages`).
+//! block a completed flush covered and nothing wrote since: in the
+//! store's power-cut test with such a disk it did at 0 of 200 seeds at
+//! 4 KiB pages, 120 at 16 KiB and 113 at 64 KiB (the review's count;
+//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins only
+//! that some seed of the 200 does at each large page).
 //! At 4 KiB only a block being written is exposed. Nothing protects
 //! against it here: the log store's open, which the start goes through,
 //! refuses a page or a file-system block larger than the volume's write
@@ -106,7 +108,7 @@
 //! large as its page, and the store saves no neighbours as the log
 //! store did. Direct I/O, which writes exactly the blocks it is given,
 //! is the candidate remedy (design §10).
-
+//!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability
 //! (`harness.rs`).

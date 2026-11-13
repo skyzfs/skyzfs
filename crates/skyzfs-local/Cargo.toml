@@ -29,6 +29,6 @@ tempfile = { workspace = true }
 # For the value of O_DIRECT only: no call into libc, no unsafe.
 libc = "0.2"
 # For `fallocate`, to deallocate a range of the home image; `fadvise`,
-# to drop its cache; and the page size, from the auxiliary vector by
-# libc's `getauxval`.
+# to drop its cache; and the page size, by libc's `sysconf(_SC_PAGESIZE)`
+# (`use-libc-auxv`) rather than a read of `/proc/self/auxv`.
 rustix = { version = "1", features = ["fs", "param", "use-libc-auxv"] }
