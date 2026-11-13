@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_hang_evidence skz_copy skz_copy_repeat; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_hang_evidence skz_copy skz_copy_repeat; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -33,7 +33,7 @@ setup() {
     WORK=$tt/work; OUT=$tt/out; rm -rf -- "$WORK" "$OUT"; mkdir -p "$WORK" "$OUT"
     head -c 3145728 /dev/zero > "$WORK/zfs-origin.img"
     SKZ_DIR=$WORK/vol; SKZ_RUN=$WORK/run; SKZ_PID=$$; SKZ_CGROUP=""; SKZ_DEV=/dev/null; SKZ_UP=""
-    SKYZFSD_ARGS="--store,in-place"; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
+    SKYZFSD_ARGS="--store,in-place"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
     SKZ_SYSRQ=$tt/sysrq; : > "$SKZ_SYSRQ"
     : > "$tt/calls"
 }
@@ -53,7 +53,7 @@ fake_dd() {
 }
 DD=fake_dd
 SKYZFSD=$tt/skyzfsd
-printf '#!/bin/sh\n[ "$1" = create ] && mkdir -p "$3"\nexit 0\n' > "$SKYZFSD"; chmod +x "$SKYZFSD"
+printf '#!/bin/sh\n[ "$1" = create ] && { mkdir -p "$3"; echo "$*" > "%s/create-args"; echo "created" >&2; }\nexit 0\n' "$tt" > "$SKYZFSD"; chmod +x "$SKYZFSD"
 # shellcheck disable=SC1091
 . "$tt/funcs.sh"
 
@@ -94,5 +94,15 @@ check "the second is marked" 'awk -F"\t" "\$1 == 2" "$OUT/copy-repeat.tsv" | gre
 check "the summary names it" 'grep -q "Did not end: repetition 2 of 3" "$OUT/summary.md"'
 check "its evidence was taken" '[ -e "$OUT/skyzfsd-hang/threads.txt" ]'
 check "the hung daemon is left for the teardown (two starts, one stop)" '[ "$(grep -c start "$tt/calls")" = 2 ] && [ "$(grep -c stop "$tt/calls")" = 1 ]'
+
+# 5. The create's own arguments, and what it said kept.
+setup; SKYZFSD_CREATE_ARGS="--zero-fill,--x,1"
+skz_create 4096 2> /dev/null; rc=$?
+check "a create with arguments returns 0" '[ "$rc" = 0 ]'
+check "the arguments reach the create, commas as spaces" 'grep -q -- "--size 4096 --zero-fill --x 1$" "$tt/create-args"'
+check "what it said is kept" 'grep -q created "$WORK/skyzfsd-create.err"'
+setup
+skz_create 4096 2> /dev/null
+check "with none, nothing is added" 'grep -q -- "--size 4096$" "$tt/create-args"'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

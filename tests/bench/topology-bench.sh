@@ -235,6 +235,11 @@
 #                           reclaims and throttles the daemon's
 #                           write-back. The daemon's resident memory and
 #                           its cgroup's file pages are recorded either way
+#   TB_SKYZFSD_CREATE_ARGS= extra arguments for its `create`, comma-separated
+#                           ("--zero-fill"; a build that does not know one
+#                           refuses it). With any, the create may take up
+#                           to 1800 s instead of 120, and what it said on
+#                           stderr is kept in the row's .skzinfo
 #   TB_SKYZFSD_COPY_LIMIT_S=600
 #                           seconds for each of the two steps that put the
 #                           pool image on the daemon's device: the copy
@@ -883,6 +888,7 @@ UBLK_ID=${TB_UBLK_ID:-7}
 SKYZFSD=${TB_SKYZFSD:-}
 SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
 SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
+SKYZFSD_CREATE_ARGS=${TB_SKYZFSD_CREATE_ARGS:-}
 SKZ_COPY_LIMIT_S=${TB_SKYZFSD_COPY_LIMIT_S:-600}
 [[ $SKZ_COPY_LIMIT_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_LIMIT_S must be a number of seconds: $SKZ_COPY_LIMIT_S" >&2; exit 64; }
 SKZ_COPY_REPEAT=${TB_SKYZFSD_COPY_REPEAT:-}
@@ -1679,6 +1685,18 @@ skz_hang_evidence() { # dir why
     lim 20 dmesg > "$d/dmesg.txt" 2>&1
     log "skyzfsd: evidence of the hang in $d ($(grep -c '^== ' "$d/threads.txt" 2>/dev/null || echo 0) threads; D state: $(grep -c ' D ' "$d/threads.txt" 2>/dev/null || echo 0))"
 }
+# A new volume at SKZ_DIR of SIZE bytes, with TB_SKYZFSD_CREATE_ARGS. What
+# the create said on stderr is passed on and kept in $WORK/skyzfsd-create.err.
+skz_create() { # size
+    local args=() secs=120 rc=0
+    if [ -n "$SKYZFSD_CREATE_ARGS" ]; then
+        read -r -a args <<< "${SKYZFSD_CREATE_ARGS//,/ }"
+        secs=1800
+    fi
+    lim "$secs" "$SKYZFSD" create --dir "$SKZ_DIR" --size "$1" "${args[@]}" > /dev/null 2> "$WORK/skyzfsd-create.err" || rc=$?
+    cat "$WORK/skyzfsd-create.err" >&2
+    return "$rc"
+}
 # The pool image onto the daemon's device, and the sync after it, each
 # under SKZ_COPY_LIMIT_S. SKZ_COPY_MS and SKZ_SYNC_MS are what they took.
 # 1: a step ran out (the evidence is in $OUT/skyzfsd-hang, or in $2 when
@@ -1715,7 +1733,7 @@ skz_copy_repeat() {
     printf 'i\tcopy_ms\tsync_ms\toutcome\twrites\n' > "$tsv"
     for i in $(seq 1 "$n"); do
         mkdir -p "$SKZ_RUN"
-        lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$size" > /dev/null 2>&1 \
+        skz_create "$size" 2> /dev/null \
             || { printf '%s\t\t\tcreate failed\t\n' "$i" >> "$tsv"; hung="create failed at $i"; break; }
         SKZ_UP=1
         skz_start || { printf '%s\t\t\tserve failed\t\n' "$i" >> "$tsv"; hung="serve failed at $i"; break; }
@@ -1801,8 +1819,10 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
                 cat "$OUT/summary.md"
                 exit "$rrc"
             fi
-            lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
-                || { echo "skyzfsd create failed or did not end in 120 s" >&2; return 1; }
+            skz_create "$(stat -c %s "$WORK/zfs-origin.img")" \
+                || { echo "skyzfsd create failed or did not end in its limit" >&2; return 1; }
+            echo "create_args ${SKYZFSD_CREATE_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
+            echo "create_said $(tr '\n' ' ' < "$WORK/skyzfsd-create.err")" >> "$OUT/$TOPO.skzinfo"
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
