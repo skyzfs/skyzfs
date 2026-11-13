@@ -24,6 +24,9 @@ name: skyzfs-daemon-rig
 on:
   workflow_dispatch:
     inputs:
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-24.04-arm"]'
       checks:
         description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
         default: "a b c d e"
@@ -134,10 +137,12 @@ jobs:
     needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
+    # arm64 (M1.T21): a pull request also runs on ubuntu-24.04-arm;
+    # ubuntu-26.04-arm by dispatch (input images). Pages of 4 KiB only.
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-26.04, ubuntu-24.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04","ubuntu-24.04-arm"]') }}
         server: ${{ fromJSON(needs.plan.outputs.servers) }}
     steps:
       - uses: actions/checkout@v6

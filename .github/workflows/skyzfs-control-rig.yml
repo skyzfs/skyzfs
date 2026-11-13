@@ -12,6 +12,10 @@ name: skyzfs-control-rig
 # `tests/kernel/control-rig.sh`.
 on:
   workflow_dispatch:
+    inputs:
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-24.04-arm"]'
   # A workflow that has never run cannot be dispatched from a branch.
   # A push that changes this file or the rig runs it on the testing
   # branches.
@@ -74,10 +78,12 @@ jobs:
     name: ${{ matrix.image }}
     runs-on: ${{ matrix.image }}
     timeout-minutes: 45
+    # arm64 (M1.T21): a pull request also runs on ubuntu-24.04-arm;
+    # ubuntu-26.04-arm by dispatch (input images). Pages of 4 KiB only.
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-26.04, ubuntu-24.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04","ubuntu-24.04-arm"]') }}
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,
