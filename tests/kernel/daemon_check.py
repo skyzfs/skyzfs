@@ -279,6 +279,10 @@ EXPECTED = {
     'pin_sync_failed_volume_refused': ('g', 'PASS', WAITING,
                                        'with the disk working again, a serve of that volume is refused with status 4 '
                                        'while the client holds the device (§4.1)', 'WAITING'),
+    'pin_failure_reason_is_the_images': ('g', 'PASS', WAITING,
+                                         'the reason the daemon gives, in the failed serve\'s line and in the refusal '
+                                         'after it, at a start (g.3) and while served (g.1), is the home image\'s: "a '
+                                         'write or sync of the volume\'s image failed" (M1.3x)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.

@@ -2663,6 +2663,36 @@ check_g() {
     # Both leave a suspended pool.
     check_g_failed_start
     check_g_sync_fails_while_serving
+    check_g_reason
+}
+
+# The reason the daemon gives when the home image's write or sync fails,
+# where an operator reads it: the failed serve's line and the refusal of
+# the serve after it, in g.3 (at a start) and g.1 (while served). g.2
+# fails nothing. The in-place store's reason (M1.3x, code 7 of the
+# failure note) is the image's, not the log's.
+G_REASON="a write or sync of the volume's image failed"
+check_g_reason() {
+    local said="" bad=0 miss="" place line name file lead
+    for place in "g3 start:$WORK/vol-g3.serve.log:the volume failed at the start of the in-place store" \
+                 "g3 refusal:$OUT/g3-again.err:skyzfsd: " \
+                 "g1 serve:$WORK/vol-g1.serve.log:the volume failed while it was served" \
+                 "g1 refusal:$OUT/g1-again.err:skyzfsd: "; do
+        IFS=: read -r name file lead <<< "$place"
+        # A serve's log: its first line of the failure. A refusal: the
+        # refusal is the last line it writes, after any note.
+        line=$(grep -F -- "$lead" "$file" 2>/dev/null | if [[ $name == *refusal ]]; then tail -n 1; else head -n 1; fi | sed 's/^skyzfsd: //' | cut -d';' -f1 | cut -c1-200)
+        if [ -z "$line" ]; then miss="$miss $name"; continue; fi
+        [[ $line == *"$G_REASON"* ]] || bad=$((bad + 1))
+        said="$said$name: \"$line\"; "
+    done
+    if [ -n "$miss" ]; then
+        pin failure_reason_is_the_images ERROR "no line of the daemon's to read at:$miss (their own pins say why); ${said:-nothing read}"
+    elif [ "$bad" = 0 ]; then
+        pin failure_reason_is_the_images PASS "all four name the image: $said"
+    else
+        pin failure_reason_is_the_images FAIL "$bad of 4 do not say \"$G_REASON\": $said"
+    fi
 }
 
 # g.2: pages of the home image that a failed sync left in the cache,
