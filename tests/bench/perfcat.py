@@ -49,17 +49,22 @@ ZFS_DONE = re.compile(r'^(zio_|taskq_|spa_taskq|vdev_disk_io_done|vdev_disk_bio_
 # Page reclaim: the kernel taking pages back, in the thread that asked
 # for one (direct reclaim, or a memory group's reclaim when it charges a
 # page over its limit) or anywhere else it runs.
+# Not lru_gen_*: those also handle a refault (lru_gen_refault under
+# workingset_refault, in the read path) and put every new page on the
+# LRU (lru_gen_add_folio under lru_add), limit or none. MGLRU's own
+# reclaim runs under shrink_node or try_to_free_*, which this finds.
 RECLAIM = re.compile(r'^(try_to_free_mem_cgroup_pages|try_to_free_pages|do_try_to_free_pages|shrink_|reclaim_|'
                      r'__reclaim|mem_cgroup_handle_over_high|__perform_reclaim|__alloc_pages_direct_reclaim|'
-                     r'lru_gen_|evict_folios|isolate_lru_folios|isolate_folios|try_to_unmap|__remove_mapping)')
+                     r'evict_folios|isolate_lru_folios|isolate_folios|try_to_unmap|__remove_mapping)')
 # A memory group's own book-keeping: charging and uncharging pages,
 # its counters and its LRU lists.
 MEMCG = re.compile(r'^(mem_cgroup_|__mem_cgroup_|memcg_|__memcg_|obj_cgroup_|__obj_cgroup|try_charge|charge_memcg|'
-                   r'__count_memcg|__mod_memcg|mod_memcg|uncharge_|__folio_uncharge|folio_memcg)')
+                   r'__count_memcg|count_memcg|__mod_memcg|mod_memcg|uncharge_|__folio_uncharge|folio_memcg)')
 # Write-back that a write starts or waits for: the dirty throttle, or
 # write-back under a write call (an fdatasync's write-back is the sync,
-# which stays under the page cache).
-DIRTY_THROTTLE = re.compile(r'^(balance_dirty_pages|__balance_dirty_pages)')
+# which stays under the page cache). The throttle by its own name only:
+# balance_dirty_pages_ratelimited* is the check every write makes.
+DIRTY_THROTTLE = re.compile(r'^(balance_dirty_pages|__balance_dirty_pages)$')
 WRITE_CALL = re.compile(r'^(__x64_sys_pwrite|__x64_sys_write|__arm64_sys_pwrite|__arm64_sys_write|ksys_pwrite|ksys_write|'
                         r'vfs_write|io_write)')
 WRITEBACK = re.compile(r'^(do_writepages|__writeback|writeback_|wb_|__filemap_fdatawrite|filemap_fdatawrite)')

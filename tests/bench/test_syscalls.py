@@ -51,6 +51,7 @@ PERF_EVENTS = """     0.013 ( 1.204 ms): skyzfsd-queue/4101 pwrite64(fd: 7, buf:
      5.000 ( 1.000 ms): skyzfs-reader-0/4102 pread64(fd: 7, buf: 0x7f00, count: 4096, pos: 0) = 4096
      6.000 ( 0.400 ms): skyzfs-reader-0/4102 futex(uaddr: 0x7f, op: WAIT|PRIVATE_FLAG) = 0
      7.000 (         ): skyzfsd-queue/4101 io_uring_enter(fd: 3, to_submit: 1) ...
+     8.000 (20.466 ms): skyzfsd-queue/4101  ... [continued]: pread64())                                 = 8192
 """
 
 NAMES = "4101 skyzfsd-queue\n4102 skyzfs-reader-0\n4103 skyzfs-reader-1\n"

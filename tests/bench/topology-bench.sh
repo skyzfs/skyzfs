@@ -572,7 +572,9 @@ if drows:
               'named, on the daemon\'s pid only. Per thread name (the readers together), the six calls that took the '
               'most time: calls per transaction (at the row\'s tps over the trace\'s seconds) and µs per call, and, where '
               'the trace counted them, the share of those calls that took the trace\'s slow mark or more (the column '
-              'names it). The trace slows the daemon, so the row has no verdict:\n')
+              'names it). The share means slowness for calls that do work (pread64, pwrite64, fdatasync); calls that '
+              'wait for work (futex, rt_sigtimedwait, io_uring_enter waiting for a completion) are slow by design. '
+              'The trace slows the daemon, so the row has no verdict:\n')
         print('| workload | daemon row | tps | tool, s | thread (threads) | calls per txn, µs per call |')
         print('|---|---|---|---|---|---|')
         for r in sc:
@@ -1866,7 +1868,7 @@ syscall_trace() {
     # call of SYSCALLS_SLOW_MS or more (--duration), from which
     # syscalls.py counts the slow ones.
     if command -v perf >/dev/null && timeout -s INT -k 10 "$SYSCALLS_S" perf trace -S --duration "$SYSCALLS_SLOW_MS" -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
-        || { [ -s "$base.trace" ] && grep -q 'events' "$base.trace"; }; then
+        || { [ -s "$base.trace" ] && grep -q ' events, ' "$base.trace"; }; then
         tool=perf
     elif command -v strace >/dev/null; then
         timeout -s INT -k 10 "$SYSCALLS_S" strace -f -qq -T -p "$SKZ_PID" -o "$base.trace" 2>> "$base.trace.err" || true
@@ -2072,7 +2074,7 @@ PY
             # what was scanned and taken back, by the writer itself
             # (direct) or by kswapd, and the file pages read again soon
             # after they were taken (refaults). Counts, sent as n MiB.
-            awk '$1 ~ /^(pgscan|pgsteal|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd|workingset_refault_file|workingset_activate_file|pgmajfault)$/ { print "mem skz.cgroup.stat." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.stat"
+            awk '$1 ~ /^(pgscan|pgsteal|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd|workingset_refault_file|workingset_activate_file|pgmajfault)$/ { printf "mem skz.cgroup.stat.%s %.0f\n", $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.stat"
         fi
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \

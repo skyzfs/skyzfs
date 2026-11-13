@@ -6,7 +6,10 @@
 
 SUMMARY is what `perf trace -S --duration SLOW_MS -p PID` wrote: the
 calls that took SLOW_MS or more, one line each, then the summary of
-all calls by thread (`-s` alone writes the summary only). TRACE is
+all calls by thread (`-s` alone writes the summary only). A line
+"... [continued]: pread64())" is a call whose entry perf did not see,
+timed from the thread's previous entry and so too long: it is not
+counted as slow (PERF_EVENT wants the call's name after the thread). TRACE is
 `strace -f -T -p PID` output, one line per call with the thread's id
 first. THREADS has "tid name" per line, the daemon's threads when the
 trace began. The JSON gives, by thread name (the four readers share

@@ -87,6 +87,18 @@ class Parse(unittest.TestCase):
         # An fdatasync's write-back stays the page cache's.
         self.assertEqual(pc.category(['ext4_writepages', 'do_writepages', 'file_write_and_wait_range',
                                       'vfs_fsync_range', '__x64_sys_fdatasync']), 'page cache')
+        # A refault's handling and a new page put on the LRU run with or
+        # without a limit: not reclaim (the reclaim table counts refaults).
+        self.assertNotEqual(pc.category(['lru_gen_test_recent', 'lru_gen_refault', 'workingset_refault',
+                                         'filemap_add_folio', 'page_cache_ra_unbounded']), 'page reclaim')
+        self.assertNotEqual(pc.category(['lru_gen_add_folio', 'lru_add', 'folio_batch_move_lru',
+                                         'filemap_add_folio']), 'page reclaim')
+        # MGLRU's reclaim is found by the shrinker above it.
+        self.assertEqual(pc.category(['lru_gen_del_folio', 'evict_folios', 'shrink_one', 'shrink_node',
+                                      'try_to_free_mem_cgroup_pages']), 'page reclaim')
+        # The check every write makes is no throttle.
+        self.assertNotEqual(pc.category(['balance_dirty_pages_ratelimited_flags', 'generic_perform_write',
+                                         'ext4_buffered_write_iter', 'vfs_write']), 'write-back from a write')
         # A copy is still a copy, whatever is above it.
         self.assertEqual(pc.category(['copy_user_x', 'copy_page_from_iter_atomic', 'generic_perform_write',
                                       'balance_dirty_pages_ratelimited_flags']), 'copy, page cache')
