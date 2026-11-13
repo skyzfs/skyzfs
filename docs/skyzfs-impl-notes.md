@@ -661,6 +661,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
+- arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the test matrix on GitHub's arm64 runners (M1.T21) and an audit of the code for the architecture and the page size (M1.3v). Nothing has run on arm64 yet.
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
