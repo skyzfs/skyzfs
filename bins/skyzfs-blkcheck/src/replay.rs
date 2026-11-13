@@ -290,6 +290,10 @@ mod tests {
     // See skyzfs/skyzfs#58 (issuecomment-6858276171).
     const RUN_43430825700: &str = include_str!("testdata/c-trace-43430825700-v60.tsv");
     const RUN_43455086383: &str = include_str!("testdata/c-trace-43455086383-v60.tsv");
+    // The daemon rig's run 43453345076, the pass with a commit delay of
+    // 20 ms: the same case with the roles swapped. #21 is acknowledged
+    // before the kill and #20's call returns after it.
+    const RUN_43453345076_DELAY: &str = include_str!("testdata/cd-trace-43453345076-v60.tsv");
 
     /// The trace with block `index` of the read `id`'s result replaced.
     fn with_read_block(trace: &str, id: u64, index: usize, digest: &str) -> String {
@@ -352,6 +356,14 @@ mod tests {
     fn a_call_issued_again_after_the_kill_is_still_allowed() {
         assert_eq!(replay_text(&reissued_43430825700(), "60", 64), Ok(0));
         assert_eq!(replay_text(&reissued_43455086383(), "60", 64), Ok(0));
+    }
+
+    /// Run 43453345076, the pass with the delay: blocks 16377 to 16379
+    /// read #21's data; #20, whose call returned after the kill, was
+    /// applied before #21 by the old server.
+    #[test]
+    fn a_call_returned_after_the_kill_may_have_been_applied_before_it_43453345076() {
+        assert_eq!(replay_text(RUN_43453345076_DELAY, "60", 64), Ok(0));
     }
 
     // Controls: each changes one block of a trace that is allowed (the
