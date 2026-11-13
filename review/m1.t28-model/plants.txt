@@ -1,0 +1,31 @@
+unchanged: nothing fails | nothing fails
+completed-without-applied:
+  model: a_request_in_flight_at_a_daemon_loss_was_applied_while_in_flight_or_after
+  replay: nothing fails
+no-outcome-3:
+  model: a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss, a_request_in_flight_at_a_daemon_loss_may_have_completed_before_it
+  replay: a_call_returned_after_the_kill_may_have_been_applied_before_it_43430825700, a_call_returned_after_the_kill_may_have_been_applied_before_it_43453345076, a_call_returned_after_the_kill_may_have_been_applied_before_it_43455086383
+no-outcome-2:
+  model: nothing fails
+  replay: nothing fails
+no-outcome-1:
+  model: nothing fails
+  replay: nothing fails
+shown-not-applied:
+  model: a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss
+  replay: nothing fails
+applied-before-submitted:
+  model: a_request_in_flight_at_a_daemon_loss_was_applied_while_in_flight_or_after
+  replay: nothing fails
+completed-inverted:
+  model: nothing fails
+  replay: nothing fails
+reissue-from-zero:
+  model: nothing fails
+  replay: nothing fails
+applied-not-durable:
+  model: nothing fails
+  replay: nothing fails
+one-placement:
+  model: nothing fails
+  replay: a_call_returned_after_the_kill_may_have_been_applied_before_it_43455086383

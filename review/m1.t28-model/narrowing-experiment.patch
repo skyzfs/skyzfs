@@ -1,0 +1,178 @@
+--- crates/skyzfs-blk/src/model.rs	2026-11-13 17:12:12.384705552 +0000
++++ /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr60/model-with-experiment.rs	2026-11-13 17:12:12.383315183 +0000
+@@ -73,6 +73,8 @@
+     Base, BlkError, Completion, Geometry, Op, Request, RequestId, BLOCK_SIZE, BLOCK_USIZE,
+ };
+ 
++thread_local! { static REDUCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
++
+ /// An interned block content. `ZERO` is a block of zeros.
+ type Cid = u32;
+ const ZERO: Cid = 0;
+@@ -1166,11 +1168,24 @@
+                 .filter(|op| !world.waiting.iter().any(|w| w.op == *op))
+                 .collect();
+             for (mut world, mut applied) in world.settle_at_loss(&self.cx, now) {
++                applied.extend(&shown);
++                // REVIEW EXPERIMENT: outcome 3 only where, in this world,
++                // an overlapping operation follows the request's place.
++                if REDUCED.with(|r| r.get()) {
++                    let cx = &self.cx;
++                    applied.retain(|op| {
++                        // One an earlier loss left complete is no longer in the tail.
++                        world.tail.iter().rposition(|p| p.op == *op).is_none_or(|i| {
++                            world.tail[i + 1..]
++                                .iter()
++                                .any(|q| q.op != *op && cx.ops[q.op].overlaps(&cx.ops[*op]))
++                        })
++                    });
++                }
+                 if healthy {
+                     let all = vec![true; world.tail.len()];
+                     world.absorb(&self.cx, &all);
+                 }
+-                applied.extend(&shown);
+                 // A request in flight that the lost daemon did not apply
+                 // is issued again and will be applied from now on. One
+                 // that it applied may also have been completed by it:
+@@ -2114,6 +2129,140 @@
+         c.sees(0, &[1, 3]).unwrap();
+     }
+ 
++
++    // ---- REVIEW EXPERIMENT (not part of the pull request) ----
++    // The same random history through the model as the pull request has
++    // it and through the narrower enumeration; every answer a read could
++    // give is put to both, and they must agree.
++    struct Rng(u64);
++    impl Rng {
++        fn next(&mut self) -> u64 {
++            self.0 ^= self.0 << 13;
++            self.0 ^= self.0 >> 7;
++            self.0 ^= self.0 << 17;
++            self.0
++        }
++        fn below(&mut self, n: u64) -> u64 {
++            self.next() % n
++        }
++    }
++
++    fn with_reduced<T>(on: bool, f: impl FnOnce() -> T) -> T {
++        REDUCED.with(|r| r.set(on));
++        let out = f();
++        REDUCED.with(|r| r.set(false));
++        out
++    }
++
++    #[test]
++    fn probe_narrower_enumeration_accepts_the_same() {
++        let histories: u64 = std::env::var("PROBE_HISTORIES").ok().and_then(|s| s.parse().ok()).unwrap_or(3000);
++        let (mut asked, mut kills, mut cuts, mut max_full, mut max_narrow) = (0u64, 0u64, 0u64, 0usize, 0usize);
++        let only: Option<u64> = std::env::var("PROBE_SEED").ok().and_then(|s| s.parse().ok());
++        for seed in 1..=histories {
++            if only.is_some_and(|o| o != seed) { continue; }
++            let say = only.is_some();
++            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
++            let mut full = Client::new();
++            let mut narrow = Client::new();
++            let mut flying: Vec<RequestId> = Vec::new();
++            let mut fill = 0u8;
++            let mut failed = false;
++            for _step in 0..40 {
++                let recovering = !full.model.readback().is_empty();
++                match rng.below(if recovering { 1 } else { 12 }) {
++                    0..=3 if !recovering && flying.len() < 4 => {
++                        let block = rng.below(4);
++                        let count = 1 + rng.below(3.min(4 - block));
++                        let id = match rng.below(8) {
++                            0 => {
++                                if say { println!("EV zeroes {block}+{count}"); }
++                                let a = full.zeroes(block, count);
++                                with_reduced(true, || narrow.zeroes(block, count));
++                                a
++                            }
++                            1 => {
++                                if say { println!("EV discard {block}+{count}"); }
++                                let a = full.discard(block, count);
++                                with_reduced(true, || narrow.discard(block, count));
++                                a
++                            }
++                            _ => {
++                                fill += 1;
++                                if say { println!("EV write {block}+{count} fill {fill}"); }
++                                let a = full.write(block, count as usize, fill);
++                                with_reduced(true, || narrow.write(block, count as usize, fill));
++                                a
++                            }
++                        };
++                        flying.push(id);
++                    }
++                    4..=6 if !flying.is_empty() => {
++                        let id = flying.remove(rng.below(flying.len() as u64) as usize);
++                        let result = if failed && rng.below(2) == 0 { Err(BlkError::Failed) } else { Ok(()) };
++                        if say { println!("EV done {id:?} {result:?}"); }
++                        let a = full.done(id, result);
++                        let b = with_reduced(true, || narrow.done(id, result));
++                        assert_eq!(a.is_ok(), b.is_ok(), "seed {seed}: an acknowledgement");
++                        if a.is_err() {
++                            break;
++                        }
++                    }
++                    7 => {
++                        if say { println!("EV kill"); }
++                        full.model.kill();
++                        with_reduced(true, || narrow.model.kill());
++                        kills += 1;
++                    }
++                    8 if rng.below(4) == 0 => {
++                        if say { println!("EV power cut"); }
++                        full.model.power_cut();
++                        with_reduced(true, || narrow.model.power_cut());
++                        flying.clear();
++                        cuts += 1;
++                    }
++                    9 if rng.below(6) == 0 && !failed => {
++                        if say { println!("EV log failed"); }
++                        full.model.log_failed();
++                        with_reduced(true, || narrow.model.log_failed());
++                        failed = true;
++                    }
++                    10 if rng.below(3) == 0 && !failed && !recovering => {
++                        if say { println!("EV flush"); }
++                        let id = full.submit(Op::Flush);
++                        with_reduced(true, || narrow.submit(Op::Flush));
++                        flying.push(id);
++                    }
++                    _ => {
++                        // A read of one block: every answer is put to both.
++                        let block = if recovering { full.model.readback()[0] } else { rng.below(4) };
++                        let mut accepted = Vec::new();
++                        for f in 0..=fill {
++                            let a = full.would_see(block, &[f]);
++                            let b = with_reduced(true, || narrow.would_see(block, &[f]));
++                            asked += 1;
++                            if say { println!("EV   would read block {block} as {f}: full {a}, narrow {b}"); }
++                            assert_eq!(a, b, "seed {seed}: block {block} read as {f}");
++                            if a {
++                                accepted.push(f);
++                            }
++                        }
++                        if accepted.is_empty() {
++                            break;
++                        }
++                        let f = accepted[rng.below(accepted.len() as u64) as usize];
++                        if say { println!("EV read block {block} = {f}"); }
++                        full.sees(block, &[f]).unwrap();
++                        with_reduced(true, || narrow.sees(block, &[f])).unwrap();
++                    }
++                }
++                max_full = max_full.max(full.model.worlds());
++                max_narrow = max_narrow.max(narrow.model.worlds());
++            }
++        }
++        println!("PROBE differential: {histories} histories, {kills} kills, {cuts} power cuts, {asked} answers put to both models, all agreed; most worlds at once: {max_full} as in the pull request, {max_narrow} narrower");
++    }
++
+     /// R3, R7: a read stays in flight across a write to its block and a
+     /// completed flush, and then returns the content from before the
+     /// write. It overlapped the write, so that is allowed; the flush must

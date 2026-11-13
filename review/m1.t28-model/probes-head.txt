@@ -1,0 +1,13 @@
+...PROBE W1 wholly under W2, W1 never applied by anyone: accepted true
+.PROBE failed log, kill: W2 on block 1 true, W1 on block 1 true, neither false
+.PROBE worlds: 1 lone writes in flight: 1 before the kill, 3 after it, 3 after their acknowledgements
+PROBE W1 partly under W2, W1 never applied: accepted false
+PROBE a read submitted before a write, returning the state before it: without a kill true, with a kill between false
+PROBE cut after the kill and W1's acknowledgement, no flush: [1,2] true, [1,1] true, [0,2] true, [1,0] false, [0,0] false
+PROBE two kills: W2 on block 1 true, W1 on block 1 true, neither false
+PROBE worlds: ... 29 after the acknowledgements
+PROBE worlds: 2 lone writes in flight: 1 before the kill, 9 after it, 9 after their acknowledgements
+PROBE worlds: 3 lone writes in flight: 1 before the kill, 27 after it, 27 after their acknowledgements
+PROBE worlds: 4 lone writes in flight: 1 before the kill, 81 after it, 81 after their acknowledgements
+PROBE worlds: three overlapping, one acknowledged: 21 after the kill
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 64 filtered out; finished in 0.00s

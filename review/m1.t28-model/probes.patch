@@ -1,0 +1,117 @@
+--- crates/skyzfs-blk/src/model.rs	2026-11-13 17:12:12.384705552 +0000
++++ /tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr60/model-head-with-probes.rs	2026-11-13 17:05:58.761237889 +0000
+@@ -2114,6 +2114,114 @@
+         c.sees(0, &[1, 3]).unwrap();
+     }
+ 
++
++    // ---- REVIEW PROBES (not part of the pull request) ----
++    #[test]
++    fn probe_worlds_at_a_kill() {
++        for k in 1..=4u64 {
++            let mut c = Client::new();
++            let ids: Vec<_> = (0..k).map(|b| c.write(b, 1, 1 + b as u8)).collect();
++            let before = c.model.worlds();
++            c.model.kill();
++            let at = c.model.worlds();
++            for id in ids {
++                c.ack(id);
++            }
++            println!("PROBE worlds: {k} lone writes in flight: {before} before the kill, {at} after it, {} after their acknowledgements", c.model.worlds());
++        }
++        // Overlapping: W1 0..2, W2 1..2, W3 1..3 in flight, W2 acknowledged.
++        let mut c = Client::new();
++        let w1 = c.write(0, 2, 1);
++        let w2 = c.write(1, 1, 2);
++        let w3 = c.write(1, 2, 3);
++        c.ack(w2);
++        c.model.kill();
++        println!("PROBE worlds: three overlapping, one acknowledged: {} after the kill", c.model.worlds());
++        c.ack(w1);
++        c.ack(w3);
++        println!("PROBE worlds: ... {} after the acknowledgements", c.model.worlds());
++    }
++
++    #[test]
++    fn probe_two_kills() {
++        let history = |block_1: u8| {
++            let mut c = Client::new();
++            let w1 = c.write(0, 2, 1);
++            let w2 = c.write(1, 1, 2);
++            c.ack(w2);
++            c.model.kill();
++            c.model.kill();
++            c.ack(w1);
++            c.would_see(0, &[1, block_1])
++        };
++        println!("PROBE two kills: W2 on block 1 {}, W1 on block 1 {}, neither {}", history(2), history(1), history(0));
++    }
++
++    #[test]
++    fn probe_power_cut_after_outcome_3() {
++        let history = |fills: [u8; 2]| {
++            let mut c = Client::new();
++            let w1 = c.write(0, 2, 1);
++            let w2 = c.write(1, 1, 2);
++            c.ack(w2);
++            c.model.kill();
++            c.ack(w1);
++            c.model.power_cut();
++            c.would_see(0, &fills)
++        };
++        println!(
++            "PROBE cut after the kill and W1's acknowledgement, no flush: [1,2] {}, [1,1] {}, [0,2] {}, [1,0] {}, [0,0] {}",
++            history([1, 2]), history([1, 1]), history([0, 2]), history([1, 0]), history([0, 0])
++        );
++    }
++
++    #[test]
++    fn probe_a_read_in_flight_at_a_kill() {
++        let history = |kill: bool| {
++            let mut c = Client::new();
++            let r = c.read(0, 1);
++            c.wrote(0, 1, 5);
++            if kill {
++                c.model.kill();
++            }
++            c.returns(r, vec![0; B]).is_ok()
++        };
++        println!("PROBE a read submitted before a write, returning the state before it: without a kill {}, with a kill between {}", history(false), history(true));
++    }
++
++    #[test]
++    fn probe_fully_covered_request_never_applied() {
++        // W1 block 1, W2 block 1, in flight together; W2 acknowledged; kill;
++        // W1 acknowledged. The target never applied W1 at all.
++        let mut c = Client::new();
++        let w1 = c.write(1, 1, 1);
++        let w2 = c.write(1, 1, 2);
++        c.ack(w2);
++        c.model.kill();
++        c.ack(w1);
++        println!("PROBE W1 wholly under W2, W1 never applied by anyone: accepted {}", c.would_see(1, &[2]));
++        // W1 covers one block more: the block W2 does not cover shows it.
++        let mut c = Client::new();
++        let w1 = c.write(0, 2, 1);
++        let w2 = c.write(1, 1, 2);
++        c.ack(w2);
++        c.model.kill();
++        c.ack(w1);
++        println!("PROBE W1 partly under W2, W1 never applied: accepted {}", c.would_see(0, &[0, 2]));
++    }
++
++    #[test]
++    fn probe_failed_log_and_a_kill() {
++        let mut c = Client::new();
++        let w1 = c.write(0, 2, 1);
++        let w2 = c.write(1, 1, 2);
++        c.ack(w2);
++        c.model.log_failed();
++        c.model.kill();
++        c.ack(w1);
++        println!("PROBE failed log, kill: W2 on block 1 {}, W1 on block 1 {}, neither {}", c.would_see(0, &[1, 2]), c.would_see(0, &[1, 1]), c.would_see(0, &[1, 0]));
++    }
++
+     /// R3, R7: a read stays in flight across a write to its block and a
+     /// completed flush, and then returns the content from before the
+     /// write. It overlapped the write, so that is allowed; the flush must
