@@ -2853,16 +2853,6 @@ check_g_sync_fails_while_serving() {
         kill "$watch" 2>/dev/null; fail_stop "$name"; return
     fi
     if FS_READS=observed fail_wait "$name" 300 "$mark"; then pin sync_failure_suspends_pool PASS "$FS_WHY"; else pin sync_failure_suspends_pool FAIL "$FS_WHY"; fi
-    kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
-    at=$(cat "$WORK/g1.failed-at")
-    seen=$(grep -c ' failed at ' "$OUT/$name-reader.log" || true)
-    if [ -n "$at" ]; then
-        before=$(awk -v t="$at" '/ failed at / && $NF + 0 < t + 0 { c++ } END { print c + 0 }' "$OUT/$name-reader.log")
-        before="$before of them before the daemon's line that the volume failed"
-    else
-        before="the daemon's line that the volume failed was not seen in 300 s, so none is placed before it"
-    fi
-    obs g_reads_while_failing "ZFS's counts for the device (zpool status): $(vdev_say "$OUT/$name-status-suspended.log" "${BDEV#/dev/ublkb}"); the reader (an uncached file read in a loop): $(cat "$WORK/$name.reads" 2>/dev/null || echo '?') reads, $seen failed, $before (the line is looked for every 0.1 s)"
     if serve_wait 60; then
         n=$(grep -m 1 -o 'the volume failed while it was served[^;]*' "$dir.serve.log")
         if [ "$SERVE_RC" = "$EXIT_FAILED" ] && [ -n "$n" ]; then
@@ -2873,6 +2863,18 @@ check_g_sync_fails_while_serving() {
     else
         pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended"
     fi
+    # The watcher looks until the serve has ended: the daemon's line may
+    # come after the pool suspended on its own reads.
+    kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
+    at=$(cat "$WORK/g1.failed-at")
+    seen=$(grep -c ' failed at ' "$OUT/$name-reader.log" || true)
+    if [ -n "$at" ]; then
+        before=$(awk -v t="$at" '/ failed at / && $NF + 0 < t + 0 { c++ } END { print c + 0 }' "$OUT/$name-reader.log")
+        before="$before of them before the daemon's line that the volume failed"
+    else
+        before="the daemon's line that the volume failed was not seen while the rig looked (until the serve ended), so none is placed before it"
+    fi
+    obs g_reads_while_failing "ZFS's counts for the device (zpool status): $(vdev_say "$OUT/$name-status-suspended.log" "${BDEV#/dev/ublkb}"); the reader (an uncached file read in a loop): $(cat "$WORK/$name.reads" 2>/dev/null || echo '?') reads, $seen failed, $before (the line is looked for every 0.1 s)"
     if ! g_table linear; then
         pin sync_failed_volume_refused ERROR "the linear table could not be put back"
     else
