@@ -1,0 +1,6 @@
+== at 2be6c33
+eight values: {'read_ios': 400, 'write_ios': 2000, 'flushes': 50, 'write_ms': 6000, 'flush_ms': 150, 'read_ms': 600}
+seven values: {'read_ios': 400, 'write_ios': 2000, 'flushes': 50, 'write_ms': 6000, 'flush_ms': 150}
+== at ab61bf0 (before the fix)
+eight values: {'read_ios': 400, 'write_ios': 2000, 'flushes': 50, 'write_ms': 6000, 'flush_ms': 150}
+seven values: {'read_ios': 400, 'write_ios': 2000, 'flushes': 50, 'write_ms': 6000, 'flush_ms': 150}
