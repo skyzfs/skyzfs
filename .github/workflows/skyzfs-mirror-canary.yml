@@ -27,8 +27,11 @@ on:
         type: boolean
         default: false
       mirror:
-        description: another fallback to try, a URL ending in /ubuntu/ (empty for the script's own)
+        description: another fallback to try, a URL ending in /ubuntu/ or /ubuntu-ports/ (empty for the script's own)
         default: ''
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-24.04 ubuntu-26.04, arm64 ubuntu-24.04-arm ubuntu-26.04-arm"
+        default: '["ubuntu-24.04","ubuntu-26.04"]'
 
 permissions:
   contents: read
@@ -41,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-24.04, ubuntu-26.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-24.04","ubuntu-26.04"]') }}
     env:
       MIRROR: ${{ inputs.mirror }}
       FORCE: ${{ inputs.force }}
@@ -67,7 +70,12 @@ jobs:
             echo "| name | resolves |"
             echo "|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
-          hosts=$(grep -o '://[^/]*' /etc/apt/apt-mirrors.txt | sed 's|://||' | sort -u)
+          # An image with no mirror list (ubuntu-24.04-arm) names its hosts in its sources.
+          if [ -e /etc/apt/apt-mirrors.txt ]; then
+            hosts=$(grep -o '://[^/]*' /etc/apt/apt-mirrors.txt | sed 's|://||' | sort -u)
+          else
+            hosts=$(cat /etc/apt/sources.list /etc/apt/sources.list.d/* 2>/dev/null | grep -v '^\s*#' | grep -o 'https\?://[^/ ]*' | sed 's|.*://||' | sort -u)
+          fi
           for h in $hosts mirrors.edge.kernel.org github.com; do
             a=$(timeout 25 getent hosts "$h" | head -n 1)
             if [ -n "$a" ]; then r="yes (${a%% *})"; else r="NO"; fi
@@ -86,6 +94,10 @@ jobs:
           t0=$(date +%s)
           bash tests/lib/apt-fallback.sh
           echo "The script took $(( $(date +%s) - t0 )) s." | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ ! -e /etc/apt/apt-mirrors.txt ]; then
+            echo "The image has no mirror list; its sources are as they were." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "== the list now"; cat -A /etc/apt/apt-mirrors.txt
           if cmp -s /etc/apt/apt-mirrors.txt /etc/apt/apt-mirrors.txt.image 2>/dev/null || [ ! -e /etc/apt/apt-mirrors.txt.image ]; then
             echo "The list is the image's own." | tee -a "$GITHUB_STEP_SUMMARY"
