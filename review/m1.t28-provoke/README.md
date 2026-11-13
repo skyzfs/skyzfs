@@ -43,3 +43,13 @@ failure with the model before.
   it by its hash and diff the files that matter against the head.
 - Hand a subagent the reading of several job logs when only table rows
   are wanted: it kept about forty thousand tokens out of this session.
+
+## Second look, 64e8d92
+
+Both defects fixed: `"$DD"` from `gnu-dd.sh`, and the provoker in a
+process group of its own, stopped as a group. `provoker-stop2.sh` runs
+the script's own `provoke_start` and `provoke_stop` around a blocking
+stand-in with no controlling terminal: nothing is left
+(`provoker-stop2.txt`). It can merge from the review's side once CI is
+green. Still open as a suggestion: one provoked run at the head, since
+the provoker as it now stands has not run on a kernel.

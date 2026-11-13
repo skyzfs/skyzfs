@@ -1,0 +1,9 @@
+64e8d92 c-repeat rig: GNU dd in the provoker, stop it as a process group, name the tool's commit
+controlling terminal: no
+try 1: provoker 3570, its process group 3570, this script's 3567
+try 1: stop took 1 ms; left running: 0
+try 2: provoker 3626, its process group 3626, this script's 3567
+try 2: stop took 1 ms; left running: 0
+try 3: provoker 3681, its process group 3681, this script's 3567
+try 3: stop took 1 ms; left running: 0
+exit 0
