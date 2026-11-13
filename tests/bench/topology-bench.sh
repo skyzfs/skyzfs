@@ -502,11 +502,12 @@ if drows:
     print('\nWhat a commit costs. `WAL fsync` is postgres\'s own timer (pg_stat_io for object wal where the '
           'server has it, else pg_stat_wal); latency is over every transaction of pgbench\'s log; the devices\' '
           'counts and times are /proc/diskstats over the window (`flush ms` is the time the device spent on '
-          'flushes, per flush); ZIL commits from the zil kstat:\n')
+          'flushes, per flush; `ms per read / write` the time it spent on reads and on writes, per request, '
+          'a stall of the disk shows there whether or not a flush ran into it); ZIL commits from the zil kstat:\n')
     print('| workload | topology | tps | latency mean / stddev ms | WAL fsyncs per commit | µs per WAL fsync | '
           'slog writes / flushes per txn | slog flush ms | work disk writes / flushes per txn | work disk flush ms | '
-          'work disk KiB written per txn | ZIL commits per txn |')
-    print('|---|---|---|---|---|---|---|---|---|---|---|---|')
+          'work disk ms per read / write | work disk KiB written per txn | ZIL commits per txn |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|---|---|')
     for r, d in drows:
         txn = r['pg'].get('xact_commit', 0) or 0
         if not txn:
@@ -522,9 +523,15 @@ if drows:
             fms = 'n/a' if 'flush_ms' not in v else nf(v['flush_ms'] / fl if fl else None, '.2f')
             return f"{v['write_ios'] / txn:.2f} / {fl / txn:.2f}", fms, f"{v['write_mb'] * 1024 / txn:.1f}"
         sw, sf, _ = io('slog'); ww, wfm, wkb = io('workdisk')
+        def per_io(name):
+            v = r['devices'].get(name) or {}
+            rd = 'n/a' if 'read_ms' not in v else nf(v['read_ms'] / v['read_ios'] if v.get('read_ios') else None, '.2f')
+            wr = 'n/a' if 'write_ms' not in v else nf(v['write_ms'] / v['write_ios'] if v.get('write_ios') else None, '.2f')
+            return f'{rd} / {wr}'
+        wrw = per_io('workdisk')
         zil = r.get('zfs', {}).get('delta', {}).get('zil.zil_commit_count')
         print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {nf(lat.get('mean_ms'), '.3f')} / {nf(lat.get('stddev_ms'), '.3f')} | "
-              f"{nf(wf / txn if wf else None, '.3f')} | {nf(wus / wf if wf else None, '.0f')} | {sw} | {sf} | {ww} | {wfm} | {wkb} | "
+              f"{nf(wf / txn if wf else None, '.3f')} | {nf(wus / wf if wf else None, '.0f')} | {sw} | {sf} | {ww} | {wfm} | {wrw} | {wkb} | "
               f"{nf(zil / txn if zil is not None else None)} |")
     # What a transaction writes besides its commit, and whether ZFS made
     # a writer wait (the write throttle) in the window.
@@ -2174,10 +2181,12 @@ snap_loop() { # file mode: a snapshot every SNAP_INTERVAL s until the stop file 
 }
 
 # --------------------------------------------------------- measuring
-diskstats_line() { # kernel device name -> "reads rsect writes wsect flush write_ms flush_ms"
+diskstats_line() { # kernel device name -> "reads rsect writes wsect flush write_ms flush_ms read_ms"
     # Fields 4 to 20 of /proc/diskstats; the flushes and their time are
-    # there since kernel 5.5, 0 where a line is shorter.
-    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; fm = (NF >= 20) ? $20 : 0; print $4, $6, $8, $10, f, $11, fm }' /proc/diskstats
+    # there since kernel 5.5, 0 where a line is shorter. The time spent
+    # on reads comes last, so that rows recorded before it was added
+    # still read the same positions.
+    awk -v d="$1" '$3==d { f = (NF >= 19) ? $19 : 0; fm = (NF >= 20) ? $20 : 0; print $4, $6, $8, $10, f, $11, fm, $7 }' /proc/diskstats
 }
 work_disk() { # -> the kernel name of the disk under $WORK, or nothing
     # By its device number, as disk-sync.py finds it: df names the
@@ -2499,6 +2508,8 @@ for name in ad:
     if len(d) >= 7:
         r['devices'][name]['write_ms'] = d[5]
         r['devices'][name]['flush_ms'] = d[6]
+    if len(d) >= 8:
+        r['devices'][name]['read_ms'] = d[7]
 for k in ap:
     r['pg'][k] = ap[k] - bp.get(k, 0)
 r['pg']['wal_mb'] = r['pg'].get('wal_bytes', 0) / MB
