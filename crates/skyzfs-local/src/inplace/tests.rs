@@ -43,14 +43,38 @@ fn until_done(store: &mut InPlace<SimDisk>, done: &mut Vec<Completion>, id: u64)
     true
 }
 
+/// How long [`drained`] waits for what is in flight to end.
+const DRAIN: Duration = Duration::from_secs(10);
+
+/// Take every completion of what is in flight, for at most [`DRAIN`],
+/// and give the store back. A store that does not drain in that time
+/// has a defect that keeps a request from ending (a job a dead thread
+/// did not hand back, say): it is leaked and not dropped, because its
+/// drop waits for every request in flight, and the test fails instead
+/// of hanging.
+fn drained(mut store: InPlace<SimDisk>, done: &mut Vec<Completion>) -> InPlace<SimDisk> {
+    let began = std::time::Instant::now();
+    while store.in_flight() > 0 {
+        if began.elapsed() > DRAIN {
+            let left = store.in_flight();
+            std::mem::forget(store);
+            panic!("{left} requests did not end within {DRAIN:?}");
+        }
+        store.wait(done, Duration::from_millis(10));
+    }
+    store
+}
+
 /// Let what the disk holds go and take every completion: done before a
 /// test asserts, so that a failed assertion fails the test and does not
 /// leave a thread held under a store that waits for it when dropped.
-fn release_and_drain(disk: &SimDisk, store: &mut InPlace<SimDisk>, done: &mut Vec<Completion>) {
+fn release_and_drain(
+    disk: &SimDisk,
+    store: InPlace<SimDisk>,
+    done: &mut Vec<Completion>,
+) -> InPlace<SimDisk> {
     disk.release_direct_io();
-    while store.in_flight() > 0 {
-        store.wait(done, WAIT);
-    }
+    drained(store, done)
 }
 
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
@@ -415,28 +439,38 @@ fn a_flush_joins_a_sync_under_way_only_when_nothing_was_written_since_it_began()
 
 /// A flush waits for every write on the threads: it covers what was
 /// acknowledged before it, and this store also makes it wait for what
-/// was submitted before it (the stricter reading). With the writes held
-/// on the threads, the flush does not complete or begin its sync until
-/// they are let go. The mutant that lets a flush pass the writes is
-/// noticed: the flush completes while a write is still held.
+/// was submitted before it (the stricter reading). With a write held on
+/// the threads beside a read, the flush does not complete or begin its
+/// sync until they are let go: one write among the requests on the
+/// threads is enough (a rule that waited only when every request there
+/// wrote would pass this flush). The mutant that lets a flush pass the
+/// writes is noticed: the flush completes while the write is held.
 #[test]
 fn a_flush_waits_for_the_writes_on_the_threads() {
     for mutant in [0, Mutants::FLUSH_PASSES_WRITES] {
         let disk = created(3, 0);
         let mut store = start_io(&disk, mutant, false, IoMode::default()).unwrap();
-        // Two writes, held on the threads before they touch the image.
+        // A write and a read, held on the threads before they touch the
+        // image.
         disk.hold_direct_io(2);
-        for id in [1, 2] {
-            store
-                .submit(Request {
-                    id: RequestId(id),
-                    op: Op::Write {
-                        offset: id * BLOCK,
-                        data: Buf::filled(1, id as u8),
-                    },
-                })
-                .unwrap();
-        }
+        store
+            .submit(Request {
+                id: RequestId(1),
+                op: Op::Write {
+                    offset: BLOCK,
+                    data: Buf::filled(1, 1),
+                },
+            })
+            .unwrap();
+        store
+            .submit(Request {
+                id: RequestId(2),
+                op: Op::Read {
+                    offset: 2 * BLOCK,
+                    buf: Buf::filled(1, 0),
+                },
+            })
+            .unwrap();
         until_held(&disk);
         store
             .submit(Request {
@@ -453,7 +487,7 @@ fn a_flush_waits_for_the_writes_on_the_threads() {
         } else {
             (until_done(&mut store, &mut done, 3), false)
         };
-        release_and_drain(&disk, &mut store, &mut done);
+        let _store = release_and_drain(&disk, store, &mut done);
         if mutant == 0 {
             assert!(!flushed, "the flush did not wait for the writes");
             assert!(!syncing, "a sync began before the writes ended");
@@ -514,7 +548,7 @@ fn an_overlapping_request_waits_for_the_one_on_the_threads() {
         } else {
             (until_done(&mut store, &mut done, 3), 0)
         };
-        release_and_drain(&disk, &mut store, &mut done);
+        let _store = release_and_drain(&disk, store, &mut done);
         if mutant == 0 {
             assert!(!read_done, "a request passed the write it overlaps");
             assert_eq!(waiting, 2, "the two wait");
@@ -523,6 +557,88 @@ fn an_overlapping_request_waits_for_the_one_on_the_threads() {
         }
         assert!(done.iter().all(|c| c.result.is_ok()));
     }
+}
+
+/// A write waits for an overlapping read on the threads: a read held on
+/// the threads, then a write of the same block. The write waits (one
+/// request waiting), so the read sees the block as it was before the
+/// write, whatever the threads do. Nothing else is in the queue, so it
+/// is this rule and not the order behind a waiting request that keeps
+/// it.
+#[test]
+fn a_write_waits_for_an_overlapping_read_on_the_threads() {
+    let disk = created(3, 0);
+    let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
+    disk.hold_direct_io(1);
+    store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::filled(1, 0xee),
+            },
+        })
+        .unwrap();
+    until_held(&disk);
+    store
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Write {
+                offset: 0,
+                data: Buf::filled(1, 0x22),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    store.poll(&mut done);
+    let waiting = store.io_queue().waiting;
+    let store = release_and_drain(&disk, store, &mut done);
+    assert_eq!(waiting, 1, "the write did not wait for the read");
+    let read = done.iter().find(|c| c.id.0 == 1).expect("the read");
+    let seen = read.buf.as_ref().expect("its buffer");
+    assert!(seen.iter().all(|&b| b == 0), "the read saw the later write");
+    assert!(done.iter().all(|c| c.result.is_ok()));
+    drop(store);
+}
+
+/// A read waits for an overlapping write on the threads: a write held
+/// on the threads, then a read of the same block with nothing in
+/// between. The read waits (one request waiting) and then sees the
+/// write.
+#[test]
+fn a_read_waits_for_an_overlapping_write_on_the_threads() {
+    let disk = created(3, 0);
+    let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
+    disk.hold_direct_io(1);
+    store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Write {
+                offset: 0,
+                data: Buf::filled(1, 0x11),
+            },
+        })
+        .unwrap();
+    until_held(&disk);
+    store
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::filled(1, 0),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    store.poll(&mut done);
+    let waiting = store.io_queue().waiting;
+    let store = release_and_drain(&disk, store, &mut done);
+    assert_eq!(waiting, 1, "the read did not wait for the write");
+    let read = done.iter().find(|c| c.id.0 == 2).expect("the read");
+    let seen = read.buf.as_ref().expect("its buffer");
+    assert!(seen.iter().all(|&b| b == 0x11), "the read missed the write");
+    assert!(done.iter().all(|c| c.result.is_ok()));
+    drop(store);
 }
 
 /// An I/O thread that panics dies and does not hang the store. The job
@@ -560,9 +676,7 @@ fn a_panicking_io_thread_fails_the_volume() {
         })
         .unwrap();
     let mut done = Vec::new();
-    while store.in_flight() > 0 {
-        store.wait(&mut done, WAIT);
-    }
+    let store = drained(store, &mut done);
     assert!(store.is_failed(), "the panic did not fail the volume");
     assert!(
         done.iter().all(|c| c.result == Err(BlkError::Failed)),
@@ -599,9 +713,7 @@ fn a_thread_death_ignored_is_noticed() {
         })
         .unwrap();
     let mut done = Vec::new();
-    while done.is_empty() {
-        store.wait(&mut done, WAIT);
-    }
+    let store = drained(store, &mut done);
     assert!(!store.is_failed(), "the defect is not noticed");
     assert!(matches!(done[0].result, Err(BlkError::Io(_))), "{done:?}");
 }
@@ -640,7 +752,7 @@ fn the_io_queue_counts_what_is_on_the_threads() {
     }
     let held = store.io_queue();
     let mut done = Vec::new();
-    release_and_drain(&disk, &mut store, &mut done);
+    let store = release_and_drain(&disk, store, &mut done);
     assert_eq!((held.in_flight, held.waiting), (1, 2), "{held:?}");
     let q = store.io_queue();
     assert_eq!((q.in_flight, q.waiting), (0, 0), "{q:?}");

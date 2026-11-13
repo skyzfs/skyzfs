@@ -77,11 +77,16 @@
 //!    in the cache, so such pages come only from a writer through it:
 //!    the log store's checkpoint at the entry into this store, which
 //!    M1.3t removes with the log store, and a file system that accepts
-//!    a direct request and serves it through its cache. The start's
-//!    check of direct I/O (`STATX_DIOALIGN`) cannot tell such a file
-//!    system apart (the design names ext4 with `data=journal`), so the
-//!    drop stays after M1.3t. Its cost: the first reads after every
-//!    start, a take-over included, come from the disk.
+//!    a direct request, reports an alignment for it and still serves it
+//!    through its cache. The start's check of direct I/O
+//!    (`STATX_DIOALIGN`) cannot tell such a one apart, so the drop stays
+//!    after M1.3t. The design's example, ext4 with `data=journal`, is
+//!    not one: as read in ext4 and not shown, its `statx` reports no
+//!    direct-I/O alignment for an inode whose data is journalled, so the
+//!    start refuses that volume by reason instead of serving it. No file
+//!    system is known here that passes the check and serves through the
+//!    cache; the drop is for one that might. Its cost: the first reads
+//!    after every start, a take-over included, come from the disk.
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
 //!    then on every request fails, reads included, and a later start
@@ -146,13 +151,25 @@
 //! effect in the order they came; and a flush behind every write on the
 //! threads (it covers what was acknowledged before it, and this store
 //! also has it wait for what was submitted before it). Everything
-//! received after a waiting request waits behind it. A write-zeroes is
-//! written as zeros by direct I/O on the caller's thread, 1 MiB at a
-//! time (a deallocated range would make the next writes to it allocate
-//! again), and a discard does nothing. A thread that panics dies, the
+//! received after a waiting request waits behind it. On the simulated
+//! disk a write applies whole under the disk's lock, so a read beside
+//! an overlapping write never sees part of it and the tests that run
+//! whole programs say little of the clauses about reads; on a file
+//! system a direct read beside an overlapping direct write may see part
+//! of it, which is what those clauses are for, and only the kernel rigs
+//! show them there. Each clause has a test of its own (`tests.rs`: a
+//! write behind a read, a read behind a write, a flush behind a write
+//! beside a read). A write-zeroes is written as zeros by direct I/O
+//! on the caller's thread, 1 MiB at a time (a deallocated range would
+//! make the next writes to it allocate again), and a discard does
+//! nothing. A thread that panics dies, the
 //! job it held comes back failed, and the volume fails as from a
 //! failed write; the requests that waited for the threads fail with it
-//! (`inplace/pool.rs`). The store's queue (on the threads, waiting, and the
+//! (`inplace/pool.rs`). The store's drop waits for every request on the
+//! threads, up to one per thread, where on the caller's thread there
+//! was at most one: a daemon's exit waits for the direct I/O it has in
+//! flight (the daemon rig's check e watches a request held at the
+//! server). The store's queue (on the threads, waiting, and the
 //! highs) is in [`InPlace::io_queue`], which the daemon's status file
 //! shows.
 //!
