@@ -1,0 +1,26 @@
+[package]
+name = "skyzfsd"
+description = "The SkyZFS daemon: serves one volume of the local store as a ublk device (design §4.2)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[features]
+# Options that inject faults, for the kernel rig. Not in a default build:
+# without it the daemon refuses them as a usage error.
+test-hooks = ["skyzfs-local/test-hooks"]
+
+[dependencies]
+skyzfs-blk = { workspace = true }
+skyzfs-local = { workspace = true }
+skyzfs-ublk = { workspace = true }
+skyzfs-ublk-sys = { workspace = true }
+thiserror = { workspace = true }
+
+# statfs, for the rule that the daemon's files are on no ZFS pool.
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

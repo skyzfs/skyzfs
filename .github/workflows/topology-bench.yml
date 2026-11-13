@@ -9,7 +9,11 @@ name: topology-bench
 # zfs-plain, zfs-l2arc, zfs-slog, zfs-slog-l2arc, zfs-slog-rcache): one pool on a
 # no-read-before-write device over
 # a delayed image of the same database, the stand-in for ZFS on a
-# userspace block backend. All the logic is `tests/bench/topology-bench.sh`,
+# userspace block backend; and, by request only, zfs-ublk (the pool on
+# a ublk device served by the reference server) with its control
+# zfs-loop, and zfs-skyzfsd (the pool on a device served by the
+# project's daemon, built here in release without its test hooks).
+# All the logic is `tests/bench/topology-bench.sh`,
 # which is meant to be run by hand on a workstation with a real NVMe —
 # the runner's loop-on-virtual-disk I/O is throttled and noisy, so the
 # numbers here establish shapes and ratios, not absolutes.
@@ -21,9 +25,11 @@ name: topology-bench
 on:
   # workflow_dispatch is only offered once the file lives on the default
   # branch; until then a push that touches the benchmark itself (on any
-  # other branch) runs it with the script's defaults.
+  # other branch) runs it with the script's defaults. The SkyZFS working
+  # branches are left out: the file is on main, so they dispatch what
+  # they need, and a push there used to start thirteen runner jobs.
   push:
-    branches-ignore: [main]
+    branches-ignore: [main, zfs-topology, "skyzfs-*"]
     paths:
       - tests/bench/topology-bench.sh
       - tests/lib/gnu-dd.sh
@@ -40,7 +46,7 @@ on:
         options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
         default: ubuntu-latest
       topologies:
-        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
+        description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache zfs-loop zfs-ublk zfs-skyzfsd"
         default: "nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache"
       workloads:
         description: "space-separated subset of: tpcb select update"
@@ -88,7 +94,7 @@ on:
         description: "zfs module parameters for the ZFS topologies, name=value separated by spaces (e.g. l2arc_noprefetch=0 l2arc_headroom=0)"
         default: ""
       sequence:
-        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. Replaces the per-topology matrix when set"
+        description: "Run several configurations one after another on ONE runner, so they share a machine: entries separated by ';', each 'label|TB_VAR=value TB_VAR=value' (values without spaces). Each entry needs its own TB_TOPOLOGIES. A daemon row is judged against the mean of the zfs-slog rows just before and after it, so begin and end with one and put one at least every third row. Replaces the per-topology matrix when set"
         default: ""
       cas_mode:
         description: "Open CAS mode: wi (write-invalidate, the true write-around) | wa | wt"
@@ -96,6 +102,20 @@ on:
       opencas_ref:
         description: "Open CAS Linux git ref to build (only when topologies include opencas)"
         default: "v26.03.4"
+      barriers:
+        # The runners' work disk is ext4 mounted nobarrier (M1.T15), so no
+        # fsync there sends the disk a flush. `on` remounts it with barriers
+        # before the first row, so that every row of the job runs on that
+        # mount. Whether a flush then reaches the disk follows the disk, not
+        # the image: one that declares no volatile cache (write_cache =
+        # write through, the `sda` runners) gets none either way.
+        description: "Work disk barriers: off leaves the runner's mount as it is (nobarrier on the runners seen so far); on remounts it with barriers before the first row"
+        type: choice
+        options: ["off", "on"]
+        default: "off"
+      ublksrv_ref:
+        description: "ublk-org/ublksrv git ref to build (only when topologies include zfs-ublk). The default is v1.9, the commit the kernel probe built and served a pool with on both runner images"
+        default: "6d0d922614ec18e6f2b5d476af8d540a1d9c1de8"
 
 env:
   # Inputs are empty on a push event; fall back to the dispatch defaults.
@@ -118,6 +138,7 @@ env:
   TB_SEQUENCE: ${{ inputs.sequence || '' }}
   TB_CAS_MODE: ${{ inputs.cas_mode || 'wi' }}
   OPENCAS_REF: ${{ inputs.opencas_ref || 'v26.03.4' }}
+  UBLKSRV_REF: ${{ inputs.ublksrv_ref || '6d0d922614ec18e6f2b5d476af8d540a1d9c1de8' }}
 
 jobs:
   plan:
@@ -149,6 +170,10 @@ jobs:
       TB_OUT: ${{ github.workspace }}/topology-bench-out
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
 
       - name: Reclaim runner disk
         # One 72 GB root disk with ~14 GB free; the images need room.
@@ -184,6 +209,79 @@ jobs:
           }
           sudo zfs version
 
+      - name: Build the ublk reference server
+        if: matrix.topology == 'zfs-ublk' || contains(inputs.sequence, 'zfs-ublk')
+        run: |
+          [[ $UBLKSRV_REF =~ ^[A-Za-z0-9._/][A-Za-z0-9._/-]*$ ]] || { echo "::error::bad ublksrv ref"; exit 64; }
+          sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          sudo modprobe ublk_drv
+          sudo ublk features || true
+
+      - name: System call tracing tools
+        # Only for an entry with TB_SYSCALLS=1 or TB_PERF_RECORD=1. perf
+        # for the running kernel where Ubuntu has it, strace in any case:
+        # the trace uses perf when `perf trace` works and strace
+        # otherwise; a recording needs perf.
+        if: contains(inputs.sequence, 'TB_SYSCALLS=1') || contains(inputs.sequence, 'TB_PERF_RECORD=1')
+        run: |
+          sudo apt-get install -y --no-install-recommends strace
+          sudo apt-get install -y --no-install-recommends linux-tools-common "linux-tools-$(uname -r)" \
+            || echo "::notice::no perf package for $(uname -r): the trace uses strace"
+          if sudo perf trace -s -- true > /dev/null 2>&1; then echo "perf trace works"; else echo "::notice::perf trace does not work here: the trace uses strace"; fi
+          if sudo perf record -g -o /tmp/perf-probe.data -- true > /dev/null 2>&1; then echo "perf record works"; else echo "::notice::perf record does not work here: no recording"; fi
+
+      - name: Build skyzfsd
+        # A release build WITHOUT the test hooks: the binary one would
+        # deploy, not the rigs'. The workspace's system packages, and
+        # libclang for the binding to the ublk library.
+        if: matrix.topology == 'zfs-skyzfsd' || contains(inputs.sequence, 'zfs-skyzfsd')
+        run: |
+          sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          cargo build --release --locked -p skyzfsd
+          echo "TB_SKYZFSD=$PWD/target/release/skyzfsd" >> "$GITHUB_ENV"
+          echo "TB_SKYZFSD_REF=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          git rev-parse HEAD
+          # A sequence entry may name another build with
+          # TB_SKYZFSD_REF=<commit, short commit or branch>: each one
+          # named is built here, from its own worktree, into a binary of
+          # its own, so that one machine runs them all.
+          # An entry with an empty ref would run the branch's own build
+          # under a row that says otherwise: refused before anything runs.
+          if grep -qE 'TB_(SKYZFSD|SKZ_TIME)_REF=($|[ ;])' <<< "$TB_SEQUENCE"; then
+            echo "::error::the sequence names an empty TB_SKYZFSD_REF= or TB_SKZ_TIME_REF="; exit 64
+          fi
+          refs=$(grep -oE 'TB_SKYZFSD_REF=[A-Za-z0-9_.,:=+-]+' <<< "$TB_SEQUENCE" | cut -d= -f2- | sort -u || true)
+          # TB_SKZ_TIME_REF=<ref> in any entry, for the whole job: the
+          # daemon's times are read with that ref's
+          # tests/bench/skz_time.py (a daemon newer than this branch has
+          # keys this branch's copy does not know). Its copy goes into
+          # the results, for the combined table.
+          skzref=$(grep -oE 'TB_SKZ_TIME_REF=[A-Za-z0-9_.,:=+-]+' <<< "$TB_SEQUENCE" | head -n 1 | cut -d= -f2- || true)
+          if [ -n "$refs$skzref" ]; then
+            git fetch --no-tags --quiet origin '+refs/heads/*:refs/remotes/origin/*'
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --unshallow --no-tags --quiet origin; fi
+          fi
+          for ref in $refs; do
+            sha=$(git rev-parse --verify --quiet "origin/$ref^{commit}" || git rev-parse --verify --quiet "$ref^{commit}") \
+              || { echo "::error::sequence names TB_SKYZFSD_REF=$ref, which is no branch or commit here"; exit 64; }
+            git worktree add --detach "$RUNNER_TEMP/wt-$ref" "$sha"
+            (cd "$RUNNER_TEMP/wt-$ref" && CARGO_TARGET_DIR="$RUNNER_TEMP/target-refs" cargo build --release --locked -p skyzfsd)
+            cp "$RUNNER_TEMP/target-refs/release/skyzfsd" "$RUNNER_TEMP/skyzfsd-$ref"
+            echo "| $ref | $sha |" >> "$RUNNER_TEMP/refs.md"
+          done
+          if [ -n "$skzref" ]; then
+            sha=$(git rev-parse --verify --quiet "origin/$skzref^{commit}" || git rev-parse --verify --quiet "$skzref^{commit}") \
+              || { echo "::error::sequence names TB_SKZ_TIME_REF=$skzref, which is no branch or commit here"; exit 64; }
+            mkdir -p "$TB_OUT/skz-time"
+            git show "$sha:tests/bench/skz_time.py" > "$TB_OUT/skz-time/skz_time.py"
+            echo "TB_SKZ_TIME_DIR=$TB_OUT/skz-time" >> "$GITHUB_ENV"
+            echo "| skz_time.py (TB_SKZ_TIME_REF=$skzref) | $sha |" >> "$RUNNER_TEMP/refs.md"
+          fi
+          if [ -s "$RUNNER_TEMP/refs.md" ]; then
+            { echo '| sequence names TB_SKYZFSD_REF= | built from |'; echo '|---|---|'; cat "$RUNNER_TEMP/refs.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          sudo modprobe ublk_drv
+
       - name: Build Open CAS (casadm with write-invalidate enabled)
         if: matrix.topology == 'opencas' || contains(inputs.sequence, 'opencas')
         run: |
@@ -200,6 +298,66 @@ jobs:
           sudo make install CAS_EXT_EXP=1
           sudo modprobe cas_cache
           casadm --version
+
+      - name: Barriers on the work disk
+        # Only when asked. Remounts the file system that holds TB_WORK with
+        # barriers, before the disk-sync line and the first row. If the
+        # remount fails, nobarrier is still in force, or the disk is write
+        # through (no flush reaches it either way), the job stops here: its
+        # rows would not be what was asked for.
+        if: inputs.barriers == 'on'
+        run: |
+          sudo mkdir -p "$TB_WORK"
+          mp=$(findmnt -n -o TARGET -T "$TB_WORK")
+          fs=$(findmnt -n -o FSTYPE -T "$TB_WORK")
+          before=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "work disk: $mp ($fs), super block options before: $before"
+          rc=0; sudo mount -o remount,barrier "$mp" || rc=$?
+          after=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "after (mount rc $rc): $after"
+          # The whole disk's queue: with write through, the block layer
+          # completes a flush without sending it, barriers or not.
+          # By the device number, as disk-sync.py finds it: the mount table
+          # names the root file system /dev/root on the runners. A
+          # partition's queue is its disk's.
+          dev=$(mountpoint -d "$mp")
+          if [ -e "/sys/dev/block/$dev" ]; then
+            src=$(readlink -f "/sys/dev/block/$dev")
+            disk=$(basename "$src"); [ -e "$src/queue" ] || disk=$(basename "$(dirname "$src")")
+            src=/dev/$(basename "$src")
+          else
+            # No block device under this number (btrfs, overlay): not read.
+            src="device $dev"; disk="none for $dev"
+          fi
+          wc=$(cat "/sys/block/$disk/queue/write_cache" 2>/dev/null || echo "not said")
+          echo "disk $disk, queue write_cache: $wc"
+          {
+            echo "### Work disk barriers"
+            echo
+            echo "\`$mp\` ($fs) on \`$src\`, disk \`$disk\` (queue \`write_cache\`: **$wc**). Before: \`$before\`. After \`mount -o remount,barrier\` (exit $rc): \`$after\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$wc" = "write through" ]; then
+            # As when the remount does not take: the job stops before its rows.
+            echo "::error::the work disk $disk is write through: barriers can do nothing on it; the job stops before its rows"
+            echo "**The input \`barriers\` can do nothing on this disk:** it declares no volatile cache (\`write through\`), so the block layer completes every flush without sending it, barriers or not. The job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ] || [[ ",$after," == *,nobarrier,* ]]; then
+            echo "::error::the work disk could not be remounted with barriers; the job stops before its rows"
+            echo "The remount did not take: the job stops before its rows." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Disk sync of the work disk
+        # One observation of the disk the daemon's files sit on, at the
+        # start of the job: 64 MiB written through the page cache and
+        # its fdatasync timed, then the same with O_DIRECT. Some runners
+        # take a sync of 8 MiB in about 40 ms and others in about 4; the
+        # summary sets this line beside the rows of this machine.
+        run: |
+          mkdir -p "$TB_OUT"
+          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 | tee "$TB_OUT/disk-sync.txt"
+          { echo '```'; cat "$TB_OUT/disk-sync.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run benchmark
         # ubuntu-26.04's sudo-rs does not carry the job's environment
@@ -221,6 +379,16 @@ jobs:
           # directory so equal topology names do not collide.
           IFS=';' read -ra entries <<< "$TB_SEQUENCE"
           i=0
+          # A row that fails does not end the job: the rows after it
+          # run, each labelled "after failed row N", and the step fails
+          # at the end. A row whose copy or sync
+          # onto the daemon ran out of its limit (its output has
+          # skyzfsd-hang/, M1.T24) does end the sequence: what it left in
+          # the kernel may not die, and a row beside it would measure two
+          # daemons in one cgroup. The evidence step then sees the
+          # machine as the hang left it.
+          failed=""
+          hung=""
           for e in "${entries[@]}"; do
             i=$((i + 1))
             label=${e%%|*}; assigns=${e#*|}
@@ -229,25 +397,81 @@ jobs:
             for a in $assigns; do
               [[ $a =~ ^TB_[A-Z0-9_]+=[A-Za-z0-9_.,:=+-]*$ ]] || { echo "::error::bad sequence assignment: $a"; exit 64; }
               args+=("$a")
+              # The build the step "Build skyzfsd" made for this ref.
+              if [[ $a == TB_SKYZFSD_REF=* ]]; then args+=("TB_SKYZFSD=$RUNNER_TEMP/skyzfsd-${a#TB_SKYZFSD_REF=}"); fi
             done
+            # Each row after a failed one says so in its label (lead's
+            # ruling on the M1.T24 review).
+            [ -z "$failed" ] || args+=("TB_EARLIER_FAILED=${failed# }")
             echo "::group::sequence $i: $label ($assigns)"
+            rc=0
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
-              "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}"
+              "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}" || rc=$?
             echo "::endgroup::"
+            if sudo test -d "$TB_OUT/$i/skyzfsd-hang"; then
+              hung=$i
+              failed="$failed $i"
+              echo "::error::sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit; the sequence ends here"
+              echo "Sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit, so the sequence ended there (${#entries[@]} rows asked for). The evidence is in skyzfsd-hang/ of its output." >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            if [ "$rc" != 0 ]; then
+              echo "::error::sequence $i ($label) failed with $rc"
+              if [ "$i" -lt "${#entries[@]}" ]; then
+                echo "Sequence $i ($label) failed with $rc; the rows after it ran, each marked \"after failed row\"." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "Sequence $i ($label) failed with $rc; it was the last row." >> "$GITHUB_STEP_SUMMARY"
+              fi
+              failed="$failed $i"
+            fi
           done
+          [ -z "$failed" ] || { echo "rows that failed:$failed${hung:+; the sequence ended after row $hung}"; exit 1; }
+
+      - name: Work disk mount at the end
+        # That the barriers asked for were in force to the last row.
+        if: always() && inputs.barriers == 'on'
+        run: |
+          after=$(findmnt -n -o FS-OPTIONS -T "$TB_WORK")
+          echo "super block options at the end: $after"
+          echo "At the end of the job: \`$after\`." >> "$GITHUB_STEP_SUMMARY"
+          if [[ ",$after," == *,nobarrier,* ]]; then echo "::error::nobarrier was back by the end of the job"; exit 1; fi
 
       - name: Evidence on failure
-        if: failure()
+        # On a cancel too (the job's limit): a hang leaves the machine as
+        # it was, and this is the only look at it (M1.T24). First the
+        # threads that wait in the kernel and what they wait for, then
+        # the rest; each look that could wait on a hung device under a
+        # limit.
+        if: failure() || cancelled()
         run: |
+          sudo bash -c '
+            . tests/lib/lim.sh
+            for t in /proc/[0-9]*/task/[0-9]*; do
+              st=$(sed "s/^.*) //" "$t/stat" 2>/dev/null | cut -c1) || continue
+              [ "$st" = D ] || continue
+              p=${t#/proc/}; p=${p%%/*}
+              echo "== D: $p ${t##*/} $(cat "$t/comm" 2>/dev/null) $(cat "$t/wchan" 2>/dev/null)"
+              lim 5 cat "$t/stack"
+            done
+            for b in /sys/block/ublkb*; do [ -e "$b" ] && echo "$b inflight: $(cat "$b/inflight")"; done
+            c=/sys/fs/cgroup/topology-bench-skyzfsd
+            if [ -d "$c" ]; then
+              for f in memory.current memory.max memory.events memory.pressure io.pressure; do echo "== $c/$f"; cat "$c/$f"; done
+            fi
+            echo w > /proc/sysrq-trigger
+            lim 30 zpool status -v
+            lim 30 ublk list
+          ' || true
           sudo dmsetup ls --tree || true
           sudo losetup -a || true
           ls /sys/block | grep -E 'bcache|cas' || true
-          sudo zpool status -v 2>/dev/null || true
-          sudo zfs list -t all 2>/dev/null || true
+          sudo bash -c '. tests/lib/lim.sh; lim 30 zfs list -t all' 2>/dev/null || true
           sudo tail -40 /proc/spl/kstat/zfs/dbgmsg 2>/dev/null || true
           sudo tail -50 "$TB_WORK/pg.log" 2>/dev/null || true
           # The interesting kernel lines are the ones BEFORE a trace.
-          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
+          sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|ublk|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
+          # The blocked tasks the dump above asked for (sysrq w), whole.
+          sudo dmesg | grep -A40 -E 'Show Blocked State|task:.* state:D' | tail -400 || true
 
       - name: Upload results
         if: always()
@@ -272,6 +496,10 @@ jobs:
       - name: Render
         run: |
           find all -name '*.json' | sort
+          # The skz_time.py the bench job read the daemon's times with,
+          # when the sequence named one (TB_SKZ_TIME_REF).
+          f=$(find all -path '*/skz-time/skz_time.py' | head -n 1)
+          if [ -n "$f" ]; then export TB_SKZ_TIME_DIR="$PWD/${f%/skz_time.py}"; echo "skz_time.py from $f"; fi
           tests/bench/topology-bench.sh summarize all | tee summary.md | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v6
         with:

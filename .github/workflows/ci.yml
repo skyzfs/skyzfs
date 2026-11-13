@@ -48,6 +48,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - run: bash tests/lib/test_apt_fallback.sh
+      - run: bash tests/lib/test_lim.sh
+      - run: bash tests/bench/test_copy_limit.sh
+      - run: python3 tests/bench/test_skz_time.py
+      - run: python3 tests/bench/test_bracket.py
+      - run: python3 tests/bench/test_syscalls.py
+      - run: python3 tests/bench/test_perfcat.py
+      - run: python3 tests/bench/test_embedded_python.py
       # First: needs no toolchain or cache, and the shell harness is
       # ~4.6k lines nothing else lints. Preinstalled on ubuntu runners.
       # No blanket excludes — deliberate idioms carry a targeted
@@ -58,10 +70,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: dm build headers (skynbd-agent "dm" feature)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The control test program and its tests are behind a feature, so
+      # the workspace line above does not build them.
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      # The daemon's fault hooks, which the rigs build and the workspace
+      # line does not.
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
 
   chart-lint:
     needs: changes
@@ -118,9 +136,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
       - uses: dtolnay/rust-toolchain@stable
       - name: dm build headers (skynbd-agent "dm" feature)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
       # This job is the writer of the shared dev-profile cache: its
       # `--workspace` build is a superset of what e2e and s3-backends
       # compile (feature unification already builds the s3 graph here),
@@ -129,7 +151,48 @@ jobs:
         with:
           shared-key: dev
       - run: cargo test --workspace
+      # The control test program's own tests, which the workspace run
+      # no longer builds. Its kernel tests are ignored here and run in
+      # skyzfs-control-rig.yml.
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
 
+
+  # The unit level on arm64 (M1.T21): clippy and the tests natively on
+  # an arm64 runner, plain and with each feature that holds code the
+  # workspace's build leaves out. One job, so the build is shared; its
+  # own cache, since an arm64 build cannot use an amd64 one. The
+  # runner's pages are 4 KiB: kernels with 16 or 64 KiB pages are not
+  # covered here. ubuntu-26.04-arm and not 24.04-arm: the package
+  # fallback works there (tests/lib/apt-fallback.sh), and 24.04-arm has
+  # none, so an outage of ubuntu.com's names would fail every pull
+  # request's arm64 job.
+  unit-arm64:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: The machine
+        run: echo "$(uname -m), pages of $(getconf PAGESIZE) bytes, kernel $(uname -r)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: arm64
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
 
   # S3 conformance against both real backends, one build (design §14.2
   # layer 3; previously two jobs compiling the same feature graph twice).
@@ -171,7 +234,7 @@ jobs:
           (cd /tmp/wif && python3 -m http.server 8481 >/dev/null 2>&1 &)
       - name: Start SeaweedFS S3 with IAM/STS
         run: |
-          curl -sSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_amd64.tar.gz" | tar -xz -C /tmp
+          curl -sSL "https://github.com/seaweedfs/seaweedfs/releases/download/${SEAWEEDFS_VERSION}/linux_$(dpkg --print-architecture).tar.gz" | tar -xz -C /tmp
           mkdir -p /tmp/weed-data
           /tmp/weed server -dir=/tmp/weed-data -ip=127.0.0.1 \
             -s3 -s3.port=8333 -s3.iam.config="$PWD/tests/wif/iam_config.json" \

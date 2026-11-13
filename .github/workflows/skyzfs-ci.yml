@@ -1,0 +1,170 @@
+name: skyzfs-ci
+
+# CI for pushes to the SkyZFS working branches that no pull request
+# covers. `ci.yml` runs on `main` and on every pull request. That leaves
+# two kinds of push with no checks: a merge into `zfs-topology`, and a
+# push to a `skyzfs-*` branch whose work package has no pull request
+# open yet. This workflow runs for those, with the same checks and the
+# same setup as the `lint` and `test` jobs of `ci.yml`. Once a branch
+# has an open pull request, `ci.yml` runs on each push to it and this
+# workflow steps aside (the `gate` job), so nothing runs twice.
+on:
+  push:
+    branches:
+      - zfs-topology
+      - "skyzfs-*"
+  workflow_dispatch:
+
+# A newer push to a role branch replaces the run of the older one. Not
+# on zfs-topology: each merge there is a different change, and two
+# merges in quick succession must both be checked.
+concurrency:
+  group: skyzfs-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_name != 'zfs-topology' }}
+
+# The jobs run branch code: the token can read the repository and
+# nothing else. The gate job asks for what it needs.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # No DWARF, as in ci.yml: with debuginfo the workspace's test binaries
+  # exceed the runner's free disk and the link dies with SIGBUS.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+
+jobs:
+  # Is this push already covered by ci.yml? It is when the branch is the
+  # head of an open pull request that does not conflict with its base.
+  # GitHub starts no pull_request workflow for a pull request that
+  # conflicts, so such a push would otherwise get no checks at all. If
+  # the question cannot be answered, run: twice is better than not at
+  # all. (GitHub works out the conflict state in the background; while
+  # it is still unknown the pull request is taken as covered.)
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr=""
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            pr=$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:$GITHUB_REF_NAME" --jq '.[0].number // empty') || pr=""
+          fi
+          state=""
+          if [ -n "$pr" ]; then
+            state=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq '.mergeable_state // empty') || state=dirty
+          fi
+          if [ -n "$pr" ] && [ "$state" != dirty ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "$GITHUB_REF_NAME heads pull request #$pr: ci.yml covers this push." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            [ -z "$pr" ] || echo "Pull request #$pr conflicts with its base, so ci.yml does not run for it: running here." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  lint:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - run: bash tests/lib/test_apt_fallback.sh
+      - run: bash tests/lib/test_lim.sh
+      - run: bash tests/bench/test_copy_limit.sh
+      - run: python3 tests/bench/test_skz_time.py
+      - run: python3 tests/bench/test_bracket.py
+      - run: python3 tests/bench/test_syscalls.py
+      - run: python3 tests/bench/test_perfcat.py
+      - run: python3 tests/bench/test_embedded_python.py
+      - name: shellcheck
+        run: git ls-files '*.sh' | xargs -r shellcheck
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+      # Its own cache, shared by every working branch. The `dev` cache
+      # belongs to ci.yml's test job on main; a cache written on one
+      # branch is not readable from another, so reusing that key here
+      # would buy nothing.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skyzfs-lint
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      # The control test program and its tests are behind a feature, so
+      # the workspace line above does not build them.
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      # The daemon's fault hooks, which the rigs build and the workspace
+      # line does not.
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+
+  test:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skyzfs-test
+      - run: cargo test --workspace
+      # The control test program's own tests, which the workspace run
+      # no longer builds. Its kernel tests are ignored here and run in
+      # skyzfs-control-rig.yml.
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
+
+  # The unit level on arm64 (M1.T21): clippy and the tests natively on
+  # an arm64 runner, plain and with each feature that holds code the
+  # workspace's build leaves out. One job, so the build is shared; its
+  # own cache, since an arm64 build cannot use an amd64 one. The
+  # runner's pages are 4 KiB: kernels with 16 or 64 KiB pages are not
+  # covered here. ubuntu-26.04-arm and not 24.04-arm: the package
+  # fallback works there (tests/lib/apt-fallback.sh), and 24.04-arm has
+  # none, so an outage of ubuntu.com's names would fail every pull
+  # request's arm64 job.
+  unit-arm64:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: The machine
+        run: echo "$(uname -m), pages of $(getconf PAGESIZE) bytes, kernel $(uname -r)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skyzfs-arm64
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
