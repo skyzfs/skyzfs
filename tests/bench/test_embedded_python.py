@@ -66,15 +66,19 @@ class Embedded(unittest.TestCase):
         end = look(61 * 10**9, 10000, 1100, 50, 860)
         after = look(70 * 10**9, 10000, 1500, 70, 700)
         with tempfile.TemporaryDirectory() as d:
-            m = self.row(d, {'.before': before, '.pressure': end, '.after': after, '.pgbench': ''})['diag']['mem_mb']
+            diag = self.row(d, {'.before': before, '.pressure': end, '.after': after, '.pgbench': ''})['diag']
+        m = diag['mem_mb']
         self.assertEqual(m['skz.cgroup.stat.pgscan.window'], 1000.0)
         self.assertEqual(m['skz.cgroup.events.max.window'], 45.0)
         self.assertEqual(m['skz.cgroup.file'], 860.0)
+        self.assertEqual(diag['skz_cgroup_look'], 'pgbench returned')
         with tempfile.TemporaryDirectory() as d:
-            m = self.row(d, {'.before': before, '.pressure': 'clock now 61000000000\n', '.after': after,
-                             '.pgbench': ''})['diag']['mem_mb']
+            diag = self.row(d, {'.before': before, '.pressure': 'clock now 61000000000\n', '.after': after,
+                                '.pgbench': ''})['diag']
+        m = diag['mem_mb']
         self.assertEqual(m['skz.cgroup.stat.pgscan.window'], 1400.0)
         self.assertEqual(m['skz.cgroup.file'], 700.0)
+        self.assertEqual(diag['skz_cgroup_look'], 'after the sync')
 
 
 if __name__ == '__main__':

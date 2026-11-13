@@ -619,7 +619,8 @@ if drows:
               'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
               'the page cache its files were charged for there, and how many times the cgroup reached its limit, '
               'during the window and since the daemon started, which includes the copy of the pool image and the '
-              'warm-up (counts, not MiB):\n')
+              'warm-up (counts, not MiB). The daemon\'s cgroup columns are read as pgbench returns, the others after '
+              'the sync and the 2 s wait that follow it:\n')
         print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit in the window | since the daemon started |')
         print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in md:
@@ -640,7 +641,8 @@ if drows:
               'looked at and took back, in all, and of those by the daemon\'s own threads as they charged a page '
               '(direct; the rest is kswapd); `refaults` are file pages read again soon after they were taken; `at high` '
               'and `at max` are the times the group reached memory.high and memory.max. The page cache, dirty and under '
-              'write-back are MiB at the end of the window:\n')
+              'write-back are MiB at the end of the window. A row marked "read after the sync" had no look when pgbench '
+              'returned, and its counts also hold the sync and the 2 s after the window:\n')
         print('| workload | topology | tps | scanned / direct per ktxn | taken / direct per ktxn | refaults per ktxn | '
               'major faults | at high / at max | file / dirty / writeback MiB |')
         print('|---|---|---|---|---|---|---|---|---|')
@@ -651,7 +653,8 @@ if drows:
             def pk(k):
                 v = w(k)
                 return nf(v / txn if v is not None and txn else None, '.1f')
-            print(f"| {r['workload']} | {label(r)} | {r['tps'] or 0:.0f} | {pk('pgscan')} / {pk('pgscan_direct')} | "
+            late = ' (read after the sync)' if r['diag'].get('skz_cgroup_look') == 'after the sync' else ''
+            print(f"| {r['workload']} | {label(r)}{late} | {r['tps'] or 0:.0f} | {pk('pgscan')} / {pk('pgscan_direct')} | "
                   f"{pk('pgsteal')} / {pk('pgsteal_direct')} | {pk('workingset_refault_file')} | "
                   f"{nf(w('pgmajfault'), '.0f')} | {nf(m.get('skz.cgroup.events.high.window'), '.0f')} / "
                   f"{nf(m.get('skz.cgroup.events.max.window'), '.0f')} | {nf(m.get('skz.cgroup.file'), '.0f')} / "
@@ -2080,7 +2083,7 @@ PY
     # (file = the page cache of its home image and log).
     if [ -n "$SKZ_PID" ]; then
         awk '$1 ~ /^(VmRSS|VmLck|RssAnon|RssFile|RssShmem):$/ { sub(":", "", $1); print "mem skz." $1, $2 * 1024 }' "/proc/$SKZ_PID/status" 2>/dev/null || true
-        skz_cgroup_mem
+        # Its cgroup: through pressure_look, above.
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
         | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
@@ -2452,6 +2455,9 @@ me = dict(mem[base + '.after'])
 if base + '.pressure' in mem:
     me.update({k: v for k, v in mem[base + '.pressure'].items() if k.startswith('skz.cgroup.')})
 if me: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in me.items()}
+if any(k.startswith('skz.cgroup.') for k in me):
+    diag['skz_cgroup_look'] = ('pgbench returned' if any(k.startswith('skz.cgroup.') for k in mem.get(base + '.pressure', {}))
+                               else 'after the sync')
 # The cgroup counts the times it reached its limit since it was made,
 # which is before the copy and the warm-up: the window's count is the
 # difference of the two looks. (The counts travel as n MiB.)
