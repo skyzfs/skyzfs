@@ -31,32 +31,21 @@ use crate::io::{Dir, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
-/// should have here ([`Identity::write_unit`]). 4096 where it cannot be
-/// found out.
+/// should have here ([`Identity::write_unit`]).
+///
+/// Linux: libc's `sysconf(_SC_PAGESIZE)`, through `rustix` (its feature
+/// `use-libc-auxv`). The C library takes it from `AT_PAGESZ` of the
+/// process's auxiliary vector at start, which every process has, so it
+/// cannot fail as a read of `/proc/self/auxv` can (where `/proc` is not
+/// mounted, a 16 KiB kernel would have been taken for 4 KiB without a
+/// word). Apple silicon: 16 KiB, other Macs 4 KiB.
 ///
 /// [`Identity::write_unit`]: crate::format::Identity::write_unit
 pub fn page_size() -> u32 {
-    // Linux tells every process in its auxiliary vector: pairs of
-    // native words, the pair with key 6 (AT_PAGESZ) holding the size.
     #[cfg(target_os = "linux")]
-    if let Ok(auxv) = fs::read("/proc/self/auxv") {
-        const WORD: usize = std::mem::size_of::<usize>();
-        let (pairs, _) = auxv.as_chunks::<{ 2 * WORD }>();
-        for pair in pairs {
-            let (key, value) = pair.split_at(WORD);
-            let word = |bytes: &[u8]| {
-                let mut raw = [0u8; WORD];
-                raw.copy_from_slice(bytes);
-                usize::from_ne_bytes(raw)
-            };
-            if word(key) == 6 {
-                if let Ok(size) = u32::try_from(word(value)) {
-                    return size;
-                }
-            }
-        }
+    if let Ok(size) = u32::try_from(rustix::param::page_size()) {
+        return size;
     }
-    // Apple silicon has 16 KiB pages, other Macs 4 KiB.
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         16384
     } else {

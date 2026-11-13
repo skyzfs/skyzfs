@@ -82,11 +82,34 @@
 //! a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
 //! the page cache for that (point 1), where the log store checks its
-//! log against the stored position. Where
-//! a write rewrites more than its own block (a page or a file-system
-//! block above 4096 bytes), such a sector can be a neighbour's that a
-//! flush covered: the log store refuses such a file system, and this
-//! store does not look.
+//! log against the stored position.
+//!
+//! Where the page or the file system's block is larger than a block
+//! (16 KiB or 64 KiB pages on some arm64 kernels and on Apple silicon),
+//! a write rewrites the other blocks of its page with what the page
+//! cache holds of them: their durable content or a version written
+//! since, so point 3 still holds of them, and a block a flush covered
+//! and nothing wrote since is rewritten with the bytes it holds. The
+//! tests run at 16 KiB and 64 KiB pages on the simulated disk
+//! (`tests.rs`).
+//!
+//! **A stated limit there (design §10): a disk that garbles.** On a
+//! disk that leaves a sector neither old nor new at a power cut, the
+//! rewrite of a page exposes its other blocks, so a cut can damage a
+//! block a completed flush covered and nothing wrote since. In the
+//! store's power-cut test with such a disk it did so at 0 of 200 seeds
+//! at 4 KiB pages (pinned by
+//! `a_power_cut_leaves_what_the_volatile_cache_disk_promises`), and at
+//! 120 at 16 KiB and 113 at 64 KiB, measured in review;
+//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins only
+//! that some seed of the 200 does at each large page.
+//! At 4 KiB only a block being written is exposed. Nothing protects
+//! against it here: the log store's open, which the start goes through,
+//! refuses a page or a file-system block larger than the volume's write
+//! unit, but a volume created on the large-page host has a unit as
+//! large as its page, and the store saves no neighbours as the log
+//! store did. Direct I/O, which writes exactly the blocks it is given,
+//! is the candidate remedy (design §10).
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability
