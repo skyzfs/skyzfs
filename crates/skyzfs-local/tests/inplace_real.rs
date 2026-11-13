@@ -15,7 +15,10 @@
 //! design: on tmpfs the pages are the file and cannot be dropped, and
 //! through an overlay the count sees none. Where the temporary directory
 //! is on such a file system, each test is skipped and says why on
-//! standard error; set `TMPDIR` to run it.
+//! standard error (`--nocapture` shows it); set `TMPDIR` to run it.
+//! Where the variable `CI` is set, as GitHub sets it on every runner, a
+//! skip is a failure instead: a run there is expected to test, and a
+//! skip reads as a pass.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -50,11 +53,13 @@ fn config() -> StoreConfig {
 /// the daemon's do: the in-place store's start refuses without it.
 fn on_disk(path: &std::path::Path) -> Option<FsDir> {
     if let Err(why) = the_cache_can_be_dropped_and_counted(path) {
-        eprintln!(
-            "skipped: {}: {why}; the in-place store refuses to start there by design. Set \
-             TMPDIR to a directory whose file system's cache can be dropped and counted",
+        let why = format!(
+            "{}: {why}; the in-place store refuses to start there by design. Set TMPDIR to \
+             a directory whose file system's cache can be dropped and counted",
             path.display()
         );
+        assert!(!on_ci(), "not skipped where CI is set: {why}");
+        eprintln!("skipped: {why}");
         return None;
     }
     Some(
@@ -64,8 +69,14 @@ fn on_disk(path: &std::path::Path) -> Option<FsDir> {
     )
 }
 
+/// Whether this is a CI run (see the module documentation).
+fn on_ci() -> bool {
+    std::env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false")
+}
+
 /// Whether the directory's file system can do what the in-place store's
-/// start needs (see the module documentation), and if not, why not.
+/// start needs (see the module documentation), and if not, why not. A
+/// count that fails other than as unsupported fails the test.
 fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::FileExt;
     let probe = path.join("cache-probe");
@@ -86,13 +97,13 @@ fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), St
     drop(file);
     std::fs::remove_file(&probe).unwrap();
     match (seen, left) {
-        (Err(e), _) => Err(format!(
-            "the kernel cannot count a file's cached pages ({e})"
-        )),
+        (Err(e), _) if e.kind() == std::io::ErrorKind::Unsupported => {
+            Err("the kernel cannot count a file's cached pages (cachestat)".into())
+        }
+        (Err(e), _) | (Ok(_), Err(e)) => panic!("counting a file's cached pages failed: {e}"),
         (Ok(0), _) => Err("the count does not see a page just read (an overlay?)".into()),
         (Ok(_), Ok(0)) => Ok(()),
         (Ok(_), Ok(n)) => Err(format!("{n} pages stay cached after a drop (tmpfs?)")),
-        (Ok(_), Err(e)) => Err(format!("counting after the drop failed ({e})")),
     }
 }
 

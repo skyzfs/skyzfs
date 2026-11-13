@@ -11,7 +11,7 @@ use crate::format::Key;
 use crate::io::Dir;
 use crate::log::{LogError, MARKER_NAME};
 use crate::sim::{SeededCut, SimDisk};
-use crate::store::{OpenOptions, Store, StoreConfig, StoreError};
+use crate::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
 
 const BLOCK: u64 = 4096;
 /// What a test gives a wait: it waits for a sync to end, not for the
@@ -1109,6 +1109,28 @@ fn a_start_refuses_where_the_count_cannot_see_the_file() {
     disk.blind_cache_count(false);
     disk.keep_cache(false);
     assert!(enter(&disk, 0).is_ok());
+}
+
+/// The look follows the drop: a read before the drop starts the
+/// kernel's read-ahead, which the drop cannot take while it is still
+/// under I/O, and the start would refuse a healthy volume, as it did on
+/// a pool's label (the third look at M1.3s). A start that looks first
+/// is noticed: it refuses.
+#[test]
+fn the_look_comes_after_the_drop() {
+    for (mutants, serves) in [(0, true), (Mutants::LOOK_BEFORE_DROP, false)] {
+        let disk = created(17, 0);
+        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        disk.hold_read_ahead_of(HOME_NAME, 3);
+        let entered = store.into_in_place_with(None, Mutants(mutants));
+        match entered {
+            Ok(_) => assert!(serves, "{mutants:#x}: the start that looks first served"),
+            Err(IntoInPlaceError::CacheKept(why)) if !serves => {
+                assert!(why.contains("two drops"), "{why}");
+            }
+            Err(e) => panic!("{mutants:#x}: {e:?}"),
+        }
+    }
 }
 
 /// The drop is advisory and tried twice: a first drop that leaves

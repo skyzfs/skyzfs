@@ -317,6 +317,10 @@ struct Inode {
     /// The file's 4096-byte pages in the cache: read or written through
     /// it since the cache last lost them ([`File::cached_pages`]).
     pages: BTreeSet<u64>,
+    /// Pages a read-ahead is still bringing in
+    /// ([`SimDisk::hold_read_ahead_of`]): no drop takes them, and they
+    /// count.
+    under_io: BTreeSet<u64>,
 }
 
 /// The 4096-byte pages that `len` bytes at `offset` touch.
@@ -468,6 +472,9 @@ struct State {
     /// [`File::cached_pages`] answers 0 whatever the cache holds, as
     /// `cachestat` through a file of an overlay file system does.
     cache_count_blind: bool,
+    /// The file whose next read through the cache leaves pages after
+    /// it under I/O, and how many ([`SimDisk::hold_read_ahead_of`]).
+    read_ahead_of: Option<(String, u64)>,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
     stats: Stats,
@@ -616,6 +623,7 @@ impl SimDisk {
                 cache_kept: 0,
                 cache_counts: true,
                 cache_count_blind: false,
+                read_ahead_of: None,
                 write_unit: SECTOR,
                 stats: Stats::default(),
             })),
@@ -664,6 +672,7 @@ impl SimDisk {
                 continue;
             };
             inode.pages.clear();
+            inode.under_io.clear();
             for (index, sector) in &mut inode.sectors {
                 // The cache does not survive.
                 sector.cached = None;
@@ -845,6 +854,18 @@ impl SimDisk {
     /// of an overlay file system, whose pages are the file's below.
     pub fn blind_cache_count(&self, blind: bool) {
         self.lock().cache_count_blind = blind;
+    }
+
+    /// The next read through the cache of the file named `name` also
+    /// brings in the `pages` pages after it, as the kernel's read-ahead
+    /// does, and leaves them under I/O: no drop of the file's cache
+    /// ([`File::drop_cache`], [`SimDisk::drop_caches`]) takes them, and
+    /// [`File::cached_pages`] counts them, until a power cut. Where the
+    /// block read is a hole, the kernel answers it at once while its
+    /// read-ahead is still being read from the disk, and a drop leaves
+    /// pages under I/O.
+    pub fn hold_read_ahead_of(&self, name: &str, pages: u64) {
+        self.lock().read_ahead_of = Some((name.to_string(), pages));
     }
 
     /// Whether [`File::cached_pages`] answers (it does at first) or is
@@ -1306,10 +1327,21 @@ impl SimFile {
             }
             at += n as u64;
         }
-        // A read through the cache leaves its pages there.
+        // A read through the cache leaves its pages there, and its
+        // read-ahead's under I/O where one is held.
         if !device {
+            let ahead = match &state.read_ahead_of {
+                Some((name, pages)) if state.name_of(self.inode) == Some(name.as_str()) => {
+                    let pages = *pages;
+                    state.read_ahead_of = None;
+                    pages
+                }
+                _ => 0,
+            };
             if let Some(inode) = state.inodes.get_mut(&self.inode) {
-                inode.pages.extend(pages_of(offset, buf.len() as u64));
+                let read = pages_of(offset, buf.len() as u64);
+                inode.under_io.extend(read.end..read.end + ahead);
+                inode.pages.extend(read);
             }
         }
         Ok(())
@@ -1643,8 +1675,8 @@ impl File for SimFile {
     }
 
     /// The pages read or written through the cache since it last lost
-    /// them, and those that hold a version the disk has not (a failed
-    /// sync's, an unsynced one). With [`SimDisk::blind_cache_count`],
+    /// them, those a held read-ahead brings in, and those that hold a
+    /// version the disk has not (a failed sync's, an unsynced one). With [`SimDisk::blind_cache_count`],
     /// 0.
     fn cached_pages(&self) -> io::Result<u64> {
         let guard = self.disk.lock();
@@ -1657,6 +1689,7 @@ impl File for SimFile {
         }
         let inode = guard.inodes.get(&self.inode).ok_or_else(gone)?;
         let mut pages = inode.pages.clone();
+        pages.extend(&inode.under_io);
         pages.extend(
             inode
                 .sectors

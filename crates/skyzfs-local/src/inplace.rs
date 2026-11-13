@@ -157,6 +157,9 @@ impl Mutants {
     pub(crate) const CACHE_NOT_CHECKED: u32 = 1 << 8;
     /// The start does not show that the count sees the file.
     pub(crate) const CACHE_SIGHT_UNCHECKED: u32 = 1 << 9;
+    /// The start shows that the count sees the file before the drop,
+    /// not after it.
+    pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -488,6 +491,11 @@ impl<D: Dir> InPlace<D> {
     /// the first reads after a start, a take-over included, come from
     /// the disk.
     fn empty_cache(&mut self) -> Result<(), String> {
+        let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
+        let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
+        if look && look_first {
+            self.count_sees_the_file()?;
+        }
         let mut left = 0;
         for _ in 0..2 {
             if !self.mutants.has(Mutants::CACHE_NOT_DROPPED) {
@@ -510,7 +518,7 @@ impl<D: Dir> InPlace<D> {
                  map, lock or read the file"
             ));
         }
-        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+        if look && !look_first {
             self.count_sees_the_file()?;
         }
         Ok(())
@@ -522,6 +530,13 @@ impl<D: Dir> InPlace<D> {
     /// mapping, which holds no page (they are the file's below), and
     /// would read 0 whatever the cache holds; a file system without a
     /// page cache would read 0 too, and is refused the same way.
+    ///
+    /// The look reads block 0, which is a hole on every pool's volume
+    /// (the first 8 KiB of the label are never written), so it rests on
+    /// a read of a hole leaving a page in the cache. ext4 and XFS leave
+    /// one (the rigs' first start of a pool is on an image of holes
+    /// only); tmpfs leaves none, and a new volume there is refused here,
+    /// as it would be by the drop once it holds data.
     ///
     /// The look comes after the drop, and what it reads comes from the
     /// disk and may stay. Before the drop it made starts refuse: the
@@ -540,8 +555,9 @@ impl<D: Dir> InPlace<D> {
         if self.cached_pages()? == 0 {
             return Err(
                 "the file system's cache cannot be observed through this file: a block \
-                 just read through the cache counts 0 pages (as through an overlay file \
-                 system), so the start cannot show that the drop left none"
+                 just read through the cache counts 0 pages, so the start cannot show that \
+                 the drop left none (through an overlay file system, for example, the count \
+                 sees no page)"
                     .into(),
             );
         }
