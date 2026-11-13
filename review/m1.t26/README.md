@@ -63,3 +63,37 @@ observation are sound.
   the comparison shows nothing.
 - `rec` in the rig also prints to stdout; a harness that evals it shows
   every line twice.
+
+
+## Second look, at 36f3e7d
+
+Comment: https://github.com/skyzfs/skyzfs/pull/56#issuecomment-6852150598
+
+Both blocking findings are fixed; nothing new. It can merge once the
+daemon rig is green on this head (run 43420602078), which is the only
+run of the helper's new status file.
+
+- `G_PINS` has the pin; `test_every_pin_of_check_g_is_in_g_pins` fails
+  when it is taken out again (56 tests as it is). The stand-in's and
+  the log store's lines now pass the judge with exit 0.
+- A missing line is a FAIL. On the negative control's files the pin
+  says FAIL, and the judge on that run's results exits 1 with four
+  lines that differ. The workflow's header names the four.
+- The status file now holds "PID STATUS" and `serve_rc` takes only the
+  line of the pid in `$DIR.serve.pid`. Run here with the waiter's
+  program cut out of the helper: exit 3 gives 3; SIGKILL gives 137
+  after 5 ms; an earlier serve's line alone gives empty after 5.2 s;
+  that line and then this serve's gives 3; no file gives empty and
+  nothing on stderr. Nothing else in the repository reads the file.
+- The watcher looks 6000 times (600 s).
+
+For the lead: the guide (CLAUDE.md, "where three lines must differ")
+and the notes (impl-notes line 255) still say three for the negative
+control. I first told the lead the guide did not give a count, from the
+older copy in my context, and corrected it in the next message.
+
+## Traps met (second look)
+
+- The copy of CLAUDE.md a session starts with can be older than the
+  one on `zfs-topology`: grep the branch before saying what the guide
+  does or does not say.
