@@ -68,8 +68,9 @@
 //!
 //! # The failure note
 //!
-//! A volume whose log failed says so in a note in its directory under
-//! the run directory ([`Failure`]). The note says whether a client held
+//! A volume that failed (its log, or the in-place store's image) says
+//! so in a note in its directory under the run directory ([`Failure`]),
+//! with the reason ([`Reason`]). The note says whether a client held
 //! the volume's device at the failure; when that cannot be told, it
 //! says that one did.
 //!
@@ -254,7 +255,10 @@ pub enum AddError {
 /// Why a volume failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// The log failed while the volume was served.
+    /// The log store's log failed: while it served the volume, or in the
+    /// checkpoint that hands the volume to the in-place store at a start
+    /// (where nothing was served yet). The daemon's line at the failure
+    /// says which, so the reason itself does not claim "while served".
     LogFailed,
     /// A start found the log shorter than what was acknowledged.
     Short,
@@ -266,17 +270,24 @@ pub enum Reason {
     PositionUnreadable,
     /// A start could not read the note for the volume's device.
     DeviceNoteUnreadable,
+    /// A write or a sync of the volume's image failed: the in-place
+    /// store's failure, while it served or in its own sync at its start.
+    /// Both fail the volume (rule R11), and one reason covers both: what
+    /// a later start does with the volume is the same for either, and
+    /// the daemon's line at the failure says when it happened.
+    ImageFailed,
 }
 
 impl std::fmt::Display for Reason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Reason::LogFailed => "the log failed while the volume was served",
+            Reason::LogFailed => "the log store's log failed",
             Reason::Short => "the log is shorter than what was acknowledged",
             Reason::RecoveryFailed => "the recovery's sync failed",
             Reason::Marked => "the volume is marked as failed",
             Reason::PositionUnreadable => "the record of what was acknowledged cannot be read",
             Reason::DeviceNoteUnreadable => "the note for the volume's device cannot be read",
+            Reason::ImageFailed => "a write or sync of the volume's image failed",
         })
     }
 }
@@ -1398,8 +1409,10 @@ fn give_up_device<C: Control, R: Records>(
     }
 }
 
-/// The log failed while the volume was served: the volume gives up its
-/// attachment. The failure note first, with what the kernel says about
+/// The volume failed while it was served, or at the start of the
+/// in-place store, for `reason` (the store's: [`Reason::LogFailed`] or
+/// [`Reason::ImageFailed`]): the volume gives up its attachment. The
+/// failure note first, with what the kernel says about
 /// a client holding the device (unknown, when it cannot say), then the
 /// device's note, then the device, without waiting. The caller holds
 /// the volume's lock (the store does) and exits afterwards.
@@ -1413,8 +1426,16 @@ pub fn fail_serving<C: Control, R: Records>(
     records: &mut R,
     number: u32,
     identity: [u8; 16],
+    reason: Reason,
 ) -> (Failure, bool, Result<(), Undeleted>) {
-    fail_serving_with(control, records, number, identity, Mutants::default())
+    fail_serving_with(
+        control,
+        records,
+        number,
+        identity,
+        reason,
+        Mutants::default(),
+    )
 }
 
 /// The first step of [`fail_serving`]: the failure note. Returns what
@@ -1426,13 +1447,14 @@ pub fn note_failure<C: Control, R: Records>(
     records: &mut R,
     number: u32,
     identity: [u8; 16],
+    reason: Reason,
 ) -> (Failure, bool) {
     let failure = Failure {
         held: match control.client_holds(number) {
             Some(held) => held.into(),
             None => Held::Unknown,
         },
-        reason: Reason::LogFailed,
+        reason,
         identity,
     };
     let written = records.write_failure(&failure).is_ok();
@@ -1454,15 +1476,16 @@ pub(crate) fn fail_serving_with<C: Control, R: Records>(
     records: &mut R,
     number: u32,
     identity: [u8; 16],
+    reason: Reason,
     mutants: Mutants,
 ) -> (Failure, bool, Result<(), Undeleted>) {
     if !mutants.has(Mutants::FAILURE_NOTE_AFTER_DELETE) {
-        let (failure, written) = note_failure(control, records, number, identity);
+        let (failure, written) = note_failure(control, records, number, identity, reason);
         let deleted = delete(control, records, number, mutants);
         return (failure, written, deleted);
     }
     let deleted = delete(control, records, number, mutants);
-    let (failure, written) = note_failure(control, records, number, identity);
+    let (failure, written) = note_failure(control, records, number, identity, reason);
     (failure, written, deleted)
 }
 

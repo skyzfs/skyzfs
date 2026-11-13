@@ -340,7 +340,22 @@ fn the_failure_note_has_the_documented_layout() {
         codes.push(code);
     }
     codes.dedup();
-    assert_eq!(codes, [1, 2, 3, 4, 5, 6]);
+    assert_eq!(codes, [1, 2, 3, 4, 5, 6, 7]);
+    // The in-place store's reason is code 7, and the log store's keeps
+    // code 1: notes written before code 7 existed read as they did.
+    for (reason, code) in [(Reason::LogFailed, 1), (Reason::ImageFailed, 7)] {
+        let stored = StoredFailure {
+            failure: failure(false, reason),
+            ..stored
+        };
+        assert_eq!(encode_failure(&stored)[41], code, "{reason:?}");
+    }
+    // A code this version does not know is not a whole note: the start
+    // refuses the volume as failed while held, as a daemon older than
+    // code 7 does with a note of code 7.
+    let mut unknown = encode_failure(&stored);
+    unknown[41] = 8;
+    assert_eq!(decode_failure(&unknown), None);
 
     // Not known whether a client held the device: its own value.
     let unknown = StoredFailure {
@@ -394,7 +409,8 @@ fn the_failure_note_counts_in_its_boot_and_a_torn_one_is_an_error() {
         assert!(here.failure().is_err(), "{len} bytes were read as a note");
         assert!(later.failure().is_err(), "whatever the boot");
     }
-    for (at, value) in [(40, 3), (41, 0), (41, 7), (42, 1), (63, 1)] {
+    // A reason code this version does not know (8: 7 is the newest).
+    for (at, value) in [(40, 3), (41, 0), (41, 8), (42, 1), (63, 1)] {
         let mut changed = whole.clone();
         changed[at] = value;
         fs::write(here.failure_path(), changed).expect("write");
