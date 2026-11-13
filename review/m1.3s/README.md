@@ -251,3 +251,8 @@ start; the refusal no longer names the overlay as the cause.
   `lint`, the 24.04 replay job and the control rig are green. The daemon rig's
   two jobs were still running when the look was posted
   (https://github.com/skyzfs/skyzfs/pull/46#issuecomment-6845514957).
+- After the look was posted: the daemon rig at 6f98d25 (run 43372945297) is
+  green on both images; each artifact has 20 kills with writes in flight
+  (`pin_kill_under_load`), 28 kills in the conformance suite, and no line with
+  "stay in the cache", "could not empty the kernel" or "cannot be observed".
+  `coverage` is green. The comment was edited to say so; lead and coding told.
