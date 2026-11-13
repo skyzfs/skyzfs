@@ -1470,6 +1470,15 @@ skz_low_bytes() {
 skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
+    # The store is always named (M1.T20), so that the daemon's default
+    # can change under the benchmark: --store log unless the arguments
+    # name one. A build from before the option (TB_SKYZFSD_REF of an
+    # older commit) has only the log store and is served as it was.
+    if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
+        && "$SKYZFSD" help 2>&1 | grep -q -- '--store'; then
+        args=(--store log "${args[@]}")
+    fi
+    SKZ_SERVE_ARGS="${args[*]}"
     : > "$WORK/skyzfsd.ready"
     # A cgroup of the daemon's own, with or without a limit: its file
     # pages (the home image and the log, through the page cache) are
@@ -1607,7 +1616,7 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
-            log "skyzfsd: serve ${SKYZFSD_ARGS//,/ } -> $dev, pid $SKZ_PID, memory.max of its cgroup: $(cat "$SKZ_CGROUP/memory.max" 2>/dev/null || echo 'no cgroup') (cgroup of the pid: $(cut -d: -f3 "/proc/$SKZ_PID/cgroup" 2>/dev/null | tr '\n' ' '))"
+            log "skyzfsd: serve ${SKZ_SERVE_ARGS:-} -> $dev, pid $SKZ_PID, memory.max of its cgroup: $(cat "$SKZ_CGROUP/memory.max" 2>/dev/null || echo 'no cgroup') (cgroup of the pid: $(cut -d: -f3 "/proc/$SKZ_PID/cgroup" 2>/dev/null | tr '\n' ' '))"
             echo "mem_max ${SKYZFSD_MEM:-none}" >> "$OUT/$TOPO.skzinfo"
             # The exported image onto the served device, through the
             # daemon. A 1 MiB block of zeros is left out, so what the
@@ -1618,7 +1627,7 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             t0=$(( ($(date +%s%N) - t0) / 1000000 ))
             log "skyzfsd: the pool image ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated of $(( $(stat -c %s "$WORK/zfs-origin.img") >> 20 )) MiB) was copied onto $dev in $t0 ms, direct I/O, conv=sparse; the daemon counted $(skz_stat writes) writes, checkpoint_steps $(skz_stat checkpoint_steps), log_live $(skz_stat log_live)"
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
-            echo "serve_args ${SKYZFSD_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
+            echo "serve_args ${SKZ_SERVE_ARGS:-}" >> "$OUT/$TOPO.skzinfo"
             echo "build ${TB_SKYZFSD_REF:-not said}" >> "$OUT/$TOPO.skzinfo"
             # Every status of this row is read by skz_status, with this
             # row's own binary: a newer `status` prints an older status

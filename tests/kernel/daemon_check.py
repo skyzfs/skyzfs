@@ -298,7 +298,10 @@ OBSERVED = {
 # client does, so with it those cases are not exercised. A change in the
 # suite or in what the harness can do changes these on purpose.
 C_DECLARED = {'reference': 'PASS 1, WEAKER 15, NOT_EXERCISED 10',
-              'daemon': 'PASS 1, WEAKER 13, NOT_EXERCISED 12'}
+              'daemon': 'PASS 1, WEAKER 13, NOT_EXERCISED 12',
+              # The daemon with --store in-place (M1.T20): the same
+              # harness and the same refusal of a failed volume.
+              'daemon in-place': 'PASS 1, WEAKER 13, NOT_EXERCISED 12'}
 C_RESULTS = ('PASS', 'WEAKER', 'NOT_EXERCISED', 'FAIL')
 
 # Pins that cannot be taken with the daemon behind the device. None now:
@@ -356,6 +359,33 @@ def parse_checks(text):
 NOT_RUN = re.compile(r'\bnot run\b', re.IGNORECASE)
 
 
+# The daemon's stores (the rig's line `store`; the stand-in has none).
+STORES = ('log', 'in-place')
+
+# Pins and controls that rest on the log store, and so are not taken
+# with `--store in-place` (M1.3r, which has no log, no checkpoint step
+# and no record of what it applied): the rig writes NA and why, and NA
+# is expected of them there and nowhere else. Every other pin is held
+# to the same result whichever store serves.
+NOT_FOR_IN_PLACE = {
+    'pin_write_zeroes_through_a_checkpoint': 'write-zeroes through a checkpoint step and --refuse-holes: no step, '
+                                             'and the option is refused',
+    'pin_takeover_time_does_not_grow': 'bounds the replay of a log that grows from kill to kill: no log to replay '
+                                       '(the take-over times stay an observation)',
+    'pin_log_stays_below_high_mark': "the log's bound: no log",
+    'pin_kills_inside_steps_lose_nothing': 'kills at the --step-pause-* points of a checkpoint step: no step, and '
+                                           'the hooks are refused',
+    'pin_kill_under_load_applied_unacknowledged': 'counts writes a new server found applied and not acknowledged in '
+                                                  'the log: no such record',
+    'ctl_delay_before_apply': 'the control of pin_kill_under_load_applied_unacknowledged',
+    'ctl_recovered_log_too_short': 'a log whose recovery comes out short (--recover-short): no log',
+    'ctl_recovered_log_too_short_no_log_device': 'a log whose recovery comes out short (--recover-short): no log',
+    'pin_c_kill_with_applied_unacknowledged': 'as pin_kill_under_load_applied_unacknowledged, through the suite',
+    'pin_c_suite_with_low_marks': 'each log filled to its high mark, steps between the calls: no log, no step',
+    'ctl_f_starts_refused': 'the refused start of a short recovery: no log, so no start is refused',
+}
+
+
 # Pins the daemon cannot carry yet: expected WAITING on the daemon too.
 WAITS_FOR_THE_DAEMON = {
     'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
@@ -363,7 +393,17 @@ WAITS_FOR_THE_DAEMON = {
 }
 
 
-def judge(results, checks, impl='reference'):
+def store_of(results, impl):
+    """-> (the daemon's store or None, rig errors). The daemon's run must name one of STORES."""
+    if impl == 'reference':
+        return None, []
+    store = results.get('store')
+    if store not in STORES:
+        return None, [f"store: {store or 'no line'}; the daemon's run names its store, one of {', '.join(STORES)}"]
+    return store, []
+
+
+def judge(results, checks, impl='reference', store=None):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
     for name, (check, want, basis, claim, *on_stand_in) in EXPECTED.items():
@@ -378,13 +418,16 @@ def judge(results, checks, impl='reference'):
                 rows.append((name, want, 'not run', 'needs the reference server', KERNEL, claim))
                 continue
             basis = 'measured on the daemon' if basis in (SERVER, WAITING) else basis
+            if store == 'in-place' and name in NOT_FOR_IN_PLACE:
+                want, basis = 'NA', f'not taken with the in-place store: {NOT_FOR_IN_PLACE[name]}'
         value = results.get(name)
         if value is None:
             errors.append(f'{name}: no result')
             rows.append((name, want, 'missing', '', basis, claim))
             continue
         got, _, detail = value.partition(': ')
-        if got == 'ERROR' or got not in ('PASS', 'FAIL', 'WAITING') or (got == 'WAITING' and want != 'WAITING'):
+        if (got == 'ERROR' or got not in ('PASS', 'FAIL', 'WAITING', 'NA') or (got == 'WAITING' and want != 'WAITING')
+                or (got == 'NA' and want != 'NA')):
             errors.append(f'{name}: {value}')
         elif got != want:
             differs.append(f'{name}: expected {want}, got {got}: {detail}')
@@ -408,7 +451,7 @@ def judge(results, checks, impl='reference'):
         elif name.startswith(('pin_', 'ctl_')) and EXPECTED[name][0] not in checks:
             errors.append(f"{name}: a result of check {EXPECTED[name][0]}, which was not asked for: {results[name]}")
     if 'c' in checks:
-        judge_cases(results, rows, differs, errors, impl)
+        judge_cases(results, rows, differs, errors, impl if store != 'in-place' else 'daemon in-place')
     if not rows and not errors:
         errors.append('the run has no row to judge: nothing was checked')
     return rows, differs, errors
@@ -421,7 +464,7 @@ def tally(words):
 
 def judge_cases(results, rows, differs, errors, impl='reference'):
     """Check c: each case of the conformance suite against what the suite declares."""
-    basis = SERVER if impl == 'reference' else 'measured on the daemon'
+    basis = SERVER if impl == 'reference' else f'measured on the {impl}'
     run = results.get('c_run')
     if run is None or not run.startswith('ok'):
         errors.append(f"c_run: {run or 'the suite did not run'}")
@@ -450,7 +493,7 @@ def judge_cases(results, rows, differs, errors, impl='reference'):
 
 
 def render(results, rows, differs, errors, checks):
-    out = [f"## Daemon rig: {results.get('impl', 'unknown server')}", '',
+    out = [f"## Daemon rig: {results.get('impl', 'unknown server')}; store: {results.get('store', 'not said')}", '',
            f"Kernel {results.get('kernel', '?')}, {results.get('os', '?')}, ZFS {results.get('zfs', '?')}, "
            f"zed {results.get('zed', '?')}; {results.get('ublk_server', '')}. Checks run: {' '.join(sorted(checks))}.", '']
     if errors:
@@ -487,8 +530,9 @@ def main(argv=None):
         print(f'The rig left no results: {e}')
         return 2
     impl = 'reference' if results.get('impl', '').startswith('reference') else 'daemon'
-    rows, differs, errors = judge(results, checks, impl)
-    errors = asked_wrong + twice + errors
+    store, store_errors = store_of(results, impl)
+    rows, differs, errors = judge(results, checks, impl, store)
+    errors = asked_wrong + twice + store_errors + errors
     # A regular file under a ublk device's name in /dev: the rig (or a
     # tool it ran) created a device's path, and writes "to the device"
     # after that went to the file. Whatever the pins say, the run is not
