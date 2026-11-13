@@ -52,6 +52,9 @@ EXPECTED = {
     'pin_label_at_byte_0': ('a', 'PASS', KERNEL, 'the pool is on the bare device, its first label at byte 0 (§4.2)'),
     'pin_flush_counted': ('a', 'PASS', SERVER, 'flushes reach the server during zpool sync, by its own count (§4.2)'),
     'pin_unstored_zero_a': ('a', 'PASS', WAITING, 'no completion waits for the acknowledged position to be stored (status: unstored 0)'),
+    'pin_commands_failed_zero_a': ('a', 'PASS', WAITING,
+                                   'no command of the queues ended with a result other than OK or the driver\'s abort at '
+                                   'a stop: no commit or fetch the driver refused (status: commands_failed 0, M1.3aa)', 'WAITING'),
 
     'pin_overlapping_writes_apply_whole': ('a', 'PASS', SERVER,
                                            'two writes at one range in flight together apply whole: after both, '
@@ -64,6 +67,10 @@ EXPECTED = {
                                     'control: a server that applies only the first half of a write that follows '
                                     'another of the same range is caught by the same load, in every run'),
 
+    'pin_c_commands_failed_zero': ('c', 'PASS', WAITING,
+                                   'in the request logs of both passes of the suite, every instance of every volume, '
+                                   'the killed ones too: no command ended with a result other than OK or the driver\'s '
+                                   'abort (M1.3aa). A build without the ended lines is a rig error', 'WAITING'),
     'pin_c_max_request': ('c', 'PASS', SERVER,
                           'every device of the conformance suite takes requests of 1 MiB: without this, its '
                           'cases about a 1 MiB request and a discard across the device test only the block layer'),
@@ -185,6 +192,8 @@ EXPECTED = {
                                                   'f\'s longnolog)',
                                                   'WAITING'),
     'pin_unstored_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end'),
+    'pin_commands_failed_zero_b': ('b', 'PASS', WAITING, 'the same after the kills, read from the instance serving at the end',
+                                   'WAITING'),
     'pin_no_ublksrvd_entry_from_daemon': ('b', 'PASS', WAITING,
                                           'the daemon causes no file under /run/ublksrvd, the reference server\'s '
                                           'directory: after each of its serves there is no entry for the device\'s '
@@ -242,6 +251,7 @@ EXPECTED = {
                                    'server\'s; the kernel neither times it out nor reports an error (§4.2, a pin '
                                    'for M3)'),
     'pin_unstored_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes'),
+    'pin_commands_failed_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes', 'WAITING'),
     'ctl_hold_too_short': ('e', 'FAIL', SERVER, 'control: a request held 5 s is not accepted as one held for minutes'),
 
     # Check g (M1.T23): the disk under the home image fails for real (dm-error under an ext4 without a
@@ -283,6 +293,11 @@ EXPECTED = {
                                          'the reason the daemon gives, in the failed serve\'s line and in the refusal '
                                          'after it, at a start (g.3) and while served (g.1), is the home image\'s: "a '
                                          'write or sync of the volume\'s image failed" (M1.3x)', 'WAITING'),
+    'pin_data_journal_refused': ('g', 'PASS', WAITING,
+                                 'on ext4 mounted data=journal, whose statx reports no direct-I/O alignment for a '
+                                 'journalled file, serve exits 1 with the reason ("no direct I/O") and "the volume has '
+                                 'not failed", no ready line and the volume\'s files untouched; the same file system '
+                                 'mounted data=ordered serves the volume before and after (M1.3y, g.4)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
@@ -297,6 +312,11 @@ OBSERVED = {
                                                      'does a newly opened descriptor see it: fdatasync, then syncfs?'),
     'obs_g_reads_while_failing': ('g', 'the disk under the home image failing while served: how many reads failed '
                                        'to ZFS, and how many an application saw before the volume failed (§5.1)'),
+    'obs_g_data_journal_cache': ('g', 'g.4 (M1.T30): after each serve of the volume on ext4, what the page cache holds '
+                                      'of the home image once 16 MiB were written to the device with O_DIRECT and '
+                                      'synced (cachestat, in pages): none for a store that writes past the cache'),
+    'obs_g_chattr_journal': ('g', 'g.4 (M1.T30): what serve does when the image alone journals its data (chattr +j '
+                                  'on ext4 data=ordered), and if it serves, what the cache then holds of the image'),
     'obs_f_refused_start_long': ('f', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
                                               'by second for 300 s; what waited at the device; the transaction '
@@ -364,7 +384,7 @@ REFERENCE_ONLY = set()
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
 DAEMON_ONLY_OBSERVED = {'obs_c_low_steps', 'obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync',
-                        'obs_g_reads_while_failing',
+                        'obs_g_reads_while_failing', 'obs_g_data_journal_cache', 'obs_g_chattr_journal',
                         'obs_f_refused_start_long', 'obs_f_refused_start_longnolog',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
                         'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',

@@ -267,6 +267,25 @@ pin_unstored() {
         *) pin "unstored_zero_$1" FAIL "status says unstored $v" ;;
     esac
 }
+# check dir: `commands_failed` (the queues' commands that the driver
+# ended with a result other than OK and other than its abort at a stop:
+# a commit or a fetch it refused, M1.3aa) is 0 in a healthy run. Like
+# pin_unstored it reads the instance serving at the end of the check;
+# an empty dir is a check that ended with no server.
+pin_commands_failed() {
+    local v
+    if [ "$IMPL" = reference ]; then
+        pin "commands_failed_zero_$1" WAITING "the stand-in's server does not count the commands the driver ended"
+        return
+    fi
+    if [ -z "$2" ]; then pin "commands_failed_zero_$1" ERROR "no server at the end of the check"; return; fi
+    v=$(vol_stat "$SKYZFSD" "$2" commands_failed)
+    case $v in
+        0) pin "commands_failed_zero_$1" PASS "status says commands_failed 0 at the end of the check (commands_aborted $(vol_stat "$SKYZFSD" "$2" commands_aborted))" ;;
+        '') pin "commands_failed_zero_$1" ERROR "status gave no commands_failed (status_version '$(vol_stat "$SKYZFSD" "$2" status_version)'): a build before M1.3aa does not count them" ;;
+        *) pin "commands_failed_zero_$1" FAIL "status says commands_failed $v, the last with the result $(vol_stat "$SKYZFSD" "$2" last_command_failure)" ;;
+    esac
+}
 # impl dir key least [ms]: a counter of `status`, read again until it
 # is at least `least` or the limit has passed (2 s). The daemon writes
 # its status file on an interval, so a counter read at once after the
@@ -614,6 +633,7 @@ PY
         pin flush_counted FAIL "the server counted $((f1 - f0)) flushes during one zpool sync"
     fi
     pin_unstored a "$dir"
+    pin_commands_failed a "$dir"
     lim 120 zpool export "$pool"
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
@@ -1901,7 +1921,8 @@ check_b() {
             fi
         fi
     fi
-    if [ -n "$SERVE_PID" ]; then pin_unstored b "$dir"; else pin unstored_zero_b ERROR "no server at the end of the check"; fi
+    if [ -n "$SERVE_PID" ]; then pin_unstored b "$dir"; pin_commands_failed b "$dir"
+    else pin unstored_zero_b ERROR "no server at the end of the check"; pin_commands_failed b ""; fi
     [ "$(pool_state "$pool")" = ONLINE ] && lim 120 zpool export "$pool"
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
     # With the server stopped and the pool exported, detach deletes the
@@ -2344,7 +2365,7 @@ hold_test() {
     bad=$(klog_bad "$OUT/$name-dmesg.log")
     obs "${name}_kernel_log" "$(wc -l < "$OUT/$name-dmesg.log") lines while a request was held ${secs} s; lines with an I/O error, a request timed out or an abort: $bad; tasks reported blocked: $(klog_hung "$OUT/$name-dmesg.log")(the reader was pid ${rpid:-unknown})"
     HT_WHY="the read took $(( took / 1000 )) s at the reader and was held $(( (t1 - t0) / 1000 )) s by the server's own account (asked $secs s, wanted at least $want s, to within the polling, by both); the reader exited $rc; kernel log lines with an I/O error, a request timed out or an abort: $bad"
-    [ "$name" != e ] || pin_unstored e "$dir"
+    [ "$name" != e ] || { pin_unstored e "$dir"; pin_commands_failed e "$dir"; }
     kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     vol_detach "$SKYZFSD" "$dir"
     [ "$held" = 0 ] && [ $(( (t1 - t0) / 1000 )) -ge $((want - 5)) ] && [ "$took" -ge $(( (want - 1) * 1000 )) ] && [ "$rc" = 0 ] && [ "$bad" = 0 ]
@@ -2393,7 +2414,7 @@ c_evidence_start() {
 # the pass failed or the tool did not end; add the pass's part of the
 # line obs_c_evidence to C_EVIDENCE.
 c_evidence_end() {
-    local tag=$1 work=$2 rc=$3 f n_logs n_lines n_change n_udev kept
+    local tag=$1 work=$2 rc=$3 f n_logs n_lines n_change n_udev kept n_ab first
     blktrace_off
     kill "$C_MONITOR" 2>/dev/null; wait "$C_MONITOR" 2>/dev/null
     C_MONITOR=""
@@ -2405,6 +2426,18 @@ c_evidence_end() {
         case $f in *.requests.tsv) n_logs=$((n_logs + 1)) ;; esac
     done
     n_lines=$({ wc -l < "$OUT/$tag-ftrace.txt"; } 2>/dev/null || echo 0)
+    # The commands the driver ended, from every instance's request log
+    # of the pass (its `ended` lines, M1.3aa): -19 is the driver's abort
+    # at a stop; any other result is a command that took no effect.
+    if [ "$n_logs" -gt 0 ]; then
+        read -r f n_ab first <<< "$(awk -F'\t' '
+            $3 == "ended" && $8 == -19 { a++ }
+            $3 == "ended" && $8 != -19 { f++; if (!e) e = "tag " $4 ", " $5 ", result " $8 }
+            END { printf "%d %d %s", f, a, e }' "$OUT/$tag"-c*.requests.tsv)"
+        C_CMD_LOGS=$((C_CMD_LOGS + n_logs)); C_CMD_FAILED=$((C_CMD_FAILED + f)); C_CMD_ABORTED=$((C_CMD_ABORTED + n_ab))
+        [ -n "$C_CMD_FIRST" ] || [ -z "$first" ] || C_CMD_FIRST="pass $tag: $first"
+        C_CMD_PASSES+="$tag "
+    fi
     # Requests that udev's own processes issued to any device during the
     # pass: its probe of each new device (its "add" event), and with a
     # watch its read after a writable close. That read, requeued at a
@@ -2446,6 +2479,7 @@ check_c() {
     mkdir -p "$work"
     # The evidence beside the tool's trace (see c_evidence_end).
     C_EVIDENCE=""; C_RL=""; C_MISSING=""
+    C_CMD_LOGS=0; C_CMD_FAILED=0; C_CMD_ABORTED=0; C_CMD_FIRST=""; C_CMD_PASSES=""
     if has_request_log "$SKYZFSD"; then C_RL=1; C_EVIDENCE+="the server keeps a request log; "
     else C_EVIDENCE+="the server keeps no request log (its build has no --request-log); "; fi
     if c_watch_off; then C_EVIDENCE+="udev's watch on ublk devices off ($C_NOWATCH); "
@@ -2523,6 +2557,7 @@ check_c() {
         pin c_kill_with_applied_unacknowledged ERROR "not run: the pass without the delay did not end"
         C_EVIDENCE+="no pass with the delay. "
     fi
+    pin_c_commands_failed
     # The trace, and the request log of a server that keeps one, are
     # asked for on every run, and judged by what each pass left: a pass
     # without them is the rig's error, not a verdict.
@@ -2532,6 +2567,28 @@ check_c() {
         obs c_evidence "not run: ${C_MISSING}${C_EVIDENCE}"
     else
         obs c_evidence "$C_EVIDENCE"
+    fi
+}
+# No command of the suite's servers ended with a result other than OK
+# or the driver's abort, by the request logs of both passes: every
+# instance of every volume, the killed ones too, which pin_commands_failed
+# (one instance, read at the end) cannot see. A build from before
+# M1.3aa writes no `ended` line, so 0 there would say nothing: such a
+# build, known by its binary not holding the status word, is the rig's
+# error.
+pin_c_commands_failed() {
+    if [ "$IMPL" = reference ]; then
+        pin c_commands_failed_zero WAITING "the stand-in keeps no request log"
+    elif [ -z "$C_RL" ]; then
+        pin c_commands_failed_zero ERROR "the server keeps no request log (its build has no --request-log), so the commands the driver ended are not seen"
+    elif ! grep -qa commands_failed "$SKYZFSD"; then
+        pin c_commands_failed_zero ERROR "this build of the daemon predates M1.3aa: its request log has no ended lines"
+    elif [ "$C_CMD_LOGS" = 0 ]; then
+        pin c_commands_failed_zero ERROR "no pass left a request log"
+    elif [ "$C_CMD_FAILED" = 0 ]; then
+        pin c_commands_failed_zero PASS "in $C_CMD_LOGS request logs of the passes ${C_CMD_PASSES% }: no command ended with a result other than OK or the driver's abort ($C_CMD_ABORTED aborts, -19)"
+    else
+        pin c_commands_failed_zero FAIL "in $C_CMD_LOGS request logs of the passes ${C_CMD_PASSES% }: $C_CMD_FAILED commands ended with a result other than OK or the driver's abort, the first in $C_CMD_FIRST ($C_CMD_ABORTED aborts, -19)"
     fi
 }
 # The suite once more, with a server that applies a write and
@@ -2729,7 +2786,7 @@ G_DM=skzg; G_LOOP=""; G_SECTORS=""; G_MNT=$WORK/g-fs
 FW=$HERE/failed_write.py
 G_AT=$((64 << 20)); G_LEN=65536   # check g.2's range of the volume
 G_BOOT=$((1 << 20))               # in the 3.5 MiB ZFS leaves free after its first two labels
-G_PINS="start_serves_what_the_disk_holds failed_start_fails_volume failed_start_suspends_pool failed_start_volume_refused sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused failure_reason_is_the_images"
+G_PINS="start_serves_what_the_disk_holds failed_start_fails_volume failed_start_suspends_pool failed_start_volume_refused sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused failure_reason_is_the_images data_journal_refused"
 g_fs_up() {
     lim 30 truncate -s 16G "$WORK/g-disk.img" || return 1
     G_LOOP=$(lim 30 losetup -f --show "$WORK/g-disk.img") || return 1
@@ -2771,6 +2828,7 @@ check_g() {
         for p in $G_PINS; do pin "$p" ERROR "check g's file system was not set up: $(tail -n 2 "$OUT/g-fs.log" | tr '\n' ' ')"; done
         ctl g_old_content_after_good_sync ERROR "check g's file system was not set up"
         obs g_failed_sync "not run: no file system"; obs g_new_descriptor_after_failed_sync "not run: no file system"
+        obs g_data_journal_cache "not run: check g did not start"; obs g_chattr_journal "not run: check g did not start"
         return
     fi
     rec g_fs "ext4 without a journal, errors=continue, on /dev/mapper/$G_DM over $G_LOOP ($G_SECTORS sectors)"
@@ -2779,6 +2837,122 @@ check_g() {
     check_g_failed_start
     check_g_sync_fails_while_serving
     check_g_reason
+    check_g_data_journal
+}
+
+# g.4 (M1.3y): on ext4 mounted data=journal a file's data goes through
+# the journal, and statx reports no direct-I/O alignment for it, so the
+# in-place store, which does all its I/O direct, cannot serve the image
+# from the disk alone. The start must refuse the volume by reason, with
+# no ready line and its files untouched, and leave it unfailed: the same
+# file system mounted again data=ordered serves it. The control is the
+# serve on data=ordered before and after, and the mount's own options.
+# Its own file system on a loop file, not check g's failing one, which
+# has no journal. Two observations beside it (M1.T30): after each serve,
+# what the page cache holds of the home image once 16 MiB were written
+# to the device with O_DIRECT and synced (cachestat: a store that writes
+# past the cache leaves none; one served through it leaves the 4096
+# pages), and what serve does when the image alone journals its data
+# (chattr +j on data=ordered).
+GJ_MIB=16
+check_g_data_journal() {
+    local img=$WORK/g-journal.img mnt=$WORK/g-journal loop="" link=$WORK/vol-gj a="" bad="" rc said before after mode
+    local cache="" attr j=""
+    gj_mount() { # data mode -> 0 when mounted with it, as the mount table says
+        lim 30 mount -o "data=$1" "$loop" "$mnt" >> "$OUT/gj-setup.log" 2>&1 || return 1
+        mode=$(findmnt -n -o OPTIONS "$mnt" | tr ',' '\n' | sed -n 's/^data=//p')
+        # The kernel names data=ordered, its default, only in some versions.
+        [ "${mode:-ordered}" = "$1" ]
+    }
+    gj_cache() { # -> what the cache holds of the image after a write to the device
+        local w
+        lim 60 "$DD" if=/dev/urandom of="$BDEV" bs=1M count=$GJ_MIB seek=64 oflag=direct conv=fsync,nocreat status=none 2>> "$OUT/gj-setup.log"
+        w=$?
+        echo "$GJ_MIB MiB written to the device with O_DIRECT and synced (exit $w), then cachestat of the image: $(lim 30 python3 -I "$HERE/cachestat.py" "$mnt/vol/home.img" 2>&1 | head -n 1)"
+    }
+    gj_serves() { # what: serve, measure, stop; 0 when it served
+        local c
+        if serve_start "$SKYZFSD" "$link"; then
+            c=$(gj_cache)
+            a+="$1: served as $BDEV; "; cache+="$1: $c; "
+            kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
+            return 0
+        fi
+        a+="$1: NOT served (serve rc ${SERVE_RC:-none}: $(tail -n 1 "$link.serve.log" | cut -c1-200)); "
+        return 1
+    }
+    gj_end() {
+        [ -z "${SERVE_PID:-}" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
+        vol_detach "$SKYZFSD" "$link"
+        lim 60 umount "$mnt" > /dev/null 2>&1
+        [ -z "$loop" ] || lim 30 losetup -d "$loop" > /dev/null 2>&1
+    }
+    gj_obs() { # the two observations, whatever happened
+        obs g_data_journal_cache "${cache:-not run: no serve got as far as a write}"
+        obs g_chattr_journal "${j:-not run: the steps before it did not end}"
+    }
+    step "g.4: ext4 mounted data=journal under a volume"
+    : > "$OUT/gj-setup.log"
+    mkdir -p "$mnt"
+    if ! lim 30 truncate -s 16G "$img" >> "$OUT/gj-setup.log" 2>&1 \
+        || ! loop=$(lim 30 losetup -f --show "$img" 2>> "$OUT/gj-setup.log") \
+        || ! lim 300 mkfs.ext4 -q -F "$loop" >> "$OUT/gj-setup.log" 2>&1 || ! gj_mount ordered \
+        || ! mkdir -p "$mnt/vol" || ! ln -sfn "$mnt/vol" "$link"; then
+        pin data_journal_refused ERROR "ext4 with a journal was not made and mounted data=ordered: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
+        gj_end; gj_obs; return
+    fi
+    if ! vol_create "$SKYZFSD" "$link" >> "$OUT/gj-setup.log" 2>&1; then
+        pin data_journal_refused ERROR "the volume was not created on ext4 data=ordered: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
+        gj_end; gj_obs; return
+    fi
+    # 1: the control, before
+    gj_serves "on data=ordered, before" || bad+="the serve before; "
+    lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
+    if ! gj_mount journal; then
+        pin data_journal_refused ERROR "the file system was not mounted again data=journal (the mount table says data=${mode:-nothing}): $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
+        gj_end; gj_obs; return
+    fi
+    # 2: the refusal. A serve here is a FAIL, and what the cache then
+    # holds is the figure that says how it served.
+    before=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    serve_start "$SKYZFSD" "$link"; rc=$?
+    said=$(grep -m 1 'no direct I/O' "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)
+    if [ $rc = 0 ]; then
+        a+="on data=journal: SERVED as $BDEV; "; bad+="the volume was served on data=journal; "
+        cache+="on data=journal: $(gj_cache); "
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
+        after=$before   # the serve wrote to it: no digest to compare
+    else
+        a+="on data=journal: serve exit ${SERVE_RC:-none}, $([ -n "$said" ] && echo "said: $said" || echo "did NOT give the reason (its last line: $(tail -n 1 "$link.serve.log" | cut -c1-200))"); "
+        { [ $rc = 1 ] && [ "$SERVE_RC" = 1 ] && [ -n "$said" ] && [[ $said == *"has not failed"* ]]; } || bad+="the refusal; "
+        ! grep -q '^ready' "$link.ready" || bad+="a ready line; "
+        cache+="on data=journal: refused, nothing written; "
+        after=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+        a+="the volume's files after it: $([ "$before" = "$after" ] && echo 'as before' || echo 'CHANGED'); "
+    fi
+    [ "$before" = "$after" ] || bad+="the volume's files changed; "
+    lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
+    # 3: not failed: the control, after
+    if ! gj_mount ordered; then
+        pin data_journal_refused ERROR "the file system was not mounted again data=ordered: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200) ($a)"
+        gj_end; gj_obs; return
+    fi
+    gj_serves "on data=ordered again" || bad+="the serve after; "
+    if [ -z "$bad" ]; then pin data_journal_refused PASS "$a"; else pin data_journal_refused FAIL "wrong: $bad$a"; fi
+    # 4: the observation: the image alone journals its data.
+    if ! lim 30 chattr +j "$mnt/vol/home.img" >> "$OUT/gj-setup.log" 2>&1; then
+        j="chattr +j on the image was refused: $(tail -n 1 "$OUT/gj-setup.log" | cut -c1-200)"
+    else
+        attr=$(lsattr "$mnt/vol/home.img" 2>&1 | cut -d' ' -f1)
+        if serve_start "$SKYZFSD" "$link"; then
+            j="with chattr +j (lsattr $attr) on data=ordered: SERVED as $BDEV; $(gj_cache)"
+            kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
+        else
+            j="with chattr +j (lsattr $attr) on data=ordered: serve exit ${SERVE_RC:-none}: $(tail -n 1 "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)"
+        fi
+        lim 30 chattr -j "$mnt/vol/home.img" >> "$OUT/gj-setup.log" 2>&1 || j+="; chattr -j afterwards failed"
+    fi
+    gj_end; gj_obs
 }
 
 # The reason the daemon gives when the home image's write or sync fails,
@@ -2804,7 +2978,9 @@ check_g_reason() {
     # A place with no line is a FAIL: the daemon did not fail the volume
     # where it must (the start served, or the serve did not fail), or the
     # part did not run, and then its own pins are ERROR already.
-    if [ -n "$miss" ]; then
+    if [ "${G1_PREMISE:-}" = missed ]; then
+        pin failure_reason_is_the_images ERROR "g.1's premise did not happen (no write or flush reached the daemon), so there is no failure of g.1 to give a reason for; ${said:-nothing read}"
+    elif [ -n "$miss" ]; then
         pin failure_reason_is_the_images FAIL "no failure line of the daemon's at:$miss; ${said:-nothing read}"
     elif [ "$bad" = 0 ]; then
         pin failure_reason_is_the_images PASS "all four name the image: $said"
@@ -2948,7 +3124,7 @@ check_g_failed_start() {
 # how many failed to ZFS and whether the reader saw one before the
 # volume failed.
 check_g_sync_fails_while_serving() {
-    local name=g1 dir mark rc n at seen before watch
+    local name=g1 dir mark rc n at seen before watch rw w0 w1 f0 f1
     dir=$(g_dir g1)
     step "g: the disk fails while the volume is served"
     if ! FS_DIR=$dir fail_setup "$name" "$SKYZFSD"; then
@@ -2967,22 +3143,46 @@ check_g_sync_fails_while_serving() {
           sleep 0.1
       done ) &
     watch=$!
+    # The daemon's counters at the switch: a write or flush it finished
+    # afterwards, whatever its result, moves them.
+    w0=$(vol_stat "$SKYZFSD" "$dir" writes); f0=$(vol_stat "$SKYZFSD" "$dir" flushes)
     if ! g_table error; then
         for n in sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused; do pin "$n" ERROR "the table could not be changed"; done
         obs g_reads_while_failing "not run: the table could not be changed"
         kill "$watch" 2>/dev/null; fail_stop "$name"; return
     fi
+    # The premise made sure of: a write of the rig's own reaches the
+    # daemon after the switch, outside the pool's data (the boot area
+    # after the first two labels, as in g.2), with O_DIRECT and O_DSYNC,
+    # so that a write and a flush of the device reach the failing disk
+    # whatever ZFS does. In one run ZFS suspended the pool on its own
+    # reads before it wrote again (43521074465), and the daemon, whose
+    # failed reads fail their requests alone (§5.1), had nothing to fail
+    # on: a run without this write tests nothing of a failed sync.
+    lim 30 "$DD" if=/dev/urandom of="$BDEV" bs=64K count=1 seek=$((G_BOOT / 65536)) oflag=direct,dsync conv=nocreat status=none 2> "$OUT/g1-rig-write.err"; rc=$?
+    rw="the rig's own write of 64 KiB at byte $G_BOOT after the switch, O_DIRECT and O_DSYNC: exit $rc$([ "$rc" = 0 ] || echo ", $(tail -n 1 "$OUT/g1-rig-write.err" | cut -c1-120)")"
     if FS_READS=observed fail_wait "$name" 300 "$mark"; then pin sync_failure_suspends_pool PASS "$FS_WHY"; else pin sync_failure_suspends_pool FAIL "$FS_WHY"; fi
-    if serve_wait 60; then
+    # And at the suspension: from the status file, which a failed
+    # instance leaves behind.
+    w1=$(vol_stat "$SKYZFSD" "$dir" writes); f1=$(vol_stat "$SKYZFSD" "$dir" flushes)
+    rw+="; the daemon's writes ${w0:-?} then ${w1:-?}, flushes ${f0:-?} then ${f1:-?}, from the switch to the suspension"
+    G1_PREMISE=""
+    if [[ "$w0$w1$f0$f1" =~ ^[0-9]+$ ]] && { [ "$w1" -gt "$w0" ] || [ "$f1" -gt "$f0" ]; }; then G1_PREMISE=1; fi
+    if [ -z "$G1_PREMISE" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
+        # Still serving, and nothing that could fail was handed to it.
+        pin sync_failure_fails_volume ERROR "no write or flush reached the daemon after the disk failed, so there was nothing to fail the volume on: the premise of g.1 did not happen; $rw"
+        G1_PREMISE=missed
+    elif serve_wait 60; then
         n=$(grep -m 1 -o 'the volume failed while it was served[^;]*' "$dir.serve.log")
         if [ "$SERVE_RC" = "$EXIT_FAILED" ] && [ -n "$n" ]; then
-            pin sync_failure_fails_volume PASS "serve exited $SERVE_RC: $n"
+            pin sync_failure_fails_volume PASS "serve exited $SERVE_RC: $n; $rw"
         else
-            pin sync_failure_fails_volume FAIL "serve exited $SERVE_RC, wanted $EXIT_FAILED with \"the volume failed while it was served\": ${n:-no line of a failure in its log}"
+            pin sync_failure_fails_volume FAIL "serve exited $SERVE_RC, wanted $EXIT_FAILED with \"the volume failed while it was served\": ${n:-no line of a failure in its log}; $rw"
         fi
     else
-        pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended"
+        pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended; $rw"
     fi
+    if [ "$G1_PREMISE" = missed ]; then kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; fi
     # The watcher looks until the serve has ended: the daemon's line may
     # come after the pool suspended on its own reads.
     kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
@@ -2999,7 +3199,11 @@ check_g_sync_fails_while_serving() {
         pin sync_failed_volume_refused ERROR "the linear table could not be put back"
     else
         lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" > /dev/null 2> "$OUT/g1-again.err"; rc=$?
-        pin_is sync_failed_volume_refused "with the disk back, serve exited $rc, wanted $EXIT_REFUSED_FAILED: $(tail -n 1 "$OUT/g1-again.err" | cut -c1-300)" [ "$rc" = "$EXIT_REFUSED_FAILED" ]
+        if [ "$G1_PREMISE" = missed ]; then
+            pin sync_failed_volume_refused ERROR "g.1's premise did not happen (no write or flush reached the daemon), so the volume did not fail: serve exited $rc"
+        else
+            pin_is sync_failed_volume_refused "with the disk back, serve exited $rc, wanted $EXIT_REFUSED_FAILED: $(tail -n 1 "$OUT/g1-again.err" | cut -c1-300)" [ "$rc" = "$EXIT_REFUSED_FAILED" ]
+        fi
     fi
     fail_stop "$name"
 }
@@ -3063,7 +3267,7 @@ case $CHECKS in *" g "*)
     elif ! in_place; then
         for p in $G_PINS; do pin "$p" NA "check g is of the in-place store; the log store is frozen until it is removed"; done
         ctl g_old_content_after_good_sync NA "check g is of the in-place store"
-        for p in g_failed_sync g_new_descriptor_after_failed_sync g_reads_while_failing; do obs "$p" "not taken with the log store"; done
+        for p in g_failed_sync g_new_descriptor_after_failed_sync g_reads_while_failing g_data_journal_cache g_chattr_journal; do obs "$p" "not taken with the log store"; done
     else
         check_g
     fi ;;

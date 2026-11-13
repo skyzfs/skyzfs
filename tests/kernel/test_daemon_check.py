@@ -45,6 +45,10 @@ def as_expected(impl='reference'):
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: seen'
         r['pin_volume_on_larger_blocks'] = 'PASS: seen'
+        # The commands the driver ended (M1.3aa): counted by the daemon only.
+        for name in ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+                     'pin_c_commands_failed_zero'):
+            r[name] = 'PASS: seen'
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
@@ -161,6 +165,9 @@ class Cases(unittest.TestCase):
         r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: zeros'
         r['pin_volume_on_larger_blocks'] = 'PASS: refused and served'
+        for name in ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+                     'pin_c_commands_failed_zero'):
+            r[name] = 'PASS: commands_failed 0'
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
@@ -562,6 +569,48 @@ class CheckG(unittest.TestCase):
         r = in_place()
         del r['obs_g_failed_sync']
         self.assertTrue(any('obs_g_failed_sync' in e for e in dc.judge(r, ALL, impl='daemon', store='in-place')[2]))
+
+
+class CommandsFailed(unittest.TestCase):
+    """M1.3aa: no command of the queues ended with a result other than OK or the driver's abort."""
+    PINS = ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+            'pin_c_commands_failed_zero')
+
+    def daemon(self):
+        return in_place()
+
+    def test_a_command_the_driver_refused_differs(self):
+        for name in self.PINS:
+            r = self.daemon()
+            r[name] = 'FAIL: status says commands_failed 1, the last with the result -22'
+            _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+            self.assertEqual((len(differs), errors), (1, []), name)
+
+    def test_waiting_is_the_stand_ins_answer_only(self):
+        for name in self.PINS:
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
+            self.assertNotIn(name, dc.NOT_FOR_IN_PLACE, name)
+            r = self.daemon()
+            r[name] = 'WAITING: the stand-in keeps no request log'
+            _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+            self.assertEqual(len(errors), 1, name)
+
+    def test_a_build_without_the_count_is_a_rig_error(self):
+        r = self.daemon()
+        r['pin_c_commands_failed_zero'] = 'ERROR: this build of the daemon predates M1.3aa'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+        self.assertEqual((differs, len(errors)), ([], 1))
+
+    def test_the_rig_writes_each_pin(self):
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        for check in ('a', 'b', 'e'):
+            self.assertIn(f'pin_commands_failed {check} "$dir"', text, check)
+        # Check b with no server at its end still writes the line.
+        self.assertIn('pin_commands_failed b ""', text)
+        body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
+        self.assertEqual(body.count('    pin_c_commands_failed\n'), 1)
 
 
 class Main(unittest.TestCase):
