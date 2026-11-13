@@ -187,7 +187,10 @@ there, and the user decides when it merges.
   chooses whether a discarded range is zeroed or left as it was.
   The daemon jobs name the store: on a pull request `--store in-place`,
   by dispatch what the input `serve_args` says, and with no `--store`
-  there the log store, which is frozen until M1.3t removes it.
+  there the in-place store too (M1.3t-a): the rigs and the benchmark
+  name the store themselves and never rest on the daemon's default.
+  The log store is frozen until M1.3t removes it; only
+  `serve_args: --store log` still reaches it.
   Since M1.T14 the workflow also has the jobs "through skyzfsd", one
   per image (`tests/kernel/replay_daemon.py`): the cut is below the
   daemon, on the disk under its files, and each prefix is checked
@@ -221,8 +224,8 @@ there, and the user decides when it merges.
   of the workflow file on a testing branch runs the stand-in. By
   dispatch the input `server` chooses `daemon` (the default), `stand-in`
   or `both`, `checks` the checks (for example `c` alone), and `store`
-  the daemon's store: `in-place` (the default, and what a pull request
-  drives) or `log`. With the in-place store the lines about a log
+  the daemon's store, which is `in-place` only (the log store can no
+  longer be driven here). With the in-place store the lines about a log
   (checkpoints, the log's bound, the take-over time's growth) read NA,
   and the expected table names them; the judge
   `tests/kernel/daemon_check.py` fails on an NA that is not in it. The job
