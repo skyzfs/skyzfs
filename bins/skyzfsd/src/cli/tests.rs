@@ -373,6 +373,18 @@ fn the_in_place_store_does_direct_io_on_its_threads() {
     ));
 }
 
+/// The default and the bound of `--io-threads` are the store's own
+/// (`IoMode`), one constant each, so that the default can change after
+/// a benchmark round in one place; the help says them.
+#[test]
+fn the_io_threads_default_is_the_stores() {
+    use skyzfs_local::inplace::IoMode;
+    assert_eq!(usize::from(DEFAULT_IO_THREADS), IoMode::DEFAULT_THREADS);
+    assert_eq!(usize::from(MAX_IO_THREADS), IoMode::MAX_THREADS);
+    let said = format!("--io-threads N (1 to {MAX_IO_THREADS}, {DEFAULT_IO_THREADS} unless given)");
+    assert!(HELP.contains(&said), "the help does not say {said:?}");
+}
+
 /// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
 /// `--home-writeback-kib` the same, 0 unless given.
 #[test]

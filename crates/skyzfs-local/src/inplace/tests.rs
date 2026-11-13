@@ -1625,9 +1625,10 @@ fn shown_survives(seed: u64, mutants: u32, io: IoMode) -> Result<bool, String> {
 /// cache serves them: that is noticed. Direct I/O leaves no page there,
 /// so the same defect changes nothing with it; what the drop still
 /// guards under direct I/O is what a writer through the cache left
-/// just before the start: the log store's checkpoint that empties the
-/// log into the image when a volume enters the in-place store (M1.3t
-/// removes the log store).
+/// before the start: the log store's checkpoint that empties the log
+/// into the image when a volume enters the in-place store (M1.3t
+/// removes the log store), or a file system that serves direct
+/// requests through its cache (the drop stays for it).
 #[test]
 fn every_start_serves_only_what_the_disk_holds() {
     for io in [IoMode::default(), BUFFERED] {

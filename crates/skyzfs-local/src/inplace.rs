@@ -38,12 +38,16 @@
 //!    (see below). A write in flight when the process dies may be there
 //!    in part, block by block; the kernel issues it again (rule R9),
 //!    and the next instance makes it whole. Where the write went into a
-//!    hole or an unwritten extent, the file system records the block as
-//!    written when the write completes, in memory and in its journal;
-//!    by my reading of ext4 and XFS (not shown here) that record is
-//!    visible to the next instance at once and durable at the next
-//!    sync, so until then a power cut may leave the block reading as
-//!    zeros, its content before the write, which point 3 allows.
+//!    hole or an unwritten extent, a returned direct write is not
+//!    durable on its own: it survives a power cut only once the file
+//!    system has committed its record that the block is written. The
+//!    file system makes that record when the write completes, in memory
+//!    and in its journal; by my reading of ext4 and XFS (not shown here)
+//!    it is visible to the next instance at once and committed by the
+//!    next sync, so until then a power cut may leave the block reading
+//!    as zeros, its content before the write, which point 3 allows.
+//!    Whether to fill or preallocate the image is M1.3u's to settle;
+//!    `skyzfsd create --zero-fill` writes it whole.
 //! 2. **A flush** completes only when every operation acknowledged
 //!    before it was received is durable (rule R7).
 //! 3. **Power loss.** Every block that a completed flush covered holds
@@ -67,15 +71,15 @@
 //!    covers a start that acknowledges a failure as well as one after
 //!    an instance that died between a failed sync and its marker, whose
 //!    own sync succeeds because the kernel reports such an error once.
-//!    Under direct I/O the store's own reads do not consult the cache,
-//!    so such pages come only from a writer through it: the log store's
-//!    checkpoint at the entry into this store, which M1.3t removes with
-//!    the log store. The drop is kept while that writer exists, and
-//!    guards beyond it a file system that would serve a direct request
-//!    through its cache; by my reading (not shown), ext4 does so only
-//!    where it reports no direct I/O (`STATX_DIOALIGN`), which the start
-//!    refuses. Its cost: the first reads after every start, a take-over
-//!    included, come from the disk.
+//!    Under direct I/O the store's own reads and writes leave no page
+//!    in the cache, so such pages come only from a writer through it:
+//!    the log store's checkpoint at the entry into this store, which
+//!    M1.3t removes with the log store, and a file system that accepts
+//!    a direct request and serves it through its cache. The start's
+//!    check of direct I/O (`STATX_DIOALIGN`) cannot tell such a file
+//!    system apart (the design names ext4 with `data=journal`), so the
+//!    drop stays after M1.3t. Its cost: the first reads after every
+//!    start, a take-over included, come from the disk.
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
 //!    then on every request fails, reads included, and a later start
@@ -300,7 +304,10 @@ impl Default for IoMode {
 impl IoMode {
     /// The I/O threads unless asked otherwise: on machines whose syncs
     /// are slow, eight measured above one in every job that ran both
-    /// (design §9).
+    /// (design §9). That rests on slow-sync machines only, and the
+    /// default may change after a benchmark round on the merged daemon:
+    /// this is the one constant to change (the daemon's `--io-threads`
+    /// takes its default from it).
     pub const DEFAULT_THREADS: usize = 8;
     /// The most I/O threads the store takes.
     pub const MAX_THREADS: usize = 64;
@@ -721,9 +728,10 @@ impl<D: Dir> InPlace<D> {
     ///
     /// Under direct I/O the store's own reads and writes leave no page
     /// in the cache: what the drop still guards is what a writer through
-    /// the cache left just before this start, the log store's checkpoint
-    /// at the entry into this store (see the module documentation,
-    /// point 3). It is kept while that writer exists (M1.3t removes it).
+    /// the cache left before this start, the log store's checkpoint at
+    /// the entry into this store, or a file system that serves direct
+    /// requests through its cache (see the module documentation, point
+    /// 3). It stays after M1.3t removes the log store.
     fn empty_cache(&mut self) -> Result<(), String> {
         let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
         let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);

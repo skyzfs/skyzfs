@@ -60,6 +60,7 @@
 
 use std::path::PathBuf;
 
+use skyzfs_local::inplace::IoMode;
 use skyzfs_ublk::features::ASYNC_DELETE_OPTION;
 use std::process::ExitCode;
 
@@ -83,10 +84,22 @@ pub const DEFAULT_READERS: u16 = 4;
 
 /// The most reader threads `serve` takes.
 pub const MAX_READERS: u16 = 64;
-/// The most I/O threads `--io-threads` gives the in-place store.
-pub const MAX_IO_THREADS: u16 = 64;
-/// The in-place store's I/O threads unless `--io-threads` is given.
-pub const DEFAULT_IO_THREADS: u16 = 8;
+/// The most I/O threads `--io-threads` gives the in-place store: the
+/// store's own bound (`IoMode::MAX_THREADS`).
+pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
+/// The in-place store's I/O threads unless `--io-threads` is given: the
+/// store's own default (`IoMode::DEFAULT_THREADS`). It rests on the
+/// benchmark's slow-sync machines only and may change after a round on
+/// the merged daemon; it is that one constant, and the help says it
+/// (a test holds the two together).
+pub const DEFAULT_IO_THREADS: u16 = io_threads(IoMode::DEFAULT_THREADS);
+
+/// A count of the store's I/O threads as the command line takes it;
+/// one that does not fit does not compile.
+const fn io_threads(n: usize) -> u16 {
+    assert!(n <= u16::MAX as usize, "more I/O threads than a u16");
+    n as u16
+}
 
 /// The log's live size at which the daemon begins to checkpoint, in
 /// segments, unless told otherwise (design §5.1: two).
@@ -829,7 +842,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 ));
             }
             let threads = small("--io-threads", DEFAULT_IO_THREADS, MAX_IO_THREADS)?;
-            let in_place_io = skyzfs_local::inplace::IoMode::with_threads(usize::from(threads))
+            let in_place_io = IoMode::with_threads(usize::from(threads))
                 .ok_or(UsageError::Value("--io-threads".into(), "out of range"))?;
             Ok(Command::Serve(Serve {
                 dir,
