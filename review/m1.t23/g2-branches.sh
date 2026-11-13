@@ -1,5 +1,6 @@
 #!/bin/bash
-# g2-branches.sh RIG: walk the verdict branches of check g.2 with
+# g2-branches.sh RIG (updated for 8a3fb89, which reads the cache just
+# before the start): walk the verdict branches of check g.2 with
 # stand-ins for the kernel's part. Each case sets what the rig's write
 # said, what the disk held and what the start served, for g0 and for g2.
 set -uo pipefail
@@ -12,6 +13,7 @@ step() { :; }; rec() { :; }
 pin() { echo "    pin_$1 $2: ${3:0:110}"; }
 ctl() { echo "    ctl_$1 $2: ${3:0:110}"; }
 obs() { :; }
+g_dir() { echo "$G_MNT/vol-$1"; }
 vol_create() { echo created; }; vol_detach() { :; }; serve_wait() { :; }
 g_table() { [ "${TABLE_FAILS:-}" = "$1" ] && return 1; return 0; }
 serve_start() { [ "$START" = ok ]; }
@@ -24,6 +26,7 @@ fw() {
         "direct /dev/"*) case $CUR in g0) echo "$S0" ;; *) echo "$S2" ;; esac ;;
         "direct "*) case $2 in *g0*) echo "$D0" ;; *) echo "$D2" ;; esac ;;
         "sync "*) echo "fdatasync ok; syncfs ok" ;;
+        "read "*) case $2 in *g0*) echo "${C0:-byte 0x22}" ;; *) echo "${C2:-byte 0x22}" ;; esac ;;
     esac
 }
 # the function reads the device after the start; CUR says which volume
@@ -43,4 +46,7 @@ run "the disk got the write"                                 "$base $ok0 W2='fda
 run "the control's write does not sync"                      "$base W0='fdatasync EIO(5); cache reads byte 0x22' D0='byte 0x11' $ok2 S0='byte 0x11' S2='byte 0x11'"
 run "the range is in two extents"                            "EXTENT='the range is not in one extent' START=ok TABLE_FAILS= $ok0 $ok2 S0=x S2=x"
 run "the range table cannot be loaded"                       "EXTENT='100 128' START=ok TABLE_FAILS=range $ok0 $ok2 S0='byte 0x22' S2='byte 0x11'"
+run "the cache no longer reads the write just before the start" "$base $ok0 $ok2 S0='byte 0x22' S2='byte 0x11' C2='byte 0x11'"
+run "the control's cache does not read the write either"      "$base $ok0 $ok2 S0='byte 0x22' S2='byte 0x11' C0='byte 0x11'"
+run "the cache read fails just before the start"              "$base $ok0 $ok2 S0='byte 0x22' S2='byte 0x11' C2='read EIO(5)'"
 run "the linear table cannot be put back"                    "EXTENT='100 128' START=ok TABLE_FAILS=linear $ok0 $ok2 S0='byte 0x22' S2='byte 0x11'"

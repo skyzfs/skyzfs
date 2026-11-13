@@ -58,3 +58,28 @@ the failing file system.
 
 - arm64: no run of check g when the review was posted. Run 43398226980
   (the pull request's own) was in its rig step. A check-in is scheduled.
+
+
+## Second look, at 8a3fb89
+
+Comment: https://github.com/skyzfs/skyzfs/pull/54#issuecomment-6850030963
+
+The blocking finding (the `pin_is` line at 2789) is fixed: the pin is an
+`if` over the status and the line. Finding 2 (g.1's reads) is taken with
+`FS_READS=observed` and a new observation; finding 3 (the description's
+reason) is corrected. All four suggestions are taken or ruled on.
+
+New, not blocking: the watcher that timestamps the daemon's failure line
+is killed when `fail_wait` returns, i.e. when the pool suspends, so a
+line that arrives later is reported as "not seen in 300 s" while the pin
+may still find it. Pre-existing and small: `rerr` counts every non-empty
+line of the reader's log, not only the failure markers.
+
+`g2-branches.sh` is updated for this head (a `g_dir` stand-in and the
+new `fw read`): fifteen cases, all landing where they should, including
+three for the added premise (the cache no longer reads the write before
+the start, the same in the control, and a failed read).
+
+arm64 still owed: run 43398226980 was cancelled at 09:35:26 by the
+concurrency group when 8a3fb89 was pushed, so its arm64 artifact ends in
+check c. The run at this head is 43402554528.
