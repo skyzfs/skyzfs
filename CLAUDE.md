@@ -257,7 +257,13 @@ there, and the user decides when it merges.
   run `skyzfs-blkcheck --replay c-trace.tsv VOLUME`: it replays that
   volume's calls through the model with no kernel and prints the same
   violation, or shows that the rig's bookkeeping and not the server was
-  at fault.
+  at fault. A replay that agrees with the rig does not show the server
+  wrong: the trace holds the tool's calls, not the requests the server
+  was handed, and a call can return long after the kernel completed it
+  (in #58 a udev read held a page of a direct write's range across a
+  kill, and the tool took the write for reissued). Read the daemon's
+  request log (`serve --request-log`, test-hooks build) and the block
+  trace before calling such a failure a verdict.
 - **The control rig.** `skyzfs-control-rig.yml` runs on a pull request
   that touches `crates/skyzfs-ublk-sys/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-blk/`, `crates/skyzfs-local/`, `Cargo.lock`,
