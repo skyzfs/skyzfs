@@ -47,13 +47,18 @@ set -uo pipefail
 # The one place that names the fallback. Ubuntu serves amd64 and i386
 # from its archive and every other architecture (arm64 on the -arm
 # runner images) from a separate tree, ubuntu-ports: a fallback of the
-# wrong tree has no packages for the machine.
+# wrong tree has no packages for the machine. kernel.org's copy of
+# ubuntu-ports has no 26.04 (resolute): every Release was 404 (canary
+# run 43356802335), so the ports tree comes from another mirror, which
+# installed the project's packages on ubuntu-26.04-arm (run 43359493991).
+# The ubuntu-24.04-arm image takes its packages from ports.ubuntu.com
+# directly, with no mirror list, so there the script changes nothing.
 APT_FALLBACK_ARCH=${APT_FALLBACK_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}
 case $APT_FALLBACK_ARCH in
-    amd64|i386) fb_tree=ubuntu ;;
-    *) fb_tree=ubuntu-ports ;;
+    amd64|i386) fb_default=https://mirrors.edge.kernel.org/ubuntu/ ;;
+    *) fb_default=https://mirrors.ocf.berkeley.edu/ubuntu-ports/ ;;
 esac
-APT_FALLBACK_MIRROR=${APT_FALLBACK_MIRROR:-https://mirrors.edge.kernel.org/$fb_tree/}
+APT_FALLBACK_MIRROR=${APT_FALLBACK_MIRROR:-$fb_default}
 APT_MIRROR_LIST=${APT_MIRROR_LIST:-/etc/apt/apt-mirrors.txt}
 APT_SOURCES=${APT_SOURCES:-/etc/apt/sources.list /etc/apt/sources.list.d}
 # A name that resolves answers in milliseconds; a dead one takes

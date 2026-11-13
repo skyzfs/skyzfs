@@ -117,8 +117,8 @@ is "no option that switches a check off, no key" \
 fallback_for() { ( unset APT_FALLBACK_MIRROR; APT_FALLBACK_ARCH=$1; . "$S"; echo "$APT_FALLBACK_MIRROR" ); }
 is "amd64: the archive" "$(fallback_for amd64)" "https://mirrors.edge.kernel.org/ubuntu/"
 is "i386: the archive" "$(fallback_for i386)" "https://mirrors.edge.kernel.org/ubuntu/"
-is "arm64: the ports tree" "$(fallback_for arm64)" "https://mirrors.edge.kernel.org/ubuntu-ports/"
-is "riscv64: the ports tree" "$(fallback_for riscv64)" "https://mirrors.edge.kernel.org/ubuntu-ports/"
+is "arm64: the ports tree" "$(fallback_for arm64)" "https://mirrors.ocf.berkeley.edu/ubuntu-ports/"
+is "riscv64: the ports tree" "$(fallback_for riscv64)" "https://mirrors.ocf.berkeley.edu/ubuntu-ports/"
 # shellcheck source=tests/lib/apt-fallback.sh
 is "a fallback named by hand is kept" "$( ( APT_FALLBACK_MIRROR=https://m.example/ubuntu-ports/ APT_FALLBACK_ARCH=amd64; . "$S"; echo "$APT_FALLBACK_MIRROR" ) )" "https://m.example/ubuntu-ports/"
 
