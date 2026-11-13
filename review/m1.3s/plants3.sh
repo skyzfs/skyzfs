@@ -44,6 +44,26 @@ s7() { $P $M '                        let cx = &self.cx;
                     }
                     Some(_) => {}' && blk; }
 
+# s8 (for 4e0d26d and later): the look comes before the drop again, as at fe54d96.
+s8() { $P $I '        let mut left = 0;
+        for _ in 0..2 {' '        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+            self.count_sees_the_file()?;
+        }
+        let mut left = 0;
+        for _ in 0..2 {' && real && inplace; }
+# s9: the look moved back before the drop, and none after it: the order of fe54d96.
+# (s8 keeps the look after the drop too, and then every start finds block 0
+# already in the cache, left there by the start before: no read-ahead, no refusal.)
+s9() { $P $I '        let mut left = 0;
+        for _ in 0..2 {' '        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+            self.count_sees_the_file()?;
+        }
+        let mut left = 0;
+        for _ in 0..2 {' && $P $I '        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+            self.count_sees_the_file()?;
+        }
+        Ok(())' '        Ok(())' && real && inplace; }
+
 for name in "$@"; do
     echo "=== $name"
     $name

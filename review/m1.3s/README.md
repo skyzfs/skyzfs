@@ -196,3 +196,21 @@ dropped; C answered, one point left that does not block.**
   142 + 1 + 1; `skyzfsd` 53 + 3.
 - A trap met: a removal of `$d/*` in a loop is stopped by the harness's safety
   check; make new directories with `mktemp -d` instead.
+
+## The fix for E, at 4e0d26d (checked ahead of the fourth look)
+
+`git diff fe54d96 4e0d26d`: the look comes after the drop has counted 0; a new
+real-file test, `every_start_serves_where_the_image_begins_with_a_hole` (blocks
+2 and 3 flushed, 200 starts).
+
+- Tests: `skyzfs-local` 268 passed, 4 ignored, real files 4 + 3 + 12; the new
+  test 5 runs of 5.
+- Probe R: 1500 of 1500 served for data from block 2 and from block 1.
+- Plants: s1 to s4 as before. s9 (the order of fe54d96 exactly: the look
+  before the drop, none after) fails the new test; the 25 in-place tests on the
+  simulated disk pass, as they must (no read-ahead there).
+- s8 (a look before the drop and the look after kept as well) fails nothing:
+  the look after leaves blocks 0 to 3 in the cache, so the next start's early
+  read starts no read-ahead. The test's pin rests on each start ending with an
+  empty cache; dropping the image's cache from the test before each start would
+  make it hold for any read before the drop. Told coding, not blocking.
