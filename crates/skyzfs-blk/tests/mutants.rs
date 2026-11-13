@@ -168,6 +168,20 @@ fn catches_rejecting_reissued_requests() {
     );
 }
 
+/// R9: a target that completes a reissued mutation without applying it,
+/// where the lost daemon had put it in the log, is caught. The in-memory
+/// harness says that the suite reissues every request in flight itself
+/// (`InFlight::Reissued`); a harness that says completions can be held
+/// past a loss would let this pass, since through a kernel block device
+/// it cannot be told from a completion heard of late.
+#[test]
+fn catches_skipping_a_reissue_that_was_logged() {
+    caught(
+        Fault::SkipReissuedIfLogged,
+        &["reissue_after_kill_is_idempotent", FAILURES],
+    );
+}
+
 /// R10: a target that tears a write inside a sector across a power cut
 /// is caught by the cut-at-every-point case.
 #[test]

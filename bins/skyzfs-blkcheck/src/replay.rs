@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use skyzfs_blk::model::Model;
+use skyzfs_blk::model::{InFlight, Model};
 use skyzfs_blk::{BlkError, Buf, Completion, Geometry, Op, Request, RequestId};
 
 const BLOCK: usize = 4096;
@@ -175,7 +175,9 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
             }
             ("settled", _) => {
                 settling = false;
-                model.kill();
+                // The trace is a block device's: a call the lost daemon
+                // completed can return after the kill.
+                model.kill(InFlight::MayHaveCompleted);
                 "the model is told of the kill".to_string()
             }
             ("fail", _) => {

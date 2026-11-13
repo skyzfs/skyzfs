@@ -5,7 +5,7 @@
 //! produce, so the model must accept it.
 //!
 //! Rule numbers refer to the crate documentation of `skyzfs-blk`.
-use skyzfs_blk::model::Model;
+use skyzfs_blk::model::{InFlight, Model};
 use skyzfs_blk::*;
 
 const B: usize = BLOCK_USIZE;
@@ -114,7 +114,7 @@ fn c_power_cut() {
 fn d_kill() {
     let mut m = m();
     w(&mut m, 1, 0, 1, 1); // X in flight
-    m.kill();
+    m.kill(InFlight::Reissued);
     ack(&mut m, 1).unwrap(); // reissued X acked
     r(&mut m, 4, 0, 1);
     got(&mut m, 4, &[1]).unwrap();

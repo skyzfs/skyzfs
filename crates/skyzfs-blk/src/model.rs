@@ -37,9 +37,11 @@
 //!   precede it.
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
-//!   be in the log, so each may end up in the order twice (rule R9). One
-//!   that the lost daemon applied may also have been completed by it,
-//!   with the client learning so only after the restart: then it is not
+//!   be in the log, so each may end up in the order twice (rule R9).
+//!   Where the client can hear of a completion late
+//!   ([`InFlight::MayHaveCompleted`], a kernel block device), one that
+//!   the lost daemon applied may also have been completed by it, with
+//!   the client learning so only after the restart: then it is not
 //!   issued again, and the world keeps it where the lost daemon applied
 //!   it, while it was in flight. A read in flight is taken as issued
 //!   again (see [`Model::kill`]).
@@ -712,6 +714,27 @@ pub enum Violation {
     },
 }
 
+/// What a client can see, after a daemon loss, of a request that was in
+/// flight at it (rule R9): the argument of [`Model::kill`]. A harness
+/// says which applies through
+/// [`Harness::in_flight_at_a_loss`](crate::conformance::Harness::in_flight_at_a_loss).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InFlight {
+    /// Every request in flight is issued again after the loss, and its
+    /// completion comes from the new daemon. So it is where the client
+    /// itself submits every request in flight again to the new daemon,
+    /// as the suite's driver does. A correct target then applies each
+    /// one after the loss, whatever the lost daemon did with it.
+    Reissued,
+    /// A request in flight that the lost daemon applied may also have
+    /// been completed by it, with the client hearing of the completion
+    /// only after the loss; it is then not issued again. So it is
+    /// through a kernel block device, where a write's call can be held
+    /// past the loss after its request was completed (see
+    /// [`Model::kill`]).
+    MayHaveCompleted,
+}
+
 /// The reference model. See the [module documentation](self).
 #[derive(Debug, Clone)]
 pub struct Model {
@@ -1113,19 +1136,28 @@ impl Model {
     /// including whatever the lost daemon had applied of the requests in
     /// flight.
     ///
-    /// "In flight" is the client's view: a request whose completion the
-    /// client has not seen. The lost daemon may have applied such a
-    /// request and completed it, and the client hear of it only after
-    /// the restart. A block device does that: an `O_DIRECT` write's call
-    /// returns only once the device's cached pages in its range are
-    /// dropped, and a read that holds one of them and waits on the lost
-    /// daemon holds the call past the restart. Such a request is not
-    /// issued again. So each request in flight was either not applied by
-    /// the lost daemon and is issued again, or applied by it while it was
-    /// in flight, and then either completed or issued again too. The
-    /// model keeps all three, and no more: a request is never lost, and
-    /// the lost daemon cannot have applied it before something that was
-    /// acknowledged before it was submitted.
+    /// With [`InFlight::Reissued`], every request in flight is issued
+    /// again: the lost daemon may have applied it or not, and the new
+    /// one applies it after the loss, perhaps for the second time.
+    ///
+    /// With [`InFlight::MayHaveCompleted`], "in flight" is the client's
+    /// view: a request whose completion the client has not seen. The lost
+    /// daemon may have applied such a request and completed it, and the
+    /// client hear of it only after the restart. A block device does
+    /// that: an `O_DIRECT` write's call returns only once the device's
+    /// cached pages in its range are dropped, and a read that holds one
+    /// of them and waits on the lost daemon holds the call past the
+    /// restart. Such a request is not issued again. So each request in
+    /// flight was either not applied by the lost daemon and is issued
+    /// again, or applied by it while it was in flight, and then either
+    /// completed or issued again too. The model keeps all three, and no
+    /// more: a request is never lost, and the lost daemon cannot have
+    /// applied it before something that was acknowledged before it was
+    /// submitted. Where every request is issued again, the third outcome
+    /// is one no correct target produces, so it is allowed only here: it
+    /// accepts, on the blocks such a request shares with a write
+    /// acknowledged before the loss, what a target that dropped the
+    /// reissue would leave.
     ///
     /// The third outcome is for writes, write-zeroes and discards. A read
     /// in flight at a loss is still taken as issued again: what it
@@ -1147,7 +1179,7 @@ impl Model {
     /// when the volume is opened again ([`Model::reopened`]). Requests
     /// in flight are reissued all the same, and may be applied a second
     /// time by a daemon that has not reported the failure yet.
-    pub fn kill(&mut self) {
+    pub fn kill(&mut self, in_flight: InFlight) {
         if self.recovering.is_some() {
             return;
         }
@@ -1169,19 +1201,39 @@ impl Model {
             .collect();
         let mut next = BTreeSet::new();
         for world in &self.worlds {
-            // A request in flight that this world does not have waiting
-            // was placed already: a read showed it applied.
-            let shown: Vec<usize> = live
-                .iter()
-                .copied()
-                .filter(|op| !world.waiting.iter().any(|w| w.op == *op))
-                .collect();
-            for (mut world, mut applied) in world.settle_at_loss(&self.cx, now) {
+            // Each world as the lost daemon may have left it, with the
+            // requests in flight that it applied: only where one of them
+            // may also have been completed does that list matter.
+            let settled: Vec<(World, Vec<usize>)> = match in_flight {
+                InFlight::Reissued => world
+                    .settle(&self.cx, now, &|_| true, None)
+                    .into_iter()
+                    .map(|world| (world, Vec::new()))
+                    .collect(),
+                InFlight::MayHaveCompleted => {
+                    // A request in flight that this world does not have
+                    // waiting was placed already: a read showed it
+                    // applied.
+                    let shown: Vec<usize> = live
+                        .iter()
+                        .copied()
+                        .filter(|op| !world.waiting.iter().any(|w| w.op == *op))
+                        .collect();
+                    world
+                        .settle_at_loss(&self.cx, now)
+                        .into_iter()
+                        .map(|(world, mut applied)| {
+                            applied.extend(&shown);
+                            (world, applied)
+                        })
+                        .collect()
+                }
+            };
+            for (mut world, applied) in settled {
                 if healthy {
                     let all = vec![true; world.tail.len()];
                     world.absorb(&self.cx, &all);
                 }
-                applied.extend(&shown);
                 // A request in flight that the lost daemon did not apply
                 // is issued again and will be applied from now on. One
                 // that it applied may also have been completed by it:
@@ -1500,6 +1552,10 @@ mod tests {
             self.ack(id);
         }
     }
+
+    /// The two readings of a daemon loss, for the tests that hold in
+    /// both.
+    const BOTH: [InFlight; 2] = [InFlight::Reissued, InFlight::MayHaveCompleted];
 
     /// R3: a block never written reads as the base and as nothing else,
     /// on an empty volume and on a clone.
@@ -1987,32 +2043,36 @@ mod tests {
     /// cannot lose the acknowledged write either.
     #[test]
     fn kill_keeps_acknowledged_writes_and_in_flight_requests() {
-        let mut c = Client::new();
-        c.wrote(0, 1, 1);
-        let w2 = c.write(1, 1, 2);
-        c.model.kill();
-        assert_eq!(c.model.in_flight(), 1);
-        assert!(!c.would_see(0, &[0]));
-        c.ack(w2);
-        c.sees(0, &[1, 2]).unwrap();
-        c.model.kill();
-        c.model.power_cut();
-        assert!(c.model.readback().is_empty());
-        assert!(!c.would_see(0, &[0, 0]));
-        c.sees(0, &[1, 2]).unwrap();
+        for in_flight in BOTH {
+            let mut c = Client::new();
+            c.wrote(0, 1, 1);
+            let w2 = c.write(1, 1, 2);
+            c.model.kill(in_flight);
+            assert_eq!(c.model.in_flight(), 1);
+            assert!(!c.would_see(0, &[0]));
+            c.ack(w2);
+            c.sees(0, &[1, 2]).unwrap();
+            c.model.kill(in_flight);
+            c.model.power_cut();
+            assert!(c.model.readback().is_empty());
+            assert!(!c.would_see(0, &[0, 0]));
+            c.sees(0, &[1, 2]).unwrap();
+        }
     }
 
     /// R7, R9: a flush received by a new instance covers what the old one
     /// acknowledged.
     #[test]
     fn flush_after_kill_covers_the_earlier_instance() {
-        let mut c = Client::new();
-        c.wrote(0, 1, 1);
-        c.model.kill();
-        c.flush();
-        c.model.power_cut();
-        assert!(!c.would_see(0, &[0]));
-        c.sees(0, &[1]).unwrap();
+        for in_flight in BOTH {
+            let mut c = Client::new();
+            c.wrote(0, 1, 1);
+            c.model.kill(in_flight);
+            c.flush();
+            c.model.power_cut();
+            assert!(!c.would_see(0, &[0]));
+            c.sees(0, &[1]).unwrap();
+        }
     }
 
     /// R9: an operation in flight
@@ -2023,13 +2083,13 @@ mod tests {
     /// is W1, W2, W1 and the cut lost the last record.
     #[test]
     fn a_reissued_operation_may_be_in_the_order_twice() {
-        let history = |kill: bool| {
+        let history = |kill: Option<InFlight>| {
             let mut c = Client::new();
             let w1 = c.write(0, 2, 1);
             let w2 = c.write(1, 1, 2);
             c.ack(w2);
-            if kill {
-                c.model.kill();
+            if let Some(in_flight) = kill {
+                c.model.kill(in_flight);
             }
             c.ack(w1);
             c.sees(1, &[1]).unwrap();
@@ -2038,8 +2098,10 @@ mod tests {
         };
         // Under the volatile-cache disk the cut no longer tells the two
         // apart: a later write may survive an earlier one either way.
-        assert!(history(false));
-        assert!(history(true));
+        assert!(history(None));
+        for in_flight in BOTH {
+            assert!(history(Some(in_flight)), "{in_flight:?}");
+        }
     }
 
     /// R9: a request the client still waits for at a daemon loss may
@@ -2049,25 +2111,30 @@ mod tests {
     /// flight together, W2 is acknowledged before the loss and W1 after.
     /// The lost daemon applied W1 and then W2, and completed both: block
     /// 1 holds W2's data. A reissued W1 would have won it; the model
-    /// keeps both.
+    /// keeps both where completions can be held past the loss, and only
+    /// the reissue where every request in flight is issued again.
     #[test]
     fn a_request_in_flight_at_a_daemon_loss_may_have_completed_before_it() {
-        let history = |kill: bool, block_1: u8| {
+        let history = |kill: Option<InFlight>, block_1: u8| {
             let mut c = Client::new();
             let w1 = c.write(0, 2, 1);
             let w2 = c.write(1, 1, 2);
             c.ack(w2);
-            if kill {
-                c.model.kill();
+            if let Some(in_flight) = kill {
+                c.model.kill(in_flight);
             }
             c.ack(w1);
             c.would_see(0, &[1, block_1])
         };
-        for kill in [false, true] {
-            assert!(history(kill, 2), "W1 then W2, kill {kill}");
-            assert!(history(kill, 1), "W2 then W1, kill {kill}");
-            assert!(!history(kill, 0), "neither on block 1, kill {kill}");
+        for kill in [None, Some(InFlight::MayHaveCompleted)] {
+            assert!(history(kill, 2), "W1 then W2, {kill:?}");
+            assert!(history(kill, 1), "W2 then W1, {kill:?}");
+            assert!(!history(kill, 0), "neither on block 1, {kill:?}");
         }
+        let reissued = Some(InFlight::Reissued);
+        assert!(!history(reissued, 2), "W1 not issued again, {reissued:?}");
+        assert!(history(reissued, 1), "W1 issued again, {reissued:?}");
+        assert!(!history(reissued, 0), "neither on block 1, {reissued:?}");
     }
 
     /// R3, R9: as above, where a read in flight with W1 showed it
@@ -2076,16 +2143,23 @@ mod tests {
     /// again.
     #[test]
     fn a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss() {
-        let mut c = Client::new();
-        let w1 = c.write(0, 2, 1);
-        let w2 = c.write(1, 1, 2);
-        let r = c.read(0, 1);
-        c.returns(r, vec![1; B]).unwrap();
-        c.ack(w2);
-        c.model.kill();
-        c.ack(w1);
+        let started = |in_flight: InFlight| {
+            let mut c = Client::new();
+            let w1 = c.write(0, 2, 1);
+            let w2 = c.write(1, 1, 2);
+            let r = c.read(0, 1);
+            c.returns(r, vec![1; B]).unwrap();
+            c.ack(w2);
+            c.model.kill(in_flight);
+            c.ack(w1);
+            c
+        };
+        let c = started(InFlight::MayHaveCompleted);
         assert!(c.would_see(0, &[1, 1]), "W1 after W2, in flight together");
-        c.sees(0, &[1, 2]).unwrap();
+        assert!(c.would_see(0, &[1, 2]), "W1 completed by the lost daemon");
+        let c = started(InFlight::Reissued);
+        assert!(c.would_see(0, &[1, 1]), "W1 issued again");
+        assert!(!c.would_see(0, &[1, 2]), "W1 not issued again");
     }
 
     /// R9: a request that a read showed applied before a daemon loss, and
@@ -2097,23 +2171,34 @@ mod tests {
     /// may follow it without a reissue. Found in review.)
     #[test]
     fn a_request_a_read_showed_applied_may_be_applied_again_after_a_daemon_loss() {
-        let started = |kill: bool| {
+        let started = |kill: Option<InFlight>| {
             let mut c = Client::new();
             let w1 = c.write(0, 1, 1);
             let r = c.read(0, 1);
             c.returns(r, vec![1; B]).unwrap();
             c.wrote(0, 1, 2);
-            if kill {
-                c.model.kill();
+            if let Some(in_flight) = kill {
+                c.model.kill(in_flight);
             }
             c.ack(w1);
             c
         };
-        let c = started(true);
-        assert!(c.would_see(0, &[1]), "W1 issued again, after W2");
+        for in_flight in BOTH {
+            let c = started(Some(in_flight));
+            assert!(
+                c.would_see(0, &[1]),
+                "W1 issued again, after W2, {in_flight:?}"
+            );
+            assert!(
+                !c.would_see(0, &[0]),
+                "a block neither wrote, {in_flight:?}"
+            );
+        }
+        let c = started(Some(InFlight::MayHaveCompleted));
         assert!(c.would_see(0, &[2]), "W1 completed by the lost daemon");
-        assert!(!c.would_see(0, &[0]), "a block neither wrote");
-        let c = started(false);
+        let c = started(Some(InFlight::Reissued));
+        assert!(!c.would_see(0, &[2]), "W1 not issued again");
+        let c = started(None);
         assert!(!c.would_see(0, &[1]), "W1 after W2 with no daemon loss");
         assert!(c.would_see(0, &[2]));
     }
@@ -2126,33 +2211,35 @@ mod tests {
     /// submitted after that follows it.
     #[test]
     fn a_request_in_flight_at_a_daemon_loss_was_applied_while_in_flight_or_after() {
-        // Not lost.
-        let mut c = Client::new();
-        let w1 = c.write(0, 1, 1);
-        c.model.kill();
-        c.ack(w1);
-        assert!(!c.would_see(0, &[0]), "the request was lost");
-        // Not before what was acknowledged before it was submitted.
-        let mut c = Client::new();
-        c.wrote(1, 1, 2);
-        let w1 = c.write(0, 2, 1);
-        c.model.kill();
-        c.ack(w1);
-        assert!(
-            !c.would_see(1, &[2]),
-            "W1 went before a write acknowledged before it was submitted"
-        );
-        // Not after what was submitted once it was acknowledged.
-        let mut c = Client::new();
-        let w1 = c.write(0, 2, 1);
-        c.model.kill();
-        c.ack(w1);
-        c.wrote(1, 1, 3);
-        assert!(
-            !c.would_see(1, &[1]),
-            "W1 went after a write submitted once W1 was acknowledged"
-        );
-        c.sees(0, &[1, 3]).unwrap();
+        for in_flight in BOTH {
+            // Not lost.
+            let mut c = Client::new();
+            let w1 = c.write(0, 1, 1);
+            c.model.kill(in_flight);
+            c.ack(w1);
+            assert!(!c.would_see(0, &[0]), "the request was lost, {in_flight:?}");
+            // Not before what was acknowledged before it was submitted.
+            let mut c = Client::new();
+            c.wrote(1, 1, 2);
+            let w1 = c.write(0, 2, 1);
+            c.model.kill(in_flight);
+            c.ack(w1);
+            assert!(
+                !c.would_see(1, &[2]),
+                "W1 went before a write acknowledged before it was submitted, {in_flight:?}"
+            );
+            // Not after what was submitted once it was acknowledged.
+            let mut c = Client::new();
+            let w1 = c.write(0, 2, 1);
+            c.model.kill(in_flight);
+            c.ack(w1);
+            c.wrote(1, 1, 3);
+            assert!(
+                !c.would_see(1, &[1]),
+                "W1 went after a write submitted once W1 was acknowledged, {in_flight:?}"
+            );
+            c.sees(0, &[1, 3]).unwrap();
+        }
     }
 
     /// R3, R7: a read stays in flight across a write to its block and a
@@ -2343,7 +2430,7 @@ mod tests {
         c.model.log_failed();
         let f = c.submit(Op::Flush);
         c.done(f, Err(BlkError::Failed)).unwrap();
-        c.model.kill();
+        c.model.kill(InFlight::Reissued);
         c.model.reopened();
         assert_eq!(c.model.readback(), vec![0]);
         assert!(c.would_see(0, &[2]));
@@ -2363,7 +2450,7 @@ mod tests {
         c.ack(f);
         c.wrote(0, 1, 2);
         c.model.log_failed();
-        c.model.kill();
+        c.model.kill(InFlight::Reissued);
         c.model.reopened();
         assert_eq!(c.model.readback(), vec![0]);
         assert!(c.would_see(0, &[2]));
@@ -2468,7 +2555,7 @@ mod tests {
         c.wrote(0, 1, 2);
         let _in_flight = c.submit(Op::Flush);
         c.model.log_failed();
-        c.model.kill();
+        c.model.kill(InFlight::Reissued);
         c.model.reopened();
         c.sees(0, &[1]).unwrap();
     }
@@ -2490,7 +2577,7 @@ mod tests {
             c.ack(w2);
             c.model.log_failed();
             if kill {
-                c.model.kill();
+                c.model.kill(InFlight::Reissued);
             }
             c.ack(w1);
             c.sees(1, &[1]).unwrap();
@@ -2525,7 +2612,7 @@ mod tests {
         ));
         c.done(r, Err(BlkError::Failed)).unwrap();
         // Also after a daemon restart.
-        c.model.kill();
+        c.model.kill(InFlight::Reissued);
         let w = c.write(0, 1, 2);
         assert!(c.clone().done(w, Ok(())).is_err());
         c.done(w, Err(BlkError::Failed)).unwrap();

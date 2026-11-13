@@ -14,6 +14,7 @@ use rustix::fs::{fallocate, FallocateFlags};
 use skyzfs_blk::conformance::{
     cases, Capabilities, Capability, Config, Harness, HarnessError, Spec, Status,
 };
+use skyzfs_blk::model::InFlight;
 use skyzfs_blk::{
     Base, BlkError, BlockTarget, Completion, Geometry, Op, Request, RequestId, SubmitError,
     SubmitErrorKind, SIZE_UNIT,
@@ -628,6 +629,17 @@ impl Harness for DeviceHarness {
         let mut target = DeviceTarget::open(number, &path, self.depth)?;
         target.server = self.server_of(number);
         Ok(target)
+    }
+
+    /// The kernel issues nothing again for a request the lost server
+    /// completed, and the call of such a write can return after the
+    /// kill: a read of a page in its range, pending at the lost server,
+    /// holds the dropping of the device's cached pages that ends the
+    /// call. The result of a call still waiting at the kill is carried
+    /// across it and handed to the suite, so that completion may be the
+    /// lost server's.
+    fn in_flight_at_a_loss(&self) -> InFlight {
+        InFlight::MayHaveCompleted
     }
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
