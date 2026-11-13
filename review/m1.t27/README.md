@@ -76,3 +76,12 @@ Posted. a38a29d (the rig replaces any `--store` when run by hand) and
 2bd14b6 (a test that a checked course with failures still needs its
 control) are right; 24 tests pass. The hole jobs on this head were not
 read yet; one read is scheduled.
+
+## The hole jobs at 2bd14b6 (read 21:20 UTC)
+
+Both green; posted on the pull request. The third count is 0 on all
+four written-through courses, the control caught in all twelve, no
+violation, no rig error (so every block's data was found in the log),
+no torn block. On ext4 a course's length moves from run to run
+(zero-fill on 26.04: 87 prefixes here, 74 at d0efbfd; fallocate on
+24.04: 100 here, 119 there); on XFS it is the same in every run read.
