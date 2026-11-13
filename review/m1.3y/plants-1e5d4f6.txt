@@ -1,0 +1,15 @@
+m1 only two writes that overlap wait: a read neither waits nor is waited for
+    failed: ['inplace::tests::a_read_waits_for_an_overlapping_write_on_the_threads', 'inplace::tests::a_write_waits_for_an_overlapping_read_on_the_threads']; 1 binaries, 1 with a failure (52 s of tests)
+m2 a write does not wait for a read it overlaps
+    failed: ['inplace::tests::a_write_waits_for_an_overlapping_read_on_the_threads']; 1 binaries, 1 with a failure (52 s of tests)
+m3 a read does not wait for a write it overlaps
+    failed: ['inplace::tests::a_read_waits_for_an_overlapping_write_on_the_threads']; 1 binaries, 1 with a failure (51 s of tests)
+m4 a flush waits only when everything on the threads is a write
+    failed: ['inplace::tests::a_flush_waits_for_the_writes_on_the_threads']; 1 binaries, 1 with a failure (53 s of tests)
+p1 a thread that panics does not hand its job back
+    failed: ['inplace::tests::a_panicking_io_thread_fails_the_volume', 'inplace::tests::a_thread_death_ignored_is_noticed']; 1 binaries, 1 with a failure (58 s of tests)
+p2 after a failure the jobs no thread has begun are not taken back
+    failed: ['inplace::tests::a_panicking_io_thread_fails_the_volume']; 1 binaries, 1 with a failure (55 s of tests)
+p3 a thread's death is not counted
+    failed: ['inplace::tests::a_panicking_io_thread_fails_the_volume']; 1 binaries, 1 with a failure (57 s of tests)
+rc=0

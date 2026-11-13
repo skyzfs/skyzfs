@@ -146,3 +146,42 @@ three were issued to the disk under `home.img`.
   it. Here: ext4 accepts the open and says 512/512; tmpfs accepts the
   open and says nothing, so the in-place store's start refuses it by
   the alignment and not by the open.
+
+## The second look (head 1e5d4f6)
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/58#issuecomment-6857116836.
+Nothing new blocked. The author's answers held: the seven plants that
+no test caught, or that hung the run, each fail a test now and none
+hangs (`plants-1e5d4f6.txt`). The red rig job still blocked, its cause
+open.
+
+The head adds `skyzfsd serve --request-log PATH` (the test build only):
+a record of what the kernel handed the daemon and what it was given
+back. What its `sent` line means, from reading the wrapper, the binding
+and libublk 0.4.8 under it:
+
+- The commits go to the kernel at the start of the queue's wait and the
+  line is written when the wait returns. A `commit` followed by `sent`
+  was given to the kernel; a `commit` with no `sent` (a kill inside the
+  wait) may have been too. The module text at this head says the
+  opposite of the second half.
+- It is what the kernel was given, not what the driver took: the
+  binding keeps a command's completion only when its result is OK and
+  drops every other without a trace, so a refused commit is invisible.
+- At a stop (not a kill) the library drops commits once it has seen an
+  abort, and the record still counts them.
+- A request that arrives during the pump's last flush has no `recv`
+  line.
+- The record costs two to three `write` calls a request on the queue's
+  thread, so a failure rate with it is not the rate without it.
+
+Leaking the store in the tests' `drained` (when a request does not end
+within 10 s) is acceptable: the failing path only, and what is left is
+idle. Any other panic while I/O is held still makes the store's drop
+wait for ever; a guard that opens the simulated disk's gate when it
+drops would cover that.
+
+The first look's gates ran on rustc 1.97.0 (July), not the current
+stable: `rustup update stable` had not taken. The second look ran on
+1.100.0. Check `rustc --version` after the update, not before it.
