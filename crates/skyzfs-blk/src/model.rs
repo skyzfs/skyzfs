@@ -41,7 +41,8 @@
 //!   that the lost daemon applied may also have been completed by it,
 //!   with the client learning so only after the restart: then it is not
 //!   issued again, and the world keeps it where the lost daemon applied
-//!   it, while it was in flight.
+//!   it, while it was in flight. A read in flight is taken as issued
+//!   again (see [`Model::kill`]).
 //! - A **power cut** leaves what a disk with a volatile write cache may
 //!   (rule R10): each block holds its content at its last flush or a
 //!   version written since, chosen sector by sector. What it holds is
@@ -1126,6 +1127,16 @@ impl Model {
     /// the lost daemon cannot have applied it before something that was
     /// acknowledged before it was submitted.
     ///
+    /// The third outcome is for writes, write-zeroes and discards. A read
+    /// in flight at a loss is still taken as issued again: what it
+    /// returns was read after the restart. A read that the lost daemon
+    /// completed, with the client hearing of it late, could return what
+    /// its blocks held before a write acknowledged before the loss, and
+    /// the model would refuse that. Nothing found so far holds a direct
+    /// read's call on a block device once its request is complete (no
+    /// cached pages are dropped after a read, as after a write), so the
+    /// rig is not expected to meet it.
+    ///
     /// Not so once the log has failed (rule R11), whether or not the
     /// client has been told yet: the rule that an acknowledged operation
     /// survives the daemon holds for a log that has not failed. The
@@ -2073,8 +2084,38 @@ mod tests {
         c.ack(w2);
         c.model.kill();
         c.ack(w1);
-        assert!(c.would_see(0, &[1, 1]), "W1 issued again");
+        assert!(c.would_see(0, &[1, 1]), "W1 after W2, in flight together");
         c.sees(0, &[1, 2]).unwrap();
+    }
+
+    /// R9: a request that a read showed applied before a daemon loss, and
+    /// that the lost daemon had not completed, is issued again and
+    /// applied a second time, after the loss. So it may follow a write
+    /// that was submitted after that read and acknowledged before the
+    /// loss, which it could not do otherwise. (The test above does not
+    /// show this: there the other write was in flight with W1, and W1
+    /// may follow it without a reissue. Found in review.)
+    #[test]
+    fn a_request_a_read_showed_applied_may_be_applied_again_after_a_daemon_loss() {
+        let started = |kill: bool| {
+            let mut c = Client::new();
+            let w1 = c.write(0, 1, 1);
+            let r = c.read(0, 1);
+            c.returns(r, vec![1; B]).unwrap();
+            c.wrote(0, 1, 2);
+            if kill {
+                c.model.kill();
+            }
+            c.ack(w1);
+            c
+        };
+        let c = started(true);
+        assert!(c.would_see(0, &[1]), "W1 issued again, after W2");
+        assert!(c.would_see(0, &[2]), "W1 completed by the lost daemon");
+        assert!(!c.would_see(0, &[0]), "a block neither wrote");
+        let c = started(false);
+        assert!(!c.would_see(0, &[1]), "W1 after W2 with no daemon loss");
+        assert!(c.would_see(0, &[2]));
     }
 
     /// R8, R9: what a request in flight at a daemon loss is allowed is

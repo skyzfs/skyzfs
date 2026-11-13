@@ -171,7 +171,10 @@
 //!   daemon, holds the call past the restart. The kernel issues nothing
 //!   again for it. So the model lets an operation in flight at a daemon
 //!   loss, as the client sees it, have only its position before the
-//!   loss, where the lost daemon applied it while it was in flight.
+//!   loss, where the lost daemon applied it while it was in flight. That
+//!   is for writes, write-zeroes and discards: a read the client waits
+//!   for at a loss is taken as read after it, since nothing found so far
+//!   holds a direct read's call once its request is complete.
 //! - **When a failed volume starts failing** (rule R11). A store learns
 //!   of the failure from an append or an fsync, not at the instant it
 //!   happens, and a completion may be delivered after the failure for
