@@ -30,7 +30,8 @@
 # mark and no further, so that the caller's first write takes it over
 # the mark and the daemon steps between that call and the next; the
 # line "prefill N" says where the log was left. The mark is read from
-# --log-high in BLK_SERVE_ARGS, default 2 segments of 64 MiB). The lines
+# --log-high in BLK_SERVE_ARGS, default 2 segments of 64 MiB),
+# BLK_REQUEST_LOG (below). The lines
 # "steps N kill" and "steps N destroy" give each server's checkpoint
 # steps and its gate count (time_gate_count: turns in which a request
 # waited because a step had the log) when it goes.
@@ -52,6 +53,10 @@ SKYZFSD=${BLK_SKYZFSD:-$HERE/skyzfsd-ref.sh}
 BYTES=${BLK_BYTES:-$((64 << 20))}
 read -r -a SERVE_ARGS <<< "${BLK_SERVE_ARGS:-}"
 DIR=$WORK/c$N
+# BLK_REQUEST_LOG=1: every serve of the volume appends what the kernel
+# handed it to DIR.requests.tsv (--request-log, the daemon's test build
+# from M1.3y on).
+REQUEST_LOG=(); [ -z "${BLK_REQUEST_LOG:-}" ] || REQUEST_LOG=(--request-log "$DIR.requests.tsv")
 RUN=$WORK/run$N               # one run directory per volume, so that reopen can empty it
 T0=$(date +%s%N)
 
@@ -93,7 +98,7 @@ serve() {
         p=$!
         echo "$p" > "$0.serve.pid"
         wait "$p"
-        echo "$p $?" > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
+        echo "$p $?" > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" "${REQUEST_LOG[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
     for _ in $(seq 1 100); do [ -s "$DIR.serve.pid" ] && break; sleep 0.02; done
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
@@ -287,6 +292,10 @@ destroy)
     [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || steps_line destroy
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
+    # With the request log, where each file of the volume lay on the
+    # disk, so that the disk's requests in a trace can be read as the
+    # image's blocks.
+    [ -z "${BLK_REQUEST_LOG:-}" ] || find "$DIR" -type f -exec filefrag -v -b512 {} + > "$DIR.extents" 2>&1
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null
     DEV=""
     ;;

@@ -287,6 +287,10 @@ EXPECTED = {
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'obs_c_evidence': ('c', 'what check c kept beside the tool\'s trace (M1.T28): the server\'s request log, the '
+                            'kernel\'s block trace and the count of udev\'s change events of a ublk device for each '
+                            'pass, kept in the artifact when a case failed; without a block trace the run is the '
+                            'rig\'s error'),
     'obs_g_failed_sync': ('g', 'the premise of pin_start_serves_what_the_disk_holds: what fdatasync returned when '
                                 'the disk failed under the range, what the cache then read, and what the disk held'),
     'obs_g_new_descriptor_after_failed_sync': ('g', 'after one descriptor\'s fdatasync took the write-back error, '
