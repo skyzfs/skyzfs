@@ -38,6 +38,8 @@ enum Step {
     /// Commands the driver ended with a result other than OK, and
     /// nothing fetched.
     Unfetched(Vec<Unfetched>),
+    /// The same, and then the queue is down.
+    UnfetchedDown(Vec<Unfetched>),
     Nothing,
     Stop(Vec<Fetched>),
     Down,
@@ -86,6 +88,10 @@ impl Queue for FakeQueue {
                 Ok(Wake::Stop)
             }
             Some(Step::Down) => Err(QueueDown),
+            Some(Step::UnfetchedDown(more)) => {
+                unfetched.extend(more);
+                Err(QueueDown)
+            }
         }
     }
 
@@ -1394,4 +1400,32 @@ fn commands_the_driver_ended_otherwise_than_ok_are_counted() {
     let c = rig.pump.counters();
     assert_eq!((c.commands_failed, c.last_command_failure), (1, -5));
     assert!(rig.committed().is_empty());
+}
+
+/// A wait that ends with the queue down still hands on what the driver
+/// ended before: the pump counts it before it stops, in its normal turn
+/// and in the turn of a failed volume.
+#[test]
+fn commands_ended_by_a_wait_that_ends_down_are_counted() {
+    for failed in [false, true] {
+        let mut rig = Rig::new(0, 4, 4);
+        if failed {
+            rig.pump.fail();
+        }
+        rig.pump.queue().script.push_back(Step::UnfetchedDown(vec![
+            unfetched(0, Command::Commit, ABORTED),
+            unfetched(1, Command::Commit, -22),
+        ]));
+        assert_eq!(rig.pump.turn(), Some(Stopped::QueueDown), "failed {failed}");
+        let c = rig.pump.counters();
+        assert_eq!(
+            (
+                c.commands_aborted,
+                c.commands_failed,
+                c.last_command_failure
+            ),
+            (1, 1, -22),
+            "failed {failed}"
+        );
+    }
 }
