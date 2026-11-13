@@ -53,6 +53,10 @@ still reads zeros is the file system's uncommitted extent change
 ("on the disk, not in the file"): the loss the image's allocation
 decides (design §10), which a written-through image should not show.
 
+On an image written through at create the third count ("on the
+disk, not in the file") must be 0 (ON_DISK): above 0 is a verdict
+against the daemon. On the other kinds it is recorded.
+
 Negative control (EXPECTED): `withheld` moves the lower disk's writes
 that carry one flushed block's data to just after that flush's mark,
 as a disk would that acknowledged the flush over data it did not have.
@@ -79,6 +83,15 @@ SECTOR = 512
 HEADER = b'SKZ-HOLE-%06d\n'
 KINDS = ('sparse', 'fallocate', 'zero-fill')
 EXPECTED = {'withheld': 'caught'}
+# The third count per kind of image: the prefixes at which a returned
+# write's data was on the disk and the file showed zeros. On an image
+# written through at create it must be 0: design §4.2 rests on it (the
+# limit "goes when the image is written through"), so a prefix there is
+# a verdict against the daemon (the lead, #63). On the other kinds it is
+# the measurement, recorded and not judged. A kind not in this table is
+# the rig's error, so that a change in either direction is made here on
+# purpose.
+ON_DISK = {'sparse': 'observed', 'fallocate': 'observed', 'zero-fill': 0}
 
 
 def content(i):
@@ -450,15 +463,27 @@ def verdict(results):
     errors = [r for r in results if r.get('rig_error')]
     if errors:
         return 2, 'The rig failed. This is not a verdict on the daemon.'
+    unknown = sorted({r['kind'] for r in results if r['kind'] not in ON_DISK})
+    if unknown:
+        return 2, f'A kind of image not in the table ON_DISK: {", ".join(unknown)}. Not a verdict.'
     bad = [r for r in results if r['violations'] or r['failures']]
+    pinned = [r for r in results if ON_DISK[r['kind']] != 'observed'
+              and r.get('disk_zero_prefixes', 0) != ON_DISK[r['kind']]]
     if [r for r in results if not r.get('control')]:
         return 2, ('A course was checked without its negative control: nothing shows that the check catches a '
                    'flush over data the disk does not have. Not a verdict.')
     ctl = [r for r in results if r['control']['result'] != EXPECTED['withheld']]
     if ctl:
         return 2, 'A negative control was not caught: the check does not show what it should. Not a verdict.'
-    if bad:
-        return 1, 'A verdict against the daemon: a block read what it must not at a prefix, or a prefix did not start.'
+    if bad or pinned:
+        why = []
+        if bad:
+            why.append('a block read what it must not at a prefix, or a prefix did not start')
+        if pinned:
+            why.append('on an image written through at create, a returned write whose data was on the disk read as '
+                       'zeros (' + ', '.join(f"{r['fs']}: {r.get('disk_zero_prefixes', 0)} prefixes" for r in pinned)
+                       + '; design §4.2 says this does not happen)')
+        return 1, 'A verdict against the daemon: ' + '; '.join(why) + '.'
     return 0, 'Every checked prefix as design §4.1 allows.'
 
 
@@ -479,9 +504,11 @@ def summary(results, kernel='', daemon=''):
         span = (rng[1] - rng[0] + 1) if rng else '?'
         c = r.get('control') or {}
         ctl = c.get('result', 'not asked') if c else 'not asked'
+        pin = ON_DISK.get(r['kind'], 'not in the table')
+        pin = f'; must be {pin}' if pin != 'observed' else ''
         out.append(f"| {r['fs']} | {r['kind']} | {r['checked']} of {span} | {r['zero_prefixes']} "
                    f"({r['zero_blocks']} block reads) | {r.get('disk_zero_prefixes', 0)} "
-                   f"({r.get('disk_zero_blocks', 0)} block reads) | {len(r['violations'])} | {len(r['failures'])} "
+                   f"({r.get('disk_zero_blocks', 0)} block reads{pin}) | {len(r['violations'])} | {len(r['failures'])} "
                    f"| {ctl} | {r.get('seconds', '?')} |")
     out += ['', '"Zeros after return": prefixes at which a block whose write had returned, and that no '
                 'returned flush covered yet, read as zeros; design §4.1 allows it. dm-log-writes logs a '
@@ -489,7 +516,9 @@ def summary(results, kernel='', daemon=''):
                 'disk\'s volatile cache, which any image loses at such a cut. "On the disk, not in the file": '
                 'those at which the block\'s data was already in the prefix, so on the disk, and the block '
                 'still read zeros: the file system had not committed the change of its extent tree. That is '
-                'the measurement for the image\'s allocation (design §10). A violation: a block that read '
+                'the measurement for the image\'s allocation (design §10), recorded on a sparse or preallocated '
+                'image; on an image written through at create it must be 0 (design §4.2), and above 0 is a '
+                'verdict against the daemon. A violation: a block that read '
                 'neither zeros nor its write, sector by sector, or a block covered by a returned flush that did not read its '
                 'write.', '']
     for r in (r for r in results if not r.get('skipped')):

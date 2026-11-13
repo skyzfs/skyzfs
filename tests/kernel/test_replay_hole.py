@@ -193,6 +193,19 @@ class Verdict(unittest.TestCase):
         self.assertEqual(rh.verdict([result(control={'result': 'not caught', 'what': 'w'})])[0], 2)
         self.assertEqual(rh.verdict([result(control={'result': 'not built', 'what': 'w'})])[0], 2)
 
+    def test_on_a_written_through_image_the_third_count_is_pinned_at_zero(self):
+        self.assertEqual(rh.ON_DISK, {'sparse': 'observed', 'fallocate': 'observed', 'zero-fill': 0})
+        ok = result(kind='zero-fill', disk_zero_prefixes=0, disk_zero_blocks=0)
+        self.assertEqual(rh.verdict([result(), ok])[0], 0)
+        code, head = rh.verdict([result(), result(kind='zero-fill', disk_zero_prefixes=1, disk_zero_blocks=1)])
+        self.assertEqual(code, 1)
+        self.assertIn('written through at create', head)
+        self.assertIn('ext4: 1 prefixes', head)
+        # On the other kinds it is the measurement, whatever it is.
+        self.assertEqual(rh.verdict([result(kind='fallocate', disk_zero_prefixes=40)])[0], 0)
+        # A kind the table does not name is the rig's error.
+        self.assertEqual(rh.verdict([result(kind='preallocated')])[0], 2)
+
     def test_a_course_without_its_control_is_the_rigs_error(self):
         code, head = rh.verdict([result(), result(kind='fallocate', control=None)])
         self.assertEqual(code, 2)
@@ -213,7 +226,7 @@ class Verdict(unittest.TestCase):
                                  {'fs': 'xfs', 'kind': 'zero-fill', 'skipped': 'this daemon has no --zero-fill'}])
         self.assertEqual(code, 0)
         self.assertIn('| ext4 | sparse | 10 of 19 | 3 (4 block reads) | 2 (2 block reads) | 0 |', text)
-        self.assertIn('| ext4 | zero-fill | 10 of 19 | 0 (0 block reads) | 0 (0 block reads) | 0 |', text)
+        self.assertIn('| ext4 | zero-fill | 10 of 19 | 0 (0 block reads) | 0 (0 block reads; must be 0) | 0 |', text)
         self.assertIn('not run: this daemon has no --zero-fill', text)
 
 
