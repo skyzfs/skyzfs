@@ -1641,6 +1641,13 @@ skz_hang_evidence() { # dir why
     mkdir -p "$d"
     echo "$2" > "$d/why.txt"
     date -u +%FT%TZ >> "$d/why.txt"
+    # A daemon that is gone (an OOM kill in its cgroup, say) leaves the
+    # device waiting for a server, and the copy with it.
+    if [ -n "${SKZ_PID:-}" ] && kill -0 "$SKZ_PID" 2>/dev/null; then
+        echo "daemon pid $SKZ_PID: alive" >> "$d/why.txt"
+    else
+        echo "daemon pid ${SKZ_PID:-none}: GONE" >> "$d/why.txt"
+    fi
     skz_status > "$d/status.txt" 2>&1
     {
         echo "# every task in D state on the machine, and every thread of the daemon (pid ${SKZ_PID:-none}): pid tid comm state wchan, then its kernel stack"
@@ -1683,7 +1690,7 @@ skz_hang_evidence() { # dir why
     echo w > "${SKZ_SYSRQ:-/proc/sysrq-trigger}" 2>/dev/null || echo "sysrq w was refused" >> "$d/why.txt"
     sleep 1
     lim 20 dmesg > "$d/dmesg.txt" 2>&1
-    log "skyzfsd: evidence of the hang in $d ($(grep -c '^== ' "$d/threads.txt" 2>/dev/null || echo 0) threads; D state: $(grep -c ' D ' "$d/threads.txt" 2>/dev/null || echo 0))"
+    log "skyzfsd: evidence of the hang in $d: $(grep '^daemon pid' "$d/why.txt"); $(grep -c '^== ' "$d/threads.txt" 2>/dev/null || echo 0) threads, $(grep -c ' D ' "$d/threads.txt" 2>/dev/null || echo 0) in D state; cgroup: $(grep -E '^(oom|oom_kill|max) ' "$d/cgroup.txt" 2>/dev/null | tr '\n' ' ')"
 }
 # A new volume at SKZ_DIR of SIZE bytes, with TB_SKYZFSD_CREATE_ARGS. What
 # the create said on stderr is passed on and kept in $WORK/skyzfsd-create.err.

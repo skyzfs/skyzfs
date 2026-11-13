@@ -76,6 +76,10 @@ check "why.txt names the copy" 'grep -q "the copy" "$OUT/skyzfsd-hang/why.txt"'
 check "the daemon's threads are listed" 'grep -q "^== $$ " "$OUT/skyzfsd-hang/threads.txt"'
 check "the blocked tasks were asked for (sysrq w)" '[ "$(cat "$SKZ_SYSRQ")" = w ]'
 check "the status was read" 'grep -q "writes 7" "$OUT/skyzfsd-hang/status.txt"'
+check "it says the daemon is alive" 'grep -q "daemon pid $$: alive" "$OUT/skyzfsd-hang/why.txt"'
+setup; SKZ_COPY_LIMIT_S=1; echo 1 > "$tt/hang-on"; rm -f "$tt/dd-count"; SKZ_PID=999999999
+skz_copy /dev/null
+check "and that it is gone when it is" 'grep -q "daemon pid 999999999: GONE" "$OUT/skyzfsd-hang/why.txt"'
 
 # 3. Repeated, every copy ends.
 setup; SKZ_COPY_LIMIT_S=5; SKZ_COPY_REPEAT=3; rm -f "$tt/hang-on" "$tt/dd-count"
