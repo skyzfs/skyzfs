@@ -75,6 +75,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
 | M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
 | M1.T14 | skyzfs/skyzfs#39 | The power-cut replay rig through `skyzfsd`, the cut below the daemon | The local store: the power-cut replay below the daemon |
+| M1.T14a | skyzfs/skyzfs#42 | The replay rig: limits on the record phase, a control for a daemon that stops answering | The local store: the power-cut replay below the daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
@@ -333,7 +334,7 @@ The replay rig of M1.T2 records the writes of the pool's own device, which fits 
 - **The deep checks**, a scrub in a writable import and the every-copy check, run at the first and the last checked prefix of each transaction group. `zdb -e -bcc` runs on the image at the end of the log.
 - **Two budgets.** A pull request checks the marks and every flush boundary and no prefix between two flushes. The full budget, by dispatch, checks every record prefix. The daemon's log is written back before the flush, so a group's first prefix can lie between two flushes, and design §9 says every prefix: the summary says in one line how many of the prefixes were checked, and says "criterion shown" only for a full run with all of them, the ends deep-checked and exit 0. The lead ruled so when the review asked what the criterion means.
 - **Controls.** `withheld` holds the lower disk's writes between two fsync marks back until after the second mark, and must be caught by the fsynced files. The reference rig's other controls pick pool blocks in a record of the pool's own device and cannot be built on a record of the volume's file system. A control with the daemon's hook `--recover-short` was planned and withdrawn: the hook moves only the end that is compared with the acknowledged position, and after a reboot there is none, so it plants nothing. A hook that ends the recovery itself early would be a control; the daemon has none yet.
-- **A read that gets no answer.** Each read of the device has a limit. At the limit the rig kills the daemon and deletes the device before it waits for the reader, because a reader with direct I/O cannot be killed while its read is queued and a device with user recovery queues reads while it has no server. This is shown with stand-in processes, not on a device whose daemon stopped answering. The record phase has no such limit yet.
+- **A daemon that stops answering.** Each read of the device has a limit. At the limit the rig kills the daemon and deletes the device before it waits for the reader, because a reader with direct I/O cannot be killed while its read is queued and a device with user recovery queues reads while it has no server. Since M1.T14a a control shows it on a real device: `stuck` stops the daemon with SIGSTOP once it is ready, and the read must end at its limit of 20 s; it was caught on both images. The record phase's pool commands have limits as well, and a fill that does not fit the pool is refused before the run.
 - **Exit codes.** 0 passed; 1 a verdict against the daemon; 2 the rig's own error.
 
 What the runs showed[^t14runs]:
@@ -370,7 +371,7 @@ What the runs showed[^t14runs]:
 - One run per image, one workload, the whole-pool layout.
 - The cut is a prefix of the lower disk's recorded writes. A disk that loses or reorders writes it never flushed in another order than it received them is not modelled; the reference rig's `reorder` control has no counterpart here.
 - The lower disk is a loop file behind dm-log-writes on a runner, not a flash device.
-- One start in the 24.04 run took 1842 ms to recover, against 300 ms at most elsewhere; it passed, and nothing was looked into.
+- One start in the 24.04 run took 1842 ms to recover a log that its neighbours recovered in about 200 ms (73 MiB, 956 operations), and 71 of that machine's 669 starts went over 300 ms against none of 671 on 26.04. The daemon's own breakdown puts the time in recovery, which reads the log from xfs on a loop file. So it is the machine at that moment, not the log's size; one run cannot say more.
 
 ### The throughput criterion (design §9)
 
@@ -571,7 +572,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 - M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42, open): a limit on the record phase and a control that stops the daemon once it is ready.
+- Whether the write log is needed (the owner's question, 2026-11-12): an in-place store is built as an experiment (M1.3r, skyzfs/skyzfs#43, open) and is being measured (M1.T17 for the log store's rows on the current daemon, M1.T18 for the in-place store). The contract's rule R10, a prefix of the daemon's order after a power cut, is what requires a journal; ZFS asks less of a disk.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -636,6 +637,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The benchmark's system-call trace and profile (M1.T15, skyzfs/skyzfs#40); three looks by the review session and two findings by Codex | Blocking at the first look: `summarize` failed with a syntax error at the head, so no summary rendered; fixed, and a unit test now compiles the script's embedded Python and runs it. The review recounted the profile's raw samples and got the same table; with the checks around a copy counted as copy, copies are 6% of the pump's kernel samples and not 4%, and the conclusion stands on its one row. Codex: stale trace files of an earlier row, and a trace longer than the window; both fixed. |
 | 2026-11-12 | The power-cut replay through `skyzfsd` (M1.T14, skyzfs/skyzfs#39); six looks by the review session and four findings by Codex | Blocking at the first look, both in the split of exit codes: a wrong exit 0, and a verdict that had been reached reported as the rig's error; fixed. A question of what the criterion means, ruled by the lead: every record prefix, so the full budget checks them all and only such a run shows the criterion. Found at the fourth look and fixed, not blocking: a read of the device that gets no answer would have hung the rig to the job's limit with no prefix named. Left for a follow-up: the record phase has no time limit, a fill that does not fit is blamed on the daemon, two test gaps. |
 | 2026-11-12 | The benchmark's barriers input (M1.T16, skyzfs/skyzfs#41); four looks by the review session, nothing from Codex | Blocking: on a disk that declares `write through` a barriers-on job passed while no flush reached the disk and nothing said why; the step now reads the disk's write cache and stops there. The review's count over the day's runs corrected the notes: the runners split by work disk, not by image. Not run on a runner at the merged head. |
+| 2026-11-12 | The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42); three looks by the review session and one finding by Codex | Can merge; nothing blocking. Fixed on the way: a command that could not start was blamed on the daemon, and the `stuck` row did not show that the limit ended the read. The control closes what the review of M1.T14 could only read in the kernel's source. Kept: two pool commands without a limit. |
 
 ## References
 
