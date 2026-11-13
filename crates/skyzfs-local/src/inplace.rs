@@ -96,11 +96,13 @@
 //! **A stated limit there (design §10): a disk that garbles.** On a
 //! disk that leaves a sector neither old nor new at a power cut, the
 //! rewrite of a page exposes its other blocks, so a cut can damage a
-//! block a completed flush covered and nothing wrote since: in the
-//! store's power-cut test with such a disk it did at 0 of 200 seeds at
-//! 4 KiB pages, 120 at 16 KiB and 113 at 64 KiB (the review's count;
+//! block a completed flush covered and nothing wrote since. In the
+//! store's power-cut test with such a disk it did so at 0 of 200 seeds
+//! at 4 KiB pages (pinned by
+//! `a_power_cut_leaves_what_the_volatile_cache_disk_promises`), and at
+//! 120 at 16 KiB and 113 at 64 KiB, measured in review;
 //! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins only
-//! that some seed of the 200 does at each large page).
+//! that some seed of the 200 does at each large page.
 //! At 4 KiB only a block being written is exposed. Nothing protects
 //! against it here: the log store's open, which the start goes through,
 //! refuses a page or a file-system block larger than the volume's write
