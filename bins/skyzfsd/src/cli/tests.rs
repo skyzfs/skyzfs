@@ -222,6 +222,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         writeback_kib: 1024,
         home_writeback_kib: 0,
         readers: DEFAULT_READERS,
+        store: StoreKind::Log,
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -281,6 +282,48 @@ fn serve_takes_the_number_of_readers() {
             ),
             "{bad}"
         );
+    }
+}
+
+/// `--store`: log unless given, or in-place; anything else is a usage
+/// error, and so is an option of the log beside in-place.
+#[test]
+fn serve_takes_the_store() {
+    assert_eq!(serve("serve --dir /v/a").store, StoreKind::Log);
+    assert_eq!(serve("serve --dir /v/a --store log").store, StoreKind::Log);
+    assert_eq!(
+        serve("serve --dir /v/a --store in-place").store,
+        StoreKind::InPlace
+    );
+    assert_eq!(
+        serve("serve --dir /v/a --store=in-place --depth 16").store,
+        StoreKind::InPlace
+    );
+    for bad in ["inplace", "LOG", "x"] {
+        assert!(
+            matches!(
+                plain(&format!("serve --dir /v/a --store {bad}")),
+                Err(UsageError::Value(..))
+            ),
+            "{bad}"
+        );
+    }
+    for log_only in [
+        "--log-high 4",
+        "--log-low 1",
+        "--writeback-kib 0",
+        "--home-writeback-kib 0",
+        "--readers 1",
+    ] {
+        assert_eq!(
+            plain(&format!("serve --dir /v/a --store in-place {log_only}")),
+            Err(UsageError::Value(
+                log_only.split(' ').next().unwrap().into(),
+                "not with --store in-place"
+            )),
+            "{log_only}"
+        );
+        assert!(plain(&format!("serve --dir /v/a --store log {log_only}")).is_ok());
     }
 }
 

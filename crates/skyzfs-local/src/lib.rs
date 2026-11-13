@@ -11,7 +11,11 @@
 //! - [`mod@format`]: the log's bytes;
 //! - [`log`]: the log: append, sync, recover, replay, reclaim;
 //! - [`store`]: the block target ([`skyzfs_blk::BlockTarget`]) on the
-//!   log and a home image: see [The store](#the-store).
+//!   log and a home image: see [The store](#the-store);
+//! - [`inplace`]: a block target on the home image alone, written in
+//!   place and synced at a flush, entered from an opened store: an
+//!   experiment, with a weaker promise at a power cut (the
+//!   volatile-cache disk).
 //!
 //! The log knows nothing of blocks: a record is a kind, a range of the
 //! volume, and for a write its data.
@@ -867,6 +871,7 @@
 
 pub mod format;
 pub mod fs;
+pub mod inplace;
 pub mod io;
 pub mod log;
 pub mod sim;
