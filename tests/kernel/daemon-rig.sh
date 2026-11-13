@@ -307,6 +307,35 @@ pool_create() { # pool bdev slog [zpool create options]
 pool_state() { # ONLINE, SUSPENDED, ...: from the kernel, which answers when zpool would block
     cat "/proc/spl/kstat/zfs/$1/state" 2>/dev/null || echo unknown
 }
+# [mark]: what holds ZFS when a zpool command has run out of its limit,
+# in one line. The zpool processes in uninterruptible sleep and the ZFS
+# function each waits in (from its kernel stack), the states of the
+# txg_sync threads, and, since MARK, the kernel's reports of hung tasks:
+# how many, in how many txg_sync was running, and the owners they name
+# of the locks waited on. Seen on arm64 (run 43389048554, M1.T25): after
+# a pool suspended, txg_sync stayed running for 18 minutes while the
+# first zpool status held the namespace lock, and every zpool command
+# after it waited behind that one. This says so; it judges nothing.
+zfs_stuck_say() {
+    local p c st fn waits="" txg="" k n run owners
+    for p in /proc/[0-9]*; do
+        c=$(cat "$p/comm" 2>/dev/null) || continue
+        case $c in zpool|txg_sync) ;; *) continue ;; esac
+        st=$(sed 's/^.*) //' "$p/stat" 2>/dev/null | cut -c1)
+        if [ "$c" = txg_sync ]; then txg+="${st:-?}"; continue; fi
+        [ "$st" = D ] || continue
+        fn=$(lim 5 cat "$p/stack" 2>/dev/null | grep -oE '(spa_namespace_enter|spa_config_enter|txg_wait_synced|spa_vdev_state_enter|zfs_ioc_[a-z_]+)' | head -n 1)
+        waits+="${p#/proc/}:${fn:-?} "
+    done
+    k="zpool processes waiting in the kernel: ${waits:-none}; txg_sync threads' states: ${txg:-none}"
+    if [ -n "${1:-}" ] && klog_since "$1" > "$OUT/stuck.tmp"; then
+        n=$(grep -c 'blocked for more than' "$OUT/stuck.tmp" || true)
+        run=$(grep -c 'task:txg_sync .*state:R' "$OUT/stuck.tmp" || true)
+        owners=$(grep -oE 'likely owned by task [^ ]+' "$OUT/stuck.tmp" | awk '{ sub(/\.$/, "", $NF); print $NF }' | sort | uniq -c | sort -rn | head -n 4 | awk '{ printf "%s x%s ", $2, $1 }')
+        k+="; the kernel since the mark: $n hung-task reports, txg_sync running in $run, lock owners named: ${owners:-none}"
+    fi
+    echo "$k"
+}
 pool_errors() { # "vdev errors N (read r, write w, checksum c), <scan line>, <errors line>"
     lim 60 zpool status -p "$1" > "$OUT/status.tmp" 2>&1 || { echo "zpool status failed or timed out"; return; }
     awk '$2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|REMOVED)$/ && NF >= 5 { r += $3; w += $4; c += $5 }
@@ -1959,7 +1988,8 @@ fail_setup() {
     FS_ERR=""
     vol_up "$impl" "$dir" "$@" || { FS_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
-    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1 || { FS_ERR="zpool create failed"; return 1; }
+    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1 \
+        || { FS_ERR="zpool create failed ($(tail -n 1 "$OUT/$name-create.log")); $(zfs_stuck_say)"; return 1; }
     for i in 0 1 2 3; do
         lim 120 "$DD" if=/dev/urandom of="$mnt/base.$i" bs=1M count=32 conv=fsync status=none || { FS_ERR="writing the first files failed"; return 1; }
     done
@@ -1993,9 +2023,13 @@ fail_wait() {
     sleep 3
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
-    lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1
+    lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1; i=$?
+    if [ "$i" = 124 ]; then
+        rec "${name}_zpool_status" "did not return in 30 s: $(zfs_stuck_say)"
+    else
+        rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
+    fi
     klog_since "$mark" > "$OUT/$name-dmesg.log"; i=$?
-    rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
     if [ "$i" != 0 ]; then rec "${name}_kernel_log" "lost: the rig's marker was not found in the kernel log, so nothing is counted"
     else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
     fi
@@ -2055,7 +2089,7 @@ check_d() {
             if [ "$st1" = ONLINE ] && [ -n "$v" ]; then
                 pin clear_resumes_on_returned_device PASS "zpool clear rc $rc; pool $st1; a new write with fsync completed; the writer went from $before to $after acknowledged files; $(pool_errors skzd-d1)"
             else
-                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d1-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)"
+                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d1-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)$([ "$rc" = 124 ] && echo "; the clear ran out of its 120 s: $(zfs_stuck_say "$mark")")"
             fi
         fi
     else
