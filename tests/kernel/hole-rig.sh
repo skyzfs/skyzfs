@@ -25,7 +25,8 @@
 # File systems (RIG_HOLE_FS): ext4 and xfs, each made fresh per course.
 #
 # Knobs (environment): RIG_SKYZFSD (required: a build with its test
-# hooks), RIG_SERVE_ARGS (default --store in-place), RIG_HOLE_FS="ext4
+# hooks), RIG_SERVE_ARGS (options for every serve; the store is
+# always in place, a --store among them is replaced), RIG_HOLE_FS="ext4
 # xfs", RIG_HOLE_KINDS="sparse fallocate zero-fill",
 # RIG_HOLE_VOLUME_MB=256, RIG_HOLE_WRITES=16, RIG_HOLE_FLUSH_EVERY=3,
 # RIG_HOLE_TAIL=2, RIG_HOLE_EVERY_PREFIX=1 (every prefix of each
@@ -55,7 +56,18 @@ OUT=$(cd "$OUT" && pwd)
 
 SKYZFSD=${RIG_SKYZFSD:?RIG_SKYZFSD names skyzfsd built with its test hooks}
 [ -x "$SKYZFSD" ] || { echo "RIG_SKYZFSD=$SKYZFSD is not an executable" >&2; exit 64; }
-read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:---store in-place}"
+read -r -a GIVEN <<< "${RIG_SERVE_ARGS:-}"
+# The courses are of the in-place store whatever the options name: a
+# --store among them is replaced (with the log store the first record
+# that carries a block's data would be the log's, not the image's).
+SERVE_ARGS=(--store in-place)
+for ((i = 0; i < ${#GIVEN[@]}; i++)); do
+    case ${GIVEN[i]} in
+        --store) i=$((i + 1)) ;;
+        --store=*) ;;
+        *) SERVE_ARGS+=("${GIVEN[i]}") ;;
+    esac
+done
 read -r -a FSES <<< "${RIG_HOLE_FS:-ext4 xfs}"
 read -r -a KINDS <<< "${RIG_HOLE_KINDS:-sparse fallocate zero-fill}"
 VOLUME_MB=${RIG_HOLE_VOLUME_MB:-256}
