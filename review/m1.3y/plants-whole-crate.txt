@@ -1,0 +1,9 @@
+m1 only two writes that overlap wait: a read neither waits nor is waited for
+    failed: NOTHING; 9 binaries, 0 with a failure (187 s of tests)
+m2 a write does not wait for a read it overlaps
+    failed: NOTHING; 9 binaries, 0 with a failure (181 s of tests)
+m3 a read does not wait for a write it overlaps
+    failed: ['inplace::tests::the_in_place_store_passes_the_conformance_suite_on_large_pages']; 1 binaries, 1 with a failure (165 s of tests)
+m4 a flush waits only when everything on the threads is a write
+    failed: NOTHING; 9 binaries, 0 with a failure (187 s of tests)
+rc=0
