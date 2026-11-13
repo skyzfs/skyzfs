@@ -127,7 +127,7 @@ pub struct Unfetched {
     /// Which command.
     pub command: Command,
     /// The driver's result: [`ABORTED`] when the queue is being
-    /// stopped, a negated error number when the driver did not take
+    /// stopped, a negated error number when the driver refused
     /// the command, or another code it does not use with this queue.
     pub result: i32,
 }
@@ -177,11 +177,15 @@ pub trait Queue {
     /// then returns `Ok` or `Err`. The pump counts them
     /// ([`Counters::commands_aborted`], [`Counters::commands_failed`])
     /// and does nothing else about them. An abort is the queue being
-    /// stopped. Any other result is a command the driver did not take:
-    /// for a commit, the driver still holds that request, unanswered,
-    /// and no request comes on that tag again until the queue stops.
-    /// Whether that should fail the volume, or the commit be made
-    /// again, is not decided; the count and the request log show it.
+    /// stopped. Any other result is a command the driver refused when
+    /// it was submitted: no command is outstanding on that tag
+    /// afterwards, so no request comes on it again until the queue
+    /// stops. A refused commit completed nothing. Either the tag held
+    /// no request in the server's hands (a commit for nothing), or the
+    /// commit was malformed and the driver still counts its request as
+    /// the server's, unanswered. Whether that should fail the volume,
+    /// or the commit be made again, is not decided; the count and the
+    /// request log show it.
     fn wait(
         &mut self,
         fetched: &mut Vec<Fetched>,
@@ -308,7 +312,7 @@ pub struct Counters {
     /// is being stopped. Each tag's last command ends so.
     pub commands_aborted: u64,
     /// Commands the driver ended with any other result than OK: a
-    /// commit or a fetch it did not take (see [`Queue::wait`]).
+    /// commit or a fetch it refused (see [`Queue::wait`]).
     pub commands_failed: u64,
     /// The result of the last command counted in
     /// [`Counters::commands_failed`]; 0 before the first.

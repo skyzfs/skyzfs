@@ -110,7 +110,7 @@
 //! | 1992 | 8 | the most reads and writes on the threads at once since the store began |
 //! | 2000 | 8 | the most requests waiting at once since the store began |
 //! | 2008 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
-//! | 2016 | 8 | `commands_failed`: the queues' commands the driver ended with any other result than OK: a commit or a fetch it did not take. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
+//! | 2016 | 8 | `commands_failed`: the queues' commands the driver ended with any other result than OK: a commit or a fetch it refused. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
 //! | 2024 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon

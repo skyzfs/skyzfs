@@ -56,9 +56,10 @@
 //!   the op column (`fetch`, `commit`, or `cmd<N>` for another code), and
 //!   the result. `-19` (`-ENODEV`) is the driver's abort: the queue is
 //!   being stopped, and each tag's last command ends so. Any other
-//!   result is a command the driver did not take: for a commit, the
-//!   request it answered is still the driver's, unanswered. The
-//!   daemon counts both (`status`: `commands_aborted`,
+//!   result is a command the driver refused: a refused commit
+//!   completed nothing, and nothing comes on its tag again until the
+//!   queue stops (see `Queue::wait` in `skyzfs-ublk`). The daemon
+//!   counts both (`status`: `commands_aborted`,
 //!   `commands_failed`).
 //!
 //! So a commit reaches the kernel no earlier than its own `commit` line
