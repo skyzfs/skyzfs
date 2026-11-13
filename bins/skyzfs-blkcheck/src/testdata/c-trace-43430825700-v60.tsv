@@ -1,0 +1,175 @@
+148019	60	open	-	64	16
+148154	60	submit	1	read	16362	7	
+148155	60	done	1	Ok(())	zero,zero,zero,zero,zero,zero,zero	Ok(())
+148155	60	delivered	1	
+148155	60	submit	2	flush	0	0	
+148155	60	submit	3	flush	0	0	
+148155	60	done	2	Ok(())		Ok(())
+148155	60	delivered	2	
+148155	60	done	3	Ok(())		Ok(())
+148155	60	submit	4	write	16367	1	fd39353a4db44325
+148155	60	kill	-	signal sent by the tool: Some(true)
+148387	60	delivered	3	
+148387	60	before_kill	3	Ok(())
+148387	60	sorted	-	outstanding 1	kernel in flight [0, 0]
+148704	60	done	4	Ok(())		Ok(())
+149171	60	served_again	-	
+149171	60	delivered	4	
+149171	60	carried	4	Ok(())
+149171	60	settled	-	
+149306	60	held_back	4	
+149306	60	submit	3	flush	0	0	
+149306	60	submit	5	discard	16368	4	
+149306	60	delivered	4	
+149306	60	submit	6	flush	0	0	
+149306	60	submit	7	flush	0	0	
+149306	60	submit	8	read	16362	4	
+149307	60	done	5	Ok(())		Ok(())
+149307	60	delivered	5	
+149307	60	submit	9	write	16367	2	40b378f85cef5325,138ea9c87f2e0b25
+149307	60	done	8	Ok(())	zero,zero,zero,zero	Ok(())
+149307	60	done	3	Ok(())		Ok(())
+149307	60	submit	10	write	16369	3	f027641bc8fb6b25,7f9f1aaff5bcc325,9671437831c18b25
+149307	60	done	7	Ok(())		Ok(())
+149307	60	delivered	8	
+149307	60	delivered	3	
+149307	60	delivered	7	
+149308	60	done	6	Ok(())		Ok(())
+149308	60	submit	11	write	16369	3	1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325
+149308	60	submit	12	write	16379	3	c501d1a771ef0325,f6e015151883e325,f70e5c32d0ead325
+149308	60	delivered	6	
+149308	60	done	9	Ok(())		Ok(())
+149308	60	delivered	9	
+149308	60	submit	13	write	16367	2	fa620c652edb5b25,961b61a6447fb325
+149308	60	done	10	Ok(())		Ok(())
+149308	60	delivered	10	
+149308	60	submit	14	write_zeroes	16373	2	
+149308	60	submit	15	read	16369	5	
+149309	60	done	14	Ok(())		Ok(())
+149309	60	done	12	Ok(())		Ok(())
+149309	60	delivered	14	
+149309	60	delivered	12	
+149309	60	done	13	Ok(())		Ok(())
+149309	60	done	11	Ok(())		Ok(())
+149309	60	submit	16	write	16362	3	625493824ad38b25,20b4b087f37d3b25,94174a5c79f8b325
+149309	60	submit	17	write_zeroes	16383	1	
+149309	60	submit	18	read	16367	8	
+149309	60	submit	19	read	16363	8	
+149309	60	delivered	13	
+149309	60	delivered	11	
+149309	60	submit	20	write	16372	8	570e4f95e4a10b25,587ede009cd9a325,d3f85cb1e0daa325,e9e618a033329325,fc91dd1f2000fb25,e27c49bff1ad3b25,a15ff6ed161e5325,42f936f178086325
+149309	60	done	15	Ok(())	1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325,zero,zero	Ok(())
+149309	60	submit	21	write	16377	7	964cfc9ff9404b25,6bafe44ab8087b25,29b89f4b2c577325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325
+149309	60	delivered	15	
+149310	60	done	16	Ok(())		Ok(())
+149310	60	done	17	Ok(())		Ok(())
+149310	60	delivered	16	
+149310	60	delivered	17	
+149310	60	submit	22	write	16361	1	c7268e7600c0c325
+149310	60	done	19	Ok(())	20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25	Ok(())
+149310	60	done	18	Ok(())	fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325,zero,zero,zero	Ok(())
+149310	60	submit	23	write	16371	5	f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325
+149310	60	delivered	19	
+149310	60	delivered	18	
+149310	60	done	20	Ok(())		Ok(())
+149310	60	delivered	20	
+149310	60	submit	24	write	16360	1	7970d002a7400325
+149310	60	submit	25	read	16363	7	
+149311	60	kill	-	signal sent by the tool: Some(true)
+149549	60	sorted	-	outstanding 5	kernel in flight [0, 0]
+149863	60	done	21	Ok(())		Ok(())
+149863	60	done	22	Ok(())		Ok(())
+149864	60	done	24	Ok(())		Ok(())
+149864	60	done	23	Ok(())		Ok(())
+149864	60	done	25	Ok(())	20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325	Ok(())
+150230	60	served_again	-	
+150230	60	delivered	21	
+150230	60	delivered	22	
+150230	60	delivered	24	
+150230	60	delivered	23	
+150230	60	delivered	25	
+150230	60	carried	21	Ok(())
+150230	60	carried	22	Ok(())
+150230	60	carried	24	Ok(())
+150230	60	carried	23	Ok(())
+150230	60	carried	25	Ok(())
+150230	60	settled	-	
+150366	60	held_back	25	
+150366	60	held_back	24	
+150366	60	held_back	23	
+150366	60	held_back	22	
+150366	60	held_back	21	
+150366	60	delivered	25	
+150366	60	delivered	24	
+150366	60	delivered	23	
+150366	60	delivered	22	
+150366	60	delivered	21	
+150368	60	submit	26	read	0	64	
+150368	60	submit	27	read	64	64	
+150368	60	submit	28	read	128	64	
+150368	60	submit	29	read	192	64	
+150368	60	submit	30	read	16360	24	
+150368	60	submit	31	read	16368	16	
+150368	60	submit	32	read	256	2	
+150368	60	submit	33	read	512	2	
+150368	60	done	26	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+150369	60	done	33	Ok(())	zero,zero	Ok(())
+150369	60	done	28	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+150368	60	submit	34	read	768	2	
+150369	60	done	27	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+150369	60	done	29	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+150369	60	submit	35	read	1024	2	
+150369	60	submit	36	read	1280	2	
+150369	60	submit	37	read	1536	2	
+150369	60	submit	38	read	1792	2	
+150369	60	submit	39	read	2048	2	
+150369	60	done	32	Ok(())	zero,zero	Ok(())
+150369	60	submit	40	read	2304	2	
+150369	60	done	35	Ok(())	zero,zero	Ok(())
+150369	60	submit	41	read	2560	2	
+150369	60	delivered	26	
+150369	60	delivered	33	
+150369	60	delivered	28	
+150369	60	done	34	Ok(())	zero,zero	Ok(())
+150369	60	delivered	27	
+150369	60	delivered	29	
+150369	60	delivered	32	
+150369	60	delivered	35	
+150369	60	delivered	34	
+150369	60	done	36	Ok(())	zero,zero	Ok(())
+150369	60	done	38	Ok(())	zero,zero	Ok(())
+150369	60	done	39	Ok(())	zero,zero	Ok(())
+150369	60	done	31	Ok(())	961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325,fc91dd1f2000fb25,e27c49bff1ad3b25,a15ff6ed161e5325,42f936f178086325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325	Ok(())
+150369	60	done	30	Ok(())	7970d002a7400325,c7268e7600c0c325,625493824ad38b25,20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325,fc91dd1f2000fb25,e27c49bff1ad3b25,a15ff6ed161e5325,42f936f178086325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325	Ok(())
+150370	60	done	37	Ok(())	zero,zero	Ok(())
+150370	60	done	40	Ok(())	zero,zero	Ok(())
+150370	60	done	41	Ok(())	zero,zero	Ok(())
+150372	60	submit	42	read	2816	2	
+150372	60	submit	43	read	3072	2	
+150372	60	submit	44	read	3328	2	
+150372	60	submit	45	read	3584	2	
+150372	60	submit	46	read	3840	2	
+150372	60	submit	47	read	4096	2	
+150372	60	done	42	Ok(())	zero,zero	Ok(())
+150372	60	done	43	Ok(())	zero,zero	Ok(())
+150372	60	done	44	Ok(())	zero,zero	Ok(())
+150372	60	submit	48	read	4352	2	
+150372	60	submit	49	read	4608	2	
+150373	60	done	46	Ok(())	zero,zero	Ok(())
+150373	60	done	45	Ok(())	zero,zero	Ok(())
+150373	60	delivered	36	
+150373	60	delivered	38	
+150373	60	delivered	39	
+150373	60	delivered	31	
+150373	60	delivered	30	
+150373	60	delivered	37	
+150373	60	delivered	40	
+150373	60	delivered	41	
+150373	60	delivered	42	
+150373	60	delivered	43	
+150373	60	delivered	44	
+150373	60	delivered	46	
+150373	60	delivered	45	
+150373	60	done	48	Ok(())	zero,zero	Ok(())
+150373	60	done	49	Ok(())	zero,zero	Ok(())
+150374	60	done	47	Ok(())	zero,zero	Ok(())
