@@ -4474,7 +4474,8 @@ fn a_completion_taken_by_wait_has_its_ready_time() {
 /// Every kind of request is counted under its own kind, once per
 /// request that completed, with a wait and a call each; a request that
 /// waited for no step is not among those that did; and the sums and
-/// the longest fit each other.
+/// the longest fit each other. Each thread's idle time is looked at
+/// once the thread is back in its wait for work.
 #[test]
 fn every_kind_of_request_is_timed_under_its_kind() {
     let env = environments(0)[0];
@@ -4524,7 +4525,21 @@ fn every_kind_of_request_is_timed_under_its_kind() {
         }
     }
     served.position().unwrap();
-    let timing = served.timing();
+    // A thread's wait for work is counted as idle only once the thread
+    // is back in it: a look taken while the reader (or the worker) is
+    // still between its last request and its wait finds that time still
+    // its own, and no idle time if the thread never waited before (a
+    // reader that started after the read arrived, as under coverage).
+    // So look until both show idle time, for at most 10 s; a thread
+    // whose wait is never counted still fails below.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let timing = loop {
+        let timing = served.timing();
+        if (timing.worker[0] > 0 && timing.reader[0] > 0) || std::time::Instant::now() >= deadline {
+            break timing;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
     let counts: Vec<u64> = timing.requests.iter().map(|k| k.wait.count).collect();
     // read, write, flush, discard, write-zeroes.
     assert_eq!(counts, [1, 2, 1, 1, 3], "{timing:?}");
