@@ -154,3 +154,33 @@ https://github.com/skyzfs/skyzfs/pull/43#issuecomment-6840937793.
 Verified: in-place tests 18 passed, 1 ignored; `cargo test -p skyzfsd` 56;
 fmt and clippy `-D warnings` on both crates with and without the hooks clean.
 CI on the head was still running; nothing had failed.
+
+## Verdict at b28b776: can merge
+
+b28b776 is fef38c6 plus a commit of comments and help text (the warning covers
+a stop too; `Store::into_in_place` points at the warning). Posted as
+https://github.com/skyzfs/skyzfs/pull/43#issuecomment-6842005844.
+
+The lead's message (2026-11-13): the owner has decided that the in-place store
+is adopted and the log store is retired; #43 merges first with the log store
+still the default; a following package removes the log store; nothing is
+released in between. Under that plan finding A does not block. If the removal
+is dropped or a release comes first, it blocks again.
+
+For the package that removes the log store:
+- the start's own sync becomes the only one (today the log store's checkpoint
+  at every start also syncs the image), and my plant without it must then fail
+  a test;
+- owed before default: the exit on a start that meets a failed disk, the
+  marker on the queue's thread, `wait` unbounded at a non-zero timeout, reads
+  on the pump's thread;
+- no job on a pull request drives `--store in-place`;
+- the ignored test goes with the log store.
+
+Verified at b28b776: in-place tests 18 passed, 1 ignored; `skyzfsd` 56; fmt,
+clippy and doc `-D warnings` clean; CI 30 check runs, none failed; merges into
+`zfs-topology` at fc65f08 without conflicts. The measurements in the notes
+were read, not checked against artifacts.
+
+Coming: the lead's design change (§4.1, §5.1, §5.2/§5.3: a cut without a log
+order) for review, with the cut argument to be checked against OpenZFS.
