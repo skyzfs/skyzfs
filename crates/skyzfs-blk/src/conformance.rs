@@ -174,7 +174,7 @@ use proptest::strategy::Union;
 use proptest::test_runner::{Config as ProptestConfig, RngAlgorithm, TestError, TestRng};
 use proptest::test_runner::{TestCaseError, TestRunner};
 
-use crate::model::Model;
+use crate::model::{InFlight, Model};
 use crate::{
     Base, BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId,
     SubmitErrorKind, BLOCK_SIZE, BLOCK_USIZE, MAX_IO_BYTES, SIZE_UNIT,
@@ -370,6 +370,27 @@ pub trait Harness {
     /// device when its log fails, there is no daemon left to lose: a
     /// kill does nothing there.
     fn kill(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
+
+    /// What the client can see, after [`Harness::kill`], of a request
+    /// that was in flight at it: whether a request that the lost daemon
+    /// applied and completed may have its completion reach the client
+    /// only after the loss, and not be issued again.
+    ///
+    /// The default is [`InFlight::Reissued`]: the suite submits every
+    /// request in flight again to the new daemon, so a correct target
+    /// applies each one after the loss, and the model holds it to that.
+    /// A harness whose transport can hold a completion past the loss
+    /// returns [`InFlight::MayHaveCompleted`]: a kernel block device,
+    /// where the kernel issues nothing again for a request the lost
+    /// daemon completed, and a write's call can return after the
+    /// restart. The model then also accepts, on the blocks such a
+    /// request shares with a write acknowledged before the loss, what a
+    /// target that dropped its reissue would leave, so do not claim it
+    /// where the transport cannot do it. A harness that should claim it
+    /// and does not sees a legal state refused, not a fault passed.
+    fn in_flight_at_a_loss(&self) -> InFlight {
+        InFlight::Reissued
+    }
 
     /// How many outcomes of a power cut are worth trying right now. A
     /// store with a log counts the records, or whatever units it
@@ -1467,7 +1488,7 @@ impl<'a, H: Harness> Driver<'a, H> {
             return fail("no target: an earlier harness call failed");
         };
         self.target = Some(self.harness.kill(target, seed)?);
-        self.model.kill();
+        self.model.kill(self.harness.in_flight_at_a_loss());
         self.check_geometry()?;
         let mut reissue: Vec<Request> = self.inflight.values().cloned().collect();
         if seed & 1 == 1 {

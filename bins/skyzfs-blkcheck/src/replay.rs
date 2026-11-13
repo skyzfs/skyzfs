@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::process::ExitCode;
 
-use skyzfs_blk::model::Model;
+use skyzfs_blk::model::{InFlight, Model};
 use skyzfs_blk::{BlkError, Buf, Completion, Geometry, Op, Request, RequestId};
 
 const BLOCK: usize = 4096;
@@ -175,7 +175,9 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
             }
             ("settled", _) => {
                 settling = false;
-                model.kill();
+                // The trace is a block device's: a call the lost daemon
+                // completed can return after the kill.
+                model.kill(InFlight::MayHaveCompleted);
                 "the model is told of the kill".to_string()
             }
             ("fail", _) => {
@@ -269,5 +271,128 @@ mod tests {
     #[test]
     fn another_volume_of_the_trace_is_not_replayed() {
         assert_eq!(replay_text(&failed_log("Err(Io(Other))"), "8", 64), Ok(0));
+    }
+
+    // M1.T28. Volume 60 of check c's case `prop_failures_match_model`
+    // (seed 0x5ca1ab1e), from two failed passes on ubuntu-26.04: the
+    // daemon rig's run 43430825700 and the diagnostic run 43455086383,
+    // pass 3. In both, writes #20 (16372+8), #21 (16377+7) and #17
+    // (write-zeroes 16383+1) are in flight together, #20 and #17 are
+    // acknowledged, and the tool kills the server while #21's call has
+    // not returned. The second run's kernel trace and request log show
+    // that the old server was handed #21 whole, applied it before #17
+    // and completed both before the kill; the call returned after the
+    // restart only because a udev read of block 16382, requeued at the
+    // death, held the page the direct write's return waits on. The tool
+    // counted #21 as in flight at the death and the model required it
+    // to be issued again after #20 and #17, so that it wins the blocks
+    // it shares with them. It need not: a call outstanding at a kill
+    // was either applied by the old server while it was in flight, in
+    // any order with what was in flight with it, or is issued again.
+    // See skyzfs/skyzfs#58 (issuecomment-6858276171).
+    const RUN_43430825700: &str = include_str!("testdata/c-trace-43430825700-v60.tsv");
+    const RUN_43455086383: &str = include_str!("testdata/c-trace-43455086383-v60.tsv");
+    // The daemon rig's run 43453345076, the pass with a commit delay of
+    // 20 ms: the same case with the roles swapped. #21 is acknowledged
+    // before the kill and #20's call returns after it.
+    const RUN_43453345076_DELAY: &str = include_str!("testdata/cd-trace-43453345076-v60.tsv");
+
+    /// The trace with block `index` of the read `id`'s result replaced.
+    fn with_read_block(trace: &str, id: u64, index: usize, digest: &str) -> String {
+        let mut changed = 0;
+        let out = trace
+            .lines()
+            .map(|line| {
+                let mut f: Vec<String> = line.split('\t').map(str::to_string).collect();
+                if f.len() >= 6 && f[2] == "done" && f[3] == id.to_string() {
+                    let mut blocks: Vec<&str> = f[5].split(',').collect();
+                    blocks[index] = digest;
+                    f[5] = blocks.join(",");
+                    changed += 1;
+                }
+                f.join("\t")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(changed, 1, "the trace has one result of read #{id}");
+        out
+    }
+
+    /// Run 43430825700: blocks 16377 to 16379 read #20's data, the
+    /// order the old server applied the two in.
+    #[test]
+    fn a_call_returned_after_the_kill_may_have_been_applied_before_it_43430825700() {
+        assert_eq!(replay_text(RUN_43430825700, "60", 64), Ok(0));
+    }
+
+    /// Run 43455086383: block 16383 reads zero, #17 applied after #21
+    /// by the old server.
+    #[test]
+    fn a_call_returned_after_the_kill_may_have_been_applied_before_it_43455086383() {
+        assert_eq!(replay_text(RUN_43455086383, "60", 64), Ok(0));
+    }
+
+    /// Run 43430825700 as the model wanted it: blocks 16377 to 16379
+    /// hold #21's data, as if #21 had been issued again after #20.
+    fn reissued_43430825700() -> String {
+        let mut trace = RUN_43430825700.to_string();
+        for (i, digest) in ["964cfc9ff9404b25", "6bafe44ab8087b25", "29b89f4b2c577325"]
+            .iter()
+            .enumerate()
+        {
+            trace = with_read_block(&trace, 30, 17 + i, digest);
+            trace = with_read_block(&trace, 31, 9 + i, digest);
+        }
+        trace
+    }
+
+    /// Run 43455086383 as the model wanted it: block 16383 holds #21's
+    /// data, as if #21 had been issued again after #17.
+    fn reissued_43455086383() -> String {
+        let trace = with_read_block(RUN_43455086383, 33, 23, "6c22afe639c02325");
+        with_read_block(&trace, 34, 15, "6c22afe639c02325")
+    }
+
+    /// The order of a reissue stays allowed.
+    #[test]
+    fn a_call_issued_again_after_the_kill_is_still_allowed() {
+        assert_eq!(replay_text(&reissued_43430825700(), "60", 64), Ok(0));
+        assert_eq!(replay_text(&reissued_43455086383(), "60", 64), Ok(0));
+    }
+
+    /// Run 43453345076, the pass with the delay: blocks 16377 to 16379
+    /// read #21's data; #20, whose call returned after the kill, was
+    /// applied before #21 by the old server.
+    #[test]
+    fn a_call_returned_after_the_kill_may_have_been_applied_before_it_43453345076() {
+        assert_eq!(replay_text(RUN_43453345076_DELAY, "60", 64), Ok(0));
+    }
+
+    // Controls: each changes one block of a trace that is allowed (the
+    // reissue's order, above) into what no order allows. The model must
+    // refuse it, now and after M1.T28.
+
+    /// Block 16377 holds data that no call wrote.
+    #[test]
+    fn a_block_no_call_wrote_is_still_refused() {
+        let trace = with_read_block(&reissued_43430825700(), 31, 9, "0123456789abcdef");
+        assert!(matches!(replay_text(&trace, "60", 64), Ok(n) if n > 0));
+    }
+
+    /// Block 16382 reads zero where #21 is the only write: #21 was
+    /// applied by the old server or issued again, never dropped.
+    #[test]
+    fn the_outstanding_call_is_not_taken_as_lost() {
+        let trace = with_read_block(&reissued_43455086383(), 34, 14, "zero");
+        assert!(matches!(replay_text(&trace, "60", 64), Ok(n) if n > 0));
+    }
+
+    /// Block 16377 holds #21's data after #27, submitted once #21 had
+    /// been delivered, was acknowledged over it: whichever way #21 was
+    /// applied, it came before #27.
+    #[test]
+    fn the_outstanding_call_does_not_land_after_a_later_call() {
+        let trace = with_read_block(&reissued_43455086383(), 34, 9, "964cfc9ff9404b25");
+        assert!(matches!(replay_text(&trace, "60", 64), Ok(n) if n > 0));
     }
 }

@@ -137,6 +137,16 @@ pub enum Fault {
     /// R9: a request that was in flight at a daemon loss fails when it is
     /// reissued.
     RejectReissued,
+    /// R9: a mutation reissued after a daemon loss is completed without
+    /// being applied again when the lost daemon had put it in the log. A
+    /// write that overlaps it, and was acknowledged before the loss
+    /// after it reached the log, then keeps the blocks they share. A
+    /// client of a kernel block device cannot tell that from a
+    /// completion the lost daemon made and the client heard of late
+    /// ([`InFlight::MayHaveCompleted`](crate::model::InFlight)); where
+    /// the client reissues every request itself, as the suite does, it
+    /// is a fault.
+    SkipReissuedIfLogged,
     /// R10: a power cut keeps part of a sector of the first write it
     /// loses: a tear finer than the volatile-cache disk's sector.
     TearOnCut,
@@ -252,6 +262,11 @@ enum Effect {
 }
 
 /// One whole operation in the write log.
+/// A write, write-zeroes or discard: not a read or a flush.
+fn is_mutation(op: &Op) -> bool {
+    !matches!(op, Op::Read { .. } | Op::Flush)
+}
+
 #[derive(Debug, Clone, Default)]
 struct Record {
     effects: Vec<(u64, Effect)>,
@@ -294,6 +309,9 @@ pub struct MemTarget {
     reported: bool,
     /// `Fault::RejectReissued`: ids that were in flight at a kill.
     poisoned: Vec<u64>,
+    /// `Fault::SkipReissuedIfLogged`: ids of mutations in flight at a
+    /// kill that were in the log by then.
+    logged_at_kill: Vec<u64>,
     /// `Fault::FlushJoinsOldSync`: what the previous flush saw.
     previous_cover: usize,
     /// `Fault::FlushForgetsEarlierInstance`: where this instance began.
@@ -323,6 +341,7 @@ impl MemTarget {
             failed: false,
             reported: false,
             poisoned: Vec::new(),
+            logged_at_kill: Vec::new(),
             previous_cover: 0,
             instance_start: 0,
             late_discards: Vec::new(),
@@ -347,7 +366,19 @@ impl MemTarget {
         if self.fault(Fault::RejectReissued) {
             self.poisoned = self.pending.iter().map(|q| q.request.id.0).collect();
         }
-        self.land_some_in_flight(&mut rng);
+        let early: Vec<u64> = self
+            .pending
+            .iter()
+            .filter(|q| q.early && is_mutation(&q.request.op))
+            .map(|q| q.request.id.0)
+            .collect();
+        let landed = self.land_some_in_flight(&mut rng);
+        if self.fault(Fault::SkipReissuedIfLogged) {
+            let mut logged: Vec<u64> = early.into_iter().chain(landed).collect();
+            logged.sort_unstable();
+            logged.dedup();
+            self.logged_at_kill = logged;
+        }
         if self.fault(Fault::KillLosesUnflushed) {
             self.log.truncate(self.durable);
         }
@@ -371,7 +402,7 @@ impl MemTarget {
     /// cut point.
     pub fn power_cut(mut self, keep: u64) -> Self {
         let mut rng = Rng(keep ^ 0xC2A5_11ED);
-        self.land_some_in_flight(&mut rng);
+        let _ = self.land_some_in_flight(&mut rng);
         let unflushed = self.log.len() - self.durable;
         let keep = (keep % (unflushed as u64 + 1)) as usize;
         let mut lost = self.log.split_off(self.durable + keep);
@@ -484,14 +515,21 @@ impl MemTarget {
 
     /// Carry out a random subset of the requests in flight, in a random
     /// order, without acknowledging them, and forget the rest.
-    fn land_some_in_flight(&mut self, rng: &mut Rng) {
+    /// Execute some of the requests in flight, as `rng` chooses, and
+    /// forget the rest. Returns the ids of the mutations executed.
+    fn land_some_in_flight(&mut self, rng: &mut Rng) -> Vec<u64> {
         let mut pending = std::mem::take(&mut self.pending);
+        let mut landed = Vec::new();
         while !pending.is_empty() {
             let queued = pending.swap_remove(rng.below(pending.len()));
             if rng.coin() {
+                if is_mutation(&queued.request.op) {
+                    landed.push(queued.request.id.0);
+                }
                 let _ = self.execute(queued);
             }
         }
+        landed
     }
 
     fn replay(image: &mut [u8], base: &[u8], record: &Record) {
@@ -766,7 +804,18 @@ impl BlockTarget for MemTarget {
         let mut request = request;
         let mut split = 0;
         let mut early = false;
-        if admitted {
+        let skipped = admitted
+            && self.fault(Fault::SkipReissuedIfLogged)
+            && self
+                .logged_at_kill
+                .iter()
+                .position(|id| *id == request.id.0)
+                .map(|at| self.logged_at_kill.swap_remove(at))
+                .is_some();
+        if skipped {
+            // Taken as done already: completed with nothing applied.
+            early = true;
+        } else if admitted {
             let timing = match &request.op {
                 Op::Flush => Timing::AtAck,
                 Op::Read { .. } => self.config.read,
