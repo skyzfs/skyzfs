@@ -4065,8 +4065,11 @@ fn a_flush_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step(
     assert_eq!(done[0].result, Ok(()));
     // Answered behind the completion's state.
     served.position().unwrap();
-    let total = began.elapsed();
+    // The look first and the test's own time after it: a thread that
+    // is idle at the look has its wait counted up to the look, so the
+    // test's time must end after it to hold the threads' times.
     let (timing, state) = (served.timing(), served.log_state());
+    let total = began.elapsed();
     // The worker goes on stepping and looks for the gate at each
     // step: it is ended before the gate is removed.
     drop(served);
@@ -5471,8 +5474,10 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     reader.open();
     let mut done = Vec::new();
     take(&mut served, &mut done, 2, "the reads").unwrap();
-    let total = began.elapsed().as_nanos() as u64;
+    // The look first and the test's own time after it: the reader is
+    // idle at the look, and its wait is counted up to the look.
     let timing = served.timing();
+    let total = began.elapsed().as_nanos() as u64;
     drop(served);
     let ns = HELD.as_nanos() as u64;
     let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
