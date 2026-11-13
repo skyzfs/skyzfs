@@ -243,10 +243,49 @@ EXPECTED = {
                                    'for M3)'),
     'pin_unstored_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes'),
     'ctl_hold_too_short': ('e', 'FAIL', SERVER, 'control: a request held 5 s is not accepted as one held for minutes'),
+
+    # Check g (M1.T23): the disk under the home image fails for real (dm-error under an ext4 without a
+    # journal), with the daemon's in-place store. The stand-in has no rule of its own here: WAITING.
+    'pin_start_serves_what_the_disk_holds': ('g', 'PASS', WAITING,
+                                             'after a sync of the home image failed and left pages in the cache that '
+                                             'read as written (the rig\'s own write and fdatasync, the error then taken), '
+                                             'the next start serves what the disk holds, not the cache: "every start, '
+                                             'after its sync, drops the kernel\'s cache of the volume\'s file and checks '
+                                             'that it is gone, and serves only what the disk holds" (§4.1). That the '
+                                             'kernel left such pages is the premise; without it the line is the rig\'s '
+                                             'error', 'WAITING'),
+    'ctl_g_old_content_after_good_sync': ('g', 'FAIL', WAITING,
+                                          'control of the pin above: the same write with no error syncs and the disk '
+                                          'holds it; the pin\'s test (the start serves the content from before the '
+                                          'write) then fails, because the start serves the write', 'WAITING'),
+    'pin_failed_start_fails_volume': ('g', 'PASS', WAITING,
+                                      'a start whose sync of the home image fails, a client holding the device, exits '
+                                      'with status 3 and says the volume failed at the start of the in-place store '
+                                      '(§4.1, §4.2)', 'WAITING'),
+    'pin_failed_start_suspends_pool': ('g', 'PASS', WAITING,
+                                       'the pool of that client then suspends, with no read or write failed to an '
+                                       'application (§4.1, §4.2)', 'WAITING'),
+    'pin_failed_start_volume_refused': ('g', 'PASS', WAITING,
+                                        'with the disk working again, a serve of that volume is refused with status 4 '
+                                        'while the client holds the device (§4.1)', 'WAITING'),
+    'pin_sync_failure_fails_volume': ('g', 'PASS', WAITING,
+                                      'the disk under the home image fails while the volume is served and written: '
+                                      'serve exits with status 3 and says the volume failed while it was served (§4.1)',
+                                      'WAITING'),
+    'pin_sync_failure_suspends_pool': ('g', 'PASS', WAITING,
+                                       'the pool then suspends, with no read or write failed to an application (§4.1)',
+                                       'WAITING'),
+    'pin_sync_failed_volume_refused': ('g', 'PASS', WAITING,
+                                       'with the disk working again, a serve of that volume is refused with status 4 '
+                                       'while the client holds the device (§4.1)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'obs_g_failed_sync': ('g', 'the premise of pin_start_serves_what_the_disk_holds: what fdatasync returned when '
+                                'the disk failed under the range, what the cache then read, and what the disk held'),
+    'obs_g_new_descriptor_after_failed_sync': ('g', 'after one descriptor\'s fdatasync took the write-back error, '
+                                                     'does a newly opened descriptor see it: fdatasync, then syncfs?'),
     'obs_f_refused_start_long': ('f', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
                                               'by second for 300 s; what waited at the device; the transaction '
@@ -313,7 +352,7 @@ REFERENCE_ONLY = set()
 # Observations only the daemon can make: on the stand-in the rig writes
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
-DAEMON_ONLY_OBSERVED = {'obs_c_low_steps',
+DAEMON_ONLY_OBSERVED = {'obs_c_low_steps', 'obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync',
                         'obs_f_refused_start_long', 'obs_f_refused_start_longnolog',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
                         'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',
@@ -321,8 +360,8 @@ DAEMON_ONLY_OBSERVED = {'obs_c_low_steps',
 
 
 # f is asked for by name: it is not among the default of a run.
-CHECKS = ('a', 'b', 'c', 'd', 'e', 'f')
-DEFAULT_CHECKS = 'a b c d e'
+CHECKS = ('a', 'b', 'c', 'd', 'e', 'f', 'g')
+DEFAULT_CHECKS = 'a b c d e g'
 JUDGED = ('pin_', 'ctl_', 'case_')
 
 
@@ -389,6 +428,11 @@ NOT_FOR_IN_PLACE = {
 }
 
 
+# Check g is of the in-place store (M1.T23): with the log store, frozen
+# until it is removed, the rig writes NA and why.
+ONLY_IN_PLACE = {name for name, row in EXPECTED.items() if row[0] == 'g'}
+
+
 # Pins the daemon cannot carry yet: expected WAITING on the daemon too.
 WAITS_FOR_THE_DAEMON = {
     'pin_failed_volume_while_a_request_is_held': 'M1.T8: the rig\'s code for it, once M1.3d says what the failure '
@@ -423,6 +467,8 @@ def judge(results, checks, impl='reference', store=None):
             basis = 'measured on the daemon' if basis in (SERVER, WAITING) else basis
             if store == 'in-place' and name in NOT_FOR_IN_PLACE:
                 want, basis = 'NA', f'not taken with the in-place store: {NOT_FOR_IN_PLACE[name]}'
+            if store == 'log' and name in ONLY_IN_PLACE:
+                want, basis = 'NA', 'not taken with the log store: check g is of the in-place store'
         value = results.get(name)
         if value is None:
             errors.append(f'{name}: no result')
