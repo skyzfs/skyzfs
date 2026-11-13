@@ -82,6 +82,15 @@ say() { # to the log and to the job's summary
     [ -z "${GITHUB_STEP_SUMMARY:-}" ] || printf '%s\n\n' "$*" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# An image whose sources do not go through the mirror list (as
+# ubuntu-24.04-arm, whose deb822 file names ports.ubuntu.com) gets no
+# fallback: rewriting its sources is more risk than the outage it
+# covers. The job's summary says so, so that a failure there on a name
+# that does not resolve is read as an outage.
+no_fallback() {
+    say "**Package mirrors: no fallback on this image.** $1 A step that installs packages fails when the names of its sources do not resolve, and that is an outage."
+}
+
 main() {
     local hosts h dead="" fb_host tmp as
     if [ -n "${RUNNER_ENVIRONMENT:-}" ] && [ "$RUNNER_ENVIRONMENT" != github-hosted ]; then
@@ -90,11 +99,13 @@ main() {
     fi
     if [ ! -f "$APT_MIRROR_LIST" ]; then
         echo "apt-fallback: no $APT_MIRROR_LIST on this machine; nothing changed"
+        no_fallback "There is no $APT_MIRROR_LIST on this machine."
         return 0
     fi
     # shellcheck disable=SC2086  # a list of paths
     if ! grep -rqsF "mirror+file:$APT_MIRROR_LIST" $APT_SOURCES; then
         echo "apt-fallback: no apt source uses $APT_MIRROR_LIST; nothing changed"
+        no_fallback "No apt source of this image uses $APT_MIRROR_LIST; they name their mirrors directly."
         return 0
     fi
     hosts=$(mirror_hosts "$APT_MIRROR_LIST")

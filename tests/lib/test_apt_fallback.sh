@@ -100,12 +100,14 @@ printf 'Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble\n' > 
 run "archive.ubuntu.com security.ubuntu.com azure.archive.ubuntu.com"
 is "no source uses the list: the list is as it was" "$(cmp -s "$T/list" "$T/before" && echo same)" same
 has "no source uses the list: says so" "$OUT" "no apt source uses"
+has "no source uses the list: the summary says there is no fallback" "$SUMMARY" "no fallback on this image"
 is "no source uses the list: looks nothing up" "$(wc -l < "$T/lookups" | tr -d ' ')" 0
 
 rm -f "$T/list"
 run "archive.ubuntu.com"
 is "no list on the machine: exit 0" "$RC" 0
 has "no list on the machine: says so" "$OUT" "nothing changed"
+has "no list on the machine: the summary says there is no fallback" "$SUMMARY" "no fallback on this image"
 
 # The script loosens nothing: no option of apt, no key.
 is "no option that switches a check off, no key" \
