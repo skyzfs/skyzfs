@@ -176,6 +176,8 @@ impl Mutants {
     pub(crate) const CACHE_NOT_DROPPED: u32 = 1 << 7;
     /// The start does not check that the cache is gone.
     pub(crate) const CACHE_NOT_CHECKED: u32 = 1 << 8;
+    /// The start does not first show that the count sees the file.
+    pub(crate) const CACHE_SIGHT_UNCHECKED: u32 = 1 << 9;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -282,8 +284,12 @@ impl Marker {
         let slot = Arc::new(std::sync::Mutex::new(Some(write)));
         let theirs = slot.clone();
         let (go, word) = std::sync::mpsc::channel::<()>();
+        // A small stack: the daemon locks its memory, so a thread's stack
+        // stays resident for its life, and the marker's writer needs
+        // little (a create, a sync, a sync of the directory).
         let started = std::thread::Builder::new()
             .name("skyzfs-marker".into())
+            .stack_size(MARKER_STACK)
             .spawn(move || {
                 if word.recv().is_err() {
                     return false;
@@ -341,6 +347,9 @@ impl Marker {
         }
     }
 }
+
+/// The marker thread's stack, in bytes.
+const MARKER_STACK: usize = 256 << 10;
 
 /// A start of the in-place store that met the failed disk
 /// ([`IntoInPlaceError::Failed`]): it holds the volume's lock and the
@@ -492,11 +501,16 @@ impl<D: Dir> InPlace<D> {
     /// That holds whether this start acknowledges a failure or follows
     /// an instance that died between a failed sync and its marker,
     /// whose own sync then succeeds: the kernel reports a writeback
-    /// error once. The drop is advisory, so it is tried twice; pages
-    /// that stay, a drop that fails, or a kernel that cannot count the
-    /// file's cached pages refuse the start. Its cost: the first reads
-    /// after a start, a take-over included, come from the disk.
+    /// error once. The count is first shown to see this file
+    /// ([`InPlace::count_sees_the_file`]). The drop is advisory, so it is
+    /// tried twice; pages that stay, a drop that fails, a count that
+    /// does not see the file, or a kernel that cannot count the file's
+    /// cached pages refuse the start. Its cost: the first reads after a
+    /// start, a take-over included, come from the disk.
     fn empty_cache(&mut self) -> Result<(), String> {
+        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+            self.count_sees_the_file()?;
+        }
         let mut left = 0;
         for _ in 0..2 {
             if !self.mutants.has(Mutants::CACHE_NOT_DROPPED) {
@@ -507,21 +521,50 @@ impl<D: Dir> InPlace<D> {
             if self.mutants.has(Mutants::CACHE_NOT_CHECKED) {
                 return Ok(());
             }
-            left = match self.home.cached_pages() {
-                Ok(0) => return Ok(()),
-                Ok(pages) => pages,
-                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
-                    return Err("the kernel cannot count a file's cached pages without \
-                                mapping it (cachestat, Linux 6.5 and later)"
-                        .into())
-                }
-                Err(e) => return Err(format!("counting its cached pages failed: {e}")),
-            };
+            left = self.cached_pages()?;
+            if left == 0 {
+                return Ok(());
+            }
         }
         Err(format!(
-            "{left} pages of it stay in the cache after two drops; something else may map \
-             or lock the file"
+            "{left} pages of it stay in the cache after two drops; something else may map, \
+             lock or read the file"
         ))
+    }
+
+    /// Show that the count sees this file's pages before it is trusted
+    /// to see none: a block read through the cache must count. On an
+    /// overlay file system `cachestat` counts the overlay file's own
+    /// mapping, which holds no page (they are the file's below), and
+    /// would read 0 whatever the cache holds; a file system without a
+    /// page cache would read 0 too, and is refused the same way.
+    fn count_sees_the_file(&mut self) -> Result<(), String> {
+        let mut block = vec![0u8; skyzfs_blk::BLOCK_USIZE];
+        self.home
+            .read_at(0, &mut block)
+            .map_err(|e| format!("reading a block of it failed: {e}"))?;
+        if self.cached_pages()? == 0 {
+            return Err(
+                "the file system's cache cannot be observed through this file: a block \
+                 just read through the cache counts 0 pages (as through an overlay file \
+                 system), so the start cannot show that the drop left none"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The home image's pages in the kernel's cache.
+    fn cached_pages(&self) -> Result<u64, String> {
+        match self.home.cached_pages() {
+            Ok(pages) => Ok(pages),
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Err(
+                "the kernel cannot count a file's cached pages without mapping it \
+                     (cachestat, Linux 6.5 and later)"
+                    .into(),
+            ),
+            Err(e) => Err(format!("counting its cached pages failed: {e}")),
+        }
     }
 
     /// The store's identity, as the log store's

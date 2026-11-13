@@ -377,8 +377,12 @@ impl World {
         }
     }
 
-    /// Mark the selected members of the tail, which must be closed under
-    /// "precedes", as covered by a flush.
+    /// Mark the selected members of the tail as covered by a flush: the
+    /// operations acknowledged before it was received, and only those
+    /// (rule R7). A member ordered before a marked one need not be
+    /// marked: under rule R10 a cut keeps each block's flushed content or
+    /// a later version, not a prefix of the order, and folding
+    /// ([`World::compact`]) still waits for every member before.
     fn mark_flushed(&mut self, cx: &Context, inside: &[bool]) {
         for (placed, covered) in self.tail.iter_mut().zip(inside) {
             placed.flushed |= *covered;
@@ -971,7 +975,14 @@ impl Model {
         let mut next = BTreeSet::new();
         for world in &self.worlds {
             let acked = &self.acked;
-            let inside = world.closure(&self.cx, &|p| acked.get(&p.op).is_some_and(|t| *t < at));
+            // What was acknowledged before the flush, and not what the
+            // order puts before it: a write never acknowledged is not
+            // covered, wherever it was placed.
+            let inside: Vec<bool> = world
+                .tail
+                .iter()
+                .map(|p| acked.get(&p.op).is_some_and(|t| *t < at))
+                .collect();
             let mut world = world.clone();
             world.mark_flushed(&self.cx, &inside);
             next.insert(world);
@@ -1187,15 +1198,20 @@ impl Model {
                 // allows (§4.1: such reads may differ).
                 match seen.get(&block) {
                     Some(before) if &before[..] != bytes => {
+                        // Only the worlds whose discard allows both
+                        // answers stay, so that one world explains every
+                        // answer the block gave (each later one is
+                        // checked against the first in the worlds left).
                         let (first, now) = (self.cx.lookup(before), self.cx.lookup(bytes));
-                        let free = self.worlds.iter().any(|world| {
-                            world.discarded(&self.cx, block).is_some_and(|cell| {
+                        let cx = &self.cx;
+                        self.worlds.retain(|world| {
+                            world.discarded(cx, block).is_some_and(|cell| {
                                 [first, now]
                                     .iter()
                                     .all(|id| id.is_some_and(|id| cell.contains(&id)))
                             })
                         });
-                        if !free {
+                        if self.worlds.is_empty() {
                             return Err(Violation::BadRecovery {
                                 block,
                                 kind: Mismatch::Inconsistent,
@@ -1713,6 +1729,37 @@ mod tests {
         }
     }
 
+    /// R6 across a power cut, in one world: two overlapping writes in
+    /// flight together, both acknowledged, then a discard of both blocks,
+    /// acknowledged; after a cut, while block 1 is still to be read back,
+    /// block 0 may read as zeros and as the write the order put last,
+    /// but not as both writes: no one order lets the discard keep both.
+    /// (Codex's finding on M1.3s.)
+    #[test]
+    fn a_discarded_block_reads_as_one_world_allows() {
+        for (second, third) in [(1u8, 2u8), (2, 1)] {
+            let mut c = Client::new();
+            let a = c.write(0, 2, 1);
+            let b = c.write(0, 2, 2);
+            c.ack(a);
+            c.ack(b);
+            let d = c.discard(0, 2);
+            c.ack(d);
+            c.model.power_cut();
+            c.sees(0, &[0]).unwrap();
+            c.sees(0, &[second]).unwrap();
+            let r = c.read(0, 1);
+            assert_eq!(
+                c.returns(r, vec![third; B]),
+                Err(Violation::BadRecovery {
+                    block: 0,
+                    kind: Mismatch::Inconsistent
+                }),
+                "0, {second}, {third}"
+            );
+        }
+    }
+
     /// R10: a cut leaves one state. A block read a second time after
     /// the cut, before every block that may have changed was read,
     /// returns what it did the first time, though either answer alone
@@ -1969,6 +2016,25 @@ mod tests {
         assert!(c.would_see(0, &[1, 0]));
         assert!(!c.would_see(0, &[0, 0]));
         assert!(!c.would_see(0, &[0, 1]));
+    }
+
+    /// R7 and R10: a flush covers what was acknowledged before it, and
+    /// nothing else. A write never acknowledged that a read showed on
+    /// one of its blocks comes before a flushed write over that block
+    /// in the order, and is still not covered: its other block may be
+    /// lost at a cut. (Found in review of M1.3s, finding 9.)
+    #[test]
+    fn a_flush_does_not_cover_an_unacknowledged_write_ordered_before_it() {
+        let mut c = Client::new();
+        let _x = c.write(0, 2, 1);
+        c.sees(0, &[1]).unwrap();
+        c.wrote(0, 1, 2);
+        c.flush();
+        c.model.power_cut();
+        assert!(c.would_see(0, &[2, 0]));
+        assert!(c.would_see(0, &[2, 1]));
+        assert!(!c.would_see(0, &[1, 1]));
+        assert!(!c.would_see(0, &[0, 0]));
     }
 
     /// R2, R11, R12: where a request is wrong in two ways, either error

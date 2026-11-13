@@ -18,6 +18,17 @@ const BLOCK: u64 = 4096;
 /// time (see `InPlace::wait`).
 const WAIT: Duration = Duration::from_secs(60);
 
+/// Wait until a caller waits at a held sync of the disk: the event the
+/// marker's tests wait for. The bound only ends a test that would
+/// otherwise hang, as where the marker never reached its sync.
+fn until_held(disk: &SimDisk) {
+    let began = std::time::Instant::now();
+    while disk.held_waiters() == 0 {
+        assert!(began.elapsed() < WAIT, "no caller reached the held sync");
+        std::thread::yield_now();
+    }
+}
+
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
     [(1, 0), (16, 0), (16, 3)]
         .into_iter()
@@ -370,9 +381,7 @@ fn a_request_that_meets_the_failure_is_answered_while_the_marker_waits() {
     });
     assert_eq!(answer.recv_timeout(WAIT), Ok(Err(BlkError::Failed)));
     // The marker's write is under way, held at its sync.
-    while disk.held_waiters() == 0 {
-        std::thread::yield_now();
-    }
+    until_held(&disk);
     disk.release_syncs();
     drop(worker.join().unwrap());
     disk.kill();
@@ -399,9 +408,7 @@ fn the_marker_test_notices_a_marker_written_on_the_callers_thread() {
         let _ = tell.send(write(&mut store, 1, 0x11));
         store
     });
-    while disk.held_waiters() == 0 {
-        std::thread::yield_now();
-    }
+    until_held(&disk);
     assert_eq!(
         answer.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty),
@@ -628,7 +635,20 @@ fn a_start_that_meets_the_failed_disk_fails_the_volume() {
                 Store::open(disk.clone(), OpenOptions::default()),
                 Err(StoreError::Locked)
             ));
-            start_failed.finish();
+            // The lock is released after the marker: while the marker's
+            // sync is held, no other start opens the volume.
+            disk.hold_whole_syncs_of(MARKER_NAME);
+            let finishing = std::thread::spawn(move || start_failed.finish());
+            until_held(&disk);
+            assert!(
+                matches!(
+                    Store::open(disk.clone(), OpenOptions::default()),
+                    Err(StoreError::Locked)
+                ),
+                "sync {nth}: the volume opened while its marker was being written"
+            );
+            disk.release_syncs();
+            finishing.join().unwrap();
             assert!(marked(), "sync {nth}: no marker after the finish");
         } else {
             drop(start_failed);
@@ -1184,8 +1204,8 @@ fn enter(disk: &SimDisk, mutants: u32) -> Result<InPlace<SimDisk>, IntoInPlaceEr
     store.into_in_place_with(None, Mutants(mutants))
 }
 
-/// A start whose drop of the cache leaves pages (something else maps
-/// or locks the file), or that runs on a kernel that cannot count them,
+/// A start whose drop of the cache leaves pages (something else maps,
+/// locks or reads the file), or that runs on a kernel that cannot count them,
 /// refuses the volume, which has not failed: the next start, with the
 /// cache dropped, serves it. A start that does not check is noticed.
 #[test]
@@ -1211,5 +1231,51 @@ fn a_start_refuses_a_volume_whose_cache_stays() {
     );
     drop(refused);
     disk.set_cache_counts(true);
+    assert!(enter(&disk, 0).is_ok());
+}
+
+/// The count is shown to see the file before it is trusted to see
+/// none: where it answers 0 whatever the cache holds (`cachestat`
+/// through a file of an overlay file system), the start refuses, though
+/// every page could still be there. A start that does not look is
+/// noticed: it serves.
+#[test]
+fn a_start_refuses_where_the_count_cannot_see_the_file() {
+    let disk = created(15, 0);
+    disk.blind_cache_count(true);
+    disk.keep_cache(true);
+    let refused = enter(&disk, 0);
+    assert!(
+        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("cannot be observed")),
+        "{refused:?}"
+    );
+    drop(refused);
+    assert!(
+        enter(&disk, Mutants::CACHE_SIGHT_UNCHECKED).is_ok(),
+        "the defect is noticed only if the start that does not look starts"
+    );
+    disk.blind_cache_count(false);
+    disk.keep_cache(false);
+    assert!(enter(&disk, 0).is_ok());
+}
+
+/// The drop is advisory and tried twice: a first drop that leaves
+/// pages is not yet a refusal, a second one is.
+#[test]
+fn the_start_drops_the_cache_twice_before_it_refuses() {
+    let disk = created(16, 0);
+    disk.keep_cache_for(1);
+    assert!(
+        enter(&disk, 0).is_ok(),
+        "one drop that left pages refused the start"
+    );
+    disk.keep_cache_for(2);
+    let refused = enter(&disk, 0);
+    assert!(
+        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("two drops")),
+        "{refused:?}"
+    );
+    drop(refused);
+    disk.keep_cache_for(0);
     assert!(enter(&disk, 0).is_ok());
 }
