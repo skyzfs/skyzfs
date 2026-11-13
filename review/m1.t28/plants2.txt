@@ -1,0 +1,14 @@
+watch-never-off: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+no-request-log: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+trace-never-started: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+start-after-the-tool: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+no-trace-off-exit: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+missing-is-ok: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+no-trace-is-not-missing: test_c_evidence.sh 1 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+change-is-not-missing: test_c_evidence.sh 1 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails
+watch-back-before-low: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: ERROR: test_check_c_writes_its_evidence_on_every_path 
+off-leaves-tracing-off: test_c_evidence.sh 0 fail; test_blktrace.sh 1 fail; test_daemon_check.py: nothing fails
+off-keeps-the-buffer: test_c_evidence.sh 0 fail; test_blktrace.sh 1 fail; test_daemon_check.py: nothing fails
+off-keeps-the-clock: test_c_evidence.sh 0 fail; test_blktrace.sh 1 fail; test_daemon_check.py: nothing fails
+off-leaves-events-on: test_c_evidence.sh 0 fail; test_blktrace.sh 1 fail; test_daemon_check.py: nothing fails
+on-does-not-save: test_c_evidence.sh 0 fail; test_blktrace.sh 0 fail; test_daemon_check.py: nothing fails

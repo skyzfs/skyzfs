@@ -90,3 +90,30 @@ watch on.
 
 Tracefs mounts in this session's machine, so a script that only uses
 ftrace's files can be run here for real. Unmount it afterwards.
+
+## The second look (head c812539)
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/59#issuecomment-6859925472.
+Every finding of the first look was settled in c812539, and nothing new
+blocked.
+
+- `blktrace_off` now puts back what `blktrace_on` found. On the same
+  kernel the state before and after is equal (`ftrace-state-c812539.txt`).
+- The rig's error is decided from what each pass left: no trace line,
+  no request log from a server that keeps one, or a change event of a
+  ublk device while the watch is meant to be off.
+- The watch stays off through `check_c_low`.
+- The probe is gone; what is left is `c-repeat-rig.sh` and
+  `skyzfs-c-repeat.yml`, with an input for the watch.
+
+Left, small: a buffer found as `7 (expanded: 1408)` (ftrace not yet
+used) is put back as 7, and a buffer written as 7 stays 7 when an event
+is enabled (measured), where the boot state grows to 1408; and two gaps
+in the tests (`plants2.txt`: a `blktrace_on` that assumes `tracing_on`
+1; "not run:" dropped from the line).
+
+To revisit when the model's half (#60) is in: a change event of a ublk
+device is then harmless and still the rig's error.
+
+`plants2.sh WORKTREE` holds the plants of this look.
