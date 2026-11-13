@@ -319,6 +319,10 @@
 #                           running (about 35 s per topology; 0 skips it)
 #   TB_LABEL=               tag appended to the topology name in the results,
 #                           for runs of one topology under different settings
+#   TB_EARLIER_FAILED=      the numbers of the rows of a sequence that failed
+#                           before this one, set by the workflow: the label
+#                           then says "after failed row N" in every table,
+#                           and the row's JSON has earlier_failed (M1.T24)
 #   TB_PG_USER=postgres     unprivileged user postgres runs as
 #   TB_KEEP=1               leave the stack up on failure for inspection
 #   TB_REUSE_ORIGIN=1       keep an existing origin image (same scale)
@@ -910,6 +914,14 @@ ZFS_PROPS=${TB_ZFS_PROPS:-}
 PG_CONF=${TB_PG_CONF:-}
 FSYNC_TEST=${TB_FSYNC_TEST:-1}
 LABEL=${TB_LABEL:-}
+EARLIER_FAILED=${TB_EARLIER_FAILED:-}
+[[ $EARLIER_FAILED =~ ^[0-9\ ]*$ ]] || { echo "TB_EARLIER_FAILED is row numbers, not: $EARLIER_FAILED" >&2; exit 64; }
+read -r -a _ef <<< "$EARLIER_FAILED"
+case ${#_ef[@]} in
+    0) ;;
+    1) LABEL="${LABEL:+$LABEL; }after failed row ${_ef[0]}" ;;
+    *) LABEL="${LABEL:+$LABEL; }after failed rows $(IFS=,; echo "${_ef[*]}")" ;;
+esac
 to_mb() { # "1G" | "256MB" | "512M" | bytes -> MiB
     python3 -c '
 import re, sys
@@ -2467,6 +2479,8 @@ r['clients'] = int(sys.argv[10])
 r['origin_delay_ms'] = int(sys.argv[11])
 # Postgres's memory limit, a setting a bracketing model row must share.
 r['mem_limit'] = os.environ.get('TB_ROW_MEM_LIMIT') or 'none'
+if os.environ.get('TB_EARLIER_FAILED', '').split():
+    r['earlier_failed'] = [int(x) for x in os.environ['TB_EARLIER_FAILED'].split()]
 # The machine the row ran on: this boot of this runner. Two rows are
 # compared only where it is the same.
 # The host name beside the boot id: machines resumed from one memory

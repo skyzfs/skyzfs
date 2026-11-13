@@ -35,7 +35,7 @@ class Embedded(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
         self.assertIn('## topology-bench', p.stdout)
 
-    def row(self, d, looks):
+    def row(self, d, looks, env=None):
         """Run the row here-document on looks {suffix: text} in d; its JSON."""
         with open(SCRIPT) as f:
             doc = next(x for x in HEREDOC.findall(f.read()) if 'sys.argv[12]' in x)
@@ -48,9 +48,22 @@ class Embedded(unittest.TestCase):
                 f.write(text)
         p = subprocess.run(['python3', '-I', prog, base, 'zfs-skyzfsd', 'tpcb', '60', 'none', '0',
                             base + '.nolog', base + '.nofsync', 'x', '8', '0', HERE],
-                           capture_output=True, text=True, timeout=60)
+                           capture_output=True, text=True, timeout=60,
+                           env={**os.environ, **(env or {})})
         self.assertEqual(p.returncode, 0, p.stderr[-2000:])
         return json.loads(p.stdout)
+
+    def test_a_row_after_a_failed_row_says_so(self):
+        # The workflow sets TB_EARLIER_FAILED on the rows of a sequence
+        # after one that failed (M1.T24).
+        with tempfile.TemporaryDirectory() as d:
+            r = self.row(d, {'.before': 'clock now 1\n', '.after': 'clock now 2\n', '.pgbench': ''},
+                         {'TB_EARLIER_FAILED': '2 5'})
+        self.assertEqual(r['earlier_failed'], [2, 5])
+        with tempfile.TemporaryDirectory() as d:
+            r = self.row(d, {'.before': 'clock now 1\n', '.after': 'clock now 2\n', '.pgbench': ''},
+                         {'TB_EARLIER_FAILED': ''})
+        self.assertNotIn('earlier_failed', r)
 
     def test_daemon_reclaim_ends_when_pgbench_returns(self):
         # The after-look comes after the trace's end, a sync and 2 s; the

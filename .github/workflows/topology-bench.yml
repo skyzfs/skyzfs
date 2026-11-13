@@ -380,7 +380,8 @@ jobs:
           IFS=';' read -ra entries <<< "$TB_SEQUENCE"
           i=0
           # A row that fails does not end the job: the rows after it
-          # run, and the step fails at the end. A row whose copy or sync
+          # run, each labelled "after failed row N", and the step fails
+          # at the end. A row whose copy or sync
           # onto the daemon ran out of its limit (its output has
           # skyzfsd-hang/, M1.T24) does end the sequence: what it left in
           # the kernel may not die, and a row beside it would measure two
@@ -399,6 +400,9 @@ jobs:
               # The build the step "Build skyzfsd" made for this ref.
               if [[ $a == TB_SKYZFSD_REF=* ]]; then args+=("TB_SKYZFSD=$RUNNER_TEMP/skyzfsd-${a#TB_SKYZFSD_REF=}"); fi
             done
+            # Each row after a failed one says so in its label (lead's
+            # ruling on the M1.T24 review).
+            [ -z "$failed" ] || args+=("TB_EARLIER_FAILED=${failed# }")
             echo "::group::sequence $i: $label ($assigns)"
             rc=0
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
