@@ -107,6 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       servers: ${{ steps.plan.outputs.servers }}
+      exclude: ${{ steps.plan.outputs.exclude }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -141,20 +142,32 @@ jobs:
           esac
           echo "servers=$servers" >> "$GITHUB_OUTPUT"
           echo "Server behind the device: $why." | tee -a "$GITHUB_STEP_SUMMARY"
+          # The stand-in on arm64 by dispatch only: it shows that the rig
+          # still catches what it caught, which the amd64 jobs show on
+          # every change of the rig.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            exclude='[]'
+          else
+            exclude='[{"image":"ubuntu-26.04-arm","server":"stand-in"},{"image":"ubuntu-24.04-arm","server":"stand-in"}]'
+            echo "On arm64 the daemon only; the stand-in there runs by dispatch." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "exclude=$exclude" >> "$GITHUB_OUTPUT"
 
   rig:
     name: ${{ matrix.image }}, ${{ matrix.server }}
     needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
-    # arm64 (M1.T21): a pull request also runs on ubuntu-26.04-arm, where the
-    # package fallback works; ubuntu-24.04-arm (no mirror list, so no fallback
-    # in an outage) by dispatch (input images). 4 KiB pages only.
+    # arm64 (M1.T21): a pull request also runs the daemon on ubuntu-26.04-arm,
+    # where the package fallback works; the stand-in on arm64, and
+    # ubuntu-24.04-arm (no mirror list, so no fallback in an outage), by
+    # dispatch (input images). 4 KiB pages only.
     strategy:
       fail-fast: false
       matrix:
         image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm"]') }}
         server: ${{ fromJSON(needs.plan.outputs.servers) }}
+        exclude: ${{ fromJSON(needs.plan.outputs.exclude) }}
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,
