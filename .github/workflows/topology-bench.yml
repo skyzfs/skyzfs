@@ -379,6 +379,16 @@ jobs:
           # directory so equal topology names do not collide.
           IFS=';' read -ra entries <<< "$TB_SEQUENCE"
           i=0
+          # A row that fails does not end the job: the rows after it
+          # run, each labelled "after failed row N", and the step fails
+          # at the end. A row whose copy or sync
+          # onto the daemon ran out of its limit (its output has
+          # skyzfsd-hang/, M1.T24) does end the sequence: what it left in
+          # the kernel may not die, and a row beside it would measure two
+          # daemons in one cgroup. The evidence step then sees the
+          # machine as the hang left it.
+          failed=""
+          hung=""
           for e in "${entries[@]}"; do
             i=$((i + 1))
             label=${e%%|*}; assigns=${e#*|}
@@ -390,11 +400,32 @@ jobs:
               # The build the step "Build skyzfsd" made for this ref.
               if [[ $a == TB_SKYZFSD_REF=* ]]; then args+=("TB_SKYZFSD=$RUNNER_TEMP/skyzfsd-${a#TB_SKYZFSD_REF=}"); fi
             done
+            # Each row after a failed one says so in its label (lead's
+            # ruling on the M1.T24 review).
+            [ -z "$failed" ] || args+=("TB_EARLIER_FAILED=${failed# }")
             echo "::group::sequence $i: $label ($assigns)"
+            rc=0
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
-              "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}"
+              "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}" || rc=$?
             echo "::endgroup::"
+            if sudo test -d "$TB_OUT/$i/skyzfsd-hang"; then
+              hung=$i
+              failed="$failed $i"
+              echo "::error::sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit; the sequence ends here"
+              echo "Sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit, so the sequence ended there (${#entries[@]} rows asked for). The evidence is in skyzfsd-hang/ of its output." >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+            if [ "$rc" != 0 ]; then
+              echo "::error::sequence $i ($label) failed with $rc"
+              if [ "$i" -lt "${#entries[@]}" ]; then
+                echo "Sequence $i ($label) failed with $rc; the rows after it ran, each marked \"after failed row\"." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "Sequence $i ($label) failed with $rc; it was the last row." >> "$GITHUB_STEP_SUMMARY"
+              fi
+              failed="$failed $i"
+            fi
           done
+          [ -z "$failed" ] || { echo "rows that failed:$failed${hung:+; the sequence ended after row $hung}"; exit 1; }
 
       - name: Work disk mount at the end
         # That the barriers asked for were in force to the last row.
@@ -406,18 +437,41 @@ jobs:
           if [[ ",$after," == *,nobarrier,* ]]; then echo "::error::nobarrier was back by the end of the job"; exit 1; fi
 
       - name: Evidence on failure
-        if: failure()
+        # On a cancel too (the job's limit): a hang leaves the machine as
+        # it was, and this is the only look at it (M1.T24). First the
+        # threads that wait in the kernel and what they wait for, then
+        # the rest; each look that could wait on a hung device under a
+        # limit.
+        if: failure() || cancelled()
         run: |
+          sudo bash -c '
+            . tests/lib/lim.sh
+            for t in /proc/[0-9]*/task/[0-9]*; do
+              st=$(sed "s/^.*) //" "$t/stat" 2>/dev/null | cut -c1) || continue
+              [ "$st" = D ] || continue
+              p=${t#/proc/}; p=${p%%/*}
+              echo "== D: $p ${t##*/} $(cat "$t/comm" 2>/dev/null) $(cat "$t/wchan" 2>/dev/null)"
+              lim 5 cat "$t/stack"
+            done
+            for b in /sys/block/ublkb*; do [ -e "$b" ] && echo "$b inflight: $(cat "$b/inflight")"; done
+            c=/sys/fs/cgroup/topology-bench-skyzfsd
+            if [ -d "$c" ]; then
+              for f in memory.current memory.max memory.events memory.pressure io.pressure; do echo "== $c/$f"; cat "$c/$f"; done
+            fi
+            echo w > /proc/sysrq-trigger
+            lim 30 zpool status -v
+            lim 30 ublk list
+          ' || true
           sudo dmsetup ls --tree || true
           sudo losetup -a || true
           ls /sys/block | grep -E 'bcache|cas' || true
-          sudo zpool status -v 2>/dev/null || true
-          sudo ublk list 2>/dev/null || true
-          sudo zfs list -t all 2>/dev/null || true
+          sudo bash -c '. tests/lib/lim.sh; lim 30 zfs list -t all' 2>/dev/null || true
           sudo tail -40 /proc/spl/kstat/zfs/dbgmsg 2>/dev/null || true
           sudo tail -50 "$TB_WORK/pg.log" 2>/dev/null || true
           # The interesting kernel lines are the ones BEFORE a trace.
           sudo dmesg | grep -iE 'device-mapper|dm-[0-9]|loop[0-9]|ublk|bcache|cas_|OCF|EXT4|ZFS|SPL|zio|WARN|BUG|Call Trace|error' | tail -120 || true
+          # The blocked tasks the dump above asked for (sysrq w), whole.
+          sudo dmesg | grep -A40 -E 'Show Blocked State|task:.* state:D' | tail -400 || true
 
       - name: Upload results
         if: always()
