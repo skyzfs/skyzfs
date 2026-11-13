@@ -513,6 +513,9 @@ class CheckG(unittest.TestCase):
             text = f.read()
         body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
         self.assertEqual(body.count('obs c_evidence '), 3, 'no trace possible, a pass that left too little, and all')
+        # The two lines for a missing piece are the rig's error: the judge
+        # reads "not run" in them.
+        self.assertEqual(body.count('obs c_evidence "not run: '), 2)
         main = text[text.index('\n    check_c\n    check_c_low\n'):]
         self.assertTrue(main.index('c_watch_back') < main.index(';;'), 'the watch is put back after the third pass')
         for tag in ('c', 'cd'):

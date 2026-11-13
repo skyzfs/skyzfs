@@ -25,6 +25,14 @@ on:
         type: choice
         options: ["on", "off"]
         default: "on"
+      provoke:
+        description: "with the watch on, during each pass: open every ublk device for writing and close it, and read it whole through the page cache, in loops (review's finding 4 on #59; see c-repeat-rig.sh)"
+        type: choice
+        options: ["no", "yes"]
+        default: "no"
+      blkcheck_ref:
+        description: "build skyzfs-blkcheck (the tool and its model) from this commit (40 hex digits) and not from the checkout; the rig's scripts stay the checkout's. Empty: the checkout"
+        default: ""
   push:
     branches: ['skyzfs-testing*']
     paths:
@@ -35,7 +43,7 @@ permissions:
 
 jobs:
   repeat:
-    name: ${{ inputs.image || 'ubuntu-26.04' }}, watch ${{ inputs.watch || 'on' }}
+    name: ${{ inputs.image || 'ubuntu-26.04' }}, watch ${{ inputs.watch || 'on' }}${{ inputs.provoke == 'yes' && ', provoked' || '' }}
     runs-on: ${{ inputs.image || 'ubuntu-26.04' }}
     timeout-minutes: 180
     steps:
@@ -47,12 +55,29 @@ jobs:
           DAEMONS: ${{ inputs.daemons || '' }}
           ROUNDS: ${{ inputs.rounds || '1' }}
           WATCH: ${{ inputs.watch || 'on' }}
+          PROVOKE: ${{ inputs.provoke || 'no' }}
+          BLKCHECK_REF: ${{ inputs.blkcheck_ref || '' }}
         run: |
           [[ $ROUNDS =~ ^[0-9]+$ ]] || { echo "::error::rounds is a number: '$ROUNDS'"; exit 64; }
           case $WATCH in on|off) ;; *) echo "::error::watch is on or off: '$WATCH'"; exit 64 ;; esac
+          case $PROVOKE in no|yes) ;; *) echo "::error::provoke is no or yes: '$PROVOKE'"; exit 64 ;; esac
+          [ "$PROVOKE" = no ] || [ "$WATCH" = on ] || { echo "::error::provoke needs the watch on"; exit 64; }
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
-          cargo build --release --locked -p skyzfs-blkcheck
+          tool=$PWD/target/release/skyzfs-blkcheck
+          from="the checkout, $(git rev-parse HEAD)"
+          if [ -n "$BLKCHECK_REF" ]; then
+            [[ $BLKCHECK_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::blkcheck_ref is a commit's 40 hex digits: '$BLKCHECK_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$BLKCHECK_REF"
+            git worktree add --detach "$RUNNER_TEMP/tool-src" "$BLKCHECK_REF"
+            (cd "$RUNNER_TEMP/tool-src" && CARGO_TARGET_DIR=$RUNNER_TEMP/target cargo build --release --locked -p skyzfs-blkcheck)
+            cp "$RUNNER_TEMP/target/release/skyzfs-blkcheck" "$RUNNER_TEMP/skyzfs-blkcheck"
+            tool=$RUNNER_TEMP/skyzfs-blkcheck
+            from=$BLKCHECK_REF
+            echo "- the tool: skyzfs-blkcheck built from \`$BLKCHECK_REF\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            cargo build --release --locked -p skyzfs-blkcheck
+          fi
           list=""
           if [ -z "$DAEMONS" ]; then
             cargo build --release --locked -p skyzfsd --features test-hooks
@@ -73,10 +98,12 @@ jobs:
             echo "- $label: skyzfsd built from \`$ref\` with its test hooks" >> "$GITHUB_STEP_SUMMARY"
           done
           {
-            printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
+            printf 'export RIG_BLKCHECK=%q\n' "$tool"
+            printf 'export RIG_BLKCHECK_FROM=%q\n' "$from"
             printf 'export RIG_DAEMONS=%q\n' "${list# }"
             printf 'export RIG_ROUNDS=%q\n' "$ROUNDS"
             printf 'export RIG_WATCH=%q\n' "$WATCH"
+            [ "$PROVOKE" = no ] || echo 'export RIG_PROVOKE=1'
           } > "$RUNNER_TEMP/rig.env"
       - name: Rig
         run: |
@@ -88,6 +115,6 @@ jobs:
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: c-repeat-${{ inputs.image || 'ubuntu-26.04' }}-watch-${{ inputs.watch || 'on' }}
+          name: c-repeat-${{ inputs.image || 'ubuntu-26.04' }}-watch-${{ inputs.watch || 'on' }}${{ inputs.provoke == 'yes' && '-provoked' || '' }}
           path: repeat-out/
           retention-days: 30

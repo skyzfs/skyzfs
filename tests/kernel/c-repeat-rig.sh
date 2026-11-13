@@ -21,8 +21,20 @@
 # Environment: RIG_BLKCHECK (the tool), RIG_DAEMONS ("LABEL=PATH ..."),
 # RIG_ROUNDS (passes for each daemon, default 10), RIG_WATCH (on: udev's
 # rules as the image ships them, which watch ublk devices on Ubuntu 26.04;
-# off: the daemon rig's rule that turns the watch off), RIG_SERVE_ARGS
-# (default --store in-place).
+# off: the daemon rig's rule that turns the watch off), RIG_PROVOKE (1:
+# the case the model's half of M1.T28 is for, made frequent on purpose,
+# review's finding 4 on #59. With the watch on, one loop opens every
+# ublk device for writing and closes it every RIG_PROVOKE_MS ms (default
+# 20), so that udev reads the devices under the suite; and one reads
+# the last 256 KiB of every ublk device through the page cache, dropping
+# it after each read, with no pause, so that at a server's death a buffered read there is in flight,
+# is requeued, and holds its pages locked until the next server answers
+# it: a direct write of the suite over those pages then returns only
+# after the restart. Every failure of #58's signature was a write at
+# the device's end, where udev's probe reads; a reader of the whole
+# device (43472772939) was rarely there at a kill and gave none),
+# RIG_SERVE_ARGS (default --store in-place), RIG_BLKCHECK_FROM (what
+# the tool was built from, for the summary).
 #
 # It judges nothing: exit 0 when it ran, 2 for an error of its own. The
 # summary is OUT/summary.md.
@@ -34,6 +46,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/blktrace.sh"
 # shellcheck source=tests/kernel/request-log.sh
 . "$HERE/request-log.sh"
+# shellcheck source=tests/lib/gnu-dd.sh
+. "$HERE/../lib/gnu-dd.sh"
 OUT=${1:?usage: c-repeat-rig.sh OUT}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -42,6 +56,8 @@ TOOL=${RIG_BLKCHECK:?}
 read -r -a DAEMONS <<< "${RIG_DAEMONS:?}"
 ROUNDS=${RIG_ROUNDS:-10}
 WATCH=${RIG_WATCH:-on}
+PROVOKE=${RIG_PROVOKE:-}
+PROVOKE_MS=${RIG_PROVOKE_MS:-20}
 SERVE_ARGS=${RIG_SERVE_ARGS:---store in-place}
 NOWATCH=/etc/udev/rules.d/61-skyzfs-rig-ublkb-nowatch.rules
 SUM=$OUT/summary.md
@@ -50,6 +66,9 @@ note() { echo "$*" | tee -a "$SUM"; }
 
 [ "$(id -u)" = 0 ] || die "needs root"
 case $WATCH in on|off) ;; *) die "RIG_WATCH is on or off: '$WATCH'" ;; esac
+case $PROVOKE in ''|1) ;; *) die "RIG_PROVOKE is 1 or empty: '$PROVOKE'" ;; esac
+[[ $PROVOKE_MS =~ ^[0-9]+$ ]] || die "RIG_PROVOKE_MS is a number: '$PROVOKE_MS'"
+[ -z "$PROVOKE" ] || [ "$WATCH" = on ] || die "RIG_PROVOKE needs udev's watch on"
 [[ $ROUNDS =~ ^[0-9]+$ ]] || die "RIG_ROUNDS is a number: '$ROUNDS'"
 mkdir -p "$WORK"
 [ -e /dev/ublk-control ] || modprobe ublk_drv 2> "$OUT/modprobe.log" || {
@@ -58,10 +77,56 @@ mkdir -p "$WORK"
 }
 why=$(blktrace_ready) || die "$why"
 MONITOR=""
+PROVOKER=""
+# The provoker: a writable open and close of every ublk device, over and
+# over, and beside it a reader of the end of every ublk device through
+# the page cache. The suite holds each device open, so a close is never the last
+# one and syncs nothing; between a create and the suite's open it may
+# be, and then waits at most for that device's server. A read of a
+# device whose server is dead waits for the next one, as the suite does.
+provoke() {
+    local d s n
+    s=$(awk -v ms="$PROVOKE_MS" 'BEGIN { printf "%.3f", ms / 1000 }')
+    while :; do
+        for d in /dev/ublkb*; do
+            [ -b "$d" ] || continue
+            n=$(blockdev --getsize64 "$d" 2>/dev/null) || continue
+            [ "${n:-0}" -ge 262144 ] || continue
+            # nocache: the pages are dropped after the read, so that the
+            # next round reads from the server again.
+            "$DD" if="$d" of=/dev/null bs=4k skip=$(( n / 4096 - 64 )) count=64 iflag=nocache status=none 2>/dev/null
+        done
+    done &
+    while :; do
+        for d in /dev/ublkb*; do
+            # Never `: > "$d"`: that opens with O_CREAT, and a node that goes
+            # between the test and the open leaves a regular file at the
+            # device's path, where the next device of that number gets no
+            # node (the create that waited 60 s in 43468133700). GNU dd
+            # with nocreat opens for writing and creates nothing ("$DD":
+            # 26.04's plain dd is not GNU's).
+            [ -b "$d" ] || continue
+            "$DD" if=/dev/null of="$d" conv=nocreat,notrunc status=none 2>/dev/null
+        done
+        sleep "$s"
+    done
+}
+# The provoker runs in a process group of its own, so that a stop
+# reaches every process under it, the dd a loop waits for among them: a
+# read of a device whose server is dead waits for the next server, and a
+# dd left behind would hold its device open.
+provoke_start() { set -m; provoke & PROVOKER=$!; set +m; }
+provoke_stop() {
+    [ -n "$PROVOKER" ] || return 0
+    kill -- "-$PROVOKER" 2>/dev/null
+    wait "$PROVOKER" 2>/dev/null
+    PROVOKER=""
+}
 # shellcheck disable=SC2317,SC2329  # reached through the trap
 cleanup() {
     blktrace_off
     [ -z "$MONITOR" ] || kill "$MONITOR" 2>/dev/null
+    provoke_stop
     if [ "$WATCH" = off ]; then rm -f "$NOWATCH"; lim 30 udevadm control --reload; fi
 }
 trap cleanup EXIT
@@ -80,12 +145,13 @@ part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
 # shellcheck disable=SC1091
 note "## Check c's first pass, ${ROUNDS} times for each daemon, in turn, on this machine ($(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r))"
 note ""
-note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")"
+note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")$([ -n "$PROVOKE" ] && echo "; reads provoked: every ublk device opened for writing and closed, and its last 256 KiB read through the page cache without a pause (the opens every $PROVOKE_MS ms)")"
+note "- the tool: $TOOL${RIG_BLKCHECK_FROM:+, built from $RIG_BLKCHECK_FROM}"
 note "- the request log (--request-log): ${rl_said}the block trace is on the clock mono, as the log's mono_ns"
 note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); a volume's c-cN.extents (filefrag -b512) are in its sectors"
 note ""
-note "| pass | daemon | exit | cases that FAILED | volumes the model's replay finds wrong | change events of a ublk device | requests issued by udev | seconds |"
-note "|---|---|---|---|---|---|---|---|"
+note "| pass | daemon | exit | cases that FAILED | volumes the model's replay finds wrong | change events of a ublk device | requests issued by udev | buffered reads requeued at a death | seconds |"
+note "|---|---|---|---|---|---|---|---|---|"
 declare -A failed_passes=()
 for r in $(seq 1 "$ROUNDS"); do
     for d in "${DAEMONS[@]}"; do
@@ -94,6 +160,7 @@ for r in $(seq 1 "$ROUNDS"); do
         rm -rf "$w"; mkdir -p "$p" "$w"
         udevadm monitor --udev --subsystem-match=block > "$p/udev.txt" 2>&1 &
         MONITOR=$!
+        if [ -n "$PROVOKE" ]; then provoke_start; fi
         blktrace_on "$p/ftrace.txt"
         blktrace_mark "pass $r $label start"
         t0=$(date +%s)
@@ -105,6 +172,7 @@ for r in $(seq 1 "$ROUNDS"); do
         secs=$(( $(date +%s) - t0 ))
         blktrace_off
         kill "$MONITOR" 2>/dev/null; wait "$MONITOR" 2>/dev/null; MONITOR=""
+        provoke_stop
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
         for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
@@ -117,7 +185,10 @@ for r in $(seq 1 "$ROUNDS"); do
         fi
         n_change=$(grep -c 'change .*/ublkb[0-9]* (block)' "$p/udev.txt")
         n_udev=$(grep 'block_rq_issue:' "$p/ftrace.txt" | grep -c 'udev[^]]*\]$')
-        note "| $r | $label | $rc | ${fails:-none} | ${bad:-none} | $n_change | $n_udev | $secs |"
+        # A read through the page cache is RA or R without S; the tool's
+        # direct reads are RS.
+        n_rq=$(grep -E 'block_rq_requeue: [0-9]+,[0-9]+ RA? ' "$p/ftrace.txt" | grep -c .)
+        note "| $r | $label | $rc | ${fails:-none} | ${bad:-none} | $n_change | $n_udev | $n_rq | $secs |"
         gzip -f "$p/c-trace.tsv" "$p/ftrace.txt" "$p"/c-*.requests.tsv "$p"/c-*.extents 2>/dev/null
         # Keep the first pass of each daemon and every pass that failed.
         if [ "$r" != 1 ] && [ -z "$fails" ] && [ $rc = 0 ]; then rm -rf "$p"; fi
