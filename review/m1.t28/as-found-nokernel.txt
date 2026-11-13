@@ -1,0 +1,21 @@
+diff -r /tmp/tmp.alJLAjSMR9/before/buffer_size_kb /tmp/tmp.alJLAjSMR9/t/buffer_size_kb
+1c1
+< 1408
+---
+> 65536
+diff -r /tmp/tmp.alJLAjSMR9/before/set_ftrace_filter /tmp/tmp.alJLAjSMR9/t/set_ftrace_filter
+0a1
+> 
+diff -r /tmp/tmp.alJLAjSMR9/before/trace /tmp/tmp.alJLAjSMR9/t/trace
+0a1
+> 
+diff -r /tmp/tmp.alJLAjSMR9/before/trace_clock /tmp/tmp.alJLAjSMR9/t/trace_clock
+1c1
+< local global counter uptime perf mono mono_raw boot tai
+---
+> local
+diff -r /tmp/tmp.alJLAjSMR9/before/tracing_on /tmp/tmp.alJLAjSMR9/t/tracing_on
+1c1
+< 1
+---
+> 0

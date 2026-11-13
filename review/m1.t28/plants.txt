@@ -1,0 +1,18 @@
+unchanged: all passed; OK
+keep-never: test_c_evidence.sh 3 checks fail; test_daemon_check.py: nothing fails
+keep-always: test_c_evidence.sh 2 checks fail; test_daemon_check.py: nothing fails
+keep-only-on-rc: test_c_evidence.sh 2 checks fail; test_daemon_check.py: nothing fails
+keep-only-on-fail: test_c_evidence.sh 1 checks fail; test_daemon_check.py: nothing fails
+extents-not-kept: test_c_evidence.sh 1 checks fail; test_daemon_check.py: nothing fails
+trace-not-kept: test_c_evidence.sh 2 checks fail; test_daemon_check.py: nothing fails
+passed-keeps-trace: test_c_evidence.sh 1 checks fail; test_daemon_check.py: nothing fails
+change-count-zero: test_c_evidence.sh 1 checks fail; test_daemon_check.py: nothing fails
+no-watch-back-exit: test_c_evidence.sh 0 checks fail; test_daemon_check.py: FAIL: test_check_c_writes_its_evidence_on_every_path 
+no-watch-back-end: test_c_evidence.sh 0 checks fail; test_daemon_check.py: FAIL: test_check_c_writes_its_evidence_on_every_path 
+watch-never-off: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails
+no-trace-off-exit: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails
+no-end-of-cd: test_c_evidence.sh 0 checks fail; test_daemon_check.py: FAIL: test_check_c_writes_its_evidence_on_every_path 
+start-after-the-tool: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails
+no-request-log: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails
+missing-trace-is-ok: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails
+trace-never-started: test_c_evidence.sh 0 checks fail; test_daemon_check.py: nothing fails

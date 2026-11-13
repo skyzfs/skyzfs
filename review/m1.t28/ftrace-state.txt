@@ -1,0 +1,46 @@
+kernel 6.18.44-fc-v445; blktrace.sh of 9addf69
+ready: yes
+before blktrace_on:
+  tracing_on             1 
+  current_tracer         nop 
+  trace_clock            [local] global counter uptime perf mono mono_raw boot tai x86-tsc 
+  buffer_size_kb         7 (expanded: 1408) 
+  buffer_total_size_kb   28 (expanded: 5632) 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 0
+  events/block/block_split 0
+  events/block/block_rq_requeue 0
+  events/block/block_rq_complete 0
+  MemFree kB             16035320
+  online CPUs            4
+while tracing:
+  tracing_on             1 
+  current_tracer         nop 
+  trace_clock            local global counter uptime perf [mono] mono_raw boot tai x86-tsc 
+  buffer_size_kb         65538 
+  buffer_total_size_kb   262152 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 1
+  events/block/block_split 1
+  events/block/block_rq_requeue 1
+  events/block/block_rq_complete 1
+  MemFree kB             15764888
+  online CPUs            4
+/home/user/skyzfs-pr59/tests/kernel/blktrace.sh: line 59: /sys/kernel/tracing/set_ftrace_filter: Operation not permitted
+after blktrace_off:
+  tracing_on             0 
+  current_tracer         nop 
+  trace_clock            [local] global counter uptime perf mono mono_raw boot tai x86-tsc 
+  buffer_size_kb         65538 
+  buffer_total_size_kb   262152 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 0
+  events/block/block_split 0
+  events/block/block_rq_requeue 0
+  events/block/block_rq_complete 0
+  MemFree kB             15763676
+  online CPUs            4
+the trace: 118 lines, 58 block_rq_issue, 0 lines that say events were lost

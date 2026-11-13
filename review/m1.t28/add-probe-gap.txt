@@ -1,0 +1,8 @@
+== pass-1-m1.3y
+devices born: 61; with a request by the tool: 54 (none: 7)
+udev-worker requests before the tool's first: 2103 in all, 39 a device; the last of them at most 13.7 ms after the scan
+the tool's first request: at the earliest 159.5 ms after the scan; smallest gap from udev's last request to it 152.6 ms; devices with a gap under 10 ms: 0
+== pass-3-m1.3y
+devices born: 61; with a request by the tool: 56 (none: 5)
+udev-worker requests before the tool's first: 2223 in all, 40 a device; the last of them at most 675.1 ms after the scan
+the tool's first request: at the earliest 153.3 ms after the scan; smallest gap from udev's last request to it 146.2 ms; devices with a gap under 10 ms: 0
