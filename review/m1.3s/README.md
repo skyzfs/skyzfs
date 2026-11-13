@@ -245,3 +245,9 @@ start; the refusal no longer names the overlay as the cause.
   the two tries are microseconds apart, so a start whose drop falls within a
   disk read begun by another reader of the image refuses. A start takes about
   6 ms here (200 in 1.2 to 1.5 s), a read far less; 0 refusals in 7000 starts.
+- CI at 6f98d25: the replay rig through `skyzfsd` on ubuntu-26.04 (run
+  43372945268, the job that showed E) is green; its artifact has the start
+  after `zpool create` served, 132 starts on pool images and no refusal. `test`,
+  `lint`, the 24.04 replay job and the control rig are green. The daemon rig's
+  two jobs were still running when the look was posted
+  (https://github.com/skyzfs/skyzfs/pull/46#issuecomment-6845514957).

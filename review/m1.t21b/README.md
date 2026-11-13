@@ -36,3 +36,21 @@ Posted as https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845159752.
 24.04-arm by dispatch is the missing mirror list only. The take-over figures
 are corrected in the description; the label check is declined (by dispatch
 only), accepted.
+
+## Third look, at dd0dd81
+
+`git diff 50d19ba 7c30321`: the daemon rig's plan job gives an `exclude` list
+(the stand-in on the two arm64 images, on every event but a dispatch, where it
+is `[]`), and the matrix reads it. dd0dd81 equals git's own merge of 7c30321
+with `zfs-topology` at de0e0e2.
+
+- Job lists read: run 43373322044 (pull request, at 7c30321) plans daemon and
+  stand-in on both amd64 images and the daemon alone on `ubuntu-26.04-arm`;
+  run 43373315642 (push) the two amd64 stand-ins; run 43375308407 (pull
+  request, at dd0dd81) the same five as the first.
+- Not shown: a dispatch, where `exclude` is `[]`. No dispatch of the workflow
+  on the branch since the change (the last was 43365073643). Suggested one
+  with `server=both` and an arm64 image, cancelled once planned.
+- A word: on a push the summary says "On arm64 the daemon only" and nothing
+  runs on arm64 then.
+- Posted: https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845483184
