@@ -676,7 +676,7 @@ For this store the rig's prefixes follow the kernel's writeback order and not th
 
 #### Where the bounded row's loss goes (M1.T22)
 
-The in-place store under a 1 GiB bound on the daemon's memory group stayed under the rule on slow-sync machines (0.873 over four rows, above). M1.T22 added the pump thread's profile, its system calls and the group's reclaim counters to the benchmark and ran the bounded row with them. Six jobs, each one machine for all its rows, the daemon at `zfs-topology`'s head of the day with `--store in-place`, origin delay 0; a traced or recorded row counts for no ratio.
+The in-place store under a 1 GiB bound on the daemon's memory group stayed under the rule on slow-sync machines (0.873 over four rows, above). M1.T22 added the pump thread's profile, its system calls and the group's reclaim counters to the benchmark and ran the bounded row with them. Six jobs, each one machine for all its rows (the table has the five whose ratios are quoted), the daemon at `zfs-topology`'s head of the day with `--store in-place`, origin delay 0; a traced or recorded row counts for no ratio.
 
 | Job | Machine | Unbounded | 1 GiB | Bracket |
 |---|---|---|---|---|
@@ -685,20 +685,38 @@ The in-place store under a 1 GiB bound on the daemon's memory group stayed under
 | 43361592308 | fast-sync (2845 MiB/s) | 1.022 | 0.986 | 1.8% |
 | 43361598539 | slow-sync (164 MiB/s) | 0.971 | 0.886 | 7.1% |
 | 43367906399 | fast-sync (2780 MiB/s), the same new kind | 1.018 | 0.928 | 0.4% |
+| 43373221489 | slow-sync (194 MiB/s) | 0.962 | 0.929 | 9.3% |
 
-**The pump reads the image itself and waits for each read.** On the in-place store only the pump's thread calls `pread64`, about 0.6 times a transaction. Its cost with and without the bound, on the three jobs that traced both (microseconds a call, and the pump's seconds in `pread64` per second):
+**The pump reads the image itself and waits for each read.** On the in-place store only the pump's thread calls `pread64`, about 0.6 times a transaction. Its cost with and without the bound, on the four jobs that traced both (microseconds a call, and the pump's seconds in `pread64` per second):
 
 | Job | Unbounded | 1 GiB |
 |---|---|---|
 | 43361592308 (fast) | 23 µs, 0.05 s/s | 172 µs, 0.31 s/s |
 | 43361598539 (slow) | 6.5 µs, 0.02 s/s | 131 µs, 0.39 s/s |
 | 43367906399 (fast) | 4.0 µs, 0.02 s/s | 99 µs, 0.39 s/s |
+| 43373221489 (slow) | 6.9 µs, 0.02 s/s | 137 µs, 0.39 s/s |
 
 The first pair, bounded only: 292 µs a call on the slow-sync machine and 92 µs on the fast one. Under the bound the pump's time in `io_uring_enter` falls by about what its time in `pread64` grows. The syncing thread's `fdatasync` took 145 ms a call on the slow-sync machine and 0.39 ms on the fast one.
 
 **Reclaim itself is a small part of the pump's CPU.** Of the pump's kernel samples in the bounded recorded rows (999 Hz, 20 s; 1682 and 5482 samples, 84% and 82% in the kernel): page cache 42% and 44%, wake and switch 14%, page reclaim 6.0% and 6.3%, the memory group 2.6% and 4.1%, write-back from a write 0. All the reclaim is direct, on the daemon's own threads; the group hit its limit ten to twenty-eight thousand times in a 120 s window, and 0.3 to 0.6 file pages a transaction were refaults, pages evicted and read back soon after. Without the bound all of these are 0. The reclaim counts of these runs were read some seconds after the window's end and may be somewhat high; the tooling was corrected afterwards (skyzfs/skyzfs#49).
 
-**Reading.** Under the bound the group evicts pages of the home image that the pump then reads back, and each such read stops the pump. The slowdown of the reads shows on every machine; the ratio falls under 0.90 only on the slow-sync ones, two jobs, one of them without a verdict. Direct I/O on the image would end the eviction and make every read of the pump a disk read on that same thread, so the candidate that follows from the figures is reads off the pump's thread. An experiment build with them (four reader threads, buffered I/O) is being measured beside the current daemon (M1.T22b); its first three jobs fell on fast-sync machines and do not count.
+**Reading.** Under the bound the group evicts pages of the home image that the daemon then reads back from the disk. The slowdown of the reads shows on every machine. The bounded row itself lies about the line: 0.886 and 0.929 on slow-sync machines, 0.986, 0.928 and 0.936 on fast ones, one job each, and one job without a verdict. The last job's reclaim counts were read at the window's end with the corrected tooling: 0.5 refaults a transaction.
+
+**Reads off the pump's thread do not help (M1.T22b).** The first reading was that the pump, waiting for its own reads, carries the loss. An experiment build served the in-place store's reads from four reader threads, buffered as before (branch `skyzfs-coding-reads`, d58a97a), and was measured beside the build it was made from (1280579) in one sequence a job: model, current, experiment, model, experiment, current, model, all bounded at 1 GiB, so that each build ran once in each order. Eight jobs; a job counts when its machine is slow-sync and both brackets are within 10%.
+
+| Job | Machine | Current | Experiment | Experiment over current |
+|---|---|---|---|---|
+| 43370579970 | slow (205 MiB/s), counts | 0.894, 0.890 | 0.889, 0.874 | 0.988 |
+| 43370596426 | slow (193 MiB/s), counts | 0.905, 0.896 | 0.902, 0.891 | 0.996 |
+| 43370588480 | slow (207 MiB/s), one bracket 12.4% wide | 0.900 (no verdict), 1.025 | 0.892 (no verdict), 0.960 | 0.964 |
+| 43362946703 | fast | 0.973, 0.961 | 0.958, 0.954 | 0.989 |
+| 43362954573 | fast | 0.983, 0.959 | 0.950, 0.958 | 0.983 |
+| 43362962443 | fast | 0.990, 0.963 | 0.900, 0.923 | 0.934 |
+| 43376081603 | fast (3644 MiB/s) | 0.978, 0.967 | 0.958, 0.956 | 0.985 |
+
+The eighth job, 43362938498, did not end: see the hang below. Over the two counting jobs the pooled median is 0.895 for the current build and 0.890 for the experiment, four rows each. The experiment is level with the current build on slow-sync machines and one to two percent under it on fast ones, for seven to eight seconds more CPU a window (the reader threads' 7.3 to 7.9 s beside a pump that saves under one) and about twice the CPU pressure in the daemon's group. Refaults are the same in both builds, 0.48 to 0.53 a transaction. So the cost is the eviction and the read from the disk, whichever thread waits for it, and the branch does not become a work package. What follows from that is to keep no cache of the image at all, as the model keeps none: direct I/O on the image, built as an experiment (branch `skyzfs-coding-directio`) and being measured.
+
+**A row that hung (M1.T24).** In job 43362938498 the sixth row, the current build under the 1 GiB bound on a slow-sync machine, never began its window: the daemon said it was serving, and the script's copy of the pool image onto the device (`dd bs=1M oflag=direct conv=sparse`, then `sync`) had not ended 96 minutes later when the job's limit cancelled it. The same build had run the same row on that machine twenty minutes before. Nothing was captured: the copy had no limit and the job's evidence step did not run on a cancel. It happened once in 14 rows of that build under the bound. A reading of the store's code found no wait without a bound outside the kernel (a buffered write under the group's throttling, and `fdatasync`); the author's hypothesis, not shown, is that the kernel killed the daemon for its group's memory, after which the copy waits on a device with no server. A reproduction on the merged daemon did not hang: 90 copies of the image (32768 MiB, about 1015 MiB allocated) with their syncs, each on a new volume and daemon under the bound, 30 a job on one fast-sync and two slow-sync machines (runs 43379878200, 43379882242, 43379886523; a copy took 7 to 14 s and its sync at most 3.8 s). That covers the bare copy on a fresh machine, not a sixth row after five windows. Since M1.T24 every row's copy and sync run under a limit of 600 s, and one that runs out leaves the daemon's status, whether it is alive, its threads' stacks, the group's memory events and the kernel log, and fails the row. The cause is open.
 
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
@@ -736,7 +754,8 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
-- The bounded row on slow-sync machines: the loss is the pump's own reads of evicted pages (M1.T22); reads off the pump's thread are being measured (M1.T22b).
+- The bounded row: about the line on both kinds of machine; the loss is the eviction and re-reading of the image's pages (M1.T22), reads off the pump's thread do not help (M1.T22b), direct I/O on the image is being measured.
+- A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
