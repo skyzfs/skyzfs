@@ -54,3 +54,11 @@ with `zfs-topology` at de0e0e2.
 - A word: on a push the summary says "On arm64 the daemon only" and nothing
   runs on arm64 then.
 - Posted: https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845483184
+
+## Fourth look, at d03b14b
+
+`git diff dd0dd81 d03b14b`: the summary line, now "The stand-in on arm64 runs
+by dispatch only." Dispatch 43375687674 at this head (read: event
+`workflow_dispatch`) planned "ubuntu-26.04-arm, daemon" and "ubuntu-26.04-arm,
+stand-in", so an empty `exclude` is accepted. Both points dropped; it can
+merge. Posted: https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845527879
