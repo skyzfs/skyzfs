@@ -5534,12 +5534,12 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     }
 }
 
-/// What a barrier costs is counted. A reader is held 200 ms with its
-/// pin while a checkpoint is asked for: the step waits at its first
-/// barrier for at least that long, the wait is the worker's activity
-/// "step_barrier" and in none of the step's parts, each batch has
-/// passed both barriers, and a flush submitted meanwhile has the
-/// barrier in its wait.
+/// What a barrier costs is counted. A reader is held with its pin
+/// while a checkpoint is asked for, and then 200 ms more once the step
+/// is at its first barrier: the step waits there for at least that
+/// long, the wait is the worker's activity "step_barrier" and in none
+/// of the step's parts, each batch has passed both barriers, and a
+/// flush submitted meanwhile has the barrier in its wait.
 #[test]
 fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
     const HELD: Duration = Duration::from_millis(200);
@@ -5549,9 +5549,11 @@ fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
     flush(&mut store).unwrap();
     let reader = Gate::new("barrier-read");
     store.set_read_pause(reader.pause());
+    let shared = store.core.shared.clone();
     let mut served = store.serve().unwrap();
     served.submit(read_request(1, 100, 1)).unwrap();
     reader.wait_reached("the read").unwrap();
+    let waited = shared.pin.waited();
     let (reply, checkpointed) = mpsc::channel();
     assert!(served.send(Command::Checkpoint(reply)));
     served
@@ -5560,6 +5562,10 @@ fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
             op: Op::Flush,
         })
         .unwrap();
+    // The hold is counted from the step's arrival at the barrier, not
+    // from the request for it: a worker slow to begin the step (as
+    // under load) would otherwise wait there for less than the hold.
+    at_a_barrier(&shared, waited, "the first barrier").unwrap();
     std::thread::sleep(HELD);
     reader.open();
     let mut done = Vec::new();
