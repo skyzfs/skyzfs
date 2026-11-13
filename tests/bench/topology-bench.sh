@@ -636,7 +636,7 @@ if drows:
     mr = [(r, d) for r, d in md if 'skz.cgroup.stat.pgscan.window' in r['diag']['mem_mb']]
     if mr:
         print('\nReclaim in the daemon\'s cgroup over the window: the differences of memory.stat and memory.events read '
-              'before and after it, per 1000 transactions of the row. `scanned` and `taken` are pages the kernel '
+              'before it and right after pgbench returned, per 1000 transactions of the row. `scanned` and `taken` are pages the kernel '
               'looked at and took back, in all, and of those by the daemon\'s own threads as they charged a page '
               '(direct; the rest is kswapd); `refaults` are file pages read again soon after they were taken; `at high` '
               'and `at max` are the times the group reached memory.high and memory.max. The page cache, dirty and under '
@@ -1981,6 +1981,19 @@ work_disk() { # -> the kernel name of the disk under $WORK, or nothing
     [ ! -e "$d/partition" ] || d=$(dirname "$d")
     basename "$d"
 }
+skz_cgroup_mem() { # the daemon's cgroup: what it holds, its limit's events, its reclaim
+    local skzmax
+    [ -n "$SKZ_PID" ] && [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ] || return 0
+    echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
+    skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
+    awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
+    awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
+    # Reclaim in the group, counted in pages since it was made: what was
+    # scanned and taken back, by the writer itself (direct) or by
+    # kswapd, and the file pages read again soon after they were taken
+    # (refaults). Counts, sent as n MiB.
+    awk '$1 ~ /^(pgscan|pgsteal|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd|workingset_refault_file|workingset_activate_file|pgmajfault)$/ { printf "mem skz.cgroup.stat.%s %.0f\n", $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.stat"
+}
 pressure_look() { # the pressure stall totals and the cgroups' CPU, and when they were read
     # Pressure stall information: the time some (and, for io and
     # memory, all) runnable tasks waited for the resource, in us: the
@@ -2002,9 +2015,11 @@ pressure_look() { # the pressure stall totals and the cgroups' CPU, and when the
         [ "$cg" = /proc/pressure ] || [ ! -r "$cg/cpu.stat" ] \
             || awk -v p="$pre" '$1 ~ /^(usage_usec|user_usec|system_usec)$/ { print "cgs", p $1, $2 }' "$cg/cpu.stat" 2>/dev/null || true
     done
+    # The daemon's cgroup as the window ends: its reclaim and what it
+    # holds, before the sync after the window adds its own.
+    skz_cgroup_mem
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
-    local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
          $1 == "ctxt" { print "cpu ctxt", $2 }' /proc/stat
     # CPU ticks by thread name (kernel threads included). A process's
@@ -2065,17 +2080,7 @@ PY
     # (file = the page cache of its home image and log).
     if [ -n "$SKZ_PID" ]; then
         awk '$1 ~ /^(VmRSS|VmLck|RssAnon|RssFile|RssShmem):$/ { sub(":", "", $1); print "mem skz." $1, $2 * 1024 }' "/proc/$SKZ_PID/status" 2>/dev/null || true
-        if [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ]; then
-            echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
-            skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
-            awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
-            awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
-            # Reclaim in the group, counted in pages since it was made:
-            # what was scanned and taken back, by the writer itself
-            # (direct) or by kswapd, and the file pages read again soon
-            # after they were taken (refaults). Counts, sent as n MiB.
-            awk '$1 ~ /^(pgscan|pgsteal|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd|workingset_refault_file|workingset_activate_file|pgmajfault)$/ { printf "mem skz.cgroup.stat.%s %.0f\n", $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.stat"
-        fi
+        skz_cgroup_mem
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
         | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
@@ -2439,20 +2444,27 @@ if pe.get('cgs'):
     diag['cgroup_cpu_s'] = {k: (v - eb.get('cgs', {}).get(k, 0)) / 1e6 for k, v in pe['cgs'].items()
                             if k in eb.get('cgs', {})}
 # Memory at the end of the window, MiB, and how the loops are attached.
-if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
+# The daemon's cgroup (skz.cgroup.*) as read right after pgbench
+# returned (the .pressure file), so that the trace's end, the sync and
+# the wait after the window are not counted in its reclaim; the
+# after-look where that look did not read it.
+me = dict(mem[base + '.after'])
+if base + '.pressure' in mem:
+    me.update({k: v for k, v in mem[base + '.pressure'].items() if k.startswith('skz.cgroup.')})
+if me: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in me.items()}
 # The cgroup counts the times it reached its limit since it was made,
 # which is before the copy and the warm-up: the window's count is the
-# difference of the two snapshots. (The counts travel as n MiB.)
+# difference of the two looks. (The counts travel as n MiB.)
 for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events.oom', 'skz.cgroup.events.oom_kill',
            'skz.cgroup.stat.pgscan', 'skz.cgroup.stat.pgsteal', 'skz.cgroup.stat.pgscan_direct',
            'skz.cgroup.stat.pgsteal_direct', 'skz.cgroup.stat.pgscan_kswapd', 'skz.cgroup.stat.pgsteal_kswapd',
            'skz.cgroup.stat.workingset_refault_file', 'skz.cgroup.stat.workingset_activate_file',
            'skz.cgroup.stat.pgmajfault'):
-    if ev in mem[base + '.after']:
+    if ev in me:
         m_ = diag['mem_mb']
         m_[ev + '.since_start'] = m_.pop(ev)
         if ev in mem[base + '.before']:
-            m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
+            m_[ev + '.window'] = round((me[ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
 # A row whose daemon was traced or recorded, by its setting: marked even
