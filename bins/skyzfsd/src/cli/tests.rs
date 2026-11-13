@@ -53,6 +53,7 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
         size: 64 << 20,
         run_dir: DEFAULT_RUN_DIR.into(),
         base_pattern: None,
+        zero_fill: false,
     });
     assert_eq!(plain("create --dir /v/a --size 67108864"), Ok(want.clone()));
     assert_eq!(plain("create --size=67108864 --dir=/v/a"), Ok(want));
@@ -223,6 +224,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         home_writeback_kib: 0,
         readers: DEFAULT_READERS,
         store: StoreKind::Log,
+        in_place_io: skyzfs_local::inplace::IoMode::default(),
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -325,6 +327,46 @@ fn serve_takes_the_store() {
         );
         assert!(plain(&format!("serve --dir /v/a --store log {log_only}")).is_ok());
     }
+}
+
+/// The experiment's options: `--direct-io` and `--io-threads N` (0 to
+/// 64, 0 unless given) with the in-place store only, and
+/// `create --zero-fill`.
+#[test]
+fn the_direct_io_experiment_has_its_options() {
+    use skyzfs_local::inplace::IoMode;
+    assert_eq!(
+        serve("serve --dir /v/a --store in-place").in_place_io,
+        IoMode::default()
+    );
+    assert_eq!(
+        serve("serve --dir /v/a --store in-place --direct-io --io-threads 8").in_place_io,
+        IoMode {
+            direct: true,
+            threads: 8
+        }
+    );
+    for log_store in ["--direct-io", "--io-threads 4"] {
+        assert_eq!(
+            plain(&format!("serve --dir /v/a {log_store}")),
+            Err(UsageError::Value(
+                log_store.split(' ').next().unwrap().into(),
+                "only with --store in-place"
+            )),
+            "{log_store}"
+        );
+    }
+    assert!(matches!(
+        plain("serve --dir /v/a --store in-place --io-threads 65"),
+        Err(UsageError::Value(..))
+    ));
+    assert!(matches!(
+        plain("create --dir /v/a --size 1048576 --zero-fill"),
+        Ok(Command::Create(Create {
+            zero_fill: true,
+            ..
+        }))
+    ));
 }
 
 /// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;

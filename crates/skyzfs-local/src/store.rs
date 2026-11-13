@@ -331,6 +331,10 @@ pub struct OpenOptions {
     /// read's file read. A store that is not served has none and is
     /// unchanged by this.
     pub readers: usize,
+    /// How the in-place store, if the store is turned into one
+    /// ([`Store::into_in_place`]), reads and writes the home image (an
+    /// experiment). The log store does not use it.
+    pub in_place_io: crate::inplace::IoMode,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -350,6 +354,7 @@ impl Default for OpenOptions {
             home_writeback_unit: 0,
             hand_over_home_sync: false,
             readers: 1,
+            in_place_io: crate::inplace::IoMode::default(),
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -945,6 +950,8 @@ struct Core<D: Dir> {
     #[cfg(any(test, feature = "test-hooks"))]
     read_pauses_at: Vec<(u64, StepPause)>,
     /// How many reader threads the store has when it is served.
+    /// See [`OpenOptions::in_place_io`].
+    in_place_io: crate::inplace::IoMode,
     readers: usize,
     /// For tests: the thread that [`Store::serve_with`] cannot start,
     /// by its place in the order it starts them (the readers from 0,
@@ -2989,6 +2996,18 @@ impl Preimages {
 /// system that cannot deallocate ([`Zeroes::Written`]). The record's
 /// whole length is written, for a record that is one header in the
 /// log.
+/// Write the whole home image with zeros and sync it (an experiment,
+/// for direct I/O): a new image is a hole, and every first write to a
+/// part of it would allocate there, which a sync must then make
+/// durable as metadata. Its content does not change. Only for an image
+/// whose content is zeros: a new one with no base.
+pub fn fill_home<D: Dir>(dir: &D) -> io::Result<()> {
+    let mut home = dir.open(HOME_NAME)?;
+    let len = home.len()?;
+    write_zeros(&mut home, 0, len)?;
+    home.sync()
+}
+
 pub(crate) fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
     const CHUNK: u64 = 1 << 20;
     let zeros = vec![0u8; len.min(CHUNK) as usize];
@@ -3352,6 +3371,7 @@ impl<D: Dir> Store<D> {
                 #[cfg(any(test, feature = "test-hooks"))]
                 read_pauses_at: Vec::new(),
                 readers: options.readers.max(1),
+                in_place_io: options.in_place_io,
                 #[cfg(test)]
                 spawn_fails_at: None,
                 #[cfg(test)]
@@ -3431,6 +3451,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         self.into_in_place_with(waker, crate::inplace::Mutants::default())
     }
@@ -3443,6 +3464,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         use crate::inplace::{FailedStart, IntoInPlaceError};
         if !self.queue.is_empty() || !self.ids.is_empty() {
@@ -3482,6 +3504,7 @@ impl<D: Dir> Store<D> {
         }
         let identity = self.core.identity();
         let marker = self.core.log.marker_writer();
+        let io = self.core.in_place_io;
         let Core {
             log,
             home,
@@ -3499,6 +3522,7 @@ impl<D: Dir> Store<D> {
                 identity,
                 marker,
                 zeroes,
+                io,
             },
             waker.map(|Waker(call)| call),
             mutants,

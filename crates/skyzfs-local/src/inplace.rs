@@ -109,7 +109,11 @@
 //! unit, but a volume created on the large-page host has a unit as
 //! large as its page, and the store saves no neighbours as the log
 //! store did. Direct I/O, which writes exactly the blocks it is given,
-//! is the candidate remedy (design §10).
+//! is the candidate remedy (design §10). With the experiment's direct
+//! I/O ([`IoMode`]), on the queue's thread or on threads, no seed of
+//! the 200 reaches such a block at either large page on the simulated
+//! disk (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`,
+//! which says what that rests on).
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability
@@ -138,7 +142,7 @@
 //! Not in it: an index, a checkpoint, a recovery beyond the log store's
 //! open of an empty log, any count of what the log holds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -151,6 +155,7 @@ use skyzfs_blk::{
 use crate::io::{Dir, File, NotBegun};
 use crate::log::Log;
 use crate::store::Zeroes;
+use pool::{Done, Job, Pool};
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -214,10 +219,29 @@ pub enum IntoInPlaceError {
     /// volume. The volume has not failed.
     #[error("the start could not empty the kernel's cache of the home image: {0}")]
     CacheKept(String),
+    /// The I/O the store was asked for ([`IoMode`]) cannot be had: no
+    /// direct I/O, an alignment it cannot meet, or no threads. The
+    /// volume has not failed.
+    #[error("the in-place store's I/O: {0}")]
+    Io(String),
     /// The log still holds records after the checkpoint: a hold, or a
     /// part of it that is not durable.
     #[error("the log could not be emptied: {0}")]
     NotEmpty(String),
+}
+
+/// How the in-place store reads and writes the home image (an
+/// experiment, M1.3u's direct I/O note): through the cache, as by
+/// default, or by direct I/O; on the caller's thread, as by default, or
+/// on `threads` threads of their own, so that up to that many requests
+/// reach the device at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoMode {
+    /// Direct I/O: the start checks the file system's alignment
+    /// (`STATX_DIOALIGN`) and refuses where it is not met.
+    pub direct: bool,
+    /// Threads for reads and writes; 0 does them on the caller's thread.
+    pub threads: usize,
 }
 
 /// The store on the home image alone: see the
@@ -246,6 +270,17 @@ pub struct InPlace<D: Dir> {
     zeroes: Zeroes,
     counts: Counts,
     mutants: Mutants,
+    /// How reads and writes are done.
+    io: IoMode,
+    /// The threads, where [`IoMode::threads`] asks for some.
+    pool: Option<Pool>,
+    /// The requests on the threads: their byte ranges, and whether each
+    /// is a write.
+    busy: BTreeMap<RequestId, (u64, u64, bool)>,
+    /// Requests that wait, in their order, for one on the threads that
+    /// they must not run beside ([`InPlace::must_wait`]). Everything
+    /// received after one of them waits behind it.
+    deferred: VecDeque<Request>,
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: as for
     /// the log store, a start that does not find it goes by the
@@ -431,6 +466,13 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
 /// the failure to write it); a marker never asked for ends its thread.
 impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
+        // What was submitted is done before the store goes, as it is on
+        // the caller's thread: what waits is executed once what it waits
+        // for has ended. Then the threads end, before the lock is gone.
+        while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+            self.collect(Duration::from_millis(10));
+        }
+        self.pool = None;
         self.marker.finish();
     }
 }
@@ -445,6 +487,8 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) zeroes: Zeroes,
     /// What writes the failure marker ([`Log::marker_writer`]).
     pub(crate) marker: MarkerWriter,
+    /// How reads and writes are done.
+    pub(crate) io: IoMode,
 }
 
 impl<D: Dir> InPlace<D> {
@@ -460,7 +504,9 @@ impl<D: Dir> InPlace<D> {
     ) -> Result<Self, IntoInPlaceError>
     where
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
+        let io = parts.io;
         let mut store = Self {
             log: parts.log,
             home: parts.home,
@@ -477,6 +523,10 @@ impl<D: Dir> InPlace<D> {
             zeroes: parts.zeroes,
             counts: Counts::default(),
             mutants,
+            io,
+            pool: None,
+            busy: BTreeMap::new(),
+            deferred: VecDeque::new(),
             marker: Marker::new(parts.marker, mutants),
         };
         // The checkpoint that entered this store synced the home image
@@ -494,7 +544,46 @@ impl<D: Dir> InPlace<D> {
             return Err(IntoInPlaceError::Failed(FailedStart { marker, lock }));
         }
         store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
+        store.set_up_io().map_err(IntoInPlaceError::Io)?;
         Ok(store)
+    }
+
+    /// Check what direct I/O asks, and start the threads.
+    ///
+    /// Direct I/O takes the request's own buffer, which is aligned to a
+    /// block ([`Buf::ALIGN`]), at the request's offset, which is a whole
+    /// number of blocks: the file system's alignment must divide both.
+    fn set_up_io(&mut self) -> Result<(), String>
+    where
+        D::File: Send + 'static,
+    {
+        if self.io.direct {
+            let align = self
+                .home
+                .direct_align()
+                .map_err(|e| format!("the file system offers no direct I/O on it: {e}"))?;
+            let block = skyzfs_blk::BLOCK_SIZE;
+            let (memory, offset) = (u64::from(align.memory), u64::from(align.offset));
+            if offset == 0
+                || !block.is_multiple_of(offset)
+                || (memory > 0 && !(Buf::ALIGN as u64).is_multiple_of(memory))
+            {
+                return Err(format!(
+                    "direct I/O asks an alignment of {offset} bytes of offsets and {memory} of \
+                     memory, which a block of {block} bytes does not meet"
+                ));
+            }
+        }
+        if self.io.threads > 0 {
+            let files = (0..self.io.threads)
+                .map(|_| self.log.dir().open(crate::store::HOME_NAME))
+                .collect::<io::Result<Vec<_>>>()
+                .map_err(|e| format!("opening the home image for the threads: {e}"))?;
+            let pool = Pool::start(files, self.io.direct, self.wake.clone())
+                .map_err(|e| format!("starting a thread: {e}"))?;
+            self.pool = Some(pool);
+        }
+        Ok(())
     }
 
     /// Drop the kernel's cache of the home image, and check that it is
@@ -684,12 +773,19 @@ impl<D: Dir> InPlace<D> {
         }
         match op {
             Op::Read { offset, mut buf } => {
+                if let Some(pool) = &self.pool {
+                    self.busy
+                        .insert(id, (offset, offset + buf.len() as u64, false));
+                    return pool.push(Job::Read { id, offset, buf });
+                }
                 // A failed read changes nothing and does not fail the
                 // volume: only its own request fails.
-                let result = self
-                    .home
-                    .read_at(offset, &mut buf)
-                    .map_err(|e| BlkError::Io(e.kind()));
+                let read = if self.io.direct {
+                    self.home.read_direct_at(offset, &mut buf)
+                } else {
+                    self.home.read_at(offset, &mut buf)
+                };
+                let result = read.map_err(|e| BlkError::Io(e.kind()));
                 self.complete(id, result, Some(buf));
             }
             Op::Flush => self.flush(id),
@@ -698,7 +794,16 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Err(BlkError::ReadOnly), buf);
             }
             Op::Write { offset, data } => {
-                let written = self.home.write_at(offset, &data);
+                if let Some(pool) = &self.pool {
+                    self.busy
+                        .insert(id, (offset, offset + data.len() as u64, true));
+                    return pool.push(Job::Write { id, offset, data });
+                }
+                let written = if self.io.direct {
+                    self.home.write_direct_at(offset, &data)
+                } else {
+                    self.home.write_at(offset, &data)
+                };
                 let result = self.mutated(written);
                 self.complete(id, result, Some(data));
             }
@@ -736,7 +841,21 @@ impl<D: Dir> InPlace<D> {
 
     /// Zero a range: deallocate it, or write zeros where the file
     /// system has no such call (from then on, without asking again).
+    ///
+    /// With direct I/O, zeros are written by direct I/O: a deallocated
+    /// range would make the next writes to it allocate again.
     fn zero(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        if self.io.direct {
+            const CHUNK: u64 = 1 << 20;
+            let zeros = Buf::filled((len.min(CHUNK) / skyzfs_blk::BLOCK_SIZE) as usize, 0);
+            let mut at = 0;
+            while at < len {
+                let n = (len - at).min(CHUNK) as usize;
+                self.home.write_direct_at(offset + at, &zeros[..n])?;
+                at += n as u64;
+            }
+            return Ok(());
+        }
         if self.zeroes != Zeroes::Written {
             match self.home.deallocate(offset, len) {
                 Ok(()) => {
@@ -835,6 +954,85 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
+    /// Whether `op` must wait for a request on the threads: a read for
+    /// a write it overlaps, a write or a write-zeroes for a read or a
+    /// write it overlaps (so that overlapping requests keep the order
+    /// they came in), and a flush for every write (a flush covers what
+    /// was acknowledged before it; this one also waits for what was
+    /// submitted before it, the stricter reading).
+    fn must_wait(&self, op: &Op) -> bool {
+        if self.busy.is_empty() {
+            return false;
+        }
+        let (offset, len, write) = match op {
+            Op::Read { offset, buf } => (*offset, buf.len() as u64, false),
+            Op::Write { offset, data } => (*offset, data.len() as u64, true),
+            Op::WriteZeroes { offset, len } => (*offset, *len, true),
+            Op::Flush => return self.busy.values().any(|&(_, _, write)| write),
+            Op::Discard { .. } => return false,
+        };
+        let end = offset.saturating_add(len);
+        self.busy
+            .values()
+            .any(|&(from, to, busy_write)| (write || busy_write) && from < end && offset < to)
+    }
+
+    /// Execute `request` now, or let it wait behind what waits already
+    /// or behind a request on the threads it must not run beside.
+    fn accept(&mut self, request: Request) {
+        if !self.deferred.is_empty() || self.must_wait(&request.op) {
+            self.deferred.push_back(request);
+        } else {
+            self.execute(request.id, request.op);
+        }
+    }
+
+    /// Take what the threads did (with `timeout`, wait up to it for
+    /// something), then execute what no longer has to wait.
+    ///
+    /// A write's end is a mutation's, as on the caller's thread: it
+    /// counts for the next flush, and a failed one fails the volume. A
+    /// request that ends after the volume failed fails with it, which
+    /// rule R11 allows of one in flight at the failure.
+    fn collect(&mut self, timeout: Duration) {
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        let mut done = Vec::new();
+        pool.take(&mut done, timeout);
+        for Done {
+            id,
+            write,
+            result,
+            buf,
+        } in done
+        {
+            self.busy.remove(&id);
+            let result = if write {
+                let result = self.mutated(result);
+                if self.failed {
+                    Err(BlkError::Failed)
+                } else {
+                    result
+                }
+            } else if self.failed {
+                Err(BlkError::Failed)
+            } else {
+                result.map_err(|e| BlkError::Io(e.kind()))
+            };
+            self.complete(id, result, Some(buf));
+        }
+        while let Some(front) = self.deferred.front() {
+            if self.must_wait(&front.op) {
+                break;
+            }
+            let Some(Request { id, op }) = self.deferred.pop_front() else {
+                break;
+            };
+            self.execute(id, op);
+        }
+    }
+
     /// See whether the sync under way has ended; with `wait`, wait for
     /// it.
     fn settle(&mut self, wait: bool) {
@@ -884,13 +1082,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
             return Err(SubmitError { kind, request });
         }
         self.ids.insert(request.id);
-        self.execute(request.id, request.op);
+        self.accept(request);
         Ok(())
     }
 
     /// Hands out what is complete. Looks whether the sync under way has
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
     }
@@ -903,9 +1102,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// The daemon's pump calls only `poll`, and is woken by the file's
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         if self.ready.is_empty() && !timeout.is_zero() {
-            self.settle(true);
+            if self.busy.is_empty() {
+                self.settle(true);
+            } else {
+                self.collect(timeout);
+            }
         }
         self.hand_out(out)
     }
@@ -946,5 +1150,6 @@ pub fn volatile_cache_explains(
 
 #[cfg(test)]
 pub(crate) mod harness;
+mod pool;
 #[cfg(test)]
 mod tests;

@@ -30,15 +30,61 @@ fn until_held(disk: &SimDisk) {
 }
 
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
+    harnesses_io(mutants, IoMode::default())
+}
+
+fn harnesses_io(mutants: u32, io: IoMode) -> Vec<InPlaceHarness> {
     [(1, 0), (16, 0), (16, 3)]
         .into_iter()
         .map(|(queue_depth, sync_delay)| InPlaceHarness {
             queue_depth,
             sync_delay,
             mutants,
+            io,
             page: 4096,
         })
         .collect()
+}
+
+/// The I/O of the direct I/O experiment: on the caller's thread and on
+/// four threads, and buffered on four threads.
+const EXPERIMENT: [IoMode; 3] = [
+    IoMode {
+        direct: true,
+        threads: 0,
+    },
+    IoMode {
+        direct: true,
+        threads: 4,
+    },
+    IoMode {
+        direct: false,
+        threads: 4,
+    },
+];
+
+/// The experiment: the suite passes on the in-place store with direct
+/// I/O and with threads, as it does on the caller's thread through the
+/// cache, with every capability.
+#[test]
+fn the_in_place_store_passes_the_conformance_suite_with_direct_io_and_threads() {
+    let config = Config {
+        cases: 32,
+        ..Config::default()
+    };
+    for io in EXPERIMENT {
+        for mut harness in harnesses_io(0, io) {
+            let report = run_all(&mut harness, &config);
+            assert!(report.passed(), "in {harness:?}:\n{report}");
+            for (case, why) in report.unexercised() {
+                assert!(
+                    harness.queue_depth == 1 && why.contains("one request at a time"),
+                    "{case}: {why}"
+                );
+            }
+            assert!(report.weaker().is_empty(), "{harness:?}:\n{report}");
+        }
+    }
 }
 
 /// The suite passes on the in-place store on the simulated disk, with
@@ -174,8 +220,18 @@ fn created_at(seed: u64, sync_delay: u64, page: u64) -> SimDisk {
 
 /// Start on `disk`: the log store's open, then the in-place store.
 fn start(disk: &SimDisk, mutants: u32, acknowledge: bool) -> Result<InPlace<SimDisk>, StoreError> {
+    start_io(disk, mutants, acknowledge, IoMode::default())
+}
+
+fn start_io(
+    disk: &SimDisk,
+    mutants: u32,
+    acknowledge: bool,
+    io: IoMode,
+) -> Result<InPlace<SimDisk>, StoreError> {
     let options = OpenOptions {
         acknowledge_failure: acknowledge,
+        in_place_io: io,
         ..OpenOptions::default()
     };
     let (store, _) = Store::open(disk.clone(), options)?;
@@ -752,7 +808,7 @@ enum Ending {
 /// volatile-cache disk ([`volatile_cache_explains`]). Whether the
 /// volume had failed when the program ended.
 fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool, String> {
-    volatile_cache_holds_at(seed, ending, mutants, 4096)
+    volatile_cache_holds_with(seed, ending, mutants, 4096, IoMode::default())
 }
 
 /// The same on a system whose page is `page` bytes ([`created_at`]).
@@ -762,6 +818,28 @@ fn volatile_cache_holds_at(
     mutants: u32,
     page: u64,
 ) -> Result<bool, String> {
+    volatile_cache_holds_with(seed, ending, mutants, page, IoMode::default())
+}
+
+/// [`volatile_cache_holds`], with the store's I/O done as `io` says.
+fn volatile_cache_holds_io(
+    seed: u64,
+    ending: Ending,
+    mutants: u32,
+    io: IoMode,
+) -> Result<bool, String> {
+    volatile_cache_holds_with(seed, ending, mutants, 4096, io)
+}
+
+/// [`volatile_cache_holds`] on a page of `page` bytes, with the store's
+/// I/O done as `io` says.
+fn volatile_cache_holds_with(
+    seed: u64,
+    ending: Ending,
+    mutants: u32,
+    page: u64,
+    io: IoMode,
+) -> Result<bool, String> {
     let garbage = ending == Ending::Cut { garbage: true };
     // Where a failure is set up, and whether it has been.
     let fail_at = match ending {
@@ -770,7 +848,7 @@ fn volatile_cache_holds_at(
     };
     let mut failing = false;
     let disk = created_at(seed, 3, page);
-    let mut store = start(&disk, mutants, false).map_err(|e| e.to_string())?;
+    let mut store = start_io(&disk, mutants, false, io).map_err(|e| e.to_string())?;
     let mut blocks: Vec<Versions> = (0..WINDOW)
         .map(|b| {
             let byte = if b == 3 { 0x33 } else { 0 };
@@ -876,7 +954,7 @@ fn volatile_cache_holds_at(
                 // Flushes in flight are lost with the process; the
                 // start's sync covers everything.
                 flushes.clear();
-                store = start(&disk, mutants, false).map_err(|e| e.to_string())?;
+                store = start_io(&disk, mutants, false, io).map_err(|e| e.to_string())?;
                 for block in &mut blocks {
                     block.floor = block.newest();
                 }
@@ -898,7 +976,7 @@ fn volatile_cache_holds_at(
         }
     }
     let acknowledge = matches!(ending, Ending::Failure { .. });
-    let mut store = start(&disk, 0, acknowledge).map_err(|e| e.to_string())?;
+    let mut store = start_io(&disk, 0, acknowledge, io).map_err(|e| e.to_string())?;
     for (b, block) in blocks.iter().enumerate() {
         let got = read(&mut store, b as u64).map_err(|e| e.to_string())?;
         let durable = &block.all[block.floor];
@@ -935,6 +1013,67 @@ fn a_power_cut_leaves_what_the_volatile_cache_disk_promises() {
             }
         }
     }
+}
+
+/// The experiment: with direct I/O and with threads, a power cut, with
+/// garbage or without, and a failing write or sync leave what the
+/// volatile-cache disk promises, as through the cache on the caller's
+/// thread.
+#[test]
+fn direct_io_and_threads_keep_what_the_volatile_cache_disk_promises() {
+    for io in EXPERIMENT {
+        for seed in 1..=100 {
+            for ending in [
+                Ending::Cut { garbage: false },
+                Ending::Cut { garbage: true },
+                Ending::Failure { sync: false },
+                Ending::Failure { sync: true },
+            ] {
+                if let Err(e) = volatile_cache_holds_io(seed, ending, 0, io) {
+                    panic!("{io:?}, {ending:?}: {e}");
+                }
+            }
+        }
+    }
+}
+
+/// The experiment's start: direct I/O where the file system has none,
+/// or where its alignment is coarser than a block, is refused, and the
+/// volume has not failed: it starts again through the cache.
+#[test]
+fn a_start_refuses_direct_io_it_cannot_have() {
+    let direct = IoMode {
+        direct: true,
+        threads: 2,
+    };
+    let disk = created(21, 0);
+    let refused = |disk: &SimDisk| {
+        let (store, _) = Store::open(
+            disk.clone(),
+            OpenOptions {
+                in_place_io: direct,
+                ..OpenOptions::default()
+            },
+        )
+        .unwrap();
+        match store.into_in_place(None) {
+            Err(IntoInPlaceError::Io(why)) => why,
+            other => panic!("{other:?}"),
+        }
+    };
+    disk.set_direct_align(None);
+    assert!(refused(&disk).contains("no direct I/O"));
+    disk.set_direct_align(Some(crate::io::DirectAlign {
+        memory: 512,
+        offset: 8192,
+    }));
+    assert!(refused(&disk).contains("8192"));
+    assert!(start(&disk, 0, false).is_ok());
+    disk.set_direct_align(Some(crate::io::DirectAlign {
+        memory: 4096,
+        offset: 4096,
+    }));
+    assert!(start_io(&disk, 0, false, direct).is_ok());
 }
 
 /// Where this store promises less than the suite's rule R11: a write
@@ -1119,6 +1258,42 @@ fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
     for page in LARGE_PAGES {
         let reached = (1..=200).any(|seed| volatile_cache_holds_at(seed, ending, 0, page).is_err());
         assert!(reached, "page {page}: no cut reached a neighbour");
+    }
+}
+
+/// Direct I/O takes the exception away, on the simulated disk: a
+/// direct write writes its own sectors and no other block of its page,
+/// so a cut with garbage reaches only blocks being written, as on
+/// 4 KiB pages. The same programs through the cache reach a neighbour
+/// (`a_cut_with_garbage_may_reach_a_neighbour_on_large_pages`). The
+/// other endings hold too.
+///
+/// What this rests on: the simulated disk takes a direct write to touch
+/// nothing but its own sectors. On a file system whose block is larger
+/// than the write, a direct write into a hole or an unwritten extent
+/// also has the rest of that block zeroed. By my reading of the kernel
+/// (not shown here) those zeros cannot be read back as garbage: the
+/// block reads as zeros until its extent is converted to written, and
+/// the journal commit that makes the conversion durable flushes the
+/// disk's cache first. An image written with zeros at its creation
+/// ([`crate::store::fill_home`]) has no such block.
+#[test]
+fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
+    for page in LARGE_PAGES {
+        for io in EXPERIMENT.into_iter().filter(|io| io.direct) {
+            for ending in [
+                Ending::Cut { garbage: true },
+                Ending::Cut { garbage: false },
+                Ending::Failure { sync: false },
+                Ending::Failure { sync: true },
+            ] {
+                for seed in 1..=200 {
+                    if let Err(e) = volatile_cache_holds_with(seed, ending, 0, page, io) {
+                        panic!("page {page}, {io:?}, {ending:?}, seed {seed}: {e}");
+                    }
+                }
+            }
+        }
     }
 }
 

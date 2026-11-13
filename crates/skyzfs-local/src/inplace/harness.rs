@@ -49,6 +49,8 @@ pub(crate) struct InPlaceHarness {
     /// this many looks ([`SimDisk::set_sync_delay`]).
     pub(crate) sync_delay: u64,
     pub(crate) mutants: u32,
+    /// How the store reads and writes ([`super::IoMode`]).
+    pub(crate) io: super::IoMode,
     /// The system's page, which is the simulated disk's write unit, its
     /// file system's block, and the volume's write unit: 4096 on amd64,
     /// 16 KiB or 64 KiB on some arm64 kernels. Passed in, not read
@@ -62,6 +64,7 @@ impl InPlaceHarness {
             queue_depth: self.queue_depth,
             read_only,
             acknowledge_failure,
+            in_place_io: self.io,
             ..OpenOptions::default()
         }
     }

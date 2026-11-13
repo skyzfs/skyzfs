@@ -95,6 +95,37 @@ pub trait File {
     /// could not check, and must not use [`File::read_at`] in its place.
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
 
+    /// What direct I/O on the file ([`File::read_direct_at`],
+    /// [`File::write_direct_at`]) asks of a request's alignment: on
+    /// Linux, `statx`'s `STATX_DIOALIGN`. Fails with
+    /// [`io::ErrorKind::Unsupported`] where the file has no direct I/O,
+    /// which is the default.
+    fn direct_align(&self) -> io::Result<DirectAlign> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Fill `buf` from `offset` by direct I/O: from the device, past the
+    /// operating system's cache, which it leaves as it was. `offset`,
+    /// the length and `buf`'s address are aligned as
+    /// [`File::direct_align`] says, or the read fails
+    /// ([`io::ErrorKind::InvalidInput`]).
+    fn read_direct_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        let _ = (offset, buf);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Write `data` at `offset` by direct I/O: handed to the device past
+    /// the operating system's cache, which keeps no page of the range,
+    /// and durable only after a sync ([`File::sync`]), as on a disk with
+    /// a volatile write cache. Only the sectors written are written: no
+    /// page or file-system block around them is written again. Aligned
+    /// as for [`File::read_direct_at`]. After an error, any of its
+    /// sectors may have been written.
+    fn write_direct_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        let _ = (offset, data);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Write `data` at `offset`, extending the file if it ends beyond the
     /// current length. After an error, any part of `data` may have been
     /// written.
@@ -244,6 +275,28 @@ pub trait File {
 /// with [`File::sync`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotBegun(pub String);
+
+/// What direct I/O asks of a request ([`File::direct_align`]): its
+/// offset and length are multiples of `offset`, and its memory starts
+/// at a multiple of `memory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectAlign {
+    /// The alignment of the request's memory, in bytes.
+    pub memory: u32,
+    /// The alignment of its offset and length, in bytes.
+    pub offset: u32,
+}
+
+impl DirectAlign {
+    /// Whether a request at `offset` of `len` bytes, in memory at
+    /// `address`, is aligned as this asks.
+    pub fn fits(self, offset: u64, len: usize, address: usize) -> bool {
+        let (memory, align) = (u64::from(self.memory.max(1)), u64::from(self.offset.max(1)));
+        offset.is_multiple_of(align)
+            && (len as u64).is_multiple_of(align)
+            && (address as u64).is_multiple_of(memory)
+    }
+}
 
 impl std::fmt::Display for NotBegun {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -629,6 +629,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     options.writeback_unit = serve.writeback_kib << 10;
     options.home_writeback_unit = serve.home_writeback_kib << 10;
     options.readers = usize::from(serve.readers);
+    options.in_place_io = serve.in_place_io;
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -798,7 +799,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // where it cannot show that, it serves nothing. The volume
             // has not failed, and the device waits as after any start
             // that fails after the lifecycle added it.
-            Err(refused @ skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)) => {
+            Err(
+                refused @ (skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)
+                | skyzfs_local::inplace::IntoInPlaceError::Io(_)),
+            ) => {
                 return Err(format!(
                     "the in-place store: {refused}. Nothing was served and the volume has not \
                      failed"

@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use skyzfs_blk::{Base, BlockTarget, Buf, Completion, Op, Request, RequestId};
 use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::InPlace;
+use skyzfs_local::inplace::{InPlace, IoMode};
 use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
 
 const BLOCK: u64 = 4096;
@@ -105,6 +105,14 @@ fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), St
         (Ok(_), Ok(0)) => Ok(()),
         (Ok(_), Ok(n)) => Err(format!("{n} pages stay cached after a drop (tmpfs?)")),
     }
+}
+
+/// The log store's open, then the in-place store, with `io`.
+fn start_io(dir: &FsDir, io: IoMode) -> Result<OnFiles, StoreError> {
+    let mut options = OpenOptions::default();
+    options.in_place_io = io;
+    let (store, _) = Store::open(dir.clone(), options)?;
+    Ok(store.into_in_place(None).expect("the in-place store"))
 }
 
 /// The log store's open, then the in-place store.
@@ -222,6 +230,54 @@ fn the_in_place_store_round_trips_on_real_files() {
     assert_eq!(store.wait(&mut done, TIMEOUT), 1);
     assert_eq!(done[0].result, Ok(()));
     expect(done[0].buf.as_deref().unwrap());
+}
+
+/// The experiment on real files: direct I/O on four threads, and the
+/// image written with zeros first (`fill_home`). Sixty-four writes of
+/// two blocks each go out together, then a flush, and every block
+/// reads back, through a start with direct I/O and through one
+/// through the cache.
+#[test]
+fn direct_io_on_threads_round_trips_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    skyzfs_local::store::fill_home(&dir).unwrap();
+    let io = IoMode {
+        direct: true,
+        threads: 4,
+    };
+    let mut store = start_io(&dir, io).unwrap();
+    let pattern = |n: u64| (n as u8).wrapping_mul(37) | 1;
+    for n in 0..64u64 {
+        store
+            .submit(Request {
+                id: RequestId(n),
+                op: Op::Write {
+                    offset: n * 2 * BLOCK,
+                    data: Buf::filled(2, pattern(n)),
+                },
+            })
+            .unwrap();
+    }
+    let mut done = Vec::new();
+    while done.len() < 64 {
+        store.wait(&mut done, TIMEOUT);
+    }
+    assert!(done.iter().all(|c| c.result == Ok(())), "{done:?}");
+    flush(&mut store);
+    let check = |store: &mut OnFiles| {
+        for n in 0..64u64 {
+            let got = read(store, n * 2, 2);
+            assert!(got.iter().all(|b| *b == pattern(n)), "blocks {}..", n * 2);
+        }
+    };
+    check(&mut store);
+    drop(store);
+    check(&mut start_io(&dir, io).unwrap());
+    check(&mut start(&dir).unwrap());
 }
 
 /// Every start serves where the image begins with blocks never
