@@ -218,8 +218,11 @@
 #                           hash of the binary that read the row's status
 #                           (always the row's own)
 #   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
-#                           ("--depth,128,--log-high,8,--log-low,4"; the
-#                           marks are in segments of 64 MiB, default 2 and 1)
+#                           ("--store,in-place,--io-threads,4"). With no
+#                           --store the row names --store in-place; the log
+#                           store's options (--log-high,8,--log-low,4: its
+#                           marks, in segments of 64 MiB) need --store,log
+#                           beside them, on a build from before M1.3t
 #   TB_SKYZFSD_MEM=         cgroup v2 memory.max for the daemon (e.g. 1G).
 #                           The daemon's files (home image and log) go
 #                           through the host's page cache, which is
@@ -1549,12 +1552,24 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
     # The store is always named (M1.T20), so that the daemon's default
-    # can change under the benchmark: --store log unless the arguments
-    # name one. A build from before the option (TB_SKYZFSD_REF of an
-    # older commit) has only the log store and is served as it was.
+    # cannot change under the benchmark: --store in-place unless the
+    # arguments name one (M1.3t removes the log store; before it the
+    # daemon's default was the log). A build from before the option
+    # (TB_SKYZFSD_REF of an older commit) has only the log store and is
+    # served as it was.
     if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
         && "$SKYZFSD" help 2>&1 | grep -q -- '--store'; then
-        args=(--store log "${args[@]}")
+        # The daemon refuses the log store's options with the in-place
+        # store: such a row names --store log (a build before M1.3t).
+        local o
+        for o in "${args[@]}"; do
+            case ${o%%=*} in
+                --log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
+                    log "TB_SKYZFSD_ARGS: ${o%%=*} is an option of the log store; name --store,log beside it (a build from before M1.3t)"
+                    return 64 ;;
+            esac
+        done
+        args=(--store in-place "${args[@]}")
     fi
     SKZ_SERVE_ARGS="${args[*]}"
     : > "$WORK/skyzfsd.ready"

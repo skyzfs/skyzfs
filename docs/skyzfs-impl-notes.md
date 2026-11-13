@@ -801,6 +801,34 @@ All of it is loss that design §4.1 allows. Decided on these figures: the image 
 
 Not shown: ext4 with `data=journal` is read as reporting no direct-I/O unit, so that the start refuses it; no rig has run it. The throughput rule and the thread default on the merged daemon are still to be measured.
 
+#### The thread count on the merged daemon (M1.T29, first round)
+
+Twelve jobs on 2026-11-13 on the merged direct I/O daemon (zfs-topology a234314; the arm64 jobs from a branch that adds only runner options), each job one machine for all its rows, each row once. Ten rows a job: model, t8, t1, model, t8-1g, t1-1g, model, t4, t4-1g, model, with t1 before t8 in half the jobs. tpcb, 8 clients, 120 s, no origin delay, postgres in 1 GiB; "1g" is the daemon in a 1 GiB memory cgroup; tN is `--io-threads N`. A row counts only when its two model rows differ by 10% or less.
+
+Median ratio to the model, with the counted rows:
+
+| Machines | Bound | 1 thread | 4 threads | 8 threads |
+|---|---|---|---|---|
+| amd64, fast syncs (3 jobs) | none | 0.957 (0.938, 0.957, 0.958) | 0.947 (0.944, 0.947, 0.955) | 0.952 (0.947, 0.952, 0.955) |
+| amd64, fast syncs | 1 GiB | 0.947 (0.938, 0.947, 0.948) | 0.959 (0.943, 0.959, 0.962) | 0.954 (0.945, 0.954, 0.957) |
+| amd64, slow syncs (5 jobs) | none | 0.924 (0.914, 0.924, 0.991) | 1.012 (0.965, 1.012, 1.053) | 0.963 (0.826, 0.963, 0.993) |
+| amd64, slow syncs | 1 GiB | 0.970 (0.938, 0.970, 0.982) | 0.972 (0.869, 0.972, 0.997) | 0.877 (0.699, 0.877, 1.010) |
+| arm64 (4 jobs) | none | 0.962 (0.896, 0.958, 0.965, 0.974) | 0.946 (0.878, 0.918, 0.973, 0.980) | 0.978 (0.894, 0.971, 0.985, 0.986) |
+| arm64 | 1 GiB | 0.964 (0.947, 0.961, 0.966, 0.981) | 0.935 (0.930, 0.932, 0.937, 0.997) | 0.968 (0.947, 0.951, 0.986, 0.987) |
+
+Eight threads minus one, in the same bracket: fast-sync -0.003, -0.005, +0.009 unbounded and +0.009, +0.007, +0.007 bounded; arm64 -0.071, +0.012, +0.075, +0.027 and +0.021, 0.000, -0.010, +0.005; slow-sync +0.002, +0.049, -0.098 and +0.028, -0.061, -0.271.
+
+- On fast-sync amd64 the three thread counts are within 1.2 points of each other in no order, and on arm64 within 3.3. Every such cell's median is 0.935 or above.
+- The slow-sync cells do not decide between one thread and eight. Six of the twelve brackets on the nvme machines were over 10% (two rows of each kind there have no verdict), and single rows ran from 0.699 to 1.286. The lowest row, 0.699 (eight threads, bounded, run 43498281407), fell on a stall of the machine's disk: 61 ms a flush against 0 to 1 ms in the rows beside it. One row cannot show that the stall and not the thread count made it.
+- So the ground of D6's default (eight threads above one on slow-sync machines, by 0.022 to 0.030 in three jobs of the experiment's build) is neither reproduced nor contradicted. The default stays eight, and the bounded slow-sync cell, where eight threads' median is 0.877 over three rows, gets a round of its own.
+- One of the slow-sync machines had the disk the notes knew as fast (`sda1`, write through) at 165 MiB/s; the disk's name no longer tells the kind, and a machine is classed by its measured rate. Its brackets were the steadiest of the round (0.1% to 0.9%). The arm64 images' disks are write through at 249 to 345 MiB/s.
+
+Runs: amd64 43497647957, 43498216158, 43498229135 (fast), 43498241766, 43498255284, 43498268163, 43498281407, 43498292940 (slow); arm64 43498318359, 43498330574, 43498341995, 43498353804.
+
+#### The power-cut replay through the direct I/O daemon
+
+Full budget, run 43497336155, zfs-topology a234314, one run an image. `ubuntu-26.04`: every record prefix, 2587 of 2587; 133 of 133 flush boundaries; 28 transaction groups, deep-checked at 56 prefixes; `zdb -bcc` exit 0; both controls caught; 82 minutes. `ubuntu-26.04-arm`: 2636 of 2636; 135 of 135; 29 groups, 58 prefixes; exit 0; both controls caught; 96 minutes. Design §9's replay criterion is shown for this daemon on both architectures. It is run again after the log store's removal (M1.3t).
+
 #### A call that returned after the kill (M1.T28)
 
 The first daemon rig run on the direct I/O daemon failed check c on `ubuntu-26.04`: in the conformance suite through the block device, a read found one write's blocks where a second, overlapping write should have won (run 43430825700, volume 60 of seed 0x5ca1ab1e). `skyzfs-blkcheck --replay` reproduced it from the tool's trace, which showed only that the rig's bookkeeping agreed with itself.
@@ -865,7 +893,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
-- Direct I/O is built (M1.3y) on an experiment build's figures; the rule, bounded and unbounded, and the thread default are still to be measured on the merged daemon on both kinds of machine and on arm64.
+- Direct I/O is built (M1.3y). On the merged daemon the rule is met in every fast-sync and arm64 cell (medians 0.935 or above, three or four rows a cell); the slow-sync cells are too noisy to judge, and bounded with eight threads the median is 0.877 over three rows (M1.T29). A second round aims at that cell; the thread default rests on it.
 - The binding drops ublk command results other than OK (M1.3aa). ext4 with `data=journal` is read as refused at the start, not run.
 - The image stays sparse (M1.T27); a full file system still fails the volume, until the store accounts for local space (M3).
 - A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
