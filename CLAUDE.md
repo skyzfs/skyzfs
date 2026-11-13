@@ -206,7 +206,16 @@ there, and the user decides when it merges.
   summary's line "Every record prefix: N of N" says whether a run
   shows design §9's criterion; only a full run that checked N of N
   and ended with exit 0 does. Exit 1 is a verdict against the daemon,
-  exit 2 the rig's own error.
+  exit 2 the rig's own error. The jobs "write into a hole" (M1.T27,
+  `tests/kernel/hole-rig.sh`) run wherever the daemon jobs run, and
+  alone by dispatch with `server: hole`: direct writes into blocks the
+  image never held, on ext4 and XFS, on a sparse, a preallocated and a
+  written-through (`create --zero-fill`) image. Every checked prefix
+  must be as design §4.1 allows, the control `withheld` must be
+  caught, and on a written-through image the count of prefixes with
+  the data on the disk and zeros in the file must be 0; the other
+  counts are measurements. The input `daemon_ref` builds the daemon of
+  the daemon and hole jobs from another commit.
 - **The daemon rig.** `skyzfs-daemon-rig.yml` runs on a pull request
   that touches `tests/kernel/`, `tests/lib/`, `bins/skyzfsd/`,
   `bins/skyzfs-blkcheck/`, `crates/skyzfs-ublk/`,
@@ -273,7 +282,10 @@ there, and the user decides when it merges.
   volume from both sides before calling such a failure a verdict. The
   line `obs_c_evidence` says what was kept; a pass with no block trace
   is an error of the rig. `skyzfs-c-repeat.yml` (dispatch) repeats
-  check c's passes on one runner.
+  check c's passes on one runner; its input `provoke` turns the watch
+  back on and keeps buffered reads of each device going, which is how
+  the late return was made on purpose, and `blkcheck_ref` builds the
+  tool and its model from another commit under the same daemon.
 - **The control rig.** `skyzfs-control-rig.yml` runs on a pull request
   that touches `crates/skyzfs-ublk-sys/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-blk/`, `crates/skyzfs-local/`, `Cargo.lock`,
