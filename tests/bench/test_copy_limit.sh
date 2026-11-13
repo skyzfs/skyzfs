@@ -143,6 +143,7 @@ check "with none, nothing is added" 'grep -q -- "--size 4096$" "$tt/create-args"
 # workflow), taken out of the script like the functions.
 sed -n '/^LABEL=\${TB_LABEL/,/^esac/p' "$script" > "$tt/label.sh"
 check "the label's lines are found" 'grep -q "^esac" "$tt/label.sh"'
+# shellcheck disable=SC1091  # written above, from the script
 label_for() { ( TB_LABEL=$1; TB_EARLIER_FAILED=$2; . "$tt/label.sh"; echo "$LABEL" ) 2>&1; }
 check "no failed row: the label is as given" '[ "$(label_for cur "")" = cur ]'
 check "one failed row" '[ "$(label_for cur 2)" = "cur; after failed row 2" ]'
