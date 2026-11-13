@@ -61,3 +61,69 @@ Posted on the pull request. What stands behind it:
 Not done: the whole workspace's tests and `cargo doc` were not run; nothing was
 run through ublk or ZFS; `tests/inplace_real.rs` was run, not read line by
 line.
+
+## Second look: d1641a4 (delta from 3dd9288, three files in `inplace`)
+
+Read the delta before the author's answer, then the answer.
+
+**Verdict: the five findings of the first look are answered and the lead's
+change to criterion 1 is done. One new finding, which I missed the first time
+and an automated review thread on the pull request raised: after a switch back
+to the log store, a flush does not cover what the in-place store acknowledged.
+Reproduced. In my view it is due before a merge; it does not touch the
+measurements.**
+
+- **Criterion 1 as the lead ruled it: done.** `fail_log` uses `fail_write(0,
+  true)` and `fail_sync(0, true)` (the flag is "sticky"; a failed write always
+  may leave any subset of its sectors). `run_suite` is `run_all` but for the
+  two cases of `NOT_MET`, reported as not exercised with `NOT_MET_REASON`; the
+  acceptance test asserts the reason word for word and that no other case is
+  idle for it. `the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does`
+  runs `run_all` and asserts exactly those two fail, each with "is Torn".
+  Plants: with the halt back in `fail_log`, that test fails; with only the
+  write fault, it and the suite's mutant test fail.
+- **Plants at this head** (`plants2.sh`, thirteen): caught: a write not
+  counted as unsynced (6 tests), the discard not counted (2, the new test and
+  the pin), waiting flushes without their sync (3), a failed volume that still
+  reads (4), no marker (2), write errors ignored (4), a failed volume that
+  still takes writes (1), `wait` that never waits (2), the halt again (1),
+  writes-only fault (2). Not caught: no sync at the start (as before, see
+  below), `wait` with a zero timeout waiting as before (nothing pins the new
+  rule), `fail_log` with faults that strike once (no difference to the suite).
+- **Why no test needs the start's own sync.** Traced the simulated disk's
+  syncs with the store's sync taken out: every start still syncs `home.img`,
+  because the entry's flush puts a record in the log and the checkpoint that
+  applies it syncs the home image. So the start is safe twice over, and the
+  comment in `assemble` is right.
+- **New: back to the log store, a flush does not cover what the in-place
+  store acknowledged.** `Store::open` syncs the home image only when it
+  restores preimages; the log store's flush syncs the log only. Sequence
+  (`repro-back-to-log.rs`, appended to `inplace/tests.rs`, run, taken out):
+  in-place store, write block 7 (acknowledged, no flush); the process is lost;
+  `Store::open`; the log store reads 7 as written, then acknowledges a write
+  to block 9 and a flush; power cut that keeps nothing unsynced; open: block 9
+  holds its write, block 7 holds zeros. The control (the second start in place
+  again) keeps both. That is rule R7 broken on the default store, on a volume
+  that was last served in place, until the log store's first checkpoint syncs
+  the home image or the kernel writes the pages back by itself. The daemon
+  has no check on a change of `--store` between starts and syncs nothing more.
+  The module documentation says a volume "can go back and forth between the
+  two"; `a_volume_goes_back_to_the_log_store` reads the block and stops there.
+  Raised first by the automated review on the pull request
+  (discussion_r4558227512), at the first commit; I did not see it in my first
+  look.
+- **The other automated thread** (the failure marker written on the queue's
+  thread, discussion_r4558366408): `fail()` does call `log.mark_failed()` on
+  the caller's thread. It is of a piece with the store's design (reads and
+  writes of the home image block that thread too). Not traced further.
+- **Small:** the pin test's comment says the two cases fail "not on anything a
+  flush covered"; the test checks "is Torn" only, which the model says of any
+  block that mixes its versions, covered or not. The weaker-promise test is
+  what holds flushed content.
+
+Verified: `cargo test -p skyzfs-local` 260 passed and 3 ignored in the
+library, 3 + 3 + 12 in the integration tests; `cargo fmt --check` clean;
+clippy `-D warnings` on `skyzfs-local` and `skyzfsd`, all targets, with and
+without the test hooks, clean. Not done: the rest of the workspace, `skyzfsd`'s
+tests (the delta does not touch it), anything through ublk or ZFS, the
+reproducer on a real file system (there is no power cut there).
