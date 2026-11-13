@@ -96,8 +96,13 @@ provoke() {
     done &
     while :; do
         for d in /dev/ublkb*; do
+            # Never `: > "$d"`: that opens with O_CREAT, and a node that goes
+            # between the test and the open leaves a regular file at the
+            # device's path, where the next device of that number gets no
+            # node (the create that waited 60 s in 43468133700). dd with
+            # nocreat opens for writing and creates nothing.
             [ -b "$d" ] || continue
-            { : > "$d"; } 2>/dev/null
+            dd if=/dev/null of="$d" conv=nocreat,notrunc status=none 2>/dev/null
         done
         sleep "$s"
     done
