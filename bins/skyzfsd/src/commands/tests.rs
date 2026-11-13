@@ -481,6 +481,7 @@ fn creating(dir: &Path, run_dir: &Path, size: u64, base_pattern: Option<u64>) ->
         size,
         run_dir: run_dir.into(),
         base_pattern,
+        zero_fill: false,
     }
 }
 

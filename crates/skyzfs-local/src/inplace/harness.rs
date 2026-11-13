@@ -49,6 +49,8 @@ pub(crate) struct InPlaceHarness {
     /// this many looks ([`SimDisk::set_sync_delay`]).
     pub(crate) sync_delay: u64,
     pub(crate) mutants: u32,
+    /// How the store reads and writes ([`super::IoMode`]).
+    pub(crate) io: super::IoMode,
 }
 
 impl InPlaceHarness {
@@ -57,6 +59,7 @@ impl InPlaceHarness {
             queue_depth: self.queue_depth,
             read_only,
             acknowledge_failure,
+            in_place_io: self.io,
             ..OpenOptions::default()
         }
     }
