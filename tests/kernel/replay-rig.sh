@@ -123,13 +123,16 @@ for v in "$VOLUME_MB" "$FILL_MB"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a numbe
 read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
 # `--store in-place` (M1.3r): the daemon keeps no log and takes no
 # checkpoint step, so a recording without one is what it should be.
-IN_PLACE=""
+# The store is always named: the rig never rests on the daemon's
+# default, which is to change (M1.T20). Without --store it is the log.
+IN_PLACE=""; STORE_NAMED=""
 for i in "${!SERVE_ARGS[@]}"; do
     case ${SERVE_ARGS[$i]} in
-        --store=in-place) IN_PLACE=1 ;;
-        --store) [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
+        --store=*) STORE_NAMED=1; [ "${SERVE_ARGS[$i]}" != --store=in-place ] || IN_PLACE=1 ;;
+        --store) STORE_NAMED=1; [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
     esac
 done
+[ -n "$STORE_NAMED" ] || SERVE_ARGS=(--store log "${SERVE_ARGS[@]}")
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec
