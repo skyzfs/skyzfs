@@ -13,3 +13,8 @@ Review posted: nothing blocks.
   stall only as far as a mean can.
 
 CI and the rendering on run 43498281407's rows were not read.
+
+## Second look, head ab61bf0
+
+Posted: can merge once CI is green. The caption alone changed, and it
+now says what the column is.

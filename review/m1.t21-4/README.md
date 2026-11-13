@@ -17,3 +17,9 @@ Looked for anything else tied to amd64 in `topology-bench.yml` and
 Not shown: topologies other than the daemon's on arm64 (Open CAS builds
 a kernel module). Suggested: the summary names the image and
 `uname -m`. The four arm64 runs were not read.
+
+## Second look, head a8ef94d
+
+Posted: can merge once CI is green. The disk-sync line carries `arch`,
+`kernel` and `image`; run here with and without the image argument; a
+line from before shows "not said" in the table.
