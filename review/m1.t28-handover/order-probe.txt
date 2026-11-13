@@ -1,0 +1,5 @@
+at 0a78798 (account, then the model is told of the loss):
+PROBE caught 29 of 200 seeds; passed with one write handed over and one in flight: 38
+with the two lines swapped (the model is told first):
+PROBE caught 0 of 200 seeds; passed with one write handed over and one in flight: 67
+the pull request's own test an_answer_handed_over_at_a_loss_counts_from_before_it passes in both.

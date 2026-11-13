@@ -1,0 +1,4 @@
+pass-1-m1.3y: 61 volumes, 5 before_kill lines, 0 answered_before_kill lines; not exit 0: old tool 0, new tool 0; volumes whose output differs: 0
+pass-10-m1.3y: 62 volumes, 5 before_kill lines, 0 answered_before_kill lines; not exit 0: old tool 0, new tool 0; volumes whose output differs: 0
+pass-7-m1.3y: 56 volumes, 6 before_kill lines, 0 answered_before_kill lines; not exit 0: old tool 0, new tool 0; volumes whose output differs: 0
+before_kill ids: 6; submitted again later in the trace: 6
