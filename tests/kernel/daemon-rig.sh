@@ -382,6 +382,7 @@ trap cleanup EXIT
 step "setup"
 rec impl "$IMPL: $SKYZFSD"
 rec store "${STORE:-none: the stand-in has one store, a file it writes in place}"
+[ "$IMPL" = reference ] || rec daemon_build "${RIG_DAEMON_REF:-the checkout under test}"
 rec kernel "$(uname -r)"
 # The kernel reports a blocked task only so many times per boot (ten by
 # default) and then says nothing more: with the limit spent, a log
@@ -1978,7 +1979,7 @@ fail_setup() {
     # The reader: any error it gets is an application seeing a read fail.
     ( n=0
       while [ ! -e "$WORK/$name.stop" ] && [ ! -e "$WORK/stop-all" ]; do
-          cat "$mnt/base.$((n % 4))" > /dev/null 2>> "$OUT/$name-reader.log" || echo "read $n failed" >> "$OUT/$name-reader.log"
+          cat "$mnt/base.$((n % 4))" > /dev/null 2>> "$OUT/$name-reader.log" || echo "read $n failed at $(date +%s.%N)" >> "$OUT/$name-reader.log"
           n=$((n + 1)); echo "$n" > "$WORK/$name.reads"
       done ) &
     FS_READER=$!
@@ -1989,6 +1990,8 @@ fail_setup() {
 }
 # name seconds: wait for the pool to suspend. Records what ZFS and the
 # kernel said. -> PASS (suspended, no application error), FAIL, in FS_WHY.
+# With FS_READS=observed a read that failed to the reader is not judged
+# (g.1: a failed read fails its request alone, design §5.1).
 fail_wait() {
     local name=$1 secs=$2 pool=skzd-$1 i st rerr werr mark=$3 t0 took
     t0=$(now_ms)
@@ -2007,7 +2010,8 @@ fail_wait() {
     else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
     fi
     rec "${name}_events" "$(lim 30 zpool events -H 2>/dev/null | awk '{ c[$NF]++ } END { for (k in c) printf "%s x%d ", k, c[k] }')"
-    FS_WHY="pool $st after $took s of waiting (the limit is ${secs} s); reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr; writes failed for the writer: $werr"
+    FS_WHY="pool $st after $took s of waiting (the limit is ${secs} s); reads done $(cat "$WORK/$name.reads" 2>/dev/null), read errors seen by the reader: $rerr$([ "${FS_READS:-}" != observed ] || echo ' (not judged here)'); writes failed for the writer: $werr"
+    [ "${FS_READS:-}" = observed ] && rerr=0
     [ "$st" = SUSPENDED ] && [ "$rerr" = 0 ] && [ "$werr" = 0 ]
 }
 fail_stop() { # name: stop the helpers of fail_setup; they may be blocked on a suspended pool
@@ -2625,6 +2629,10 @@ g_table() {
     echo "$1 ${2:-} ${3:-}: $(lim 30 dmsetup table "$G_DM" | tr '\n' ';')" >> "$OUT/g-tables.log"
 }
 fw() { lim 60 python3 -I "$FW" "$@" 2>&1; }
+# name -> the volume's directory: on the failing file system, reached by
+# a link from $WORK, so that the serve's own files ($dir.ready,
+# $dir.serve.log) stay on the rig's disk, which does not fail.
+g_dir() { mkdir -p "$G_MNT/vol-$1" && ln -sfn "$G_MNT/vol-$1" "$WORK/vol-$1" && echo "$WORK/vol-$1"; }
 
 check_g() {
     local p
@@ -2640,7 +2648,6 @@ check_g() {
     # Both leave a suspended pool.
     check_g_failed_start
     check_g_sync_fails_while_serving
-    for p in "$G_MNT"/*.serve.log; do [ -s "$p" ] && cp "$p" "$OUT/"; done
 }
 
 # g.2: pages of the home image that a failed sync left in the cache,
@@ -2654,9 +2661,9 @@ check_g() {
 # checks that it is gone, and serves only what the disk holds"). The
 # control does the same with no error.
 check_g_start_after_failed_sync() {
-    local name dir ext said disk again served ok
+    local name dir ext said disk again cached served ok
     for name in g0 g2; do
-        dir=$G_MNT/vol-$name
+        dir=$(g_dir "$name")
         if [ "$name" = g0 ]; then step "g, control: a start after a sync that succeeded"; else step "g: a start after a sync that failed"; fi
         said=""; ext=""; served=""
         if vol_create "$SKYZFSD" "$dir" > "$OUT/$name-create.log" 2>&1; then
@@ -2674,7 +2681,9 @@ check_g_start_after_failed_sync() {
         [ "$name" = g0 ] || g_table linear || { pin start_serves_what_the_disk_holds ERROR "the linear table could not be put back"; continue; }
         disk=$(fw direct "$dir/home.img" "$G_AT" "$G_LEN")
         again=$(fw sync "$dir/home.img")
-        rec "${name}_before_the_start" "a write of 0x22 over 0x11 at $G_AT (sectors $ext): $said; the disk then holds $disk; a new descriptor: $again"
+        # What the cache holds as the start meets it: the last look.
+        cached=$(fw read "$dir/home.img" "$G_AT" "$G_LEN")
+        rec "${name}_before_the_start" "a write of 0x22 over 0x11 at $G_AT (sectors $ext): $said; the disk then holds $disk; a new descriptor: $again; the cache just before the start reads $cached"
         if serve_start "$SKYZFSD" "$dir"; then
             served=$(fw direct "$BDEV" "$G_AT" "$G_LEN")
             kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
@@ -2685,7 +2694,7 @@ check_g_start_after_failed_sync() {
         if [ "$name" = g0 ]; then
             # The pin's test, on a write that synced: the start serves
             # the write, so "it serves 0x11" fails.
-            if ! [[ $said == "fdatasync ok; cache reads byte 0x22" && $disk == "byte 0x22" ]]; then
+            if ! [[ $said == "fdatasync ok; cache reads byte 0x22" && $disk == "byte 0x22" && $cached == "byte 0x22" ]]; then
                 ctl g_old_content_after_good_sync ERROR "the rig's write did not sync as it should: $said; the disk holds $disk"
             elif [ "$served" = "byte 0x11" ]; then
                 ctl g_old_content_after_good_sync PASS "the write synced and the disk holds 0x22, and the start served 0x11"
@@ -2699,8 +2708,8 @@ check_g_start_after_failed_sync() {
         # What the kernel did is the check's premise, and an observation.
         obs g_failed_sync "the rig's write: $said; the disk then holds $disk (on $(uname -r))"
         obs g_new_descriptor_after_failed_sync "after the rig's own fdatasync took the error, a newly opened descriptor: $again"
-        if ! [[ $said == fdatasync\ EIO* && $said == *"cache reads byte 0x22" && $disk == "byte 0x11" ]]; then
-            pin start_serves_what_the_disk_holds ERROR "the kernel did not leave what the check needs (a failed fdatasync, the cache reading 0x22, the disk 0x11): $said; disk $disk"
+        if ! [[ $said == fdatasync\ EIO* && $said == *"cache reads byte 0x22" && $disk == "byte 0x11" && $cached == "byte 0x22" ]]; then
+            pin start_serves_what_the_disk_holds ERROR "the kernel did not leave what the check needs (a failed fdatasync, the cache reading 0x22 up to the start, the disk 0x11): $said; disk $disk; just before the start $cached"
         elif [ "$served" = "byte 0x11" ]; then
             pin start_serves_what_the_disk_holds PASS "the cache read 0x22 after the failed sync and the disk held 0x11; the start served 0x11"
         else
@@ -2719,7 +2728,8 @@ check_g_start_after_failed_sync() {
 # device (§4.1, §4.2). The block is in the part of the device ZFS
 # leaves free, so the pool's own data is not in the failure.
 check_g_failed_start() {
-    local name=g3 dir=$G_MNT/vol-g3 ext said mark rc n
+    local name=g3 dir ext said mark rc n
+    dir=$(g_dir g3)
     step "g: a start whose sync fails, a client holding the device"
     if ! FS_DIR=$dir fail_setup "$name" "$SKYZFSD"; then
         for n in failed_start_fails_volume failed_start_suspends_pool failed_start_volume_refused; do pin "$n" ERROR "$FS_ERR"; done
@@ -2765,28 +2775,56 @@ check_g_failed_start() {
 }
 
 # g.1: the disk under the home image fails while the volume is served
-# and written. Every write of the device fails from then on; the
-# daemon's next sync of the home image fails. The volume has failed:
-# status 3, the pool suspends without an application error, and with
-# the disk back a new serve is refused while the client holds the
-# device (§4.1, §4.2).
+# and written. Every write of the device fails from then on, and every
+# read too (dm-error fails both); the daemon's next sync of the home
+# image fails. The volume has failed: status 3, the pool suspends with
+# no write failed to an application, and with the disk back a new serve
+# is refused while the client holds the device (§4.1, §4.2). A read
+# that fails before the volume does fails its request alone (§5.1): the
+# check does not judge reads but records, in obs_g_reads_while_failing,
+# how many failed to ZFS and whether the reader saw one before the
+# volume failed.
 check_g_sync_fails_while_serving() {
-    local name=g1 dir=$G_MNT/vol-g1 mark rc n
+    local name=g1 dir mark rc n at seen before watch
+    dir=$(g_dir g1)
     step "g: the disk fails while the volume is served"
     if ! FS_DIR=$dir fail_setup "$name" "$SKYZFSD"; then
         for n in sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused; do pin "$n" ERROR "$FS_ERR"; done
+        obs g_reads_while_failing "not run: $FS_ERR"
         fail_stop "$name"; return
     fi
     sleep 5
     mark=$(klog_mark)
+    # When the daemon says the volume failed, to a tenth of a second.
+    : > "$WORK/g1.failed-at"
+    ( for n in $(seq 1 3000); do
+          if grep -q 'the volume failed' "$dir.serve.log" 2>/dev/null; then date +%s.%N > "$WORK/g1.failed-at"; exit 0; fi
+          sleep 0.1
+      done ) &
+    watch=$!
     if ! g_table error; then
         for n in sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused; do pin "$n" ERROR "the table could not be changed"; done
-        fail_stop "$name"; return
+        obs g_reads_while_failing "not run: the table could not be changed"
+        kill "$watch" 2>/dev/null; fail_stop "$name"; return
     fi
-    if fail_wait "$name" 300 "$mark"; then pin sync_failure_suspends_pool PASS "$FS_WHY"; else pin sync_failure_suspends_pool FAIL "$FS_WHY"; fi
+    if FS_READS=observed fail_wait "$name" 300 "$mark"; then pin sync_failure_suspends_pool PASS "$FS_WHY"; else pin sync_failure_suspends_pool FAIL "$FS_WHY"; fi
+    kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
+    at=$(cat "$WORK/g1.failed-at")
+    seen=$(grep -c ' failed at ' "$OUT/$name-reader.log" || true)
+    if [ -n "$at" ]; then
+        before=$(awk -v t="$at" '/ failed at / && $NF + 0 < t + 0 { c++ } END { print c + 0 }' "$OUT/$name-reader.log")
+        before="$before of them before the daemon's line that the volume failed"
+    else
+        before="the daemon's line that the volume failed was not seen in 300 s, so none is placed before it"
+    fi
+    obs g_reads_while_failing "ZFS's counts for the device (zpool status): $(vdev_say "$OUT/$name-status-suspended.log" "${BDEV#/dev/ublkb}"); the reader (an uncached file read in a loop): $(cat "$WORK/$name.reads" 2>/dev/null || echo '?') reads, $seen failed, $before (the line is looked for every 0.1 s)"
     if serve_wait 60; then
         n=$(grep -m 1 -o 'the volume failed while it was served[^;]*' "$dir.serve.log")
-        pin_is sync_failure_fails_volume "serve exited $SERVE_RC, wanted $EXIT_FAILED: ${n:-no line of a failure in its log}" [ "$SERVE_RC" = "$EXIT_FAILED" ] && [ -n "$n" ]
+        if [ "$SERVE_RC" = "$EXIT_FAILED" ] && [ -n "$n" ]; then
+            pin sync_failure_fails_volume PASS "serve exited $SERVE_RC: $n"
+        else
+            pin sync_failure_fails_volume FAIL "serve exited $SERVE_RC, wanted $EXIT_FAILED with \"the volume failed while it was served\": ${n:-no line of a failure in its log}"
+        fi
     else
         pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended"
     fi
@@ -2866,7 +2904,7 @@ esac
 # artifact can be lost (GitHub's upload failed for a run's four jobs on
 # 2026-11-11, and the serve logs went with them).
 step "the servers' own lines"
-for f in "$WORK"/vol-*.serve.log "$G_MNT"/vol-*.serve.log; do
+for f in "$WORK"/vol-*.serve.log; do
     [ -s "$f" ] || continue
     echo "-- ${f##*/} ($(grep -c . "$f") lines; the last 6):"
     tail -n 6 "$f" | cut -c1-400

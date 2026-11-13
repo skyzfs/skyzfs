@@ -6,6 +6,7 @@ sync fails under it, and what reads then return.
     failed_write.py write  PATH OFFSET LEN BYTE   buffered write, then fdatasync; then a buffered read back
     failed_write.py dirty  PATH OFFSET LEN BYTE   buffered write and nothing else: a page left dirty
     failed_write.py direct PATH OFFSET LEN        O_DIRECT read: what the disk (or the device) holds
+    failed_write.py read   PATH OFFSET LEN        buffered read: what the kernel's cache gives
     failed_write.py sync   PATH                   a new descriptor: fdatasync, then syncfs
     failed_write.py extent PATH OFFSET LEN        the 512-byte sectors of the file system's device under the range
 
@@ -86,6 +87,16 @@ def direct(path, off, n):
         os.close(fd)
 
 
+def read(path, off, n):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        return what(os.pread(fd, n, off))
+    except OSError as e:
+        return f'read {say_error(e)}'
+    finally:
+        os.close(fd)
+
+
 def sync(path):
     libc = ctypes.CDLL(None, use_errno=True)
     fd = os.open(path, os.O_RDWR)
@@ -128,7 +139,7 @@ def main(argv):
     try:
         cmd, path = argv[1], argv[2]
         nums = [int(x, 0) for x in argv[3:]]
-        if cmd in ('fill', 'write', 'dirty', 'direct', 'extent') and (nums[0] % BLOCK or nums[1] % BLOCK or not nums[1]):
+        if cmd in ('fill', 'write', 'dirty', 'direct', 'read', 'extent') and (nums[0] % BLOCK or nums[1] % BLOCK or not nums[1]):
             raise ValueError('offset and length are whole blocks')
         if cmd == 'fill':
             out = fill(path, nums[0], nums[1], nums[2])
@@ -138,6 +149,8 @@ def main(argv):
             out = write(path, nums[0], nums[1], nums[2], sync=False)
         elif cmd == 'direct':
             out = direct(path, nums[0], nums[1])
+        elif cmd == 'read':
+            out = read(path, nums[0], nums[1])
         elif cmd == 'sync':
             out = sync(path)
         elif cmd == 'extent':

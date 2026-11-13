@@ -273,7 +273,8 @@ EXPECTED = {
                                       'serve exits with status 3 and says the volume failed while it was served (§4.1)',
                                       'WAITING'),
     'pin_sync_failure_suspends_pool': ('g', 'PASS', WAITING,
-                                       'the pool then suspends, with no read or write failed to an application (§4.1)',
+                                       'the pool then suspends, with no write failed to an application (§4.1); a '
+                                       'failed read fails its request alone (§5.1): obs_g_reads_while_failing',
                                        'WAITING'),
     'pin_sync_failed_volume_refused': ('g', 'PASS', WAITING,
                                        'with the disk working again, a serve of that volume is refused with status 4 '
@@ -286,6 +287,8 @@ OBSERVED = {
                                 'the disk failed under the range, what the cache then read, and what the disk held'),
     'obs_g_new_descriptor_after_failed_sync': ('g', 'after one descriptor\'s fdatasync took the write-back error, '
                                                      'does a newly opened descriptor see it: fdatasync, then syncfs?'),
+    'obs_g_reads_while_failing': ('g', 'the disk under the home image failing while served: how many reads failed '
+                                       'to ZFS, and how many an application saw before the volume failed (§5.1)'),
     'obs_f_refused_start_long': ('f', 'after a start is refused (the short-recovery control), with a writer\'s '
                                               'writes waiting at the device: the pool\'s and the device\'s state second '
                                               'by second for 300 s; what waited at the device; the transaction '
@@ -353,6 +356,7 @@ REFERENCE_ONLY = set()
 # no line for them and none is asked for. A line that says "not run"
 # is the rig's error whatever the server.
 DAEMON_ONLY_OBSERVED = {'obs_c_low_steps', 'obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync',
+                        'obs_g_reads_while_failing',
                         'obs_f_refused_start_long', 'obs_f_refused_start_longnolog',
                         'obs_f_refused_start_scrub', 'obs_f_refused_start_export', 'obs_f_refused_start_reopen',
                         'obs_f_refused_start_clear', 'obs_f_refused_start_writers', 'obs_f_refused_start_zed',

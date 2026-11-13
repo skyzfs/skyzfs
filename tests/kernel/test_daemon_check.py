@@ -514,7 +514,7 @@ class CheckG(unittest.TestCase):
 
     def test_its_observations_are_the_daemons(self):
         r = as_expected()
-        for name in ('obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync'):
+        for name in ('obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync', 'obs_g_reads_while_failing'):
             del r[name]
         self.assertEqual(dc.judge(r, ALL)[1:], ([], []))
         r = in_place()

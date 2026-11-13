@@ -242,6 +242,7 @@ jobs:
             if [ "$SERVER" = daemon ]; then
               printf 'export RIG_SKYZFSD=%q\n' "$daemon_bin"
               printf 'export RIG_STORE=%q\n' "$STORE"
+              [ -z "$DAEMON_REF" ] || printf 'export RIG_DAEMON_REF=%q\n' "built from $DAEMON_REF (input daemon_ref), not the checkout"
             fi
           } > "$RUNNER_TEMP/rig.env"
           echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
