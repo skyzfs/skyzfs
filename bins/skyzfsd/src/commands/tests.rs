@@ -530,6 +530,24 @@ fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
     assert_eq!(status(&volume, &mut kernel, &now).exit, Exit::Done);
 }
 
+/// `create --zero-fill` makes a volume whose image is written whole,
+/// with no hole left, which the store opens.
+#[test]
+fn create_with_zero_fill_writes_the_whole_image() {
+    use std::os::unix::fs::MetadataExt;
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
+    std::fs::create_dir(&dir).expect("the volume's directory");
+    let mut asked = creating(&dir, &run_dir, 8 << 20, None);
+    asked.zero_fill = true;
+    let output = create(&asked, *b"0123456789abcdef", Some(BOOT));
+    assert_eq!(output.exit, Exit::Done, "{}", output.err);
+    let home = std::fs::metadata(dir.join(skyzfs_local::store::HOME_NAME)).expect("the image");
+    assert_eq!(home.len(), 8 << 20);
+    assert!(home.blocks() * 512 >= 8 << 20, "{} blocks", home.blocks());
+    drop(open(&dir).expect("the store opens what create made"));
+}
+
 /// `create` makes a missing directory (its last part, mode 0700), and
 /// refuses a missing parent, a path that is not a directory, and a
 /// directory that holds a volume: status 1, and nothing changes.

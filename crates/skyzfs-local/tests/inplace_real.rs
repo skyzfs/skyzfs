@@ -244,7 +244,8 @@ fn the_in_place_store_round_trips_on_real_files() {
 }
 
 /// Direct I/O on real files, on four threads and on the default eight,
-/// and with the image written with zeros first (`fill_home`).
+/// and with the image written with zeros at its creation
+/// (`create_zero_filled`).
 /// Sixty-four writes of two blocks each go out together, then a flush,
 /// and every block reads back, through a start on four threads and
 /// through one with the default.
@@ -254,8 +255,7 @@ fn direct_io_on_threads_round_trips_on_real_files() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    create(&dir, &config()).unwrap();
-    skyzfs_local::store::fill_home(&dir).unwrap();
+    skyzfs_local::inplace::create_zero_filled(&dir, &config()).unwrap();
     let io = IoMode::with_threads(4).unwrap();
     let mut store = start_io(&dir, io).unwrap();
     let pattern = |n: u64| (n as u8).wrapping_mul(37) | 1;

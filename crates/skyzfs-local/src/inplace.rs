@@ -194,7 +194,10 @@ use crate::io::{Dir, File, NotBegun};
 use crate::store::{FailureObserver, Zeroes};
 use pool::{Done, Job, Pool};
 
-pub use start::{create, identity_of, lock, OpenError, OpenOptions, Opened, Under, VolumeConfig};
+pub use start::{
+    create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
+    VolumeConfig,
+};
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

@@ -1608,7 +1608,7 @@ fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
 /// block reads as zeros until its extent is converted to written, and
 /// the journal commit that makes the conversion durable flushes the
 /// disk's cache first. An image written with zeros at its creation
-/// ([`crate::store::fill_home`]) has no such block.
+/// ([`create_zero_filled`]) has no such block.
 #[test]
 fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
     for page in LARGE_PAGES {
@@ -1986,6 +1986,37 @@ fn a_cut_inside_a_create_leaves_a_whole_volume_or_none() {
     }
     // Both outcomes happen, so the cuts reach inside the create.
     assert!(found[0] > 0 && found[1] > 0, "{found:?}");
+}
+
+/// `create --zero-fill` writes its zeros inside the creation, into the
+/// image under its creation's name, under the lock and before the
+/// volume file: while they are written there is no volume to serve,
+/// and a creation whose zeros fail leaves none. Without the zeros the
+/// same refusing disk lets the creation through, since an empty base
+/// writes nothing into the image.
+#[test]
+fn a_create_with_zeros_makes_the_volume_only_once_they_are_written() {
+    use crate::store::HOME_NEW_NAME;
+    use crate::volume::{Volume, VolumeError};
+    let config = VolumeConfig {
+        volume: *b"in-place volume.",
+        size_mib: 1,
+        base: Base::Empty,
+        write_unit: 4096,
+    };
+    let disk = SimDisk::new(3);
+    disk.fail_write_of(HOME_NEW_NAME);
+    let refused = create_zero_filled(&disk, &config);
+    assert!(matches!(&refused, Err(OpenError::Io { .. })), "{refused:?}");
+    assert!(matches!(Volume::read(&disk), Err(VolumeError::Missing)));
+    assert!(
+        create(&disk, &config).is_ok(),
+        "an empty base writes nothing"
+    );
+    let disk = SimDisk::new(4);
+    create_zero_filled(&disk, &config).unwrap();
+    let mut store = start(&disk, 0, false).unwrap();
+    assert_eq!(read(&mut store, 9).unwrap(), vec![0u8; BLOCK_USIZE]);
 }
 
 mod ported;

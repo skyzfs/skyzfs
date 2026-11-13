@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::io::{Dir, File};
+use crate::io::File;
 use crate::writeback::Hinted;
 
 /// The home image's file.
@@ -353,18 +353,6 @@ pub enum Zeroes {
     /// Zeros are written by direct I/O: the in-place store's way
     /// (decision D6).
     WrittenDirect,
-}
-
-/// Write the whole home image with zeros and sync it (`skyzfsd create
-/// --zero-fill`, not the default): a new image is a hole, and every
-/// first direct write to a part of it allocates there, which the next
-/// sync must make durable as metadata. Its content does not change.
-/// Only for an image whose content is zeros: a new one with no base.
-pub fn fill_home<D: Dir>(dir: &D) -> io::Result<()> {
-    let mut home = dir.open(HOME_NAME)?;
-    let len = home.len()?;
-    write_zeros(&mut home, 0, len)?;
-    home.sync()
 }
 
 /// Write `len` zeros at `offset`, a MiB at a time.

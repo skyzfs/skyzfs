@@ -540,22 +540,26 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Ou
         base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
         write_unit,
     };
-    match inplace::create(&dir, &config) {
-        Ok(made) if create.zero_fill && create.base_pattern.is_none() => {
-            let began = std::time::Instant::now();
-            skyzfs_local::store::fill_home(&dir).map_err(|e| {
-                Output::error(format_args!(
-                    "{shown}: writing the image with zeros: {e}. The volume is made, its image \
-                     only in part written"
-                ))
-            })?;
-            eprintln!(
-                "skyzfsd: {shown}: the image written with zeros in {:.1} s",
-                began.elapsed().as_secs_f64()
-            );
+    // With --zero-fill the zeros are written inside the creation, under
+    // the lock and before the volume file is made, so that no serve can
+    // start on the volume while they are written.
+    let zero_fill = create.zero_fill && create.base_pattern.is_none();
+    let began = std::time::Instant::now();
+    let made = if zero_fill {
+        inplace::create_zero_filled(&dir, &config)
+    } else {
+        inplace::create(&dir, &config)
+    };
+    match made {
+        Ok(made) => {
+            if zero_fill {
+                eprintln!(
+                    "skyzfsd: {shown}: the image written with zeros in {:.1} s",
+                    began.elapsed().as_secs_f64()
+                );
+            }
             Ok((made.identity, write_unit))
         }
-        Ok(made) => Ok((made.identity, write_unit)),
         Err(OpenError::Exists) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),

@@ -248,10 +248,35 @@ pub fn create<D: Dir>(dir: &D, config: &VolumeConfig) -> Result<Volume, OpenErro
     create_with(dir, config, Mutants::default())
 }
 
+/// [`create`], with the whole home image written with zeros
+/// (`skyzfsd create --zero-fill`, not the default). A new image is a
+/// hole, and every first direct write to a part of it allocates there,
+/// which the next sync must make durable as metadata; written with
+/// zeros at its creation, it has no hole. Its content does not change.
+///
+/// The zeros are written into the image under its creation's name,
+/// with the lock held and before the volume file is made: no instance
+/// can serve the volume while they are written, and a creation cut off
+/// or failed among them leaves no volume. With a base every block is
+/// written anyway, and this is [`create`].
+pub fn create_zero_filled<D: Dir>(dir: &D, config: &VolumeConfig) -> Result<Volume, OpenError> {
+    make(dir, config, true, Mutants::default())
+}
+
 /// [`create`], with defects planted for the tests.
 pub(crate) fn create_with<D: Dir>(
     dir: &D,
     config: &VolumeConfig,
+    mutants: Mutants,
+) -> Result<Volume, OpenError> {
+    make(dir, config, false, mutants)
+}
+
+/// [`create`], and with `zero_fill` [`create_zero_filled`].
+fn make<D: Dir>(
+    dir: &D,
+    config: &VolumeConfig,
+    zero_fill: bool,
     mutants: Mutants,
 ) -> Result<Volume, OpenError> {
     let mut identity = [0u8; 16];
@@ -316,6 +341,9 @@ pub(crate) fn create_with<D: Dir>(
             }
             home.write_at(mib * SIZE_UNIT, &chunk).map_err(&creating)?;
         }
+    } else if zero_fill {
+        crate::store::write_zeros(&mut home, 0, volume.size)
+            .map_err(io_error("writing the home image with zeros"))?;
     }
     home.sync().map_err(&creating)?;
     drop(home);

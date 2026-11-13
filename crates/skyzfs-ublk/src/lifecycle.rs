@@ -509,9 +509,11 @@ pub trait Volume {
     /// a record it cannot read does not fail a volume that would not use
     /// it ([`Reason::PositionUnreadable`]). Goes with the rest of the
     /// position plumbing in M1.3t-b.
-    fn reaches_positions(&self) -> bool {
-        true
-    }
+    ///
+    /// It has no default, so that a volume that wraps another (the
+    /// daemon's timing wrapper) must say it and cannot fall back to
+    /// reading the record for a store that reaches no position.
+    fn reaches_positions(&self) -> bool;
 }
 
 /// The daemon may serve: the store is open and a device is its.
