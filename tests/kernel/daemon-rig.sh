@@ -34,11 +34,12 @@
 #   d  a failed volume: what ZFS does, and what the server refuses after
 #   e  one request held RIG_HOLD_S seconds (default 300)
 # RIG_SERVE_ARGS: options added to every serve.
-# RIG_STORE: the daemon's store, log or in-place (default log). It is
-#   always named on the daemon's serves (--store), never left to the
-#   daemon's default. With in-place, the pins and controls that rest on
-#   the log store are not taken: the rig writes NA and why, and the
-#   judge's table NOT_FOR_IN_PLACE has the same names.
+# RIG_STORE: the daemon's store, in-place (the default) or log (a build
+#   from before M1.3t, which removes the log store). It is always named
+#   on the daemon's serves (--store), never left to the daemon's
+#   default, which before M1.3t is the log. With in-place, the pins and
+#   controls that rest on the log store are not taken: the rig writes NA
+#   and why, and the judge's table NOT_FOR_IN_PLACE has the same names.
 #   c  the conformance suite of skyzfs-blk through the block device:
 #      RIG_BLKCHECK is a built skyzfs-blkcheck, which drives the server
 #      through tests/kernel/blkcheck-helper.sh. RIG_C_CASES and
@@ -94,7 +95,7 @@ HOLD_S=${RIG_HOLD_S:-300}
 # "--unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem".
 STORE=""
 if [ "$IMPL" = daemon ]; then
-    STORE=${RIG_STORE:-log}
+    STORE=${RIG_STORE:-in-place}
     case $STORE in log|in-place) ;; *) echo "RIG_STORE: '$STORE' is not a store; the stores are log and in-place" >&2; exit 64 ;; esac
     # On every serve, the stand-in's controls too: it takes the option
     # and has one store whatever the name (a file written in place).
@@ -2462,14 +2463,18 @@ check_c() {
     c_evidence_end c "$work" "$rc"
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
     # At each kill the tool sorts the calls it has outstanding: those
-    # the old server had completed (their resubmission is issued) and
-    # those in flight when it died (the kernel issues them again). If
-    # the second number is near nothing, the kill cases test little.
-    read -r n_live n_before n_at_death n_with n_zero n_dead <<< "$(awk -F'\t' '
+    # the old server had completed and those in flight when it died (the
+    # kernel issues them again). If the second number is near nothing,
+    # the kill cases test little. The tool's trace word for the first
+    # kind says what it does with them: before_kill, issued again by the
+    # tool; answered_before_kill (the tool's late-result handover),
+    # handed to the suite with the old server's answer.
+    read -r n_live n_before n_at_death n_with n_zero n_dead n_answered <<< "$(awk -F'\t' '
         $3 == "sorted" { live++; split($5, w, " "); at_death += w[2] } $3 == "before_kill" { before++ }
+        $3 == "answered_before_kill" { answered++ }
         $3 == "sorted" && w[2] > 0 { with++; if ($6 ~ /\[0, 0\]/) zero++ } $3 == "kill" { kills++ }
-        END { printf "%d %d %d %d %d %d", live, before, at_death, with, zero, kills - live }' "$OUT/c-trace.tsv" 2>/dev/null)"
-    rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again. The kernel's inflight file read 0 at ${n_zero:-0} of the ${n_with:-0} deaths with calls in flight: it does not count a request that waits to be issued again, and is no check on the sorting"
+        END { printf "%d %d %d %d %d %d %d", live, before, at_death, with, zero, kills - live, answered }' "$OUT/c-trace.tsv" 2>/dev/null)"
+    rec c_kills "${n_live:-0} kills of a live server (and ${n_dead:-0} that found none, after a failed log); calls outstanding when the suite asked for the kill: ${n_before:-0} had been completed by the old server and were issued again by the tool, ${n_answered:-0} had been completed by the old server and were handed to the suite with its answer, ${n_at_death:-0} were in flight at its death and left to the kernel to issue again. The kernel's inflight file read 0 at ${n_zero:-0} of the ${n_with:-0} deaths with calls in flight: it does not count a request that waits to be issued again, and is no check on the sorting"
     # A kill of an idle server exercises its restart and nothing of the
     # reissue of requests. At least a third of the kills of a live
     # server must have found a call in flight at its death, or the kill
