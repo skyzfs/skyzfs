@@ -1,0 +1,7 @@
+== at 8e8cb23
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
+== with the plant: the driver does not ask the harness
+a_harness_that_claims_late_completions_lets_the_skipped_reissue_pass --- FAILED
+thread 'a_harness_that_claims_late_completions_lets_the_skipped_reissue_pass' (19673) panicked at crates/skyzfs-blk/tests/late_probe.rs:47:5:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.60s
+error: test failed, to rerun pass `-p skyzfs-blk --test late_probe`

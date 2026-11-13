@@ -1,0 +1,11 @@
+== head with InFlight::Reissued against the base (c2169bc), 20000 random histories
+histories 20000 (1569 ended early at more than 400 worlds); read answers compared: accepted 407300 refused 2351354; mutation and flush completions 184120; kills 117304 (with a mutation in flight 80018); power cuts and reopens 9718; log failures 4885; most worlds 35226
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 376.92s
+== control: head with InFlight::MayHaveCompleted against the base: the probe must find a difference
+thread 'reissued_is_the_base' (14998) panicked at crates/skyzfs-blk/tests/diff_base.rs:140:9:
+assertion `left == right` failed: worlds, seed 1 step 7
+  left: 3
+ right: 2
+   2: core::panicking::assert_failed_inner
+   3: core::panicking::assert_failed::<usize, usize>
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s

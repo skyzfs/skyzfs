@@ -1,0 +1,24 @@
+unchanged:
+  skyzfs-blk: nothing fails (142 pass, 137 s) 
+  skyzfs-blkcheck: nothing fails (22 pass, 5 s)
+default-flipped:
+  skyzfs-blk: catches_skipping_a_reissue_that_was_logged, with_no_capability_the_faults_a_daemon_loss_shows_are_still_caught, without_a_base_the_faults_a_fixed_case_sees_are_still_caught, without_a_log_failure_the_faults_a_fixed_case_sees_are_still_caught, without_a_power_cut_the_faults_a_fixed_case_sees_are_still_caught, without_a_read_only_device_the_faults_a_fixed_case_sees_are_still_caught, without_a_reopen_the_faults_a_fixed_case_sees_are_still_caught, without_invalid_requests_the_faults_a_fixed_case_sees_are_still_caught (134 pass, 149 s)
+  skyzfs-blkcheck: nothing fails (22 pass, 6 s)
+driver-ignores-harness:
+  skyzfs-blk: nothing fails (142 pass, 138 s)
+  skyzfs-blkcheck: nothing fails (22 pass, 5 s)
+device-says-reissued:
+  skyzfs-blk: nothing fails (142 pass, 138 s)
+  skyzfs-blkcheck: nothing fails (22 pass, 5 s)
+replay-says-reissued:
+  skyzfs-blk: nothing fails (142 pass, 129 s)
+  skyzfs-blkcheck: a_call_returned_after_the_kill_may_have_been_applied_before_it_43430825700, a_call_returned_after_the_kill_may_have_been_applied_before_it_43453345076, a_call_returned_after_the_kill_may_have_been_applied_before_it_43455086383 (19 pass, 3 s)
+model-always-wide:
+  skyzfs-blk: catches_skipping_a_reissue_that_was_logged, a_request_a_read_showed_applied_may_be_applied_again_after_a_daemon_loss, a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss, a_request_in_flight_at_a_daemon_loss_may_have_completed_before_it, with_no_capability_the_faults_a_daemon_loss_shows_are_still_caught, without_a_base_the_faults_a_fixed_case_sees_are_still_caught, without_a_log_failure_the_faults_a_fixed_case_sees_are_still_caught, without_a_power_cut_the_faults_a_fixed_case_sees_are_still_caught, without_a_read_only_device_the_faults_a_fixed_case_sees_are_still_caught, without_a_reopen_the_faults_a_fixed_case_sees_are_still_caught, without_invalid_requests_the_faults_a_fixed_case_sees_are_still_caught (131 pass, 143 s)
+  skyzfs-blkcheck: nothing fails (22 pass, 5 s)
+model-always-reissued:
+  skyzfs-blk: a_request_a_read_showed_applied_may_be_applied_again_after_a_daemon_loss, a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss, a_request_in_flight_at_a_daemon_loss_may_have_completed_before_it (139 pass, 133 s)
+  skyzfs-blkcheck: a_call_returned_after_the_kill_may_have_been_applied_before_it_43430825700, a_call_returned_after_the_kill_may_have_been_applied_before_it_43453345076, a_call_returned_after_the_kill_may_have_been_applied_before_it_43455086383 (19 pass, 5 s)
+no-outcome-2:
+  skyzfs-blk: a_request_a_read_showed_applied_may_be_applied_again_after_a_daemon_loss (141 pass, 131 s)
+  skyzfs-blkcheck: nothing fails (22 pass, 5 s)

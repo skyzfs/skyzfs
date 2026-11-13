@@ -77,3 +77,35 @@ shown about the corrected form. The first form's gain was small
   model's worlds can grow without limit in a random history.
 - This container's disk allowance fills with cargo target directories.
   Before a build, look at `df` and remove stale ones.
+
+## Second look, 8e8cb23
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/60#issuecomment-6861320777. It
+can merge from the review's side.
+
+The lead decided finding 1 as proposed: `Model::kill` takes an
+`InFlight`, `Harness::in_flight_at_a_loss` defaults to `Reissued`, and
+the device harness and `--replay` say `MayHaveCompleted`. A new fault
+of the in-memory target, `SkipReissuedIfLogged`, is caught by the
+strict suite.
+
+- `Reissued` is the base's model: the same code path by reading, and
+  20,000 random histories through both models agree on every answer
+  (`second-look/diff_base.rs`, `diff-base-8e8cb23.txt`). To run it,
+  put the base's `model.rs` into the crate as `src/model_base.rs`,
+  declare it in `lib.rs`, and run the test in release mode. Histories
+  end early at more than 400 worlds: without that cap the run takes
+  gigabytes.
+- The new fault pins the default: with the default flipped the mutants
+  test and seven capability tests fail (`second-look/plants3.py`,
+  `plants3.txt`).
+- Left, small: nothing without a kernel holds that the device harness
+  says `MayHaveCompleted`, nor that the driver asks the harness. A
+  test with a harness that wraps `MemHarness` and says
+  `MayHaveCompleted` holds the driver's half
+  (`second-look/late_probe.rs`, `late-probe.txt`).
+
+For next time: a job's log tail read through the GitHub tool comes
+back whole and is very large. Ask for a short tail, or read the saved
+result file with a filter, when only one line is wanted.
