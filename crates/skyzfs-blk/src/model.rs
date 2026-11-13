@@ -1198,15 +1198,20 @@ impl Model {
                 // allows (§4.1: such reads may differ).
                 match seen.get(&block) {
                     Some(before) if &before[..] != bytes => {
+                        // Only the worlds whose discard allows both
+                        // answers stay, so that one world explains every
+                        // answer the block gave (each later one is
+                        // checked against the first in the worlds left).
                         let (first, now) = (self.cx.lookup(before), self.cx.lookup(bytes));
-                        let free = self.worlds.iter().any(|world| {
-                            world.discarded(&self.cx, block).is_some_and(|cell| {
+                        let cx = &self.cx;
+                        self.worlds.retain(|world| {
+                            world.discarded(cx, block).is_some_and(|cell| {
                                 [first, now]
                                     .iter()
                                     .all(|id| id.is_some_and(|id| cell.contains(&id)))
                             })
                         });
-                        if !free {
+                        if self.worlds.is_empty() {
                             return Err(Violation::BadRecovery {
                                 block,
                                 kind: Mismatch::Inconsistent,
@@ -1721,6 +1726,37 @@ mod tests {
             c.wrote(0, 1, 3);
             assert!(!c.would_see(0, &[1]), "other {other}");
             c.sees(0, &[3]).unwrap();
+        }
+    }
+
+    /// R6 across a power cut, in one world: two overlapping writes in
+    /// flight together, both acknowledged, then a discard of both blocks,
+    /// acknowledged; after a cut, while block 1 is still to be read back,
+    /// block 0 may read as zeros and as the write the order put last,
+    /// but not as both writes: no one order lets the discard keep both.
+    /// (Codex's finding on M1.3s.)
+    #[test]
+    fn a_discarded_block_reads_as_one_world_allows() {
+        for (second, third) in [(1u8, 2u8), (2, 1)] {
+            let mut c = Client::new();
+            let a = c.write(0, 2, 1);
+            let b = c.write(0, 2, 2);
+            c.ack(a);
+            c.ack(b);
+            let d = c.discard(0, 2);
+            c.ack(d);
+            c.model.power_cut();
+            c.sees(0, &[0]).unwrap();
+            c.sees(0, &[second]).unwrap();
+            let r = c.read(0, 1);
+            assert_eq!(
+                c.returns(r, vec![third; B]),
+                Err(Violation::BadRecovery {
+                    block: 0,
+                    kind: Mismatch::Inconsistent
+                }),
+                "0, {second}, {third}"
+            );
         }
     }
 

@@ -93,14 +93,23 @@ mod tests {
                 return;
             }
         };
-        assert!(written >= 1, "{written} pages after a write of 1 MiB");
+        assert!(
+            written >= 1,
+            "{written} pages after a write of 1 MiB: the count does not see this file's pages, \
+             as through an overlay file system; set TMPDIR to a directory on ext4 or xfs"
+        );
         file.sync_data().expect("synced");
         // SAFETY: `posix_fadvise` takes a descriptor and integers and no
         // pointer; the descriptor is `file`'s.
         let advised =
             unsafe { libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED) };
         assert_eq!(advised, 0);
-        assert_eq!(cached_pages(&file).expect("counted"), 0);
+        assert_eq!(
+            cached_pages(&file).expect("counted"),
+            0,
+            "pages stay cached after a drop, as on tmpfs, where they are the file; set TMPDIR \
+             to a directory on ext4 or xfs"
+        );
         let mut page = [0u8; 4096];
         file.read_exact_at(&mut page, 0).expect("read");
         assert!(cached_pages(&file).expect("counted") >= 1);

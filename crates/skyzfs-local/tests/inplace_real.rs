@@ -7,6 +7,14 @@
 //! to a file when the process dies. The test cuts no power, and the
 //! in-place store promises nothing more than the volatile-cache disk
 //! at a power cut (see `skyzfs_local::inplace`).
+//!
+//! **The temporary directory must be on a file system whose page cache
+//! the kernel can drop and count for a file** (ext4, xfs). Every start
+//! of the in-place store drops the home image's cache and checks with
+//! `cachestat` that none of it is left, and refuses otherwise: on tmpfs
+//! the pages are the file and cannot be dropped, and through an overlay
+//! the count sees none. Each test says so first where that is the case;
+//! set `TMPDIR` to a directory on such a file system.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -40,9 +48,48 @@ fn config() -> StoreConfig {
 /// The directory at `path`, whose files count their cached pages as
 /// the daemon's do: the in-place store's start refuses without it.
 fn on_disk(path: &std::path::Path) -> FsDir {
+    the_cache_can_be_dropped_and_counted(path);
     FsDir::new(path)
         .unwrap()
         .with_cache_count(skyzfs_ublk_sys::cached_pages)
+}
+
+/// Fail with a sentence where the directory's file system cannot do
+/// what the in-place store's start needs (see the module documentation),
+/// so that the start's refusal is not taken for a defect of the store.
+fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) {
+    use std::os::unix::fs::FileExt;
+    let probe = path.join("cache-probe");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&probe)
+        .unwrap();
+    file.write_all_at(&[7u8; 64 << 10], 0).unwrap();
+    file.sync_data().unwrap();
+    let mut page = [0u8; 4096];
+    file.read_exact_at(&mut page, 0).unwrap();
+    let seen = skyzfs_ublk_sys::cached_pages(&file).unwrap_or(0);
+    assert!(
+        seen > 0,
+        "{}: the kernel's count does not see a page just read (an overlay file system, or a \
+         kernel before 6.5): the in-place store refuses to start here by design; set TMPDIR \
+         to a directory on ext4 or xfs",
+        path.display()
+    );
+    rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::DontNeed).unwrap();
+    let left = skyzfs_ublk_sys::cached_pages(&file).unwrap_or(u64::MAX);
+    assert_eq!(
+        left,
+        0,
+        "{}: pages stay cached after a drop (tmpfs keeps a file in its pages): the in-place \
+         store refuses to start here by design; set TMPDIR to a directory on ext4 or xfs",
+        path.display()
+    );
+    drop(file);
+    std::fs::remove_file(&probe).unwrap();
 }
 
 /// The log store's open, then the in-place store.
