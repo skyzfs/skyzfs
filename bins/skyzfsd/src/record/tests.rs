@@ -9,6 +9,21 @@ struct Scripted {
     flushes: u32,
     waits: VecDeque<Result<Vec<Fetched>, QueueDown>>,
     flush_fails: bool,
+    /// A record to read as each wait or flush begins: its last line then
+    /// goes to `last_before`.
+    peek: Option<std::path::PathBuf>,
+    last_before: Vec<String>,
+}
+
+impl Scripted {
+    fn note_last_line(&mut self) {
+        if let Some(path) = &self.peek {
+            let text = std::fs::read_to_string(path).expect("the record");
+            let last = text.lines().last().unwrap_or_default();
+            let (_time, rest) = last.split_once('\t').expect("a time");
+            self.last_before.push(rest.to_string());
+        }
+    }
 }
 
 impl Queue for Scripted {
@@ -16,6 +31,7 @@ impl Queue for Scripted {
         4
     }
     fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+        self.note_last_line();
         match self.waits.pop_front() {
             Some(Ok(more)) => {
                 fetched.extend(more);
@@ -32,6 +48,7 @@ impl Queue for Scripted {
         self.committed.push((tag, result));
     }
     fn flush(&mut self) -> Result<(), QueueDown> {
+        self.note_last_line();
         self.flushes += 1;
         if self.flush_fails {
             Err(QueueDown)
@@ -72,8 +89,9 @@ fn pid() -> u32 {
 
 /// What the kernel handed over and what it was given back, each in the
 /// order it happened: the start, the requests as the wait returned them,
-/// each commit with its request again, and a `sent` line once a wait
-/// returned after commits. The queue underneath sees every call.
+/// each commit with its request again, a `send` line as a wait or a
+/// flush begins with commits pending and a `sent` line when it returns.
+/// The queue underneath sees every call.
 #[test]
 fn the_record_has_each_request_and_its_answer() {
     let dir = tempfile::tempdir().expect("dir");
@@ -107,9 +125,11 @@ fn the_record_has_each_request_and_its_answer() {
             format!("{p}\tcommit\t1\twrite\t131040\t32\t16384"),
             format!("{p}\tcommit\t0\twrite\t131016\t24\t12288"),
             format!("{p}\tcommit\t2\tflush\t0\t0\t0"),
+            format!("{p}\tsend\t-\t-\t-\t-\t3"),
             format!("{p}\tsent\t-\t-\t-\t-\t3"),
             format!("{p}\trecv\t0\tread\t8\t16\t-"),
             format!("{p}\tcommit\t0\tread\t8\t16\t-5"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tsent\t-\t-\t-\t-\t1"),
         ]
     );
@@ -118,6 +138,38 @@ fn the_record_has_each_request_and_its_answer() {
         [(1, 16384), (0, 12288), (2, 0), (0, -5)]
     );
     assert_eq!(queue.inner.flushes, 1);
+}
+
+/// The `send` line is in the file before the queue underneath is asked
+/// to wait or flush, since that call hands the commits to the kernel at
+/// its start; the `sent` line only after it returns. A kill inside the
+/// call leaves the first and not the second.
+#[test]
+fn the_send_line_is_written_before_the_commits_go() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let mut inner = Scripted {
+        peek: Some(path.clone()),
+        ..Scripted::default()
+    };
+    inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0);
+    let mut got = Vec::new();
+    let _ = queue.wait(&mut got);
+    queue.commit(0, 4096, None);
+    let _ = queue.wait(&mut got);
+    queue.commit(0, 4096, None);
+    let _ = queue.flush();
+    let p = pid();
+    assert_eq!(
+        queue.inner.last_before,
+        [
+            // Nothing pending at the first wait: no `send`.
+            format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
+        ]
+    );
 }
 
 /// The times are `CLOCK_MONOTONIC` and do not go back from one line to
@@ -147,9 +199,10 @@ fn the_times_are_monotonic() {
                 .expect("a time")
         })
         .collect();
-    assert_eq!(times.len(), 4);
+    // start, recv, commit, send, sent.
+    assert_eq!(times.len(), 5);
     assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
-    assert!(times[1] >= before && times[3] <= after, "{times:?}");
+    assert!(times[1] >= before && times[4] <= after, "{times:?}");
 }
 
 /// Every operation code has a name, and one outside the five says its
@@ -165,8 +218,8 @@ fn every_operation_is_named() {
     assert_eq!(op_name(13), "op13");
 }
 
-/// A wait or a flush that fails says that the commits before it may not
-/// have reached the kernel; a commit for a tag that holds no request
+/// A wait or a flush that fails says that the commits it was to send may
+/// not have reached the kernel; a commit for a tag that holds no request
 /// (the pump answers a refused request with no fetch recorded only in
 /// a test) still has its line.
 #[test]
@@ -190,8 +243,10 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
         [
             format!("{p}\tstart\t1\t-\t-\t-\t4"),
             format!("{p}\tcommit\t2\t-\t-\t-\t-5"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tdown\t-\t-\t-\t-\t1"),
             format!("{p}\tcommit\t3\t-\t-\t-\t-5"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tdown\t-\t-\t-\t-\t1"),
         ]
     );
@@ -225,6 +280,7 @@ fn a_second_instance_appends_to_the_same_record() {
             format!("{p}\tstart\t0\t-\t-\t-\t4"),
             format!("{p}\trecv\t3\twrite\t0\t8\t-"),
             format!("{p}\tcommit\t3\twrite\t0\t8\t4096"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tsent\t-\t-\t-\t-\t1"),
         ]
     );

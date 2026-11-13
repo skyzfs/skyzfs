@@ -58,7 +58,10 @@ fn drained(mut store: InPlace<SimDisk>, done: &mut Vec<Completion>) -> InPlace<S
         if began.elapsed() > DRAIN {
             let left = store.in_flight();
             std::mem::forget(store);
-            panic!("{left} requests did not end within {DRAIN:?}");
+            panic!(
+                "{left} requests did not end within {DRAIN:?}; the store is \
+                 leaked and not dropped, since its drop would wait for them"
+            );
         }
         store.wait(done, Duration::from_millis(10));
     }
@@ -75,6 +78,19 @@ fn release_and_drain(
 ) -> InPlace<SimDisk> {
     disk.release_direct_io();
     drained(store, done)
+}
+
+/// Lets the disk's held direct I/O go when dropped. Declared after the
+/// store it guards, it is dropped before it: a panic while a request is
+/// held on a thread (an [`until_held`] that times out, a submit that
+/// fails) lets the thread go before the store's drop waits for it, and
+/// the test fails instead of hanging.
+struct Releases<'a>(&'a SimDisk);
+
+impl Drop for Releases<'_> {
+    fn drop(&mut self) {
+        self.0.release_direct_io();
+    }
 }
 
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
@@ -453,6 +469,7 @@ fn a_flush_waits_for_the_writes_on_the_threads() {
         // A write and a read, held on the threads before they touch the
         // image.
         disk.hold_direct_io(2);
+        let _release = Releases(&disk);
         store
             .submit(Request {
                 id: RequestId(1),
@@ -510,6 +527,7 @@ fn an_overlapping_request_waits_for_the_one_on_the_threads() {
         let disk = created(3, 0);
         let mut store = start_io(&disk, mutant, false, IoMode::default()).unwrap();
         disk.hold_direct_io(1);
+        let _release = Releases(&disk);
         store
             .submit(Request {
                 id: RequestId(1),
@@ -570,6 +588,7 @@ fn a_write_waits_for_an_overlapping_read_on_the_threads() {
     let disk = created(3, 0);
     let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
     disk.hold_direct_io(1);
+    let _release = Releases(&disk);
     store
         .submit(Request {
             id: RequestId(1),
@@ -610,6 +629,7 @@ fn a_read_waits_for_an_overlapping_write_on_the_threads() {
     let disk = created(3, 0);
     let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
     disk.hold_direct_io(1);
+    let _release = Releases(&disk);
     store
         .submit(Request {
             id: RequestId(1),
@@ -729,6 +749,7 @@ fn the_io_queue_counts_what_is_on_the_threads() {
     let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
     assert_eq!(store.io_queue().threads, IoMode::DEFAULT_THREADS as u64);
     disk.hold_direct_io(1);
+    let _release = Releases(&disk);
     store
         .submit(Request {
             id: RequestId(1),

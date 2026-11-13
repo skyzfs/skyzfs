@@ -41,13 +41,37 @@
 //!   (bytes, or a negated error number). With `--commit-delay-ms` it is
 //!   written when the delayed answer goes on, so it is what the kernel
 //!   was given, not when the store completed the request.
-//! - `sent`: a wait or a flush of the queue returned, so every `commit`
-//!   above it has reached the kernel. The result column says how many
-//!   commits that covers. A commit that a queue keeps until its next
-//!   wait is not with the kernel before this line.
-//! - `down`: a wait or a flush of the queue failed; the commits since
-//!   the last `sent` (the result column) may not have reached the
-//!   kernel.
+//! - `send`: a wait or a flush of the queue begins with commits not yet
+//!   handed on (the result column says how many: the `commit` lines
+//!   since the last `send`). The queue hands them to the kernel at the
+//!   start of that wait, before it waits for anything.
+//! - `sent`: that wait or flush returned, so those commits were handed
+//!   to the kernel at some moment between the `send` line and this one.
+//!   A wait returns at the next request, a wake, or the library's idle
+//!   time-out of 20 s, so the gap can be long: the kernel may have ended
+//!   the calls of those commits, and their callers seen them return,
+//!   well before this line. A `kill -9` between the two lines leaves a
+//!   `send` with no `sent` whose commits the kernel may or may not have.
+//! - `down`: that wait or flush failed; the commits since the `send`
+//!   (the result column) may not have reached the kernel.
+//!
+//! # What the record cannot show
+//!
+//! - **Handed to the kernel is not taken by the driver.** The queue keeps
+//!   a command's completion only when its result is OK and drops every
+//!   other: a commit the driver refuses looks here like one it took. The
+//!   kernel's own trace (`block_rq_complete`, `block_rq_requeue`) is the
+//!   other side of it.
+//! - **At a stop** (not at a kill), once the library has seen an abort
+//!   it puts no more commits on its ring, while its commit still
+//!   returns as done: such a commit has its `commit`, `send` and `sent`
+//!   lines and never reached the kernel. This is detach, a deleted
+//!   device, a failed volume.
+//! - **A request that arrives during the queue's last flush** (at a
+//!   stop) is dropped by the queue and has no `recv` line, though the
+//!   kernel's trace shows it issued.
+//! - **The record costs** two or three `write` calls per request on the
+//!   queue's thread: a rate measured with it is not the rate without it.
 //!
 //! A record that cannot be written does not stop the daemon: the first
 //! error is said once on standard error, and the record ends there.
@@ -108,7 +132,8 @@ pub struct Recorded<Q: Queue> {
     pid: u32,
     /// The request each tag holds, as the kernel handed it over.
     held: Vec<Option<Desc>>,
-    /// Commits handed on since the last `sent` or `down` line.
+    /// Commits made since the last `sent` or `down` line: the count the
+    /// next `send` names.
     unsent: u64,
 }
 
@@ -146,8 +171,15 @@ impl<Q: Queue> Recorded<Q> {
         }
     }
 
-    /// After a wait or a flush: what the commits since the last line of
-    /// this kind came to.
+    /// Before a wait or a flush: the commits it hands to the kernel.
+    fn send(&mut self) {
+        if self.unsent > 0 {
+            let count = self.unsent.to_string();
+            self.line(&columns("send", "-", None, &count));
+        }
+    }
+
+    /// After a wait or a flush: what the commits of its `send` came to.
     fn sent(&mut self, ok: bool) {
         if self.unsent == 0 {
             return;
@@ -166,6 +198,7 @@ impl<Q: Queue> Queue for Recorded<Q> {
 
     fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
         let before = fetched.len();
+        self.send();
         let woken = self.inner.wait(fetched);
         self.sent(woken.is_ok());
         for Fetched { tag, desc } in fetched.get(before..).unwrap_or_default().to_vec() {
@@ -198,6 +231,7 @@ impl<Q: Queue> Queue for Recorded<Q> {
     }
 
     fn flush(&mut self) -> Result<(), QueueDown> {
+        self.send();
         let flushed = self.inner.flush();
         self.sent(flushed.is_ok());
         flushed
