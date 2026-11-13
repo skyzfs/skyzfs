@@ -16,7 +16,7 @@ use std::time::Duration;
 use skyzfs_blk::{Base, Buf};
 use skyzfs_local::inplace::{create, lock, InPlace, OpenOptions, Opened, VolumeConfig};
 use skyzfs_local::sim::{LoseAll, SimDisk};
-use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Wake};
+use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
 enum Step {
@@ -38,7 +38,11 @@ impl Queue for ScriptQueue {
         16
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        _unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
                 fetched.extend(more);

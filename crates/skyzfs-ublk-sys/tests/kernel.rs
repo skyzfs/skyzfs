@@ -212,7 +212,9 @@ fn zeros(mut queue: impl Queue) -> u64 {
     let mut answered = 0;
     loop {
         fetched.clear();
-        let Ok(woken) = queue.wait(&mut fetched) else {
+        // A command the driver ended otherwise than OK is not judged
+        // here: the pump counts it, and its tests say so.
+        let Ok(woken) = queue.wait(&mut fetched, &mut Vec::new()) else {
             return answered;
         };
         for f in fetched.drain(..) {
@@ -349,7 +351,9 @@ fn memory_gathering(
     let mut longest = 0;
     loop {
         fetched.clear();
-        let Ok(woken) = queue.wait(&mut fetched) else {
+        // A command the driver ended otherwise than OK is not judged
+        // here: the pump counts it, and its tests say so.
+        let Ok(woken) = queue.wait(&mut fetched, &mut Vec::new()) else {
             return longest;
         };
         if gathering {

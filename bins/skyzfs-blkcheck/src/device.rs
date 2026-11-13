@@ -179,6 +179,10 @@ struct DeviceTarget {
     carried: BTreeMap<RequestId, Completion>,
     /// Carried results whose id has been resubmitted, ready for `poll`.
     ready: Vec<Completion>,
+    /// Results of calls that had returned when the old server was gone:
+    /// the requests it completed before its death, handed to the suite
+    /// as answered before the loss ([`Harness::completed_before_loss`]).
+    before_loss: Vec<Completion>,
 }
 
 fn io_error(e: &std::io::Error) -> BlkError {
@@ -293,6 +297,7 @@ impl DeviceTarget {
             in_flight: BTreeSet::new(),
             carried: BTreeMap::new(),
             ready: Vec::new(),
+            before_loss: Vec::new(),
         })
     }
 
@@ -316,14 +321,20 @@ impl DeviceTarget {
         out.len() - before
     }
 
-    /// The server has been stopped and is about to be killed. Every call
-    /// that has returned by now was completed before the kill, and the
-    /// kernel will have nothing of it to issue again. The suite does not
-    /// know these results yet and will resubmit the ids, and to the
-    /// suite's model they were in flight at the kill. These results are
-    /// dropped and the resubmissions are issued: each is applied a
-    /// second time, after the kill, which the model allows of a request
-    /// in flight at a kill (rule R9).
+    /// The old server is gone and the new one is not started. Every call
+    /// that has returned by now was completed by the old server, before
+    /// its death, and the kernel will have nothing of it to issue again.
+    /// The suite does not know these results yet. They are kept and
+    /// handed to it as answered before the loss
+    /// ([`Harness::completed_before_loss`]): the model holds the server
+    /// to them after the kill, and the suite does not resubmit them.
+    ///
+    /// Until this was so they were dropped and resubmitted, and each was
+    /// applied a second time after the kill, which the model allows of
+    /// a request in flight at a kill (rule R9). A server that lost one
+    /// of them at its death then passed. The trace's word for them
+    /// changed with it, `before_kill` then and `answered_before_kill`
+    /// now, so that `--replay` reads an older trace as the suite saw it.
     /// Returns how many there were.
     fn returned_before_kill(&mut self) -> usize {
         let mut got = Vec::new();
@@ -331,13 +342,15 @@ impl DeviceTarget {
         for c in &got {
             trace(
                 self.number,
-                "before_kill",
+                crate::replay::ANSWERED_BEFORE_KILL,
                 Some(c.id),
                 &format!("{:?}", c.result),
             );
         }
         self.sorted_at = Some(std::time::Instant::now());
-        got.len()
+        let count = got.len();
+        self.before_loss.append(&mut got);
+        count
     }
 
     /// Reads, writes, discards and writes of zeros still outstanding.
@@ -685,6 +698,12 @@ impl Harness for DeviceHarness {
             target.server = self.server_of(number);
         }
         Ok(target)
+    }
+
+    /// The calls that had returned when the old server was gone: see
+    /// `DeviceTarget::returned_before_kill`.
+    fn completed_before_loss(&mut self, target: &mut DeviceTarget) -> Vec<Completion> {
+        std::mem::take(&mut target.before_loss)
     }
 
     fn cut_points(&mut self, _target: &DeviceTarget) -> u64 {
@@ -1036,15 +1055,17 @@ mod tests {
         std::fs::remove_file(&script).unwrap();
     }
 
-    /// A call that had returned before the server was killed was not in
-    /// flight at the kill, and the kernel issues nothing of it again.
-    /// The suite does not know that: the id is unacknowledged, it
-    /// resubmits it, and its model requires the request to be applied
-    /// from the kill on. So that resubmission is issued, and the id
-    /// still completes exactly once.
+    /// A call that had returned when the old server was gone was not in
+    /// flight at its death, and the kernel issues nothing of it again.
+    /// Its result is handed to the suite once, through the harness, as
+    /// answered before the loss, and not through `poll`, where the suite
+    /// would take it as answered after. Until this was so the result was
+    /// dropped and the suite resubmitted the id; a resubmission is still
+    /// issued, since the target does not know the suite's mind.
     #[test]
-    fn a_request_completed_before_the_kill_is_issued_again() {
+    fn a_request_completed_before_the_kill_is_handed_over_as_answered_before_it() {
         let (mut t, path) = target("before");
+        let (mut h, script) = harness("before", "true");
         let write = |byte: u8| Request {
             id: RequestId(1),
             op: Op::Write {
@@ -1060,20 +1081,24 @@ mod tests {
         assert_eq!(t.returned_before_kill(), 1);
         t.settle(Duration::from_secs(30)).unwrap();
         let mut out = Vec::new();
-        assert_eq!(t.poll(&mut out), 0, "the old result is not handed out");
-        // The suite's reissue, with other data so that it shows.
+        assert_eq!(t.poll(&mut out), 0, "not handed out by poll");
+        let before = h.completed_before_loss(&mut t);
+        assert_eq!(before.len(), 1);
+        assert_eq!((before[0].id, before[0].result), (RequestId(1), Ok(())));
+        assert!(
+            h.completed_before_loss(&mut t).is_empty(),
+            "handed over once"
+        );
+        let on_device = std::fs::read(&path).unwrap();
+        assert!(on_device[..BLOCK_USIZE].iter().all(|b| *b == 0xaa));
+        // A resubmission of the id would be issued, as any request is.
         t.submit(write(0x55)).unwrap();
         assert_eq!(t.wait(&mut out, Duration::from_secs(30)), 1);
-        assert_eq!(out[0].id, RequestId(1));
-        assert_eq!(out[0].result, Ok(()));
-        std::thread::sleep(Duration::from_millis(200));
-        assert_eq!(t.poll(&mut out), 0, "no second completion");
+        assert_eq!((out[0].id, out[0].result), (RequestId(1), Ok(())));
         let on_device = std::fs::read(&path).unwrap();
-        assert!(
-            on_device[..BLOCK_USIZE].iter().all(|b| *b == 0x55),
-            "the resubmission was not issued"
-        );
+        assert!(on_device[..BLOCK_USIZE].iter().all(|b| *b == 0x55));
         std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&script).unwrap();
     }
 
     /// The start time is field 22 whatever the command is called, and a

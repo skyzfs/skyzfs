@@ -118,6 +118,36 @@ pub struct Fetched {
     pub desc: Desc,
 }
 
+/// A command of a queue that the driver ended with a result other than
+/// OK: it fetched no request. [`Queue::wait`] hands these over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unfetched {
+    /// The tag the command was for.
+    pub tag: u16,
+    /// Which command.
+    pub command: Command,
+    /// The driver's result: [`ABORTED`] when the queue is being
+    /// stopped, a negated error number when the driver refused
+    /// the command, or another code it does not use with this queue.
+    pub result: i32,
+}
+
+/// A command a queue sends the driver for a tag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// The tag's first fetch, at the queue's start.
+    Fetch,
+    /// The tag's answer, which also fetches its next request.
+    Commit,
+    /// Another command, by the low byte of its code.
+    Other(u8),
+}
+
+/// The driver's result for a command of a queue that is being stopped
+/// (`UBLK_IO_RES_ABORT`, `-ENODEV`): at a detach, a deleted device, a
+/// failed volume. Every tag's last command ends so.
+pub const ABORTED: i32 = -19;
+
 /// Why [`Queue::wait`] returned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wake {
@@ -141,7 +171,39 @@ pub trait Queue {
     /// Block until requests arrive, the target's waker fires or a stop
     /// is asked, and append what was fetched. It may return with
     /// nothing.
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown>;
+    ///
+    /// A command that the driver ended with a result other than OK
+    /// fetched nothing: it is appended to `unfetched`, whether the wait
+    /// then returns `Ok` or `Err`. The pump counts them
+    /// ([`Counters::commands_aborted`], [`Counters::commands_failed`])
+    /// and does nothing else about them. An abort is the queue being
+    /// stopped. Any other result is a command that took no effect: one
+    /// the driver refused when it was submitted, or one io_uring could
+    /// not hand to the driver at all (a bad descriptor or address). A
+    /// refused commit completed nothing, and its tag is then in one of
+    /// two states, which the result does not tell apart (`-EINVAL`
+    /// comes of either kind on every release the daemon runs on):
+    ///
+    /// - **The tag held no request in the server's hands**: a second
+    ///   commit of one tag, or a commit of a tag that was never given a
+    ///   request. The commit was for nothing. A command that waits on
+    ///   the tag still waits, and requests come on it as before.
+    /// - **The commit was malformed**: no buffer for a read, the wrong
+    ///   thread, the wrong code, a tag out of range. The driver still
+    ///   counts the request as the server's, unanswered, and no command
+    ///   waits on the tag, so nothing comes on it again until the queue
+    ///   stops.
+    ///
+    /// A count of 0 does not show that no commit was sent twice: a
+    /// second commit that arrives after the tag's next request was
+    /// handed over is taken, and answers that request with the stale
+    /// result. What the daemon should do about a refusal is not decided
+    /// here (M1.3ac); the count and the request log show it.
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown>;
 
     /// The buffer of the request with `tag`, `blocks` blocks long. For a
     /// write it holds the data. Called once for a read or a write that
@@ -259,6 +321,16 @@ pub struct Counters {
     /// Completions that are waiting because the acknowledged position
     /// could not be stored.
     pub unstored: u64,
+    /// Commands the driver ended with its abort ([`ABORTED`]): the queue
+    /// is being stopped. Each tag's last command ends so.
+    pub commands_aborted: u64,
+    /// Commands that ended with any other result than OK: a commit or a
+    /// fetch the driver refused, or one io_uring could not hand to the
+    /// driver (see [`Queue::wait`]). None of them took effect.
+    pub commands_failed: u64,
+    /// The result of the last command counted in
+    /// [`Counters::commands_failed`]; 0 before the first.
+    pub last_command_failure: i32,
 }
 
 /// Where a request's time goes in the pump, before the target has it
@@ -580,11 +652,26 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         self.failed_answers
     }
 
+    /// Count the commands the driver ended otherwise than OK.
+    fn count_unfetched(&mut self, unfetched: &[Unfetched]) {
+        for command in unfetched {
+            if command.result == ABORTED {
+                self.counters.commands_aborted += 1;
+            } else {
+                self.counters.commands_failed += 1;
+                self.counters.last_command_failure = command.result;
+            }
+        }
+    }
+
     /// A turn of a pump whose volume failed: what arrives is answered
     /// with the plain I/O error, and the target is not touched.
     fn failed_turn(&mut self) -> Option<Stopped> {
         let mut fetched = Vec::new();
-        let woken = match self.queue.wait(&mut fetched) {
+        let mut unfetched = Vec::new();
+        let waited = self.queue.wait(&mut fetched, &mut unfetched);
+        self.count_unfetched(&unfetched);
+        let woken = match waited {
             Err(QueueDown) => return Some(Stopped::QueueDown),
             Ok(woken) => woken,
         };
@@ -616,7 +703,10 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return self.failed_turn();
         }
         let mut fetched = Vec::new();
-        match self.queue.wait(&mut fetched) {
+        let mut unfetched = Vec::new();
+        let waited = self.queue.wait(&mut fetched, &mut unfetched);
+        self.count_unfetched(&unfetched);
+        match waited {
             Err(QueueDown) => return Some(Stopped::QueueDown),
             Ok(Wake::Stop) => self.stopping = true,
             Ok(Wake::Work) => {}
