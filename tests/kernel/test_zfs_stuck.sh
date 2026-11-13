@@ -64,6 +64,12 @@ is "with no mark, no kernel half" "$out" "zpool processes waiting in the kernel:
 out=$(zfs_stuck_say skz-rig-mark-0-0)
 has "a mark not in the log is said to be lost" "$out" "; the kernel log since the mark is lost"
 
+# A log with a mark and no hung-task report: the counts say none, with
+# nothing that reads as a stuck pool.
+printf '[ 100.000000] skz-rig-mark-5-5\n[ 101.000000] a quiet line\n' > "$T/log2"
+out=$(LOG=$T/log2 zfs_stuck_say skz-rig-mark-5-5)
+has "a log with no report says none" "$out" "; the kernel since the mark: 0 hung-task reports, txg_sync shown 0 times and running in 0 of them, lock owners named: none"
+
 # Nothing stuck: no zpool in D state, no txg_sync.
 rm -rf "$T/proc"; task 600 zpool S; task 601 sshd D
 out=$(zfs_stuck_say skz-rig-mark-9-9)
