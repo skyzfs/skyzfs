@@ -245,7 +245,14 @@ vol_status() { lim 30 "$1" status --dir "$2" "${VOL_RUN_ARGS[@]}" 2>/dev/null; }
 # position could not be stored) is 0 in a healthy run. Counters are
 # since the instance started, so this reads the instance serving now.
 pin_unstored() {
-    local v; v=$(vol_stat "$SKYZFSD" "$2" unstored)
+    local v
+    # The in-place store reports no acknowledged position, so the daemon
+    # stores none and the count cannot be anything but 0.
+    if in_place; then
+        pin "unstored_zero_$1" NA "the in-place store has no acknowledged position to store, so no completion can wait for one"
+        return
+    fi
+    v=$(vol_stat "$SKYZFSD" "$2" unstored)
     case $v in
         0) pin "unstored_zero_$1" PASS "status says unstored 0 at the end of the check" ;;
         '') pin "unstored_zero_$1" ERROR "status gave no unstored" ;;
@@ -1556,10 +1563,10 @@ check_b_stop_under_load() {
     st=$(pool_state "$pool")
     fails=$(grep -c . "$OUT/b7-writer.log")
     files=$(lim 120 files_match "$WORK/mnt/$pool" "$WORK/b7.record" 2>&1 | tail -n 1)
-    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i$([ $i = 0 ] || echo " (THE SERVER DID NOT COME BACK: serve exit ${SERVE_RC:-none})"), recovered_unacknowledged '${rec:-not said}'; ${stuck}the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: ${files:-not read in 120 s}"
+    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i$([ $i = 0 ] || echo " (THE SERVER DID NOT COME BACK: serve exit ${SERVE_RC:-none})"), $(if in_place; then echo "recovered_unacknowledged not judged (the in-place store keeps no record of what it applied)"; else echo "recovered_unacknowledged '${rec:-not said}'"; fi); ${stuck}the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: ${files:-not read in 120 s}"
     if ! { [[ ${w0:-} =~ ^[0-9]+$ ]] && [[ ${w1:-} =~ ^[0-9]+$ ]] && [ "$w1" -gt "$w0" ]; }; then
         pin orderly_stop_under_load ERROR "the stop did not find the writer at work: $a"
-    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ -z "$stuck" ] && [ "$rec" = 0 ] && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
+    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ -z "$stuck" ] && { [ "$rec" = 0 ] || in_place; } && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
         pin orderly_stop_under_load PASS "$a"
     elif [ "$rc" != 0 ]; then
         pin orderly_stop_under_load FAIL "serve ended with $rc on SIGTERM under plain load (wanted 0): $a; its log's end: $(tail -n 2 "$dir.serve.log" | tr '\n' ';' | cut -c1-300)"
@@ -1726,16 +1733,22 @@ kill_cleanup() { # name [impl]: the pool exported, the server stopped, the devic
 }
 check_b_delay() {
     local ms=${RIG_COMMIT_DELAY_MS:-20} kills=10 v why
-    if in_place; then
-        pin kill_under_load_applied_unacknowledged NA "the in-place store keeps no record of what it applied, so a new server finds nothing applied and not acknowledged; kills under load are pin_kill_under_load"
-        ctl delay_before_apply NA "the control of pin_kill_under_load_applied_unacknowledged, which is not taken with the in-place store"
-        return
-    fi
     step "b: kill -9 under load, a write acknowledged $ms ms after it is applied, $kills times"
     KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
     kill_test "$SKYZFSD" bd "$kills"
     KT_SERVE_EXTRA=()
     kill_verdict; v=$KT_VERDICT
+    # The in-place store keeps no record of what it applied, so a new
+    # server cannot count writes applied and not acknowledged. The kills
+    # still land, by the delay, between a write's apply and its
+    # acknowledgement, where the kernel must issue the write again: the
+    # pin is judged as pin_kill_under_load is, without the count.
+    if in_place; then
+        pin kill_under_load_applied_unacknowledged "$v" "${KT_WHY:-writes were in flight just before $KT_INFLIGHT of $KT_DONE kills, each write acknowledged $ms ms after it was applied: no application write failed, no error on the vdev, scrub clean, $KT_FILES}; not counted: the in-place store keeps no record of what it applied"
+        ctl delay_before_apply NA "the control of the count of writes applied and not acknowledged, which the in-place store cannot take"
+        kill_cleanup bd
+        return
+    fi
     why="${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}; the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs ($KT_RECOVERED_UNSAID did not say)"
     if [ "$v" = PASS ] && { [ "$KT_RECOVERED" = 0 ] || [ "$KT_RECOVERED_UNSAID" != 0 ]; }; then v=ERROR; fi
     pin kill_under_load_applied_unacknowledged "$v" "$why"
@@ -1795,7 +1808,9 @@ check_b() {
     # that a kill left whole. Kills around a change of log segment and
     # right after a checkpoint are the daemon's to arrange; here every
     # kill is at a random moment under load.
-    if [ "$KT_REFUSED" -gt 0 ]; then
+    if in_place; then
+        pin serve_after_kill_accepts_log NA "the in-place store has no log, and a start checks nothing against what was acknowledged"
+    elif [ "$KT_REFUSED" -gt 0 ]; then
         pin serve_after_kill_accepts_log FAIL "$KT_REFUSED serve(s) after a kill exited $EXIT_REFUSED_FAILED: the volume was refused as failed"
     elif [ "$KT_DONE" -ge 1 ]; then
         pin serve_after_kill_accepts_log PASS "none of $KT_DONE serves after a kill was refused"

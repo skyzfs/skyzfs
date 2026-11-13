@@ -375,9 +375,12 @@ NOT_FOR_IN_PLACE = {
     'pin_log_stays_below_high_mark': "the log's bound: no log",
     'pin_kills_inside_steps_lose_nothing': 'kills at the --step-pause-* points of a checkpoint step: no step, and '
                                            'the hooks are refused',
-    'pin_kill_under_load_applied_unacknowledged': 'counts writes a new server found applied and not acknowledged in '
-                                                  'the log: no such record',
-    'ctl_delay_before_apply': 'the control of pin_kill_under_load_applied_unacknowledged',
+    'ctl_delay_before_apply': 'the control of the count of writes a new server found applied and not acknowledged: '
+                              'no such record, so pin_kill_under_load_applied_unacknowledged is judged without the count',
+    'pin_unstored_zero_a': 'completions waiting for an acknowledged position to be stored: no position, so always 0',
+    'pin_unstored_zero_b': 'completions waiting for an acknowledged position to be stored: no position, so always 0',
+    'pin_unstored_zero_e': 'completions waiting for an acknowledged position to be stored: no position, so always 0',
+    'pin_serve_after_kill_accepts_log': 'a start that checks its log against what was acknowledged: no log, no check',
     'ctl_recovered_log_too_short': 'a log whose recovery comes out short (--recover-short): no log',
     'ctl_recovered_log_too_short_no_log_device': 'a log whose recovery comes out short (--recover-short): no log',
     'pin_c_kill_with_applied_unacknowledged': 'as pin_kill_under_load_applied_unacknowledged, through the suite',
