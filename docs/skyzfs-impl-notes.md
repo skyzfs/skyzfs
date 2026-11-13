@@ -764,6 +764,27 @@ An experiment build (branch `skyzfs-coding-directio`, bec42e9: `serve --store in
 
 Decided on these figures: direct I/O is the in-place store's I/O, eight threads by default (M1.3y). The rule is shown again on that daemon.
 
+#### A direct write into a hole, at a power cut (M1.T27)
+
+Design §4.2 says that over a hole or an unwritten extent a direct write that has returned still needs the file system's commit to be readable after a power cut. M1.T27 measured it in the power-cut replay, the cut on the disk under the daemon's files and each prefix read through a daemon started as after a reboot. The course: 16 direct writes of 4 KiB to the daemon's device on a 256 MiB volume, a flush after every third, the last two unflushed. Six courses a job: ext4 and XFS, each on a sparse image, on one preallocated with `fallocate` (unwritten extents) and on one written through with `create --zero-fill`; `filefrag` confirms the three kinds. The daemon is the direct I/O package's build (b4a4068). Full budget, every prefix, run 43429346339, one run an image; a sampled run before it (43428255511) agrees.
+
+Per course: prefixes checked, prefixes at which a returned write read as zeros, and of those the prefixes at which the write's data was already on the disk.
+
+| Image | File system | Sparse | `fallocate` | Written through |
+|---|---|---|---|---|
+| `ubuntu-24.04` | ext4 | 108 / 73 / 56 | 100 / 65 / 48 | 73 / 27 / 0 |
+| `ubuntu-24.04` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+| `ubuntu-26.04` | ext4 | 110 / 74 / 57 | 102 / 66 / 49 | 74 / 27 / 0 |
+| `ubuntu-26.04` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+| `ubuntu-26.04-arm` | ext4 | 110 / 74 / 57 | 102 / 66 / 49 | 88 / 41 / 0 |
+| `ubuntu-26.04-arm` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+
+- No violation in any of the 18 courses: at every prefix at or after a flush that completed after a write, the block holds what was written, and before it the block is zeros or the write, whole. The control, a flush acknowledged with its data withheld, is caught in all 18.
+- The third figure is the effect in question: the data is on the disk and the file does not show it, because the extent change is not committed. It is there on a sparse and on a preallocated image, on both file systems and both architectures, and never on an image written through. `fallocate` is no better than a hole on XFS and a little better on ext4.
+- The second figure also counts writes lost from the disk's volatile cache, which every kind of image loses alike (the recording logs a completed write at the lower disk's next flush).
+
+All of it is loss that design §4.1 allows. Decided on these figures: the image stays sparse (design §10).
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -801,6 +822,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
 - Direct I/O is decided (D6) on an experiment build's figures; M1.3y builds it, and the rule, bounded and unbounded, is shown again on that daemon on both kinds of machine and on arm64.
+- The image stays sparse (M1.T27); a full file system still fails the volume, until the store accounts for local space (M3).
 - A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
