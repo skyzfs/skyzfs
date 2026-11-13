@@ -777,6 +777,7 @@ def _check(a, st):
     marks, fmarks = ck.marks, ck.fmarks
     res = {'mode': 'daemon', 'records': total, 'marks': len(marks), 'fsync_marks': len(fmarks), 'files': len(ck.rig.manifest),
            'write_bytes': sum(r['bytes'] for r in records if rc.is_write(r)), 'steps': a.steps,
+           'serve_args': ' '.join(a.serve_arg or []),
            'budget_name': a.budget_name, 'budget_s': a.budget_s}
     st['res'] = res
     print(f"lower log: {total} records, {len(marks)} sync marks, {len(fmarks)} fsync marks, "
@@ -1083,6 +1084,8 @@ def criterion_line(res):
         return head + ("Design §9's replay criterion: not shown by this run (this budget checks the marks and the flush "
                        "boundaries, not every prefix; the full budget, by dispatch, does).")
     if n == of and ends and res.get('exit') == 0:
+        if res.get('serve_args'):
+            return head + f"Design §9's replay criterion: shown by this run, for `skyzfsd serve {res['serve_args']}`."
         return head + "Design §9's replay criterion: shown by this run."
     why = []
     if n < of:
@@ -1111,6 +1114,8 @@ def summary(res):
         out.append(f"Budget: {budget}, every record prefix, with no time limit.\n")
     else:
         out.append(f"Budget: {budget}, {res['budget_s']:.0f} s for the sampled flush boundaries.\n")
+    if res.get('serve_args'):
+        out.append(f"Every start of the daemon: `skyzfsd serve ... {res['serve_args']}`.\n")
     out.append(criterion_line(res) + '\n')
     fails = res['failures']
     word = ('every checked prefix passed' if not fails else f"**{len(fails)} prefixes FAILED**")
