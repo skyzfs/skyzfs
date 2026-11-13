@@ -43,17 +43,29 @@
 //!   was given, not when the store completed the request.
 //! - `send`: a wait or a flush of the queue begins with commits not yet
 //!   handed on (the result column says how many: the `commit` lines
-//!   since the last `send`). The queue hands them to the kernel at the
-//!   start of that wait, before it waits for anything.
-//! - `sent`: that wait or flush returned, so those commits were handed
-//!   to the kernel at some moment between the `send` line and this one.
-//!   A wait returns at the next request, a wake, or the library's idle
-//!   time-out of 20 s, so the gap can be long: the kernel may have ended
-//!   the calls of those commits, and their callers seen them return,
-//!   well before this line. A `kill -9` between the two lines leaves a
-//!   `send` with no `sent` whose commits the kernel may or may not have.
-//! - `down`: that wait or flush failed; the commits since the `send`
-//!   (the result column) may not have reached the kernel.
+//!   since the last `sent` or `down`). The queue hands what its ring
+//!   holds to the kernel at the start of that wait, before it waits for
+//!   anything.
+//! - `sent`: that wait or flush returned, so the commits counted in its
+//!   `send` have been handed to the kernel.
+//! - `down`: that wait or flush failed; those commits may or may not
+//!   have reached the kernel.
+//!
+//! So a commit reaches the kernel no earlier than its own `commit` line
+//! and no later than the `sent` line after it. Mostly that is between
+//! the `send` and the `sent`, but not always. The ring has room for as
+//! many entries as the queue is deep, and when a commit finds it full
+//! the library hands what it holds to the kernel from inside that
+//! commit. After a wake, the wake's poll waits in the ring until the
+//! next submit, so a turn that then commits on every tag hands all but
+//! the last commit over before its `send` line.
+//!
+//! A wait returns at the next request, a wake, or the library's idle
+//! time-out of 20 s, so the gap before `sent` can be long: the kernel
+//! may have ended the calls of those commits, and their callers seen
+//! them return, well before that line. A `kill -9` inside the wait
+//! leaves `commit` lines (and a `send`) with no `sent`, whose commits
+//! the kernel may or may not have.
 //!
 //! # What the record cannot show
 //!
