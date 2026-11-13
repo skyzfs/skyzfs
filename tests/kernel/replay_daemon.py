@@ -62,6 +62,12 @@ are not built here; the summary says so):
                   acknowledged the flushes of that fsync over data that
                   is not there. The file of that fsync is then due at
                   its mark and is not on the disk
+  stuck           at the end of the log, the daemon is stopped
+                  (SIGSTOP) as soon as it says it is ready, so that it
+                  answers no read: the read of the device must fail at
+                  its time limit (STUCK_READ_S), not hang the rig. It
+                  shows on a real device the path a daemon that dies or
+                  sticks after its start takes (read_bounded)
 Not built by default: recover-short, the start with the test hook
 `--recover-short N`. The hook moves only the end of the log that is
 compared with the acknowledged position, and after a reboot there is
@@ -109,6 +115,10 @@ READY_S = 120
 STOP_S = 60
 RUN_PARENT = '/run'             # where a start's run directory goes, as after a reboot
 READ_S = 300                    # the read of the whole device
+STUCK_READ_S = 20               # the same read in the stuck control, whose daemon answers nothing
+# A hook of the rig's own, not the daemon's: given to make() like the
+# daemon's hooks, it stops the daemon (SIGSTOP) once it is ready.
+STOP_AFTER_READY = 'rig:stop-after-ready'
 REAP_S = 60                     # a read that timed out, after its daemon was killed and its device deleted
 READY_RE = re.compile(r'^ready (/dev/ublkb(\d+))$', re.M)
 TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
@@ -130,6 +140,7 @@ CHECK_NAMES = dict(rc.CHECK_NAMES, **{
 # to cause, so both must be caught. Do not edit a control to fit.
 EXPECTED = {
     'withheld': {'block': {'by': 'fsync'}},
+    'stuck': {'block': {'by': 'device read'}},
 }
 # Only when asked for (--recover-short N); see the head of this file.
 EXPECTED_HOOKED = {
@@ -417,8 +428,8 @@ class Daemon:
         vol = os.path.join(self.mnt, self.a.volume)
         out_path, err_path = os.path.join(self.a.work, 'serve.out'), os.path.join(self.a.work, 'serve.err')
         cmd = ([self.a.skyzfsd, 'serve', '--dir', vol, '--run-dir', run_dir, '--boot-id-file', boot]
-               + self.serve_args + list(hooks))
-        state = {'number': None}
+               + self.serve_args + [h for h in hooks if h != STOP_AFTER_READY])
+        state = {'number': None, 'stop_after_ready': STOP_AFTER_READY in hooks}
         before = ublk_numbers()
         t0 = time.monotonic()
         with open(out_path, 'w') as o, open(err_path, 'w') as e:
@@ -486,8 +497,13 @@ class Daemon:
             except subprocess.TimeoutExpired:
                 pass
             run([self.a.ublk, 'del', '-n', str(dev[1])], 60)
+        limit = READ_S
+        if state.get('stop_after_ready'):
+            p.send_signal(signal.SIGSTOP)
+            info['stopped_after_ready'] = True
+            limit = STUCK_READ_S
         rc_, out, _ = read_bounded([self.a.dd, f'if={dev[0]}', f'of={image}', 'bs=1M',
-                                    'iflag=direct', 'conv=sparse', 'status=none'], READ_S, unstick)
+                                    'iflag=direct', 'conv=sparse', 'status=none'], limit, unstick)
         if rc_ == 124 and 'not reaped' in out:
             # A judged stage, but a reader is left on this machine: stop the run.
             info['abort'] = f'dd of {dev[0]} did not end {REAP_S} s after the daemon was killed and its device deleted'
@@ -670,7 +686,6 @@ def main():
     ap.add_argument('--discard', choices=('zero', 'skip'), default='zero')
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
-    rc.CHECK_NAMES.update(CHECK_NAMES)
     try:
         code = check(a)
     except Exception as e:  # noqa: BLE001 -- whatever stops the rig is its own error, and says so
@@ -707,6 +722,8 @@ def abort_if(r):
 
 def check(a):
     """The run; when it stops on the rig's error, what was found before is still reported, a failure first."""
+    # The names of this rig's own stages, for the table of controls.
+    rc.CHECK_NAMES.update(CHECK_NAMES)
     st = {'points': [], 'outside': [], 'res': {}}
     try:
         return _check(a, st)
@@ -946,6 +963,7 @@ def _check(a, st):
             results.append(ck.point(n, 'control', marks=smarks, fmarks=sfm))
             abort_if(results[-1])
         ctl.append(dict(control_row('withheld', w['what'], results), victim=w['victim'], victims=w['victims']))
+    ctl.append(stuck_control(ck, total))
     res['controls'] = ctl
     res['control_rows'], res['gaps'], controls_ok = rc.judge_controls(ctl, expected=expected, absent=absent)
     for row in res['control_rows']:
@@ -1003,6 +1021,33 @@ def hooked_control(ck, points, cov, name, hooks, pts, what):
         row['rig_errors'].append({'n': results[0]['n'] if results else 0, 'failed': 'rig: the hook had no effect',
                                   'detail': why})
         cov['errors'].append(f'the {name} control: {why}')
+    return row
+
+
+def stuck_control(ck, n):
+    """The `stuck` control: the daemon stopped once ready, at prefix n of the true log.
+
+    Planted only if the daemon was stopped: a start that never got to
+    ready plants nothing, and that is the rig's error."""
+    ck.daemon.reset()
+    ck.held = None
+    r = ck.point(n, 'control', hooks=(STOP_AFTER_READY,))
+    if r.get('abort'):
+        # The rig stopped the daemon, killed it and deleted its device, and
+        # the read still did not end: the path was not shown to end, and
+        # the daemon had no part in it. The rig's error, naming the control.
+        raise RigError(f"the stuck control at prefix {n}: {r['abort']}")
+    row = control_row('stuck', f'the daemon is stopped (SIGSTOP) once ready, at prefix {n}; its device is read '
+                               f'with a limit of {STUCK_READ_S} s', [r])
+    if not r.get('stopped_after_ready'):
+        row['rig_errors'].append({'n': n, 'failed': 'rig: the daemon was not stopped',
+                                  'detail': f"it did not get to ready: {r.get('failed')}: {r.get('detail', '')[:200]}"})
+    elif not r['ok'] and not (r.get('failed') == 'device read' and 'TIMEOUT after' in r.get('detail', '')):
+        # A stopped daemon answers nothing, so its read can only end at the
+        # limit. One that failed otherwise (at once, with an I/O error, or
+        # at another stage) did not show the path: the rig's error.
+        row['rig_errors'].append({'n': n, 'failed': 'rig: the read did not wait for the stopped daemon',
+                                  'detail': f"{r.get('failed')}: {r.get('detail', '')[:200]}"})
     return row
 
 

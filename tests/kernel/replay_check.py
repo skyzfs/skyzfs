@@ -754,7 +754,7 @@ def judge_controls(ctl, expected=None, absent=()):
         elif want['by'] == 'either':
             exp, match = 'either: not judged', not c.get('rig_errors')
         else:
-            exp, match = 'caught, and by ' + CHECK_NAMES[want['by']], clean and want['by'] in c['failed_by']
+            exp, match = 'caught, and by ' + CHECK_NAMES.get(want['by'], want['by']), clean and want['by'] in c['failed_by']
         ok = ok and match
         rows.append({'name': name, 'class': cls, 'expected': exp, 'observed': got, 'match': match,
                      'note': (want or {}).get('harmless', '') or (want or {}).get('why', '') if match else ''})
@@ -1173,7 +1173,7 @@ class Rig:
         if self.fsynced:
             rc, out, _ = run(['zfs', 'mount', self.a.pool], 120)
             if rc:
-                return 'mount (writable)', out.strip()[-400:]
+                return stage('mount (writable)', rc), out.strip()[-400:]
             bad = self.verify(self.fsynced)
             if bad:
                 return 'fsync', f'of {self.fsynced} files whose fsync had returned, {bad}'
