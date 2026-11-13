@@ -3,7 +3,18 @@
 Reviewed at 6355607, base `zfs-topology` 0726a81. Review comment:
 https://github.com/skyzfs/skyzfs/pull/55#issuecomment-6849640783
 
-Verdict: nothing blocks. Three findings, none blocking.
+Verdict: at first look nothing blocked; corrected an hour later to **one
+finding blocks** (comment
+https://github.com/skyzfs/skyzfs/pull/55#issuecomment-6849901500), on the
+artifact of check g run against this build (run 43400705709): a failed
+start of the in-place store still writes the log's reason (code 1), and
+the refusal for the rest of the boot repeats it, while the serving case
+is fixed. `StartFailed::Image` comes only from `assemble`'s own
+`home.sync()`; everything the log store's part of the hand-over sees
+keeps code 1, including where the log is empty. Likely mechanism (not
+shown): a sync with something to write back issues a device flush,
+which fails on a partly-erroring table, so the log store's syncs in the
+hand-over see the error first on a sick disk.
 
 ## What is here
 
