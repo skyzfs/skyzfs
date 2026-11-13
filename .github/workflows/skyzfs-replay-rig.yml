@@ -40,6 +40,20 @@ name: skyzfs-replay-rig
 # store (`--store in-place`); by dispatch what `serve_args` names, and
 # without --store there the in-place store too (the log store is being
 # removed, M1.3t).
+#
+# The jobs `hole` (M1.T27, `tests/kernel/hole-rig.sh` and
+# `tests/kernel/replay_hole.py`) run wherever the daemon jobs run, and
+# alone by dispatch with `server: hole`. A course writes 4 KiB blocks
+# that the home image has never held straight to skyzfsd's device, with
+# a flush every few writes, on ext4 and on xfs, for three kinds of image
+# (sparse, fallocate, create --zero-fill); each record prefix checked
+# must give every block as zeros or as its write, and its write once a
+# returned flush covers it. The summary counts per kind the prefixes at
+# which a returned write read as zeros: the measurement for the image's
+# allocation (design §10). The negative control `withheld` must be
+# caught. On the pull-request budget the marks' prefixes and a sample;
+# on the full budget every prefix. The input `daemon_ref` builds the
+# daemon of the daemon and hole jobs from another commit.
 on:
   workflow_dispatch:
     inputs:
@@ -61,9 +75,9 @@ on:
         options: [zero, skip]
         default: zero
       server:
-        description: "what serves the pool's device: reference (the reference ublk server), daemon (skyzfsd, the cut below it) or both"
+        description: "what serves the pool's device: reference (the reference ublk server), daemon (skyzfsd, the cut below it, and the hole courses), both, or hole (the hole courses alone)"
         type: choice
-        options: [reference, daemon, both]
+        options: [reference, daemon, both, hole]
         default: reference
       daemon_budget:
         description: "daemon jobs only: pull-request (flush boundaries and marks, about 25 minutes a job) or full (every record prefix, design §9: about 45)"
@@ -72,6 +86,9 @@ on:
         default: full
       serve_args:
         description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --io-threads 1); without --store the rig passes --store in-place, as on a pull request; the log store's options (--log-high and the like) need --store log beside them, on a build from before M1.3t"
+        default: ""
+      daemon_ref:
+        description: "daemon and hole jobs: build skyzfsd from this commit (40 hex digits) and not from the checkout, under the rig of the checkout. Empty: the checkout"
         default: ""
   pull_request:
     paths:
@@ -102,6 +119,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_replay.py -v
       - run: python3 tests/kernel/test_replay_daemon.py -v
+      - run: python3 tests/kernel/test_replay_hole.py -v
 
   # Which servers this run replays through; see the head of this file.
   plan:
@@ -110,6 +128,7 @@ jobs:
     outputs:
       reference: ${{ steps.plan.outputs.reference }}
       daemon: ${{ steps.plan.outputs.daemon }}
+      hole: ${{ steps.plan.outputs.hole }}
       budget: ${{ steps.plan.outputs.budget }}
     steps:
       - uses: actions/checkout@v6
@@ -122,14 +141,15 @@ jobs:
           BUDGET: ${{ inputs.daemon_budget }}
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
-          ref=false; dmn=false; budget=pull-request
+          ref=false; dmn=false; hole=false; budget=pull-request
           case $EVENT in
             workflow_dispatch)
               case $SERVER in
                 reference) ref=true ;;
-                daemon) dmn=true ;;
-                both) ref=true; dmn=true ;;
-                *) echo "::error::server is reference, daemon or both: '$SERVER'"; exit 64 ;;
+                daemon) dmn=true; hole=true ;;
+                both) ref=true; dmn=true; hole=true ;;
+                hole) hole=true ;;
+                *) echo "::error::server is reference, daemon, both or hole: '$SERVER'"; exit 64 ;;
               esac
               case $BUDGET in pull-request|full) budget=$BUDGET ;; *) echo "::error::daemon_budget is pull-request or full: '$BUDGET'"; exit 64 ;; esac
               why="by dispatch: server $SERVER" ;;
@@ -143,11 +163,12 @@ jobs:
               else
                 ref=true; dmn=true
               fi
+              hole=$dmn
               why="a pull request" ;;
             *) ref=true; why="$EVENT" ;;
           esac
-          { echo "reference=$ref"; echo "daemon=$dmn"; echo "budget=$budget"; } >> "$GITHUB_OUTPUT"
-          echo "Replay through: reference server $ref, skyzfsd $dmn (budget $budget); $why." | tee -a "$GITHUB_STEP_SUMMARY"
+          { echo "reference=$ref"; echo "daemon=$dmn"; echo "hole=$hole"; echo "budget=$budget"; } >> "$GITHUB_OUTPUT"
+          echo "Replay through: reference server $ref, skyzfsd $dmn, the hole courses $hole (budget $budget); $why." | tee -a "$GITHUB_STEP_SUMMARY"
 
   replay:
     name: replay, ${{ matrix.layout == 'slog' && 'product layout (local log device)' || 'whole-pool layout (no log device)' }}
@@ -257,6 +278,8 @@ jobs:
       - name: Install ZFS, build the ublk tool, replay-log and skyzfsd
         # As in the job above: a step that needs the network and fails
         # three times ends the job with exit 2, the rig's own error.
+        env:
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
         run: |
           . tests/lib/net-try.sh
           mkdir -p replay-out
@@ -283,7 +306,16 @@ jobs:
           sudo modprobe dm_snapshot
           setup replay-log tests/kernel/build-replay-log.sh "$RUNNER_TEMP/bin"
           # Not retried: a build that fails is no network fault.
-          cargo build --release --locked -p skyzfsd --features test-hooks
+          if [ -n "$DAEMON_REF" ]; then
+            [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+            git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+            (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+            mkdir -p target/release && cp "$RUNNER_TEMP/daemon-src/target/release/skyzfsd" target/release/skyzfsd
+            echo "The daemon was built from \`$DAEMON_REF\` (input daemon_ref), not from this checkout." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cargo build --release --locked -p skyzfsd --features test-hooks
+          fi
           uname -r; sudo zfs version
       - name: Record and replay
         env:
@@ -331,4 +363,112 @@ jobs:
         with:
           name: replay-rig-daemon-${{ matrix.image }}
           path: replay-out/
+          retention-days: 90
+
+  hole:
+    name: write into a hole, through skyzfsd, ${{ matrix.image }}
+    needs: plan
+    if: needs.plan.outputs.hole == 'true'
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 120
+    # arm64 by dispatch only (input images), as the daemon jobs.
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
+    env:
+      UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install, build the ublk tool and skyzfsd
+        env:
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p hole-out
+          setup() { # NAME COMMAND...
+            local name=$1 log; shift
+            log=hole-out/setup-$name.log
+            net_try "$@" > "$log" 2>&1 && return 0
+            tail -n 40 "$log"
+            {
+              echo "## Power-cut replay of a write into a hole: the rig's own error, not a verdict"
+              echo
+              echo "Setup step \`$name\` failed in $NET_TRIES tries: $(net_why "$log")"
+            } > hole-out/hole-summary.md
+            echo "::error::setup ($name): $(net_why "$log")"
+            exit 2
+          }
+          setup apt sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends dmsetup xfsprogs e2fsprogs libdevmapper-dev libudev-dev libclang-dev'
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          setup ublksrv sudo tests/kernel/build-ublksrv.sh "$UBLKSRV_REF"
+          sudo modprobe ublk_drv
+          sudo modprobe dm_log_writes
+          sudo modprobe dm_snapshot
+          if [ -n "$DAEMON_REF" ]; then
+            [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+            git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+            (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+            mkdir -p target/release && cp "$RUNNER_TEMP/daemon-src/target/release/skyzfsd" target/release/skyzfsd
+            echo "The daemon was built from \`$DAEMON_REF\` (input daemon_ref), not from this checkout." >> "$GITHUB_STEP_SUMMARY"
+          else
+            cargo build --release --locked -p skyzfsd --features test-hooks
+          fi
+          uname -r
+      - name: Record and check the courses
+        env:
+          BUDGET: ${{ needs.plan.outputs.budget }}
+          SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '--store in-place' }}
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
+        run: |
+          [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
+          # The hole courses are of the in-place store whatever else is
+          # asked: a --store of serve_args is replaced, and the summary
+          # says so. With the log store the first record that carries a
+          # block's data would be the log's, not the home image's.
+          read -r -a given <<< "$SERVE_ARGS"; kept=()
+          for ((i = 0; i < ${#given[@]}; i++)); do
+            case ${given[i]} in
+              --store) i=$((i + 1)); [ "${given[i]:-}" = in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`--store ${given[i]:-}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
+              --store=*) [ "${given[i]}" = --store=in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`${given[i]}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
+              *) kept+=("${given[i]}") ;;
+            esac
+          done
+          SERVE_ARGS="--store in-place${kept[*]:+ ${kept[*]}}"
+          case $BUDGET in
+            pull-request) every="" ;;
+            full) every=1 ;;
+            *) echo "::error::budget: $BUDGET"; exit 64 ;;
+          esac
+          {
+            echo "export RIG_SKYZFSD=$PWD/target/release/skyzfsd"
+            echo "export RIG_HOLE_EVERY_PREFIX=$every RIG_BUDGET_NAME=$BUDGET"
+            printf 'export RIG_SERVE_ARGS=%q\n' "$SERVE_ARGS"
+            if [ -n "$DAEMON_REF" ]; then from=$DAEMON_REF
+            elif [ -n "$PR_HEAD" ]; then from="the pull request's head $PR_HEAD, merged with its base"
+            else from="the checkout, $(git rev-parse HEAD)"; fi
+            printf 'export RIG_DAEMON_FROM=%q\n' "$from"
+          } > "$RUNNER_TEMP/rig.env"
+          rc=0
+          sudo bash -c '. "$1" && exec tests/kernel/hole-rig.sh "$2" /mnt/skz-hole' \
+            rig "$RUNNER_TEMP/rig.env" "$PWD/hole-out" || rc=$?
+          case $rc in
+            0) ;;
+            1) echo "::error title=write into a hole::a verdict against the daemon: see the summary"; exit 1 ;;
+            *) echo "::error title=write into a hole::the rig itself failed (exit $rc); this is not a verdict on the daemon"; exit 2 ;;
+          esac
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX hole-out 2>/dev/null || true
+          cat hole-out/hole-summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: hole-${{ matrix.image }}
+          path: hole-out/
           retention-days: 90

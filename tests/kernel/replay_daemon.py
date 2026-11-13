@@ -334,6 +334,11 @@ class Daemon:
         self.at = 0
         self.schedule = None
         self.serve_args = list(a.serve_arg or [])
+        # xfs refuses a second mount of a file system whose uuid it has
+        # seen; another file system (the hole course's ext4) has no such
+        # option.
+        opts = getattr(a, 'mount_opts', None)
+        self.mount_opts = ['-o', 'nouuid'] if opts is None else list(opts)
 
     def reset(self, schedule=None):
         if os.path.exists(self.lower):
@@ -412,7 +417,7 @@ class Daemon:
             return rc.stage('rig: dm-snapshot', rc_), out.strip()[-300:]
         info['_snap'] = True
         # The journal is replayed here, as at the first mount after a power cut.
-        rc_, out, info['t_mount'] = run(['mount', '-o', 'nouuid', f'/dev/mapper/{SNAP}', self.mnt], 180)
+        rc_, out, info['t_mount'] = run(['mount'] + self.mount_opts + [f'/dev/mapper/{SNAP}', self.mnt], 180)
         if rc_:
             return ('volume mount' if rc_ not in rc.RIG_RC else rc.stage('volume mount', rc_)), out.strip()[-400:]
         info['_mounted'] = True
