@@ -107,3 +107,12 @@ fallback: fails); `fallback-cmp.py ROW.py BENCHDIR DIR` over the six
 difference); `look.sh DIR` (the two shell functions at 663ec65 on a made-up
 cgroup directory: 21 group lines, status 0 with and without a daemon).
 Not seen: a run at this head (three dispatches queued).
+
+## Fourth look, at 5391f60
+
+Posted as https://github.com/skyzfs/skyzfs/pull/49#issuecomment-6844921510.
+**Can merge, nothing found.** `git diff 663ec65 5391f60`: the row records
+`diag.skz_cgroup_look`, the reclaim table marks a row read after the sync, the
+older table's text names its two instants, and `diag_stats` reads the group
+through `pressure_look` only. 57 tests pass; with the field always "pgbench
+returned" the test fails. Still no finished benchmark run at 663ec65 or 5391f60.
