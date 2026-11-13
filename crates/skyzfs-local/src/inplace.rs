@@ -893,8 +893,12 @@ impl<D: Dir> InPlace<D> {
         self.counts
     }
 
-    /// How write-zeroes reach the home image: deallocated, or written
-    /// as zeros where the file system cannot deallocate.
+    /// How write-zeroes reach the home image: written as zeros by direct
+    /// I/O ([`Zeroes::WrittenDirect`]) once one has been applied. Until
+    /// then, what the start's checkpoint of the log did, if it applied
+    /// one, and else [`Zeroes::Untried`]. Through the cache (test builds
+    /// only): deallocated, or written as zeros where the file system
+    /// cannot deallocate.
     pub fn zeroes(&self) -> Zeroes {
         self.zeroes
     }
@@ -1054,7 +1058,8 @@ impl<D: Dir> InPlace<D> {
     /// system has no such call (from then on, without asking again).
     ///
     /// With direct I/O, zeros are written by direct I/O: a deallocated
-    /// range would make the next writes to it allocate again.
+    /// range would make the next writes to it allocate again. The state
+    /// the status shows ([`InPlace::zeroes`]) says so from the first.
     fn zero(&mut self, offset: u64, len: u64) -> io::Result<()> {
         if self.io.direct {
             const CHUNK: u64 = 1 << 20;
@@ -1065,6 +1070,7 @@ impl<D: Dir> InPlace<D> {
                 self.home.write_direct_at(offset + at, &zeros[..n])?;
                 at += n as u64;
             }
+            self.zeroes = Zeroes::WrittenDirect;
             return Ok(());
         }
         if self.zeroes != Zeroes::Written {

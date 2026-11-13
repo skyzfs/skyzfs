@@ -277,6 +277,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
             ZeroesShown::WrittenForBlocks,
             "written as zeros: the blocks of the volume's file system",
         ),
+        (ZeroesShown::WrittenDirect, "written as zeros by direct I/O"),
     ] {
         let mut status = sample();
         if let Some(log) = status.log.as_mut() {

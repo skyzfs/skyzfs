@@ -538,6 +538,7 @@ fn zeroes_shown(zeroes: Zeroes) -> ZeroesShown {
         Zeroes::Untried => ZeroesShown::Untried,
         Zeroes::Deallocated => ZeroesShown::Deallocated,
         Zeroes::Written => ZeroesShown::Written,
+        Zeroes::WrittenDirect => ZeroesShown::WrittenDirect,
     }
 }
 

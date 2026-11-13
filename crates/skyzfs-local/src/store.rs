@@ -2821,6 +2821,10 @@ pub enum Zeroes {
     Deallocated,
     /// The file system cannot deallocate: zeros are written.
     Written,
+    /// Zeros are written by direct I/O: the in-place store's way
+    /// (decision D6), where a deallocated range would make the next
+    /// writes to it allocate again. The log store never says this.
+    WrittenDirect,
 }
 
 impl LogState {

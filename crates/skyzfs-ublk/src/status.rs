@@ -73,7 +73,7 @@
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
-//! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
+//! | 192 | 8 | `zeroes_applied`: how write-zeroes reach the home image, by a checkpoint of the log store or by the in-place store. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say; 4: zeros are written by direct I/O (the in-place store). Any other value is read as "not said" |
 //! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it (for reads, the store's reader); the longest such wait; the summed time of the store's call for them; the longest such call |
 //! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync (the worker's part in it: the whole sync where the worker makes it, handing it over where a step of the rule gives it to the helper); the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
 //! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
@@ -494,8 +494,8 @@ pub struct LogShown {
     pub io_queue: Option<IoQueue>,
 }
 
-/// How a checkpoint applies write-zeroes to the home image, as the
-/// status file says it.
+/// How write-zeroes reach the home image, as the status file says it:
+/// by a checkpoint of the log store, or by the in-place store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ZeroesShown {
     /// The file does not say: it is of a version before the fourth, or
@@ -513,6 +513,10 @@ pub enum ZeroesShown {
     /// says this any more: one is not opened on such a file system
     /// (M1.3g). The value stays readable.
     WrittenForBlocks,
+    /// Zeros are written by direct I/O: the in-place store, where a
+    /// deallocated range would make the next writes to it allocate
+    /// again.
+    WrittenDirect,
 }
 
 impl ZeroesShown {
@@ -522,6 +526,7 @@ impl ZeroesShown {
             Self::Deallocated => 1,
             Self::Written => 2,
             Self::WrittenForBlocks => 3,
+            Self::WrittenDirect => 4,
             Self::Unsaid => u64::MAX,
         }
     }
@@ -532,6 +537,7 @@ impl ZeroesShown {
             1 => Self::Deallocated,
             2 => Self::Written,
             3 => Self::WrittenForBlocks,
+            4 => Self::WrittenDirect,
             _ => Self::Unsaid,
         }
     }
@@ -554,6 +560,11 @@ impl ZeroesShown {
                  store's write unit, or their size could not be read, so a range is not \
                  deallocated there; a log of write-zeroes is worked off at the pace of that \
                  writing, and requests wait for it",
+            ),
+            Self::WrittenDirect => Some(
+                "written as zeros by direct I/O: the in-place store does not deallocate, since \
+                 the next writes to a deallocated range would allocate it again, and a \
+                 write-zeroes takes as long as writing its zeros",
             ),
         }
     }

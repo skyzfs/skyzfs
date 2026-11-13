@@ -379,6 +379,38 @@ fn the_start_applies_the_log_and_makes_the_home_image_durable() {
     assert_eq!(read(&mut store, 5).unwrap(), vec![0x55; BLOCK_USIZE]);
 }
 
+/// How write-zeroes reach the home image, as the status file shows it:
+/// with direct I/O they are written as zeros by direct I/O, and once
+/// one is applied the store says so, whatever it said before; through
+/// the cache (test builds) they are deallocated. A write-zeroes that
+/// left the state as it was showed "not yet" on a fresh volume, or the
+/// log store's "deallocated" from the start's checkpoint, while zeros
+/// were written. (Found by Codex on #58.)
+#[test]
+fn the_store_says_how_it_applies_write_zeroes() {
+    for (io, applied) in [
+        (IoMode::default(), Zeroes::WrittenDirect),
+        (OTHER_IO[0], Zeroes::WrittenDirect),
+        (OTHER_IO[1], Zeroes::WrittenDirect),
+        (BUFFERED, Zeroes::Deallocated),
+    ] {
+        let disk = created(1, 0);
+        let mut store = start_io(&disk, 0, false, io).unwrap();
+        assert_eq!(store.zeroes(), Zeroes::Untried, "{io:?}");
+        let done = run(
+            &mut store,
+            1,
+            Op::WriteZeroes {
+                offset: 3 * BLOCK,
+                len: BLOCK,
+            },
+        );
+        assert_eq!(done.result, Ok(()), "{io:?}");
+        assert_eq!(store.zeroes(), applied, "{io:?}");
+        assert_eq!(read(&mut store, 3).unwrap(), vec![0; BLOCK_USIZE]);
+    }
+}
+
 /// A flush with nothing written since the last sync completes without
 /// one; a flush after a write begins one.
 #[test]
