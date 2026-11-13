@@ -4065,8 +4065,11 @@ fn a_flush_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step(
     assert_eq!(done[0].result, Ok(()));
     // Answered behind the completion's state.
     served.position().unwrap();
-    let total = began.elapsed();
+    // The look first and the test's own time after it: a thread that
+    // is idle at the look has its wait counted up to the look, so the
+    // test's time must end after it to hold the threads' times.
     let (timing, state) = (served.timing(), served.log_state());
+    let total = began.elapsed();
     // The worker goes on stepping and looks for the gate at each
     // step: it is ended before the gate is removed.
     drop(served);
@@ -4110,7 +4113,7 @@ fn a_flush_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step(
     let steps = others.iter().map(|part| part.sum_ns).sum::<u64>()
         + timing.step_home_sync.sum_ns
         + timing.step_own_sync.sum_ns;
-    assert!(steps <= ns(total), "{timing:?}");
+    assert!(steps <= ns(total), "{total:?}: {timing:?}");
     // What the read waited for, by what the worker did meanwhile: the
     // parts are the whole wait, the largest is the home image's sync,
     // which the step was held in, and that is what the longest wait
@@ -4127,7 +4130,10 @@ fn a_flush_that_arrives_during_a_step_is_counted_with_what_was_left_of_the_step(
     assert_eq!(by[0], 0, "the worker was not idle while the read waited");
     // The worker's own time: no more than the test's, and the sync it
     // was held in is in it.
-    assert!(timing.worker.iter().sum::<u64>() <= ns(total), "{timing:?}");
+    assert!(
+        timing.worker.iter().sum::<u64>() <= ns(total),
+        "{total:?}: {timing:?}"
+    );
     assert!(timing.worker[home_sync] >= timing.step_home_sync.max_ns);
     assert_eq!(timing.worker[home_sync], timing.step_home_sync.sum_ns);
     assert!(timing.step_home_sync.count <= state.steps);
@@ -5471,8 +5477,10 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     reader.open();
     let mut done = Vec::new();
     take(&mut served, &mut done, 2, "the reads").unwrap();
-    let total = began.elapsed().as_nanos() as u64;
+    // The look first and the test's own time after it: the reader is
+    // idle at the look, and its wait is counted up to the look.
     let timing = served.timing();
+    let total = began.elapsed().as_nanos() as u64;
     drop(served);
     let ns = HELD.as_nanos() as u64;
     let at = |name: &str| ACTIVITIES.iter().position(|a| *a == name).unwrap();
@@ -5500,7 +5508,10 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     // The reader's time: its calls are the reads' calls, and all of
     // it is no more than the test's.
     assert_eq!(timing.reader[1], reads.call.sum_ns, "{timing:?}");
-    assert!(timing.reader.iter().sum::<u64>() <= total, "{timing:?}");
+    assert!(
+        timing.reader.iter().sum::<u64>() <= total,
+        "total {total} ns: {timing:?}"
+    );
     // The worker did no read.
     assert_eq!(timing.worker[at("read")], 0, "{timing:?}");
     for kind in &timing.requests[1..5] {
