@@ -19,6 +19,14 @@
 //! - `fail_log` makes every write and every sync fail from then on, as
 //!   the simulated disk fails them: a failed write leaves any subset of
 //!   its sectors, a failed sync may drop what it did not make durable.
+//!   For a third of the seeds ([`settles_at_failure`]) the faults come
+//!   once every job on the I/O threads has ended and what waited for
+//!   them has begun, with the image's syncs held so that a flush's sync
+//!   begun then is under way when the faults come and fails when it
+//!   ends: a store that answers a failed sync otherwise than by failing
+//!   the volume meets that every time (M1.3ad). For the other seeds the
+//!   faults come wherever the threads are, which is where a real
+//!   failure comes.
 //! - `reopen_failed` takes the fault away, loses the process and
 //!   starts with the failure acknowledged, with the kernel's cache kept,
 //!   as the log store's harness does: what a failed sync left marked
@@ -36,10 +44,19 @@ use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, 
 use super::{InPlace, Mutants};
 use crate::format::Key;
 use crate::sim::{SeededCut, SimDisk};
-use crate::store::{OpenOptions, Store, StoreConfig};
+use crate::store::{OpenOptions, Store, StoreConfig, HOME_NAME};
 
 /// The log's segments: as the log store's harness has them.
 const SEGMENT: u64 = (1 << 20) + (128 << 10);
+
+/// Whether a target created with `seed` has its failure come when the
+/// I/O threads have ended their jobs and a flush's sync is under way
+/// (see the module documentation): a third of the seeds, which in the
+/// suite's cases cross their other choices (the base or none by the
+/// seed's parity; a kill or none by the seed modulo 4).
+pub(crate) fn settles_at_failure(seed: u64) -> bool {
+    seed % 3 == 1
+}
 
 /// One environment the suite runs the in-place store in.
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +94,7 @@ impl InPlaceHarness {
         read_only: bool,
         acknowledge_failure: bool,
         before: Option<Geometry>,
+        settle_at_failure: bool,
     ) -> Result<OnSim, HarnessError> {
         disk.set_sync_delay(self.sync_delay);
         let opened = Store::open(disk.clone(), self.options(read_only, acknowledge_failure));
@@ -91,6 +109,7 @@ impl InPlaceHarness {
                     inner: Inner::Gone(Vec::new()),
                     disk,
                     geometry,
+                    settle_at_failure,
                 });
             }
         };
@@ -105,6 +124,7 @@ impl InPlaceHarness {
             inner,
             disk,
             geometry,
+            settle_at_failure,
         })
     }
 }
@@ -115,6 +135,8 @@ pub(crate) struct OnSim {
     inner: Inner,
     pub(crate) disk: SimDisk,
     geometry: Geometry,
+    /// [`settles_at_failure`] of the seed it was created with.
+    settle_at_failure: bool,
 }
 
 enum Inner {
@@ -240,7 +262,13 @@ impl Harness for InPlaceHarness {
         }
         drop(store);
         disk.kill();
-        self.start(disk, spec.read_only, false, None)
+        self.start(
+            disk,
+            spec.read_only,
+            false,
+            None,
+            settles_at_failure(spec.seed),
+        )
     }
 
     fn kill(&mut self, target: OnSim, _seed: u64) -> Result<OnSim, HarnessError> {
@@ -248,10 +276,17 @@ impl Harness for InPlaceHarness {
             inner,
             disk,
             geometry,
+            settle_at_failure,
         } = target;
         drop(inner);
         disk.kill();
-        self.start(disk, geometry.read_only(), false, Some(geometry))
+        self.start(
+            disk,
+            geometry.read_only(),
+            false,
+            Some(geometry),
+            settle_at_failure,
+        )
     }
 
     /// The seeds of the simulated disk's cut worth trying: eight.
@@ -265,15 +300,32 @@ impl Harness for InPlaceHarness {
             inner,
             disk,
             geometry,
+            settle_at_failure,
         } = target;
         drop(inner);
         disk.power_cut(SeededCut::new(keep ^ 0x5EED_C0DE));
-        self.start(disk, geometry.read_only(), false, Some(geometry))
+        self.start(
+            disk,
+            geometry.read_only(),
+            false,
+            Some(geometry),
+            settle_at_failure,
+        )
     }
 
     fn fail_log(&mut self, target: &mut OnSim) -> Result<(), HarnessError> {
+        let settle = target.settle_at_failure;
+        if settle {
+            target.disk.hold_syncs_of(HOME_NAME);
+            if let Some(store) = target.store() {
+                store.finish_threads();
+            }
+        }
         target.disk.fail_write(0, true);
         target.disk.fail_sync(0, true);
+        if settle {
+            target.disk.release_syncs();
+        }
         Ok(())
     }
 
@@ -282,10 +334,17 @@ impl Harness for InPlaceHarness {
             inner,
             disk,
             geometry,
+            settle_at_failure,
         } = target;
         drop(inner);
         disk.clear_faults();
         disk.kill();
-        self.start(disk, geometry.read_only(), true, Some(geometry))
+        self.start(
+            disk,
+            geometry.read_only(),
+            true,
+            Some(geometry),
+            settle_at_failure,
+        )
     }
 }

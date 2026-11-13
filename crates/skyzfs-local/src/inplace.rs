@@ -1391,6 +1391,23 @@ pub fn volatile_cache_explains(
 }
 
 #[cfg(test)]
+impl<D: Dir> InPlace<D> {
+    /// For the conformance harness's failure (`harness::fail_log`): let
+    /// every job on the I/O threads end, take its result, and start
+    /// what waited for it, a flush's sync among them. Nothing is handed
+    /// out and no sync is looked at, so a sync begun here is under way
+    /// when this returns, and the completions wait for the next poll:
+    /// as if the threads had been quick and the caller had not looked
+    /// since. Bounded by a minute, for a thread that never ends its job.
+    pub(crate) fn finish_threads(&mut self) {
+        let began = std::time::Instant::now();
+        while !self.busy.is_empty() && began.elapsed() < Duration::from_secs(60) {
+            self.collect(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod harness;
 mod pool;
 #[cfg(test)]
