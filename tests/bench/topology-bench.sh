@@ -235,6 +235,25 @@
 #                           reclaims and throttles the daemon's
 #                           write-back. The daemon's resident memory and
 #                           its cgroup's file pages are recorded either way
+#   TB_SKYZFSD_COPY_LIMIT_S=600
+#                           seconds for each of the two steps that put the
+#                           pool image on the daemon's device: the copy
+#                           (dd) and the sync after it. A step that runs
+#                           out takes the evidence of a hang (the
+#                           daemon's status, every thread in D state with
+#                           its kernel stack, ublk's and the cgroup's
+#                           state, the kernel's log after a dump of the
+#                           blocked tasks) into skyzfsd-hang/ of the row's
+#                           output, and the row fails (M1.T24)
+#   TB_SKYZFSD_COPY_REPEAT=N
+#                           zfs-skyzfsd only, a reproduction and not a
+#                           benchmark: N times, a new volume, a new
+#                           daemon, the copy and its sync under the limit
+#                           above, the daemon stopped; then the row ends
+#                           with no window. copy-repeat.tsv and the
+#                           summary say how long each took and which, if
+#                           any, ran out; the first that runs out takes
+#                           the evidence and ends the repetitions
 #   TB_SYSCALLS=1           zfs-skyzfsd only: trace the daemon's system calls
 #                           for TB_SYSCALLS_S seconds (default 20) in the
 #                           middle of the measured window, by thread
@@ -864,6 +883,10 @@ UBLK_ID=${TB_UBLK_ID:-7}
 SKYZFSD=${TB_SKYZFSD:-}
 SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
 SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
+SKZ_COPY_LIMIT_S=${TB_SKYZFSD_COPY_LIMIT_S:-600}
+[[ $SKZ_COPY_LIMIT_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_LIMIT_S must be a number of seconds: $SKZ_COPY_LIMIT_S" >&2; exit 64; }
+SKZ_COPY_REPEAT=${TB_SKYZFSD_COPY_REPEAT:-}
+[[ -z $SKZ_COPY_REPEAT || $SKZ_COPY_REPEAT =~ ^[1-9][0-9]*$ ]] || { echo "TB_SKYZFSD_COPY_REPEAT must be a count: $SKZ_COPY_REPEAT" >&2; exit 64; }
 SYSCALLS=${TB_SYSCALLS:-}
 SYSCALLS_S=${TB_SYSCALLS_S:-20}
 SYSCALLS_SLOW_MS=${TB_SYSCALLS_SLOW_MS:-1}
@@ -1602,6 +1625,129 @@ skz_settle() {
     log "skyzfsd: $said"
     echo "settle $said" >> "$OUT/$TOPO.skzinfo"
 }
+# The evidence of a step on the daemon's device that did not end: into
+# DIR, every read under a limit, since a look at a hung device can hang
+# too. What the threads in uninterruptible sleep wait for (their kernel
+# stacks) is the part that says where; the kernel's own dump of the
+# blocked tasks (sysrq w) goes to its log, which is read after it.
+skz_hang_evidence() { # dir why
+    local d=$1 t p st
+    mkdir -p "$d"
+    echo "$2" > "$d/why.txt"
+    date -u +%FT%TZ >> "$d/why.txt"
+    skz_status > "$d/status.txt" 2>&1
+    {
+        echo "# every task in D state on the machine, and every thread of the daemon (pid ${SKZ_PID:-none}): pid tid comm state wchan, then its kernel stack"
+        for t in /proc/[0-9]*/task/[0-9]*; do
+            p=${t#/proc/}; p=${p%%/*}
+            st=$(sed 's/^.*) //' "$t/stat" 2>/dev/null | cut -c1) || continue
+            [ "$st" = D ] || [ "$p" = "${SKZ_PID:-x}" ] || continue
+            echo "== $p ${t##*/} $(cat "$t/comm" 2>/dev/null) $st $(cat "$t/wchan" 2>/dev/null)"
+            lim 5 cat "$t/stack" 2>&1
+        done
+    } > "$d/threads.txt" 2>&1
+    {
+        for t in /sys/block/ublkb*; do
+            [ -e "$t" ] || continue
+            echo "== $t"
+            for p in inflight stat size queue/nr_requests queue/max_sectors_kb queue/write_cache; do
+                echo "$p: $(lim 5 cat "$t/$p" 2>&1 | tr '\n' ' ')"
+            done
+        done
+        for t in /sys/kernel/debug/block/ublkb*/hctx*; do
+            [ -d "$t" ] || continue
+            for p in busy dispatch tags state; do
+                [ -e "$t/$p" ] && { echo "== $t/$p"; lim 5 cat "$t/$p" 2>&1 | head -n 50; }
+            done
+        done
+        echo "== ublk list"; lim 20 ublk list 2>&1 | head -n 60
+    } > "$d/ublk.txt" 2>&1
+    if [ -n "$SKZ_CGROUP" ] && [ -d "$SKZ_CGROUP" ]; then
+        for p in memory.current memory.max memory.events memory.stat memory.pressure io.pressure cpu.pressure cgroup.procs; do
+            echo "== $p"; lim 5 cat "$SKZ_CGROUP/$p" 2>&1
+        done > "$d/cgroup.txt" 2>&1
+    fi
+    {
+        for p in /proc/pressure/memory /proc/pressure/io /proc/pressure/cpu; do echo "== $p"; cat "$p" 2>&1; done
+        echo "== /proc/meminfo"; cat /proc/meminfo
+        echo "== /proc/vmstat (dirty, write-back, reclaim)"; grep -E '^(nr_dirty|nr_writeback|nr_writeback_temp|pgscan|pgsteal|workingset_refault|allocstall)' /proc/vmstat
+    } > "$d/memory.txt" 2>&1
+    [ -n "${SKZ_PID:-}" ] && lim 5 cat "/proc/$SKZ_PID/status" > "$d/daemon-proc-status.txt" 2>&1
+    tail -n 50 "$OUT/skyzfsd-serve.log" > "$d/serve-log-tail.txt" 2>&1
+    echo w > "${SKZ_SYSRQ:-/proc/sysrq-trigger}" 2>/dev/null || echo "sysrq w was refused" >> "$d/why.txt"
+    sleep 1
+    lim 20 dmesg > "$d/dmesg.txt" 2>&1
+    log "skyzfsd: evidence of the hang in $d ($(grep -c '^== ' "$d/threads.txt" 2>/dev/null || echo 0) threads; D state: $(grep -c ' D ' "$d/threads.txt" 2>/dev/null || echo 0))"
+}
+# The pool image onto the daemon's device, and the sync after it, each
+# under SKZ_COPY_LIMIT_S. SKZ_COPY_MS and SKZ_SYNC_MS are what they took.
+# 1: a step ran out (the evidence is in $OUT/skyzfsd-hang, or in $2 when
+# given) or the copy failed.
+skz_copy() { # dev [evidence dir]
+    local dev=$1 ev=${2:-$OUT/skyzfsd-hang} t0 rc=0
+    SKZ_COPY_MS=""; SKZ_SYNC_MS=""
+    t0=$(date +%s%N)
+    lim "$SKZ_COPY_LIMIT_S" "$DD" if="$WORK/zfs-origin.img" of="$dev" bs=1M oflag=direct conv=sparse,nocreat status=none || rc=$?
+    SKZ_COPY_MS=$(( ($(date +%s%N) - t0) / 1000000 ))
+    if [ "$rc" = 124 ]; then
+        log "skyzfsd: the copy of the pool image onto $dev did NOT end in $SKZ_COPY_LIMIT_S s; the daemon counted $(skz_stat writes) writes"
+        skz_hang_evidence "$ev" "the copy (dd bs=1M oflag=direct) onto $dev did not end in $SKZ_COPY_LIMIT_S s"
+        return 1
+    elif [ "$rc" != 0 ]; then
+        log "skyzfsd: the copy of the pool image onto $dev failed with $rc after $SKZ_COPY_MS ms"
+        return 1
+    fi
+    t0=$(date +%s%N)
+    lim "$SKZ_COPY_LIMIT_S" sync || rc=$?
+    SKZ_SYNC_MS=$(( ($(date +%s%N) - t0) / 1000000 ))
+    if [ "$rc" = 124 ]; then
+        log "skyzfsd: the sync after the copy onto $dev did NOT end in $SKZ_COPY_LIMIT_S s"
+        skz_hang_evidence "$ev" "the sync after the copy onto $dev did not end in $SKZ_COPY_LIMIT_S s"
+        return 1
+    fi
+    return 0
+}
+# TB_SKYZFSD_COPY_REPEAT: the copy and its sync, N times, each on a new
+# volume and a new daemon. Not judged: the table says what happened.
+skz_copy_repeat() {
+    local i n=$SKZ_COPY_REPEAT hung="" tsv=$OUT/copy-repeat.tsv size
+    size=$(stat -c %s "$WORK/zfs-origin.img")
+    printf 'i\tcopy_ms\tsync_ms\toutcome\twrites\n' > "$tsv"
+    for i in $(seq 1 "$n"); do
+        mkdir -p "$SKZ_RUN"
+        lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$size" > /dev/null 2>&1 \
+            || { printf '%s\t\t\tcreate failed\t\n' "$i" >> "$tsv"; hung="create failed at $i"; break; }
+        SKZ_UP=1
+        skz_start || { printf '%s\t\t\tserve failed\t\n' "$i" >> "$tsv"; hung="serve failed at $i"; break; }
+        if skz_copy "$SKZ_DEV" "$OUT/skyzfsd-hang"; then
+            printf '%s\t%s\t%s\tok\t%s\n' "$i" "$SKZ_COPY_MS" "$SKZ_SYNC_MS" "$(skz_stat writes)" >> "$tsv"
+        else
+            printf '%s\t%s\t%s\tRAN OUT or failed\t%s\n' "$i" "$SKZ_COPY_MS" "${SKZ_SYNC_MS:-}" "$(skz_stat writes)" >> "$tsv"
+            hung="repetition $i of $n"
+            break
+        fi
+        skz_stop
+        SKZ_UP=""
+    done
+    {
+        echo "## topology-bench: the copy onto skyzfsd, repeated (M1.T24, not judged)"
+        echo
+        echo "Build ${TB_SKYZFSD_REF:-not said}; serve ${SKYZFSD_ARGS//,/ }; memory.max ${SKYZFSD_MEM:-none}; limit ${SKZ_COPY_LIMIT_S} s a step; the image $(( size >> 20 )) MiB ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated)."
+        echo
+        if [ -n "$hung" ]; then
+            echo "**Did not end: $hung.** The evidence is in skyzfsd-hang/ of this row's output."
+        else
+            echo "All $n ended."
+        fi
+        echo
+        echo "| repetition | copy ms | sync ms | outcome | daemon's writes |"
+        echo "|---|---|---|---|---|"
+        tail -n +2 "$tsv" | awk -F'\t' '{ printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5 }'
+        awk -F'\t' 'NR > 1 && $4 == "ok" { n++; s += $2; if ($2 > m) m = $2 } END { if (n) printf "\nCopies that ended: %d, mean %.0f ms, longest %d ms.\n", n, s / n, m }' "$tsv"
+    } > "$OUT/summary.md"
+    log "skyzfsd: copy repeated: ${hung:-all $n ended}"
+    [ -z "$hung" ]
+}
 skz_sample() { # file: one line a second, "epoch key=value ...", until killed
     while :; do
         # A pool whose daemon is gone waits for it, and pgbench with it,
@@ -1648,6 +1794,13 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
             mkdir -p "$SKZ_RUN"
             : > "$OUT/$TOPO.skzinfo"
+            if [ -n "$SKZ_COPY_REPEAT" ]; then
+                # A reproduction, not a benchmark: no window follows.
+                local rrc=0
+                skz_copy_repeat || rrc=$?
+                cat "$OUT/summary.md"
+                exit "$rrc"
+            fi
             lim 120 "$SKYZFSD" create --dir "$SKZ_DIR" --size "$(stat -c %s "$WORK/zfs-origin.img")" >&2 \
                 || { echo "skyzfsd create failed or did not end in 120 s" >&2; return 1; }
             SKZ_UP=1
@@ -1658,10 +1811,10 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             # The exported image onto the served device, through the
             # daemon. A 1 MiB block of zeros is left out, so what the
             # image never held the daemon is never given.
-            t0=$(date +%s%N)
-            "$DD" if="$WORK/zfs-origin.img" of="$dev" bs=1M oflag=direct conv=sparse,nocreat status=none
-            sync
-            t0=$(( ($(date +%s%N) - t0) / 1000000 ))
+            # Each step under a limit (M1.T24): a copy that did not end
+            # once held a job for 96 minutes and left nothing to read.
+            skz_copy "$dev" || return 1
+            t0=$(( SKZ_COPY_MS + SKZ_SYNC_MS ))
             log "skyzfsd: the pool image ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated of $(( $(stat -c %s "$WORK/zfs-origin.img") >> 20 )) MiB) was copied onto $dev in $t0 ms, direct I/O, conv=sparse; the daemon counted $(skz_stat writes) writes, checkpoint_steps $(skz_stat checkpoint_steps), log_live $(skz_stat log_live)"
             echo "copy_ms $t0" >> "$OUT/$TOPO.skzinfo"
             echo "serve_args ${SKZ_SERVE_ARGS:-}" >> "$OUT/$TOPO.skzinfo"
