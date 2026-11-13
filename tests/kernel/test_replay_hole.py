@@ -214,6 +214,11 @@ class Verdict(unittest.TestCase):
         code, head = rh.verdict([result(), failed])
         self.assertEqual(code, 1)
         self.assertIn('A verdict against the daemon', head)
+        # A course that was checked still needs its control, failures or not.
+        checked = dict(failed, checked=5, failures=['prefix 7: start: exit 1'])
+        code, head = rh.verdict([result(), checked])
+        self.assertEqual(code, 2)
+        self.assertIn('without its negative control', head)
 
     def test_a_course_without_its_control_is_the_rigs_error(self):
         code, head = rh.verdict([result(), result(kind='fallocate', control=None)])
