@@ -22,12 +22,15 @@ pkg() { # name: the candidate version apt offers, or "not offered"
 
 sudo apt-get update -qq >/dev/null 2>&1 || echo "apt-get update failed" >&2
 kver=$(uname -r)
-work=$(df --output=source / | tail -n 1)
-for d in /mnt "$HOME"; do
-    s=$(df --output=source "$d" 2>/dev/null | tail -n 1) && [ -n "$s" ] && { work=$s; break; }
-done
-dev=${work#/dev/}; parent=$dev
+# The disk under /mnt, found by its device number: the name the mount
+# table gives can be an alias such as /dev/root.
+work=$(findmnt -n -o SOURCE -T /mnt 2>/dev/null | head -n 1)
+majmin=$(findmnt -n -o MAJ:MIN -T /mnt 2>/dev/null | head -n 1 | tr -d " ")
+dev=$(basename "$(readlink -f "/sys/dev/block/$majmin" 2>/dev/null)")
+parent=$dev
 [ -e "/sys/class/block/$dev/partition" ] && parent=$(basename "$(readlink -f "/sys/class/block/$dev/..")")
+
+model=$(xargs < "/sys/block/$parent/device/model" 2>/dev/null)
 
 echo "### The machine"
 echo
@@ -50,7 +53,7 @@ for p in zfsutils-linux zfs-dkms "linux-modules-extra-$kver" libdevmapper-dev li
     row "package $p" "$(pkg "$p")"
 done
 row "/mnt" "$(df -h --output=source,size,avail,fstype /mnt 2>/dev/null | tail -n 1)"
-row "work disk" "$work, on $parent: write_cache $(cat "/sys/block/$parent/queue/write_cache" 2>/dev/null || echo 'not said'); rotational $(cat "/sys/block/$parent/queue/rotational" 2>/dev/null || echo '?')"
+row "work disk" "$work ($majmin, $dev), on $parent: model ${model:-not said}; write_cache $(cat "/sys/block/$parent/queue/write_cache" 2>/dev/null || echo 'not said'); rotational $(cat "/sys/block/$parent/queue/rotational" 2>/dev/null || echo '?')"
 row "its mount" "$(findmnt -n -o FSTYPE,OPTIONS -T /mnt 2>/dev/null)"
 echo
 exit 0
