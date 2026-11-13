@@ -73,7 +73,7 @@ note "## The direct-write split probe ($(. /etc/os-release && echo "$PRETTY_NAME
 note ""
 note "- udev: $(udevadm --version 2>/dev/null | head -n 1); rules that name ublkb: $(grep -l 'ublkb' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | tr '\n' ' ')"
 grep -h 'ublkb' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | cut -c1-400 > "$OUT/udev-ublkb-rules.txt"
-note "- the rule lines that name ublkb are in udev-ublkb-rules.txt ($(wc -l < "$OUT/udev-ublkb-rules.txt") lines); with OPTIONS watch: $(grep -c 'watch' "$OUT/udev-ublkb-rules.txt")"
+note "- the rule lines that name ublkb are in udev-ublkb-rules.txt ($(wc -l < "$OUT/udev-ublkb-rules.txt") lines); 60-block.rules's rule with ublkb* in it: $(grep -A 2 'ublkb' /usr/lib/udev/rules.d/60-block.rules 2>/dev/null | grep -o 'OPTIONS+="watch"' | head -n 1 || true)"
 note "- the daemon's request log (--request-log): ${RL_SAID}ftrace's clock is mono, as the log's mono_ns"
 src=$(findmnt -no SOURCE -T "$WORK" 2>/dev/null)
 part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
@@ -109,7 +109,10 @@ trace_off() {
 trap '[ -z "$TRACE_PID" ] || trace_off' EXIT
 
 # Whether a daemon's build has the request log (M1.3y's test hooks).
-has_request_log() { "$1" serve --help 2>&1 | grep -q -- '--request-log'; }
+# The hooked build prints its hooks after the usage and exits 2: the
+# text is read whole, since under pipefail a pipe into grep would fail on
+# that status.
+has_request_log() { local h; h=$("$1" serve --help 2>&1); [[ $h == *--request-log* ]]; }
 helper() { # WORK VERB N [DAEMON]
     local rl=""; has_request_log "$4" && rl=1
     BLK_WORK=$1 BLK_SKYZFSD=$4 BLK_SERVE_ARGS=$SERVE_ARGS BLK_REQUEST_LOG=$rl lim 120 "$HERE/blkcheck-helper.sh" "$2" "$3"
