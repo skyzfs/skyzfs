@@ -1519,6 +1519,7 @@ mod tests {
         fn wait(
             &mut self,
             _fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
         ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
             assert!(!self.panics, "the queue panics, as the test asks");
             Ok(skyzfs_ublk::pump::Wake::Stop)
@@ -1606,6 +1607,7 @@ mod tests {
         fn wait(
             &mut self,
             fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
         ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
             use skyzfs_ublk::translate::{op, Desc};
             self.waits += 1;

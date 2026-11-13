@@ -50,6 +50,18 @@
 //!   `send` have been handed to the kernel.
 //! - `down`: that wait or flush failed; those commits may or may not
 //!   have reached the kernel.
+//! - `ended`: a command of the queue that the driver ended with a result
+//!   other than OK, as the queue's wait returned it (after that wait's
+//!   `sent` or `down`, before its `recv` lines): its tag, the command in
+//!   the op column (`fetch`, `commit`, or `cmd<N>` for another code), and
+//!   the result. `-19` (`-ENODEV`) is the driver's abort: the queue is
+//!   being stopped, and each tag's last command ends so. Any other
+//!   result is a command that took no effect, which the driver refused
+//!   (or io_uring could not hand to it): a refused commit completed
+//!   nothing. Whether requests still come on its tag depends on why it
+//!   was refused, which the result does not say (see `Queue::wait` in
+//!   `skyzfs-ublk`). The daemon counts both (`status`:
+//!   `commands_aborted`, `commands_failed`).
 //!
 //! So a commit reaches the kernel no earlier than its own `commit` line
 //! and no later than the `sent` line after it. Mostly that is between
@@ -69,11 +81,13 @@
 //!
 //! # What the record cannot show
 //!
-//! - **Handed to the kernel is not taken by the driver.** The queue keeps
-//!   a command's completion only when its result is OK and drops every
-//!   other: a commit the driver refuses looks here like one it took. The
+//! - **Handed to the kernel is not taken by the driver** until the
+//!   driver says so: a commit it refuses has an `ended` line, at the
+//!   queue's next wait, and until then looks here like one it took. The
 //!   kernel's own trace (`block_rq_complete`, `block_rq_requeue`) is the
 //!   other side of it.
+//! - **A command the driver ends in the queue's last flush** (at a stop)
+//!   has no `ended` line: that flush hands nothing on.
 //! - **At a stop** (not at a kill), once the library has seen an abort
 //!   it puts no more commits on its ring, while its commit still
 //!   returns as done: such a commit has its `commit`, `send` and `sent`
@@ -93,7 +107,7 @@ use std::io::{self, Write as _};
 use std::path::Path;
 
 use skyzfs_blk::Buf;
-use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Wake};
+use skyzfs_ublk::pump::{Command, Fetched, Queue, QueueDown, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
 /// Open the record at `path` for appending, creating it if need be.
@@ -112,6 +126,15 @@ fn op_name(code: u8) -> String {
         op::DISCARD => "discard".into(),
         op::WRITE_ZEROES => "write_zeroes".into(),
         other => format!("op{other}"),
+    }
+}
+
+/// The name a line gives a command of the queue.
+fn command_name(command: Command) -> String {
+    match command {
+        Command::Fetch => "fetch".into(),
+        Command::Commit => "commit".into(),
+        Command::Other(code) => format!("cmd{code}"),
     }
 }
 
@@ -208,11 +231,27 @@ impl<Q: Queue> Queue for Recorded<Q> {
         self.inner.depth()
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         let before = fetched.len();
+        let ended_before = unfetched.len();
         self.send();
-        let woken = self.inner.wait(fetched);
+        let woken = self.inner.wait(fetched, unfetched);
         self.sent(woken.is_ok());
+        for Unfetched {
+            tag,
+            command,
+            result,
+        } in unfetched.get(ended_before..).unwrap_or_default().to_vec()
+        {
+            self.line(&format!(
+                "ended\t{tag}\t{}\t-\t-\t{result}",
+                command_name(command)
+            ));
+        }
         for Fetched { tag, desc } in fetched.get(before..).unwrap_or_default().to_vec() {
             if let Some(slot) = self.held.get_mut(usize::from(tag)) {
                 *slot = Some(desc);

@@ -84,10 +84,10 @@ use std::time::Duration;
 use io_uring::{opcode, types};
 use libublk::ctrl::{UblkCtrl, UblkCtrlBuilder};
 use libublk::helpers::IoBuf;
-use libublk::io::{BufDescList, UblkDev, UblkQueue};
+use libublk::io::{BufDescList, UblkDev, UblkIOCtx, UblkQueue};
 use libublk::{sys, BufDesc, UblkError, UblkFlags, UblkIORes};
 use skyzfs_blk::{Buf, BLOCK_SIZE};
-use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Wake as Woken};
+use skyzfs_ublk::pump::{Command, Fetched, Queue, QueueDown, Unfetched, Wake as Woken, ABORTED};
 use skyzfs_ublk::translate::Desc;
 
 use crate::mem;
@@ -96,6 +96,39 @@ use crate::{io_error, Wake, FLAGS, MAX_IO};
 /// The user data of the wake descriptor's poll on the queue's ring:
 /// bit 63 marks it as not a command of the driver.
 const WAKE: u64 = (1 << 63) | 1;
+
+/// The low byte of the fetch command's code, as the library puts it in
+/// a command's user data.
+const FETCH: u32 = sys::UBLK_U_IO_FETCH_REQ & 0xff;
+/// The same of the commit, which also fetches the tag's next request.
+const COMMIT: u32 = sys::UBLK_U_IO_COMMIT_AND_FETCH_REQ & 0xff;
+
+// The pump's name for the driver's abort is the driver's.
+const _: () = assert!(ABORTED == sys::UBLK_IO_RES_ABORT);
+
+/// What a completion on the queue's ring says: `None` if it is not one
+/// of a driver's command (bit 63: the wake descriptor's poll); a
+/// request fetched on a tag when the driver ended the command with OK;
+/// otherwise the command it ended so, which fetched nothing.
+fn ended(user_data: u64, result: i32) -> Option<Result<u16, Unfetched>> {
+    if user_data & (1 << 63) != 0 {
+        return None;
+    }
+    let tag = UblkIOCtx::user_data_to_tag(user_data) as u16;
+    if result == sys::UBLK_IO_RES_OK as i32 {
+        return Some(Ok(tag));
+    }
+    let command = match UblkIOCtx::user_data_to_op(user_data) {
+        FETCH => Command::Fetch,
+        COMMIT => Command::Commit,
+        other => Command::Other(other as u8),
+    };
+    Some(Err(Unfetched {
+        tag,
+        command,
+        result,
+    }))
+}
 
 /// How long [`Queue::pause`] sleeps.
 pub const PAUSE: Duration = Duration::from_millis(100);
@@ -481,7 +514,11 @@ impl Queue for KernelQueue<'_> {
         self.bufs.own.len() as u16
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Woken, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Woken, QueueDown> {
         let mut woken = false;
         let tags = &mut self.tags;
         tags.clear();
@@ -493,9 +530,11 @@ impl Queue for KernelQueue<'_> {
             |user_data, done, _last| {
                 if user_data == WAKE {
                     woken = true;
-                } else if user_data & (1 << 63) == 0 && done.result() == sys::UBLK_IO_RES_OK as i32
-                {
-                    tags.push((user_data & 0xffff) as u16);
+                }
+                match ended(user_data, done.result()) {
+                    None => {}
+                    Some(Ok(tag)) => tags.push(tag),
+                    Some(Err(command)) => unfetched.push(command),
                 }
             },
             1,
@@ -606,6 +645,10 @@ impl Queue for KernelQueue<'_> {
     /// One submit of what the ring holds, with no wait. A fetch that
     /// completes in it belongs to a request nobody serves any more: it
     /// stays with the kernel and is issued again to the next instance.
+    /// A command that the driver ends otherwise than OK in it is not
+    /// handed on either: this is the pump's last call, at a stop, and
+    /// no turn follows that would count it. At a stop the driver ends
+    /// each tag's last command with its abort.
     fn flush(&mut self) -> Result<(), QueueDown> {
         for _ in 0..FLUSH_TRIES {
             match self.queue.flush_and_wake_io_tasks(|_, _, _| {}, 0) {
@@ -626,6 +669,52 @@ impl Queue for KernelQueue<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A completion of the ring is read by the library's own encoding
+    /// of a command's user data: a fetch or a commit that the driver
+    /// ended with OK fetched a request on its tag; any other result is
+    /// handed on with its tag, its command and the result; the wake's
+    /// poll and a target's own I/O are no command of the driver.
+    #[test]
+    fn a_command_the_driver_ended_otherwise_than_ok_is_handed_on() {
+        let ok = sys::UBLK_IO_RES_OK as i32;
+        let fetch = |tag| UblkIOCtx::build_user_data(tag, sys::UBLK_U_IO_FETCH_REQ, 0, false);
+        let commit =
+            |tag| UblkIOCtx::build_user_data(tag, sys::UBLK_U_IO_COMMIT_AND_FETCH_REQ, 0, false);
+        assert_eq!(ended(fetch(0), ok), Some(Ok(0)));
+        assert_eq!(ended(commit(31), ok), Some(Ok(31)));
+        assert_eq!(ended(commit(0xffff), ok), Some(Ok(0xffff)));
+        let unfetched = |tag, command, result| {
+            Some(Err(Unfetched {
+                tag,
+                command,
+                result,
+            }))
+        };
+        assert_eq!(
+            ended(commit(5), sys::UBLK_IO_RES_ABORT),
+            unfetched(5, Command::Commit, ABORTED)
+        );
+        assert_eq!(
+            ended(fetch(7), -libc::EINVAL),
+            unfetched(7, Command::Fetch, -libc::EINVAL)
+        );
+        assert_eq!(
+            ended(commit(2), -libc::EBUSY),
+            unfetched(2, Command::Commit, -libc::EBUSY)
+        );
+        // Another command, and a positive result the driver gives only
+        // to a feature this queue does not ask for (`NEED_GET_DATA`).
+        let other = UblkIOCtx::build_user_data(3, sys::UBLK_U_IO_NEED_GET_DATA, 0, false);
+        assert_eq!(ended(other, 1), unfetched(3, Command::Other(0x22), 1));
+        // Not commands of the driver, whatever their result.
+        assert_eq!(ended(WAKE, ok), None);
+        assert_eq!(ended(WAKE, -libc::ECANCELED), None);
+        assert_eq!(
+            ended(UblkIOCtx::build_user_data(1, 0, 0, true), -libc::EIO),
+            None
+        );
+    }
 
     /// A device is served only if its largest request fits the tag
     /// buffers.

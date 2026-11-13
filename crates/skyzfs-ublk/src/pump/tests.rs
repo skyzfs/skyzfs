@@ -35,6 +35,11 @@ type Events = Rc<RefCell<Vec<Event>>>;
 
 enum Step {
     Fetch(Vec<Fetched>),
+    /// Commands the driver ended with a result other than OK, and
+    /// nothing fetched.
+    Unfetched(Vec<Unfetched>),
+    /// The same, and then the queue is down.
+    UnfetchedDown(Vec<Unfetched>),
     Nothing,
     Stop(Vec<Fetched>),
     Down,
@@ -62,11 +67,19 @@ impl Queue for FakeQueue {
         self.depth
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         self.events.borrow_mut().push(Event::Sent);
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
                 fetched.extend(more);
+                Ok(Wake::Work)
+            }
+            Some(Step::Unfetched(more)) => {
+                unfetched.extend(more);
                 Ok(Wake::Work)
             }
             Some(Step::Nothing) | None => Ok(Wake::Work),
@@ -75,6 +88,10 @@ impl Queue for FakeQueue {
                 Ok(Wake::Stop)
             }
             Some(Step::Down) => Err(QueueDown),
+            Some(Step::UnfetchedDown(more)) => {
+                unfetched.extend(more);
+                Err(QueueDown)
+            }
         }
     }
 
@@ -1338,4 +1355,77 @@ fn a_failed_pump_ends_with_the_queue_or_at_a_stop() {
     assert_eq!(rig.fetch(&[request(2, op::READ, 0, 0, 1)]), None);
     assert_eq!(rig.committed(), [(2, -EIO)]);
     assert_eq!(rig.pump.queue().taken, 0, "no buffer is taken");
+}
+
+fn unfetched(tag: u16, command: Command, result: i32) -> Unfetched {
+    Unfetched {
+        tag,
+        command,
+        result,
+    }
+}
+
+/// Commands the driver ended with a result other than OK fetched
+/// nothing, and the pump counts them: aborts apart from the others,
+/// and the result of the last of those. Nothing else follows from
+/// them: no commit, no request, no change to what is in flight. (Until
+/// M1.3aa the queue dropped them, and nothing showed them.)
+#[test]
+fn commands_the_driver_ended_otherwise_than_ok_are_counted() {
+    let mut rig = Rig::new(0, 4, 4);
+    assert_eq!(rig.fetch(&[request(2, op::READ, 0, 0, 1)]), None);
+    let before = rig.committed();
+    rig.pump.queue().script.push_back(Step::Unfetched(vec![
+        unfetched(1, Command::Commit, -22),
+        unfetched(3, Command::Fetch, ABORTED),
+        unfetched(0, Command::Commit, -16),
+        unfetched(3, Command::Other(0x23), 1),
+        unfetched(0, Command::Commit, ABORTED),
+    ]));
+    assert_eq!(rig.pump.turn(), None);
+    let c = rig.pump.counters();
+    assert_eq!(c.commands_aborted, 2, "aborted");
+    assert_eq!(c.commands_failed, 3, "failed");
+    assert_eq!(c.last_command_failure, 1, "the last failure");
+    assert_eq!(c.in_flight, 1, "in flight");
+    assert_eq!(rig.committed(), before, "nothing committed for them");
+    // A pump whose volume failed counts them too.
+    let mut rig = Rig::new(0, 4, 4);
+    rig.pump.fail();
+    rig.pump
+        .queue()
+        .script
+        .push_back(Step::Unfetched(vec![unfetched(1, Command::Commit, -5)]));
+    assert_eq!(rig.pump.turn(), None);
+    let c = rig.pump.counters();
+    assert_eq!((c.commands_failed, c.last_command_failure), (1, -5));
+    assert!(rig.committed().is_empty());
+}
+
+/// A wait that ends with the queue down still hands on what the driver
+/// ended before: the pump counts it before it stops, in its normal turn
+/// and in the turn of a failed volume.
+#[test]
+fn commands_ended_by_a_wait_that_ends_down_are_counted() {
+    for failed in [false, true] {
+        let mut rig = Rig::new(0, 4, 4);
+        if failed {
+            rig.pump.fail();
+        }
+        rig.pump.queue().script.push_back(Step::UnfetchedDown(vec![
+            unfetched(0, Command::Commit, ABORTED),
+            unfetched(1, Command::Commit, -22),
+        ]));
+        assert_eq!(rig.pump.turn(), Some(Stopped::QueueDown), "failed {failed}");
+        let c = rig.pump.counters();
+        assert_eq!(
+            (
+                c.commands_aborted,
+                c.commands_failed,
+                c.last_command_failure
+            ),
+            (1, 1, -22),
+            "failed {failed}"
+        );
+    }
 }

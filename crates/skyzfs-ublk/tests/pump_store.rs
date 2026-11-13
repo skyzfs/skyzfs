@@ -12,7 +12,7 @@ use skyzfs_local::format::{Identity, Lsn};
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig, StoreError};
 use skyzfs_ublk::ack::{self, AckFile};
-use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Wake};
+use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
 const BOOT: [u8; 16] = [7; 16];
@@ -36,7 +36,11 @@ impl Queue for ScriptQueue {
         16
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        _unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
                 fetched.extend(more);

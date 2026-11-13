@@ -46,7 +46,7 @@ use std::time::{Duration, Instant};
 use skyzfs_blk::Buf;
 use std::sync::Mutex;
 
-use skyzfs_ublk::pump::{AckRecord, Fetched, Queue, QueueDown, Wake};
+use skyzfs_ublk::pump::{AckRecord, Fetched, Queue, QueueDown, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc, SECTOR};
 
 use crate::cli::{Held, Hold};
@@ -237,11 +237,15 @@ impl<Q: Queue, A: AckRecord + Clone> Queue for Delayed<Q, A> {
         self.inner.depth()
     }
 
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         // Before the wait, so that the queue's wait sends them.
         self.release(self.stopping);
         let before = fetched.len();
-        let woken = self.inner.wait(fetched)?;
+        let woken = self.inner.wait(fetched, unfetched)?;
         if let Some(hold) = self.hold {
             let new = fetched.get(before..).unwrap_or_default();
             if let Some(first) = new.iter().find(|f| is_held(hold.what, &f.desc)) {
@@ -369,14 +373,20 @@ mod tests {
         heals: Option<(u32, Stored)>,
         wakes: VecDeque<Wake>,
         fetches: VecDeque<Fetched>,
+        ends: VecDeque<Unfetched>,
     }
 
     impl Queue for Noting {
         fn depth(&self) -> u16 {
             4
         }
-        fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+        fn wait(
+            &mut self,
+            fetched: &mut Vec<Fetched>,
+            unfetched: &mut Vec<Unfetched>,
+        ) -> Result<Wake, QueueDown> {
             fetched.extend(self.fetches.drain(..));
+            unfetched.extend(self.ends.drain(..));
             Ok(self.wakes.pop_front().unwrap_or(Wake::Work))
         }
         fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
@@ -397,6 +407,25 @@ mod tests {
                     record.refuse(false);
                 }
             }
+        }
+    }
+
+    /// The commands the queue underneath ended otherwise than OK pass
+    /// through to the pump, with or without a delay.
+    #[test]
+    fn the_commands_ended_otherwise_than_ok_pass_through() {
+        for delay in [None, Some(Duration::from_millis(40))] {
+            let mut inner = Noting::default();
+            let ended = Unfetched {
+                tag: 2,
+                command: skyzfs_ublk::pump::Command::Commit,
+                result: -22,
+            };
+            inner.ends.push_back(ended);
+            let (mut queue, _ack) = Delayed::new(inner, Stored::default(), delay, None, || {});
+            let mut unfetched = Vec::new();
+            queue.wait(&mut Vec::new(), &mut unfetched).expect("wait");
+            assert_eq!(unfetched, [ended], "{delay:?}");
         }
     }
 
@@ -431,7 +460,7 @@ mod tests {
         queue.commit(2, 0, None);
         let mut fetched = Vec::new();
         // Not due yet (unless this thread was held up for the delay).
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         if began.elapsed() < delay {
             assert!(queue.inner.committed.is_empty());
             assert_eq!(queue.waiting(), 2);
@@ -441,7 +470,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(began.elapsed() >= delay);
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         assert_eq!(queue.inner.committed, [1, 2]);
         assert_eq!(queue.waiting(), 0);
     }
@@ -464,7 +493,7 @@ mod tests {
         queue.commit(3, 0, None);
         assert_eq!(queue.waiting(), 1);
         let mut fetched = Vec::new();
-        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Stop));
         assert_eq!(queue.inner.committed, [3]);
         queue.commit(0, 0, None);
         assert_eq!(queue.inner.committed, [3, 0]);
@@ -497,7 +526,7 @@ mod tests {
             queue.commit(1, 0, None);
             stored.refuse(true);
             let mut fetched = Vec::new();
-            assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+            assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Stop));
             assert_eq!(queue.waiting(), 1, "behind a position that is not stored");
             assert!(queue.inner.committed.is_empty());
             let ended = queue.flush();
@@ -540,10 +569,10 @@ mod tests {
         ack.advance(9).expect("remembered");
         queue.commit(2, 0, None);
         let mut fetched = Vec::new();
-        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Work));
+        assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Work));
         assert!(stored.positions().is_empty());
         assert!(queue.inner.committed.is_empty());
-        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Stop));
         assert_eq!(stored.positions(), [7, 9]);
         assert_eq!(queue.inner.committed, [1, 2]);
         ack.advance(11).expect("stored");
@@ -571,11 +600,11 @@ mod tests {
         queue.commit(2, 0, None);
         stored.refuse(true);
         let mut fetched = Vec::new();
-        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Stop));
         assert!(queue.inner.committed.is_empty());
         assert_eq!(queue.waiting(), 2);
         stored.refuse(false);
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         assert_eq!(queue.inner.committed, [1, 2]);
         assert_eq!(stored.positions(), [7, 7]);
     }
@@ -644,7 +673,7 @@ mod tests {
             }
         });
         let mut fetched = Vec::new();
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         assert_eq!(fetched.len(), 3);
         let began = Instant::now();
         for tag in [0, 1, 2] {
@@ -653,7 +682,7 @@ mod tests {
         // The write and the second read went on; the first read waits.
         assert_eq!(queue.inner.committed, [0, 2]);
         assert_eq!(queue.waiting(), 1);
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         if began.elapsed() < Duration::from_secs(1) {
             assert_eq!(queue.inner.committed, [0, 2]);
         }
@@ -662,11 +691,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(began.elapsed() >= Duration::from_secs(1));
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         assert_eq!(queue.inner.committed, [0, 2, 1]);
         // A later read of the same block is not held.
         queue.inner.fetches.push_back(request(3, op::READ, 8, 8));
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         queue.commit(3, 0, None);
         assert_eq!(queue.inner.committed, [0, 2, 1, 3]);
     }
@@ -692,7 +721,7 @@ mod tests {
         let delay = Some(Duration::from_secs(3600));
         let (mut queue, mut ack) = Delayed::new(inner, stored.clone(), delay, Some(hold), || {});
         let mut fetched = Vec::new();
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         ack.advance(77).expect("kept back");
         queue.commit(0, 4096, Some(Buf::zeroed(1)));
         queue.commit(1, 0, None);
@@ -707,7 +736,7 @@ mod tests {
         // What the pump commits from now on is not kept.
         queue.commit(2, -5, None);
         assert_eq!(queue.inner.committed, [0, 1, 2]);
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         assert!(stored.positions().is_empty());
     }
 
@@ -725,10 +754,10 @@ mod tests {
         };
         let (mut queue, _ack) = Delayed::new(inner, Stored::default(), None, Some(hold), || {});
         let mut fetched = Vec::new();
-        queue.wait(&mut fetched).expect("wait");
+        queue.wait(&mut fetched, &mut Vec::new()).expect("wait");
         queue.commit(5, 0, None);
         assert!(queue.inner.committed.is_empty());
-        assert_eq!(queue.wait(&mut fetched), Ok(Wake::Stop));
+        assert_eq!(queue.wait(&mut fetched, &mut Vec::new()), Ok(Wake::Stop));
         assert_eq!(queue.inner.committed, [5]);
     }
 }

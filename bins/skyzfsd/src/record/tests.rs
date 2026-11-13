@@ -8,6 +8,9 @@ struct Scripted {
     committed: Vec<(u16, i32)>,
     flushes: u32,
     waits: VecDeque<Result<Vec<Fetched>, QueueDown>>,
+    /// What each wait hands on as ended otherwise than OK, whatever it
+    /// returns.
+    ends: VecDeque<Vec<Unfetched>>,
     flush_fails: bool,
     /// A record to read as each wait or flush begins: its last line then
     /// goes to `last_before`.
@@ -30,8 +33,13 @@ impl Queue for Scripted {
     fn depth(&self) -> u16 {
         4
     }
-    fn wait(&mut self, fetched: &mut Vec<Fetched>) -> Result<Wake, QueueDown> {
+    fn wait(
+        &mut self,
+        fetched: &mut Vec<Fetched>,
+        unfetched: &mut Vec<Unfetched>,
+    ) -> Result<Wake, QueueDown> {
         self.note_last_line();
+        unfetched.extend(self.ends.pop_front().unwrap_or_default());
         match self.waits.pop_front() {
             Some(Ok(more)) => {
                 fetched.extend(more);
@@ -105,13 +113,13 @@ fn the_record_has_each_request_and_its_answer() {
     inner.waits.push_back(Ok(vec![fetched(0, op::READ, 8, 16)]));
     let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7);
     let mut got = Vec::new();
-    assert_eq!(queue.wait(&mut got), Ok(Wake::Work));
+    assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got.len(), 3);
     queue.commit(1, 16384, None);
     queue.commit(0, 12288, None);
     queue.commit(2, 0, None);
     got.clear();
-    assert_eq!(queue.wait(&mut got), Ok(Wake::Work));
+    assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     queue.commit(0, -5, None);
     assert_eq!(queue.flush(), Ok(()));
     let p = pid();
@@ -155,9 +163,9 @@ fn the_send_line_is_written_before_the_commits_go() {
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
     let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0);
     let mut got = Vec::new();
-    let _ = queue.wait(&mut got);
+    let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(0, 4096, None);
-    let _ = queue.wait(&mut got);
+    let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(0, 4096, None);
     let _ = queue.flush();
     let p = pid();
@@ -185,7 +193,7 @@ fn the_times_are_monotonic() {
     let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0);
     let before = mono_ns();
     let mut got = Vec::new();
-    let _ = queue.wait(&mut got);
+    let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(3, 0, None);
     let _ = queue.flush();
     let after = mono_ns();
@@ -232,7 +240,7 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
     let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 1);
     queue.commit(2, -5, None);
     let mut got = Vec::new();
-    assert_eq!(queue.wait(&mut got), Err(QueueDown));
+    assert_eq!(queue.wait(&mut got, &mut Vec::new()), Err(QueueDown));
     queue.commit(3, -5, None);
     assert_eq!(queue.flush(), Err(QueueDown));
     // Nothing committed since: no line.
@@ -262,13 +270,13 @@ fn a_second_instance_appends_to_the_same_record() {
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
     let mut first = Recorded::new(inner, Some(open(&path).expect("open")), 0);
     let mut got = Vec::new();
-    let _ = first.wait(&mut got);
+    let _ = first.wait(&mut got, &mut Vec::new());
     drop(first);
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(3, op::WRITE, 0, 8)]));
     let mut second = Recorded::new(inner, Some(open(&path).expect("open")), 0);
     got.clear();
-    let _ = second.wait(&mut got);
+    let _ = second.wait(&mut got, &mut Vec::new());
     second.commit(3, 4096, None);
     let _ = second.flush();
     let p = pid();
@@ -294,7 +302,7 @@ fn without_a_file_every_call_passes_through() {
     inner.waits.push_back(Ok(vec![fetched(1, op::READ, 0, 8)]));
     let mut queue = Recorded::new(inner, None, 0);
     let mut got = Vec::new();
-    assert_eq!(queue.wait(&mut got), Ok(Wake::Work));
+    assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got, [fetched(1, op::READ, 0, 8)]);
     assert!(queue.take_buf(1, 2).is_some_and(|buf| buf.len() == 8192));
     queue.commit(1, 4096, None);
@@ -309,4 +317,66 @@ fn without_a_file_every_call_passes_through() {
 fn a_record_that_cannot_be_opened_is_an_error() {
     let dir = tempfile::tempdir().expect("dir");
     assert!(open(&dir.path().join("no-such-dir").join("requests.tsv")).is_err());
+}
+
+/// A command the driver ended otherwise than OK has an `ended` line
+/// when the wait that returned it ends, before that wait's requests:
+/// its tag, the command, the result. Also when the wait fails, and the
+/// pump is handed every one of them.
+#[test]
+fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let mut inner = Scripted::default();
+    inner.waits.push_back(Ok(vec![fetched(0, op::READ, 8, 16)]));
+    inner.ends.push_back(vec![Unfetched {
+        tag: 1,
+        command: Command::Commit,
+        result: -22,
+    }]);
+    inner.waits.push_back(Err(QueueDown));
+    inner.ends.push_back(vec![
+        Unfetched {
+            tag: 0,
+            command: Command::Commit,
+            result: -19,
+        },
+        Unfetched {
+            tag: 2,
+            command: Command::Fetch,
+            result: -19,
+        },
+        Unfetched {
+            tag: 3,
+            command: Command::Other(0x23),
+            result: 1,
+        },
+    ]);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7);
+    queue.commit(1, 4096, None);
+    let mut got = Vec::new();
+    let mut ended = Vec::new();
+    assert_eq!(queue.wait(&mut got, &mut ended), Ok(Wake::Work));
+    assert_eq!(ended.len(), 1);
+    queue.commit(0, 8192, None);
+    assert_eq!(queue.wait(&mut got, &mut ended), Err(QueueDown));
+    assert_eq!(ended.len(), 4);
+    let p = pid();
+    assert_eq!(
+        lines(&path),
+        [
+            format!("{p}\tstart\t7\t-\t-\t-\t4"),
+            format!("{p}\tcommit\t1\t-\t-\t-\t4096"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
+            format!("{p}\tsent\t-\t-\t-\t-\t1"),
+            format!("{p}\tended\t1\tcommit\t-\t-\t-22"),
+            format!("{p}\trecv\t0\tread\t8\t16\t-"),
+            format!("{p}\tcommit\t0\tread\t8\t16\t8192"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
+            format!("{p}\tdown\t-\t-\t-\t-\t1"),
+            format!("{p}\tended\t0\tcommit\t-\t-\t-19"),
+            format!("{p}\tended\t2\tfetch\t-\t-\t-19"),
+            format!("{p}\tended\t3\tcmd35\t-\t-\t1"),
+        ]
+    );
 }
