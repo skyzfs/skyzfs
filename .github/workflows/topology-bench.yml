@@ -379,10 +379,15 @@ jobs:
           # directory so equal topology names do not collide.
           IFS=';' read -ra entries <<< "$TB_SEQUENCE"
           i=0
-          # A row that fails (a copy onto the daemon that ran out of its
-          # limit, M1.T24) does not end the job: the rows after it run,
-          # and the step fails at the end.
+          # A row that fails does not end the job: the rows after it
+          # run, and the step fails at the end. A row whose copy or sync
+          # onto the daemon ran out of its limit (its output has
+          # skyzfsd-hang/, M1.T24) does end the sequence: what it left in
+          # the kernel may not die, and a row beside it would measure two
+          # daemons in one cgroup. The evidence step then sees the
+          # machine as the hang left it.
           failed=""
+          hung=""
           for e in "${entries[@]}"; do
             i=$((i + 1))
             label=${e%%|*}; assigns=${e#*|}
@@ -404,8 +409,14 @@ jobs:
               echo "Sequence $i ($label) failed with $rc; the rows after it ran." >> "$GITHUB_STEP_SUMMARY"
               failed="$failed $i"
             fi
+            if sudo test -d "$TB_OUT/$i/skyzfsd-hang"; then
+              hung=$i
+              echo "::error::sequence $i ($label): a step onto the daemon ran out of its limit; the sequence ends here"
+              echo "Sequence $i ($label): a step onto the daemon ran out of its limit, so the sequence ended there (${#entries[@]} rows asked for). The evidence is in skyzfsd-hang/ of its output." >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
           done
-          [ -z "$failed" ] || { echo "rows that failed:$failed"; exit 1; }
+          [ -z "$failed" ] || { echo "rows that failed:$failed${hung:+; the sequence ended after row $hung}"; exit 1; }
 
       - name: Work disk mount at the end
         # That the barriers asked for were in force to the last row.

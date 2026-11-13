@@ -1593,7 +1593,10 @@ skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the v
     fi
     lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 \
         || log "WARNING: skyzfsd detach did not succeed; ublk devices: $(lim 20 ls /dev 2>/dev/null | grep -c '^ublkb' || true)"
-    rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
+    # Under a limit: a daemon stuck in a write to its home image holds
+    # the file's lock, and an unlink waits behind it (M1.T24 review).
+    lim 120 rm -rf -- "$SKZ_DIR" "$SKZ_RUN" \
+        || log "WARNING: the removal of the volume's files did not end in 120 s or failed"
     if [ -n "$SKZ_CGROUP" ]; then rmdir "$SKZ_CGROUP" 2>/dev/null; SKZ_CGROUP=""; fi
 }
 # Wait for the daemon to be at rest after the copy, so that a window
@@ -1690,22 +1693,25 @@ skz_hang_evidence() { # dir why
     echo w > "${SKZ_SYSRQ:-/proc/sysrq-trigger}" 2>/dev/null || echo "sysrq w was refused" >> "$d/why.txt"
     sleep 1
     lim 20 dmesg > "$d/dmesg.txt" 2>&1
-    log "skyzfsd: evidence of the hang in $d: $(grep '^daemon pid' "$d/why.txt"); $(grep -c '^== ' "$d/threads.txt" 2>/dev/null || echo 0) threads, $(grep -c ' D ' "$d/threads.txt" 2>/dev/null || echo 0) in D state; cgroup: $(grep -E '^(oom|oom_kill|max) ' "$d/cgroup.txt" 2>/dev/null | tr '\n' ' ')"
+    log "skyzfsd: evidence of the hang in $d: $(grep '^daemon pid' "$d/why.txt"); $(grep -c '^== ' "$d/threads.txt" 2>/dev/null || true) threads, $(grep -c '^== .* D ' "$d/threads.txt" 2>/dev/null || true) in D state; cgroup: $(grep -E '^(oom|oom_kill|max) ' "$d/cgroup.txt" 2>/dev/null | tr '\n' ' ')"
 }
 # A new volume at SKZ_DIR of SIZE bytes, with TB_SKYZFSD_CREATE_ARGS. What
-# the create said on stderr is passed on and kept in $WORK/skyzfsd-create.err.
+# the create said, on stdout and stderr, is passed on to stderr (the
+# row's log) and kept in $WORK/skyzfsd-create.out and .err.
 skz_create() { # size
     local args=() secs=120 rc=0
     if [ -n "$SKYZFSD_CREATE_ARGS" ]; then
         read -r -a args <<< "${SKYZFSD_CREATE_ARGS//,/ }"
         secs=1800
     fi
-    lim "$secs" "$SKYZFSD" create --dir "$SKZ_DIR" --size "$1" "${args[@]}" > /dev/null 2> "$WORK/skyzfsd-create.err" || rc=$?
-    cat "$WORK/skyzfsd-create.err" >&2
+    lim "$secs" "$SKYZFSD" create --dir "$SKZ_DIR" --size "$1" "${args[@]}" > "$WORK/skyzfsd-create.out" 2> "$WORK/skyzfsd-create.err" || rc=$?
+    cat "$WORK/skyzfsd-create.out" "$WORK/skyzfsd-create.err" >&2
     return "$rc"
 }
 # The pool image onto the daemon's device, and the sync after it, each
-# under SKZ_COPY_LIMIT_S. SKZ_COPY_MS and SKZ_SYNC_MS are what they took.
+# under SKZ_COPY_LIMIT_S. SKZ_COPY_MS and SKZ_SYNC_MS are what they took,
+# as lim sees them: it looks every tenth of a second, so each carries up
+# to about 0.1 s more than the step itself.
 # 1: a step ran out (the evidence is in $OUT/skyzfsd-hang, or in $2 when
 # given) or the copy failed.
 skz_copy() { # dev [evidence dir]
@@ -1735,7 +1741,7 @@ skz_copy() { # dev [evidence dir]
 # TB_SKYZFSD_COPY_REPEAT: the copy and its sync, N times, each on a new
 # volume and a new daemon. Not judged: the table says what happened.
 skz_copy_repeat() {
-    local i n=$SKZ_COPY_REPEAT hung="" tsv=$OUT/copy-repeat.tsv size
+    local i n=$SKZ_COPY_REPEAT hung="" tsv=$OUT/copy-repeat.tsv size cargs=${SKYZFSD_CREATE_ARGS//,/ }
     size=$(stat -c %s "$WORK/zfs-origin.img")
     printf 'i\tcopy_ms\tsync_ms\toutcome\twrites\n' > "$tsv"
     for i in $(seq 1 "$n"); do
@@ -1757,7 +1763,7 @@ skz_copy_repeat() {
     {
         echo "## topology-bench: the copy onto skyzfsd, repeated (M1.T24, not judged)"
         echo
-        echo "Build ${TB_SKYZFSD_REF:-not said}; serve ${SKYZFSD_ARGS//,/ }; memory.max ${SKYZFSD_MEM:-none}; limit ${SKZ_COPY_LIMIT_S} s a step; the image $(( size >> 20 )) MiB ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated)."
+        echo "Build ${TB_SKYZFSD_REF:-not said}; create ${cargs:-with no arguments}; serve ${SKYZFSD_ARGS//,/ }; memory.max ${SKYZFSD_MEM:-none}; limit ${SKZ_COPY_LIMIT_S} s a step; the image $(( size >> 20 )) MiB ($(du -m "$WORK/zfs-origin.img" | cut -f1) MiB allocated)."
         echo
         if [ -n "$hung" ]; then
             echo "**Did not end: $hung.** The evidence is in skyzfsd-hang/ of this row's output."
@@ -1816,7 +1822,8 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
         skyzfsd)
             # A previous run's leftover: its device and its files.
             lim 90 "$SKYZFSD" detach --dir "$SKZ_DIR" --run-dir "$SKZ_RUN" >/dev/null 2>&1 || true
-            rm -rf -- "$SKZ_DIR" "$SKZ_RUN"
+            lim 120 rm -rf -- "$SKZ_DIR" "$SKZ_RUN" \
+                || { echo "the removal of a previous row's volume did not end in 120 s or failed" >&2; return 1; }
             mkdir -p "$SKZ_RUN"
             : > "$OUT/$TOPO.skzinfo"
             if [ -n "$SKZ_COPY_REPEAT" ]; then
@@ -1829,7 +1836,7 @@ build_zfs_direct() { # ublk|loop|skyzfsd: the pool imported from its own image, 
             skz_create "$(stat -c %s "$WORK/zfs-origin.img")" \
                 || { echo "skyzfsd create failed or did not end in its limit" >&2; return 1; }
             echo "create_args ${SKYZFSD_CREATE_ARGS//,/ }" >> "$OUT/$TOPO.skzinfo"
-            echo "create_said $(tr '\n' ' ' < "$WORK/skyzfsd-create.err")" >> "$OUT/$TOPO.skzinfo"
+            echo "create_said $(cat "$WORK/skyzfsd-create.out" "$WORK/skyzfsd-create.err" | tr '\n' ' ')" >> "$OUT/$TOPO.skzinfo"
             SKZ_UP=1
             skz_start
             dev=$SKZ_DEV
