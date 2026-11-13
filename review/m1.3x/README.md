@@ -65,3 +65,29 @@ hand-over see the error first on a sick disk.
 - Nothing of the daemon's `run` can be exercised without a kernel, so
   the call-site gap cannot be closed by a unit test: it belongs in the
   daemon rig's check g, which does not read the reason today.
+
+
+## Third look, at 7808412
+
+Comment: https://github.com/skyzfs/skyzfs/pull/55#issuecomment-6850175555
+
+Findings 2 and 3 are fixed and verified by running:
+
+- the reason now renders "the log store's log failed"; planting the old
+  words back fails `status::tests::the_report_shows_a_failure_of_this_
+  boot_and_what_it_needs`, and no rig matches either wording (grepped
+  `tests/kernel` at #54's head).
+- the corrected remedy paragraph matches the code. `removed-note.rs`
+  now runs all of it: the note alone removed leaves the volume refused
+  as marked (and writes a fresh note); the note and `log.failed`
+  removed, it serves; after a reboot the marker alone is refused
+  without the flag and acknowledged with it.
+
+The blocking finding (a failed start still reports the log store) is
+untouched at this head; coding's answer and 7808412 crossed with the
+correction. The rewording makes the g.3 line "the volume failed at the
+start of the in-place store (the log store's log failed)" — no longer
+false on its face, but still the log store's name on an image failure.
+
+Gates at 7808412: 496 passed over the three crates, 0 failed, 6
+ignored; fmt and clippy clean.

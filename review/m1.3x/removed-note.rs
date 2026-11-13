@@ -162,7 +162,7 @@ fn scenario(held: bool) {
         println!("unknown code, acknowledge {acknowledge}: {}", said(&result));
     }
 
-    // Someone removes the note by hand.
+    // Someone removes the note by hand (the old advice).
     std::fs::remove_file(&path).expect("remove");
     for acknowledge in [false, true] {
         let result = start(&mut kernel, &mut records, &mut volume, &wanted(acknowledge));
@@ -175,10 +175,83 @@ fn scenario(held: bool) {
             break;
         }
     }
+
+    // The corrected advice: the note AND the store's marker.
+    let marker = dir.join("log.failed");
+    println!("the marker is there: {}", marker.exists());
+    let _ = std::fs::remove_file(&records.failure_path());
+    std::fs::remove_file(&marker).expect("remove the marker");
+    for acknowledge in [false, true] {
+        let result = start(&mut kernel, &mut records, &mut volume, &wanted(acknowledge));
+        println!(
+            "note and marker removed, acknowledge {acknowledge}: {}; then {}",
+            said(&result),
+            note(&records)
+        );
+        if result.is_ok() {
+            break;
+        }
+    }
+
+    // And what a reboot does with the marker alone, as the note now says.
+    let mut next = Files::new(&dir as &Path, &run, [9; 16], Duration::ZERO).expect("records");
+    let result = start(&mut kernel, &mut next, &mut volume, &wanted(false));
+    println!("after a reboot, no flag: {}", said(&result));
+}
+
+/// The other half of the corrected paragraph: the note is of this boot
+/// only, so after a reboot the marker alone is left, and the start
+/// acknowledges it with --acknowledge-failure.
+fn reboot_with_the_marker(held: bool) {
+    println!("\n=== after a reboot, the marker alone (a client {} the device) ===",
+             if held { "held" } else { "did not hold" });
+    let keep = tempfile::tempdir().expect("a directory");
+    let (dir, run) = (keep.path().join("volume"), keep.path().join("run"));
+    std::fs::create_dir(&dir).expect("the volume's directory");
+    std::fs::create_dir(&run).expect("the run directory");
+    let config = StoreConfig {
+        volume: *b"a volume on disk",
+        size_mib: 8,
+        base: Base::Empty,
+        align: 4096,
+        segment_size: 8 << 20,
+        write_unit: Identity::system_write_unit(),
+    };
+    drop(Store::create(FsDir::new(&dir).expect("the directory"), &config, OpenOptions::default())
+        .expect("create"));
+    let mut kernel = Kernel::default();
+    let mut records = Files::new(&dir as &Path, &run, BOOT, Duration::ZERO).expect("records");
+    let mut volume = StoreVolume::new(&dir, OpenOptions::default());
+    let ready = start(&mut kernel, &mut records, &mut volume, &wanted(false)).expect("serves");
+    let (number, identity) = (ready.number, ready.store.identity());
+    if let Some(device) = kernel.devices.get_mut(&number) {
+        device.state = DeviceState::Live;
+    }
+    if held {
+        kernel.held.push(number);
+    }
+    let served = ready.store.serve().expect("serve");
+    served.fail_now();
+    let _ = fail_serving(&mut kernel, &mut records, number, identity, Reason::ImageFailed);
+    drop(served);
+    println!("the marker is there: {}", dir.join("log.failed").exists());
+    // The next boot: the note counts as none, and the record of the
+    // attachment is of the earlier boot.
+    let mut next = Files::new(&dir as &Path, &run, [9; 16], Duration::ZERO).expect("records");
+    for acknowledge in [false, true] {
+        let result = start(&mut kernel, &mut next, &mut volume, &wanted(acknowledge));
+        println!("after a reboot, acknowledge {acknowledge}: {}", said(&result));
+        if let Ok(ready) = result {
+            println!("    acknowledged: {:?}", ready.acknowledged);
+            break;
+        }
+    }
 }
 
 #[test]
 fn what_removing_the_note_by_hand_leads_to() {
     scenario(false);
     scenario(true);
+    reboot_with_the_marker(false);
+    reboot_with_the_marker(true);
 }
