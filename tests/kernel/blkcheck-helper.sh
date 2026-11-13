@@ -292,6 +292,10 @@ destroy)
     [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || steps_line destroy
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
+    # With the request log, where each file of the volume lay on the
+    # disk, so that the disk's requests in a trace can be read as the
+    # image's blocks.
+    [ -z "${BLK_REQUEST_LOG:-}" ] || find "$DIR" -type f -exec filefrag -v -b512 {} + > "$DIR.extents" 2>&1
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null
     DEV=""
     ;;

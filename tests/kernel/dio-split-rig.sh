@@ -56,8 +56,11 @@ mkdir -p "$WORK"
     apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/modprobe.log" 2>&1
     modprobe ublk_drv 2>> "$OUT/modprobe.log" || die "no ublk driver"
 }
-[ -d "$T/events/block/block_rq_issue" ] || die "no ftrace event block_rq_issue under $T"
-[ -d "$T/events/block/block_split" ] || die "no ftrace event block_split under $T"
+# The requests issued to every device, a bio split, a request put back
+# in the queue (a short result from a server is requeued), and every
+# completion.
+EVENTS="block_rq_issue block_split block_rq_requeue block_rq_complete"
+for e in $EVENTS; do [ -d "$T/events/block/$e" ] || die "no ftrace event $e under $T"; done
 grep -qw mono "$T/trace_clock" || die "no trace clock mono"
 for d in "${DAEMONS[@]}"; do
     if has_request_log "${d#*=}"; then RL_SAID+="${d%%=*} yes; "; else RL_SAID+="${d%%=*} no; "; fi
@@ -72,6 +75,9 @@ note "- udev: $(udevadm --version 2>/dev/null | head -n 1); rules that name ublk
 grep -h 'ublkb' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | cut -c1-400 > "$OUT/udev-ublkb-rules.txt"
 note "- the rule lines that name ublkb are in udev-ublkb-rules.txt ($(wc -l < "$OUT/udev-ublkb-rules.txt") lines); with OPTIONS watch: $(grep -c 'watch' "$OUT/udev-ublkb-rules.txt")"
 note "- the daemon's request log (--request-log): ${RL_SAID}ftrace's clock is mono, as the log's mono_ns"
+src=$(findmnt -no SOURCE -T "$WORK" 2>/dev/null)
+part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
+note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, $(stat -L -c '%t:%T' "$src" 2>/dev/null) in hex, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); the extents of a volume's files (c-cN.extents, filefrag -b512) are in its sectors"
 note "- function trace of the fallback: ${FALLBACK:-not traceable on this kernel (direct_write_fallback is not in available_filter_functions)}"
 
 TRACE_PID=""
@@ -86,8 +92,7 @@ trace_on() { # FILE
         echo "$FALLBACK" > "$T/set_ftrace_filter"
         echo function > "$T/current_tracer"
     fi
-    echo 1 > "$T/events/block/block_rq_issue/enable"
-    echo 1 > "$T/events/block/block_split/enable"
+    for e in $EVENTS; do echo 1 > "$T/events/block/$e/enable"; done
     cat "$T/trace_pipe" > "$1" &
     TRACE_PID=$!
     echo 1 > "$T/tracing_on"
@@ -96,8 +101,7 @@ trace_off() {
     echo 0 > "$T/tracing_on"
     sleep 1
     kill "$TRACE_PID" 2>/dev/null; wait "$TRACE_PID" 2>/dev/null
-    echo 0 > "$T/events/block/block_rq_issue/enable"
-    echo 0 > "$T/events/block/block_split/enable"
+    for e in $EVENTS; do echo 0 > "$T/events/block/$e/enable"; done
     echo nop > "$T/current_tracer"
     echo > "$T/set_ftrace_filter" 2>/dev/null
     TRACE_PID=""
@@ -186,7 +190,7 @@ for r in $(seq 1 "$ROUNDS"); do
         secs=$(( $(date +%s) - t0 ))
         trace_off
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
-        for f in "$w"/*.serve.log "$w"/*.requests.tsv; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
+        for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
         bad=""
         if [ -n "$fails" ] || [ $rc != 0 ]; then
@@ -204,7 +208,7 @@ for r in $(seq 1 "$ROUNDS"); do
         if [ -n "$fails" ] || [ $rc != 0 ]; then
             failed_passes[$label]=$(( ${failed_passes[$label]:-0} + 1 ))
         fi
-        gzip -f "$p/c-trace.tsv" "$p/ftrace.txt" "$p"/c-*.requests.tsv 2>/dev/null
+        gzip -f "$p/c-trace.tsv" "$p/ftrace.txt" "$p"/c-*.requests.tsv "$p"/c-*.extents 2>/dev/null
         # Keep the first pass of each daemon and every pass that failed.
         if [ "$r" != 1 ] && [ -z "$fails" ] && [ $rc = 0 ]; then rm -rf "$p"; fi
         rm -rf "$w"
