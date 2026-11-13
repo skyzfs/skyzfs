@@ -1,0 +1,6 @@
+clippy(skyzfs packages + skynbd-tree)=0
+clippy-hooks=0
+clippy-ctl=0
+test=0
+test-hooks=0
+test-ctl=0
