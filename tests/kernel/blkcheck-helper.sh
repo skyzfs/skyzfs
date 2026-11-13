@@ -61,6 +61,15 @@ status_of() { lim 30 "$SKYZFSD" status --dir "$DIR" --run-dir "$RUN" 2>/dev/null
 # the serve process itself.
 server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>/dev/null)}"; }
 # [serve options]: serve in the background, wait for "ready", print the device.
+# The status serve exited with, once it is gone. The small shell that
+# waits for serve writes it a moment after serve is reaped, later than
+# 0.1 s on a busy machine (a pass of check c read the file empty,
+# 2026-11-13): wait for it, up to 5 s. Empty when it never came.
+serve_rc() {
+    local rc=""
+    for _ in $(seq 1 100); do rc=$(cat "$DIR.serve.rc" 2>/dev/null); [ -n "$rc" ] && break; sleep 0.05; done
+    echo "$rc"
+}
 serve() {
     local dev pid t0
     t0=$(( $(date +%s) - 1 ))
@@ -85,7 +94,7 @@ serve() {
             ublksrvd_look "${dev#/dev/ublkb}" "$t0" "${BLK_UBLKSRVD_SEEN:-}"
             echo "$dev" > "$DIR.device"; echo "$dev"; return 0
         fi
-        kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
+        kill -0 "$pid" 2>/dev/null || { die "serve exited $(serve_rc) before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
     die "serve was not ready after 60 s"
@@ -167,7 +176,7 @@ create)
     ;;
 kill)
     serve_pid=$(cat "$DIR.serve.pid" 2>/dev/null)
-    if [ -n "$serve_pid" ] && ! kill -0 "$serve_pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+    if [ -n "$serve_pid" ] && ! kill -0 "$serve_pid" 2>/dev/null && [ "$(serve_rc)" = 3 ]; then
         # The log failed and the server exited by itself: there is no
         # daemon to lose, and a failed volume is not served again
         # without `reopen`. The device stays the deleted one.
@@ -223,7 +232,7 @@ kill)
     ;;
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
-    if ! kill -0 "$pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+    if ! kill -0 "$pid" 2>/dev/null && [ "$(serve_rc)" = 3 ]; then
         # The log has failed already and the server is gone: it stays failed.
         echo "fail $N: the log had failed already" >> "$WORK/helper.log"
         exit 0
@@ -236,8 +245,7 @@ fail)
     # for a deleted device.
     for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
     kill -0 "$pid" 2>/dev/null && die "serve was still running 10 s after SIGUSR1"
-    sleep 0.1
-    rc=$(cat "$DIR.serve.rc" 2>/dev/null)
+    rc=$(serve_rc)
     [ "$rc" = 3 ] || die "serve exited ${rc:-with no status} after SIGUSR1, wanted 3"
     DEV=""
     ;;
