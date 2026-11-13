@@ -89,6 +89,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.3t-a | skyzfs/skyzfs#65 | The rigs and the benchmark name the in-place store themselves, ahead of the log store's removal | The criterion: without the write log |
 | M1.T28 follow-up | skyzfs/skyzfs#66 | The tool hands the suite the result of a call that returned before the kill | A call that returned after the kill (M1.T28) |
 | M1.T21 (benchmark) | skyzfs/skyzfs#67 | The benchmark's runner input offers the arm64 images; the disk-sync table names image, architecture and kernel | arm64 (M1.T21) |
+| M1.T27 | skyzfs/skyzfs#63 | The power-cut replay of a direct write into a hole, through skyzfsd, as jobs of the replay rig | A direct write into a hole, at a power cut (M1.T27) |
 | M1.T29 | none (measurement only) | The thread count and the throughput rule on the merged direct I/O daemon, two rounds; the full power-cut replay | The thread count on the merged daemon (M1.T29, first round) |
 | M1.3x | skyzfs/skyzfs#55 | The failure note's reason for the in-place store: code 7, "a write or sync of the volume's image failed" | The ublk transport: a failed volume gives up its attachment |
 | M1.3w | skyzfs/skyzfs#52 | Two tests of the log store's times took their own total before the look they compare it with | The local store |
@@ -793,6 +794,8 @@ Per course: prefixes checked, prefixes at which a returned write read as zeros, 
 
 All of it is loss that design §4.1 allows. Decided on these figures: the image stays sparse (design §10).
 
+The table rests on one run an image, and a course's length varies from run to run: ext4 on a preallocated image had 100 prefixes on `ubuntu-24.04` in the table's run and 119 in a later one (43498059751). The rig is merged (skyzfs/skyzfs#63) and runs on every pull request that runs the daemon's replay jobs. It judges three things: every checked prefix as §4.1 allows, the control caught, and on a written-through image no prefix with the data on the disk and zeros in the file (0 in all four such courses of run 43515269154, on the merged direct I/O daemon).
+
 #### Direct I/O as built (M1.3y)
 
 `skyzfsd serve --store in-place` reads and writes the home image with `O_DIRECT` on a pool of I/O threads, eight by default (`--io-threads`, 1 to 64); there is no buffered served mode. What the package added to the experiment:
@@ -1008,6 +1011,7 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-13 | A test of `mapped()` that raced (M1.3ab, skyzfs/skyzfs#61); two looks by the review session, nothing from Codex | Can merge. The review reproduced the cause the author had inferred: another thread's larger mapping ending on the test's one-page hole. An attempt now counts only when the hole is empty before and after; the planted defect still fails every time. |
 | 2026-11-13 | The binding's command results (M1.3aa, skyzfs/skyzfs#64); two looks by the review session, nothing from Codex | Can merge. The review corrected the ground for what follows (M1.3ac): the driver's result does not tell a commit refused for an empty tag from a malformed one on any release read (v6.11, v6.17, v7.0); the first leaves the tag working, the second leaves it dead with its request held; and a count of zero failed commands does not show that no commit was sent twice. Decided by the lead: any refused commit stops the daemon for a take-over, once a kernel test shows the take-over gets the held request issued again. |
 | 2026-11-13 | The rigs name the store (M1.3t-a, skyzfs/skyzfs#65), the tool's hand-over (skyzfs/skyzfs#66) and the benchmark's arm64 runners (skyzfs/skyzfs#67); looks by the review session, nothing from Codex | Each can merge, one small defect fixed in #65. On #66 the repeat rig ran 10 of 10 passes on `ubuntu-26.04` and met the new outcome five times (run 43503235852). Found beside it by the author: `the_suite_notices_the_defects` notices one planted defect only by timing and fails alone, 4 of 4 runs (M1.3ad). |
+| 2026-11-13 | The hole rig (M1.T27, skyzfs/skyzfs#63); four looks by the review session and two findings by Codex | Can merge. Decided by the lead on the review's question: on a written-through image the count of prefixes with the data on the disk and zeros in the file is a pin at 0, since design §4.2 rests on it. One blocking finding fixed: a course whose daemon failed before its check ended as "not a verdict". Three small defects and Codex's two findings fixed. Also merged that day, one look each: the benchmark's time per read and per write on the work disk (skyzfs/skyzfs#68), where Codex found the row parser dropping the new field. |
 
 ## References
 
