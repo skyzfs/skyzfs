@@ -524,9 +524,9 @@ impl<D: Dir> InPlace<D> {
             .map_err(|e| format!("reading a block of it failed: {e}"))?;
         if self.cached_pages()? == 0 {
             return Err(
-                "the kernel's count of cached pages does not see this file: a block \
-                        just read through the cache counts 0, as on an overlay file system. \
-                        Put the volume on a file system whose pages it counts (ext4, xfs)"
+                "the file system's cache cannot be observed through this file: a block \
+                 just read through the cache counts 0 pages (as through an overlay file \
+                 system), so the start cannot show that the drop left none"
                     .into(),
             );
         }

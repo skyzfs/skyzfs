@@ -1098,7 +1098,7 @@ fn a_start_refuses_where_the_count_cannot_see_the_file() {
     disk.keep_cache(true);
     let refused = enter(&disk, 0);
     assert!(
-        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("does not see")),
+        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("cannot be observed")),
         "{refused:?}"
     );
     drop(refused);

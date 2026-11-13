@@ -8,13 +8,14 @@
 //! in-place store promises nothing more than the volatile-cache disk
 //! at a power cut (see `skyzfs_local::inplace`).
 //!
-//! **The temporary directory must be on a file system whose page cache
-//! the kernel can drop and count for a file** (ext4, xfs). Every start
-//! of the in-place store drops the home image's cache and checks with
-//! `cachestat` that none of it is left, and refuses otherwise: on tmpfs
-//! the pages are the file and cannot be dropped, and through an overlay
-//! the count sees none. Each test says so first where that is the case;
-//! set `TMPDIR` to a directory on such a file system.
+//! **These tests need a temporary directory on a file system whose page
+//! cache the kernel can drop and count for a file.** Every start of the
+//! in-place store drops the home image's cache and checks with
+//! `cachestat` that none of it is left, and refuses otherwise, by
+//! design: on tmpfs the pages are the file and cannot be dropped, and
+//! through an overlay the count sees none. Where the temporary directory
+//! is on such a file system, each test is skipped and says why on
+//! standard error; set `TMPDIR` to run it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -47,17 +48,25 @@ fn config() -> StoreConfig {
 
 /// The directory at `path`, whose files count their cached pages as
 /// the daemon's do: the in-place store's start refuses without it.
-fn on_disk(path: &std::path::Path) -> FsDir {
-    the_cache_can_be_dropped_and_counted(path);
-    FsDir::new(path)
-        .unwrap()
-        .with_cache_count(skyzfs_ublk_sys::cached_pages)
+fn on_disk(path: &std::path::Path) -> Option<FsDir> {
+    if let Err(why) = the_cache_can_be_dropped_and_counted(path) {
+        eprintln!(
+            "skipped: {}: {why}; the in-place store refuses to start there by design. Set \
+             TMPDIR to a directory whose file system's cache can be dropped and counted",
+            path.display()
+        );
+        return None;
+    }
+    Some(
+        FsDir::new(path)
+            .unwrap()
+            .with_cache_count(skyzfs_ublk_sys::cached_pages),
+    )
 }
 
-/// Fail with a sentence where the directory's file system cannot do
-/// what the in-place store's start needs (see the module documentation),
-/// so that the start's refusal is not taken for a defect of the store.
-fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) {
+/// Whether the directory's file system can do what the in-place store's
+/// start needs (see the module documentation), and if not, why not.
+fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::FileExt;
     let probe = path.join("cache-probe");
     let file = std::fs::OpenOptions::new()
@@ -71,25 +80,20 @@ fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) {
     file.sync_data().unwrap();
     let mut page = [0u8; 4096];
     file.read_exact_at(&mut page, 0).unwrap();
-    let seen = skyzfs_ublk_sys::cached_pages(&file).unwrap_or(0);
-    assert!(
-        seen > 0,
-        "{}: the kernel's count does not see a page just read (an overlay file system, or a \
-         kernel before 6.5): the in-place store refuses to start here by design; set TMPDIR \
-         to a directory on ext4 or xfs",
-        path.display()
-    );
+    let seen = skyzfs_ublk_sys::cached_pages(&file);
     rustix::fs::fadvise(&file, 0, None, rustix::fs::Advice::DontNeed).unwrap();
-    let left = skyzfs_ublk_sys::cached_pages(&file).unwrap_or(u64::MAX);
-    assert_eq!(
-        left,
-        0,
-        "{}: pages stay cached after a drop (tmpfs keeps a file in its pages): the in-place \
-         store refuses to start here by design; set TMPDIR to a directory on ext4 or xfs",
-        path.display()
-    );
+    let left = skyzfs_ublk_sys::cached_pages(&file);
     drop(file);
     std::fs::remove_file(&probe).unwrap();
+    match (seen, left) {
+        (Err(e), _) => Err(format!(
+            "the kernel cannot count a file's cached pages ({e})"
+        )),
+        (Ok(0), _) => Err("the count does not see a page just read (an overlay?)".into()),
+        (Ok(_), Ok(0)) => Ok(()),
+        (Ok(_), Ok(n)) => Err(format!("{n} pages stay cached after a drop (tmpfs?)")),
+        (Ok(_), Err(e)) => Err(format!("counting after the drop failed ({e})")),
+    }
 }
 
 /// The log store's open, then the in-place store.
@@ -144,7 +148,9 @@ fn flush(store: &mut OnFiles) {
 #[test]
 fn the_in_place_store_round_trips_on_real_files() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = on_disk(tmp.path());
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
     drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
     let mut store = start(&dir).unwrap();
     write(&mut store, 0, Buf::filled(4, 0x11));
@@ -235,7 +241,9 @@ fn inplace_kill_test_child() {
         return;
     };
     let from: u64 = std::env::var(CHILD_FROM).unwrap().parse().unwrap();
-    let dir = on_disk(std::path::Path::new(&path));
+    let Some(dir) = on_disk(std::path::Path::new(&path)) else {
+        return;
+    };
     let mut store = start(&dir).unwrap();
     // The reports go to standard error, which the test harness does not
     // write to (as in `store_real.rs`).
@@ -275,7 +283,9 @@ fn inplace_kill_test_child() {
 #[test]
 fn acknowledged_writes_survive_kill_9_in_place() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = on_disk(tmp.path());
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
     drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
     let exe = std::env::current_exe().unwrap();
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];
