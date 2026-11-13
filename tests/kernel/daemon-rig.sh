@@ -138,6 +138,8 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 . "$HERE/klog.sh"
 # shellcheck source=tests/kernel/blktrace.sh
 . "$HERE/blktrace.sh"
+# shellcheck source=tests/kernel/request-log.sh
+. "$HERE/request-log.sh"
 # Device paths: dev_strays, and why every dd to a device has conv=nocreat.
 # shellcheck source=tests/kernel/devnode.sh
 . "$HERE/devnode.sh"
@@ -366,6 +368,7 @@ cleanup() {
     set +e
     touch "$WORK/stop-all"
     blktrace_off
+    [ -z "${C_MONITOR:-}" ] || kill "$C_MONITOR" 2>/dev/null
     c_watch_back
     local p
     for p in $(lim 30 zpool list -H -o name 2>/dev/null | grep '^skzd-'); do
@@ -2364,10 +2367,6 @@ hold_test() {
 # a write's close does not make udev read the device under the suite.
 C_NOWATCH=/etc/udev/rules.d/61-skyzfs-rig-ublkb-nowatch.rules
 C_EVIDENCE=""
-# Whether a server's build keeps the request log: the hooked daemon
-# prints its hooks after the usage and exits 2, so the text is read whole
-# (under pipefail a pipe into grep would fail on that status).
-has_request_log() { local h; h=$("$1" serve --help 2>&1); [[ $h == *--request-log* ]]; }
 c_watch_off() {
     printf '%s\n' '# The daemon rig, check c: no udev watch on ublk devices (M1.T28).' \
         'ACTION!="remove", SUBSYSTEM=="block", KERNEL=="ublkb*", OPTIONS+="nowatch"' > "$C_NOWATCH" &&
@@ -2393,9 +2392,10 @@ c_evidence_start() {
 # the pass failed or the tool did not end; add the pass's part of the
 # line obs_c_evidence to C_EVIDENCE.
 c_evidence_end() {
-    local tag=$1 work=$2 rc=$3 f n_logs n_lines n_change kept
+    local tag=$1 work=$2 rc=$3 f n_logs n_lines n_change n_udev kept
     blktrace_off
     kill "$C_MONITOR" 2>/dev/null; wait "$C_MONITOR" 2>/dev/null
+    C_MONITOR=""
     n_change=$(grep -c 'change .*/ublkb[0-9]* (block)' "$OUT/$tag-udev.txt" 2>/dev/null)
     n_logs=0
     for f in "$work"/c*.requests.tsv "$work"/c*.extents; do
@@ -2403,15 +2403,34 @@ c_evidence_end() {
         cp "$f" "$OUT/$tag-$(basename "$f")"
         case $f in *.requests.tsv) n_logs=$((n_logs + 1)) ;; esac
     done
-    n_lines=$(wc -l < "$OUT/$tag-ftrace.txt" 2>/dev/null || echo 0)
+    n_lines=$({ wc -l < "$OUT/$tag-ftrace.txt"; } 2>/dev/null || echo 0)
+    # Requests that udev's own processes issued to any device during the
+    # pass: its probe of each new device (its "add" event), and with a
+    # watch its read after a writable close. That read, requeued at a
+    # server's death, held back the return of a write in #58.
+    n_udev=$(grep 'block_rq_issue:' "$OUT/$tag-ftrace.txt" 2>/dev/null | grep -c 'udev[^]]*\]$')
+    # What the pass must leave, whether it is kept or not: a trace, and a
+    # request log from a server that keeps one.
+    [ "${n_lines:-0}" -gt 0 ] || C_MISSING+="pass $tag left no block trace; "
+    # And no change event of a ublk device: the watch is off.
+    case ${n_change:-x} in
+        0) ;;
+        x) C_MISSING+="pass $tag has no count of udev's events (udevadm monitor); " ;;
+        *) C_MISSING+="pass $tag saw $n_change change events of a ublk device with udev's watch meant to be off; " ;;
+    esac
+    [ -z "$C_RL" ] || [ "$n_logs" -gt 0 ] || C_MISSING+="pass $tag left no request log, though the server keeps one; "
     if [ "$rc" != 0 ] || awk -F'\t' '$1 == "case" && $3 == "FAIL" { f = 1 } END { exit !f }' "$OUT/$tag-cases.tsv" 2>/dev/null; then
         gzip -f "$OUT/$tag-ftrace.txt" "$OUT/$tag"-c*.requests.tsv "$OUT/$tag"-c*.extents 2>/dev/null
-        kept="kept in the artifact ($tag-ftrace.txt.gz, $tag-cN.requests.tsv.gz, $tag-cN.extents.gz), since a case failed or the tool did not end"
+        kept=""
+        [ ! -s "$OUT/$tag-ftrace.txt.gz" ] || kept+="$tag-ftrace.txt.gz "
+        ! compgen -G "$OUT/$tag-c*.requests.tsv.gz" > /dev/null || kept+="$tag-cN.requests.tsv.gz "
+        ! compgen -G "$OUT/$tag-c*.extents.gz" > /dev/null || kept+="$tag-cN.extents.gz "
+        kept="kept in the artifact (${kept% }), since a case failed or the tool did not end"
     else
         rm -f "$OUT/$tag-ftrace.txt" "$OUT/$tag"-c*.requests.tsv "$OUT/$tag"-c*.extents
         kept="not kept: no case failed"
     fi
-    C_EVIDENCE+="pass $tag: change events of a ublk device $n_change; request logs $n_logs; block trace $n_lines lines; $kept. "
+    C_EVIDENCE+="pass $tag: change events of a ublk device $n_change; requests issued by udev $n_udev; request logs $n_logs; block trace $n_lines lines; $kept. "
 }
 check_c() {
     local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n n_live n_before n_at_death n_with n_zero n_dead
@@ -2425,7 +2444,7 @@ check_c() {
     if [ ! -x "$tool" ]; then rec c_run "ERROR: no skyzfs-blkcheck at '$tool' (RIG_BLKCHECK)"; return; fi
     mkdir -p "$work"
     # The evidence beside the tool's trace (see c_evidence_end).
-    C_EVIDENCE=""; C_RL=""
+    C_EVIDENCE=""; C_RL=""; C_MISSING=""
     if has_request_log "$SKYZFSD"; then C_RL=1; C_EVIDENCE+="the server keeps a request log; "
     else C_EVIDENCE+="the server keeps no request log (its build has no --request-log); "; fi
     if c_watch_off; then C_EVIDENCE+="udev's watch on ublk devices off ($C_NOWATCH); "
@@ -2499,11 +2518,13 @@ check_c() {
         pin c_kill_with_applied_unacknowledged ERROR "not run: the pass without the delay did not end"
         C_EVIDENCE+="no pass with the delay. "
     fi
-    c_watch_back
-    # The trace is asked for on every run: a kernel without it is the
-    # rig's error, not a verdict.
+    # The trace, and the request log of a server that keeps one, are
+    # asked for on every run, and judged by what each pass left: a pass
+    # without them is the rig's error, not a verdict.
     if [ -n "$C_TRACE_WHY" ]; then
         obs c_evidence "not run: no block trace: $C_TRACE_WHY. ${C_EVIDENCE}"
+    elif [ -n "$C_MISSING" ]; then
+        obs c_evidence "not run: ${C_MISSING}${C_EVIDENCE}"
     else
         obs c_evidence "$C_EVIDENCE"
     fi
@@ -2983,6 +3004,8 @@ case $CHECKS in *" b "*) check_b ;; esac
 case $CHECKS in *" c "*)
     check_c
     check_c_low
+    # udev's watch stays off through the third pass (the log store's).
+    c_watch_back
     unflushed_obs c "$(for f in c cd cl; do awk -v p="$f" '$1 == "unflushed" { sub(/^unflushed /, ""); printf "%s/%s; ", p, $0 }' "$OUT/$f-helper.log" 2>/dev/null; done | sed 's|/\([0-9]*\): |\1 |g')" ;;
 esac
 case $CHECKS in *" e "*) check_e ;; esac

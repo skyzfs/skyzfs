@@ -115,6 +115,7 @@ jobs:
       - run: bash tests/kernel/test_looks.sh
       - run: bash tests/kernel/test_ublksrvd_look.sh
       - run: bash tests/kernel/test_c_evidence.sh
+      - run: bash tests/kernel/test_blktrace.sh
 
   # Which servers this run drives; see the head of this file.
   plan:

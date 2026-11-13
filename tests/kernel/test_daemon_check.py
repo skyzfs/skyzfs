@@ -512,8 +512,9 @@ class CheckG(unittest.TestCase):
         with open(rig, encoding='utf-8') as f:
             text = f.read()
         body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
-        self.assertEqual(body.count('obs c_evidence '), 2, 'one line with a trace and one without')
-        self.assertIn('c_watch_back', body)
+        self.assertEqual(body.count('obs c_evidence '), 3, 'no trace possible, a pass that left too little, and all')
+        main = text[text.index('\n    check_c\n    check_c_low\n'):]
+        self.assertTrue(main.index('c_watch_back') < main.index(';;'), 'the watch is put back after the third pass')
         for tag in ('c', 'cd'):
             self.assertIn(f'c_evidence_start {tag}\n', text)
             self.assertIn(f'c_evidence_end {tag} "$work" "$rc"', text)
