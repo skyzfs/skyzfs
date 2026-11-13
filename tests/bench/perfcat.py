@@ -46,12 +46,33 @@ WAKE = re.compile(r'^(futex_|__futex|do_futex|eventfd|try_to_wake_up|ttwu_|wake_
 # ZFS's handling of a finished request, which the kernel runs in the
 # thread that ends the request: the daemon's, when it commits a result.
 ZFS_DONE = re.compile(r'^(zio_|taskq_|spa_taskq|vdev_disk_io_done|vdev_disk_bio_done)')
+# Page reclaim: the kernel taking pages back, in the thread that asked
+# for one (direct reclaim, or a memory group's reclaim when it charges a
+# page over its limit) or anywhere else it runs.
+RECLAIM = re.compile(r'^(try_to_free_mem_cgroup_pages|try_to_free_pages|do_try_to_free_pages|shrink_|reclaim_|'
+                     r'__reclaim|mem_cgroup_handle_over_high|__perform_reclaim|__alloc_pages_direct_reclaim|'
+                     r'lru_gen_|evict_folios|isolate_lru_folios|isolate_folios|try_to_unmap|__remove_mapping)')
+# A memory group's own book-keeping: charging and uncharging pages,
+# its counters and its LRU lists.
+MEMCG = re.compile(r'^(mem_cgroup_|__mem_cgroup_|memcg_|__memcg_|obj_cgroup_|__obj_cgroup|try_charge|charge_memcg|'
+                   r'__count_memcg|__mod_memcg|mod_memcg|uncharge_|__folio_uncharge|folio_memcg)')
+# Write-back that a write starts or waits for: the dirty throttle, or
+# write-back under a write call (an fdatasync's write-back is the sync,
+# which stays under the page cache).
+DIRTY_THROTTLE = re.compile(r'^(balance_dirty_pages|__balance_dirty_pages)')
+WRITE_CALL = re.compile(r'^(__x64_sys_pwrite|__x64_sys_write|__arm64_sys_pwrite|__arm64_sys_write|ksys_pwrite|ksys_write|'
+                        r'vfs_write|io_write)')
+WRITEBACK = re.compile(r'^(do_writepages|__writeback|writeback_|wb_|__filemap_fdatawrite|filemap_fdatawrite)')
 IO_URING = re.compile(r'^(io_uring|__io_|io_[a-z_]+$|__x64_sys_io_uring)')
 # (name, rule over the chain's symbols, leaf first). The first that holds wins.
 CATEGORIES = (
     ('copy, ublk', lambda c: any(UBLK_COPY.match(s) for s in c) or (COPY.match(c[0]) and any(UBLK.match(s) for s in c))),
     ('copy, page cache', lambda c: COPY.match(c[0]) and any(PAGE_CACHE.match(s) for s in c)),
     ('copy, other', lambda c: COPY.match(c[0])),
+    ('page reclaim', lambda c: any(RECLAIM.match(s) for s in c)),
+    ('memory group', lambda c: any(MEMCG.match(s) for s in c)),
+    ('write-back from a write', lambda c: any(DIRTY_THROTTLE.match(s) for s in c)
+     or (any(WRITEBACK.match(s) for s in c) and any(WRITE_CALL.match(s) for s in c))),
     ('ZFS completion', lambda c: any(ZFS_DONE.match(s) for s in c)),
     ('wake and switch', lambda c: any(WAKE.match(s) for s in c)),
     ('page cache', lambda c: any(PAGE_CACHE.match(s) for s in c)),
