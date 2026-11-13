@@ -71,7 +71,7 @@ on:
         options: [pull-request, full]
         default: full
       serve_args:
-        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --io-threads 1); without --store the rig passes --store in-place, as on a pull request"
+        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --io-threads 1); without --store the rig passes --store in-place, as on a pull request; the log store's options (--log-high and the like) need --store log beside them, on a build from before M1.3t"
         default: ""
   pull_request:
     paths:

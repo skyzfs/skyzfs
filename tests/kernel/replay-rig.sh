@@ -134,7 +134,19 @@ for i in "${!SERVE_ARGS[@]}"; do
         --store) STORE_NAMED=1; [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
     esac
 done
-[ -n "$STORE_NAMED" ] || { SERVE_ARGS=(--store in-place "${SERVE_ARGS[@]}"); IN_PLACE=1; }
+if [ -z "$STORE_NAMED" ]; then
+    # The options of the log store, which the daemon refuses with the
+    # in-place store: asked for with no store named, they would end the
+    # first start with a usage error that reads as a verdict.
+    for o in "${SERVE_ARGS[@]}"; do
+        case ${o%%=*} in
+            --log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
+                echo "RIG_SERVE_ARGS: ${o%%=*} is an option of the log store; name --store log beside it (a build from before M1.3t)" >&2
+                exit 64 ;;
+        esac
+    done
+    SERVE_ARGS=(--store in-place "${SERVE_ARGS[@]}"); IN_PLACE=1
+fi
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec
