@@ -204,8 +204,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       failure is final as with the log. The start applies and empties
       the log first. A volume served in place must not be given back to
       --store log: a write acknowledged in place and not flushed before
-      the daemon was lost can be lost at a power cut after it, whatever
-      the log store flushed. The log's options (--log-high, --log-low,
+      the daemon ended, however it ended, can be lost at a power cut
+      after it, whatever the log store flushed. The log's options (--log-high, --log-low,
       --writeback-kib, --home-writeback-kib, --readers) are refused with
       it.
 

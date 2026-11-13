@@ -9,7 +9,8 @@
 //! those of the log store. **A volume served in place must not be given
 //! back to the log store**: the log store's open does not sync the home
 //! image, and its flushes sync the log alone, so a write this store
-//! acknowledged and no flush covered before its process was lost is
+//! acknowledged and no flush covered before its process ended (lost or
+//! stopped: nothing syncs the image at a stop) is
 //! covered by no flush of the log store after it, and a power cut can
 //! take it (rule R7). That is owed (the review of M1.3r, finding A;
 //! the ignored test
