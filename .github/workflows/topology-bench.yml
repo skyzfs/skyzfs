@@ -359,7 +359,8 @@ jobs:
         # summary sets this line beside the rows of this machine.
         run: |
           mkdir -p "$TB_OUT"
-          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 | tee "$TB_OUT/disk-sync.txt"
+          # The image is an argument: sudo-rs does not carry the environment.
+          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 "${ImageOS:-unknown}/${ImageVersion:-unknown}" | tee "$TB_OUT/disk-sync.txt"
           { echo '```'; cat "$TB_OUT/disk-sync.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run benchmark

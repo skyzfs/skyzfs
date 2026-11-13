@@ -400,13 +400,13 @@ if disk:
     print('The work disk, measured at the start of the job (tests/bench/disk-sync.py): 64 MiB written through the page cache '
           'and the fdatasync after it, then 64 MiB with O_DIRECT and its fdatasync. The daemon\'s files are on this disk, '
           'and its syncs wait for what the page cache holds of them; an observation, not judged:\n')
-    print('| machine | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes; write_cache | file system; mount options; super block options | the rows of this machine |')
-    print('|---|---|---|---|---|---|---|---|---|---|')
+    print('| machine | runner image; arch; kernel | buffered: write ms | its fdatasync ms | MiB/s of the fdatasync | direct: write ms | its fdatasync ms | MiB/s of both | device; stable_writes; write_cache | file system; mount options; super block options | the rows of this machine |')
+    print('|---|---|---|---|---|---|---|---|---|---|---|')
     for d in disk:
         m = d.get('machine', '')
         m = m[:36] + ' ' + m[37:] if len(m) > 37 else m
         here = sorted({r.get('label', r['topology']) for r in runs if r.get('machine') == m})
-        print(f"| {m} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
+        print(f"| {m} | {d.get('image', 'not said')}; {d.get('arch', 'not said')}; {d.get('kernel', 'not said')} | {d.get('buffered_write_ms', '-')} | {d.get('buffered_sync_ms', '-')} | {d.get('buffered_sync_mib_s', '-')} | "
               f"{d.get('direct_write_ms', '-')} | {d.get('direct_sync_ms', '-')} | {d.get('direct_all_mib_s', '-')} | {d.get('dev', '-')}; {d.get('stable_writes', 'not said')}; {d.get('write_cache', 'not said')} | {d.get('fs', 'not said')}; {d.get('mount', 'not said')}; {d.get('super', 'not said')} | {', '.join(here) or 'none'} |")
     print()
 print('Block-layer bytes over the measured window. `origin read` includes the WAL origin where there is one; '
