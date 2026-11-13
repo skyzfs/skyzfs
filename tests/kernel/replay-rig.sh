@@ -72,7 +72,9 @@
 # split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME,
 # RIG_EVERY_PREFIX=1 (every record prefix, no time limit). A
 # recording in which the daemon took no checkpoint step is the rig's
-# error (exit 2): it would say nothing about a cut inside a step.
+# error (exit 2): it would say nothing about a cut inside a step. With
+# RIG_SERVE_ARGS='--store in-place' there is no log and so no step, and
+# none is asked for.
 set -euo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -116,6 +118,15 @@ LOWER_MB=$((VOLUME_MB * 3))
 FILL_MB=${RIG_FILL_MB:-160}
 for v in "$VOLUME_MB" "$FILL_MB"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
+# `--store in-place` (M1.3r): the daemon keeps no log and takes no
+# checkpoint step, so a recording without one is what it should be.
+IN_PLACE=""
+for i in "${!SERVE_ARGS[@]}"; do
+    case ${SERVE_ARGS[$i]} in
+        --store=in-place) IN_PLACE=1 ;;
+        --store) [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
+    esac
+done
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec
@@ -411,7 +422,13 @@ log "log: $(du -m "$WORK/log.img" | cut -f1) MiB on disk"
 if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exit 0; fi
 if [ -n "$SKYZFSD" ]; then
     [[ ${STEPS:-} =~ ^[0-9]+$ ]] || rig_error "the daemon's status after recording gave no checkpoint_steps: $(head -c 300 "$OUT/status-after-recording.txt")"
-    [ "$STEPS" -gt 0 ] || rig_error "the daemon took no checkpoint step while recording (RIG_FILL_MB=$FILL_MB, serve options: ${SERVE_ARGS[*]:-none}): a run without one says nothing about a cut inside a step"
+    if [ -n "$IN_PLACE" ]; then
+        # No log, so no step: there is no cut inside one to look for.
+        [ "$STEPS" = 0 ] || rig_error "the in-place store reports $STEPS checkpoint steps, and it has no log"
+        STEPS="none: the in-place store has no log"
+    else
+        [ "$STEPS" -gt 0 ] || rig_error "the daemon took no checkpoint step while recording (RIG_FILL_MB=$FILL_MB, serve options: ${SERVE_ARGS[*]:-none}): a run without one says nothing about a cut inside a step"
+    fi
     PHASE=check
     args=(--log "$WORK/log.img" --base "$WORK/base.img" --manifest "$MANIFEST" --pool "$POOL" --mountpoint "$MOUNTPOINT"
           --work "$WORK/check" --out "$OUT" --skyzfsd "$SKYZFSD" --ublk "$(command -v ublk)" --dd "$DD" --volume vol
