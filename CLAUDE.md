@@ -261,9 +261,16 @@ there, and the user decides when it merges.
   wrong: the trace holds the tool's calls, not the requests the server
   was handed, and a call can return long after the kernel completed it
   (in #58 a udev read held a page of a direct write's range across a
-  kill, and the tool took the write for reissued). Read the daemon's
-  request log (`serve --request-log`, test-hooks build) and the block
-  trace before calling such a failure a verdict.
+  kill, and the tool took the write for reissued). Since M1.T28
+  check c runs with udev's watch on ublk devices off, and the artifact
+  of a pass where a case failed keeps what the server was handed and
+  answered (`c-cN.requests.tsv.gz`, `cd-` for the pass with the delay,
+  from `serve --request-log` of a test-hooks build that has it) and the
+  kernel's block trace on the same clock (`c-ftrace.txt.gz`): read the
+  volume from both sides before calling such a failure a verdict. The
+  line `obs_c_evidence` says what was kept; a pass with no block trace
+  is an error of the rig. `skyzfs-c-repeat.yml` (dispatch) repeats
+  check c's passes on one runner.
 - **The control rig.** `skyzfs-control-rig.yml` runs on a pull request
   that touches `crates/skyzfs-ublk-sys/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-blk/`, `crates/skyzfs-local/`, `Cargo.lock`,
