@@ -156,27 +156,40 @@ mod tests {
     /// too. It maps four pages of the system aligned to four, unmaps
     /// the first, and asks about the second: with pages of four of the
     /// system's, the range reaches the unmapped one; with the system's
-    /// own, it does not. Another thread of the test binary can map a
-    /// page into the hole meanwhile; the answers count only when the
-    /// hole is still there after them, and the test tries again
-    /// otherwise.
+    /// own, it does not.
+    ///
+    /// Another thread of the test binary can map a page into the hole
+    /// and unmap it again while the test asks, so no one attempt can
+    /// prove the rounding wrong. The defect, a range rounded to the
+    /// system's page whatever page is given, makes the larger page miss
+    /// the hole in every attempt, while a thread in the hole does so
+    /// only now and then. So an attempt counts when the hole was empty
+    /// before and after the answers, and the test passes at the first
+    /// counted attempt in which the larger page reached the hole; it
+    /// fails if none of 100 attempts did. (In run 43463408420 of ci the
+    /// test as it was before failed so: the hole read as empty after
+    /// the answers, and the larger page had missed it, most likely
+    /// because a page was mapped into the hole and unmapped in between.)
     #[test]
     fn mapped_in_rounds_to_the_page_it_is_given() {
+        let mut counted = 0;
         for _ in 0..100 {
-            if let Some((own, larger, hole)) = with_a_hole() {
+            if let Some((own, larger)) = with_a_hole() {
                 assert!(own, "the page after the hole reads as unmapped");
-                assert!(!larger, "a page four times larger did not reach the hole");
-                assert!(!hole);
-                return;
+                counted += 1;
+                if !larger {
+                    return;
+                }
             }
         }
-        panic!("another thread filled the hole every time");
+        assert!(counted > 0, "another thread filled the hole every time");
+        panic!("a page four times larger did not reach the hole in {counted} attempts");
     }
 
-    /// Map, make the hole, ask `mapped_in` about the page after it with
-    /// the system's page and with one four times larger, and whether the
-    /// hole reads as mapped; `None` where the hole was filled.
-    fn with_a_hole() -> Option<(bool, bool, bool)> {
+    /// Map, make the hole, and ask `mapped_in` about the page after it
+    /// with the system's page and with one four times larger; `None`
+    /// where the hole read as mapped before or after the answers.
+    fn with_a_hole() -> Option<(bool, bool)> {
         let host = page_size();
         let large = 4 * host;
         // Room to find a start aligned to `large`.
@@ -201,12 +214,12 @@ mod tests {
         let unmapped = unsafe { libc::munmap(aligned as *mut libc::c_void, host) };
         assert_eq!(unmapped, 0);
         let second = aligned + host;
+        let filled_before = mapped_in(aligned, host, host);
         let answers = (
             mapped_in(second, host, host) && mapped(second, host),
             mapped_in(second, host, large),
-            mapped_in(aligned, host, host),
         );
-        let filled = answers.2;
+        let filled = filled_before || mapped_in(aligned, host, host);
         // SAFETY: what is left of the mapping made above, around the
         // page already unmapped; nothing refers to it. A page another
         // thread mapped into the hole is not touched.
