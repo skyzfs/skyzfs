@@ -408,6 +408,70 @@ class WaitsForTheDaemon(unittest.TestCase):
             self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
 
 
+def in_place():
+    """A run of the daemon with --store in-place, every line as the table has it."""
+    r = as_expected('daemon')
+    r.update(impl='daemon: x', store='in-place', c_declared=dc.C_DECLARED['daemon in-place'])
+    for name in dc.NOT_FOR_IN_PLACE:
+        if name not in F:
+            r[name] = 'NA: the in-place store has no log'
+    return r
+
+
+class InPlace(unittest.TestCase):
+    """The daemon with --store in-place: the pins that rest on the log are NA, every other as with the log store."""
+
+    def judge(self, r):
+        store, errors = dc.store_of(r, 'daemon')
+        rows, differs, more = dc.judge(r, ALL, 'daemon', store)
+        return rows, differs, errors + more
+
+    def test_every_name_not_taken_is_in_the_table(self):
+        for name in dc.NOT_FOR_IN_PLACE:
+            self.assertIn(name, dc.EXPECTED, name)
+
+    def test_a_run_with_na_where_the_table_says_so_passes(self):
+        rows, differs, errors = self.judge(in_place())
+        self.assertEqual((differs, errors), ([], []))
+        na = {name for name, want, *_ in rows if want == 'NA'}
+        self.assertEqual(na, {n for n in dc.NOT_FOR_IN_PLACE if dc.EXPECTED[n][0] in ALL})
+
+    def test_na_on_the_log_store_is_a_rig_error(self):
+        r = as_expected('daemon')
+        r.update(impl='daemon: x', store='log', pin_log_stays_below_high_mark='NA: x')
+        _, _, errors = self.judge(r)
+        self.assertTrue(any('pin_log_stays_below_high_mark' in e for e in errors), errors)
+
+    def test_na_for_a_pin_that_applies_to_in_place_is_a_rig_error(self):
+        r = in_place()
+        r['pin_kill_under_load'] = 'NA: x'
+        _, _, errors = self.judge(r)
+        self.assertTrue(any('pin_kill_under_load:' in e for e in errors), errors)
+
+    def test_a_pin_not_taken_that_was_taken_differs(self):
+        r = in_place()
+        r['pin_takeover_time_does_not_grow'] = 'PASS: x'
+        _, differs, errors = self.judge(r)
+        self.assertEqual(errors, [])
+        self.assertTrue(any('pin_takeover_time_does_not_grow' in d for d in differs), differs)
+
+    def test_the_daemon_names_its_store(self):
+        for store in (None, '', 'whatever'):
+            r = in_place()
+            r.pop('store')
+            if store is not None:
+                r['store'] = store
+            self.assertTrue(dc.store_of(r, 'daemon')[1], store)
+        # The stand-in has none to name.
+        self.assertEqual(dc.store_of({'impl': 'reference: x'}, 'reference'), (None, []))
+
+    def test_the_suite_is_held_to_the_in_place_counts(self):
+        r = in_place()
+        r['c_declared'] = 'PASS 2, WEAKER 12, NOT_EXERCISED 12'
+        _, differs, _ = self.judge(r)
+        self.assertTrue(any('C_DECLARED' in d for d in differs), differs)
+
+
 class Main(unittest.TestCase):
     def test_exit_statuses(self):
         import contextlib
