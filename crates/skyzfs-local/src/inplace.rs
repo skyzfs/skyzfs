@@ -71,11 +71,21 @@
 //! a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
 //! the page cache for that (point 1), where the log store checks its
-//! log against the stored position. Where
-//! a write rewrites more than its own block (a page or a file-system
-//! block above 4096 bytes), such a sector can be a neighbour's that a
-//! flush covered: the log store refuses such a file system, and this
-//! store does not look.
+//! log against the stored position.
+//!
+//! Where the page or the file system's block is larger than a block
+//! (16 KiB or 64 KiB pages on some arm64 kernels and on Apple silicon),
+//! a write rewrites the other blocks of its page with what the page
+//! cache holds of them: their durable content or a version written
+//! since, so point 3 still holds of them, and a block a flush covered
+//! and nothing wrote since is rewritten with the bytes it holds. Only
+//! the disk's garbage reaches further there: such a neighbour's sector
+//! is one a cut could take, and nothing about it is promised. The store
+//! is entered through the log store's open, which refuses a page or a
+//! file-system block larger than the volume's write unit (a volume
+//! created where pages are 4 KiB is refused where they are 16 KiB);
+//! the tests run at 16 KiB and 64 KiB pages on the simulated disk
+//! (`tests.rs`).
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability

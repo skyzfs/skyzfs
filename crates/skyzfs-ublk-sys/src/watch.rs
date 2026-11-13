@@ -107,16 +107,90 @@ unsafe impl GlobalAlloc for Watching {
 /// process: `mincore` answers `ENOMEM` for a range with a page that is
 /// not. False also for an empty range.
 pub fn mapped(start: usize, len: usize) -> bool {
-    const PAGE: usize = 4096;
-    if start == 0 || len == 0 {
+    mapped_in(start, len, page_size())
+}
+
+/// This system's page: 4096 on amd64, 16 KiB or 64 KiB on some arm64
+/// kernels. 4096 where the system does not say.
+fn page_size() -> usize {
+    // SAFETY: `sysconf` reads a value of the system and touches no
+    // memory of ours.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    usize::try_from(page)
+        .ok()
+        .filter(|p| p.is_power_of_two())
+        .unwrap_or(4096)
+}
+
+/// [`mapped`] with the page given: `mincore` takes a start aligned to
+/// the system's page and fails with `EINVAL` for any other, so the
+/// range is widened to whole pages of `page` bytes.
+fn mapped_in(start: usize, len: usize, page: usize) -> bool {
+    if start == 0 || len == 0 || page == 0 {
         return false;
     }
-    let from = start / PAGE * PAGE;
-    let bytes = (start + len).div_ceil(PAGE) * PAGE - from;
-    let mut pages = vec![0u8; bytes / PAGE];
+    let from = start / page * page;
+    let bytes = (start + len).div_ceil(page) * page - from;
+    let host = page_size();
+    let mut pages = vec![0u8; bytes.div_ceil(host)];
     // SAFETY: `mincore` reads nothing through `from`: it reports on
     // the mapping of the range and fails for one that is not mapped.
-    // It writes one byte per page into `pages`, which has that many.
+    // It writes one byte per page of the system into `pages`, which
+    // has that many: `bytes` is a multiple of `page`, and a page given
+    // smaller than the system's makes `mincore` fail on the start.
     let result = unsafe { libc::mincore(from as *mut libc::c_void, bytes, pages.as_mut_ptr()) };
     result == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `mapped_in` widens the range to whole pages of the size it is
+    /// given, not of 4096 bytes: on a kernel of 16 KiB pages a start
+    /// rounded to 4096 is not aligned, `mincore` fails with `EINVAL`,
+    /// and every buffer reads as unmapped. The test is written against
+    /// `mapped_in` and not `mapped` because on amd64 the system's page
+    /// is 4096, so `mapped` would pass with the size fixed at 4096
+    /// too. It maps four pages of the system aligned to four, unmaps
+    /// the first, and asks about the second: with pages of four of the
+    /// system's, the range reaches the unmapped one; with the system's
+    /// own, it does not.
+    #[test]
+    fn mapped_in_rounds_to_the_page_it_is_given() {
+        let host = page_size();
+        let large = 4 * host;
+        // Room to find a start aligned to `large`.
+        let room = 2 * large;
+        // SAFETY: a new anonymous private mapping, of no file and at no
+        // address of ours; the result is checked.
+        let base = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                room,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(base, libc::MAP_FAILED);
+        let base = base as usize;
+        let aligned = base.div_ceil(large) * large;
+        // SAFETY: the first page of `aligned` lies inside the mapping
+        // made above, and nothing refers to it.
+        let unmapped = unsafe { libc::munmap(aligned as *mut libc::c_void, host) };
+        assert_eq!(unmapped, 0);
+        let second = aligned + host;
+        assert!(mapped_in(second, host, host));
+        assert!(!mapped_in(second, host, large));
+        assert!(!mapped_in(aligned, host, host));
+        assert!(mapped(second, host));
+        // SAFETY: what is left of the mapping made above, around the
+        // page already unmapped; nothing refers to it.
+        unsafe {
+            libc::munmap(base as *mut libc::c_void, aligned - base);
+            libc::munmap(second as *mut libc::c_void, base + room - second);
+        }
+    }
 }
