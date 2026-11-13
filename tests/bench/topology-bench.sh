@@ -502,8 +502,9 @@ if drows:
     print('\nWhat a commit costs. `WAL fsync` is postgres\'s own timer (pg_stat_io for object wal where the '
           'server has it, else pg_stat_wal); latency is over every transaction of pgbench\'s log; the devices\' '
           'counts and times are /proc/diskstats over the window (`flush ms` is the time the device spent on '
-          'flushes, per flush; `ms per read / write` the time it spent on reads and on writes, per request, '
-          'a stall of the disk shows there whether or not a flush ran into it); ZIL commits from the zil kstat:\n')
+          'flushes, per flush; `ms per read / write` the mean time of a read and of a write from its issue to its completion, '
+          'waiting in the queue included (iostat\'s r_await and w_await); a stall of the disk raises these means whether or not a flush ran into it, '
+          'but one that catches a few requests of many moves them little); ZIL commits from the zil kstat:\n')
     print('| workload | topology | tps | latency mean / stddev ms | WAL fsyncs per commit | µs per WAL fsync | '
           'slog writes / flushes per txn | slog flush ms | work disk writes / flushes per txn | work disk flush ms | '
           'work disk ms per read / write | work disk KiB written per txn | ZIL commits per txn |')
