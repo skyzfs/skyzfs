@@ -510,18 +510,20 @@ pub struct FailedStart {
 /// The reason is true to the file that failed, as far as the start can
 /// tell (the lead's ruling for M1.3x). Before the in-place store takes
 /// over, the log store settles, syncs its log and checkpoints it into
-/// the home image (`Store::into_in_place`): where the log held
-/// operations to apply, a failure there is the log store's (`Log`);
-/// where it held none, nothing of the log store's own was at stake, and
-/// the failure is the image's or the device's under it (`Image`). With
-/// an empty log a failure of the log file's own sync is so reported as
-/// the image's too: the start cannot tell the two apart, and the
-/// hand-over goes with the log store in M1.3t.
+/// the home image (`Store::into_in_place`): where the log held a write
+/// or write-zeroes to apply into the image, a failure there is the log
+/// store's (`Log`); where it held none, nothing of the log store's own
+/// was at stake, and the failure is the image's or the device's under
+/// it (`Image`). A discard counts as nothing to apply: it changes
+/// nothing in the image, and the log store's index does not hold it.
+/// With nothing to apply, a failure of the log file's own sync is so
+/// reported as the image's too: the start cannot tell the two apart,
+/// and the hand-over goes with the log store in M1.3t.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartFailed {
-    /// The log store, in the hand-over, with operations in its log to
-    /// apply into the home image: the log store's own failure, which
-    /// its failure path has marked already.
+    /// The log store, in the hand-over, with a write or write-zeroes in
+    /// its log to apply into the home image: the log store's own
+    /// failure, which its failure path has marked already.
     Log,
     /// The home image: the in-place store's own sync of it, or the
     /// hand-over when the log held nothing to apply.

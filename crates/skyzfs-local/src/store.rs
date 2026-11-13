@@ -562,7 +562,9 @@ struct Index {
 
 impl Index {
     /// Whether no block's newest version is in the log: a checkpoint
-    /// has nothing to apply.
+    /// has nothing to apply. Discards are not in the index (they change
+    /// nothing in the home image), so a log of discards alone is empty
+    /// here.
     fn is_empty(&self) -> bool {
         self.extents.is_empty()
     }
@@ -3493,8 +3495,8 @@ impl<D: Dir> Store<D> {
             return Err(failed(&self.core, StartFailed::Log));
         }
         // What a failure of the hand-over is reported as: the log store's
-        // own where its log holds operations to apply into the home
-        // image, and otherwise the image's ([`StartFailed`]).
+        // own where its log holds a write or write-zeroes to apply into
+        // the home image, and otherwise the image's ([`StartFailed`]).
         let what = if self.core.shared.read().index.is_empty() {
             StartFailed::Image
         } else {
