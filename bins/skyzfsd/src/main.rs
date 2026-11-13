@@ -33,7 +33,7 @@ fn run(command: &Command) -> Output {
     match command {
         Command::Help => Output {
             exit: Exit::Done,
-            out: format!("{}\n", cli::HELP),
+            out: format!("{}\n", cli::help()),
             err: String::new(),
         },
         Command::Status(volume) => match Now::read() {
@@ -69,7 +69,7 @@ fn main() -> ExitCode {
     let command = match cli::parse(std::env::args().skip(1)) {
         Ok(command) => command,
         Err(error) => {
-            skyzfsd::to_stderr(&format!("skyzfsd: {error}\n{}\n", cli::USAGE));
+            skyzfsd::to_stderr(&format!("skyzfsd: {error}\n{}\n", cli::usage()));
             return Exit::Usage.code();
         }
     };

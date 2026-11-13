@@ -625,3 +625,25 @@ fn help_names_the_oldest_kernel_and_the_flags() {
     assert!(HELP.matches(ASYNC_DELETE_OPTION).count() >= 3, "{HELP}");
     assert!(USAGE.matches(ASYNC_DELETE_OPTION).count() == 2, "{USAGE}");
 }
+
+/// Every test hook is in the list that a build with the hooks prints
+/// after its usage and its help, and that list is printed exactly in
+/// such a build: the kernel rig reads it (`serve --help`) to see which
+/// hooks a daemon takes.
+#[test]
+fn a_build_with_the_hooks_lists_them() {
+    for opt in CREATE.iter().chain(SERVE).filter(|opt| opt.hook) {
+        assert!(
+            HOOKS_USAGE.contains(&format!("[{} ", opt.name))
+                || HOOKS_USAGE.contains(&format!("[{}]", opt.name))
+                || HOOKS_USAGE.contains(&format!("| {} ", opt.name)),
+            "{} is not listed",
+            opt.name
+        );
+    }
+    let hooked = cfg!(feature = "test-hooks");
+    assert_eq!(usage().contains("--request-log"), hooked);
+    assert_eq!(help().contains("--request-log"), hooked);
+    assert!(usage().starts_with(USAGE) && help().starts_with(HELP));
+    assert!(!USAGE.contains("--request-log") && !HELP.contains("--request-log"));
+}

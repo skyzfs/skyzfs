@@ -123,17 +123,48 @@ pub const DEFAULT_WRITEBACK_KIB: u64 = skyzfs_local::writeback::DEFAULT_UNIT >> 
 /// The largest `--writeback-kib`: 1 GiB.
 const MAX_WRITEBACK_KIB: u64 = 1 << 20;
 
-/// What is printed with a usage error.
+/// What is printed with a usage error ([`usage`]).
 pub const USAGE: &str = "usage:
-  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                  [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
-                 [--store log|in-place]
+                 [--store log|in-place] [--io-threads N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
   skyzfsd help";
+
+/// The test hooks, which a build with the feature `test-hooks` takes and
+/// lists after [`USAGE`] and [`HELP`], and a default build refuses (see
+/// the module documentation). The kernel rig reads this list to see
+/// what a build takes (`serve --help`, a usage error, prints it).
+pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
+  skyzfsd create ... [--base-pattern SEED]
+  skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
+                 [--hold-one-request SECONDS:flush] [--boot-id-file PATH] [--recover-short N]
+                 [--commit-delay-ms N] [--step-pause-ms N | --step-pause-until PATH]
+                 [--step-pause-at POINT] [--refuse-holes] [--request-log PATH]";
+
+/// What a usage error prints: [`USAGE`], and in a build with the test
+/// hooks [`HOOKS_USAGE`] after it.
+pub fn usage() -> String {
+    with_hooks(USAGE)
+}
+
+/// What `help` prints: [`HELP`], and in a build with the test hooks
+/// [`HOOKS_USAGE`] after it.
+pub fn help() -> String {
+    with_hooks(HELP)
+}
+
+fn with_hooks(text: &str) -> String {
+    if cfg!(feature = "test-hooks") {
+        format!("{text}\n\n{HOOKS_USAGE}")
+    } else {
+        text.to_string()
+    }
+}
 
 /// What `help` prints: the usage, and what an operator has to know
 /// before using a command.
