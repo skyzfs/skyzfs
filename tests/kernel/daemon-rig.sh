@@ -142,6 +142,9 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # The looks at a device over a wait: look_word, looks_judge.
 # shellcheck source=tests/kernel/looks.sh
 . "$HERE/looks.sh"
+# What holds ZFS when a zpool command has run out: zfs_stuck_say.
+# shellcheck source=tests/kernel/zfs-stuck.sh
+. "$HERE/zfs-stuck.sh"
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -308,7 +311,10 @@ pool_state() { # ONLINE, SUSPENDED, ...: from the kernel, which answers when zpo
     cat "/proc/spl/kstat/zfs/$1/state" 2>/dev/null || echo unknown
 }
 pool_errors() { # "vdev errors N (read r, write w, checksum c), <scan line>, <errors line>"
-    lim 60 zpool status -p "$1" > "$OUT/status.tmp" 2>&1 || { echo "zpool status failed or timed out"; return; }
+    local rc=0
+    lim 60 zpool status -p "$1" > "$OUT/status.tmp" 2>&1 || rc=$?
+    if [ "$rc" = 124 ]; then echo "zpool status did not return in 60 s: $(zfs_stuck_say)"; return; fi
+    [ "$rc" = 0 ] || { echo "zpool status failed with $rc"; return; }
     awk '$2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|REMOVED)$/ && NF >= 5 { r += $3; w += $4; c += $5 }
          /scan:/ { sub(/^ *scan: */, ""); scan = $0 }
          /^errors:/ { sub(/^errors: */, ""); err = $0 }
@@ -1959,7 +1965,12 @@ fail_setup() {
     FS_ERR=""
     vol_up "$impl" "$dir" "$@" || { FS_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
-    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1 || { FS_ERR="zpool create failed"; return 1; }
+    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1; i=$?
+    if [ "$i" = 124 ]; then
+        FS_ERR="zpool create ran out of its 180 s: $(zfs_stuck_say)"; return 1
+    elif [ "$i" != 0 ]; then
+        FS_ERR="zpool create failed with $i: $(tail -n 1 "$OUT/$name-create.log")"; return 1
+    fi
     for i in 0 1 2 3; do
         lim 120 "$DD" if=/dev/urandom of="$mnt/base.$i" bs=1M count=32 conv=fsync status=none || { FS_ERR="writing the first files failed"; return 1; }
     done
@@ -1993,9 +2004,13 @@ fail_wait() {
     sleep 3
     rerr=$(grep -c . "$OUT/$name-reader.log" || true)
     werr=$(grep -c failed "$OUT/$name-writer.log" || true)
-    lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1
+    lim 30 zpool status -v "$pool" > "$OUT/$name-status-suspended.log" 2>&1; i=$?
+    if [ "$i" = 124 ]; then
+        rec "${name}_zpool_status" "did not return in 30 s: $(zfs_stuck_say)"
+    else
+        rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
+    fi
     klog_since "$mark" > "$OUT/$name-dmesg.log"; i=$?
-    rec "${name}_zpool_status" "$(grep -E 'state:|status:|errors:|ublkb|SUSPENDED|UNAVAIL|FAULTED|REMOVED' "$OUT/$name-status-suspended.log" | tr -s ' ' | tr '\n' ';')"
     if [ "$i" != 0 ]; then rec "${name}_kernel_log" "lost: the rig's marker was not found in the kernel log, so nothing is counted"
     else rec "${name}_kernel_log" "$(grep -ciE 'I/O error|critical' "$OUT/$name-dmesg.log") lines with an I/O error; ZFS said: $(grep -iE 'zio|pool|WARNING' "$OUT/$name-dmesg.log" | sed 's/^\[[^]]*\] //' | sort | uniq -c | sort -rn | head -n 4 | tr -s ' ' | tr '\n' ';')"
     fi
@@ -2055,7 +2070,7 @@ check_d() {
             if [ "$st1" = ONLINE ] && [ -n "$v" ]; then
                 pin clear_resumes_on_returned_device PASS "zpool clear rc $rc; pool $st1; a new write with fsync completed; the writer went from $before to $after acknowledged files; $(pool_errors skzd-d1)"
             else
-                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d1-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)"
+                pin clear_resumes_on_returned_device FAIL "zpool clear rc $rc ($(tail -n 1 "$OUT/d1-clear.log")); pool $st1; new write $([ -n "$v" ] && echo ok || echo failed)$([ "$rc" = 124 ] && echo "; the clear ran out of its 120 s: $(zfs_stuck_say "$mark")")"
             fi
         fi
     else
@@ -2145,7 +2160,7 @@ check_d_shorter() {
     st=$(pool_state skzd-d3)
     lim 30 zpool status -v skzd-d3 > "$OUT/d3-status-after-clear.log" 2>&1
     lim 300 zpool scrub -w skzd-d3 > "$OUT/d3-scrub.log" 2>&1
-    obs returned_device_with_older_content "the image was copied when the writer had $n files acknowledged; it had $v at the failure. After the copy came back and zpool clear (rc $rc): pool $st; $(pool_errors skzd-d3); the writer's files: $(lim 120 files_match "$WORK/mnt/skzd-d3" "$WORK/d3.record" 2>&1 | tail -n 1); status: $(grep -E 'state:|status:' "$OUT/d3-status-after-clear.log" | tr -s ' ' | tr '\n' ';')"
+    obs returned_device_with_older_content "the image was copied when the writer had $n files acknowledged; it had $v at the failure. After the copy came back and zpool clear (rc $rc$([ "$rc" = 124 ] && echo ", ran out of its 120 s: $(zfs_stuck_say)")): pool $st; $(pool_errors skzd-d3); the writer's files: $(lim 120 files_match "$WORK/mnt/skzd-d3" "$WORK/d3.record" 2>&1 | tail -n 1); status: $(grep -E 'state:|status:' "$OUT/d3-status-after-clear.log" | tr -s ' ' | tr '\n' ';')"
 }
 # d.5, an observation: a scrub in progress when the volume fails.
 check_d_scrub() {
