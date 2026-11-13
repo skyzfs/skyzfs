@@ -354,7 +354,9 @@ mod run {
         let mut held: Option<(Fetched, Instant)> = None;
         loop {
             fetched.clear();
-            let Ok(woken) = queue.wait(&mut fetched) else {
+            // A command the driver ended otherwise than OK is not judged
+            // here: the pump counts it, and its tests say so.
+            let Ok(woken) = queue.wait(&mut fetched, &mut Vec::new()) else {
                 return;
             };
             for f in fetched.drain(..) {

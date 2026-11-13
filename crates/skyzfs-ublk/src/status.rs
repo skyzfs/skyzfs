@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 1960
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 2032
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,7 +18,11 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's ninth version. The eighth (`SKYZSTA8`, 1960
+//! This is the file's tenth version. The ninth (`SKYZSTA9`, 2008
+//! bytes) ended before the queues' commands that the driver ended
+//! otherwise than OK, from offset 2008 on; a file of that version is
+//! still read, with those at zero, and `status` shows none of them. The
+//! eighth (`SKYZSTA8`, 1960
 //! bytes) ended before the in-place store's I/O threads' queue, from
 //! offset 1960 on; a file of that version is still read, with that
 //! queue absent (the log store has none, and shows the same). The
@@ -49,7 +53,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA9` |
+//! | 0 | 8 | magic `SKYZST10` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -105,6 +109,9 @@
 //! | 1984 | 8 | the requests that waited so since the store began (only grows) |
 //! | 1992 | 8 | the most reads and writes on the threads at once since the store began |
 //! | 2000 | 8 | the most requests waiting at once since the store began |
+//! | 2008 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
+//! | 2016 | 8 | `commands_failed`: the queues' commands the driver ended with any other result than OK: a commit or a fetch it did not take. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
+//! | 2024 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -158,10 +165,16 @@ use skyzfs_local::writeback::Hinted;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA9";
+const MAGIC: &[u8; 8] = b"SKYZST10";
 /// The version this crate writes.
-pub const VERSION: u32 = 9;
-const LEN: usize = 2008;
+pub const VERSION: u32 = 10;
+const LEN: usize = 2032;
+
+/// The ninth version: nothing of the commands the driver ended
+/// otherwise than OK (offset 2008). A file of it is still read, with
+/// those at zero.
+const NINTH_MAGIC: &[u8; 8] = b"SKYZSTA9";
+const NINTH_LEN: usize = 2008;
 
 /// The eighth version: nothing from the I/O threads' queue on (offset
 /// 1960). A file of it is still read, with that queue absent.
@@ -629,6 +642,11 @@ fn encode(status: &Status) -> [u8; LEN] {
     {
         bytes[EIGHTH_LEN + 8 * i..EIGHTH_LEN + 8 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
+    // The tenth version's commands the driver ended otherwise than OK,
+    // from offset 2008.
+    bytes[NINTH_LEN..NINTH_LEN + 8].copy_from_slice(&c.commands_aborted.to_le_bytes());
+    bytes[NINTH_LEN + 8..NINTH_LEN + 16].copy_from_slice(&c.commands_failed.to_le_bytes());
+    bytes[NINTH_LEN + 16..NINTH_LEN + 20].copy_from_slice(&c.last_command_failure.to_le_bytes());
     bytes
 }
 
@@ -920,7 +938,8 @@ fn timing_at(bytes: &[u8], fifth: bool, seventh: bool, eighth: bool) -> Timing {
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let ninth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let tenth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let ninth = tenth || (bytes.len() == NINTH_LEN && &bytes[..8] == NINTH_MAGIC);
     let eighth = ninth || (bytes.len() == EIGHTH_LEN && &bytes[..8] == EIGHTH_MAGIC);
     let seventh = eighth || (bytes.len() == SEVENTH_LEN && &bytes[..8] == SEVENTH_MAGIC);
     let sixth = seventh || (bytes.len() == SIXTH_LEN && &bytes[..8] == SIXTH_MAGIC);
@@ -961,7 +980,9 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
-    let version = if ninth {
+    let version = if tenth {
+        10
+    } else if ninth {
         9
     } else if eighth {
         8
@@ -995,6 +1016,13 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             refused: u64_at(bytes, 96),
             in_flight: u64_at(bytes, 104),
             unstored: u64_at(bytes, 112),
+            commands_aborted: if tenth { u64_at(bytes, 2008) } else { 0 },
+            commands_failed: if tenth { u64_at(bytes, 2016) } else { 0 },
+            last_command_failure: if tenth {
+                i32::from_le_bytes([bytes[2024], bytes[2025], bytes[2026], bytes[2027]])
+            } else {
+                0
+            },
         },
         failures: u64_at(bytes, 120),
         first_write_copies: u64_at(bytes, 128),
@@ -1496,6 +1524,20 @@ pub fn report(
             ("refused", c.refused),
             ("held", c.in_flight),
             ("unstored", c.unstored),
+        ] {
+            lines.push((key, value.to_string()));
+        }
+        // The commands the driver ended otherwise than OK: only from a
+        // file that holds them, so that a file of an older version
+        // shows no count it did not keep.
+        if s.version >= 10 {
+            lines.push(("commands_aborted", c.commands_aborted.to_string()));
+            lines.push(("commands_failed", c.commands_failed.to_string()));
+            if c.commands_failed > 0 {
+                lines.push(("last_command_failure", c.last_command_failure.to_string()));
+            }
+        }
+        for (key, value) in [
             ("first_write_copies", s.first_write_copies),
             ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),

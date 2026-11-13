@@ -64,6 +64,9 @@ fn sample() -> Status {
             refused: 7,
             in_flight: 8,
             unstored: 9,
+            commands_aborted: 26,
+            commands_failed: 27,
+            last_command_failure: -28,
         },
         failures: 10,
         first_write_copies: 11,
@@ -96,7 +99,7 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA9");
+    expected.extend(b"SKYZST10");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
@@ -104,16 +107,21 @@ fn the_file_has_the_documented_layout() {
     // How write-zeroes are applied is 2, written, at offset 192.
     // The times are the 220 fields from offset 200, here 100 to 319
     // but for the two that say the hint is off, 1. The I/O threads'
-    // queue is the six fields 20 to 25 from offset 1960.
+    // queue is the six fields 20 to 25 from offset 1960. The commands
+    // the driver ended otherwise than OK are 26 and 27 from offset 2008,
+    // and the last failure's result, -28, in the next field's first four
+    // bytes.
     for field in (1..=14u64)
         .chain([1, 16, 17, 18, 2])
         .chain((0..TIME_FIELDS).map(sample_field))
-        .chain(20..=25)
+        .chain(20..=27)
     {
         expected.extend(field.to_le_bytes());
     }
+    expected.extend((-28i32).to_le_bytes());
+    expected.extend([0; 4]);
     assert_eq!(TIME_FIELDS, 220);
-    assert_eq!(bytes.len(), 2008);
+    assert_eq!(bytes.len(), 2032);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -210,7 +218,7 @@ fn a_file_of_the_second_version_is_read_without_the_log() {
         Status {
             version: 2,
             log: None,
-            ..sample()
+            ..before_the_tenth(sample())
         }
     );
     let lines = report(
@@ -243,7 +251,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     let read = read(&path).expect("read").expect("a status");
     let mut unsaid = Status {
         version: 3,
-        ..sample()
+        ..before_the_tenth(sample())
     };
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.zeroes = ZeroesShown::Unsaid;
@@ -296,6 +304,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
         log.shown.io_queue = sample().log.and_then(|log| log.shown.io_queue);
     }
     unsaid.version = VERSION;
+    unsaid.counters = sample().counters;
     assert_eq!(decode(&unknown), Some(unsaid));
 }
 
@@ -313,7 +322,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     let read = read(&path).expect("read").expect("a status");
     let mut untimed = Status {
         version: 4,
-        ..sample()
+        ..before_the_tenth(sample())
     };
     if let Some(log) = untimed.log.as_mut() {
         log.shown.timing = None;
@@ -466,7 +475,7 @@ fn a_file_of_the_eighth_version_is_read_without_the_io_queue() {
     fs::write(&path, &eighth).expect("write");
     let read = read(&path).expect("read").expect("a status");
     assert_eq!(read.version, 8);
-    let mut expected = sample();
+    let mut expected = before_the_tenth(sample());
     expected.version = 8;
     if let Some(log) = expected.log.as_mut() {
         log.shown.io_queue = None;
@@ -487,6 +496,77 @@ fn a_file_of_the_eighth_version_is_read_without_the_io_queue() {
     eighth[..8].copy_from_slice(b"SKYZSTA9");
     fs::write(&path, &eighth).expect("write");
     assert!(super::read(&path).is_err());
+}
+
+/// The sample as a file of a version before the tenth has it: no
+/// command the driver ended otherwise than OK.
+fn before_the_tenth(mut status: Status) -> Status {
+    status.counters.commands_aborted = 0;
+    status.counters.commands_failed = 0;
+    status.counters.last_command_failure = 0;
+    status
+}
+
+/// A file of the ninth version (2008 bytes, `SKYZSTA9`) is still read:
+/// everything where it was, and the commands the driver ended otherwise
+/// than OK at zero, which the report does not show. The ninth's magic
+/// at the tenth's length is no file, nor the tenth's at the ninth's.
+#[test]
+fn a_file_of_the_ninth_version_is_read_without_the_commands() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut ninth = encode(&sample())[..2008].to_vec();
+    ninth[..8].copy_from_slice(b"SKYZSTA9");
+    fs::write(&path, &ninth).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    assert_eq!(read.version, 9);
+    let mut expected = before_the_tenth(sample());
+    expected.version = 9;
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert!(lines.iter().all(|(key, _)| !key.contains("command")));
+    assert_eq!(value(&lines, "io_threads"), Some("20"));
+    let mut long = encode(&sample()).to_vec();
+    long[..8].copy_from_slice(b"SKYZSTA9");
+    fs::write(&path, &long).expect("write");
+    assert!(super::read(&path).is_err());
+    ninth[..8].copy_from_slice(b"SKYZST10");
+    fs::write(&path, &ninth).expect("write");
+    assert!(super::read(&path).is_err());
+}
+
+/// The result of the last failed command is shown only once one has
+/// failed; the two counts are shown whenever the file holds them.
+#[test]
+fn the_report_shows_the_last_command_failure_only_after_one() {
+    let mut status = sample();
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&status),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "commands_aborted"), Some("26"));
+    assert_eq!(value(&lines, "commands_failed"), Some("27"));
+    assert_eq!(value(&lines, "last_command_failure"), Some("-28"));
+    status.counters.commands_failed = 0;
+    status.counters.last_command_failure = 0;
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&status),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "commands_failed"), Some("0"));
+    assert_eq!(value(&lines, "last_command_failure"), None);
 }
 
 /// The log store has no I/O threads: a status with a queue of no
@@ -990,6 +1070,9 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "refused",
             "held",
             "unstored",
+            "commands_aborted",
+            "commands_failed",
+            "last_command_failure",
             "first_write_copies",
             "recovered_unacknowledged",
             "status_write_failures",
@@ -1424,6 +1507,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         (1856, b"SKYZSTA7", "7"),
         (1960, b"SKYZSTA8", "8"),
         (2008, b"SKYZSTA9", "9"),
+        (2032, b"SKYZST10", "10"),
     ] {
         let mut bytes = encode(&sample())[..len].to_vec();
         bytes[..8].copy_from_slice(magic);
@@ -1439,7 +1523,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 9);
+    assert_eq!(VERSION, 10);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.
