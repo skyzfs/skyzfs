@@ -2468,7 +2468,7 @@ def load(p):
     for line in open(p):
         f = line.split()
         if not f: continue
-        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:9]]
+        if f[0] == 'dev': dev[f[1]] = [int(x) for x in f[2:10]]
         elif f[0] == 'pg': pg[f[1]] = int(f[2]) if len(f) > 2 and f[2].isdigit() else 0
         elif f[0] == 'cpu' and len(f) > 2: cpu[p][f[1]] = [int(x) for x in f[2:]]
         elif f[0] == 'thr' and len(f) > 2: thr[p][f[1]] = int(f[2])
