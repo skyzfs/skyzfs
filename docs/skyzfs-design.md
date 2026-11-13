@@ -143,6 +143,8 @@ Every transport delivers the same operations to the daemon and must honour the s
   - of a block written since the last flush that covered it, each 512-byte sector holds that durable content or one of the versions written since, independently of every other sector and of every other block. A later write can survive where an earlier one is lost, and a write can be torn at a sector;
   - a block that nothing wrote since its last flush is unchanged.
 
+  A "version written since" is whatever an operation since that flush could have left: a write's bytes, a write_zeroes' zeros, any content the discard rule allows, and what an operation that was in flight or that failed left, in whole or in part. What a start finds it makes durable before it serves (above), so a second power cut cannot change what the first one left.
+
   The volume is **not** promised to be a prefix of the daemon's order. The first version of this contract promised that, and a write log delivered it. It was dropped on 2026-11-13 (decision D5): ZFS does not need it, and the log cost every block a second write (§9). What keeps a pool consistent on such a disk is ZFS's own: the order of its writes and flushes, its checksums, and its ring of uberblocks.
 
 **Errors.**
