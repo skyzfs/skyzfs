@@ -41,6 +41,7 @@ fn harnesses_io(mutants: u32, io: IoMode) -> Vec<InPlaceHarness> {
             sync_delay,
             mutants,
             io,
+            page: 4096,
         })
         .collect()
 }
@@ -170,16 +171,26 @@ fn the_suite_notices_the_defects() {
 /// A store on a simulated disk, with a log of a few records that the
 /// start applies.
 fn created(seed: u64, sync_delay: u64) -> SimDisk {
+    created_at(seed, sync_delay, 4096)
+}
+
+/// The same on a system whose page is `page` bytes: the disk's write
+/// unit, its file system's block and the volume's write unit.
+fn created_at(seed: u64, sync_delay: u64, page: u64) -> SimDisk {
     let disk = SimDisk::new(seed);
-    disk.set_write_unit(4096);
+    disk.set_write_unit(page);
+    disk.set_page_size(page);
+    disk.set_block_size(Some(page));
     disk.set_sync_delay(sync_delay);
     let config = StoreConfig {
         volume: *b"in-place volume.",
         size_mib: 1,
         base: Base::Empty,
         align: 64,
-        segment_size: (1 << 20) + (128 << 10),
-        write_unit: 4096,
+        // Room for a request of a megabyte beside the two units a
+        // segment keeps.
+        segment_size: (1 << 20) + (128 << 10).max(3 * page),
+        write_unit: u32::try_from(page).unwrap(),
     };
     let mut store = Store::create_keyed(
         disk.clone(),
@@ -797,7 +808,17 @@ enum Ending {
 /// volatile-cache disk ([`volatile_cache_explains`]). Whether the
 /// volume had failed when the program ended.
 fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool, String> {
-    volatile_cache_holds_io(seed, ending, mutants, IoMode::default())
+    volatile_cache_holds_with(seed, ending, mutants, 4096, IoMode::default())
+}
+
+/// The same on a system whose page is `page` bytes ([`created_at`]).
+fn volatile_cache_holds_at(
+    seed: u64,
+    ending: Ending,
+    mutants: u32,
+    page: u64,
+) -> Result<bool, String> {
+    volatile_cache_holds_with(seed, ending, mutants, page, IoMode::default())
 }
 
 /// [`volatile_cache_holds`], with the store's I/O done as `io` says.
@@ -807,6 +828,18 @@ fn volatile_cache_holds_io(
     mutants: u32,
     io: IoMode,
 ) -> Result<bool, String> {
+    volatile_cache_holds_with(seed, ending, mutants, 4096, io)
+}
+
+/// [`volatile_cache_holds`] on a page of `page` bytes, with the store's
+/// I/O done as `io` says.
+fn volatile_cache_holds_with(
+    seed: u64,
+    ending: Ending,
+    mutants: u32,
+    page: u64,
+    io: IoMode,
+) -> Result<bool, String> {
     let garbage = ending == Ending::Cut { garbage: true };
     // Where a failure is set up, and whether it has been.
     let fail_at = match ending {
@@ -814,7 +847,7 @@ fn volatile_cache_holds_io(
         Ending::Cut { .. } => None,
     };
     let mut failing = false;
-    let disk = created(seed, 3);
+    let disk = created_at(seed, 3, page);
     let mut store = start_io(&disk, mutants, false, io).map_err(|e| e.to_string())?;
     let mut blocks: Vec<Versions> = (0..WINDOW)
         .map(|b| {
@@ -1128,6 +1161,133 @@ fn the_harness_gives_the_store() {
         })
         .unwrap();
     assert!(target.store().is_some());
+}
+
+// Pages larger than 4 KiB, as some arm64 kernels and Apple silicon have.
+
+/// The page sizes beyond amd64's that the store is tested at.
+const LARGE_PAGES: [u64; 2] = [16 << 10, 64 << 10];
+
+/// The suite passes on a system whose page, file-system block and
+/// volume write unit are 16 KiB or 64 KiB: a write of one 4 KiB block
+/// then rewrites a whole page around it. The page size is the
+/// simulated disk's and passed in, so this runs on amd64 too.
+#[test]
+fn the_in_place_store_passes_the_conformance_suite_on_large_pages() {
+    let config = Config {
+        cases: 16,
+        ..Config::default()
+    };
+    for page in LARGE_PAGES {
+        let mut harness = InPlaceHarness {
+            page,
+            ..harnesses(0)[2]
+        };
+        let report = run_all(&mut harness, &config);
+        assert!(report.passed(), "in {harness:?}:\n{report}");
+        assert!(report.unexercised().is_empty(), "{harness:?}:\n{report}");
+        assert!(report.weaker().is_empty(), "{harness:?}:\n{report}");
+    }
+}
+
+/// The volatile-cache disk holds on large pages. A write of one block
+/// rewrites the other blocks of its page with what the page cache holds
+/// of them: their durable content or a version written since, so a cut
+/// that takes such a sector leaves what the rule allows. A neighbour a
+/// flush covered and nothing wrote since is rewritten with the bytes it
+/// holds. The simulated disk's garbage is left out: a cut that turns a
+/// rewritten neighbour's sector into garbage breaks the rule on any
+/// page larger than a block, which is the store's documented exception
+/// (`a_cut_with_garbage_may_reach_a_neighbour_on_large_pages`).
+#[test]
+fn a_power_cut_leaves_what_the_volatile_cache_disk_promises_on_large_pages() {
+    for page in LARGE_PAGES {
+        for seed in 1..=100 {
+            let ending = Ending::Cut { garbage: false };
+            if let Err(e) = volatile_cache_holds_at(seed, ending, 0, page) {
+                panic!("page {page}: {e}");
+            }
+        }
+    }
+}
+
+/// A failure on large pages leaves what a power cut leaves (R11).
+#[test]
+fn a_failure_leaves_what_the_volatile_cache_disk_promises_on_large_pages() {
+    for page in LARGE_PAGES {
+        for sync in [false, true] {
+            let ending = Ending::Failure { sync };
+            let mut failed = 0;
+            for seed in 1..=100 {
+                match volatile_cache_holds_at(seed, ending, 0, page) {
+                    Ok(true) => failed += 1,
+                    Ok(false) => {}
+                    Err(e) => panic!("page {page}, {ending:?}: {e}"),
+                }
+            }
+            assert!(failed >= 25, "page {page}, {ending:?}: {failed} failed");
+        }
+    }
+}
+
+/// The large-page tests can tell: the defects of durability are
+/// noticed there as on 4 KiB pages.
+#[test]
+fn the_power_cut_test_notices_the_defects_of_durability_on_large_pages() {
+    for page in LARGE_PAGES {
+        for mutant in [Mutants::FLUSH_JOINS_ANY_SYNC, Mutants::FLUSH_WITHOUT_SYNC] {
+            let ending = Ending::Cut { garbage: false };
+            let noticed =
+                (1..=200).any(|seed| volatile_cache_holds_at(seed, ending, mutant, page).is_err());
+            assert!(
+                noticed,
+                "page {page}: the defect {mutant:#x} is not noticed"
+            );
+        }
+    }
+}
+
+/// The exception, pinned: where a cut can write garbage, a sector of a
+/// block that a flush covered and nothing wrote since can be lost on a
+/// large page, because a write to another block of the page rewrote
+/// it. On 4 KiB pages the same programs keep such blocks
+/// (`a_power_cut_leaves_what_the_volatile_cache_disk_promises`).
+#[test]
+fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
+    let ending = Ending::Cut { garbage: true };
+    for page in LARGE_PAGES {
+        let reached = (1..=200).any(|seed| volatile_cache_holds_at(seed, ending, 0, page).is_err());
+        assert!(reached, "page {page}: no cut reached a neighbour");
+    }
+}
+
+/// A volume created where the page is 4 KiB is refused where it is
+/// 16 KiB, on the way into the in-place store: a write there would
+/// rewrite more than the volume's write unit. The refusal is the log
+/// store's open, which the in-place store's start goes through.
+#[test]
+fn a_volume_of_small_pages_is_refused_on_large_pages() {
+    let disk = created(5, 0);
+    disk.set_page_size(16 << 10);
+    disk.set_write_unit(16 << 10);
+    let (opened, _) = match Store::open(disk.clone(), OpenOptions::default()) {
+        Err(error) => (error, ()),
+        Ok(_) => panic!("a volume of 4 KiB pages opened on 16 KiB pages"),
+    };
+    assert!(
+        matches!(
+            opened,
+            StoreError::Pages {
+                page: 16384,
+                unit: 4096
+            }
+        ),
+        "{opened}"
+    );
+    // Where the page is 4 KiB again, it starts.
+    disk.set_page_size(4096);
+    disk.set_write_unit(4096);
+    assert!(start(&disk, 0, false).is_ok());
 }
 
 // Every start serves only what the disk holds.

@@ -51,6 +51,11 @@ pub(crate) struct InPlaceHarness {
     pub(crate) mutants: u32,
     /// How the store reads and writes ([`super::IoMode`]).
     pub(crate) io: super::IoMode,
+    /// The system's page, which is the simulated disk's write unit, its
+    /// file system's block, and the volume's write unit: 4096 on amd64,
+    /// 16 KiB or 64 KiB on some arm64 kernels. Passed in, not read
+    /// from the host, so that every size runs everywhere.
+    pub(crate) page: u64,
 }
 
 impl InPlaceHarness {
@@ -182,14 +187,20 @@ impl Harness for InPlaceHarness {
 
     fn create(&mut self, spec: &Spec) -> Result<OnSim, HarnessError> {
         let disk = SimDisk::new(spec.seed);
-        disk.set_write_unit(4096);
+        disk.set_write_unit(self.page);
+        disk.set_page_size(self.page);
+        disk.set_block_size(Some(self.page));
+        let write_unit =
+            u32::try_from(self.page).map_err(|_| HarnessError("a page above 4 GiB".into()))?;
         let config = StoreConfig {
             volume: *b"in-place volume.",
             size_mib: 4,
             base: spec.base,
             align: 64,
-            segment_size: SEGMENT,
-            write_unit: 4096,
+            // Room for a request of a megabyte beside the two units a
+            // segment keeps.
+            segment_size: SEGMENT.max((1 << 20) + 3 * self.page),
+            write_unit,
         };
         let key = Key(*b"a key for tests!");
         let mut store = Store::create_keyed(disk.clone(), &config, key, self.options(false, false))

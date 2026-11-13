@@ -43,6 +43,9 @@ name: skyzfs-replay-rig
 on:
   workflow_dispatch:
     inputs:
+      images:
+        description: "images of the jobs through skyzfsd, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04"]'
       budget_s:
         description: "seconds for the main pass over the sampled prefixes"
         default: "840"
@@ -240,10 +243,11 @@ jobs:
     runs-on: ${{ matrix.image }}
     # The full budget checks every record prefix (about 670 at 2.4 s).
     timeout-minutes: 120
+    # arm64 (M1.T21) by dispatch only (input images).
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-26.04, ubuntu-24.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
     env:
       UBLKSRV_REF: 6d0d922614ec18e6f2b5d476af8d540a1d9c1de8
     steps:

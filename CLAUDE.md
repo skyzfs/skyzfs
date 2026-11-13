@@ -162,9 +162,11 @@ there, and the user decides when it merges.
 - **arm64.** amd64 and arm64 are both supported (design goal 8). The
   job `unit-arm64` in `ci.yml` and `skyzfs-ci.yml` runs clippy and the
   tests natively on `ubuntu-26.04-arm`, plain and with each of the two
-  features below, on every pull request. The kernel rigs take arm64
-  images by dispatch (their `images` inputs); what runs on a pull
-  request is said in each workflow's head. The hosted arm64 images have
+  features below, on every pull request. The control rig and the daemon
+  rig (the daemon only, not the stand-in) also run on `ubuntu-26.04-arm`
+  on a pull request that triggers them. `ubuntu-24.04-arm`, the
+  stand-in on arm64 and the replay rig on arm64 run by dispatch (the
+  rigs' `images` inputs). The hosted arm64 images have
   4 KiB pages only: nothing here shows 16 KiB or 64 KiB pages on a real
   kernel.
 - **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
