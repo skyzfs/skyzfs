@@ -279,10 +279,18 @@ EXPECTED = {
     'pin_sync_failed_volume_refused': ('g', 'PASS', WAITING,
                                        'with the disk working again, a serve of that volume is refused with status 4 '
                                        'while the client holds the device (§4.1)', 'WAITING'),
+    'pin_failure_reason_is_the_images': ('g', 'PASS', WAITING,
+                                         'the reason the daemon gives, in the failed serve\'s line and in the refusal '
+                                         'after it, at a start (g.3) and while served (g.1), is the home image\'s: "a '
+                                         'write or sync of the volume\'s image failed" (M1.3x)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
 # them: a missing one, or one that says "not run", is a rig error.
 OBSERVED = {
+    'obs_c_evidence': ('c', 'what check c kept beside the tool\'s trace (M1.T28): the server\'s request log, the '
+                            'kernel\'s block trace and the count of udev\'s change events of a ublk device for each '
+                            'pass, kept in the artifact when a case failed; without a block trace the run is the '
+                            'rig\'s error'),
     'obs_g_failed_sync': ('g', 'the premise of pin_start_serves_what_the_disk_holds: what fdatasync returned when '
                                 'the disk failed under the range, what the cache then read, and what the disk held'),
     'obs_g_new_descriptor_after_failed_sync': ('g', 'after one descriptor\'s fdatasync took the write-back error, '

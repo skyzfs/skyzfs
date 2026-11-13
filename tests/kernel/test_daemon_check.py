@@ -481,6 +481,45 @@ class InPlace(unittest.TestCase):
 class CheckG(unittest.TestCase):
     """Check g (M1.T23): the daemon's in-place store, a disk that fails for real."""
 
+    def test_every_pin_of_check_g_is_in_g_pins(self):
+        # The stand-in, the log store and a file system that was not set up
+        # write check g's pins from G_PINS without running it; a pin left
+        # out of it is "no result", a rig error (M1.T26 review).
+        import re
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            listed = set(re.search(r'^G_PINS="([^"]*)"', f.read(), re.M).group(1).split())
+        want = {name[len('pin_'):] for name, row in dc.EXPECTED.items() if row[0] == 'g' and name.startswith('pin_')}
+        self.assertEqual(want, listed)
+
+    def test_the_log_store_branch_writes_every_observation(self):
+        # With the log store the rig writes check g's lines without running
+        # it; an observation it leaves out fails the run (M1.T23, Codex).
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        start = text.index('elif ! in_place; then')
+        branch = text[start:text.index('check_g\n', start)]
+        for name, (check, _) in dc.OBSERVED.items():
+            if check == 'g':
+                self.assertIn(name[len('obs_'):], branch, name)
+
+    def test_check_c_writes_its_evidence_on_every_path(self):
+        # M1.T28: check c ends in one place, which writes obs_c_evidence
+        # whether or not the pass with the delay ran; and the evidence is
+        # started and ended around both passes of the tool.
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
+        self.assertEqual(body.count('obs c_evidence '), 3, 'no trace possible, a pass that left too little, and all')
+        main = text[text.index('\n    check_c\n    check_c_low\n'):]
+        self.assertTrue(main.index('c_watch_back') < main.index(';;'), 'the watch is put back after the third pass')
+        for tag in ('c', 'cd'):
+            self.assertIn(f'c_evidence_start {tag}\n', text)
+            self.assertIn(f'c_evidence_end {tag} "$work" "$rc"', text)
+        self.assertIn('c_watch_back', text[text.index('\ncleanup() {'):text.index('\ntrap cleanup EXIT')])
+
     def test_on_the_daemon_in_place_every_line_is_judged(self):
         r = in_place()
         rows, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')

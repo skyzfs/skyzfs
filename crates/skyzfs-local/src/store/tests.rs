@@ -4474,7 +4474,8 @@ fn a_completion_taken_by_wait_has_its_ready_time() {
 /// Every kind of request is counted under its own kind, once per
 /// request that completed, with a wait and a call each; a request that
 /// waited for no step is not among those that did; and the sums and
-/// the longest fit each other.
+/// the longest fit each other. Each thread's idle time is looked at
+/// once the thread is back in its wait for work.
 #[test]
 fn every_kind_of_request_is_timed_under_its_kind() {
     let env = environments(0)[0];
@@ -4524,7 +4525,21 @@ fn every_kind_of_request_is_timed_under_its_kind() {
         }
     }
     served.position().unwrap();
-    let timing = served.timing();
+    // A thread's wait for work is counted as idle only once the thread
+    // is back in it: a look taken while the reader (or the worker) is
+    // still between its last request and its wait finds that time still
+    // its own, and no idle time if the thread never waited before (a
+    // reader that started after the read arrived, as under coverage).
+    // So look until both show idle time, for at most 10 s; a thread
+    // whose wait is never counted still fails below.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let timing = loop {
+        let timing = served.timing();
+        if (timing.worker[0] > 0 && timing.reader[0] > 0) || std::time::Instant::now() >= deadline {
+            break timing;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
     let counts: Vec<u64> = timing.requests.iter().map(|k| k.wait.count).collect();
     // read, write, flush, discard, write-zeroes.
     assert_eq!(counts, [1, 2, 1, 1, 3], "{timing:?}");
@@ -5519,12 +5534,12 @@ fn a_read_waits_for_the_reader_and_for_nothing_of_the_worker() {
     }
 }
 
-/// What a barrier costs is counted. A reader is held 200 ms with its
-/// pin while a checkpoint is asked for: the step waits at its first
-/// barrier for at least that long, the wait is the worker's activity
-/// "step_barrier" and in none of the step's parts, each batch has
-/// passed both barriers, and a flush submitted meanwhile has the
-/// barrier in its wait.
+/// What a barrier costs is counted. A reader is held with its pin
+/// while a checkpoint is asked for, and then 200 ms more once the step
+/// is at its first barrier: the step waits there for at least that
+/// long, the wait is the worker's activity "step_barrier" and in none
+/// of the step's parts, each batch has passed both barriers, and a
+/// flush submitted meanwhile has the barrier in its wait.
 #[test]
 fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
     const HELD: Duration = Duration::from_millis(200);
@@ -5534,9 +5549,11 @@ fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
     flush(&mut store).unwrap();
     let reader = Gate::new("barrier-read");
     store.set_read_pause(reader.pause());
+    let shared = store.core.shared.clone();
     let mut served = store.serve().unwrap();
     served.submit(read_request(1, 100, 1)).unwrap();
     reader.wait_reached("the read").unwrap();
+    let waited = shared.pin.waited();
     let (reply, checkpointed) = mpsc::channel();
     assert!(served.send(Command::Checkpoint(reply)));
     served
@@ -5545,6 +5562,10 @@ fn a_steps_wait_at_a_barrier_is_counted_as_its_own_activity() {
             op: Op::Flush,
         })
         .unwrap();
+    // The hold is counted from the step's arrival at the barrier, not
+    // from the request for it: a worker slow to begin the step (as
+    // under load) would otherwise wait there for less than the hold.
+    at_a_barrier(&shared, waited, "the first barrier").unwrap();
     std::thread::sleep(HELD);
     reader.open();
     let mut done = Vec::new();

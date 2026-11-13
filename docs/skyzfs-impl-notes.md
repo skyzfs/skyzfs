@@ -81,6 +81,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T19 | none (measurement only) | The confirming round: the two stores with their order swapped, both bounded | The criterion: without the write log |
 | M1.3s | skyzfs/skyzfs#46 | The conformance model's power cut is the volatile-cache disk; the in-place store's failure paths; every start drops the kernel's cache of the home image and checks it is gone | The criterion: without the write log |
 | M1.3v | skyzfs/skyzfs#47 | The code read for arm64 and for pages above 4 KiB: `mapped()` takes the system's page size; the in-place store's tests on the simulated disk at 16 KiB and 64 KiB pages | The ublk transport: arm64 |
+| M1.3z | skyzfs/skyzfs#57 | Two more tests of the log store's times that raced their own threads | The local store |
 | M1.3x | skyzfs/skyzfs#55 | The failure note's reason for the in-place store: code 7, "a write or sync of the volume's image failed" | The ublk transport: a failed volume gives up its attachment |
 | M1.3w | skyzfs/skyzfs#52 | Two tests of the log store's times took their own total before the look they compare it with | The local store |
 | M1.T20a | skyzfs/skyzfs#44 | The replay rig names the daemon's store (`serve_args`); a pull request's daemon jobs drive `--store in-place` | The criterion: without the write log |
@@ -90,6 +91,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T22 | skyzfs/skyzfs#49 | Where the bounded row's loss goes: the pump's profile, its system calls and the cgroup's reclaim, in the benchmark | The criterion: where the bounded row's loss goes |
 | M1.T25 | skyzfs/skyzfs#53 | The daemon rig says what holds ZFS when a `zpool` command runs out: hung-task reports, the sync thread, the lock's holders | The ublk transport: arm64 |
 | M1.T23 | skyzfs/skyzfs#54 | The daemon rig's check g: the disk under the in-place store fails for real (a sync that fails in the kernel) | The ublk transport: a failed volume gives up its attachment |
+| M1.T26 | skyzfs/skyzfs#56 | Check g reads the reason the daemon gives for a failed image, in four places; four fixes to the rig | The ublk transport: a failed volume gives up its attachment |
 | M1.T24 | skyzfs/skyzfs#51 | The benchmark's copy of the pool image and its sync under a limit, with evidence when it runs out and on a cancel | The criterion: where the bounded row's loss goes |
 | M1.T17 | none (measurement only) | The criterion's round on the current daemon | The criterion: the round on the current daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
@@ -252,7 +254,7 @@ The take-overs of the in-place store were slower on the arm runners: 10 and 13 o
 
 - After a sync that failed, the cache held the new content (0x22) and the disk the old (0x11); the next start served 0x11. The control, a write that did sync, is served as written.
 - A start whose sync fails with the client attached exits with status 3, the pool suspends at once with no application error, and a restart with the disk back is refused with status 4. The same when the whole disk fails while the pool is written.
-- On a daemon from before the cache drop (cd0e763, run 43397129438) three lines differ: the start served 0x22 from the cache, exited with status 1, and the pool stayed ONLINE for 120 s.
+- On a daemon from before the cache drop (cd0e763, run 43397129438) three lines differ: the start served 0x22 from the cache, exited with status 1, and the pool stayed ONLINE for 120 s. Since M1.T26 a fourth differs there, the failure reason (run 43420754305): that daemon gives no failure line at the failed start.
 - Observed on all three kernels: after one descriptor's `fdatasync` took the write-back error, a newly opened descriptor's `fdatasync` returns success and its `syncfs` returns the error. The check records it on every run.
 - Reads: when the disk fails, ZFS counted 3 to 185 read errors on the device in four runs and no application read failed in any (20 to 85 reads of an uncached file). A failed read fails its request alone by design (design §5.1), so the check judges no reads and records these.
 - The suspended pool of the failing start counts hundreds of thousands of write errors on its device and posts 250 thousand to 1.5 million events, against hundreds in check d. The cause is not known.
@@ -762,6 +764,27 @@ An experiment build (branch `skyzfs-coding-directio`, bec42e9: `serve --store in
 
 Decided on these figures: direct I/O is the in-place store's I/O, eight threads by default (M1.3y). The rule is shown again on that daemon.
 
+#### A direct write into a hole, at a power cut (M1.T27)
+
+Design §4.2 says that over a hole or an unwritten extent a direct write that has returned still needs the file system's commit to be readable after a power cut. M1.T27 measured it in the power-cut replay, the cut on the disk under the daemon's files and each prefix read through a daemon started as after a reboot. The course: 16 direct writes of 4 KiB to the daemon's device on a 256 MiB volume, a flush after every third, the last two unflushed. Six courses a job: ext4 and XFS, each on a sparse image, on one preallocated with `fallocate` (unwritten extents) and on one written through with `create --zero-fill`; `filefrag` confirms the three kinds. The daemon is the direct I/O package's build (b4a4068). Full budget, every prefix, run 43429346339, one run an image; a sampled run before it (43428255511) agrees.
+
+Per course: prefixes checked, prefixes at which a returned write read as zeros, and of those the prefixes at which the write's data was already on the disk.
+
+| Image | File system | Sparse | `fallocate` | Written through |
+|---|---|---|---|---|
+| `ubuntu-24.04` | ext4 | 108 / 73 / 56 | 100 / 65 / 48 | 73 / 27 / 0 |
+| `ubuntu-24.04` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+| `ubuntu-26.04` | ext4 | 110 / 74 / 57 | 102 / 66 / 49 | 74 / 27 / 0 |
+| `ubuntu-26.04` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+| `ubuntu-26.04-arm` | ext4 | 110 / 74 / 57 | 102 / 66 / 49 | 88 / 41 / 0 |
+| `ubuntu-26.04-arm` | XFS | 72 / 39 / 22 | 73 / 39 / 22 | 66 / 27 / 0 |
+
+- No violation in any of the 18 courses: at every prefix at or after a flush that completed after a write, the block holds what was written, and before it the block is zeros or the write, whole. The control, a flush acknowledged with its data withheld, is caught in all 18.
+- The third figure is the effect in question: the data is on the disk and the file does not show it, because the extent change is not committed. It is there on a sparse and on a preallocated image, on both file systems and both architectures, and never on an image written through. `fallocate` is no better than a hole on XFS and a little better on ext4.
+- The second figure also counts writes lost from the disk's volatile cache, which every kind of image loses alike (the recording logs a completed write at the lower disk's next flush).
+
+All of it is loss that design §4.1 allows. Decided on these figures: the image stays sparse (design §10).
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -799,6 +822,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
 - Direct I/O is decided (D6) on an experiment build's figures; M1.3y builds it, and the rule, bounded and unbounded, is shown again on that daemon on both kinds of machine and on arm64.
+- The image stays sparse (M1.T27); a full file system still fails the volume, until the store accounts for local space (M3).
 - A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
@@ -882,6 +906,8 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-13 | The daemon rig names a stuck ZFS (M1.T25, skyzfs/skyzfs#53); two looks by the review session, nothing from Codex | Can merge; four small findings settled. No verdict or limit changes. Ruled by the lead: the new function gets a test before the merge, since it runs only when a `zpool` command has run out; the test feeds it a log trimmed from the stuck arm64 job and stand-in processes, and eleven plants in it are each caught. Over that job's kernel log the function writes "148 hung-task reports, txg_sync running in 24" and names the two lock owners. |
 | 2026-11-13 | The failed-sync check (M1.T23, skyzfs/skyzfs#54); looks by the review session and two findings by Codex | Can merge. Blocking and fixed: one pin tested only the daemon's exit status, its second test changing nothing (also Codex's finding). Ruled by the lead: the check runs on every pull request's daemon jobs; the negative control is an old commit by dispatch and no hook in the product; a failed read fails its request alone, so the check claims nothing about reads and records them; the start's refusal where it cannot see its cache stays with the unit tests. Left for the next rig change (M1.T26): with the log store selected the check omitted an observation, and a watcher stopped at the suspension. The review counted ten plants in the judge's rows, each caught. |
 | 2026-11-13 | The in-place store's failure reason (M1.3x, skyzfs/skyzfs#55); four looks by the review session, nothing from Codex | Can merge. Found by check g: the daemon reported "the log failed" for a failed sync of the image. Blocking at the second look, from check g run on the pull request's own build: the fix covered the serving case and not a failed start, where the log store's part of the hand-over meets the disk's error first. Ruled by the lead: at an in-place start a failed hand-over is the image's (code 7) when the log held nothing to apply and the log store's (code 1) when it held records; with an empty log a failure of the log file's own sync therefore reads as the image's, accepted until M1.3t removes the hand-over. Also fixed: the format note's remedy for an older daemon did not work as written (the store's marker outlives the note; the review ran it). No unit test can reach the daemon's three call sites (plants there pass all 57 daemon tests): the pin is a line of check g that reads the reason (M1.T26), which passed 4 of 4 on a daemon built from this head (run 43413318350). An older daemon that meets a note with code 7 refuses to start. The lead ran the judge over the three daemon artifacts of run 43413321393, the arm64 one among them: no difference from the table. |
+| 2026-11-13 | The failure-reason pin and four rig fixes (M1.T26, skyzfs/skyzfs#56); two looks by the review session and one finding by Codex | Can merge. Blocking and fixed: the new pin was missing from the check's list, so a run on the stand-in or the log store ended as a rig error (Codex's finding too); and a daemon that does not fail the volume where it must ended the run as a rig error and not as a verdict. Ruled by the lead with the review: a missing failure line is a verdict against the daemon. The negative control then ends with exit 1 and four lines differing (run 43420754305). On the merged daemon the pin passes 4 of 4 on both amd64 images and on arm64 (run 43420602078). The rig fixes: a watcher that stopped at the suspension, an observation left out with the log store, two points on the stuck-ZFS test, and a race in which the suite's helper read the daemon's exit status before the wrapper had written it (seen once on `zfs-topology`, run 43411310544). |
+| 2026-11-13 | Two more timing tests (M1.3z, skyzfs/skyzfs#57); one look by the review session, nothing from Codex | Can merge; no findings. One test looked before the reader thread was back in its wait (it failed once in a coverage job, reader idle 0); the other began its 200 ms hold before the step had reached its barrier (199.80 ms against a bound of 200 ms in the package's own gate run). Each is shown by a planted delay that fails the old test and passes the new one, with a control plant that still fails. The review ran the old barrier test under load with nothing planted: 4 failures in 40 runs, and 0 in 40 for the new one. Test code only; no assertion is weakened. |
 
 ## References
 

@@ -14,6 +14,7 @@ use rustix::fs::{fallocate, FallocateFlags};
 use skyzfs_blk::conformance::{
     cases, Capabilities, Capability, Config, Harness, HarnessError, Spec, Status,
 };
+use skyzfs_blk::model::InFlight;
 use skyzfs_blk::{
     Base, BlkError, BlockTarget, Completion, Geometry, Op, Request, RequestId, SubmitError,
     SubmitErrorKind, SIZE_UNIT,
@@ -78,7 +79,8 @@ fn digests(bytes: &[u8]) -> String {
         .join(",")
 }
 
-/// "write<TAB>first block<TAB>blocks<TAB>digests" for the trace.
+/// The operation's name, its first block, its count of blocks and the
+/// digests of a write's data, separated by tabs, for the trace.
 fn describe(op: &Op) -> String {
     let (name, data): (&str, Option<&[u8]>) = match op {
         Op::Read { .. } => ("read", None),
@@ -170,7 +172,9 @@ struct DeviceTarget {
     /// Ids handed to a thread whose completion has not been returned.
     in_flight: BTreeSet<RequestId>,
     /// Results of requests that were in flight at a kill. The kernel
-    /// issued them again by itself; the suite's own resubmission of the
+    /// issued again by itself those the old server had not completed;
+    /// one it had completed returns late, its call held by something
+    /// else the old server held. The suite's own resubmission of the
     /// same id gets this result and is not issued.
     carried: BTreeMap<RequestId, Completion>,
     /// Carried results whose id has been resubmitted, ready for `poll`.
@@ -315,10 +319,11 @@ impl DeviceTarget {
     /// The server has been stopped and is about to be killed. Every call
     /// that has returned by now was completed before the kill, and the
     /// kernel will have nothing of it to issue again. The suite does not
-    /// know these results yet and will resubmit the ids; to the suite's
-    /// model a request that was not acknowledged at a kill is applied
-    /// from the kill on. So these results are dropped and the
-    /// resubmissions will be issued, as a transport would issue them.
+    /// know these results yet and will resubmit the ids, and to the
+    /// suite's model they were in flight at the kill. These results are
+    /// dropped and the resubmissions are issued: each is applied a
+    /// second time, after the kill, which the model allows of a request
+    /// in flight at a kill (rule R9).
     /// Returns how many there were.
     fn returned_before_kill(&mut self) -> usize {
         let mut got = Vec::new();
@@ -342,8 +347,13 @@ impl DeviceTarget {
 
     /// Wait for every outstanding call to return, and keep the results
     /// for the ids the suite will resubmit. These calls were outstanding
-    /// at a server that died: the kernel issued them again by itself,
-    /// which is their application after the kill.
+    /// at a server that died. The kernel issued again by itself each
+    /// request the old server had not completed, which is its
+    /// application after the kill. A request the old server had
+    /// completed is not issued again, though its call may return only
+    /// now: an `O_DIRECT` write returns once the device's cached pages in
+    /// its range are dropped, and a read holding one of them may have
+    /// waited on the old server. The model allows both (rule R9).
     fn settle(&mut self, timeout: Duration) -> Result<(), HarnessError> {
         if let Some(what) = self.settle_checked(timeout)? {
             rig_error(&what);
@@ -619,6 +629,17 @@ impl Harness for DeviceHarness {
         let mut target = DeviceTarget::open(number, &path, self.depth)?;
         target.server = self.server_of(number);
         Ok(target)
+    }
+
+    /// The kernel issues nothing again for a request the lost server
+    /// completed, and the call of such a write can return after the
+    /// kill: a read of a page in its range, pending at the lost server,
+    /// holds the dropping of the device's cached pages that ends the
+    /// call. The result of a call still waiting at the kill is carried
+    /// across it and handed to the suite, so that completion may be the
+    /// lost server's.
+    fn in_flight_at_a_loss(&self) -> InFlight {
+        InFlight::MayHaveCompleted
     }
 
     fn kill(&mut self, mut target: DeviceTarget, _seed: u64) -> Result<DeviceTarget, HarnessError> {
@@ -966,6 +987,17 @@ mod tests {
             last: None,
         };
         (harness, path)
+    }
+
+    /// The device harness reads a daemon loss with late completions:
+    /// through the kernel a request the lost server completed is not
+    /// issued again, and its call can return after the kill. With the
+    /// strict reading the rig would refuse that legal state (#58).
+    #[test]
+    fn a_kill_may_leave_completions_the_lost_server_made() {
+        let (h, script) = harness("loss", "true");
+        assert_eq!(h.in_flight_at_a_loss(), InFlight::MayHaveCompleted);
+        let _ = std::fs::remove_file(script);
     }
 
     /// The volume counts as failed from the moment the helper is asked

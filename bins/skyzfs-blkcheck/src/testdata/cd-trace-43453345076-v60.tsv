@@ -1,0 +1,150 @@
+130204	60	open	-	64	16
+130340	60	submit	1	read	16362	7	
+130361	60	done	1	Ok(())	zero,zero,zero,zero,zero,zero,zero	Ok(())
+130361	60	delivered	1	
+130361	60	submit	2	flush	0	0	
+130361	60	submit	3	flush	0	0	
+130381	60	done	2	Ok(())		Ok(())
+130381	60	delivered	2	
+130381	60	submit	4	write	16367	1	fd39353a4db44325
+130381	60	kill	-	signal sent by the tool: Some(true)
+130617	60	sorted	-	outstanding 1	kernel in flight [0, 0]
+130820	60	done	3	Ok(())		Ok(())
+130820	60	done	4	Ok(())		Ok(())
+131148	60	served_again	-	
+131148	60	delivered	3	
+131148	60	delivered	4	
+131148	60	carried	3	Ok(())
+131148	60	carried	4	Ok(())
+131148	60	settled	-	
+131285	60	held_back	4	
+131285	60	held_back	3	
+131285	60	submit	5	discard	16368	4	
+131285	60	delivered	4	
+131285	60	delivered	3	
+131285	60	submit	6	flush	0	0	
+131285	60	submit	7	flush	0	0	
+131285	60	submit	8	read	16362	4	
+131306	60	done	8	Ok(())	zero,zero,zero,zero	Ok(())
+131306	60	done	6	Ok(())		Ok(())
+131306	60	done	5	Ok(())		Ok(())
+131306	60	delivered	8	
+131306	60	delivered	6	
+131306	60	delivered	5	
+131306	60	submit	9	write	16367	2	40b378f85cef5325,138ea9c87f2e0b25
+131306	60	submit	10	write	16369	3	f027641bc8fb6b25,7f9f1aaff5bcc325,9671437831c18b25
+131307	60	submit	11	write	16369	3	1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325
+131307	60	submit	12	write	16379	3	c501d1a771ef0325,f6e015151883e325,f70e5c32d0ead325
+131326	60	done	7	Ok(())		Ok(())
+131326	60	delivered	7	
+131327	60	done	10	Ok(())		Ok(())
+131327	60	delivered	10	
+131327	60	submit	13	write	16367	2	fa620c652edb5b25,961b61a6447fb325
+131327	60	done	11	Ok(())		Ok(())
+131327	60	done	9	Ok(())		Ok(())
+131327	60	delivered	11	
+131327	60	delivered	9	
+131327	60	submit	14	write_zeroes	16373	2	
+131327	60	submit	15	read	16369	5	
+131327	60	submit	16	write	16362	3	625493824ad38b25,20b4b087f37d3b25,94174a5c79f8b325
+131327	60	done	12	Ok(())		Ok(())
+131327	60	delivered	12	
+131327	60	submit	17	write_zeroes	16383	1	
+131327	60	submit	18	read	16367	8	
+131328	60	submit	19	read	16363	8	
+131348	60	done	14	Ok(())		Ok(())
+131348	60	delivered	14	
+131348	60	submit	20	write	16372	8	570e4f95e4a10b25,587ede009cd9a325,d3f85cb1e0daa325,e9e618a033329325,fc91dd1f2000fb25,e27c49bff1ad3b25,a15ff6ed161e5325,42f936f178086325
+131348	60	done	13	Ok(())		Ok(())
+131348	60	done	16	Ok(())		Ok(())
+131348	60	done	15	Ok(())	1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325,zero,zero	Ok(())
+131348	60	delivered	13	
+131348	60	delivered	16	
+131348	60	delivered	15	
+131348	60	done	18	Ok(())	fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,c721326613593325,zero,zero,zero	Ok(())
+131348	60	done	19	Ok(())	20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25	Ok(())
+131348	60	submit	21	write	16377	7	964cfc9ff9404b25,6bafe44ab8087b25,29b89f4b2c577325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325
+131348	60	submit	22	write	16361	1	c7268e7600c0c325
+131348	60	delivered	18	
+131348	60	delivered	19	
+131368	60	done	17	Ok(())		Ok(())
+131368	60	delivered	17	
+131368	60	submit	23	write	16371	5	f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325
+131368	60	done	21	Ok(())		Ok(())
+131368	60	delivered	21	
+131368	60	submit	24	write	16360	1	7970d002a7400325
+131368	60	submit	25	read	16363	7	
+131368	60	done	22	Ok(())		Ok(())
+131368	60	kill	-	signal sent by the tool: Some(true)
+131602	60	delivered	22	
+131602	60	before_kill	22	Ok(())
+131602	60	sorted	-	outstanding 4	kernel in flight [0, 0]
+131801	60	done	24	Ok(())		Ok(())
+131802	60	done	20	Ok(())		Ok(())
+131801	60	done	23	Ok(())		Ok(())
+131802	60	done	25	Ok(())	20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325	Ok(())
+132028	60	served_again	-	
+132028	60	delivered	24	
+132028	60	delivered	20	
+132028	60	delivered	23	
+132028	60	delivered	25	
+132028	60	carried	24	Ok(())
+132028	60	carried	20	Ok(())
+132028	60	carried	23	Ok(())
+132028	60	carried	25	Ok(())
+132028	60	settled	-	
+132166	60	held_back	25	
+132166	60	held_back	24	
+132166	60	held_back	23	
+132166	60	submit	22	write	16361	1	c7268e7600c0c325
+132166	60	held_back	20	
+132166	60	delivered	25	
+132166	60	delivered	24	
+132166	60	delivered	23	
+132166	60	delivered	20	
+132187	60	done	22	Ok(())		Ok(())
+132187	60	delivered	22	
+132187	60	submit	26	read	0	64	
+132187	60	submit	27	read	64	64	
+132187	60	submit	28	read	128	64	
+132187	60	submit	29	read	192	64	
+132187	60	submit	30	read	16360	24	
+132188	60	submit	31	read	16368	16	
+132188	60	submit	32	read	256	2	
+132188	60	submit	33	read	512	2	
+132188	60	submit	34	read	768	2	
+132188	60	submit	35	read	1024	2	
+132188	60	submit	36	read	1280	2	
+132188	60	submit	37	read	1536	2	
+132188	60	submit	38	read	1792	2	
+132188	60	submit	39	read	2048	2	
+132188	60	submit	40	read	2304	2	
+132188	60	submit	41	read	2560	2	
+132208	60	done	27	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+132208	60	done	28	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+132208	60	done	32	Ok(())	zero,zero	Ok(())
+132208	60	done	37	Ok(())	zero,zero	Ok(())
+132208	60	done	40	Ok(())	zero,zero	Ok(())
+132208	60	done	31	Ok(())	961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325,fc91dd1f2000fb25,964cfc9ff9404b25,6bafe44ab8087b25,29b89f4b2c577325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325	Ok(())
+132208	60	done	35	Ok(())	zero,zero	Ok(())
+132208	60	done	29	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+132208	60	done	38	Ok(())	zero,zero	Ok(())
+132208	60	delivered	27	
+132208	60	done	39	Ok(())	zero,zero	Ok(())
+132208	60	done	34	Ok(())	zero,zero	Ok(())
+132208	60	done	41	Ok(())	zero,zero	Ok(())
+132208	60	delivered	28	
+132208	60	delivered	32	
+132208	60	delivered	37	
+132208	60	delivered	40	
+132208	60	delivered	31	
+132208	60	delivered	35	
+132208	60	delivered	29	
+132208	60	delivered	38	
+132208	60	delivered	34	
+132208	60	delivered	41	
+132208	60	delivered	39	
+132209	60	done	33	Ok(())	zero,zero	Ok(())
+132209	60	done	26	Ok(())	zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero,zero	Ok(())
+132209	60	done	36	Ok(())	zero,zero	Ok(())
+132209	60	done	30	Ok(())	7970d002a7400325,c7268e7600c0c325,625493824ad38b25,20b4b087f37d3b25,94174a5c79f8b325,zero,zero,fa620c652edb5b25,961b61a6447fb325,1cfef4b4888da325,8d698d0c5b6bab25,f1f670c99821c325,1ac14b1ee11c6b25,6319bab29b31e325,7fa237aa3cf0db25,f06a0e31c22b6325,fc91dd1f2000fb25,964cfc9ff9404b25,6bafe44ab8087b25,29b89f4b2c577325,294d0326aea46325,c772ad29b9076325,50272e7fb3345325,6c22afe639c02325	Ok(())

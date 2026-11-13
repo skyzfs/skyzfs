@@ -340,7 +340,7 @@ const INVISIBLE_WITH_NOTHING: &[Fault] = &[
     Fault::StrayWrite,
 ];
 
-const FAULTS: [Fault; 24] = [
+const FAULTS: [Fault; 25] = [
     Fault::AcceptMisaligned,
     Fault::AcceptOutOfBounds,
     Fault::StaleReads,
@@ -355,6 +355,7 @@ const FAULTS: [Fault; 24] = [
     Fault::SplitWrites,
     Fault::KillLosesUnflushed,
     Fault::RejectReissued,
+    Fault::SkipReissuedIfLogged,
     Fault::TearOnCut,
     Fault::CutLeavesForeign,
     Fault::RecoveryNotDurable,

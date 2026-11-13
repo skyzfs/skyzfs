@@ -30,7 +30,8 @@
 # mark and no further, so that the caller's first write takes it over
 # the mark and the daemon steps between that call and the next; the
 # line "prefill N" says where the log was left. The mark is read from
-# --log-high in BLK_SERVE_ARGS, default 2 segments of 64 MiB). The lines
+# --log-high in BLK_SERVE_ARGS, default 2 segments of 64 MiB),
+# BLK_REQUEST_LOG (below). The lines
 # "steps N kill" and "steps N destroy" give each server's checkpoint
 # steps and its gate count (time_gate_count: turns in which a request
 # waited because a step had the log) when it goes.
@@ -52,6 +53,10 @@ SKYZFSD=${BLK_SKYZFSD:-$HERE/skyzfsd-ref.sh}
 BYTES=${BLK_BYTES:-$((64 << 20))}
 read -r -a SERVE_ARGS <<< "${BLK_SERVE_ARGS:-}"
 DIR=$WORK/c$N
+# BLK_REQUEST_LOG=1: every serve of the volume appends what the kernel
+# handed it to DIR.requests.tsv (--request-log, the daemon's test build
+# from M1.3y on).
+REQUEST_LOG=(); [ -z "${BLK_REQUEST_LOG:-}" ] || REQUEST_LOG=(--request-log "$DIR.requests.tsv")
 RUN=$WORK/run$N               # one run directory per volume, so that reopen can empty it
 T0=$(date +%s%N)
 
@@ -61,6 +66,23 @@ status_of() { lim 30 "$SKYZFSD" status --dir "$DIR" --run-dir "$RUN" 2>/dev/null
 # the serve process itself.
 server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>/dev/null)}"; }
 # [serve options]: serve in the background, wait for "ready", print the device.
+# The status the current serve ($DIR.serve.pid) exited with, once it is
+# gone. The small shell that waits for serve writes "PID STATUS" a moment
+# after serve is reaped, later than 0.1 s on a busy machine (a pass of
+# check c read the file empty, 2026-11-13): wait for it, up to 5 s. A
+# line of another pid is an earlier serve's, whose shell wrote it late,
+# after this serve had begun (M1.T26 review): it is not this serve's
+# status. Empty when this serve's never came.
+serve_rc() {
+    local want got rc
+    want=$(cat "$DIR.serve.pid" 2>/dev/null)
+    for _ in $(seq 1 100); do
+        got=""; rc=""; read -r got rc 2>/dev/null < "$DIR.serve.rc"
+        [ -n "$want" ] && [ "${got:-}" = "$want" ] && [ -n "${rc:-}" ] && { echo "$rc"; return; }
+        sleep 0.05
+    done
+    echo ""
+}
 serve() {
     local dev pid t0
     t0=$(( $(date +%s) - 1 ))
@@ -68,14 +90,15 @@ serve() {
     # Detached from this script's stdout, which the caller reads to its end.
     # A later call of this script must learn the exit status of serve,
     # which is not its child: a small shell stays with it and writes
-    # its pid and then its status down.
+    # its pid and then the pid with its status down.
     : > "$DIR.serve.rc"
     # shellcheck disable=SC2016
     setsid bash -c '
         "$@" &
-        echo $! > "$0.serve.pid"
-        wait $!
-        echo $? > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
+        p=$!
+        echo "$p" > "$0.serve.pid"
+        wait "$p"
+        echo "$p $?" > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" "${REQUEST_LOG[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
     for _ in $(seq 1 100); do [ -s "$DIR.serve.pid" ] && break; sleep 0.02; done
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do
@@ -85,7 +108,7 @@ serve() {
             ublksrvd_look "${dev#/dev/ublkb}" "$t0" "${BLK_UBLKSRVD_SEEN:-}"
             echo "$dev" > "$DIR.device"; echo "$dev"; return 0
         fi
-        kill -0 "$pid" 2>/dev/null || { sleep 0.2; die "serve exited $(cat "$DIR.serve.rc") before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
+        kill -0 "$pid" 2>/dev/null || { die "serve exited $(serve_rc) before it was ready: $(tail -n 2 "$DIR.serve.log" | tr '\n' ' ')"; }
         sleep 0.25
     done
     die "serve was not ready after 60 s"
@@ -167,7 +190,7 @@ create)
     ;;
 kill)
     serve_pid=$(cat "$DIR.serve.pid" 2>/dev/null)
-    if [ -n "$serve_pid" ] && ! kill -0 "$serve_pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+    if [ -n "$serve_pid" ] && ! kill -0 "$serve_pid" 2>/dev/null && [ "$(serve_rc)" = 3 ]; then
         # The log failed and the server exited by itself: there is no
         # daemon to lose, and a failed volume is not served again
         # without `reopen`. The device stays the deleted one.
@@ -223,7 +246,7 @@ kill)
     ;;
 fail)
     pid=$(cat "$DIR.serve.pid" 2>/dev/null); [ -n "$pid" ] || die "no serve pid"
-    if ! kill -0 "$pid" 2>/dev/null && [ "$(cat "$DIR.serve.rc" 2>/dev/null)" = 3 ]; then
+    if ! kill -0 "$pid" 2>/dev/null && [ "$(serve_rc)" = 3 ]; then
         # The log has failed already and the server is gone: it stays failed.
         echo "fail $N: the log had failed already" >> "$WORK/helper.log"
         exit 0
@@ -236,8 +259,7 @@ fail)
     # for a deleted device.
     for _ in $(seq 1 200); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
     kill -0 "$pid" 2>/dev/null && die "serve was still running 10 s after SIGUSR1"
-    sleep 0.1
-    rc=$(cat "$DIR.serve.rc" 2>/dev/null)
+    rc=$(serve_rc)
     [ "$rc" = 3 ] || die "serve exited ${rc:-with no status} after SIGUSR1, wanted 3"
     DEV=""
     ;;
@@ -270,6 +292,10 @@ destroy)
     [ -z "${BLK_PREFILL_TO_HIGH:-}" ] || steps_line destroy
     stop_serve
     lim 90 "$SKYZFSD" detach --dir "$DIR" --run-dir "$RUN" >&2
+    # With the request log, where each file of the volume lay on the
+    # disk, so that the disk's requests in a trace can be read as the
+    # image's blocks.
+    [ -z "${BLK_REQUEST_LOG:-}" ] || find "$DIR" -type f -exec filefrag -v -b512 {} + > "$DIR.extents" 2>&1
     find "$DIR" "$RUN" "$DIR.ready" "$DIR.serve.pid" "$DIR.serve.rc" -delete 2>/dev/null
     DEV=""
     ;;

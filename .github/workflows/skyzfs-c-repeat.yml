@@ -1,0 +1,93 @@
+name: skyzfs-c-repeat
+
+# Check c's first pass many times on one runner, for one or more builds
+# of the daemon in turn, with the kernel's block trace and the daemon's
+# request log, and udev's watch on ublk devices on (as the image ships
+# it) or off (as the daemon rig has it). tests/kernel/c-repeat-rig.sh has
+# the logic and says why it exists (#58, M1.T28). It judges nothing:
+# read the summary. By dispatch; a push of this file on a testing branch
+# runs one pass of the checkout's daemon, so that the workflow can be
+# dispatched from the branch.
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "runner image"
+        default: ubuntu-26.04
+      daemons:
+        description: "daemons to build with their test hooks, LABEL=COMMIT (40 hex digits) with a space between; empty: the checkout's, labelled checkout"
+        default: ""
+      rounds:
+        description: "passes of check c's first pass for each daemon, in turn on one machine"
+        default: "10"
+      watch:
+        description: "udev's watch on ublk devices: on (the image's rules) or off (the daemon rig's rule)"
+        type: choice
+        options: ["on", "off"]
+        default: "on"
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - .github/workflows/skyzfs-c-repeat.yml
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: ${{ inputs.image || 'ubuntu-26.04' }}, watch ${{ inputs.watch || 'on' }}
+    runs-on: ${{ inputs.image || 'ubuntu-26.04' }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Build
+        env:
+          DAEMONS: ${{ inputs.daemons || '' }}
+          ROUNDS: ${{ inputs.rounds || '1' }}
+          WATCH: ${{ inputs.watch || 'on' }}
+        run: |
+          [[ $ROUNDS =~ ^[0-9]+$ ]] || { echo "::error::rounds is a number: '$ROUNDS'"; exit 64; }
+          case $WATCH in on|off) ;; *) echo "::error::watch is on or off: '$WATCH'"; exit 64 ;; esac
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          cargo build --release --locked -p skyzfs-blkcheck
+          list=""
+          if [ -z "$DAEMONS" ]; then
+            cargo build --release --locked -p skyzfsd --features test-hooks
+            cp target/release/skyzfsd "$RUNNER_TEMP/skyzfsd-checkout"
+            list="checkout=$RUNNER_TEMP/skyzfsd-checkout"
+            echo "- checkout: skyzfsd built from the checkout with its test hooks" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          for d in $DAEMONS; do
+            label=${d%%=*}; ref=${d#*=}
+            [[ $label =~ ^[a-z0-9.-]+$ && $ref =~ ^[0-9a-f]{40}$ ]] || { echo "::error::a daemon is LABEL=COMMIT: '$d'"; exit 64; }
+            git fetch --no-tags --depth=1 origin "$ref"
+            git worktree add --detach "$RUNNER_TEMP/src-$label" "$ref"
+            # One target directory: the second build reuses what the
+            # first built of the dependencies.
+            (cd "$RUNNER_TEMP/src-$label" && CARGO_TARGET_DIR=$RUNNER_TEMP/target cargo build --release --locked -p skyzfsd --features test-hooks)
+            cp "$RUNNER_TEMP/target/release/skyzfsd" "$RUNNER_TEMP/skyzfsd-$label"
+            list+=" $label=$RUNNER_TEMP/skyzfsd-$label"
+            echo "- $label: skyzfsd built from \`$ref\` with its test hooks" >> "$GITHUB_STEP_SUMMARY"
+          done
+          {
+            printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
+            printf 'export RIG_DAEMONS=%q\n' "${list# }"
+            printf 'export RIG_ROUNDS=%q\n' "$ROUNDS"
+            printf 'export RIG_WATCH=%q\n' "$WATCH"
+          } > "$RUNNER_TEMP/rig.env"
+      - name: Rig
+        run: |
+          rc=0
+          sudo bash -c '. "$1" && exec tests/kernel/c-repeat-rig.sh "$2"' rig "$RUNNER_TEMP/rig.env" "$PWD/repeat-out" || rc=$?
+          sudo chmod -R a+rX repeat-out 2>/dev/null || true
+          cat repeat-out/summary.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          exit $rc
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: c-repeat-${{ inputs.image || 'ubuntu-26.04' }}-watch-${{ inputs.watch || 'on' }}
+          path: repeat-out/
+          retention-days: 30

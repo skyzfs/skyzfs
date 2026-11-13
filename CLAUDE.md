@@ -243,8 +243,10 @@ there, and the user decides when it merges.
   only the cache held, and what the daemon and the pool do when the
   disk fails at a start or while serving. Its negative control is a
   daemon from before the cache drop, by dispatch: `daemon_ref` with
-  cd0e763's full id and `checks: g` (run 43397129438), where three
-  lines must differ. Check f (what a pool does after a
+  cd0e763's full id and `checks: g` (run 43420754305), where four
+  lines must differ, the daemon's failure reason among them
+  (`pin_failure_reason_is_the_images`, M1.T26: the reason the daemon
+  gives for a failed image is read in four places). Check f (what a pool does after a
   refused start; the input `f_courses` names the courses) runs by
   dispatch only, one course per job, and judges nothing but its
   control. The summary
@@ -255,7 +257,20 @@ there, and the user decides when it merges.
   run `skyzfs-blkcheck --replay c-trace.tsv VOLUME`: it replays that
   volume's calls through the model with no kernel and prints the same
   violation, or shows that the rig's bookkeeping and not the server was
-  at fault.
+  at fault. A replay that agrees with the rig does not show the server
+  wrong: the trace holds the tool's calls, not the requests the server
+  was handed, and a call can return long after the kernel completed it
+  (in #58 a udev read held a page of a direct write's range across a
+  kill, and the tool took the write for reissued). Since M1.T28
+  check c runs with udev's watch on ublk devices off, and the artifact
+  of a pass where a case failed keeps what the server was handed and
+  answered (`c-cN.requests.tsv.gz`, `cd-` for the pass with the delay,
+  from `serve --request-log` of a test-hooks build that has it) and the
+  kernel's block trace on the same clock (`c-ftrace.txt.gz`): read the
+  volume from both sides before calling such a failure a verdict. The
+  line `obs_c_evidence` says what was kept; a pass with no block trace
+  is an error of the rig. `skyzfs-c-repeat.yml` (dispatch) repeats
+  check c's passes on one runner.
 - **The control rig.** `skyzfs-control-rig.yml` runs on a pull request
   that touches `crates/skyzfs-ublk-sys/`, `crates/skyzfs-ublk/`,
   `crates/skyzfs-blk/`, `crates/skyzfs-local/`, `Cargo.lock`,
