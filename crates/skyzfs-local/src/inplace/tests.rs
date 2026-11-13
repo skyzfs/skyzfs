@@ -923,7 +923,12 @@ fn the_start_refuses_a_store_with_requests_in_flight() {
 /// the conversion makes, gives `Failed`, and the next start finds the
 /// volume marked as failed. Where the in-place store's own sync failed
 /// (the last), the marker is handed back unwritten, with the lock: no
-/// marker yet, and no other start, until the caller finishes it.
+/// marker yet, and no other start, until the caller finishes it. The
+/// start says what failed: here the log holds operations to apply, so
+/// the image at that sync, the log store at every one before it (the
+/// daemon's failure note gives the two different reasons). With
+/// nothing to apply, see
+/// `a_start_with_nothing_to_apply_reports_the_image_at_every_sync`.
 #[test]
 fn a_start_that_meets_the_failed_disk_fails_the_volume() {
     let mut handed_back = 0;
@@ -939,6 +944,12 @@ fn a_start_that_meets_the_failed_disk_fails_the_volume() {
         };
         failing += 1;
         let marked = || disk.list().unwrap().iter().any(|n| n == MARKER_NAME);
+        let failed = start_failed.failed();
+        assert_eq!(
+            failed == StartFailed::Image,
+            !marked(),
+            "sync {nth}: {failed:?}"
+        );
         if !marked() {
             handed_back += 1;
             assert!(matches!(
@@ -974,6 +985,56 @@ fn a_start_that_meets_the_failed_disk_fails_the_volume() {
         );
     }
     assert!(failing >= 2, "{failing} syncs failed the conversion");
+    assert_eq!(
+        handed_back, 1,
+        "the in-place store's own sync hands it back"
+    );
+}
+
+/// A start whose log holds nothing to apply, as after an earlier start
+/// in place (check g's volume, whose log held 0 operations): a failure
+/// at each sync the start makes, the log store's hand-over (whose
+/// marker is written) and the in-place store's own (whose marker is
+/// handed back) alike, is reported as the image's. Nothing of the log
+/// store's own is at stake there; a failure of the log file's own sync
+/// is reported so too, which is accepted until M1.3t removes the
+/// hand-over (`StartFailed`). The next start finds the volume failed.
+#[test]
+fn a_start_with_nothing_to_apply_reports_the_image_at_every_sync() {
+    let mut failing = 0;
+    let mut handed_back = 0;
+    for nth in 0.. {
+        let disk = created(12, 0);
+        // A first start applies the log; the next has nothing to apply.
+        drop(start(&disk, 0, false).unwrap());
+        disk.kill();
+        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        disk.fail_sync(nth, false);
+        let start_failed = match store.into_in_place(None) {
+            Ok(_) => break,
+            Err(IntoInPlaceError::Failed(start_failed)) => start_failed,
+            Err(other) => panic!("sync {nth}: {other}"),
+        };
+        failing += 1;
+        assert_eq!(start_failed.failed(), StartFailed::Image, "sync {nth}");
+        if !disk.list().unwrap().iter().any(|n| n == MARKER_NAME) {
+            handed_back += 1;
+        }
+        drop(start_failed);
+        disk.clear_faults();
+        disk.kill();
+        assert!(
+            matches!(
+                start(&disk, 0, false),
+                Err(StoreError::Log(LogError::MarkedFailed))
+            ),
+            "sync {nth}"
+        );
+    }
+    assert!(
+        failing >= 2,
+        "{failing} syncs failed the start: the hand-over's are not reached"
+    );
     assert_eq!(
         handed_back, 1,
         "the in-place store's own sync hands it back"

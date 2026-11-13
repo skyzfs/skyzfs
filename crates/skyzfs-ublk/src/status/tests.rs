@@ -1128,10 +1128,7 @@ fn the_report_shows_a_failure_of_this_boot_and_what_it_needs() {
             continue;
         }
         let held = matches!(noted, Noted::Whole(s) if s.failure.held == Held::Yes);
-        assert_eq!(
-            value(&lines, "failure"),
-            Some("the log failed while the volume was served")
-        );
+        assert_eq!(value(&lines, "failure"), Some("the log store's log failed"));
         assert_eq!(
             value(&lines, "failure_held"),
             Some(if held { "yes" } else { "no" })

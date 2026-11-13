@@ -55,6 +55,7 @@ jobs:
       - run: bash tests/lib/test_apt_fallback.sh
       - run: bash tests/lib/test_lim.sh
       - run: bash tests/bench/test_copy_limit.sh
+      - run: bash tests/kernel/test_zfs_stuck.sh
       - run: python3 tests/bench/test_skz_time.py
       - run: python3 tests/bench/test_bracket.py
       - run: python3 tests/bench/test_syscalls.py

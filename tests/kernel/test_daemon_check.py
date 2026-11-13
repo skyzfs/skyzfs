@@ -14,8 +14,10 @@ import c_low_steps as cls  # noqa: E402
 # The checks of a run by default. Check f is asked for by name, and a
 # result of a check that was not asked for is a rig error: F below is
 # what the tables hold for it.
-ALL = {'a', 'b', 'c', 'd', 'e'}
+ALL = {'a', 'b', 'c', 'd', 'e', 'g'}
 F = [name for name, (check, *_) in list(dc.EXPECTED.items()) + list(dc.OBSERVED.items()) if check == 'f']
+# Check g's pins and control: the daemon's in-place store (M1.T23).
+G = [name for name, (check, *_) in dc.EXPECTED.items() if check == 'g']
 
 
 def cases(impl='reference'):
@@ -47,6 +49,8 @@ def as_expected(impl='reference'):
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
         r['ctl_recovered_log_too_short_no_log_device'] = 'FAIL: seen'
+        for name in G:
+            r[name] = f'{dc.EXPECTED[name][1]}: seen'
         # And those the daemon cannot carry yet.
         for name in dc.WAITS_FOR_THE_DAEMON:
             r[name] = 'WAITING: seen'
@@ -160,6 +164,8 @@ class Cases(unittest.TestCase):
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
+        for name in G:
+            r[name] = f'{dc.EXPECTED[name][1]}: seen'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -472,6 +478,50 @@ class InPlace(unittest.TestCase):
         self.assertTrue(any('C_DECLARED' in d for d in differs), differs)
 
 
+class CheckG(unittest.TestCase):
+    """Check g (M1.T23): the daemon's in-place store, a disk that fails for real."""
+
+    def test_on_the_daemon_in_place_every_line_is_judged(self):
+        r = in_place()
+        rows, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+        self.assertEqual((differs, errors), ([], []))
+        self.assertTrue(all(want in ('PASS', 'FAIL') for name, want, *_ in rows if name in G), rows)
+
+    def test_a_start_that_serves_the_cache_differs(self):
+        r = in_place()
+        r['pin_start_serves_what_the_disk_holds'] = 'FAIL: the start served byte 0x22'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+        self.assertEqual(len(differs), 1)
+        self.assertEqual(errors, [])
+
+    def test_a_control_that_passes_differs(self):
+        r = in_place()
+        r['ctl_g_old_content_after_good_sync'] = 'PASS: the start served 0x11'
+        _, differs, _ = dc.judge(r, ALL, impl='daemon', store='in-place')
+        self.assertEqual(len(differs), 1)
+
+    def test_with_the_log_store_it_is_na(self):
+        r = as_expected('daemon')
+        r.update(impl='daemon: x', store='log', ctl_recovered_log_too_short='FAIL: refused')
+        r.update({name: 'NA: check g is of the in-place store' for name in G})
+        _, differs, errors = dc.judge(r, ALL, impl='daemon', store='log')
+        self.assertEqual((differs, errors), ([], []))
+
+    def test_on_the_stand_in_it_waits(self):
+        rows, differs, errors = dc.judge(as_expected(), ALL)
+        self.assertEqual((differs, errors), ([], []))
+        self.assertEqual({want for name, want, *_ in rows if name in G}, {'WAITING'})
+
+    def test_its_observations_are_the_daemons(self):
+        r = as_expected()
+        for name in ('obs_g_failed_sync', 'obs_g_new_descriptor_after_failed_sync', 'obs_g_reads_while_failing'):
+            del r[name]
+        self.assertEqual(dc.judge(r, ALL)[1:], ([], []))
+        r = in_place()
+        del r['obs_g_failed_sync']
+        self.assertTrue(any('obs_g_failed_sync' in e for e in dc.judge(r, ALL, impl='daemon', store='in-place')[2]))
+
+
 class Main(unittest.TestCase):
     def test_exit_statuses(self):
         import contextlib
@@ -519,7 +569,7 @@ class Main(unittest.TestCase):
     def test_checks_that_name_nothing_are_refused(self):
         lines = [f'{k}\t{v}\n' for k, v in as_expected().items()]
         self.assertEqual(self.run_main(lines)[0], 0)
-        self.assertEqual(self.run_main(lines, '--checks', 'a b c d e')[0], 0)
+        self.assertEqual(self.run_main(lines, '--checks', 'a b c d e g')[0], 0)
         for asked in (' ', '', 'abcde', 'a b x', 'a,b'):
             status, text = self.run_main(lines, '--checks', asked)
             self.assertEqual(status, 2, repr(asked))

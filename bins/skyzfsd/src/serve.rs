@@ -29,8 +29,10 @@
 //! | the queue went away, or the target did | 1 |
 //!
 //! After an orderly stop the device stays and waits for the next
-//! server. When the volume fails, the failure is noted, the device's
-//! note is removed and the device is deleted ([`lifecycle::fail_serving`]),
+//! server. When the volume fails, the failure is noted with the store's
+//! reason (the log store's log, or the in-place store's image: a write
+//! or a sync of it), the device's note is removed and the device is
+//! deleted ([`lifecycle::fail_serving`]),
 //! under the volume's lock: the main thread has a hold of its own on
 //! the lock the store took, from the start until it returns, so the
 //! lock does not depend on what becomes of the store on the queue's
@@ -78,10 +80,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use skyzfs_local::inplace::StartFailed;
 use skyzfs_local::log::SUPER_NAME;
 use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker, Zeroes};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
-use skyzfs_ublk::lifecycle::{self, Stop, Wanted};
+use skyzfs_ublk::lifecycle::{self, Reason, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
@@ -456,6 +459,29 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
+/// The reason the failure note gives for a volume that failed while it
+/// was served: the log store's log, or the in-place store's image (a
+/// write or a sync of it: both fail the volume).
+fn served_failure(store: StoreKind) -> Reason {
+    match store {
+        StoreKind::Log => Reason::LogFailed,
+        StoreKind::InPlace => Reason::ImageFailed,
+    }
+}
+
+/// The reason the failure note gives for a start of the in-place store
+/// that failed, true to the file that failed as far as the start can
+/// tell: the log store's hand-over with operations in its log to apply
+/// keeps the log's reason; the hand-over with nothing to apply, and the
+/// in-place store's own sync of the image, give the image's
+/// (`StartFailed`).
+fn start_failure(failed: StartFailed) -> Reason {
+    match failed {
+        StartFailed::Log => Reason::LogFailed,
+        StartFailed::Image => Reason::ImageFailed,
+    }
+}
+
 /// The store's times as the status file holds them: the file keeps no
 /// count of the batches a step's parts were measured over, so those
 /// are left out here as a reader of the file finds them.
@@ -776,8 +802,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // failure of the volume, and ends with exit 1 as it does
             // while the log store serves (`Err(other)`).
             Err(skyzfs_local::inplace::IntoInPlaceError::Failed(start)) => {
-                let (failure, written, deleted) =
-                    lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
+                let (failure, written, deleted) = lifecycle::fail_serving(
+                    &mut kernel,
+                    &mut records,
+                    number,
+                    identity,
+                    start_failure(start.failed()),
+                );
                 say(format_args!(
                     "the volume failed at the start of the in-place store ({}); client holds the \
                      device: {:?}{}{}. Note: {}",
@@ -1025,8 +1056,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         //
         // The volume's lock is held: by `_lock`, whatever the queue's
         // thread has done with the store.
-        let (failure, written) =
-            lifecycle::note_failure(&mut kernel, &mut records, number, identity);
+        let (failure, written) = lifecycle::note_failure(
+            &mut kernel,
+            &mut records,
+            number,
+            identity,
+            served_failure(serve.store),
+        );
         let (mut answered, mut ended) = (false, false);
         for _ in 0..ANSWER_LOOKS {
             // The thread's end first: a flag set just before the end
@@ -1094,8 +1130,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     finish(&board);
     // A failure can arrive with the queue's end.
     if flags.failed.load(Ordering::SeqCst) {
-        let (failure, written) =
-            lifecycle::note_failure(&mut kernel, &mut records, number, identity);
+        let (failure, written) = lifecycle::note_failure(
+            &mut kernel,
+            &mut records,
+            number,
+            identity,
+            served_failure(serve.store),
+        );
         let deleted = lifecycle::delete_failed(&mut kernel, &mut records, number);
         say(format_args!(
             "the volume failed while it was served ({}){}{}. Note: {}",
@@ -1187,6 +1228,24 @@ mod tests {
         assert!(by_flag.contains("still waits"), "{by_flag}");
         assert!(!by_flag.contains(&goes_on), "{by_flag}");
         assert!(!by_flag.contains(&alone), "{by_flag}");
+    }
+
+    /// Each store's failure is noted with its own reason: the log store's
+    /// with the log's (code 1 in the note), the in-place store's with
+    /// the image's (code 7), while it serves and when its own sync fails
+    /// at its start. A start of the in-place store that failed in the
+    /// log store's hand-over keeps the log's where the log held
+    /// operations to apply (`StartFailed::Log`).
+    #[test]
+    fn each_store_notes_its_own_failure() {
+        assert_eq!(served_failure(StoreKind::Log), Reason::LogFailed);
+        assert_eq!(served_failure(StoreKind::InPlace), Reason::ImageFailed);
+        assert_eq!(start_failure(StartFailed::Log), Reason::LogFailed);
+        assert_eq!(start_failure(StartFailed::Image), Reason::ImageFailed);
+        assert_eq!(
+            Reason::ImageFailed.to_string(),
+            "a write or sync of the volume's image failed"
+        );
     }
 
     /// `--fail-log-after` counts what appends to the log: not reads,

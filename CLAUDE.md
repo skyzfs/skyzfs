@@ -236,7 +236,15 @@ there, and the user decides when it merges.
   stays within its bound, kills inside a step lose nothing, the suite
   passes with each log left at the high mark so that steps fall inside
   its cases) but not on a failure with a request held: that one pin is
-  WAITING, and the summary says so. Check f (what a pool does after a
+  WAITING, and the summary says so. Check g (M1.T23) puts the volume's
+  directory on a device-mapper device that the rig switches to the
+  `error` target, so a sync of the home image fails in the kernel: it
+  pins that the next start serves what the disk holds and not what
+  only the cache held, and what the daemon and the pool do when the
+  disk fails at a start or while serving. Its negative control is a
+  daemon from before the cache drop, by dispatch: `daemon_ref` with
+  cd0e763's full id and `checks: g` (run 43397129438), where three
+  lines must differ. Check f (what a pool does after a
   refused start; the input `f_courses` names the courses) runs by
   dispatch only, one course per job, and judges nothing but its
   control. The summary
