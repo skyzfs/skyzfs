@@ -154,28 +154,33 @@ mod tests {
     /// `mapped_in` and not `mapped` because on amd64 the system's page
     /// is 4096, so `mapped` would pass with the size fixed at 4096
     /// too. It maps four pages of the system aligned to four, unmaps
-    /// the first, and asks about the second: with pages of four of the
+    /// the first, and asks about the fourth: with pages of four of the
     /// system's, the range reaches the unmapped one; with the system's
-    /// own, it does not.
+    /// own, or with two of them, it does not. (From the second page, a
+    /// rounding to two would reach the hole as well.)
     ///
-    /// Another thread of the test binary can map a page into the hole
-    /// and unmap it again while the test asks, so no one attempt can
-    /// prove the rounding wrong. The defect, a range rounded to the
-    /// system's page whatever page is given, makes the larger page miss
-    /// the hole in every attempt, while a thread in the hole does so
-    /// only now and then. So an attempt counts when the hole was empty
-    /// before and after the answers, and the test passes at the first
-    /// counted attempt in which the larger page reached the hole; it
-    /// fails if none of 100 attempts did. (In run 43463408420 of ci the
-    /// test as it was before failed so: the hole read as empty after
-    /// the answers, and the larger page had missed it, most likely
-    /// because a page was mapped into the hole and unmapped in between.)
+    /// The hole has a page of the test's own mapping on each side, so
+    /// only a mapping of exactly one page can land in it, and the test
+    /// binary makes none. Without the page below, the hole could be
+    /// the mapping's first page and join the free space under it, and
+    /// another thread's larger mapping (a thread's signal stack, an
+    /// allocator's arena) could end on it while the test asked and be
+    /// gone again after: in run 43463408420 of ci the test failed so,
+    /// with the hole read as empty after the answers and the larger
+    /// page having missed it, and the review reproduced that.
+    ///
+    /// An attempt still counts only when the hole read as empty before
+    /// and after the answers. The defect, a range rounded to less than
+    /// the page given, makes the larger page miss the hole in every
+    /// attempt; anything else in the hole does so only now and then. So
+    /// the test passes at the first counted attempt in which the larger
+    /// page reached the hole, and fails if none of 100 attempts did.
     #[test]
     fn mapped_in_rounds_to_the_page_it_is_given() {
         let mut counted = 0;
         for _ in 0..100 {
             if let Some((own, larger)) = with_a_hole() {
-                assert!(own, "the page after the hole reads as unmapped");
+                assert!(own, "the fourth page from the hole reads as unmapped");
                 counted += 1;
                 if !larger {
                     return;
@@ -186,9 +191,10 @@ mod tests {
         panic!("a page four times larger did not reach the hole in {counted} attempts");
     }
 
-    /// Map, make the hole, and ask `mapped_in` about the page after it
-    /// with the system's page and with one four times larger; `None`
-    /// where the hole read as mapped before or after the answers.
+    /// Map, make the hole, and ask `mapped_in` about the fourth page
+    /// from it with the system's page and with one four times larger;
+    /// `None` where the hole read as mapped before or after the
+    /// answers.
     fn with_a_hole() -> Option<(bool, bool)> {
         let host = page_size();
         let large = 4 * host;
@@ -208,16 +214,20 @@ mod tests {
         };
         assert_ne!(base, libc::MAP_FAILED);
         let base = base as usize;
-        let aligned = base.div_ceil(large) * large;
+        // The first start aligned to `large` strictly above `base`, so
+        // that a page of the mapping lies below the hole; `aligned +
+        // large` is still inside it.
+        let aligned = (base / large + 1) * large;
         // SAFETY: the first page of `aligned` lies inside the mapping
         // made above, and nothing refers to it.
         let unmapped = unsafe { libc::munmap(aligned as *mut libc::c_void, host) };
         assert_eq!(unmapped, 0);
-        let second = aligned + host;
+        let after = aligned + host;
+        let fourth = aligned + 3 * host;
         let filled_before = mapped_in(aligned, host, host);
         let answers = (
-            mapped_in(second, host, host) && mapped(second, host),
-            mapped_in(second, host, large),
+            mapped_in(fourth, host, host) && mapped(fourth, host),
+            mapped_in(fourth, host, large),
         );
         let filled = filled_before || mapped_in(aligned, host, host);
         // SAFETY: what is left of the mapping made above, around the
@@ -225,7 +235,7 @@ mod tests {
         // thread mapped into the hole is not touched.
         unsafe {
             libc::munmap(base as *mut libc::c_void, aligned - base);
-            libc::munmap(second as *mut libc::c_void, base + room - second);
+            libc::munmap(after as *mut libc::c_void, base + room - after);
         }
         (!filled).then_some(answers)
     }
