@@ -49,3 +49,17 @@ Verdict: nothing blocks the merge.
 
 - A stress that does not reproduce a failure says little until it makes
   the kind of mapping the real binary makes. Trace the binary first.
+
+## Second look, e2e5ca1
+
+Both suggestions taken: `aligned` strictly above `base`, and the fourth
+page asked about. It can merge from the review's side once CI is green.
+
+- `plants61-e2e5ca1.txt`: the head and three planted roundings (the
+  system's page, half the page given, twice the page given), each 200
+  runs alone, 200 of the whole binary and three runs under churn. The
+  first two plants fail every time; nothing fills the hole at the head
+  (2.86 million attempts). A rounding to twice the page given passes:
+  the test claims only "less than the page given".
+- `churn2.py`: inserts the churn probe used for those runs into
+  `watch.rs` at e2e5ca1.

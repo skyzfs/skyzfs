@@ -1,0 +1,16 @@
+head e2e5ca1: the test alone, 200 runs: 200 pass; the whole binary, 200 runs: 200 pass
+head e2e5ca1: under churn: attempts 956214; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 956214; counted and missed 0; longest run without a pass 0
+head e2e5ca1: under churn: attempts 980539; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 980539; counted and missed 0; longest run without a pass 0
+head e2e5ca1: under churn: attempts 925489; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 925489; counted and missed 0; longest run without a pass 0
+plant: rounds to the system's page: the test alone, 200 runs: 0 pass; the whole binary, 200 runs: 0 pass
+plant: rounds to the system's page: under churn: attempts 934034; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 934034; longest run without a pass 934034
+plant: rounds to the system's page: under churn: attempts 859464; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 859464; longest run without a pass 859464
+plant: rounds to the system's page: under churn: attempts 789107; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 789107; longest run without a pass 789107
+plant: rounds to half the page given: the test alone, 200 runs: 0 pass; the whole binary, 200 runs: 0 pass
+plant: rounds to half the page given: under churn: attempts 903690; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 903690; longest run without a pass 903690
+plant: rounds to half the page given: under churn: attempts 791643; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 791643; longest run without a pass 791643
+plant: rounds to half the page given: under churn: attempts 889782; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 0; counted and missed 889782; longest run without a pass 889782
+plant: rounds to twice the page given: the test alone, 200 runs: 200 pass; the whole binary, 200 runs: 200 pass
+plant: rounds to twice the page given: under churn: attempts 953291; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 953291; counted and missed 0; longest run without a pass 0
+plant: rounds to twice the page given: under churn: attempts 785868; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 785868; counted and missed 0; longest run without a pass 0
+plant: rounds to twice the page given: under churn: attempts 882488; not counted (hole read as mapped) 0; fourth page read as unmapped 0; counted and reached 882488; counted and missed 0; longest run without a pass 0
