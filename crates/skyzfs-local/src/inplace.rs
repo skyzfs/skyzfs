@@ -373,24 +373,37 @@ pub struct FailedStart {
 /// What failed at a start of the in-place store
 /// ([`FailedStart::failed`]), for the daemon's failure note: the two
 /// are told apart there (`skyzfs_ublk::lifecycle::Reason`).
+///
+/// The reason is true to the file that failed, as far as the start can
+/// tell (the lead's ruling for M1.3x). Before the in-place store takes
+/// over, the log store settles, syncs its log and checkpoints it into
+/// the home image (`Store::into_in_place`): where the log held
+/// operations to apply, a failure there is the log store's (`Log`);
+/// where it held none, nothing of the log store's own was at stake, and
+/// the failure is the image's or the device's under it (`Image`). With
+/// an empty log a failure of the log file's own sync is so reported as
+/// the image's too: the start cannot tell the two apart, and the
+/// hand-over goes with the log store in M1.3t.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartFailed {
-    /// The log store, in the checkpoint that empties its log into the
-    /// home image before the in-place store takes over: the log store's
-    /// own failure, which its failure path has marked already.
+    /// The log store, in the hand-over, with operations in its log to
+    /// apply into the home image: the log store's own failure, which
+    /// its failure path has marked already.
     Log,
-    /// The in-place store's own sync of the home image.
+    /// The home image: the in-place store's own sync of it, or the
+    /// hand-over when the log held nothing to apply.
     Image,
 }
 
 impl FailedStart {
-    /// A start that the log store failed, with its marker already
-    /// tried.
-    pub(crate) fn written() -> Self {
+    /// A start that failed in the log store's hand-over, with its
+    /// marker already tried; `failed` says which file it is reported
+    /// as ([`StartFailed`]).
+    pub(crate) fn written(failed: StartFailed) -> Self {
         Self {
             marker: Marker::Done,
             lock: None,
-            failed: StartFailed::Log,
+            failed,
         }
     }
 

@@ -555,6 +555,12 @@ struct Index {
 }
 
 impl Index {
+    /// Whether no block's newest version is in the log: a checkpoint
+    /// has nothing to apply.
+    fn is_empty(&self) -> bool {
+        self.extents.is_empty()
+    }
+
     /// `len` blocks from `start` are now at `source`.
     fn insert(&mut self, start: u64, len: u64, source: Source) {
         let end = start + len;
@@ -3444,23 +3450,33 @@ impl<D: Dir> Store<D> {
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
     {
-        use crate::inplace::{FailedStart, IntoInPlaceError};
+        use crate::inplace::{FailedStart, IntoInPlaceError, StartFailed};
         if !self.queue.is_empty() || !self.ids.is_empty() {
             return Err(IntoInPlaceError::InFlight);
         }
         // A failure of the log store marks the log as its own failure
         // path does (here, on this thread), before this returns; only
         // the in-place store's own sync hands its marker back unwritten.
-        let failed = |core: &Core<D>| {
+        let failed = |core: &Core<D>, what: StartFailed| {
             if core.helper_ended {
                 IntoInPlaceError::HelperEnded
             } else {
-                IntoInPlaceError::Failed(FailedStart::written())
+                IntoInPlaceError::Failed(FailedStart::written(what))
             }
         };
+        // A store that failed before the hand-over failed in the log
+        // store's own open or service.
         if self.core.failed {
-            return Err(failed(&self.core));
+            return Err(failed(&self.core, StartFailed::Log));
         }
+        // What a failure of the hand-over is reported as: the log store's
+        // own where its log holds operations to apply into the home
+        // image, and otherwise the image's ([`StartFailed`]).
+        let what = if self.core.shared.read().index.is_empty() {
+            StartFailed::Image
+        } else {
+            StartFailed::Log
+        };
         self.core.marks = None;
         self.core.working = false;
         self.core.log.set_hold(None);
@@ -3471,7 +3487,7 @@ impl<D: Dir> Store<D> {
             .and_then(|()| self.core.checkpoint())
             .and_then(|_| self.core.settle());
         if emptied.is_err() || self.core.failed {
-            return Err(failed(&self.core));
+            return Err(failed(&self.core, what));
         }
         let (start, end) = (self.core.log.floor(), self.core.log.tail());
         if start != end {

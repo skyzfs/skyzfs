@@ -470,9 +470,11 @@ fn served_failure(store: StoreKind) -> Reason {
 }
 
 /// The reason the failure note gives for a start of the in-place store
-/// that failed: the log store, in the checkpoint that empties its log
-/// into the image, keeps the log's reason; the in-place store's own sync
-/// of the image gives the image's.
+/// that failed, true to the file that failed as far as the start can
+/// tell: the log store's hand-over with operations in its log to apply
+/// keeps the log's reason; the hand-over with nothing to apply, and the
+/// in-place store's own sync of the image, give the image's
+/// (`StartFailed`).
 fn start_failure(failed: StartFailed) -> Reason {
     match failed {
         StartFailed::Log => Reason::LogFailed,
@@ -1225,8 +1227,9 @@ mod tests {
     /// Each store's failure is noted with its own reason: the log store's
     /// with the log's (code 1 in the note), the in-place store's with
     /// the image's (code 7), while it serves and when its own sync fails
-    /// at its start. A start of the in-place store that the log store
-    /// failed, in its checkpoint, keeps the log's.
+    /// at its start. A start of the in-place store that failed in the
+    /// log store's hand-over keeps the log's where the log held
+    /// operations to apply (`StartFailed::Log`).
     #[test]
     fn each_store_notes_its_own_failure() {
         assert_eq!(served_failure(StoreKind::Log), Reason::LogFailed);
