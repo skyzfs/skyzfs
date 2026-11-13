@@ -71,3 +71,27 @@ fe54d96 (8437d05) equals git's own merge. The four wording points of the second
 look are dropped. Ran: in-place tests 31 passed, 1 ignored; `skyzfs-ublk-sys`
 8; `cargo doc -p skyzfs-local` with warnings denied (the paragraph break is
 back).
+
+## Fourth look, at 962d6de (the merges of #46's settled head and of the base's tip)
+
+- e401d5d equals git's own merge of 2e04452 and 6f98d25; 962d6de equals git's
+  own merge of e401d5d and `zfs-topology` at 3af3370 (which holds #46, #48,
+  #49). No Rust file or manifest differs between e401d5d and 962d6de.
+- The own part: six files, 315 lines added and 45 removed against the base's
+  tip; for each file the patch id of `git diff fe54d96 2e04452` equals that of
+  `git diff 6f98d25 e401d5d`.
+- At e401d5d: `skyzfs-local` 275 passed, 4 ignored, real files 4 + 3 + 12 (and
+  4 with `CI=true`); `skyzfs-ublk-sys` 8 + 1; `skyzfsd` 53 + 3. The six
+  large-page tests enter through `into_in_place_with`, so through #46's drop
+  and look, and pass.
+- Plants at e401d5d (`plants.sh` here; t1 and t5 of `../m1.3s/plants3.sh`):
+  q1 and q3 caught, q2 passes as before; probe P 0, 120, 113 of 200; t1 fails
+  the hole test and the simulated disk's test; t5 fails three in-place tests.
+- `cargo test --workspace` does not build here (`devicemapper-sys` needs
+  headers this container lacks), so the author's 1267/0/19 is not checked.
+- A trap met: the disk allowance filled during that build (two target
+  directories of 7 to 9 GB). Removing the target directory of the worktree of
+  an already merged pull request freed it.
+- CI had just restarted on 962d6de when the look was posted; `unit-arm64` is
+  the first run of this package's tests on arm64.
+- Posted: https://github.com/skyzfs/skyzfs/pull/47#issuecomment-6845865676
