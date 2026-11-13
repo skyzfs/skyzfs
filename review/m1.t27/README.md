@@ -60,3 +60,12 @@ itself now ends with exit 2), `check()` going on when data is missing,
 the script not passing on what the daemon was built from.
 
 The hole jobs had not started on this head when CI was read.
+
+## Third look, head 7f1f9b8
+
+Posted. The blocking finding is fixed and held by a test. `plants63c.py`
+(27 plants), results in `plants63-7f1f9b8.txt`: 23 caught; besides the
+three kernel-run wirings, "no control is asked of a checked course that
+has a failure" is not held. `storeloop.sh` is the hole job's replacement
+of `--store` in `serve_args`, run on seven inputs (`storeloop.txt`).
+The hole jobs had not been created on this head when CI was read.

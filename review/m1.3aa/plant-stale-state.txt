@@ -1,0 +1,4 @@
+inplace::tests::the_first_write_zeroes_on_direct_io_replaces_what_the_hand_over_said --- FAILED
+thread 'inplace::tests::the_first_write_zeroes_on_direct_io_replaces_what_the_hand_over_said' (10522) panicked at crates/skyzfs-local/src/inplace/tests.rs:449:5:
+test result: FAILED. 45 passed; 1 failed; 1 ignored; 0 measured; 249 filtered out; finished in 48.32s
+error: test failed, to rerun pass `-p skyzfs-local --lib`

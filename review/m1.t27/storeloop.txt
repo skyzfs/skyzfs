@@ -1,0 +1,11 @@
+[] -> [--store in-place]
+[--store in-place] -> [--store in-place]
+  summary: not --store log
+[--store log] -> [--store in-place]
+[--io-threads 1] -> [--store in-place --io-threads 1]
+  summary: not --store=log
+[--io-threads 1 --store=log] -> [--store in-place --io-threads 1]
+  summary: not --store log
+[--store log --io-threads 2 --store in-place] -> [--store in-place --io-threads 2]
+  summary: not --store 
+[--store] -> [--store in-place]
