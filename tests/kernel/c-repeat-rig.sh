@@ -22,11 +22,15 @@
 # RIG_ROUNDS (passes for each daemon, default 10), RIG_WATCH (on: udev's
 # rules as the image ships them, which watch ublk devices on Ubuntu 26.04;
 # off: the daemon rig's rule that turns the watch off), RIG_PROVOKE (1:
-# with the watch on, a loop opens every ublk device for writing and
-# closes it, every RIG_PROVOKE_MS ms (default 20), so that udev reads the
-# devices under the suite all through the pass: review's finding 4 on
-# #59, the case the model's half of M1.T28 is for, made frequent on
-# purpose), RIG_SERVE_ARGS (default --store in-place).
+# the case the model's half of M1.T28 is for, made frequent on purpose,
+# review's finding 4 on #59. With the watch on, one loop opens every
+# ublk device for writing and closes it every RIG_PROVOKE_MS ms (default
+# 20), so that udev reads the devices under the suite; and one reads
+# every ublk device whole through the page cache, over and over, so that
+# at a server's death a buffered read is in flight, is requeued, and
+# holds its pages locked until the next server answers it: a direct
+# write of the suite over those pages then returns only after the
+# restart), RIG_SERVE_ARGS (default --store in-place).
 #
 # It judges nothing: exit 0 when it ran, 2 for an error of its own. The
 # summary is OUT/summary.md.
@@ -69,12 +73,20 @@ why=$(blktrace_ready) || die "$why"
 MONITOR=""
 PROVOKER=""
 # The provoker: a writable open and close of every ublk device, over and
-# over. The suite holds each device open, so the close is never the last
+# over, and beside it a reader of every ublk device through the page
+# cache. The suite holds each device open, so a close is never the last
 # one and syncs nothing; between a create and the suite's open it may
-# be, and then waits at most for that device's server.
+# be, and then waits at most for that device's server. A read of a
+# device whose server is dead waits for the next one, as the suite does.
 provoke() {
     local d s
     s=$(awk -v ms="$PROVOKE_MS" 'BEGIN { printf "%.3f", ms / 1000 }')
+    while :; do
+        for d in /dev/ublkb*; do
+            [ -b "$d" ] && dd if="$d" of=/dev/null bs=64k status=none 2>/dev/null
+        done
+        sleep "$s"
+    done &
     while :; do
         for d in /dev/ublkb*; do
             [ -b "$d" ] || continue
@@ -87,7 +99,7 @@ provoke() {
 cleanup() {
     blktrace_off
     [ -z "$MONITOR" ] || kill "$MONITOR" 2>/dev/null
-    [ -z "$PROVOKER" ] || kill "$PROVOKER" 2>/dev/null
+    [ -z "$PROVOKER" ] || { pkill -P "$PROVOKER" 2>/dev/null; kill "$PROVOKER" 2>/dev/null; }
     if [ "$WATCH" = off ]; then rm -f "$NOWATCH"; lim 30 udevadm control --reload; fi
 }
 trap cleanup EXIT
@@ -106,13 +118,13 @@ part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
 # shellcheck disable=SC1091
 note "## Check c's first pass, ${ROUNDS} times for each daemon, in turn, on this machine ($(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r))"
 note ""
-note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")$([ -n "$PROVOKE" ] && echo "; udev's reads provoked: every ublk device opened for writing and closed every $PROVOKE_MS ms")"
+note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")$([ -n "$PROVOKE" ] && echo "; reads provoked: every ublk device opened for writing and closed, and read whole through the page cache, in loops with $PROVOKE_MS ms between rounds")"
 note "- the tool: $TOOL"
 note "- the request log (--request-log): ${rl_said}the block trace is on the clock mono, as the log's mono_ns"
 note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); a volume's c-cN.extents (filefrag -b512) are in its sectors"
 note ""
-note "| pass | daemon | exit | cases that FAILED | volumes the model's replay finds wrong | change events of a ublk device | requests issued by udev | seconds |"
-note "|---|---|---|---|---|---|---|---|"
+note "| pass | daemon | exit | cases that FAILED | volumes the model's replay finds wrong | change events of a ublk device | requests issued by udev | buffered reads requeued at a death | seconds |"
+note "|---|---|---|---|---|---|---|---|---|"
 declare -A failed_passes=()
 for r in $(seq 1 "$ROUNDS"); do
     for d in "${DAEMONS[@]}"; do
@@ -133,7 +145,7 @@ for r in $(seq 1 "$ROUNDS"); do
         secs=$(( $(date +%s) - t0 ))
         blktrace_off
         kill "$MONITOR" 2>/dev/null; wait "$MONITOR" 2>/dev/null; MONITOR=""
-        if [ -n "$PROVOKER" ]; then kill "$PROVOKER" 2>/dev/null; wait "$PROVOKER" 2>/dev/null; PROVOKER=""; fi
+        if [ -n "$PROVOKER" ]; then pkill -P "$PROVOKER" 2>/dev/null; kill "$PROVOKER" 2>/dev/null; wait "$PROVOKER" 2>/dev/null; PROVOKER=""; fi
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
         for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
@@ -146,7 +158,10 @@ for r in $(seq 1 "$ROUNDS"); do
         fi
         n_change=$(grep -c 'change .*/ublkb[0-9]* (block)' "$p/udev.txt")
         n_udev=$(grep 'block_rq_issue:' "$p/ftrace.txt" | grep -c 'udev[^]]*\]$')
-        note "| $r | $label | $rc | ${fails:-none} | ${bad:-none} | $n_change | $n_udev | $secs |"
+        # A read through the page cache is RA or R without S; the tool's
+        # direct reads are RS.
+        n_rq=$(grep -E 'block_rq_requeue: [0-9]+,[0-9]+ RA? ' "$p/ftrace.txt" | grep -c .)
+        note "| $r | $label | $rc | ${fails:-none} | ${bad:-none} | $n_change | $n_udev | $n_rq | $secs |"
         gzip -f "$p/c-trace.tsv" "$p/ftrace.txt" "$p"/c-*.requests.tsv "$p"/c-*.extents 2>/dev/null
         # Keep the first pass of each daemon and every pass that failed.
         if [ "$r" != 1 ] && [ -z "$fails" ] && [ $rc = 0 ]; then rm -rf "$p"; fi

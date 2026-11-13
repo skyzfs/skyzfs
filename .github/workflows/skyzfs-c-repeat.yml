@@ -26,7 +26,7 @@ on:
         options: ["on", "off"]
         default: "on"
       provoke:
-        description: "with the watch on: open every ublk device for writing and close it every 20 ms during each pass, so that udev reads the devices under the suite (review's finding 4 on #59)"
+        description: "with the watch on, during each pass: open every ublk device for writing and close it, and read it whole through the page cache, in loops (review's finding 4 on #59; see c-repeat-rig.sh)"
         type: choice
         options: ["no", "yes"]
         default: "no"
