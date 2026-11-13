@@ -43,3 +43,38 @@ On `skz_hang_evidence` and limits: what runs without `lim` is procfs reads of
 output, `kill -0` and the write to `sysrq-trigger`; stacks, sysfs queue
 attributes, debugfs, `ublk list`, cgroup files, `dmesg` and the status are
 under `lim`.
+
+## Second look, at 991cd58
+
+Posted: https://github.com/skyzfs/skyzfs/pull/51#issuecomment-6846985876
+Verdict: it can merge; all five findings dropped. `git diff 50820e3 991cd58`.
+
+- 1: both removals under `lim 120` (by reading; the test's `skz_stop` is a
+  stand-in).
+- 2, as the lead ruled: the workflow ends the sequence when the row's output
+  has `skyzfsd-hang/` (`$TB_OUT/$i`, which is the row's `OUT`), and passes
+  `TB_EARLIER_FAILED` to rows after a failed one; the label says "after failed
+  row N" and the JSON has `earlier_failed`.
+- 3: a `sync` stand-in and two new cases; plants a3 and a4 now fail.
+- 4: run 43384421833 at 991cd58 (sequence badcreate, model, limit1, not-run),
+  read from its artifacts: row 1 no result, row 2 labelled
+  `zfs-slog [model; after failed row 1]` with `earlier_failed [1]`, row 3 with
+  `skyzfsd-hang/` (daemon alive, five threads, ublkb0's attributes), row 4
+  absent. Run 43384124782 at be79787: "Run benchmark" cancelled, "Evidence on
+  failure" ran.
+- 5: the count takes the `== ` lines; the old pattern fails the new check.
+
+What ran: `test_copy_limit.sh` 44 checks, `test_embedded_python.py` 4 tests.
+Plants: a3, a4, the D count with the header, the create's stdout dropped, the
+JSON without the failed rows: all caught. The label line removed: both tests
+pass. `label-lines.sh` holds the script's label lines; by hand they give
+nothing for no failed row, `model; after failed row 3`, `model; after failed
+rows 1,3`, and exit 64 for `x` or `1,3`.
+
+Left, none blocking: the label's text is in no test; the step summary for the
+row the sequence ends on says "the rows after it ran" and then "the sequence
+ended there" (`topology-bench.yml:411-413`); `bracket.py` does not look at
+`earlier_failed`, so a labelled row is still judged.
+
+A trap met: the host of a run's whole-log download is not allowed from this
+container; job logs come through the job-log tool's tail only.
