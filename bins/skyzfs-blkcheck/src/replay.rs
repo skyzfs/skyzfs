@@ -94,6 +94,13 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
     // Between "kill" and "settled" the tool collects the results of the
     // calls that were outstanding; the suite has not seen them yet.
     let mut settling = false;
+    // The calls that had returned when the old server was gone, in the
+    // order the tool sorted them: the suite takes them as answered
+    // before the loss, when the kill is over and before its model is
+    // told of it. An older trace says `before_kill` for them, when the
+    // tool dropped them and the suite issued them again; those lines
+    // are passed over, as the suite passed over the results.
+    let mut answered_before: Vec<u64> = Vec::new();
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
         if f.len() < 3 || f[1] != volume {
@@ -155,6 +162,10 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
                 settling = true;
                 continue;
             }
+            ("answered_before_kill", Some(id)) if settling => {
+                answered_before.push(id);
+                continue;
+            }
             ("delivered", _) if settling => continue,
             ("delivered", Some(id)) => {
                 let Some(d) = done.remove(&id) else {
@@ -175,6 +186,32 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
             }
             ("settled", _) => {
                 settling = false;
+                for id in std::mem::take(&mut answered_before) {
+                    let Some(d) = done.remove(&id) else {
+                        return Err(format!(
+                            "{ms}: {id} answered before the kill but never done"
+                        ));
+                    };
+                    outstanding.remove(&id);
+                    let buf = if d.seen.is_empty() {
+                        None
+                    } else {
+                        content(&d.seen)
+                    };
+                    let said = model.complete(&Completion {
+                        id: RequestId(id),
+                        result: d.result,
+                        buf,
+                    });
+                    let what = ops.get(&id).cloned().unwrap_or_default();
+                    println!(
+                        "{ms}\tanswered_before_kill\t#{id} {what}\t{said:?}\tworlds {}",
+                        model.worlds()
+                    );
+                    if said.is_err() {
+                        violations += 1;
+                    }
+                }
                 // The trace is a block device's: a call the lost daemon
                 // completed can return after the kill.
                 model.kill(InFlight::MayHaveCompleted);
@@ -266,6 +303,40 @@ mod tests {
         ]
         .join("\n");
         assert_eq!(replay_text(&trace, "7", 64), Ok(0));
+    }
+
+    /// A write the old server answered before its death, whose call had
+    /// returned when it was gone: under the word of the tool that hands
+    /// it over, the suite took it as answered before the loss and did
+    /// not issue it again, so a read after the kill that misses it is a
+    /// violation. Under the older word the tool had dropped the result
+    /// and the suite took the write as in flight at the death, which a
+    /// read of the old content does not contradict.
+    fn answered_before(word: &str) -> String {
+        [
+            "1\t7\tsubmit\t1\twrite\t3\t1\taaaa",
+            "2\t7\tdone\t1\tOk(())\t\tOk(())",
+            "3\t7\tkill\t\t",
+            &format!("4\t7\t{word}\t1\tOk(())"),
+            "4\t7\tdelivered\t1\t",
+            "5\t7\tsettled\t\t",
+            "6\t7\tsubmit\t2\tread\t3\t1\t",
+            "7\t7\tdone\t2\tOk(())\tzero\tOk(())",
+            "8\t7\tdelivered\t2\t",
+        ]
+        .join("\n")
+    }
+
+    #[test]
+    fn a_write_answered_before_the_kill_must_survive_it() {
+        assert_eq!(
+            replay_text(&answered_before("answered_before_kill"), "7", 64),
+            Ok(1)
+        );
+        assert_eq!(replay_text(&answered_before("before_kill"), "7", 64), Ok(0));
+        // And the write read back after the kill is no violation.
+        let kept = answered_before("answered_before_kill").replace("\tzero\t", "\taaaa\t");
+        assert_eq!(replay_text(&kept, "7", 64), Ok(0));
     }
 
     #[test]

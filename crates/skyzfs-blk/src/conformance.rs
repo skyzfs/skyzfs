@@ -392,6 +392,22 @@ pub trait Harness {
         InFlight::Reissued
     }
 
+    /// After [`Harness::kill`]: the completions of requests that the lost
+    /// daemon answered before the loss and that the client had not taken
+    /// yet. The suite takes them as answered before the loss: the model
+    /// holds the target to them after it, and they are not issued again.
+    ///
+    /// The default is none, for a harness whose kill holds no such
+    /// answer. The device harness has them: at the old server's death it
+    /// sorts the calls outstanding into those that had returned, whose
+    /// requests the lost server completed, and those still waiting. A
+    /// harness that has them and drops them makes the suite issue those
+    /// requests again, and a target that lost one of them at the kill
+    /// then applies it once more and passes.
+    fn completed_before_loss(&mut self, _target: &mut Self::Target) -> Vec<Completion> {
+        Vec::new()
+    }
+
     /// How many outcomes of a power cut are worth trying right now. A
     /// store with a log counts the records, or whatever units it
     /// persists, that no flush covers yet, and a cut keeps that many; a
@@ -1483,11 +1499,16 @@ impl<'a, H: Harness> Driver<'a, H> {
     }
 
     /// Lose the daemon, bring it back and reissue what was in flight.
+    /// What the harness says was answered before the loss is accounted
+    /// first, as answered before it.
     fn kill(&mut self, seed: u64) -> Outcome {
         let Some(target) = self.target.take() else {
             return fail("no target: an earlier harness call failed");
         };
-        self.target = Some(self.harness.kill(target, seed)?);
+        let mut target = self.harness.kill(target, seed)?;
+        let before = self.harness.completed_before_loss(&mut target);
+        self.target = Some(target);
+        self.account(&before)?;
         self.model.kill(self.harness.in_flight_at_a_loss());
         self.check_geometry()?;
         let mut reissue: Vec<Request> = self.inflight.values().cloned().collect();
@@ -2673,6 +2694,101 @@ mod tests {
     use proptest::strategy::ValueTree;
 
     use super::*;
+    use crate::mem::{Fault, MemConfig, MemHarness, MemTarget, Schedule};
+
+    /// The in-memory harness, whose kill first takes what the target
+    /// has completed by then, as the device harness takes the calls
+    /// that returned before the old server's death, and hands it to the
+    /// suite as answered before the loss. With `drops` it drops them,
+    /// as the device harness did before, and the suite issues them
+    /// again.
+    struct HandsOver {
+        inner: MemHarness,
+        before: Vec<Completion>,
+        drops: bool,
+    }
+
+    impl Harness for HandsOver {
+        type Target = MemTarget;
+
+        fn capabilities(&self) -> Capabilities {
+            self.inner.capabilities()
+        }
+
+        fn create(&mut self, spec: &Spec) -> Result<MemTarget, HarnessError> {
+            self.inner.create(spec)
+        }
+
+        fn kill(&mut self, mut target: MemTarget, seed: u64) -> Result<MemTarget, HarnessError> {
+            let mut done = Vec::new();
+            target.poll(&mut done);
+            if !self.drops {
+                self.before = done;
+            }
+            self.inner.kill(target, seed)
+        }
+
+        fn completed_before_loss(&mut self, _target: &mut MemTarget) -> Vec<Completion> {
+            std::mem::take(&mut self.before)
+        }
+
+        fn cut_points(&mut self, target: &MemTarget) -> u64 {
+            self.inner.cut_points(target)
+        }
+
+        fn power_cut(&mut self, target: MemTarget, keep: u64) -> Result<MemTarget, HarnessError> {
+            self.inner.power_cut(target, keep)
+        }
+
+        fn fail_log(&mut self, target: &mut MemTarget) -> Result<(), HarnessError> {
+            self.inner.fail_log(target)
+        }
+
+        fn reopen_failed(&mut self, target: MemTarget) -> Result<MemTarget, HarnessError> {
+            self.inner.reopen_failed(target)
+        }
+    }
+
+    /// R9: what the harness hands over at a loss as answered before it
+    /// counts from before the loss. A write that the lost daemon
+    /// answered, and whose answer the client had not taken, must read
+    /// back after the loss; the suite does not issue it again. A target
+    /// that acknowledged it from memory and lost it at the kill is
+    /// caught. Were the answer dropped and the write issued again, that
+    /// target would apply it once more after the loss and pass.
+    #[test]
+    fn an_answer_handed_over_at_a_loss_counts_from_before_it() {
+        let run = |fault: Option<Fault>, drops: bool| -> Result<bool, Failure> {
+            let config = MemConfig {
+                schedule: Schedule::Fifo,
+                fault,
+                ..MemConfig::default()
+            };
+            let mut harness = HandsOver {
+                inner: MemHarness::new(config),
+                before: Vec::new(),
+                drops,
+            };
+            let suite = Config::default();
+            let mut d = Driver::new(&mut harness, &suite, &Spec::EMPTY)?;
+            let op = d.write_op(3, 2);
+            let id = d.submit(op)?;
+            d.kill(1)?;
+            let issued_again = d.inflight.contains_key(&id);
+            d.drain()?;
+            d.read(3, 2)?;
+            Ok(issued_again)
+        };
+        assert_eq!(run(None, false), Ok(false), "answered before the loss");
+        assert_eq!(run(None, true), Ok(true), "dropped: issued again");
+        let caught = run(Some(Fault::KillLosesUnflushed), false);
+        assert!(caught.is_err(), "the lost write is not caught: {caught:?}");
+        assert_eq!(
+            run(Some(Fault::KillLosesUnflushed), true),
+            Ok(true),
+            "with the answer dropped the write is applied again and the loss is masked"
+        );
+    }
 
     /// The kinds of step in `samples` programs' worth of steps.
     fn kinds(failures: bool, has: Capabilities) -> Vec<&'static str> {
