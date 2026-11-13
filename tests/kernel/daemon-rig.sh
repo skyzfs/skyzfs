@@ -2941,7 +2941,7 @@ case $CHECKS in *" g "*)
     elif ! in_place; then
         for p in $G_PINS; do pin "$p" NA "check g is of the in-place store; the log store is frozen until it is removed"; done
         ctl g_old_content_after_good_sync NA "check g is of the in-place store"
-        obs g_failed_sync "not taken with the log store"; obs g_new_descriptor_after_failed_sync "not taken with the log store"
+        for p in g_failed_sync g_new_descriptor_after_failed_sync g_reads_while_failing; do obs "$p" "not taken with the log store"; done
     else
         check_g
     fi ;;
