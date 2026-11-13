@@ -64,6 +64,29 @@ s9() { $P $I '        let mut left = 0;
         }
         Ok(())' '        Ok(())' && real && inplace; }
 
+# For 6f98d25 and later (the order is behind the mutant LOOK_BEFORE_DROP).
+# t1: the look comes before the drop, always (the order of fe54d96).
+t1() { $P $I '        let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);' '        let look_first = true;' && real && inplace; }
+# t2: a look before the drop and the look after it kept as well.
+t2() { $P $I '        if look && look_first {
+            self.count_sees_the_file()?;
+        }' '        if look {
+            self.count_sees_the_file()?;
+        }' && $P $I '        if look && !look_first {' '        if look {' && real && inplace; }
+# t3: the binding counts 0, with CI set: a skip must fail.
+t3() { $P crates/skyzfs-ublk-sys/src/cache.rs '        return Ok(stat.nr_cache);' '        return Ok(stat.nr_cache * 0);' && CI=true sys && CI=true real; }
+# t4: the hole test does not drop the image's cache before each start, and t2's defect is planted.
+t4() { $P crates/skyzfs-local/tests/inplace_real.rs '        rustix::fs::fadvise(&home, 0, None, rustix::fs::Advice::DontNeed).unwrap();
+        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
+        if let Err(e) = store.into_in_place(None) {' '        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
+        if let Err(e) = store.into_in_place(None) {' && $P $I '        if look && look_first {
+            self.count_sees_the_file()?;
+        }' '        if look {
+            self.count_sees_the_file()?;
+        }' && $P $I '        if look && !look_first {' '        if look {' && real; }
+# t5: the start does not look (s1 at this head, whose anchor changed).
+t5() { $P $I '        let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);' '        let look = false;' && inplace; }
+
 for name in "$@"; do
     echo "=== $name"
     $name

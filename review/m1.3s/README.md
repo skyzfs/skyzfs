@@ -214,3 +214,34 @@ real-file test, `every_start_serves_where_the_image_begins_with_a_hole` (blocks
   read starts no read-ahead. The test's pin rests on each start ending with an
   empty cache; dropping the image's cache from the test before each start would
   make it hold for any read before the drop. Told coding, not blocking.
+
+## Fourth look, at 6f98d25
+
+`git diff 4e0d26d 6f98d25`: the order sits behind a mutant
+(`LOOK_BEFORE_DROP`); the simulated disk can hold a read's read-ahead under
+I/O (`SimDisk::hold_read_ahead_of`) and `the_look_comes_after_the_drop` uses
+it; a skip of a real-file test or of the count's test panics where `CI` is set
+(non-empty and not "false"); the hole test drops the image's cache before each
+start; the refusal no longer names the overlay as the cause.
+
+- Tests: `skyzfs-blk` 61 + 11 + 29 + 24 + 4 + 7; `skyzfs-local` 269 passed, 4
+  ignored, real files 4 + 3 + 12; `skyzfs-ublk-sys` 7; `skyzfsd` 53 + 3.
+- The hole test: 20 runs of 20. Probe R: 1500 of 1500 for both layouts.
+- The `CI` rule: with `CI=true` on ext4 all pass. `TMPDIR` on tmpfs: `CI`
+  unset or "false", four "ok" (skipped); `CI=true`, the three real-file tests
+  that touch files and the count's test fail, "not skipped where CI is set".
+  The fourth real-file test is the kill test's child, which returns unless the
+  kill test started it.
+- Workflows that run `cargo test` (`ci.yml`, `coverage.yml`, `e2e.yml`,
+  `skyzfs-ci.yml`, the control rig): none in a container, all on
+  `ubuntu-latest`.
+- Plants (`plants3.sh`, t1 to t5): t1 the look always before the drop, and t2 a
+  look before the drop with the look after kept, each fail the hole test and
+  the simulated disk's test; t3 the binding counts 0 with `CI=true` fails the
+  count's test and three real-file tests; t4 is t2 with the hole test's own
+  drop removed, and nothing fails (the test's drop is what catches t2); t5 the
+  start does not look fails three in-place tests; s2, s3, s4 as before.
+- What is left of E's cause, not blocking: a drop leaves pages under I/O and
+  the two tries are microseconds apart, so a start whose drop falls within a
+  disk read begun by another reader of the image refuses. A start takes about
+  6 ms here (200 in 1.2 to 1.5 s), a read far less; 0 refusals in 7000 starts.
