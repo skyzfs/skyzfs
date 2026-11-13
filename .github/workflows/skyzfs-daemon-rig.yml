@@ -148,8 +148,8 @@ jobs:
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
     # arm64 (M1.T21): a pull request also runs on ubuntu-26.04-arm, where the
-    # package fallback works; ubuntu-24.04-arm (no fallback, and its ZFS
-    # userland older than its module) by dispatch (input images). 4 KiB pages only.
+    # package fallback works; ubuntu-24.04-arm (no mirror list, so no fallback
+    # in an outage) by dispatch (input images). 4 KiB pages only.
     strategy:
       fail-fast: false
       matrix:
