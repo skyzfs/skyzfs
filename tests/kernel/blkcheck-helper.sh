@@ -61,14 +61,22 @@ status_of() { lim 30 "$SKYZFSD" status --dir "$DIR" --run-dir "$RUN" 2>/dev/null
 # the serve process itself.
 server_pid() { local p; p=$(status_of pid); echo "${p:-$(cat "$DIR.serve.pid" 2>/dev/null)}"; }
 # [serve options]: serve in the background, wait for "ready", print the device.
-# The status serve exited with, once it is gone. The small shell that
-# waits for serve writes it a moment after serve is reaped, later than
-# 0.1 s on a busy machine (a pass of check c read the file empty,
-# 2026-11-13): wait for it, up to 5 s. Empty when it never came.
+# The status the current serve ($DIR.serve.pid) exited with, once it is
+# gone. The small shell that waits for serve writes "PID STATUS" a moment
+# after serve is reaped, later than 0.1 s on a busy machine (a pass of
+# check c read the file empty, 2026-11-13): wait for it, up to 5 s. A
+# line of another pid is an earlier serve's, whose shell wrote it late,
+# after this serve had begun (M1.T26 review): it is not this serve's
+# status. Empty when this serve's never came.
 serve_rc() {
-    local rc=""
-    for _ in $(seq 1 100); do rc=$(cat "$DIR.serve.rc" 2>/dev/null); [ -n "$rc" ] && break; sleep 0.05; done
-    echo "$rc"
+    local want got rc
+    want=$(cat "$DIR.serve.pid" 2>/dev/null)
+    for _ in $(seq 1 100); do
+        got=""; rc=""; read -r got rc 2>/dev/null < "$DIR.serve.rc"
+        [ -n "$want" ] && [ "${got:-}" = "$want" ] && [ -n "${rc:-}" ] && { echo "$rc"; return; }
+        sleep 0.05
+    done
+    echo ""
 }
 serve() {
     local dev pid t0
@@ -77,14 +85,15 @@ serve() {
     # Detached from this script's stdout, which the caller reads to its end.
     # A later call of this script must learn the exit status of serve,
     # which is not its child: a small shell stays with it and writes
-    # its pid and then its status down.
+    # its pid and then the pid with its status down.
     : > "$DIR.serve.rc"
     # shellcheck disable=SC2016
     setsid bash -c '
         "$@" &
-        echo $! > "$0.serve.pid"
-        wait $!
-        echo $? > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
+        p=$!
+        echo "$p" > "$0.serve.pid"
+        wait "$p"
+        echo "$p $?" > "$0.serve.rc"' "$DIR" "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$DIR" --run-dir "$RUN" "$@" > "$DIR.ready" 2>> "$DIR.serve.log" < /dev/null &
     for _ in $(seq 1 100); do [ -s "$DIR.serve.pid" ] && break; sleep 0.02; done
     pid=$(cat "$DIR.serve.pid")
     for _ in $(seq 1 240); do

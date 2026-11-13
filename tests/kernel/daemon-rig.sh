@@ -2614,7 +2614,7 @@ G_DM=skzg; G_LOOP=""; G_SECTORS=""; G_MNT=$WORK/g-fs
 FW=$HERE/failed_write.py
 G_AT=$((64 << 20)); G_LEN=65536   # check g.2's range of the volume
 G_BOOT=$((1 << 20))               # in the 3.5 MiB ZFS leaves free after its first two labels
-G_PINS="start_serves_what_the_disk_holds failed_start_fails_volume failed_start_suspends_pool failed_start_volume_refused sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused"
+G_PINS="start_serves_what_the_disk_holds failed_start_fails_volume failed_start_suspends_pool failed_start_volume_refused sync_failure_fails_volume sync_failure_suspends_pool sync_failed_volume_refused failure_reason_is_the_images"
 g_fs_up() {
     lim 30 truncate -s 16G "$WORK/g-disk.img" || return 1
     G_LOOP=$(lim 30 losetup -f --show "$WORK/g-disk.img") || return 1
@@ -2686,8 +2686,11 @@ check_g_reason() {
         [[ $line == *"$G_REASON"* ]] || bad=$((bad + 1))
         said="$said$name: \"$line\"; "
     done
+    # A place with no line is a FAIL: the daemon did not fail the volume
+    # where it must (the start served, or the serve did not fail), or the
+    # part did not run, and then its own pins are ERROR already.
     if [ -n "$miss" ]; then
-        pin failure_reason_is_the_images ERROR "no line of the daemon's to read at:$miss (their own pins say why); ${said:-nothing read}"
+        pin failure_reason_is_the_images FAIL "no failure line of the daemon's at:$miss; ${said:-nothing read}"
     elif [ "$bad" = 0 ]; then
         pin failure_reason_is_the_images PASS "all four name the image: $said"
     else
@@ -2840,9 +2843,11 @@ check_g_sync_fails_while_serving() {
     fi
     sleep 5
     mark=$(klog_mark)
-    # When the daemon says the volume failed, to a tenth of a second.
+    # When the daemon says the volume failed, to a tenth of a second. It
+    # looks for up to 600 s, longer than the rig waits (300 s for the
+    # pool, then 60 s for the serve), and is stopped when the serve ends.
     : > "$WORK/g1.failed-at"
-    ( for n in $(seq 1 3000); do
+    ( for n in $(seq 1 6000); do
           if grep -q 'the volume failed' "$dir.serve.log" 2>/dev/null; then date +%s.%N > "$WORK/g1.failed-at"; exit 0; fi
           sleep 0.1
       done ) &
