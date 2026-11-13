@@ -37,7 +37,11 @@
 //!   precede it.
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
-//!   be in the log, so each may end up in the order twice (rule R9).
+//!   be in the log, so each may end up in the order twice (rule R9). One
+//!   that the lost daemon applied may also have been completed by it,
+//!   with the client learning so only after the restart: then it is not
+//!   issued again, and the world keeps it where the lost daemon applied
+//!   it, while it was in flight.
 //! - A **power cut** leaves what a disk with a volatile write cache may
 //!   (rule R10): each block holds its content at its last flush or a
 //!   version written since, chosen sector by sector. What it holds is
@@ -346,6 +350,37 @@ impl World {
                     without.waiting.sort_unstable();
                 }
                 next.insert(without);
+            }
+            worlds = next;
+        }
+        worlds
+    }
+
+    /// Settle every waiting operation at a daemon loss at `now`: each was
+    /// applied by the lost daemon or was not. With each world comes the
+    /// list of the operations it placed, sorted.
+    fn settle_at_loss(&self, cx: &Context, now: u64) -> BTreeSet<(World, Vec<usize>)> {
+        let mut worlds = BTreeSet::from([(self.clone(), Vec::new())]);
+        for w in &self.waiting {
+            let mut next = BTreeSet::new();
+            for (world, applied) in worlds {
+                let mut without = world.clone();
+                without.waiting.retain(|x| x.op != w.op);
+                let inst = Placed {
+                    op: w.op,
+                    lb: w.lb,
+                    ub: now,
+                    flushed: false,
+                };
+                let mut placed = BTreeSet::new();
+                without.place(cx, inst, &mut placed);
+                let mut with = applied.clone();
+                with.push(w.op);
+                with.sort_unstable();
+                for world in placed {
+                    next.insert((world, with.clone()));
+                }
+                next.insert((without, applied));
             }
             worlds = next;
         }
@@ -1077,6 +1112,20 @@ impl Model {
     /// including whatever the lost daemon had applied of the requests in
     /// flight.
     ///
+    /// "In flight" is the client's view: a request whose completion the
+    /// client has not seen. The lost daemon may have applied such a
+    /// request and completed it, and the client hear of it only after
+    /// the restart. A block device does that: an `O_DIRECT` write's call
+    /// returns only once the device's cached pages in its range are
+    /// dropped, and a read that holds one of them and waits on the lost
+    /// daemon holds the call past the restart. Such a request is not
+    /// issued again. So each request in flight was either not applied by
+    /// the lost daemon and is issued again, or applied by it while it was
+    /// in flight, and then either completed or issued again too. The
+    /// model keeps all three, and no more: a request is never lost, and
+    /// the lost daemon cannot have applied it before something that was
+    /// acknowledged before it was submitted.
+    ///
     /// Not so once the log has failed (rule R11), whether or not the
     /// client has been told yet: the rule that an acknowledged operation
     /// survives the daemon holds for a log that has not failed. The
@@ -1109,15 +1158,56 @@ impl Model {
             .collect();
         let mut next = BTreeSet::new();
         for world in &self.worlds {
-            for mut world in world.settle(&self.cx, now, &|_| true, None) {
+            // A request in flight that this world does not have waiting
+            // was placed already: a read showed it applied.
+            let shown: Vec<usize> = live
+                .iter()
+                .copied()
+                .filter(|op| !world.waiting.iter().any(|w| w.op == *op))
+                .collect();
+            for (mut world, mut applied) in world.settle_at_loss(&self.cx, now) {
                 if healthy {
                     let all = vec![true; world.tail.len()];
                     world.absorb(&self.cx, &all);
                 }
-                // Every request in flight is issued again and will be
-                // applied, perhaps for the second time, from now on.
-                world.waiting = live.iter().map(|op| Waiting { op: *op, lb: now }).collect();
-                next.insert(world);
+                applied.extend(&shown);
+                // A request in flight that the lost daemon did not apply
+                // is issued again and will be applied from now on. One
+                // that it applied may also have been completed by it:
+                // then nothing is issued again, and the client learns of
+                // the completion after the restart (its call can wait on
+                // something else the lost daemon held, a read of a page
+                // in its range, say). Or it was not completed, and it is
+                // issued again and applied a second time. The choice is
+                // made here and not at the acknowledgement: a world that
+                // holds a reissue waiting holds back the folding of
+                // everything applied after the loss, and made that way
+                // the suite's capability tests took half as long again.
+                let either: Vec<usize> = live
+                    .iter()
+                    .copied()
+                    .filter(|op| applied.contains(op))
+                    .collect();
+                assert!(
+                    either.len() < 64,
+                    "the model cannot take {} requests in flight at a daemon loss",
+                    either.len()
+                );
+                for choice in 0..1u64 << either.len() {
+                    let completed = |op: usize| {
+                        either
+                            .iter()
+                            .position(|e| *e == op)
+                            .is_some_and(|k| choice >> k & 1 == 1)
+                    };
+                    let mut world = world.clone();
+                    world.waiting = live
+                        .iter()
+                        .filter(|op| !completed(**op))
+                        .map(|op| Waiting { op: *op, lb: now })
+                        .collect();
+                    next.insert(world);
+                }
             }
         }
         self.set_worlds(next);
@@ -1939,6 +2029,89 @@ mod tests {
         // apart: a later write may survive an earlier one either way.
         assert!(history(false));
         assert!(history(true));
+    }
+
+    /// R9: a request the client still waits for at a daemon loss may
+    /// have been applied and completed by the lost daemon, and is then
+    /// not issued again: the client learns of its completion only after
+    /// the restart. W1 covers blocks 0 and 1, W2 block 1; they are in
+    /// flight together, W2 is acknowledged before the loss and W1 after.
+    /// The lost daemon applied W1 and then W2, and completed both: block
+    /// 1 holds W2's data. A reissued W1 would have won it; the model
+    /// keeps both.
+    #[test]
+    fn a_request_in_flight_at_a_daemon_loss_may_have_completed_before_it() {
+        let history = |kill: bool, block_1: u8| {
+            let mut c = Client::new();
+            let w1 = c.write(0, 2, 1);
+            let w2 = c.write(1, 1, 2);
+            c.ack(w2);
+            if kill {
+                c.model.kill();
+            }
+            c.ack(w1);
+            c.would_see(0, &[1, block_1])
+        };
+        for kill in [false, true] {
+            assert!(history(kill, 2), "W1 then W2, kill {kill}");
+            assert!(history(kill, 1), "W2 then W1, kill {kill}");
+            assert!(!history(kill, 0), "neither on block 1, kill {kill}");
+        }
+    }
+
+    /// R3, R9: as above, where a read in flight with W1 showed it
+    /// applied before the loss. The read places W1 in the world's order;
+    /// it may still have completed before the loss, and not be issued
+    /// again.
+    #[test]
+    fn a_request_a_read_showed_applied_may_have_completed_before_a_daemon_loss() {
+        let mut c = Client::new();
+        let w1 = c.write(0, 2, 1);
+        let w2 = c.write(1, 1, 2);
+        let r = c.read(0, 1);
+        c.returns(r, vec![1; B]).unwrap();
+        c.ack(w2);
+        c.model.kill();
+        c.ack(w1);
+        assert!(c.would_see(0, &[1, 1]), "W1 issued again");
+        c.sees(0, &[1, 2]).unwrap();
+    }
+
+    /// R8, R9: what a request in flight at a daemon loss is allowed is
+    /// no more than that. It was applied or will be, so it is not lost.
+    /// If the lost daemon applied it, that was while it was in flight,
+    /// so it cannot precede a write that was acknowledged before it was
+    /// submitted. And once the client has its completion, a write
+    /// submitted after that follows it.
+    #[test]
+    fn a_request_in_flight_at_a_daemon_loss_was_applied_while_in_flight_or_after() {
+        // Not lost.
+        let mut c = Client::new();
+        let w1 = c.write(0, 1, 1);
+        c.model.kill();
+        c.ack(w1);
+        assert!(!c.would_see(0, &[0]), "the request was lost");
+        // Not before what was acknowledged before it was submitted.
+        let mut c = Client::new();
+        c.wrote(1, 1, 2);
+        let w1 = c.write(0, 2, 1);
+        c.model.kill();
+        c.ack(w1);
+        assert!(
+            !c.would_see(1, &[2]),
+            "W1 went before a write acknowledged before it was submitted"
+        );
+        // Not after what was submitted once it was acknowledged.
+        let mut c = Client::new();
+        let w1 = c.write(0, 2, 1);
+        c.model.kill();
+        c.ack(w1);
+        c.wrote(1, 1, 3);
+        assert!(
+            !c.would_see(1, &[1]),
+            "W1 went after a write submitted once W1 was acknowledged"
+        );
+        c.sees(0, &[1, 3]).unwrap();
     }
 
     /// R3, R7: a read stays in flight across a write to its block and a

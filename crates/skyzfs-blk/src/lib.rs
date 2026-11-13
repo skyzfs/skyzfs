@@ -162,6 +162,16 @@
 //!   a new operation in the order. The model lets an operation that was in
 //!   flight at a daemon loss occupy two positions: one before the loss,
 //!   which may or may not exist, and one after.
+//! - **An operation the client waits for at a daemon loss may already be
+//!   complete** (rule R9). R9's "not acknowledged" is the daemon's view:
+//!   what it has not completed is reissued. A client can see a
+//!   completion late. Through a block device, an `O_DIRECT` write's call
+//!   returns only after the device's cached pages in its range are
+//!   dropped, and a read that holds one of them, waiting on the lost
+//!   daemon, holds the call past the restart. The kernel issues nothing
+//!   again for it. So the model lets an operation in flight at a daemon
+//!   loss, as the client sees it, have only its position before the
+//!   loss, where the lost daemon applied it while it was in flight.
 //! - **When a failed volume starts failing** (rule R11). A store learns
 //!   of the failure from an append or an fsync, not at the instant it
 //!   happens, and a completion may be delivered after the failure for

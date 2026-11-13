@@ -58,15 +58,20 @@
 //! - A request reaches the server only after the kernel has had it. The
 //!   kernel answers a misaligned or out-of-range request itself and
 //!   splits a long one, so the suite's rejection cases test the kernel.
-//! - After a kill the kernel issues the requests in flight again by
-//!   itself. The calls this tool had outstanding at the server's death
-//!   simply return when the new server answers; their results are
-//!   handed to the suite when it resubmits the same ids, and the
-//!   resubmission is not issued a second time. A call that had already
+//! - After a kill the kernel issues again by itself the requests the
+//!   old server had not completed. The calls this tool had outstanding
+//!   at the server's death simply return when the new server answers;
+//!   their results are handed to the suite when it resubmits the same
+//!   ids, and the resubmission is not issued a second time. Such a call
+//!   may also be one whose request the old server completed: an
+//!   `O_DIRECT` write's call returns only once the device's cached
+//!   pages in its range are dropped, and a read that holds one of them
+//!   (a udev probe's, say) and waits on the dead server holds the call
+//!   past the take-over. The kernel issues nothing of it again, and the
+//!   suite's model allows that (rule R9). A call that had already
 //!   returned when the server died, and whose result the suite had not
-//!   been given yet, is another matter: the kernel issues nothing of it
-//!   again, while the suite's model takes every unacknowledged request
-//!   to be applied from the kill on. Its resubmission is issued. To
+//!   been given yet, is resubmitted and issued: it is applied a second
+//!   time, after the kill, which the model also allows. To
 //!   tell the two apart, `CMD kill N` prints the line `dead R W` when
 //!   the old server is gone and before the new one is started: no
 //!   request completes in between, so what has returned by that line
