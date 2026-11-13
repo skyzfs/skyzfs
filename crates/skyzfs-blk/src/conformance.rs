@@ -2790,6 +2790,51 @@ mod tests {
         );
     }
 
+    /// R9, the order: what the harness hands over at a loss is accounted
+    /// before the model hears of the loss. Two writes of one block are
+    /// in flight; the lost daemon answers one of them before the loss
+    /// and the harness hands it over, and the other is issued again, so
+    /// the block must hold the one issued again. A target that skips the
+    /// reissue of a write its lost instance had logged leaves the
+    /// answered one there. Told of the loss first, the model takes both
+    /// as issued again, in either order, and accepts that. Some of the
+    /// seeded schedules reach the case. (From the review of the pull
+    /// request: caught at 29 of 200 seeds in this order, at none with
+    /// the two steps of `kill` swapped.)
+    #[test]
+    fn what_is_handed_over_is_accounted_before_the_loss() {
+        let run = |fault: Option<Fault>, seed: u64| -> Result<(), Failure> {
+            let config = MemConfig {
+                schedule: Schedule::Seeded,
+                apply: crate::mem::Timing::AtSubmit,
+                fault,
+                seed,
+                ..MemConfig::default()
+            };
+            let mut harness = HandsOver {
+                inner: MemHarness::new(config),
+                before: Vec::new(),
+                drops: false,
+            };
+            let suite = Config::default();
+            let mut d = Driver::new(&mut harness, &suite, &Spec::EMPTY)?;
+            let a = d.write_op(3, 1);
+            let b = d.write_op(3, 1);
+            d.submit(a)?;
+            d.submit(b)?;
+            d.kill(seed)?;
+            d.drain()?;
+            d.read(3, 1).map(drop)
+        };
+        for seed in 0..200 {
+            assert_eq!(run(None, seed), Ok(()), "a correct target, seed {seed}");
+        }
+        let caught = (0..200)
+            .filter(|&seed| run(Some(Fault::SkipReissuedIfLogged), seed).is_err())
+            .count();
+        assert!(caught > 0, "a skipped reissue is never caught");
+    }
+
     /// The kinds of step in `samples` programs' worth of steps.
     fn kinds(failures: bool, has: Capabilities) -> Vec<&'static str> {
         let strategy = step_strategy(24, failures, has);

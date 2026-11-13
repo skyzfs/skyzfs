@@ -16,6 +16,13 @@ use skyzfs_blk::{BlkError, Buf, Completion, Geometry, Op, Request, RequestId};
 
 const BLOCK: usize = 4096;
 
+/// The trace's word for a result the device harness hands the suite as
+/// answered before a kill. The tool writes it and the replayer reads
+/// it, both from here, so that the two cannot drift apart. A trace from
+/// before it has `before_kill` there instead, which the replayer passes
+/// over: the suite then dropped such results and issued them again.
+pub(crate) const ANSWERED_BEFORE_KILL: &str = "answered_before_kill";
+
 /// Content for a digest: the same digest gives the same block, and
 /// "zero" gives zeros, which is all the model compares.
 fn content(digests: &str) -> Option<Buf> {
@@ -162,7 +169,7 @@ fn replay_text(text: &str, volume: &str, size_mib: u64) -> Result<usize, String>
                 settling = true;
                 continue;
             }
-            ("answered_before_kill", Some(id)) if settling => {
+            (ANSWERED_BEFORE_KILL, Some(id)) if settling => {
                 answered_before.push(id);
                 continue;
             }

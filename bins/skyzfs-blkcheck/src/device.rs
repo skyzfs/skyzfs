@@ -342,7 +342,7 @@ impl DeviceTarget {
         for c in &got {
             trace(
                 self.number,
-                "answered_before_kill",
+                crate::replay::ANSWERED_BEFORE_KILL,
                 Some(c.id),
                 &format!("{:?}", c.result),
             );
