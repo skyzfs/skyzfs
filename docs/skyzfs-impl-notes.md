@@ -76,6 +76,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
 | M1.T14 | skyzfs/skyzfs#39 | The power-cut replay rig through `skyzfsd`, the cut below the daemon | The local store: the power-cut replay below the daemon |
 | M1.T14a | skyzfs/skyzfs#42 | The replay rig: limits on the record phase, a control for a daemon that stops answering | The local store: the power-cut replay below the daemon |
+| M1.T17 | none (measurement only) | The criterion's round on the current daemon | The criterion: the round on the current daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
@@ -537,6 +538,31 @@ M1.3p took a third off the readers' CPU and their wait for a CPU, and the throug
 
 **The runners' work disk is mounted without barriers.** On the machines whose work disk is an nvme device the disk declares a volatile write cache (on those with `sda` it does not; see M1.T16 below), and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
 
+#### The round on the current daemon (M1.T17)
+
+Four jobs on `zfs-topology` at 9b6439c on 2026-11-12, the daemon with M1.3p and M1.3q, four readers; each job on one machine, the four machines different, every row once[^t17runs]. tpcb, 8 clients, 120 s, no origin delay, `TB_MEM_LIMIT` 1G, no barriers. The sequence in each job: model, daemon, daemon at 1 GiB, model, daemon, daemon at 1 GiB, model.
+
+| Job | Disk-sync, work disk, write cache | tps in sequence | Ratios (bracket's width) |
+|---|---|---|---|
+| A, 24.04 | 3120 MiB/s, `sda1`, write through | 3393, 3312, 3224, 3412, 3309, 3195, 3360 | 0.973 and 0.948 (0.6%); 0.977 and 0.944 (1.5%) |
+| B, 24.04 | 146 MiB/s, `nvme0n1p1`, write back | 3469, 3650, 3332, 3877, 3686, 3277, 4227 | 0.994 and 0.907 (11.1%: no verdict); 0.910 and 0.809 (8.6%) |
+| C, 26.04 | 3167 MiB/s, `sda1`, write through | 3579, 3480, 3329, 3622, 3499, 3409, 3640 | 0.966 and 0.925 (1.2%); 0.964 and 0.939 (0.5%) |
+| D, 26.04 | 151 MiB/s, `nvme0n1p1`, write back | 4015, 3550, 3754, 3998, 3822, 3298, 4466 | 0.886 and 0.937 (0.4%); 0.903 and 0.779 (11.1%: no verdict) |
+
+In each pair of ratios the first is the unbounded row and the second the row at 1 GiB. The summary does not name a machine's kind; the disk-sync rates fall into two groups with nothing between, about 3100 MiB/s on `sda` and about 150 MiB/s on nvme, and each image got one machine of each.
+
+| Machine kind, row | Counted ratios | Median | Rests on | By the rule |
+|---|---|---|---|---|
+| Fast-sync, unbounded | 0.973, 0.977, 0.966, 0.964 | **0.970** | 4 rows, 2 jobs | met |
+| Fast-sync, 1 GiB | 0.948, 0.944, 0.925, 0.939 | **0.942** | 4 rows, 2 jobs | met |
+| Slow-sync, unbounded | 0.910, 0.886 | 0.898 | 2 rows, 2 jobs | not decided: under four rows |
+| Slow-sync, 1 GiB | 0.809, 0.937 | 0.873 | 2 rows, 2 jobs | not decided: under four rows |
+
+- **On fast-sync machines the criterion is met on the merged daemon**, by the rule, for both rows, with brackets of 0.5 to 1.5%.
+- **On slow-sync machines it is not shown.** Half of the rows got no verdict because the model's own rows were 11% apart: the model climbed through both jobs, 3469 to 4227 and 4015 to 4466. The counted rows sit at the line, as M1.T15's row of this daemon did (0.889).
+- What separates the two kinds is the work disk: on `sda` (write through, a sync of 3100 MiB/s, which only a host that buffers the writes can give) the daemon's second write costs little; on nvme (write back, 150 MiB/s) it does. Neither is a flash device whose flush is real (M1.T16).
+- Nothing was rerun, and no job failed.
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -570,7 +596,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 #### Open at this writing (2026-11-12)
 
-- M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
+- Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - Whether the write log is needed (the owner's question, 2026-11-12): an in-place store is built as an experiment (M1.3r, skyzfs/skyzfs#43, open) and is being measured (M1.T17 for the log store's rows on the current daemon, M1.T18 for the in-place store). The contract's rule R10, a prefix of the daemon's order after a power cut, is what requires a journal; ZFS asks less of a disk.
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
@@ -682,3 +708,4 @@ Every independent read of the design and every review of a work package, with wh
 [^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.
 [^t14runs]: `skyzfs-replay-rig.yml`: run 43314111709 on the pull request's last head (e9b55ef), pull-request budget, both "through skyzfsd" jobs; and run 43282556301 by dispatch before the review, full budget as it then was. The daemon rig on the same head, run 43314111778, was as its table on the daemon and on the stand-in.
 [^t14full]: `skyzfs-replay-rig.yml`, run 43323450604, dispatched with `server=daemon` and `daemon_budget=full`; both "through skyzfsd" jobs ended with exit 0 and the summary line "criterion: shown by this run".
+[^t17runs]: `topology-bench.yml` by dispatch on `zfs-topology` at 9b6439c: runs 43331668450 (A) and 43331678908 (B) on Ubuntu 24.04, 43331689019 (C) and 43331698987 (D) on Ubuntu 26.04.
