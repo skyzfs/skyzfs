@@ -29,6 +29,9 @@ name: skyzfs-daemon-rig
 on:
   workflow_dispatch:
     inputs:
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm"]'
       checks:
         description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
         default: "a b c d e"
@@ -104,6 +107,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       servers: ${{ steps.plan.outputs.servers }}
+      exclude: ${{ steps.plan.outputs.exclude }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -138,17 +142,32 @@ jobs:
           esac
           echo "servers=$servers" >> "$GITHUB_OUTPUT"
           echo "Server behind the device: $why." | tee -a "$GITHUB_STEP_SUMMARY"
+          # The stand-in on arm64 by dispatch only: it shows that the rig
+          # still catches what it caught, which the amd64 jobs show on
+          # every change of the rig.
+          if [ "$EVENT" = workflow_dispatch ]; then
+            exclude='[]'
+          else
+            exclude='[{"image":"ubuntu-26.04-arm","server":"stand-in"},{"image":"ubuntu-24.04-arm","server":"stand-in"}]'
+            echo "The stand-in on arm64 runs by dispatch only." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "exclude=$exclude" >> "$GITHUB_OUTPUT"
 
   rig:
     name: ${{ matrix.image }}, ${{ matrix.server }}
     needs: plan
     runs-on: ${{ matrix.image }}
     timeout-minutes: 90
+    # arm64 (M1.T21): a pull request also runs the daemon on ubuntu-26.04-arm,
+    # where the package fallback works; the stand-in on arm64, and
+    # ubuntu-24.04-arm (no mirror list, so no fallback in an outage), by
+    # dispatch (input images). 4 KiB pages only.
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-26.04, ubuntu-24.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm"]') }}
         server: ${{ fromJSON(needs.plan.outputs.servers) }}
+        exclude: ${{ fromJSON(needs.plan.outputs.exclude) }}
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,
