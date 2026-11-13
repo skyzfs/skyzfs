@@ -489,6 +489,7 @@ fn log_shown(target: &Target) -> LogShown {
                 stepping: false,
                 own_syncs: 0,
                 zeroes: zeroes_shown(store.zeroes()),
+                io_queue: Some(store.io_queue()),
             }
         }
     };
@@ -502,6 +503,7 @@ fn log_shown(target: &Target) -> LogShown {
         stepping: log.stepping,
         own_syncs: log.own_syncs,
         zeroes: zeroes_shown(log.zeroes),
+        io_queue: None,
     }
 }
 

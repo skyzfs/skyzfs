@@ -29,13 +29,21 @@
 //! journal makes it so, and the journal was the log, which D5 dropped.
 //! The points, as this store keeps them:
 //!
-//! 1. **Process loss.** A write, write-zeroes or discard is
-//!    acknowledged once it is in the file system's cache. It is there
-//!    after the process is lost, and so is everything acknowledged
-//!    before it (rules R9 and R8). This rests on the page cache: it
-//!    holds while the machine runs. A write in flight when the process
-//!    dies may be there in part, block by block; the kernel issues it
-//!    again (rule R9), and the next instance makes it whole.
+//! 1. **Process loss.** A write or write-zeroes is acknowledged once
+//!    its direct write has returned: it has reached the device (its
+//!    volatile write cache, where it has one), past the kernel's cache
+//!    (decision D6, [`IoMode`]). It is there after the process is lost,
+//!    and so is everything acknowledged before it (rules R9 and R8);
+//!    this no longer rests on the page cache. A discard does nothing
+//!    (see below). A write in flight when the process dies may be there
+//!    in part, block by block; the kernel issues it again (rule R9),
+//!    and the next instance makes it whole. Where the write went into a
+//!    hole or an unwritten extent, the file system records the block as
+//!    written when the write completes, in memory and in its journal;
+//!    by my reading of ext4 and XFS (not shown here) that record is
+//!    visible to the next instance at once and durable at the next
+//!    sync, so until then a power cut may leave the block reading as
+//!    zeros, its content before the write, which point 3 allows.
 //! 2. **A flush** completes only when every operation acknowledged
 //!    before it was received is durable (rule R7).
 //! 3. **Power loss.** Every block that a completed flush covered holds
@@ -45,17 +53,28 @@
 //!    independently of every other sector and of every other block: a
 //!    later write can survive while an earlier one is lost, and a
 //!    write can be torn at a sector. A start makes what it finds
-//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)),
-//!    and then serves only what the disk holds: it drops the kernel's
-//!    cache of the home image and checks that no page of it is left
-//!    (`cachestat`), or refuses the volume (design §4.1). A failed sync
-//!    can leave pages marked clean that the disk never got, and no
+//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)):
+//!    its sync of the home image makes durable what the instance before
+//!    it wrote by direct I/O (on the device, perhaps only in its cache)
+//!    and what the log store's checkpoint wrote through the cache when
+//!    the volume entered this store. That sync stays under direct I/O.
+//!    The start then serves only what the disk holds: it drops the
+//!    kernel's cache of the home image and checks that no page of it is
+//!    left (`cachestat`), or refuses the volume (design §4.1). A failed
+//!    sync can leave pages marked clean that the disk never got, and no
 //!    later sync writes them; served from the cache, they would be
 //!    shown and then taken by a cut behind a completed flush. The drop
 //!    covers a start that acknowledges a failure as well as one after
 //!    an instance that died between a failed sync and its marker, whose
 //!    own sync succeeds because the kernel reports such an error once.
-//!    Its cost: the first reads after every start, a take-over
+//!    Under direct I/O the store's own reads do not consult the cache,
+//!    so such pages come only from a writer through it: the log store's
+//!    checkpoint at the entry into this store, which M1.3t removes with
+//!    the log store. The drop is kept while that writer exists, and
+//!    guards beyond it a file system that would serve a direct request
+//!    through its cache; by my reading (not shown), ext4 does so only
+//!    where it reports no direct I/O (`STATX_DIOALIGN`), which the start
+//!    refuses. Its cost: the first reads after every start, a take-over
 //!    included, come from the disk.
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
@@ -81,39 +100,29 @@
 //! acknowledged, and the daemon stores none (`skyzfsd`'s `Target`). At
 //! a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
-//! the page cache for that (point 1), where the log store checks its
-//! log against the stored position.
+//! the direct write having reached the device for that (point 1),
+//! where the log store checks its log against the stored position.
 //!
 //! Where the page or the file system's block is larger than a block
 //! (16 KiB or 64 KiB pages on some arm64 kernels and on Apple silicon),
-//! a write rewrites the other blocks of its page with what the page
-//! cache holds of them: their durable content or a version written
-//! since, so point 3 still holds of them, and a block a flush covered
-//! and nothing wrote since is rewritten with the bytes it holds. The
-//! tests run at 16 KiB and 64 KiB pages on the simulated disk
+//! a direct write still writes only the blocks it is given: it does not
+//! rewrite the other blocks of its page, as a write through the cache
+//! does. The tests run at 16 KiB and 64 KiB pages on the simulated disk
 //! (`tests.rs`).
 //!
-//! **A stated limit there (design §10): a disk that garbles.** On a
-//! disk that leaves a sector neither old nor new at a power cut, the
-//! rewrite of a page exposes its other blocks, so a cut can damage a
-//! block a completed flush covered and nothing wrote since. In the
-//! store's power-cut test with such a disk it did so at 0 of 200 seeds
-//! at 4 KiB pages (pinned by
-//! `a_power_cut_leaves_what_the_volatile_cache_disk_promises`), and at
-//! 120 at 16 KiB and 113 at 64 KiB, measured in review;
-//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins only
-//! that some seed of the 200 does at each large page.
-//! At 4 KiB only a block being written is exposed. Nothing protects
-//! against it here: the log store's open, which the start goes through,
-//! refuses a page or a file-system block larger than the volume's write
-//! unit, but a volume created on the large-page host has a unit as
-//! large as its page, and the store saves no neighbours as the log
-//! store did. Direct I/O, which writes exactly the blocks it is given,
-//! is the candidate remedy (design §10). With the experiment's direct
-//! I/O ([`IoMode`]), on the queue's thread or on threads, no seed of
-//! the 200 reaches such a block at either large page on the simulated
-//! disk (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`,
-//! which says what that rests on).
+//! **A limit that direct I/O removes, on the simulated disk: a disk
+//! that garbles.** On a disk that leaves a sector neither old nor new at
+//! a power cut, a write through the cache on a large page rewrites the
+//! page's other blocks and exposes them, so a cut can damage a block a
+//! completed flush covered and nothing wrote since: in the store's
+//! power-cut test, through the cache, at 120 of 200 seeds at 16 KiB and
+//! 113 at 64 KiB (measured in review), and at 0 at 4 KiB.
+//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins that
+//! some seed does so through the cache, which only tests still use;
+//! with direct I/O no seed of the 200 does at either large page
+//! (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`,
+//! which says what that rests on on a real file system). That is the
+//! reason for decision D6.
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability
@@ -121,23 +130,42 @@
 //!
 //! # How it executes
 //!
-//! On the caller's thread, in [`BlockTarget::submit`], one request at a
-//! time, in the order of submission: a read is a read of the home
-//! image, a write a write at its offset, a write-zeroes deallocates the
-//! range (or writes zeros where the file system cannot), and a discard
-//! does nothing. Rule R6 allows a discarded block to keep its content,
-//! and that is the least work: no call, no metadata to make durable,
-//! and nothing a power cut can tear. It counts as a change all the
-//! same, so that the flush behind it syncs: a flush that follows a
-//! client's change never succeeds on a disk that has failed (R11), at
-//! the cost of one sync where a discard alone came before it. A flush
-//! begins a sync of the home image on the file's helper
-//! ([`File::sync_begin`]) and completes when the sync ends; writes go
-//! on meanwhile. Flushes that arrive while a
-//! sync is under way join it when nothing was written since it began,
-//! and otherwise wait for the next one, which begins when this one
-//! ends and covers them all. No thread of the store's own, and no
-//! hand-off for a read or a write: the pump's thread does the I/O.
+//! Reads and writes go by direct I/O to a pool of I/O threads
+//! ([`IoMode::threads`], eight unless asked otherwise), each with its
+//! own handle on the home image and one request at a time; their
+//! completions are taken back on the caller's thread. A request waits,
+//! in order, behind one on the threads that it must not run beside: a
+//! read behind an overlapping write, a write or a write-zeroes behind
+//! an overlapping read or write, so that overlapping requests take
+//! effect in the order they came; and a flush behind every write on the
+//! threads (it covers what was acknowledged before it, and this store
+//! also has it wait for what was submitted before it). Everything
+//! received after a waiting request waits behind it. A write-zeroes is
+//! written as zeros by direct I/O on the caller's thread, 1 MiB at a
+//! time (a deallocated range would make the next writes to it allocate
+//! again), and a discard does nothing. A thread that panics dies, the
+//! job it held comes back failed, and the volume fails as from a
+//! failed write; the requests that waited for the threads fail with it
+//! (`inplace/pool.rs`). The store's queue (on the threads, waiting, and the
+//! highs) is in [`InPlace::io_queue`], which the daemon's status file
+//! shows.
+//!
+//! Rule R6 allows a discarded block to keep its content, and that is
+//! the least work: no call, no metadata to make durable, and nothing a
+//! power cut can tear. It counts as a change all the same, so that the
+//! flush behind it syncs: a flush that follows a client's change never
+//! succeeds on a disk that has failed (R11), at the cost of one sync
+//! where a discard alone came before it. A flush begins a sync of the
+//! home image on the file's helper ([`File::sync_begin`]) and completes
+//! when the sync ends; writes go on meanwhile. Flushes that arrive
+//! while a sync is under way join it when nothing was written since it
+//! began, and otherwise wait for the next one, which begins when this
+//! one ends and covers them all.
+//!
+//! Test builds can also do the I/O on the caller's thread, in
+//! [`BlockTarget::submit`], or through the kernel's cache, where a
+//! write-zeroes deallocates the range (`IoMode::for_tests`). Neither is
+//! a mode the store is served in.
 //!
 //! Not in it: an index, a checkpoint, a recovery beyond the log store's
 //! open of an empty log, any count of what the log holds.
@@ -248,7 +276,7 @@ pub enum IntoInPlaceError {
 /// reason where it has none or its unit is above a block (4 KiB).
 ///
 /// Test builds can also have the I/O done on the caller's thread, or
-/// through the kernel's cache ([`IoMode::for_tests`]): for a test that
+/// through the kernel's cache (`IoMode::for_tests`): for a test that
 /// needs the cache, or a file system without direct I/O. Neither is a
 /// mode the store is served in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,7 +540,8 @@ pub struct IoQueue {
     /// yet taken back by the store.
     pub in_flight: u64,
     /// Requests that wait now, in their order, for one on the threads
-    /// that they must not run beside ([`InPlace::must_wait`]), and every
+    /// that they must not run beside (an overlapping request, or for a
+    /// flush a write), and every
     /// request received after the first of them.
     pub waiting: u64,
     /// The requests that waited so since the store began: a count that
@@ -689,6 +718,12 @@ impl<D: Dir> InPlace<D> {
     /// cannot count the file's cached pages refuse the start. Its cost:
     /// the first reads after a start, a take-over included, come from
     /// the disk.
+    ///
+    /// Under direct I/O the store's own reads and writes leave no page
+    /// in the cache: what the drop still guards is what a writer through
+    /// the cache left just before this start, the log store's checkpoint
+    /// at the entry into this store (see the module documentation,
+    /// point 3). It is kept while that writer exists (M1.3t removes it).
     fn empty_cache(&mut self) -> Result<(), String> {
         let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
         let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
