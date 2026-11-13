@@ -5,7 +5,7 @@ use skyzfs_blk::{
     Base, BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId, BLOCK_USIZE,
 };
 
-use super::harness::{InPlaceHarness, OnSim};
+use super::harness::{run_suite, InPlaceHarness, OnSim, NOT_MET, NOT_MET_REASON};
 use super::*;
 use crate::format::Key;
 use crate::log::LogError;
@@ -13,6 +13,9 @@ use crate::sim::{SeededCut, SimDisk};
 use crate::store::{OpenOptions, Store, StoreConfig, StoreError};
 
 const BLOCK: u64 = 4096;
+/// What a test gives a wait: it waits for a sync to end, not for the
+/// time (see `InPlace::wait`).
+const WAIT: Duration = Duration::from_secs(60);
 
 /// The cases of the suite that need a power cut (its table "Needs P").
 const NEED_A_POWER_CUT: [&str; 6] = [
@@ -41,6 +44,12 @@ fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
 /// they begin, so that writes and flushes arrive while a sync is under
 /// way. Exactly the cases that need a power cut are not exercised, and
 /// for that reason.
+///
+/// Two failure cases are not met by this store, by design (the
+/// harness's `NOT_MET`): they are reported as not exercised, with that
+/// reason, and
+/// `the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does` pins
+/// why.
 #[test]
 fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
     let config = Config {
@@ -48,18 +57,17 @@ fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
         ..Config::default()
     };
     for mut harness in harnesses(0) {
-        let report = run_all(&mut harness, &config);
+        let report = run_suite(&mut harness, &config);
         assert!(report.passed(), "in {harness:?}:\n{report}");
         let idle = report.not_exercised();
-        for case in NEED_A_POWER_CUT {
-            assert!(idle.contains(&case), "{case} ran in {harness:?}");
+        for case in NEED_A_POWER_CUT.iter().chain(&NOT_MET) {
+            assert!(idle.contains(case), "{case} ran in {harness:?}");
         }
         for (case, why) in report.unexercised() {
             let one_at_a_time = harness.queue_depth == 1 && why.contains("one request at a time");
-            assert!(
-                NEED_A_POWER_CUT.contains(&case) && why.contains("power") || one_at_a_time,
-                "{case}: {why}"
-            );
+            let cut = NEED_A_POWER_CUT.contains(&case) && why.contains("power");
+            let not_met = NOT_MET.contains(&case) && why == NOT_MET_REASON;
+            assert!(cut || not_met || one_at_a_time, "{case}: {why}");
         }
         for (case, what) in report.weaker() {
             assert!(what.contains("power"), "{case}: {what}");
@@ -67,19 +75,43 @@ fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
     }
 }
 
-/// The suite notices the defects of failure: a failed sync that is
-/// tried again, and a failed write that does not fail the volume.
+/// Why the cases of `NOT_MET` are not met: run as the suite has them,
+/// with the log failing by the simulated disk's faults, exactly those
+/// two fail, each on a block that is torn, and not on anything a flush
+/// covered. That is the module's point 4 (a failure leaves unflushed
+/// blocks as a power cut does).
+#[test]
+fn the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does() {
+    let config = Config {
+        cases: 32,
+        ..Config::default()
+    };
+    for mut harness in harnesses(0) {
+        let report = run_all(&mut harness, &config);
+        let mut failed = report.failed();
+        failed.sort_unstable();
+        assert_eq!(failed, NOT_MET, "in {harness:?}:\n{report}");
+        for outcome in &report.outcomes {
+            if let Err(failure) = &outcome.result {
+                assert!(failure.0.contains("is Torn"), "{}: {failure}", outcome.name);
+            }
+        }
+    }
+}
+
+/// The suite notices a failed sync that is tried again. (A failed write
+/// that does not fail the volume is caught by
+/// `a_failed_write_fails_the_volume`: the suite's cases that catch it
+/// are the two this store does not meet.)
 #[test]
 fn the_suite_notices_a_failure_that_is_not_final() {
     let config = Config {
         cases: 32,
         ..Config::default()
     };
-    for mutant in [Mutants::SYNC_RETRIED, Mutants::WRITE_ERROR_PASSES] {
-        let mut harness = harnesses(mutant)[1];
-        let report = run_all(&mut harness, &config);
-        assert!(!report.passed(), "the defect {mutant:#x} is not noticed");
-    }
+    let mut harness = harnesses(Mutants::SYNC_RETRIED)[1];
+    let report = run_suite(&mut harness, &config);
+    assert!(!report.passed(), "the defect is not noticed");
 }
 
 /// A store on a simulated disk, with a log of a few records that the
@@ -144,7 +176,7 @@ fn run(store: &mut InPlace<SimDisk>, id: u64, op: Op) -> Completion {
         .unwrap();
     let mut done = Vec::new();
     while done.is_empty() {
-        store.wait(&mut done, Duration::ZERO);
+        store.wait(&mut done, WAIT);
     }
     done.pop().unwrap()
 }
@@ -287,9 +319,39 @@ fn a_failed_sync_fails_the_volume_for_good() {
     assert!(read(&mut store, 1).is_ok());
 }
 
-/// A failed write fails the volume as a failed sync does.
+/// A discard counts as a change: a flush behind a discard alone syncs,
+/// and so fails on a disk whose syncs fail. Without that, it would
+/// succeed after the client changed the volume.
+#[test]
+fn a_flush_behind_a_discard_syncs() {
+    for mutants in [0, Mutants::DISCARD_UNCHANGED] {
+        let disk = created(8, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        disk.fail_sync(0, true);
+        let discard = Op::Discard {
+            offset: 0,
+            len: BLOCK,
+        };
+        assert_eq!(run(&mut store, 1, discard).result, Ok(()));
+        let flushed = run(&mut store, 2, Op::Flush).result;
+        if mutants == 0 {
+            assert_eq!(flushed, Err(BlkError::Failed));
+        } else {
+            assert_eq!(flushed, Ok(()), "the defect is not noticed");
+        }
+    }
+}
+
+/// A failed write fails the volume as a failed sync does; a store
+/// that lets it pass is noticed.
 #[test]
 fn a_failed_write_fails_the_volume() {
+    let disk = created(5, 0);
+    let mut defective = start(&disk, Mutants::WRITE_ERROR_PASSES, false).unwrap();
+    disk.fail_write(0, false);
+    assert_ne!(write(&mut defective, 1, 0x11), Err(BlkError::Failed));
+    assert!(!defective.is_failed(), "the defect is not noticed");
+    drop(defective);
     let disk = created(5, 0);
     let mut store = start(&disk, 0, false).unwrap();
     disk.fail_write(0, false);
@@ -531,7 +593,7 @@ fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool,
                 store.poll(&mut done);
             }
             Step::Wait => {
-                store.wait(&mut done, Duration::ZERO);
+                store.wait(&mut done, WAIT);
             }
             // After a failure, the program ends with the process.
             Step::Kill if failing => break,

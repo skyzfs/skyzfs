@@ -52,7 +52,19 @@
 //!
 //! Where the disk writes a sector neither old nor new at a power cut
 //! (the simulated disk's garbage), point 3 holds for no sector a power
-//! cut could take, and nothing about such a sector is promised. Where
+//! cut could take, and nothing about such a sector is promised. A file
+//! system can do the same: ext4 with `data=writeback` (the CI runners'
+//! root is mounted so) may show a block that was allocated since the
+//! last flush holding bytes this store never wrote, another file's
+//! included. That too is a sector the cut could take, and the same
+//! holds of it: nothing is promised.
+//!
+//! The store has no log, so it reports no position of what was
+//! acknowledged, and the daemon stores none (`skyzfsd`'s `Target`). At
+//! a start after a lost process nothing can show that the home image
+//! holds less than the kernel was told: the store's promise rests on
+//! the page cache for that (point 1), where the log store checks its
+//! log against the stored position. Where
 //! a write rewrites more than its own block (a page or a file-system
 //! block above 4096 bytes), such a sector can be a neighbour's that a
 //! flush covered: the log store refuses such a file system, and this
@@ -113,6 +125,9 @@ impl Mutants {
     pub(crate) const FLUSH_WITHOUT_SYNC: u32 = 1 << 3;
     /// A failed write does not fail the volume.
     pub(crate) const WRITE_ERROR_PASSES: u32 = 1 << 4;
+    /// A discard is not counted as a change: a flush behind it alone
+    /// does not sync.
+    pub(crate) const DISCARD_UNCHANGED: u32 = 1 << 5;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -338,7 +353,9 @@ impl<D: Dir> InPlace<D> {
             // it: a flush after a client's change always syncs, so it
             // fails on a failed disk whatever the change was (rule R11).
             Op::Discard { .. } => {
-                self.unsynced = true;
+                if !self.mutants.has(Mutants::DISCARD_UNCHANGED) {
+                    self.unsynced = true;
+                }
                 self.complete(id, Ok(()), None)
             }
         }
@@ -519,11 +536,16 @@ impl<D: Dir> BlockTarget for InPlace<D> {
         self.hand_out(out)
     }
 
-    /// As [`BlockTarget::poll`]; with nothing complete and a sync under
-    /// way, waits for the sync, however long it takes.
-    fn wait(&mut self, out: &mut Vec<Completion>, _timeout: Duration) -> usize {
+    /// As [`BlockTarget::poll`] with a zero `timeout`. Otherwise, with
+    /// nothing complete and a sync under way, it waits for that sync to
+    /// end, which can take longer than `timeout`: the file has no wait
+    /// with a bound ([`File::sync_end`]). Everything else completes in
+    /// [`BlockTarget::submit`], so a sync is all there is to wait for.
+    /// The daemon's pump calls only `poll`, and is woken by the file's
+    /// helper when a sync ends.
+    fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
         self.settle(false);
-        if self.ready.is_empty() {
+        if self.ready.is_empty() && !timeout.is_zero() {
             self.settle(true);
         }
         self.hand_out(out)
