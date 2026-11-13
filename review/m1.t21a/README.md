@@ -59,3 +59,13 @@ Verdict: can merge; both findings dropped; nothing new.
   `dm-0` and reads "model not said"; 24.04 runs kernel 7.0.0-1017-azure and
   26.04 7.0.0-1016-aws.
 - Still running when posted: `test`, `s3-backends`, the four daemon-rig jobs.
+
+## Third look, at 8580fc7
+
+Posted as https://github.com/skyzfs/skyzfs/pull/48#issuecomment-6844870884.
+**Can merge, nothing found.** `git diff 1d66540 8580fc7`: the mirror canary on
+an image with no mirror list (ubuntu-24.04-arm) takes the names to resolve from
+the sources and ends the script's step with a word. The pipeline run on made-up
+sources (deb822, a one-line entry, comments, `sources.list` missing) gives the
+hosts and none from a comment; the first step runs under `set +e` without
+`pipefail`. Canary run 43368385262: both arm images green in every step.

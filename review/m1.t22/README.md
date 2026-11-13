@@ -85,3 +85,25 @@ Re-run over the two runs' artifacts: page reclaim 85 of 1,406 (6.0%) and 281
 of 4,495 (6.3%) on the queue thread; every such sample has a reclaim entry
 point in its chain (86 and 282 over all threads); write-back from a write 0.
 Three plants, each caught. Lint, test and coverage were queued when I posted.
+
+## Third look, at 663ec65
+
+Posted as https://github.com/skyzfs/skyzfs/pull/49#issuecomment-6844875908.
+**Can merge, nothing blocks.** `git diff bd8feef 663ec65`: the daemon's cgroup
+is read in the look right after pgbench returns (`.pressure`), the row takes
+every `skz.cgroup.*` key from it, and from the after-look when that look has
+none.
+
+Points, none blocking:
+1. The older "Memory at the end of the window" table now holds two instants.
+2. The fallback is silent: with `pressure_look` not calling `skz_cgroup_mem`
+   all 57 tests of `tests/bench` pass.
+3. `diag_stats` reads the group twice (`:2067` through `pressure_look`, `:2083`
+   itself).
+
+Run: the new test's plants (the window ends at the after-look: fails; no
+fallback: fails); `fallback-cmp.py ROW.py BENCHDIR DIR` over the six
+`zfs-skyzfsd` rows of the two earlier runs (57 memory keys each, no
+difference); `look.sh DIR` (the two shell functions at 663ec65 on a made-up
+cgroup directory: 21 group lines, status 0 with and without a daemon).
+Not seen: a run at this head (three dispatches queued).

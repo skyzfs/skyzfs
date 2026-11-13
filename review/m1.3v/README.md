@@ -61,3 +61,13 @@ Ran at ee96ba2 (amd64, 4 KiB pages): `skyzfs-local` 272 passed, 4 ignored,
 real files 3 + 3 + 12; `skyzfs-ublk-sys` 8 + 1; `skyzfsd` 53 + 3; q1 caught, q2
 passes (no CI machine has pages above 4 KiB, the arm64 runners included), q3
 caught; `cargo doc -p skyzfs-local`.
+
+## Third look, at 2e04452
+
+Posted as https://github.com/skyzfs/skyzfs/pull/47#issuecomment-6844888242.
+**Its own part clear; still behind #46, and it now carries #46's finding E.**
+779fd87 and 2e04452 are comments and documentation only; the merge of #46 at
+fe54d96 (8437d05) equals git's own merge. The four wording points of the second
+look are dropped. Ran: in-place tests 31 passed, 1 ignored; `skyzfs-ublk-sys`
+8; `cargo doc -p skyzfs-local` with warnings denied (the paragraph break is
+back).
