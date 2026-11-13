@@ -4,7 +4,8 @@ name: skyzfs-daemon-rig
 # and ZFS do with a ublk device served through the daemon's command
 # line. Parameters; kill -9 under load; a second serve; an orderly
 # stop; the conformance suite of skyzfs-blk through the block device; a
-# failed volume; one request held for minutes. The job fails unless
+# failed volume; one request held for minutes; a disk that fails under
+# the in-place store's home image (check g, M1.T23). The job fails unless
 # every pin and every control is as the table `EXPECTED` in
 # `tests/kernel/daemon_check.py` has it. All the logic is
 # `tests/kernel/daemon-rig.sh`.
@@ -26,6 +27,14 @@ name: skyzfs-daemon-rig
 # frozen until it is removed (M1.T20), and with the in-place store the
 # pins that rest on the log are NA (`NOT_FOR_IN_PLACE` in the judge).
 # The summary says for every pin what it rests on.
+#
+# Check g's negative control (M1.T23): the input `daemon_ref` builds the
+# daemon from another commit under this checkout's rig. With
+# cd0e76360b4a3e8597c8ac5d68182b9e05c077e3 (before #46: no cache drop at
+# a start), `checks: g`, the job must fail with three lines that differ:
+# pin_start_serves_what_the_disk_holds, pin_failed_start_fails_volume and
+# pin_failed_start_suspends_pool (run 43397129438). That is how to show
+# again that check g catches what it is for.
 on:
   workflow_dispatch:
     inputs:
@@ -33,8 +42,8 @@ on:
         description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm"]'
       checks:
-        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request; f (never by default) the courses after a refused start, daemon only, about 25 minutes"
-        default: "a b c d e"
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request, g a disk that fails under the in-place store (daemon only); f (never by default) the courses after a refused start, daemon only, about 25 minutes"
+        default: "a b c d e g"
       f_courses:
         description: "check f only: which courses, of scrub export reopen clear writers zed zedreopen long longnolog (long and longnolog: check b's 300 s courses until M1.T8). One course per run gives it a clean machine"
         default: "scrub export reopen clear writers zed zedreopen long longnolog"
@@ -49,6 +58,9 @@ on:
         type: choice
         options: [daemon, stand-in, both]
         default: daemon
+      daemon_ref:
+        description: "build the daemon from this commit (40 hex digits) and not from the checkout, with the rig of the checkout: a negative control, e.g. a build without a rule a check pins. Empty: the checkout"
+        default: ""
       store:
         description: "the daemon's store: in-place, or log (frozen until it is removed; its checkpoint pins are taken only with it)"
         type: choice
@@ -179,7 +191,8 @@ jobs:
         # The settings go in a file: ubuntu-26.04's sudo-rs does not
         # carry the environment through.
         env:
-          CHECKS: ${{ inputs.checks || 'a b c d e' }}
+          CHECKS: ${{ inputs.checks || 'a b c d e g' }}
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
           F_COURSES: ${{ inputs.f_courses || 'scrub export reopen clear writers zed zedreopen long longnolog' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
@@ -190,7 +203,7 @@ jobs:
           [ "$SERVER" != daemon ] || echo "The daemon's store: \`--store $STORE\`." >> "$GITHUB_STEP_SUMMARY"
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
-          [[ $CHECKS =~ ^[abcdef](\ [abcdef])*$ ]] || { echo "::error::checks are letters of a b c d e f with a space between: '$CHECKS'"; exit 64; }
+          [[ $CHECKS =~ ^[abcdefg](\ [abcdefg])*$ ]] || { echo "::error::checks are letters of a b c d e f g with a space between: '$CHECKS'"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
@@ -204,7 +217,19 @@ jobs:
               # binding's library.
               sudo apt-get update
               sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
-              cargo build --release --locked -p skyzfsd --features test-hooks ;;
+              daemon_bin=$PWD/target/release/skyzfsd
+              if [ -n "$DAEMON_REF" ]; then
+                # A negative control: another build of the daemon under
+                # the rig of this checkout.
+                [[ $DAEMON_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::daemon_ref is a commit's 40 hex digits: '$DAEMON_REF'"; exit 64; }
+                git fetch --no-tags --depth=1 origin "$DAEMON_REF"
+                git worktree add --detach "$RUNNER_TEMP/daemon-src" "$DAEMON_REF"
+                (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
+                daemon_bin=$RUNNER_TEMP/daemon-src/target/release/skyzfsd
+                echo "The daemon was built from \`$DAEMON_REF\`, not from this checkout: a negative control, whose lines may differ from the table on purpose." >> "$GITHUB_STEP_SUMMARY"
+              else
+                cargo build --release --locked -p skyzfsd --features test-hooks
+              fi ;;
             stand-in) ;;
             *) echo "::error::server is daemon or stand-in: '$SERVER'"; exit 64 ;;
           esac
@@ -216,8 +241,9 @@ jobs:
             # On the daemon, with its own defaults: no --unsafe-allow-*
             # override until a run shows that one is needed.
             if [ "$SERVER" = daemon ]; then
-              printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
+              printf 'export RIG_SKYZFSD=%q\n' "$daemon_bin"
               printf 'export RIG_STORE=%q\n' "$STORE"
+              [ -z "$DAEMON_REF" ] || printf 'export RIG_DAEMON_REF=%q\n' "built from $DAEMON_REF (input daemon_ref), not the checkout"
             fi
           } > "$RUNNER_TEMP/rig.env"
           echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
@@ -228,7 +254,7 @@ jobs:
         run: |
           sudo chmod -R a+rX rig-out 2>/dev/null || true
           rc=0
-          python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d e}" > summary.md || rc=$?
+          python3 tests/kernel/daemon_check.py rig-out --checks "${CHECKS:-a b c d e g}" > summary.md || rc=$?
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
           # rig-out is root's (the rig runs under sudo): the judge's table
           # goes into the artifact with sudo, or it is silently left out.
