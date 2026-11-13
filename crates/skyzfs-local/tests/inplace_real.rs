@@ -213,6 +213,31 @@ fn the_in_place_store_round_trips_on_real_files() {
     expect(done[0].buf.as_deref().unwrap());
 }
 
+/// Every start serves where the image begins with blocks never
+/// written, as a pool's label does (8 KiB that nothing wrote, then the
+/// boot block). A read of such a block is answered at once while the
+/// kernel's read-ahead of the blocks after it is still under I/O, and a
+/// drop leaves pages under I/O; a start that read a block just before
+/// its drop could find them still there and refuse.
+#[test]
+fn every_start_serves_where_the_image_begins_with_a_hole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    let mut store = start(&dir).unwrap();
+    write(&mut store, 2, Buf::filled(2, 0x22));
+    flush(&mut store);
+    drop(store);
+    for n in 0..200 {
+        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
+        if let Err(e) = store.into_in_place(None) {
+            panic!("start {n} refused: {e}");
+        }
+    }
+}
+
 const CHILD_DIR: &str = "SKYZFS_INPLACE_KILL_TEST_DIR";
 const CHILD_FROM: &str = "SKYZFS_INPLACE_KILL_TEST_FROM";
 /// The blocks the kill test writes to.
