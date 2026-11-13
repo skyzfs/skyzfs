@@ -65,6 +65,44 @@ class Parse(unittest.TestCase):
         self.assertEqual(pc.category(['_raw_spin_unlock_irqrestore', 'taskq_dispatch_ent', 'zio_interrupt',
                                       'blk_mq_end_request', 'try_to_wake_up']), 'ZFS completion')
 
+    def test_reclaim_memory_group_and_write_back_from_a_write(self):
+        # A buffered write that charges a page over the group's limit and
+        # reclaims on its own thread (the leaf is no copy).
+        self.assertEqual(pc.category(['shrink_folio_list', 'shrink_lruvec', 'shrink_node', 'do_try_to_free_pages',
+                                      'try_to_free_mem_cgroup_pages', 'try_charge_memcg', '__mem_cgroup_charge',
+                                      '__filemap_add_folio', 'generic_perform_write', '__x64_sys_pwrite64']),
+                         'page reclaim')
+        # The group's reclaim after a charge went over memory.high.
+        self.assertEqual(pc.category(['_raw_spin_unlock_irqrestore', 'mem_cgroup_handle_over_high',
+                                      'exit_to_user_mode_prepare']), 'page reclaim')
+        # The charge itself, no reclaim.
+        self.assertEqual(pc.category(['page_counter_try_charge', 'try_charge_memcg', '__mem_cgroup_charge',
+                                      '__filemap_add_folio', 'filemap_add_folio']), 'memory group')
+        # The dirty throttle, and write-back under a write call.
+        self.assertEqual(pc.category(['schedule', 'io_schedule_timeout', 'balance_dirty_pages',
+                                      'balance_dirty_pages_ratelimited_flags', 'generic_perform_write']),
+                         'write-back from a write')
+        self.assertEqual(pc.category(['ext4_writepages', 'do_writepages', 'filemap_fdatawrite_wbc',
+                                      'vfs_write', '__arm64_sys_pwrite64']), 'write-back from a write')
+        # An fdatasync's write-back stays the page cache's.
+        self.assertEqual(pc.category(['ext4_writepages', 'do_writepages', 'file_write_and_wait_range',
+                                      'vfs_fsync_range', '__x64_sys_fdatasync']), 'page cache')
+        # A refault's handling and a new page put on the LRU run with or
+        # without a limit: not reclaim (the reclaim table counts refaults).
+        self.assertNotEqual(pc.category(['lru_gen_test_recent', 'lru_gen_refault', 'workingset_refault',
+                                         'filemap_add_folio', 'page_cache_ra_unbounded']), 'page reclaim')
+        self.assertNotEqual(pc.category(['lru_gen_add_folio', 'lru_add', 'folio_batch_move_lru',
+                                         'filemap_add_folio']), 'page reclaim')
+        # MGLRU's reclaim is found by the shrinker above it.
+        self.assertEqual(pc.category(['lru_gen_del_folio', 'evict_folios', 'shrink_one', 'shrink_node',
+                                      'try_to_free_mem_cgroup_pages']), 'page reclaim')
+        # The check every write makes is no throttle.
+        self.assertNotEqual(pc.category(['balance_dirty_pages_ratelimited_flags', 'generic_perform_write',
+                                         'ext4_buffered_write_iter', 'vfs_write']), 'write-back from a write')
+        # A copy is still a copy, whatever is above it.
+        self.assertEqual(pc.category(['copy_user_x', 'copy_page_from_iter_atomic', 'generic_perform_write',
+                                      'balance_dirty_pages_ratelimited_flags']), 'copy, page cache')
+
     def test_summarize(self):
         t = pc.summarize(SCRIPT)
         self.assertEqual(sorted(t), ['iou-wrk', 'skyzfs-pump', 'skyzfs-reader'])

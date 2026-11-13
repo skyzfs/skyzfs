@@ -100,16 +100,29 @@ printf 'Types: deb\nURIs: http://archive.ubuntu.com/ubuntu/\nSuites: noble\n' > 
 run "archive.ubuntu.com security.ubuntu.com azure.archive.ubuntu.com"
 is "no source uses the list: the list is as it was" "$(cmp -s "$T/list" "$T/before" && echo same)" same
 has "no source uses the list: says so" "$OUT" "no apt source uses"
+has "no source uses the list: the summary says there is no fallback" "$SUMMARY" "no fallback on this image"
 is "no source uses the list: looks nothing up" "$(wc -l < "$T/lookups" | tr -d ' ')" 0
 
 rm -f "$T/list"
 run "archive.ubuntu.com"
 is "no list on the machine: exit 0" "$RC" 0
 has "no list on the machine: says so" "$OUT" "nothing changed"
+has "no list on the machine: the summary says there is no fallback" "$SUMMARY" "no fallback on this image"
 
 # The script loosens nothing: no option of apt, no key.
 is "no option that switches a check off, no key" \
     "$(grep -v '^#' "$S" | grep -c -i -E 'trusted=|allow-unauth|AllowInsecure|AllowUnauth|apt-key|\.gpg|signed-by|apt\.conf')" 0
+
+# The fallback's tree follows the machine's architecture: arm64 packages
+# are only in ubuntu-ports. A fallback named by hand is kept as given.
+# shellcheck source=tests/lib/apt-fallback.sh
+fallback_for() { ( unset APT_FALLBACK_MIRROR; APT_FALLBACK_ARCH=$1; . "$S"; echo "$APT_FALLBACK_MIRROR" ); }
+is "amd64: the archive" "$(fallback_for amd64)" "https://mirrors.edge.kernel.org/ubuntu/"
+is "i386: the archive" "$(fallback_for i386)" "https://mirrors.edge.kernel.org/ubuntu/"
+is "arm64: the ports tree" "$(fallback_for arm64)" "https://mirrors.ocf.berkeley.edu/ubuntu-ports/"
+is "riscv64: the ports tree" "$(fallback_for riscv64)" "https://mirrors.ocf.berkeley.edu/ubuntu-ports/"
+# shellcheck source=tests/lib/apt-fallback.sh
+is "a fallback named by hand is kept" "$( ( APT_FALLBACK_MIRROR=https://m.example/ubuntu-ports/ APT_FALLBACK_ARCH=amd64; . "$S"; echo "$APT_FALLBACK_MIRROR" ) )" "https://m.example/ubuntu-ports/"
 
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

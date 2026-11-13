@@ -105,6 +105,9 @@ jobs:
       # The control test program and its tests are behind a feature, so
       # the workspace line above does not build them.
       - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      # The daemon's fault hooks, which the rigs build and the workspace
+      # line does not.
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
 
   test:
     needs: gate
@@ -127,3 +130,40 @@ jobs:
       # no longer builds. Its kernel tests are ignored here and run in
       # skyzfs-control-rig.yml.
       - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
+
+  # The unit level on arm64 (M1.T21): clippy and the tests natively on
+  # an arm64 runner, plain and with each feature that holds code the
+  # workspace's build leaves out. One job, so the build is shared; its
+  # own cache, since an arm64 build cannot use an amd64 one. The
+  # runner's pages are 4 KiB: kernels with 16 or 64 KiB pages are not
+  # covered here. ubuntu-26.04-arm and not 24.04-arm: the package
+  # fallback works there (tests/lib/apt-fallback.sh), and 24.04-arm has
+  # none, so an outage of ubuntu.com's names would fail every pull
+  # request's arm64 job.
+  unit-arm64:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-26.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      # While the names of the image's package mirrors do not resolve,
+      # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: The machine
+        run: echo "$(uname -m), pages of $(getconf PAGESIZE) bytes, kernel $(uname -r)" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: dm build headers (skynbd-agent "dm" feature)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: skyzfs-arm64
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+      - run: cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo test -p skyzfs-ublk-sys --features control-test-program
+      - run: cargo test -p skyzfsd --features test-hooks
