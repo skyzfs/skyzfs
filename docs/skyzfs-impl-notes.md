@@ -78,6 +78,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T14a | skyzfs/skyzfs#42 | The replay rig: limits on the record phase, a control for a daemon that stops answering | The local store: the power-cut replay below the daemon |
 | M1.3r | skyzfs/skyzfs#43 | A store without a write log, `--store in-place` | The criterion: without the write log |
 | M1.T18 | none yet (the rig's input waits on a branch) | The in-place store in the benchmark and in the power-cut replay | The criterion: without the write log |
+| M1.T19 | none (measurement only) | The confirming round: the two stores with their order swapped, both bounded | The criterion: without the write log |
 | M1.T17 | none (measurement only) | The criterion's round on the current daemon | The criterion: the round on the current daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
@@ -603,6 +604,33 @@ Every bracket was within the rule's 10% (0.0 to 8.0%).
 - **Bounded to 1 GiB on the slow-sync machine it was at 0.852**, one row. The pump used 12 s of CPU there against 9 s unbounded (12 to 15 s over the four jobs' bounded rows). The likely cause is that a read that misses the page cache is served on the pump's thread and holds every other request up while it waits; that is not shown, since a wait uses no CPU and nothing measured the pump's waits. A pool of readers for misses is the remedy if it is the cause, and is not built.
 - Three of the four machines were fast-sync, so the slow-sync figures rest on one job.
 
+**The confirming round** (M1.T19): four jobs, the order of the two stores swapped and both bounded as well; the sequence model, in place, log store, model, in place at 1 GiB, log store at 1 GiB, model; every row once; the daemon at the experiment's last head, whose serving path is M1.T18's[^t19runs].
+
+| Job | Disk-sync, work disk | tps in sequence | In place | Log | In place at 1 GiB | Log at 1 GiB |
+|---|---|---|---|---|---|---|
+| J1, 24.04 | 142 MiB/s, `sda1`, write through | 3767, 3783, 3552, 3787, 3448, 3326, 3885 | 1.002 | 0.940 | 0.899 | 0.867 |
+| J2, 24.04 | 3548 MiB/s, `sda1`, write through | 3500, 3581, 3432, 3522, 3427, 3355, 3559 | 1.020 | 0.978 | 0.968 | 0.948 |
+| J3, 26.04 | 197 MiB/s, `nvme0n1p1`, write back | 5353, 5610, 4587, 5825, 5090, 4968, 6170 | 1.004 | 0.821 | 0.849 | 0.828 |
+| J4, 26.04 | 161 MiB/s, `sda1`, write through | 3747, 3677, 3474, 3907, 3485, 3370, 3894 | 0.961 | 0.908 | 0.893 | 0.864 |
+
+Every bracket was within 10% (0.3 to 8.4%). Two of the `sda` machines were slow-sync this time: the device's name does not tell the kind of machine, the measured rate does.
+
+- **In place was ahead of the log store in all eight pairs**, with the order swapped: by 4.3 to 22.3% unbounded and by 2.1 to 3.7% at 1 GiB.
+- **Unbounded, in place is at the model's speed on every machine**: 1.002, 1.020, 1.004, 0.961.
+- **At 1 GiB on slow-sync machines both stores are under 0.90**: in place 0.899, 0.849, 0.893, the log store 0.867, 0.828, 0.864. On the one fast-sync machine both were over (0.968, 0.948).
+- **Where the bound costs:** under the limit the in-place pump's system time rises by 2.9 to 6.0 s per job (from about 8 s to 10.6 to 13.9 s); in the log store the same rise lands on the readers (4.2 to 7.0 s). The daemon's memory group hit its limit about 14,500 times in a bounded window and never in an unbounded one. The daemon's own resident memory is 140 MiB in place and 156 MiB with the log, so what the limit bounds is the page cache of the volume's file. What the pump does in that extra system time has not been profiled.
+
+**The in-place store under the rule, M1.T18's and M1.T19's rows together** (one serving path, two builds):
+
+| Machine kind, row | Ratios | Median | Rests on | By the rule |
+|---|---|---|---|---|
+| Fast-sync, unbounded | 1.000, 0.992, 0.982, 0.949, 1.016, 1.011, 1.020 | 1.000 | 7 rows, 4 jobs | met |
+| Fast-sync, 1 GiB | 0.965, 0.962, 0.975, 0.968 | 0.967 | 4 rows, 4 jobs | met |
+| Slow-sync, unbounded | 0.986, 0.933, 1.002, 1.004, 0.961 | 0.986 | 5 rows, 4 jobs | met |
+| Slow-sync, 1 GiB | 0.852, 0.899, 0.849, 0.893 | **0.873** | 4 rows, 4 jobs | **not met** |
+
+These are rows of the experiment's builds and not of the merged daemon with the in-place store as its only store, which is what the criterion asks for; they say where it will stand. **One cell is open: bounded to 1 GiB on slow-sync machines.** The store reads and writes the volume's file through the page cache, which the limit bounds, while ZFS above it keeps its own cache: the block is cached twice, and under the limit the kernel reclaims on the pump's thread. Whether the store should do direct I/O instead is the open question the design has carried since M1 began (§5.1, "Block cache"); a profile of the bounded row comes first.
+
 **The power-cut replay with the in-place store**, full budget, one run per image[^t18replay]:
 
 | | Ubuntu 24.04 | Ubuntu 26.04 |
@@ -777,3 +805,4 @@ Every independent read of the design and every review of a work package, with wh
 [^t17runs]: `topology-bench.yml` by dispatch on `zfs-topology` at 9b6439c: runs 43331668450 (A) and 43331678908 (B) on Ubuntu 24.04, 43331689019 (C) and 43331698987 (D) on Ubuntu 26.04.
 [^t18runs]: `topology-bench.yml` by dispatch, every daemon row built at 3dd9288 of the experiment's branch: runs 43337935593 (A) and 43337946627 (B) on Ubuntu 24.04, 43337957099 (C) and 43337967297 (D) on Ubuntu 26.04.
 [^t18replay]: `skyzfs-replay-rig.yml`, run 43338376122, from the branch that adds the rig's `serve_args` input, with `server=daemon`, `daemon_budget=full` and `serve_args="--store in-place"`; both jobs ended with exit 0.
+[^t19runs]: `topology-bench.yml` by dispatch, every daemon row built at fef38c6 of the experiment's branch: runs 43347646828 (J1) and 43347656324 (J2) on Ubuntu 24.04, 43347665318 (J3) and 43347674621 (J4) on Ubuntu 26.04.
