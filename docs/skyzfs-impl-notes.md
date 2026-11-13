@@ -618,7 +618,9 @@ Every bracket was within the rule's 10% (0.0 to 8.0%).
 
 For this store the rig's prefixes follow the kernel's writeback order and not the daemon's, so the run shows the pool surviving states that are not prefixes of the daemon's order. It does not show a disk that loses or reorders unflushed writes in another order than it received them, nor a torn sector; that gap is wider for this store than for the log store, whose own order is a prefix by construction. One run per image.
 
-**What the log store's log was for, and what replaces it** (the lead's reading, to be settled in M2's design):
+**Decided on 2026-11-13 (design, decision D5): the in-place store is adopted and the log store is retired.** The design's §4.1, §5.1, §5.2, §5.3 and §5.5 were rewritten for it the same day. The steps: the experiment merges with the log store still the default; M1.3s moves the contract's model in `skyzfs-blk` to the volatile-cache disk and closes what the experiment owed in the daemon; M1.T20 makes the rigs drive the in-place store and name the store they drive; M1.3t makes it the only store and removes the log store, its format, its options and its hooks. Volumes that hold a log are not migrated: there are none outside the rigs. Everything in these notes about the log store, from M1.2a to M1.3p, describes the store that is being removed; it stays as the record of what was built and why it was dropped.
+
+**What the log store's log was for, and what replaces it** (now in the design, §5.2; to be built in M2):
 
 - *A cheap flush.* Not borne out: the in-place flush was as fast or faster on these machines, with less than half the bytes written. Not measured on real flash.
 - *The cut as a position in the log, and the cut's blocks kept until uploaded (design §5.2, §5.3).* A cut needs the set of blocks changed since the cut before, frozen at the first flush after the uberblock write, and their content kept against later overwrites until uploaded. The log gave the first for nothing. Without it the daemon needs a map of changed blocks that survives the daemon's death, and a copy made before a block of a pending cut is overwritten. Neither is designed.
@@ -659,7 +661,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- Whether the write log is needed (the owner's question, 2026-11-12): an in-place store is built as an experiment (M1.3r, skyzfs/skyzfs#43, open) and is being measured (M1.T17 for the log store's rows on the current daemon, M1.T18 for the in-place store). The contract's rule R10, a prefix of the daemon's order after a power cut, is what requires a journal; ZFS asks less of a disk.
+- The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
