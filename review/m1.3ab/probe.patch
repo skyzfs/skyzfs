@@ -1,0 +1,112 @@
+diff --git a/crates/skyzfs-ublk-sys/src/watch.rs b/crates/skyzfs-ublk-sys/src/watch.rs
+index 4e4b25d..9673f2b 100644
+--- a/crates/skyzfs-ublk-sys/src/watch.rs
++++ b/crates/skyzfs-ublk-sys/src/watch.rs
+@@ -186,6 +186,107 @@ mod tests {
+         panic!("a page four times larger did not reach the hole in {counted} attempts");
+     }
+ 
++
++    // ---- REVIEW PROBE (not part of the pull request) ----
++    // The test's attempt, over and over, while other threads start and
++    // end as the tests of this binary do. Counts what the old rule and
++    // the new one would have said of each attempt.
++    #[test]
++    #[ignore]
++    fn probe_stray_pages_in_the_hole() {
++        use std::sync::atomic::{AtomicBool, Ordering};
++        use std::sync::Arc;
++        use std::time::{Duration, Instant};
++        let secs: u64 = std::env::var("PROBE_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(20);
++        let others: usize = std::env::var("PROBE_THREADS").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
++        let hole = std::env::var("PROBE_HOLE").unwrap_or_default();
++        let stop = Arc::new(AtomicBool::new(false));
++        let spawners: Vec<_> = (0..others)
++            .map(|_| {
++                let stop = stop.clone();
++                std::thread::spawn(move || {
++                    let mut n = 0u64;
++                    while !stop.load(Ordering::Relaxed) {
++                        std::thread::spawn(|| {}).join().unwrap();
++                        n += 1;
++                    }
++                    n
++                })
++            })
++            .collect();
++        let host = page_size();
++        let large = 4 * host;
++        let room = 2 * large;
++        let (mut attempts, mut filled_before, mut filled_after, mut old_fail, mut counted_missed, mut reached) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
++        let (mut at_start, mut old_fail_at_start, mut run, mut longest, mut own_false) = (0u64, 0u64, 0u64, 0u64, 0u64);
++        let t0 = Instant::now();
++        while t0.elapsed() < Duration::from_secs(secs) {
++            let base = unsafe {
++                libc::mmap(std::ptr::null_mut(), room, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0)
++            };
++            assert_ne!(base, libc::MAP_FAILED);
++            let base = base as usize;
++            // PROBE_HOLE=edge: the hole is the mapping's first page;
++            // inner: its second, with a page of ours below it.
++            let aligned = match hole.as_str() {
++                "edge" => base,
++                "inner" => base + host,
++                _ => base.div_ceil(large) * large,
++            };
++            // edge-aligned: the hole is aligned as the test has it, and
++            // what lies below it is given back first, so that the hole
++            // is the mapping's first page.
++            let mut low = base;
++            if hole == "edge-aligned" {
++                if aligned > base {
++                    assert_eq!(unsafe { libc::munmap(base as *mut libc::c_void, aligned - base) }, 0);
++                }
++                low = aligned;
++            }
++            assert_eq!(unsafe { libc::munmap(aligned as *mut libc::c_void, host) }, 0);
++            let second = aligned + host;
++            let before = mapped_in(aligned, host, host);
++            let own = mapped_in(second, host, host) && mapped(second, host);
++            let larger = mapped_in(second, host, large);
++            let after = mapped_in(aligned, host, host);
++            unsafe {
++                if aligned > low {
++                    libc::munmap(low as *mut libc::c_void, aligned - low);
++                }
++                libc::munmap(second as *mut libc::c_void, base + room - second);
++            }
++            attempts += 1;
++            let hole_at_start = aligned == base;
++            at_start += u64::from(hole_at_start);
++            own_false += u64::from(!own);
++            filled_before += u64::from(before);
++            filled_after += u64::from(after);
++            // The old rule: only the look after; larger must be false.
++            if !after && larger {
++                old_fail += 1;
++                old_fail_at_start += u64::from(hole_at_start);
++            }
++            // The new rule.
++            if !before && !after && !larger {
++                reached += 1;
++                run = 0;
++            } else {
++                if !before && !after {
++                    counted_missed += 1;
++                }
++                run += 1;
++                longest = longest.max(run);
++            }
++        }
++        stop.store(true, Ordering::Relaxed);
++        let spawned: u64 = spawners.into_iter().map(|s| s.join().unwrap()).sum();
++        println!("PROBE hole '{hole}'; {secs} s, {others} threads starting and ending threads ({spawned} threads in all), page {host}");
++        println!("PROBE attempts {attempts}; the hole at the start of the mapping, with free space below it: {at_start}");
++        println!("PROBE the hole read as mapped before the answers {filled_before}, after them {filled_after}; the page after the hole read as unmapped {own_false}");
++        println!("PROBE old rule: failures (hole empty after, the larger page missed it) {old_fail}, of them with the hole at the start {old_fail_at_start}");
++        println!("PROBE new rule: counted and reached {reached}; counted and missed {counted_missed}; longest run of attempts without a pass {longest}");
++    }
++
+     /// Map, make the hole, and ask `mapped_in` about the page after it
+     /// with the system's page and with one four times larger; `None`
+     /// where the hole read as mapped before or after the answers.

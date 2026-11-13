@@ -1,0 +1,9 @@
+head: the test alone, 200 runs: 200 pass, 0 fail
+head: the whole binary, 200 runs: 200 pass, 0 fail
+head: under churn, new rule: counted and reached 139890; counted and missed 106; longest run of attempts without a pass 2
+plant: rounds to the system's page: the test alone, 200 runs: 0 pass, 200 fail
+plant: rounds to the system's page: the whole binary, 200 runs: 0 pass, 200 fail
+plant: rounds to the system's page: under churn, new rule: counted and reached 0; counted and missed 151602; longest run of attempts without a pass 151677
+plant: rounds to half the page given: the test alone, 200 runs: 200 pass, 0 fail
+plant: rounds to half the page given: the whole binary, 200 runs: 200 pass, 0 fail
+plant: rounds to half the page given: under churn, new rule: counted and reached 148223; counted and missed 374; longest run of attempts without a pass 3

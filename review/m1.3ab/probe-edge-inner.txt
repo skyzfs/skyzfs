@@ -1,0 +1,12 @@
+edge: attempts 239748;the hole read as mapped before the answers 1124, after them 3228;old rule: failures (hole empty after, the larger page missed it) 667;
+edge: attempts 222198;the hole read as mapped before the answers 72, after them 133;old rule: failures (hole empty after, the larger page missed it) 37;
+edge: attempts 245328;the hole read as mapped before the answers 1128, after them 3188;old rule: failures (hole empty after, the larger page missed it) 556;
+edge: attempts 217221;the hole read as mapped before the answers 1174, after them 3172;old rule: failures (hole empty after, the larger page missed it) 458;
+edge: attempts 232364;the hole read as mapped before the answers 3536, after them 6484;old rule: failures (hole empty after, the larger page missed it) 1151;
+edge: attempts 247522;the hole read as mapped before the answers 3797, after them 6747;old rule: failures (hole empty after, the larger page missed it) 660;
+inner: attempts 196431;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 196431;
+inner: attempts 199167;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 0;
+inner: attempts 181300;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 102;
+inner: attempts 189866;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 87;
+inner: attempts 234077;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 0;
+inner: attempts 223356;the hole read as mapped before the answers 0, after them 0;old rule: failures (hole empty after, the larger page missed it) 80;
