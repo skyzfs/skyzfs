@@ -41,3 +41,12 @@ so the replayer finds it at `settled`.
 Five of eight are caught. Not caught: the driver's order (the probe
 above pins it), the replayer's same order, and the tool's trace still
 saying `before_kill` (nothing reads the tool's own trace in a test).
+
+## Second look, head 8a0dd14
+
+Posted: can merge once CI is green. The order test is in
+(`what_is_handed_over_is_accounted_before_the_loss`: a correct target at
+all 200 seeds, the faulty one caught at least once); with the two steps
+swapped it fails (`plants66-8a0dd14.txt`). The trace's word is one
+constant for writer and replayer. The replayer's own order is still
+held by nothing, and I did not ask for it.

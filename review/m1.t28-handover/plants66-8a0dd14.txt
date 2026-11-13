@@ -1,0 +1,5 @@
+unchanged: nothing fails (91 passed, 31 s)
+the driver tells the model of the loss before it accounts what was handed over: FAILS: conformance::tests::what_is_handed_over_is_accounted_before_the_loss (90 passed, 12 s)
+the driver does not ask the harness for what was answered before the loss: FAILS: conformance::tests::an_answer_handed_over_at_a_loss_counts_from_before_it, conformance::tests::what_is_handed_over_is_accounted_before_the_loss (89 passed, 11 s)
+the trace still says before_kill: THE PLANT DOES NOT APPLY (0 places)
+the replayer tells the model of the loss first: nothing fails (91 passed, 11 s)

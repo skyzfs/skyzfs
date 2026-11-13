@@ -22,3 +22,8 @@ Review posted on the pull request. Nothing blocks.
 
 CI when read (20:29 UTC): the control rig green on three images, the
 daemon rig queued, lint and tests running, no failure.
+
+## Second look, head d68f422 (comments only)
+
+Posted: the text on `Queue::wait` is right for both kinds of refused
+commit on v6.11, v6.17 and v7.0; can merge once CI is green.
