@@ -69,3 +69,25 @@ L, which cases notice: a flush that syncs nothing fails the power-cut cases.
 
 Not done: nothing on a kernel; clippy and the feature builds; the rig jobs of
 the pull request had not finished.
+
+## After the first look: the lead's rulings (2026-11-13)
+
+- Finding 1: every start, after its sync, drops the kernel's cache of the
+  volume's file, checks that it is gone, and serves only what the disk holds;
+  it refuses the volume if it cannot (§4.1, §5.1 at `zfs-topology` 86d2441).
+  The suite's reopen goes back to a lost process without a power cut, so the
+  case pins it. Still blocks #46 until it is in.
+- Finding 5: the model must not be stricter than §4.1 on a discarded block's
+  reads; fixed if small, else owed.
+- Finding 2: the note before the marker at a start, as while serving.
+
+For the second look:
+
+- How the cache is checked. The daemon runs under `mlockall(MCL_FUTURE)`: a
+  check by mapping the image and `mincore` would read the range in and lock
+  it. `cachestat` (Linux 6.5) needs no mapping.
+- `POSIX_FADV_DONTNEED` is advisory and drops only clean pages nothing maps or
+  locks; the check is the only evidence.
+- Plants to run: a drop that does nothing (the reopen case must fail); a check
+  that always passes (a test of the refusal must fail); `plants.sh` h2 is now
+  the harness as it should be.
