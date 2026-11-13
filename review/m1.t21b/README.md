@@ -28,3 +28,11 @@ https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845117648.
   log). (3) A mistyped label in `images` waits for a runner.
 - For the lead: the cost (about 28 minutes per daemon-rig run, about 65 where
   the rig changes), and merging #48 before #50 because of the arm fallback.
+
+## Second look, at 50d19ba
+
+Posted as https://github.com/skyzfs/skyzfs/pull/50#issuecomment-6845159752.
+**Can merge, nothing found.** Two workflow comments changed: the reason for
+24.04-arm by dispatch is the missing mirror list only. The take-over figures
+are corrected in the description; the label check is declined (by dispatch
+only), accepted.
