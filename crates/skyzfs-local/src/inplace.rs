@@ -40,14 +40,16 @@
 //!    and the next instance makes it whole. Where the write went into a
 //!    hole or an unwritten extent, a returned direct write is not
 //!    durable on its own: it survives a power cut only once the file
-//!    system has committed its record that the block is written. The
-//!    file system makes that record when the write completes, in memory
-//!    and in its journal; by my reading of ext4 and XFS (not shown here)
-//!    it is visible to the next instance at once and committed by the
-//!    next sync, so until then a power cut may leave the block reading
-//!    as zeros, its content before the write, which point 3 allows.
-//!    Whether to fill or preallocate the image is M1.3u's to settle;
-//!    `skyzfsd create --zero-fill` writes it whole.
+//!    system has committed its record that the block is written, which
+//!    the next sync does. Until then a power cut may leave the block
+//!    reading as zeros, its content before the write, which point 3
+//!    allows; after a completed flush it never does. The replay rig
+//!    showed both on ext4 and XFS (design §10, the allocation row):
+//!    preallocating does not change it, and an image written through
+//!    first does not show it. So the image stays sparse, and `skyzfsd
+//!    create --zero-fill` (which writes it whole) is an option. That the
+//!    record is visible to the next instance at once, after a lost
+//!    process, is my reading of the two file systems, not shown here.
 //! 2. **A flush** completes only when every operation acknowledged
 //!    before it was received is durable (rule R7).
 //! 3. **Power loss.** Every block that a completed flush covered holds
