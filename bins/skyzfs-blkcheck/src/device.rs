@@ -989,6 +989,17 @@ mod tests {
         (harness, path)
     }
 
+    /// The device harness reads a daemon loss with late completions:
+    /// through the kernel a request the lost server completed is not
+    /// issued again, and its call can return after the kill. With the
+    /// strict reading the rig would refuse that legal state (#58).
+    #[test]
+    fn a_kill_may_leave_completions_the_lost_server_made() {
+        let (h, script) = harness("loss", "true");
+        assert_eq!(h.in_flight_at_a_loss(), InFlight::MayHaveCompleted);
+        let _ = std::fs::remove_file(script);
+    }
+
     /// The volume counts as failed from the moment the helper is asked
     /// to make the log fail: a request in flight returns with the
     /// kernel's I/O error while the helper is still waiting for the

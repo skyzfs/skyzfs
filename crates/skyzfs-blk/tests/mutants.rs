@@ -4,8 +4,9 @@
 //!
 //! Rule numbers refer to the crate documentation of `skyzfs-blk`.
 
-use skyzfs_blk::conformance::{run_all, Config};
-use skyzfs_blk::mem::{Fault, MemConfig, MemHarness};
+use skyzfs_blk::conformance::{run_all, Capabilities, Config, Harness, HarnessError, Spec};
+use skyzfs_blk::mem::{Fault, MemConfig, MemHarness, MemTarget};
+use skyzfs_blk::model::InFlight;
 
 /// Run the whole suite against a target with `fault` and require that it
 /// fails, and that every case in `must_fail` is among the failures.
@@ -180,6 +181,86 @@ fn catches_skipping_a_reissue_that_was_logged() {
         Fault::SkipReissuedIfLogged,
         &["reissue_after_kill_is_idempotent", FAILURES],
     );
+}
+
+/// The in-memory harness, saying that a completion can reach the client
+/// after a daemon loss ([`InFlight::MayHaveCompleted`]), as a kernel
+/// block device's harness does.
+struct LateCompletions(MemHarness);
+
+impl Harness for LateCompletions {
+    type Target = MemTarget;
+
+    fn capabilities(&self) -> Capabilities {
+        self.0.capabilities()
+    }
+
+    fn create(&mut self, spec: &Spec) -> Result<MemTarget, HarnessError> {
+        self.0.create(spec)
+    }
+
+    fn kill(&mut self, target: MemTarget, seed: u64) -> Result<MemTarget, HarnessError> {
+        self.0.kill(target, seed)
+    }
+
+    fn in_flight_at_a_loss(&self) -> InFlight {
+        InFlight::MayHaveCompleted
+    }
+
+    fn cut_points(&mut self, target: &MemTarget) -> u64 {
+        self.0.cut_points(target)
+    }
+
+    fn power_cut(&mut self, target: MemTarget, keep: u64) -> Result<MemTarget, HarnessError> {
+        self.0.power_cut(target, keep)
+    }
+
+    fn fail_log(&mut self, target: &mut MemTarget) -> Result<(), HarnessError> {
+        self.0.fail_log(target)
+    }
+
+    fn reopen_failed(&mut self, target: MemTarget) -> Result<MemTarget, HarnessError> {
+        self.0.reopen_failed(target)
+    }
+}
+
+/// R9: the suite reads a daemon loss as the harness says. Under a
+/// harness that says completions can reach the client after the loss,
+/// the target of `catches_skipping_a_reissue_that_was_logged` passes,
+/// since a client of such a device cannot tell it from one whose lost
+/// daemon completed the request. A correct target passes too, and a
+/// target that loses what was acknowledged, or fails its reissues, is
+/// still caught. Without this, a driver that stopped asking the harness
+/// would leave every test without a kernel passing and send the daemon
+/// rig back to the strict reading.
+#[test]
+fn the_suite_reads_a_daemon_loss_as_the_harness_says() {
+    let run = |fault: Option<Fault>| {
+        let config = MemConfig {
+            queue_depth: 16,
+            fault,
+            ..MemConfig::default()
+        };
+        let suite = Config {
+            cases: 64,
+            ..Config::default()
+        };
+        run_all(&mut LateCompletions(MemHarness::new(config)), &suite)
+    };
+    for fault in [None, Some(Fault::SkipReissuedIfLogged)] {
+        let report = run(fault);
+        assert!(
+            report.passed(),
+            "{fault:?} failed under MayHaveCompleted: {:?}",
+            report.failed()
+        );
+    }
+    for fault in [Fault::KillLosesUnflushed, Fault::RejectReissued] {
+        assert!(
+            !run(Some(fault)).passed(),
+            "{fault:?} passed under MayHaveCompleted"
+        );
+    }
 }
 
 /// R10: a target that tears a write inside a sector across a power cut
