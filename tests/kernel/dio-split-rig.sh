@@ -16,7 +16,10 @@
 #     times for each daemon, the daemons in turn on this one machine.
 #     The same ftrace runs during each pass, so a failed pass can be
 #     read from both sides: the tool's calls (c-trace.tsv) and the
-#     requests the kernel issued to the device (ftrace.txt.gz).
+#     requests the kernel issued to the device (ftrace.txt.gz, with
+#     block_split, on the clock mono), and, from a daemon whose test
+#     build has it, what the server was handed (c-cN.requests.tsv.gz,
+#     --request-log, on CLOCK_MONOTONIC too).
 #
 #   dio-split-rig.sh OUT
 #
@@ -42,6 +45,7 @@ ROUNDS=${RIG_ROUNDS:-0}
 PROBE_ROUNDS=${RIG_PROBE_ROUNDS:-2000}
 SERVE_ARGS=${RIG_SERVE_ARGS:---store in-place}
 T=/sys/kernel/tracing
+RL_SAID=""
 SUM=$OUT/summary.md
 die() { echo "dio-split-rig: $*" | tee -a "$SUM" >&2; exit 2; }
 note() { echo "$*" | tee -a "$SUM"; }
@@ -53,6 +57,11 @@ mkdir -p "$WORK"
     modprobe ublk_drv 2>> "$OUT/modprobe.log" || die "no ublk driver"
 }
 [ -d "$T/events/block/block_rq_issue" ] || die "no ftrace event block_rq_issue under $T"
+[ -d "$T/events/block/block_split" ] || die "no ftrace event block_split under $T"
+grep -qw mono "$T/trace_clock" || die "no trace clock mono"
+for d in "${DAEMONS[@]}"; do
+    if has_request_log "${d#*=}"; then RL_SAID+="${d%%=*} yes; "; else RL_SAID+="${d%%=*} no; "; fi
+done
 FALLBACK=""
 grep -qx 'direct_write_fallback' "$T/available_filter_functions" 2>/dev/null && FALLBACK=direct_write_fallback
 
@@ -62,6 +71,7 @@ note ""
 note "- udev: $(udevadm --version 2>/dev/null | head -n 1); rules that name ublkb: $(grep -l 'ublkb' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | tr '\n' ' ')"
 grep -h 'ublkb' /usr/lib/udev/rules.d/*.rules /etc/udev/rules.d/*.rules 2>/dev/null | cut -c1-400 > "$OUT/udev-ublkb-rules.txt"
 note "- the rule lines that name ublkb are in udev-ublkb-rules.txt ($(wc -l < "$OUT/udev-ublkb-rules.txt") lines); with OPTIONS watch: $(grep -c 'watch' "$OUT/udev-ublkb-rules.txt")"
+note "- the daemon's request log (--request-log): ${RL_SAID}ftrace's clock is mono, as the log's mono_ns"
 note "- function trace of the fallback: ${FALLBACK:-not traceable on this kernel (direct_write_fallback is not in available_filter_functions)}"
 
 TRACE_PID=""
@@ -70,11 +80,14 @@ trace_on() { # FILE
     echo nop > "$T/current_tracer"
     echo > "$T/trace"
     echo 65536 > "$T/buffer_size_kb"
+    # The daemon's request log (--request-log) stamps CLOCK_MONOTONIC.
+    echo mono > "$T/trace_clock"
     if [ -n "$FALLBACK" ]; then
         echo "$FALLBACK" > "$T/set_ftrace_filter"
         echo function > "$T/current_tracer"
     fi
     echo 1 > "$T/events/block/block_rq_issue/enable"
+    echo 1 > "$T/events/block/block_split/enable"
     cat "$T/trace_pipe" > "$1" &
     TRACE_PID=$!
     echo 1 > "$T/tracing_on"
@@ -84,14 +97,18 @@ trace_off() {
     sleep 1
     kill "$TRACE_PID" 2>/dev/null; wait "$TRACE_PID" 2>/dev/null
     echo 0 > "$T/events/block/block_rq_issue/enable"
+    echo 0 > "$T/events/block/block_split/enable"
     echo nop > "$T/current_tracer"
     echo > "$T/set_ftrace_filter" 2>/dev/null
     TRACE_PID=""
 }
 trap '[ -z "$TRACE_PID" ] || trace_off' EXIT
 
+# Whether a daemon's build has the request log (M1.3y's test hooks).
+has_request_log() { "$1" serve --help 2>&1 | grep -q -- '--request-log'; }
 helper() { # WORK VERB N [DAEMON]
-    BLK_WORK=$1 BLK_SKYZFSD=$4 BLK_SERVE_ARGS=$SERVE_ARGS lim 120 "$HERE/blkcheck-helper.sh" "$2" "$3"
+    local rl=""; has_request_log "$4" && rl=1
+    BLK_WORK=$1 BLK_SKYZFSD=$4 BLK_SERVE_ARGS=$SERVE_ARGS BLK_REQUEST_LOG=$rl lim 120 "$HERE/blkcheck-helper.sh" "$2" "$3"
 }
 
 # --- 1. the probe ---------------------------------------------------
@@ -139,6 +156,7 @@ print(f"| {sys.argv[2]} | {r['calls'] // 2} | {r['calls']} | {r['requests']} | {
 EOF
     gzip -f "$OUT/probe-$mode-ftrace.txt"
 done
+cp "$pw"/c1.requests.tsv "$OUT/probe-requests.tsv" 2>/dev/null && gzip -f "$OUT/probe-requests.tsv"
 helper "$pw" destroy 1 "$probe_daemon" > /dev/null 2>> "$OUT/probe-helper.err"
 note ""
 note "A pair is two calls. More than two write requests, or merges, in a pair means a call reached the device as more than one request. \"Mixed\" is a shared block range that neither call won whole, which two whole requests cannot give."
@@ -160,14 +178,15 @@ for r in $(seq 1 "$ROUNDS"); do
         trace_on "$p/ftrace.txt"
         echo "pass $r $label start" > "$T/trace_marker"
         t0=$(date +%s)
-        BLKCHECK_TRACE=$p/c-trace.tsv BLK_SKYZFSD=$bin BLK_WORK=$w BLK_SERVE_ARGS=$SERVE_ARGS \
+        rl=""; has_request_log "$bin" && rl=1
+        BLKCHECK_TRACE=$p/c-trace.tsv BLK_SKYZFSD=$bin BLK_WORK=$w BLK_SERVE_ARGS=$SERVE_ARGS BLK_REQUEST_LOG=$rl \
             lim 2400 "$TOOL" --harness "$HERE/blkcheck-helper.sh" --can fail-log \
             --cases 16 --rounds 4 --timeout 60 \
             > "$p/c-cases.tsv" 2> "$p/c-blkcheck.err"; rc=$?
         secs=$(( $(date +%s) - t0 ))
         trace_off
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
-        for f in "$w"/*.serve.log; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
+        for f in "$w"/*.serve.log "$w"/*.requests.tsv; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
         bad=""
         if [ -n "$fails" ] || [ $rc != 0 ]; then
@@ -185,7 +204,7 @@ for r in $(seq 1 "$ROUNDS"); do
         if [ -n "$fails" ] || [ $rc != 0 ]; then
             failed_passes[$label]=$(( ${failed_passes[$label]:-0} + 1 ))
         fi
-        gzip -f "$p/c-trace.tsv" "$p/ftrace.txt"
+        gzip -f "$p/c-trace.tsv" "$p/ftrace.txt" "$p"/c-*.requests.tsv 2>/dev/null
         # Keep the first pass of each daemon and every pass that failed.
         if [ "$r" != 1 ] && [ -z "$fails" ] && [ $rc = 0 ]; then rm -rf "$p"; fi
         rm -rf "$w"
