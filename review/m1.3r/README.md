@@ -127,3 +127,30 @@ clippy `-D warnings` on `skyzfs-local` and `skyzfsd`, all targets, with and
 without the test hooks, clean. Not done: the rest of the workspace, `skyzfsd`'s
 tests (the delta does not touch it), anything through ublk or ZFS, the
 reproducer on a real file system (there is no power cut there).
+
+## Third look: fef38c6 (delta from d1641a4: help text, module doc, tests)
+
+**Verdict: finding A is handled as the lead ruled (not fixed in this pull
+request; the claim withdrawn; listed as owed with the reproduction), and both
+notes of the second look are answered. Nothing new blocks.** Posted as
+https://github.com/skyzfs/skyzfs/pull/43#issuecomment-6840937793.
+
+- The lead's ruling on A: the default store's open is not touched for an
+  experiment; #43 does not merge before the owner chooses between the stores;
+  A and the failure marker on the queue's thread are owed if both stores were
+  kept.
+- The ignored test `a_flush_on_the_log_store_covers_what_the_in_place_store_wrote`
+  fails with `--include-ignored` on the log store's case, `(0, 153)` against
+  `(119, 153)`, and its control passes. No workflow runs this crate's ignored
+  tests (the control rig passes `--ignored` to the kernel test binary only).
+- `a_wait_with_no_time_does_not_wait_for_a_sync` fails on the old condition
+  (plant), the other 17 pass.
+- Left, not blocking: the doc of `Store::into_in_place` (`store.rs:3423`)
+  still says a volume "later opened by the log store again finds an empty log
+  and the home image as the in-place store left it", with no pointer to the
+  warning; the warning's reason names a lost daemon, and whether a clean stop
+  syncs the image was not checked (the rule is unconditional).
+
+Verified: in-place tests 18 passed, 1 ignored; `cargo test -p skyzfsd` 56;
+fmt and clippy `-D warnings` on both crates with and without the hooks clean.
+CI on the head was still running; nothing had failed.
