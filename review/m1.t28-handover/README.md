@@ -37,3 +37,7 @@ so the replayer finds it at `settled`.
 ## Plants
 
 `plants66.py`: eight, results in `plants66.txt`.
+
+Five of eight are caught. Not caught: the driver's order (the probe
+above pins it), the replayer's same order, and the tool's trace still
+saying `before_kill` (nothing reads the tool's own trace in a test).
