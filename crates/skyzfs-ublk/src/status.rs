@@ -18,7 +18,11 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's eighth version. The seventh (`SKYZSTA7`, 1856
+//! This is the file's ninth version. The eighth (`SKYZSTA8`, 1960
+//! bytes) ended before the in-place store's I/O threads' queue, from
+//! offset 1960 on; a file of that version is still read, with that
+//! queue absent (the log store has none, and shows the same). The
+//! seventh (`SKYZSTA7`, 1856
 //! bytes) ended before the worker's sixteenth activity (waiting for
 //! the helper's report of a step's home-image sync), the waits by it
 //! and the helper's account, from offset 1856 on; a file of that
@@ -45,7 +49,7 @@
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZSTA8` |
+//! | 0 | 8 | magic `SKYZSTA9` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -69,7 +73,7 @@
 //! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
 //! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
-//! | 192 | 8 | `zeroes_applied`: how a checkpoint applies write-zeroes to the home image. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say. Any other value is read as "not said" |
+//! | 192 | 8 | `zeroes_applied`: how write-zeroes reach the home image, by a checkpoint of the log store or by the in-place store. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say; 4: zeros are written by direct I/O (the in-place store). Any other value is read as "not said" |
 //! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it (for reads, the store's reader); the longest such wait; the summed time of the store's call for them; the longest such call |
 //! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync (the worker's part in it: the whole sync where the worker makes it, handing it over where a step of the rule gives it to the helper); the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
 //! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
@@ -95,6 +99,12 @@
 //! | 1904 | 24 | the home image's syncs that steps handed to the helper: how many, their summed time from the hand-over to the worker taking the report, the longest. Not the worker's time: it served meanwhile |
 //! | 1928 | 24 | the worker's waits for that report: how many, their summed time, the longest |
 //! | 1952 | 8 | the requests the worker completed while a sync was with the helper |
+//! | 1960 | 8 | the in-place store's I/O threads: how many (0 for the log store, which has none, and for a build that does the I/O on the caller's thread) |
+//! | 1968 | 8 | reads and writes on those threads now: handed to a thread and not yet taken back |
+//! | 1976 | 8 | requests waiting now for a thread, in their order, because one on the threads overlaps them or a flush is behind a write still there, and everything received after the first of them |
+//! | 1984 | 8 | the requests that waited so since the store began (only grows) |
+//! | 1992 | 8 | the most reads and writes on the threads at once since the store began |
+//! | 2000 | 8 | the most requests waiting at once since the store began |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -141,17 +151,22 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::{Counters, PumpTiming};
 use crate::records::StoredFailure;
+use skyzfs_local::inplace::IoQueue;
 use skyzfs_local::store::{RequestTiming, Spent, Synced, Timing, ACTIVITIES};
 use skyzfs_local::writeback::Hinted;
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZSTA8";
+const MAGIC: &[u8; 8] = b"SKYZSTA9";
 /// The version this crate writes.
-pub const VERSION: u32 = 8;
-const LEN: usize = 1960;
+pub const VERSION: u32 = 9;
+const LEN: usize = 2008;
 
+/// The eighth version: nothing from the I/O threads' queue on (offset
+/// 1960). A file of it is still read, with that queue absent.
+const EIGHTH_MAGIC: &[u8; 8] = b"SKYZSTA8";
+const EIGHTH_LEN: usize = 1960;
 const SEVENTH_MAGIC: &[u8; 8] = b"SKYZSTA7";
 const SEVENTH_LEN: usize = 1856;
 /// The sixth version: nothing from the hint on.
@@ -472,10 +487,15 @@ pub struct LogShown {
     /// Where the pump's time went. `None` in a file of a version
     /// before the fifth.
     pub pump: Option<PumpTiming>,
+    /// The in-place store's I/O threads' queue. `None` in a file of a
+    /// version before the ninth, and from the log store (which has no
+    /// threads); a reader tells them apart by nothing, and the report
+    /// shows the queue only where there are threads.
+    pub io_queue: Option<IoQueue>,
 }
 
-/// How a checkpoint applies write-zeroes to the home image, as the
-/// status file says it.
+/// How write-zeroes reach the home image, as the status file says it:
+/// by a checkpoint of the log store, or by the in-place store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ZeroesShown {
     /// The file does not say: it is of a version before the fourth, or
@@ -493,6 +513,10 @@ pub enum ZeroesShown {
     /// says this any more: one is not opened on such a file system
     /// (M1.3g). The value stays readable.
     WrittenForBlocks,
+    /// Zeros are written by direct I/O: the in-place store, where a
+    /// deallocated range would make the next writes to it allocate
+    /// again.
+    WrittenDirect,
 }
 
 impl ZeroesShown {
@@ -502,6 +526,7 @@ impl ZeroesShown {
             Self::Deallocated => 1,
             Self::Written => 2,
             Self::WrittenForBlocks => 3,
+            Self::WrittenDirect => 4,
             Self::Unsaid => u64::MAX,
         }
     }
@@ -512,6 +537,7 @@ impl ZeroesShown {
             1 => Self::Deallocated,
             2 => Self::Written,
             3 => Self::WrittenForBlocks,
+            4 => Self::WrittenDirect,
             _ => Self::Unsaid,
         }
     }
@@ -534,6 +560,11 @@ impl ZeroesShown {
                  store's write unit, or their size could not be read, so a range is not \
                  deallocated there; a log of write-zeroes is worked off at the pace of that \
                  writing, and requests wait for it",
+            ),
+            Self::WrittenDirect => Some(
+                "written as zeros by direct I/O: the in-place store does not deallocate, since \
+                 the next writes to a deallocated range would allocate it again, and a \
+                 write-zeroes takes as long as writing its zeros",
             ),
         }
     }
@@ -582,6 +613,21 @@ fn encode(status: &Status) -> [u8; LEN] {
     );
     for (i, field) in fields.iter().chain(&times).enumerate() {
         bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
+    }
+    // The ninth version's I/O threads' queue, from offset 1960.
+    let q = log.shown.io_queue.unwrap_or_default();
+    for (i, field) in [
+        q.threads,
+        q.in_flight,
+        q.waiting,
+        q.waited,
+        q.in_flight_max,
+        q.waiting_max,
+    ]
+    .iter()
+    .enumerate()
+    {
+        bytes[EIGHTH_LEN + 8 * i..EIGHTH_LEN + 8 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
     bytes
 }
@@ -874,7 +920,8 @@ fn timing_at(bytes: &[u8], fifth: bool, seventh: bool, eighth: bool) -> Timing {
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let eighth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let ninth = bytes.len() == LEN && &bytes[..8] == MAGIC;
+    let eighth = ninth || (bytes.len() == EIGHTH_LEN && &bytes[..8] == EIGHTH_MAGIC);
     let seventh = eighth || (bytes.len() == SEVENTH_LEN && &bytes[..8] == SEVENTH_MAGIC);
     let sixth = seventh || (bytes.len() == SIXTH_LEN && &bytes[..8] == SIXTH_MAGIC);
     let only_fifth = bytes.len() == FIFTH_LEN && &bytes[..8] == FIFTH_MAGIC;
@@ -898,6 +945,14 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             },
             timing: fifth.then(|| timing_at(bytes, only_fifth, seventh, eighth)),
             pump: fifth.then(|| pump_at(bytes, only_fifth)),
+            io_queue: ninth.then(|| IoQueue {
+                threads: u64_at(bytes, 1960),
+                in_flight: u64_at(bytes, 1968),
+                waiting: u64_at(bytes, 1976),
+                waited: u64_at(bytes, 1984),
+                in_flight_max: u64_at(bytes, 1992),
+                waiting_max: u64_at(bytes, 2000),
+            }),
         },
         start_ms: u64_at(bytes, 168),
         replayed_bytes: u64_at(bytes, 176),
@@ -906,7 +961,9 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
-    let version = if eighth {
+    let version = if ninth {
+        9
+    } else if eighth {
         8
     } else if seventh {
         7
@@ -1480,6 +1537,20 @@ pub fn report(
                         .and_then(|cause| ACTIVITIES.get(cause));
                     let said = name.map_or_else(|| value.to_string(), |name| (*name).to_string());
                     lines.push((key, said));
+                }
+            }
+            // The in-place store's I/O threads' queue, where there are
+            // threads (the log store has none, and shows nothing).
+            if let Some(q) = log.shown.io_queue.filter(|q| q.threads > 0) {
+                for (key, value) in [
+                    ("io_threads", q.threads),
+                    ("io_in_flight", q.in_flight),
+                    ("io_waiting", q.waiting),
+                    ("io_waited", q.waited),
+                    ("io_in_flight_max", q.in_flight_max),
+                    ("io_waiting_max", q.waiting_max),
+                ] {
+                    lines.push((key, value.to_string()));
                 }
             }
         }

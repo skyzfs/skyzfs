@@ -541,7 +541,21 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Ou
         segment_size: SEGMENT_SIZE,
         write_unit,
     };
-    match Store::create(dir, &config, OpenOptions::default()) {
+    match Store::create(dir.clone(), &config, OpenOptions::default()) {
+        Ok(store) if create.zero_fill && create.base_pattern.is_none() => {
+            let began = std::time::Instant::now();
+            skyzfs_local::store::fill_home(&dir).map_err(|e| {
+                Output::error(format_args!(
+                    "{shown}: writing the image with zeros: {e}. The volume is made, its image \
+                     only in part written"
+                ))
+            })?;
+            eprintln!(
+                "skyzfsd: {shown}: the image written with zeros in {:.1} s",
+                began.elapsed().as_secs_f64()
+            );
+            Ok((store.identity(), write_unit))
+        }
         Ok(store) => Ok((store.identity(), write_unit)),
         Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"

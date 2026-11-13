@@ -53,6 +53,7 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
         size: 64 << 20,
         run_dir: DEFAULT_RUN_DIR.into(),
         base_pattern: None,
+        zero_fill: false,
     });
     assert_eq!(plain("create --dir /v/a --size 67108864"), Ok(want.clone()));
     assert_eq!(plain("create --size=67108864 --dir=/v/a"), Ok(want));
@@ -223,6 +224,7 @@ fn serve_has_the_agreed_defaults_and_options() {
         home_writeback_kib: 0,
         readers: DEFAULT_READERS,
         store: StoreKind::Log,
+        in_place_io: skyzfs_local::inplace::IoMode::default(),
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
         hooks: Hooks::default(),
@@ -327,6 +329,62 @@ fn serve_takes_the_store() {
     }
 }
 
+/// The in-place store's I/O: direct, on 8 threads unless `--io-threads
+/// N` (1 to 64) says otherwise, with the in-place store only; there is
+/// no option for buffered I/O, and `--direct-io` (the experiment's) is
+/// gone. `create --zero-fill` stays.
+#[test]
+fn the_in_place_store_does_direct_io_on_its_threads() {
+    use skyzfs_local::inplace::IoMode;
+    let default = serve("serve --dir /v/a --store in-place").in_place_io;
+    assert_eq!(default, IoMode::default());
+    assert!(default.direct());
+    assert_eq!(default.threads(), 8);
+    for n in [1, 32, 64] {
+        let io = serve(&format!(
+            "serve --dir /v/a --store in-place --io-threads {n}"
+        ))
+        .in_place_io;
+        assert_eq!(io, IoMode::with_threads(n).unwrap());
+        assert!(io.direct());
+    }
+    for n in [0, 65] {
+        assert!(matches!(
+            plain(&format!(
+                "serve --dir /v/a --store in-place --io-threads {n}"
+            )),
+            Err(UsageError::Value(..))
+        ));
+    }
+    assert_eq!(
+        plain("serve --dir /v/a --io-threads 4"),
+        Err(UsageError::Value(
+            "--io-threads".into(),
+            "only with --store in-place"
+        ))
+    );
+    assert!(plain("serve --dir /v/a --store in-place --direct-io").is_err());
+    assert!(matches!(
+        plain("create --dir /v/a --size 1048576 --zero-fill"),
+        Ok(Command::Create(Create {
+            zero_fill: true,
+            ..
+        }))
+    ));
+}
+
+/// The default and the bound of `--io-threads` are the store's own
+/// (`IoMode`), one constant each, so that the default can change after
+/// a benchmark round in one place; the help says them.
+#[test]
+fn the_io_threads_default_is_the_stores() {
+    use skyzfs_local::inplace::IoMode;
+    assert_eq!(usize::from(DEFAULT_IO_THREADS), IoMode::DEFAULT_THREADS);
+    assert_eq!(usize::from(MAX_IO_THREADS), IoMode::MAX_THREADS);
+    let said = format!("--io-threads N (1 to {MAX_IO_THREADS}, {DEFAULT_IO_THREADS} unless given)");
+    assert!(HELP.contains(&said), "the help does not say {said:?}");
+}
+
 /// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
 /// `--home-writeback-kib` the same, 0 unless given.
 #[test]
@@ -374,7 +432,8 @@ fn serve_takes_the_writeback_unit() {
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes",
+         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes \
+         --request-log /tmp/requests.tsv",
     )
     .hooks;
     assert_eq!(
@@ -391,8 +450,12 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
             refuse_holes: true,
+            request_log: Some("/tmp/requests.tsv".into()),
         }
     );
+    // Either store: the record is the transport's.
+    let in_place = serve("serve --dir /v/a --store in-place --request-log /tmp/r.tsv");
+    assert_eq!(in_place.hooks.request_log, Some("/tmp/r.tsv".into()));
     assert!(!serve("serve --dir /v/a").hooks.refuse_holes);
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))
@@ -436,6 +499,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --boot-id-file /tmp/boot",
         "serve --dir /v/a --recover-short 1",
         "serve --dir /v/a --commit-delay-ms 20",
+        "serve --dir /v/a --request-log /tmp/r.tsv",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(
@@ -560,4 +624,26 @@ fn help_names_the_oldest_kernel_and_the_flags() {
     // the usage.
     assert!(HELP.matches(ASYNC_DELETE_OPTION).count() >= 3, "{HELP}");
     assert!(USAGE.matches(ASYNC_DELETE_OPTION).count() == 2, "{USAGE}");
+}
+
+/// Every test hook is in the list that a build with the hooks prints
+/// after its usage and its help, and that list is printed exactly in
+/// such a build: the kernel rig reads it (`serve --help`) to see which
+/// hooks a daemon takes.
+#[test]
+fn a_build_with_the_hooks_lists_them() {
+    for opt in CREATE.iter().chain(SERVE).filter(|opt| opt.hook) {
+        assert!(
+            HOOKS_USAGE.contains(&format!("[{} ", opt.name))
+                || HOOKS_USAGE.contains(&format!("[{}]", opt.name))
+                || HOOKS_USAGE.contains(&format!("| {} ", opt.name)),
+            "{} is not listed",
+            opt.name
+        );
+    }
+    let hooked = cfg!(feature = "test-hooks");
+    assert_eq!(usage().contains("--request-log"), hooked);
+    assert_eq!(help().contains("--request-log"), hooked);
+    assert!(usage().starts_with(USAGE) && help().starts_with(HELP));
+    assert!(!USAGE.contains("--request-log") && !HELP.contains("--request-log"));
 }

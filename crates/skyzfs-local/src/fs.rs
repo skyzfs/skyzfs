@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
-use crate::io::{Dir, File, HelperEnded, NotBegun};
+use crate::io::{Dir, DirectAlign, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
@@ -447,18 +447,26 @@ impl FsFile {
     }
 }
 
-/// A descriptor for direct reads of `file`, opened by the name `file`
-/// was just opened by. The name could have been given to another file
-/// in between, so the two are compared, and a difference is an error:
-/// reads from the device must never come from another file.
+/// A descriptor for direct I/O on `file`, opened by the name `file`
+/// was just opened by: for reading and writing, or for reading only
+/// where writing is not allowed. The name could have been given to
+/// another file in between, so the two are compared, and a difference
+/// is an error: reads from the device must never come from another
+/// file.
 #[cfg(target_os = "linux")]
 fn open_direct(file: &fs::File, path: &Path) -> io::Result<Option<fs::File>> {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let direct = match fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECT)
-        .open(path)
-    {
+    let open = |write: bool| {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(write)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)
+    };
+    let direct = match open(true).or_else(|e| match e.kind() {
+        io::ErrorKind::InvalidInput => Err(e),
+        _ => open(false),
+    }) {
         Ok(direct) => direct,
         // How a file system says that it has no direct I/O.
         Err(e) if e.kind() == io::ErrorKind::InvalidInput => return Ok(None),
@@ -577,6 +585,31 @@ impl File for FsFile {
 
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
         write_all_at(&self.file, data, offset)
+    }
+
+    /// `statx` on the direct descriptor, with `STATX_DIOALIGN` (Linux
+    /// 6.1 and later). A kernel or a file system that does not say, or
+    /// says 0, has no direct I/O to offer here.
+    #[cfg(target_os = "linux")]
+    fn direct_align(&self) -> io::Result<DirectAlign> {
+        use rustix::fs::{statx, AtFlags, StatxFlags};
+        let direct = self.direct()?;
+        let stat = statx(direct, "", AtFlags::EMPTY_PATH, StatxFlags::DIOALIGN)?;
+        if stat.stx_mask & StatxFlags::DIOALIGN.bits() == 0 || stat.stx_dio_offset_align == 0 {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        Ok(DirectAlign {
+            memory: stat.stx_dio_mem_align,
+            offset: stat.stx_dio_offset_align,
+        })
+    }
+
+    fn read_direct_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        read_exact_at(self.direct()?, buf, offset)
+    }
+
+    fn write_direct_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        write_all_at(self.direct()?, data, offset)
     }
 
     fn sync(&mut self) -> io::Result<()> {

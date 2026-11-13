@@ -331,6 +331,11 @@ pub struct OpenOptions {
     /// read's file read. A store that is not served has none and is
     /// unchanged by this.
     pub readers: usize,
+    /// How the in-place store, if the store is turned into one
+    /// ([`Store::into_in_place`]), reads and writes the home image: by
+    /// direct I/O on its I/O threads (decision D6). The log store does
+    /// not use it.
+    pub in_place_io: crate::inplace::IoMode,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
 }
@@ -350,6 +355,7 @@ impl Default for OpenOptions {
             home_writeback_unit: 0,
             hand_over_home_sync: false,
             readers: 1,
+            in_place_io: crate::inplace::IoMode::default(),
             mutants: Mutants::default(),
             log_mutants: crate::log::Mutants::default(),
         }
@@ -556,7 +562,9 @@ struct Index {
 
 impl Index {
     /// Whether no block's newest version is in the log: a checkpoint
-    /// has nothing to apply.
+    /// has nothing to apply. Discards are not in the index (they change
+    /// nothing in the home image), so a log of discards alone is empty
+    /// here.
     fn is_empty(&self) -> bool {
         self.extents.is_empty()
     }
@@ -951,6 +959,8 @@ struct Core<D: Dir> {
     #[cfg(any(test, feature = "test-hooks"))]
     read_pauses_at: Vec<(u64, StepPause)>,
     /// How many reader threads the store has when it is served.
+    /// See [`OpenOptions::in_place_io`].
+    in_place_io: crate::inplace::IoMode,
     readers: usize,
     /// For tests: the thread that [`Store::serve_with`] cannot start,
     /// by its place in the order it starts them (the readers from 0,
@@ -2811,6 +2821,10 @@ pub enum Zeroes {
     Deallocated,
     /// The file system cannot deallocate: zeros are written.
     Written,
+    /// Zeros are written by direct I/O: the in-place store's way
+    /// (decision D6), where a deallocated range would make the next
+    /// writes to it allocate again. The log store never says this.
+    WrittenDirect,
 }
 
 impl LogState {
@@ -2989,6 +3003,18 @@ impl Preimages {
         }
         Ok(Some(file))
     }
+}
+
+/// Write the whole home image with zeros and sync it (`skyzfsd create
+/// --zero-fill`, not the default): a new image is a hole, and every
+/// first direct write to a part of it allocates there, which the next
+/// sync must make durable as metadata. Its content does not change.
+/// Only for an image whose content is zeros: a new one with no base.
+pub fn fill_home<D: Dir>(dir: &D) -> io::Result<()> {
+    let mut home = dir.open(HOME_NAME)?;
+    let len = home.len()?;
+    write_zeros(&mut home, 0, len)?;
+    home.sync()
 }
 
 /// Write `len` zeros at `offset`: for a write-zeroes record on a file
@@ -3358,6 +3384,7 @@ impl<D: Dir> Store<D> {
                 #[cfg(any(test, feature = "test-hooks"))]
                 read_pauses_at: Vec::new(),
                 readers: options.readers.max(1),
+                in_place_io: options.in_place_io,
                 #[cfg(test)]
                 spawn_fails_at: None,
                 #[cfg(test)]
@@ -3437,6 +3464,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         self.into_in_place_with(waker, crate::inplace::Mutants::default())
     }
@@ -3449,6 +3477,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         use crate::inplace::{FailedStart, IntoInPlaceError, StartFailed};
         if !self.queue.is_empty() || !self.ids.is_empty() {
@@ -3470,8 +3499,8 @@ impl<D: Dir> Store<D> {
             return Err(failed(&self.core, StartFailed::Log));
         }
         // What a failure of the hand-over is reported as: the log store's
-        // own where its log holds operations to apply into the home
-        // image, and otherwise the image's ([`StartFailed`]).
+        // own where its log holds a write or write-zeroes to apply into
+        // the home image, and otherwise the image's ([`StartFailed`]).
         let what = if self.core.shared.read().index.is_empty() {
             StartFailed::Image
         } else {
@@ -3498,6 +3527,7 @@ impl<D: Dir> Store<D> {
         }
         let identity = self.core.identity();
         let marker = self.core.log.marker_writer();
+        let io = self.core.in_place_io;
         let Core {
             log,
             home,
@@ -3515,6 +3545,7 @@ impl<D: Dir> Store<D> {
                 identity,
                 marker,
                 zeroes,
+                io,
             },
             waker.map(|Waker(call)| call),
             mutants,

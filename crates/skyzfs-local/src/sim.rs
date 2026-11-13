@@ -86,7 +86,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-use crate::io::{Dir, File, NotBegun, SECTOR};
+use crate::io::{Dir, DirectAlign, File, NotBegun, SECTOR};
 
 const SECTOR_USIZE: usize = SECTOR as usize;
 
@@ -475,8 +475,19 @@ struct State {
     /// The file whose next read through the cache leaves pages after
     /// it under I/O, and how many ([`SimDisk::hold_read_ahead_of`]).
     read_ahead_of: Option<(String, u64)>,
+    /// What direct I/O asks of a request's alignment, or `None` where
+    /// the file system has none ([`SimDisk::set_direct_align`]).
+    direct_align: Option<DirectAlign>,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
+    /// How many of the next direct reads and writes wait, before they
+    /// do anything, until [`SimDisk::release_direct_io`].
+    direct_holds: u64,
+    /// Releases of held direct I/O so far: a held call waits until it
+    /// changes.
+    direct_releases: u64,
+    /// The direct read or write after this many more panics.
+    direct_panic: Option<u64>,
     stats: Stats,
 }
 
@@ -485,6 +496,20 @@ fn injected(what: &str) -> io::Error {
 }
 
 impl State {
+    /// Whether a direct request at `offset` of `len` bytes, in memory at
+    /// `address`, is one the file system takes: unsupported where it
+    /// has no direct I/O, invalid where it is not aligned.
+    fn direct_fits(&self, offset: u64, len: usize, address: usize) -> io::Result<()> {
+        match self.direct_align {
+            None => Err(io::ErrorKind::Unsupported.into()),
+            Some(align) if !align.fits(offset, len, address) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "not aligned for direct I/O",
+            )),
+            Some(_) => Ok(()),
+        }
+    }
+
     /// Whether the machine has stopped. A write or a sync (`counts`)
     /// uses up one of the calls it still takes.
     fn halted(&mut self, counts: bool) -> bool {
@@ -624,7 +649,14 @@ impl SimDisk {
                 cache_counts: true,
                 cache_count_blind: false,
                 read_ahead_of: None,
+                direct_align: Some(DirectAlign {
+                    memory: SECTOR as u32,
+                    offset: SECTOR as u32,
+                }),
                 write_unit: SECTOR,
+                direct_holds: 0,
+                direct_releases: 0,
+                direct_panic: None,
                 stats: Stats::default(),
             })),
             released: Arc::new(Condvar::new()),
@@ -866,6 +898,37 @@ impl SimDisk {
     /// pages under I/O.
     pub fn hold_read_ahead_of(&self, name: &str, pages: u64) {
         self.lock().read_ahead_of = Some((name.to_string(), pages));
+    }
+
+    /// What direct I/O ([`File::read_direct_at`],
+    /// [`File::write_direct_at`]) asks of a request's alignment (at
+    /// first a sector for both), or `None`: the file system has no
+    /// direct I/O, and it is unsupported.
+    pub fn set_direct_align(&self, align: Option<DirectAlign>) {
+        self.lock().direct_align = align;
+    }
+
+    /// The next `calls` direct reads and writes wait, before they do
+    /// anything, until [`SimDisk::release_direct_io`] or until the
+    /// process is gone; each counts in [`SimDisk::held_waiters`] while
+    /// it waits. Later calls go on.
+    pub fn hold_direct_io(&self, calls: u64) {
+        self.lock().direct_holds = calls;
+    }
+
+    /// Let the held direct reads and writes go on, and hold no more.
+    pub fn release_direct_io(&self) {
+        let mut state = self.lock();
+        state.direct_holds = 0;
+        state.direct_releases += 1;
+        drop(state);
+        self.released.notify_all();
+    }
+
+    /// The direct read or write after the next `after` panics, before it
+    /// does anything, as a bug in the call would.
+    pub fn panic_in_direct_io(&self, after: u64) {
+        self.lock().direct_panic = Some(after);
     }
 
     /// Whether [`File::cached_pages`] answers (it does at first) or is
@@ -1192,6 +1255,15 @@ impl Dir for SimDisk {
     }
 }
 
+/// How a file is read or written: through the cache, from the device
+/// for a check ([`File::read_device_at`]), or by direct I/O.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Through {
+    Cache,
+    Device,
+    Direct,
+}
+
 /// An open file of a [`SimDisk`]. It stops working when the disk's
 /// process is killed or its power is cut.
 #[derive(Debug)]
@@ -1255,6 +1327,105 @@ impl SimFile {
         Ok(())
     }
 
+    /// A write through the cache, or by direct I/O past it.
+    fn write(&self, offset: u64, data: &[u8], how: Through) -> io::Result<()> {
+        if how == Through::Direct {
+            self.direct_gate();
+        }
+        let mut guard = self.disk.lock();
+        let state = &mut *guard;
+        self.check(state)?;
+        if how == Through::Direct {
+            state.direct_fits(offset, data.len(), data.as_ptr() as usize)?;
+        }
+        if state.halted(true) {
+            return Err(injected("halt"));
+        }
+        if state.write_fault_of.is_some()
+            && state.write_fault_of.as_deref() == state.name_of(self.inode)
+        {
+            return Err(injected("write"));
+        }
+        state.stats.writes += 1;
+        state.stats.written += data.len() as u64;
+        state.count_write(self.inode);
+        let failing = State::strikes(&mut state.write_fault);
+        let end = offset
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let rng = &mut state.rng;
+        // A direct write writes its own sectors and nothing around them.
+        let unit = match how {
+            Through::Direct => SECTOR,
+            _ => state.write_unit.max(state.block_size.unwrap_or(SECTOR)),
+        };
+        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        let range = pages_of(offset, data.len() as u64);
+        if how == Through::Direct {
+            // The cache keeps no page of the range.
+            inode.pages.retain(|page| !range.contains(page));
+            inode.under_io.retain(|page| !range.contains(page));
+        } else {
+            // A write goes through the cache and leaves its pages there.
+            inode.pages.extend(range);
+        }
+        // The units the write touches, or the file system's blocks if
+        // those are larger, are rewritten as a whole: their other
+        // sectors are written again as they are.
+        if unit > SECTOR && !data.is_empty() {
+            let first = offset / unit * unit;
+            let last = (end.div_ceil(unit) * unit).min(inode.len.max(end));
+            for index in first / SECTOR..last.div_ceil(SECTOR) {
+                // The sectors the write itself touches go from what they
+                // were straight to what it makes them, below.
+                let touched = (index + 1) * SECTOR > offset && index * SECTOR < end;
+                if touched || index * SECTOR >= inode.len {
+                    continue;
+                }
+                let sector = inode.sectors.entry(index).or_default();
+                let same: Box<[u8]> = match sector.current() {
+                    Some(current) => current.into(),
+                    None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
+                };
+                sector.cached = None;
+                sector.unsynced.push(same);
+            }
+        }
+        let mut at = offset;
+        while at < end {
+            let index = at / SECTOR;
+            let from = (at % SECTOR) as usize;
+            let n = (SECTOR_USIZE - from).min((end - at) as usize);
+            let src = &data[(at - offset) as usize..][..n];
+            at += n as u64;
+            // A failed write leaves any subset of its sectors written.
+            if failing && rng.coin() {
+                continue;
+            }
+            let sector = inode.sectors.entry(index).or_default();
+            // A direct write of part of a sector starts from what the
+            // device holds, not from what the cache shows.
+            let base = match how {
+                Through::Direct => sector.device(),
+                _ => sector.current(),
+            };
+            let mut bytes: Box<[u8]> = match base {
+                Some(current) => current.into(),
+                None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
+            };
+            bytes[from..from + n].copy_from_slice(src);
+            // The page is dirty again, whatever a failed sync made of it.
+            sector.cached = None;
+            sector.unsynced.push(bytes);
+            inode.len = inode.len.max(index * SECTOR + (from + n) as u64);
+        }
+        if failing {
+            Err(injected("write"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn check(&self, state: &State) -> io::Result<()> {
         if state.generation == self.generation {
             Ok(())
@@ -1291,12 +1462,52 @@ fn gone() -> io::Error {
 }
 
 impl SimFile {
-    fn read(&self, offset: u64, buf: &mut [u8], device: bool) -> io::Result<()> {
+    /// Where a direct read or write begins: it waits while held
+    /// ([`SimDisk::hold_direct_io`]), and panics where asked
+    /// ([`SimDisk::panic_in_direct_io`]), outside the disk's lock.
+    fn direct_gate(&self) {
+        let disk = &self.disk;
+        let mut guard = disk.lock();
+        if guard.direct_holds > 0 {
+            guard.direct_holds -= 1;
+            let release = guard.direct_releases;
+            guard.held_waiting += 1;
+            while guard.direct_releases == release && guard.generation == self.generation {
+                guard = disk
+                    .released
+                    .wait(guard)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            guard.held_waiting -= 1;
+        }
+        let panics = match &mut guard.direct_panic {
+            Some(0) => {
+                guard.direct_panic = None;
+                true
+            }
+            Some(left) => {
+                *left -= 1;
+                false
+            }
+            None => false,
+        };
+        drop(guard);
+        assert!(!panics, "injected panic in direct I/O");
+    }
+
+    fn read(&self, offset: u64, buf: &mut [u8], how: Through) -> io::Result<()> {
+        if how == Through::Direct {
+            self.direct_gate();
+        }
         let mut state = self.disk.lock();
         self.check(&state)?;
-        if device && !state.device_reads {
+        if how == Through::Device && !state.device_reads {
             return Err(io::ErrorKind::Unsupported.into());
         }
+        if how == Through::Direct {
+            state.direct_fits(offset, buf.len(), buf.as_ptr() as usize)?;
+        }
+        let device = how != Through::Cache;
         if state.read_fault_of.is_some()
             && state.read_fault_of.as_deref() == state.name_of(self.inode)
         {
@@ -1350,86 +1561,31 @@ impl SimFile {
 
 impl File for SimFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, false)
+        self.read(offset, buf, Through::Cache)
     }
 
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, true)
+        self.read(offset, buf, Through::Device)
+    }
+
+    fn direct_align(&self) -> io::Result<DirectAlign> {
+        let state = self.disk.lock();
+        self.check(&state)?;
+        state
+            .direct_align
+            .ok_or_else(|| io::ErrorKind::Unsupported.into())
+    }
+
+    fn read_direct_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read(offset, buf, Through::Direct)
+    }
+
+    fn write_direct_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        self.write(offset, data, Through::Direct)
     }
 
     fn write_at(&mut self, offset: u64, data: &[u8]) -> io::Result<()> {
-        let mut guard = self.disk.lock();
-        let state = &mut *guard;
-        self.check(state)?;
-        if state.halted(true) {
-            return Err(injected("halt"));
-        }
-        if state.write_fault_of.is_some()
-            && state.write_fault_of.as_deref() == state.name_of(self.inode)
-        {
-            return Err(injected("write"));
-        }
-        state.stats.writes += 1;
-        state.stats.written += data.len() as u64;
-        state.count_write(self.inode);
-        let failing = State::strikes(&mut state.write_fault);
-        let end = offset
-            .checked_add(data.len() as u64)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let rng = &mut state.rng;
-        let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
-        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
-        // A write goes through the cache and leaves its pages there.
-        inode.pages.extend(pages_of(offset, data.len() as u64));
-        // The units the write touches, or the file system's blocks if
-        // those are larger, are rewritten as a whole: their other
-        // sectors are written again as they are.
-        if unit > SECTOR && !data.is_empty() {
-            let first = offset / unit * unit;
-            let last = (end.div_ceil(unit) * unit).min(inode.len.max(end));
-            for index in first / SECTOR..last.div_ceil(SECTOR) {
-                // The sectors the write itself touches go from what they
-                // were straight to what it makes them, below.
-                let touched = (index + 1) * SECTOR > offset && index * SECTOR < end;
-                if touched || index * SECTOR >= inode.len {
-                    continue;
-                }
-                let sector = inode.sectors.entry(index).or_default();
-                let same: Box<[u8]> = match sector.current() {
-                    Some(current) => current.into(),
-                    None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
-                };
-                sector.cached = None;
-                sector.unsynced.push(same);
-            }
-        }
-        let mut at = offset;
-        while at < end {
-            let index = at / SECTOR;
-            let from = (at % SECTOR) as usize;
-            let n = (SECTOR_USIZE - from).min((end - at) as usize);
-            let src = &data[(at - offset) as usize..][..n];
-            at += n as u64;
-            // A failed write leaves any subset of its sectors written.
-            if failing && rng.coin() {
-                continue;
-            }
-            let sector = inode.sectors.entry(index).or_default();
-            let mut bytes: Box<[u8]> = match sector.current() {
-                Some(current) => current.into(),
-                None => vec![0u8; SECTOR_USIZE].into_boxed_slice(),
-            };
-            bytes[from..from + n].copy_from_slice(src);
-            // The page is dirty again, whatever a failed sync made of it.
-            sector.cached = None;
-            sector.unsynced.push(bytes);
-            inode.len = inode.len.max(index * SECTOR + (from + n) as u64);
-        }
-        if failing {
-            Err(injected("write"))
-        } else {
-            Ok(())
-        }
+        self.write(offset, data, Through::Cache)
     }
 
     fn sync(&mut self) -> io::Result<()> {
@@ -1830,6 +1986,92 @@ mod tests {
         let got = read(&disk, "f", 0, S);
         assert_ne!(got, vec![1; S]);
         assert_ne!(got, vec![2; S]);
+    }
+
+    /// Direct I/O, the unit: on a disk whose writes through the cache
+    /// rewrite 16 KiB around them, a direct write writes its own
+    /// sectors and nothing else, so a cut that turns every sector it can
+    /// to garbage leaves a block beside it as it was. Through the cache,
+    /// the same write exposes that block.
+    #[test]
+    fn a_direct_write_writes_only_its_own_sectors() {
+        for direct in [true, false] {
+            let disk = disk_with(32, 1);
+            disk.set_write_unit(16 << 10);
+            let mut f = disk.open("f").unwrap();
+            let data = skyzfs_blk::Buf::filled(1, 2);
+            if direct {
+                f.write_direct_at(4096, &data).unwrap();
+            } else {
+                f.write_at(4096, &data).unwrap();
+            }
+            disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+            let beside = read(&disk, "f", 0, 4096);
+            assert_eq!(beside == vec![1; 4096], direct, "direct: {direct}");
+        }
+    }
+
+    /// Direct I/O and the cache: a direct write leaves no page of its
+    /// range in the cache, and a direct read brings none in.
+    #[test]
+    fn direct_io_leaves_no_page_in_the_cache() {
+        let disk = disk_with(16, 1);
+        let mut f = disk.open("f").unwrap();
+        f.drop_cache().unwrap();
+        let mut buf = skyzfs_blk::Buf::filled(1, 0);
+        f.read_at(0, &mut buf).unwrap();
+        assert_eq!(f.cached_pages().unwrap(), 1);
+        f.write_direct_at(0, &skyzfs_blk::Buf::filled(1, 2))
+            .unwrap();
+        f.sync().unwrap();
+        assert_eq!(f.cached_pages().unwrap(), 0);
+        f.read_direct_at(0, &mut buf).unwrap();
+        assert_eq!(&buf[..], &[2; 4096][..]);
+        assert_eq!(f.cached_pages().unwrap(), 0);
+    }
+
+    /// Direct I/O, alignment: a request that is not aligned as the file
+    /// system asks fails, and on a file system with no direct I/O every
+    /// request is unsupported.
+    #[test]
+    fn direct_io_refuses_what_is_not_aligned() {
+        let disk = disk_with(16, 1);
+        let f = disk.open("f").unwrap();
+        disk.set_direct_align(Some(DirectAlign {
+            memory: 4096,
+            offset: 4096,
+        }));
+        assert_eq!(
+            f.direct_align().unwrap(),
+            DirectAlign {
+                memory: 4096,
+                offset: 4096
+            }
+        );
+        let data = skyzfs_blk::Buf::filled(2, 2);
+        let kind = |r: io::Result<()>| r.unwrap_err().kind();
+        assert_eq!(
+            kind(f.write_direct_at(512, &data[..4096])),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            kind(f.write_direct_at(0, &data[..512])),
+            io::ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            kind(f.write_direct_at(0, &data[512..4608])),
+            io::ErrorKind::InvalidInput
+        );
+        f.write_direct_at(4096, &data[..4096]).unwrap();
+        disk.set_direct_align(None);
+        assert_eq!(
+            f.direct_align().unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+        assert_eq!(
+            kind(f.write_direct_at(0, &data[..4096])),
+            io::ErrorKind::Unsupported
+        );
     }
 
     /// Power cut, stability: what a power cut leaves is durable. A second

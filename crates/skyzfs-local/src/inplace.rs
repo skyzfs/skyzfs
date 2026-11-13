@@ -29,13 +29,27 @@
 //! journal makes it so, and the journal was the log, which D5 dropped.
 //! The points, as this store keeps them:
 //!
-//! 1. **Process loss.** A write, write-zeroes or discard is
-//!    acknowledged once it is in the file system's cache. It is there
-//!    after the process is lost, and so is everything acknowledged
-//!    before it (rules R9 and R8). This rests on the page cache: it
-//!    holds while the machine runs. A write in flight when the process
-//!    dies may be there in part, block by block; the kernel issues it
-//!    again (rule R9), and the next instance makes it whole.
+//! 1. **Process loss.** A write or write-zeroes is acknowledged once
+//!    its direct write has returned: it has reached the device (its
+//!    volatile write cache, where it has one), past the kernel's cache
+//!    (decision D6, [`IoMode`]). It is there after the process is lost,
+//!    and so is everything acknowledged before it (rules R9 and R8);
+//!    this no longer rests on the page cache. A discard does nothing
+//!    (see below). A write in flight when the process dies may be there
+//!    in part, block by block; the kernel issues it again (rule R9),
+//!    and the next instance makes it whole. Where the write went into a
+//!    hole or an unwritten extent, a returned direct write is not
+//!    durable on its own: it survives a power cut only once the file
+//!    system has committed its record that the block is written, which
+//!    the next sync does. Until then a power cut may leave the block
+//!    reading as zeros, its content before the write, which point 3
+//!    allows; after a completed flush it never does. The replay rig
+//!    showed both on ext4 and XFS (design §10, the allocation row):
+//!    preallocating does not change it, and an image written through
+//!    first does not show it. So the image stays sparse, and `skyzfsd
+//!    create --zero-fill` (which writes it whole) is an option. That the
+//!    record is visible to the next instance at once, after a lost
+//!    process, is my reading of the two file systems, not shown here.
 //! 2. **A flush** completes only when every operation acknowledged
 //!    before it was received is durable (rule R7).
 //! 3. **Power loss.** Every block that a completed flush covered holds
@@ -45,18 +59,34 @@
 //!    independently of every other sector and of every other block: a
 //!    later write can survive while an earlier one is lost, and a
 //!    write can be torn at a sector. A start makes what it finds
-//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)),
-//!    and then serves only what the disk holds: it drops the kernel's
-//!    cache of the home image and checks that no page of it is left
-//!    (`cachestat`), or refuses the volume (design §4.1). A failed sync
-//!    can leave pages marked clean that the disk never got, and no
+//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)):
+//!    its sync of the home image makes durable what the instance before
+//!    it wrote by direct I/O (on the device, perhaps only in its cache)
+//!    and what the log store's checkpoint wrote through the cache when
+//!    the volume entered this store. That sync stays under direct I/O.
+//!    The start then serves only what the disk holds: it drops the
+//!    kernel's cache of the home image and checks that no page of it is
+//!    left (`cachestat`), or refuses the volume (design §4.1). A failed
+//!    sync can leave pages marked clean that the disk never got, and no
 //!    later sync writes them; served from the cache, they would be
 //!    shown and then taken by a cut behind a completed flush. The drop
 //!    covers a start that acknowledges a failure as well as one after
 //!    an instance that died between a failed sync and its marker, whose
 //!    own sync succeeds because the kernel reports such an error once.
-//!    Its cost: the first reads after every start, a take-over
-//!    included, come from the disk.
+//!    Under direct I/O the store's own reads and writes leave no page
+//!    in the cache, so such pages come only from a writer through it:
+//!    the log store's checkpoint at the entry into this store, which
+//!    M1.3t removes with the log store, and a file system that accepts
+//!    a direct request, reports an alignment for it and still serves it
+//!    through its cache. The start's check of direct I/O
+//!    (`STATX_DIOALIGN`) cannot tell such a one apart, so the drop stays
+//!    after M1.3t. The design's example, ext4 with `data=journal`, is
+//!    not one: as read in ext4 and not shown, its `statx` reports no
+//!    direct-I/O alignment for an inode whose data is journalled, so the
+//!    start refuses that volume by reason instead of serving it. No file
+//!    system is known here that passes the check and serves through the
+//!    cache; the drop is for one that might. Its cost: the first reads
+//!    after every start, a take-over included, come from the disk.
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
 //!    then on every request fails, reads included, and a later start
@@ -81,35 +111,29 @@
 //! acknowledged, and the daemon stores none (`skyzfsd`'s `Target`). At
 //! a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
-//! the page cache for that (point 1), where the log store checks its
-//! log against the stored position.
+//! the direct write having reached the device for that (point 1),
+//! where the log store checks its log against the stored position.
 //!
 //! Where the page or the file system's block is larger than a block
 //! (16 KiB or 64 KiB pages on some arm64 kernels and on Apple silicon),
-//! a write rewrites the other blocks of its page with what the page
-//! cache holds of them: their durable content or a version written
-//! since, so point 3 still holds of them, and a block a flush covered
-//! and nothing wrote since is rewritten with the bytes it holds. The
-//! tests run at 16 KiB and 64 KiB pages on the simulated disk
+//! a direct write still writes only the blocks it is given: it does not
+//! rewrite the other blocks of its page, as a write through the cache
+//! does. The tests run at 16 KiB and 64 KiB pages on the simulated disk
 //! (`tests.rs`).
 //!
-//! **A stated limit there (design §10): a disk that garbles.** On a
-//! disk that leaves a sector neither old nor new at a power cut, the
-//! rewrite of a page exposes its other blocks, so a cut can damage a
-//! block a completed flush covered and nothing wrote since. In the
-//! store's power-cut test with such a disk it did so at 0 of 200 seeds
-//! at 4 KiB pages (pinned by
-//! `a_power_cut_leaves_what_the_volatile_cache_disk_promises`), and at
-//! 120 at 16 KiB and 113 at 64 KiB, measured in review;
-//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins only
-//! that some seed of the 200 does at each large page.
-//! At 4 KiB only a block being written is exposed. Nothing protects
-//! against it here: the log store's open, which the start goes through,
-//! refuses a page or a file-system block larger than the volume's write
-//! unit, but a volume created on the large-page host has a unit as
-//! large as its page, and the store saves no neighbours as the log
-//! store did. Direct I/O, which writes exactly the blocks it is given,
-//! is the candidate remedy (design §10).
+//! **A limit that direct I/O removes, on the simulated disk: a disk
+//! that garbles.** On a disk that leaves a sector neither old nor new at
+//! a power cut, a write through the cache on a large page rewrites the
+//! page's other blocks and exposes them, so a cut can damage a block a
+//! completed flush covered and nothing wrote since: in the store's
+//! power-cut test, through the cache, at 120 of 200 seeds at 16 KiB and
+//! 113 at 64 KiB (measured in review), and at 0 at 4 KiB.
+//! `a_cut_with_garbage_may_reach_a_neighbour_on_large_pages` pins that
+//! some seed does so through the cache, which only tests still use;
+//! with direct I/O no seed of the 200 does at either large page
+//! (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`,
+//! which says what that rests on on a real file system). That is the
+//! reason for decision D6.
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability
@@ -117,28 +141,59 @@
 //!
 //! # How it executes
 //!
-//! On the caller's thread, in [`BlockTarget::submit`], one request at a
-//! time, in the order of submission: a read is a read of the home
-//! image, a write a write at its offset, a write-zeroes deallocates the
-//! range (or writes zeros where the file system cannot), and a discard
-//! does nothing. Rule R6 allows a discarded block to keep its content,
-//! and that is the least work: no call, no metadata to make durable,
-//! and nothing a power cut can tear. It counts as a change all the
-//! same, so that the flush behind it syncs: a flush that follows a
-//! client's change never succeeds on a disk that has failed (R11), at
-//! the cost of one sync where a discard alone came before it. A flush
-//! begins a sync of the home image on the file's helper
-//! ([`File::sync_begin`]) and completes when the sync ends; writes go
-//! on meanwhile. Flushes that arrive while a
-//! sync is under way join it when nothing was written since it began,
-//! and otherwise wait for the next one, which begins when this one
-//! ends and covers them all. No thread of the store's own, and no
-//! hand-off for a read or a write: the pump's thread does the I/O.
+//! Reads and writes go by direct I/O to a pool of I/O threads
+//! ([`IoMode::threads`], eight unless asked otherwise), each with its
+//! own handle on the home image and one request at a time; their
+//! completions are taken back on the caller's thread. A request waits,
+//! in order, behind one on the threads that it must not run beside: a
+//! read behind an overlapping write, a write or a write-zeroes behind
+//! an overlapping read or write, so that overlapping requests take
+//! effect in the order they came; and a flush behind every write on the
+//! threads (it covers what was acknowledged before it, and this store
+//! also has it wait for what was submitted before it). Everything
+//! received after a waiting request waits behind it. On the simulated
+//! disk a write applies whole under the disk's lock, so a read beside
+//! an overlapping write never sees part of it and the tests that run
+//! whole programs say little of the clauses about reads; on a file
+//! system a direct read beside an overlapping direct write may see part
+//! of it, which is what those clauses are for, and only the kernel rigs
+//! show them there. Each clause has a test of its own (`tests.rs`: a
+//! write behind a read, a read behind a write, a flush behind a write
+//! beside a read). A write-zeroes is written as zeros by direct I/O
+//! on the caller's thread, 1 MiB at a time (a deallocated range would
+//! make the next writes to it allocate again), and a discard does
+//! nothing. A thread that panics dies, the
+//! job it held comes back failed, and the volume fails as from a
+//! failed write; the requests that waited for the threads fail with it
+//! (`inplace/pool.rs`). The store's drop waits for every request on the
+//! threads, up to one per thread, where on the caller's thread there
+//! was at most one: a daemon's exit waits for the direct I/O it has in
+//! flight (the daemon rig's check e watches a request held at the
+//! server). The store's queue (on the threads, waiting, and the
+//! highs) is in [`InPlace::io_queue`], which the daemon's status file
+//! shows.
+//!
+//! Rule R6 allows a discarded block to keep its content, and that is
+//! the least work: no call, no metadata to make durable, and nothing a
+//! power cut can tear. It counts as a change all the same, so that the
+//! flush behind it syncs: a flush that follows a client's change never
+//! succeeds on a disk that has failed (R11), at the cost of one sync
+//! where a discard alone came before it. A flush begins a sync of the
+//! home image on the file's helper ([`File::sync_begin`]) and completes
+//! when the sync ends; writes go on meanwhile. Flushes that arrive
+//! while a sync is under way join it when nothing was written since it
+//! began, and otherwise wait for the next one, which begins when this
+//! one ends and covers them all.
+//!
+//! Test builds can also do the I/O on the caller's thread, in
+//! [`BlockTarget::submit`], or through the kernel's cache, where a
+//! write-zeroes deallocates the range (`IoMode::for_tests`). Neither is
+//! a mode the store is served in.
 //!
 //! Not in it: an index, a checkpoint, a recovery beyond the log store's
 //! open of an empty log, any count of what the log holds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
@@ -151,6 +206,7 @@ use skyzfs_blk::{
 use crate::io::{Dir, File, NotBegun};
 use crate::log::Log;
 use crate::store::Zeroes;
+use pool::{Done, Job, Pool};
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -183,6 +239,14 @@ impl Mutants {
     /// The start shows that the count sees the file before the drop,
     /// not after it.
     pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
+    /// A thread's death is taken for an I/O error of the job it held:
+    /// the volume goes on, and the jobs that wait for the threads are
+    /// left to them.
+    pub(crate) const DEATH_IGNORED: u32 = 1 << 11;
+    /// A flush does not wait for the writes on the threads.
+    pub(crate) const FLUSH_PASSES_WRITES: u32 = 1 << 12;
+    /// A request does not wait for an overlapping one on the threads.
+    pub(crate) const OVERLAP_UNORDERED: u32 = 1 << 13;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -214,10 +278,84 @@ pub enum IntoInPlaceError {
     /// volume. The volume has not failed.
     #[error("the start could not empty the kernel's cache of the home image: {0}")]
     CacheKept(String),
+    /// The I/O the store was asked for ([`IoMode`]) cannot be had: no
+    /// direct I/O, an alignment it cannot meet, or no threads. The
+    /// volume has not failed.
+    #[error("the in-place store's I/O: {0}")]
+    Io(String),
     /// The log still holds records after the checkpoint: a hold, or a
     /// part of it that is not durable.
     #[error("the log could not be emptied: {0}")]
     NotEmpty(String),
+}
+
+/// How the in-place store reads and writes the home image: by direct
+/// I/O (design, decision D6), past the kernel's cache, on I/O threads of
+/// its own ([`IoMode::threads`], [`IoMode::DEFAULT_THREADS`] unless
+/// asked otherwise). Each thread has a handle of its own on the image
+/// and one request at the disk at a time, so that up to that many
+/// requests reach the device at once. The start checks the file
+/// system's alignment for direct I/O (`STATX_DIOALIGN`) and refuses by
+/// reason where it has none or its unit is above a block (4 KiB).
+///
+/// Test builds can also have the I/O done on the caller's thread, or
+/// through the kernel's cache (`IoMode::for_tests`): for a test that
+/// needs the cache, or a file system without direct I/O. Neither is a
+/// mode the store is served in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoMode {
+    /// Direct I/O; without it, through the cache (test builds only).
+    direct: bool,
+    /// The I/O threads; 0 (test builds only) does the I/O on the
+    /// caller's thread.
+    threads: usize,
+}
+
+impl Default for IoMode {
+    fn default() -> Self {
+        Self {
+            direct: true,
+            threads: Self::DEFAULT_THREADS,
+        }
+    }
+}
+
+impl IoMode {
+    /// The I/O threads unless asked otherwise: on machines whose syncs
+    /// are slow, eight measured above one in every job that ran both
+    /// (design §9). That rests on slow-sync machines only, and the
+    /// default may change after a benchmark round on the merged daemon:
+    /// this is the one constant to change (the daemon's `--io-threads`
+    /// takes its default from it).
+    pub const DEFAULT_THREADS: usize = 8;
+    /// The most I/O threads the store takes.
+    pub const MAX_THREADS: usize = 64;
+
+    /// Direct I/O on `threads` I/O threads, 1 to [`IoMode::MAX_THREADS`];
+    /// `None` outside that range.
+    pub fn with_threads(threads: usize) -> Option<Self> {
+        (1..=Self::MAX_THREADS).contains(&threads).then_some(Self {
+            direct: true,
+            threads,
+        })
+    }
+
+    /// The I/O threads.
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    /// Whether the I/O is direct: always, outside test builds.
+    pub fn direct(&self) -> bool {
+        self.direct
+    }
+
+    /// For tests: through the kernel's cache unless `direct`, and on the
+    /// caller's thread where `threads` is 0.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn for_tests(direct: bool, threads: usize) -> Self {
+        Self { direct, threads }
+    }
 }
 
 /// The store on the home image alone: see the
@@ -246,6 +384,20 @@ pub struct InPlace<D: Dir> {
     zeroes: Zeroes,
     counts: Counts,
     mutants: Mutants,
+    /// How reads and writes are done.
+    io: IoMode,
+    /// The threads, where [`IoMode::threads`] asks for some.
+    pool: Option<Pool>,
+    /// The requests on the threads: their byte ranges, and whether each
+    /// is a write.
+    busy: BTreeMap<RequestId, (u64, u64, bool)>,
+    /// Requests that wait, in their order, for one on the threads that
+    /// they must not run beside ([`InPlace::must_wait`]). Everything
+    /// received after one of them waits behind it.
+    deferred: VecDeque<Request>,
+    /// The queue's counts and highs; the current figures are those of
+    /// `busy` and `deferred`.
+    queue: IoQueue,
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: as for
     /// the log store, a start that does not find it goes by the
@@ -377,18 +529,20 @@ pub struct FailedStart {
 /// The reason is true to the file that failed, as far as the start can
 /// tell (the lead's ruling for M1.3x). Before the in-place store takes
 /// over, the log store settles, syncs its log and checkpoints it into
-/// the home image (`Store::into_in_place`): where the log held
-/// operations to apply, a failure there is the log store's (`Log`);
-/// where it held none, nothing of the log store's own was at stake, and
-/// the failure is the image's or the device's under it (`Image`). With
-/// an empty log a failure of the log file's own sync is so reported as
-/// the image's too: the start cannot tell the two apart, and the
-/// hand-over goes with the log store in M1.3t.
+/// the home image (`Store::into_in_place`): where the log held a write
+/// or write-zeroes to apply into the image, a failure there is the log
+/// store's (`Log`); where it held none, nothing of the log store's own
+/// was at stake, and the failure is the image's or the device's under
+/// it (`Image`). A discard counts as nothing to apply: it changes
+/// nothing in the image, and the log store's index does not hold it.
+/// With nothing to apply, a failure of the log file's own sync is so
+/// reported as the image's too: the start cannot tell the two apart,
+/// and the hand-over goes with the log store in M1.3t.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartFailed {
-    /// The log store, in the hand-over, with operations in its log to
-    /// apply into the home image: the log store's own failure, which
-    /// its failure path has marked already.
+    /// The log store, in the hand-over, with a write or write-zeroes in
+    /// its log to apply into the home image: the log store's own
+    /// failure, which its failure path has marked already.
     Log,
     /// The home image: the in-place store's own sync of it, or the
     /// hand-over when the log held nothing to apply.
@@ -436,6 +590,30 @@ impl std::fmt::Debug for FailedStart {
     }
 }
 
+/// The I/O threads' queue, as the status file shows it
+/// ([`InPlace::io_queue`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoQueue {
+    /// The I/O threads; 0 where the I/O is done on the caller's thread
+    /// (test builds only).
+    pub threads: u64,
+    /// Reads and writes on the threads now: handed to a thread, and not
+    /// yet taken back by the store.
+    pub in_flight: u64,
+    /// Requests that wait now, in their order, for one on the threads
+    /// that they must not run beside (an overlapping request, or for a
+    /// flush a write), and every
+    /// request received after the first of them.
+    pub waiting: u64,
+    /// The requests that waited so since the store began: a count that
+    /// only grows.
+    pub waited: u64,
+    /// The most requests on the threads at once since the store began.
+    pub in_flight_max: u64,
+    /// The most requests that waited at once since the store began.
+    pub waiting_max: u64,
+}
+
 /// What the store has done, for its owner and for tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -464,6 +642,13 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
 /// the failure to write it); a marker never asked for ends its thread.
 impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
+        // What was submitted is done before the store goes, as it is on
+        // the caller's thread: what waits is executed once what it waits
+        // for has ended. Then the threads end, before the lock is gone.
+        while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+            self.collect(Duration::from_millis(10));
+        }
+        self.pool = None;
         self.marker.finish();
     }
 }
@@ -478,6 +663,8 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) zeroes: Zeroes,
     /// What writes the failure marker ([`Log::marker_writer`]).
     pub(crate) marker: MarkerWriter,
+    /// How reads and writes are done.
+    pub(crate) io: IoMode,
 }
 
 impl<D: Dir> InPlace<D> {
@@ -493,7 +680,9 @@ impl<D: Dir> InPlace<D> {
     ) -> Result<Self, IntoInPlaceError>
     where
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
+        let io = parts.io;
         let mut store = Self {
             log: parts.log,
             home: parts.home,
@@ -510,6 +699,11 @@ impl<D: Dir> InPlace<D> {
             zeroes: parts.zeroes,
             counts: Counts::default(),
             mutants,
+            io,
+            pool: None,
+            busy: BTreeMap::new(),
+            deferred: VecDeque::new(),
+            queue: IoQueue::default(),
             marker: Marker::new(parts.marker, mutants),
         };
         // The checkpoint that entered this store synced the home image
@@ -531,7 +725,46 @@ impl<D: Dir> InPlace<D> {
             }));
         }
         store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
+        store.set_up_io().map_err(IntoInPlaceError::Io)?;
         Ok(store)
+    }
+
+    /// Check what direct I/O asks, and start the threads.
+    ///
+    /// Direct I/O takes the request's own buffer, which is aligned to a
+    /// block ([`Buf::ALIGN`]), at the request's offset, which is a whole
+    /// number of blocks: the file system's alignment must divide both.
+    fn set_up_io(&mut self) -> Result<(), String>
+    where
+        D::File: Send + 'static,
+    {
+        if self.io.direct {
+            let align = self
+                .home
+                .direct_align()
+                .map_err(|e| format!("the file system offers no direct I/O on it: {e}"))?;
+            let block = skyzfs_blk::BLOCK_SIZE;
+            let (memory, offset) = (u64::from(align.memory), u64::from(align.offset));
+            if offset == 0
+                || !block.is_multiple_of(offset)
+                || (memory > 0 && !(Buf::ALIGN as u64).is_multiple_of(memory))
+            {
+                return Err(format!(
+                    "direct I/O asks an alignment of {offset} bytes of offsets and {memory} of \
+                     memory, which a block of {block} bytes does not meet"
+                ));
+            }
+        }
+        if self.io.threads > 0 {
+            let files = (0..self.io.threads)
+                .map(|_| self.log.dir().open(crate::store::HOME_NAME))
+                .collect::<io::Result<Vec<_>>>()
+                .map_err(|e| format!("opening the home image for the threads: {e}"))?;
+            let pool = Pool::start(files, self.io.direct, self.wake.clone())
+                .map_err(|e| format!("starting a thread: {e}"))?;
+            self.pool = Some(pool);
+        }
+        Ok(())
     }
 
     /// Drop the kernel's cache of the home image, and check that it is
@@ -550,6 +783,13 @@ impl<D: Dir> InPlace<D> {
     /// cannot count the file's cached pages refuse the start. Its cost:
     /// the first reads after a start, a take-over included, come from
     /// the disk.
+    ///
+    /// Under direct I/O the store's own reads and writes leave no page
+    /// in the cache: what the drop still guards is what a writer through
+    /// the cache left before this start, the log store's checkpoint at
+    /// the entry into this store, or a file system that serves direct
+    /// requests through its cache (see the module documentation, point
+    /// 3). It stays after M1.3t removes the log store.
     fn empty_cache(&mut self) -> Result<(), String> {
         let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
         let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
@@ -653,8 +893,12 @@ impl<D: Dir> InPlace<D> {
         self.counts
     }
 
-    /// How write-zeroes reach the home image: deallocated, or written
-    /// as zeros where the file system cannot deallocate.
+    /// How write-zeroes reach the home image: written as zeros by direct
+    /// I/O ([`Zeroes::WrittenDirect`]) once one has been applied. Until
+    /// then, what the start's checkpoint of the log did, if it applied
+    /// one, and else [`Zeroes::Untried`]. Through the cache (test builds
+    /// only): deallocated, or written as zeros where the file system
+    /// cannot deallocate.
     pub fn zeroes(&self) -> Zeroes {
         self.zeroes
     }
@@ -667,6 +911,17 @@ impl<D: Dir> InPlace<D> {
     /// Requests submitted and not yet handed out.
     pub fn in_flight(&self) -> usize {
         self.ids.len()
+    }
+
+    /// The I/O threads' queue: what is on them, what waits for them,
+    /// and the counts since the store began.
+    pub fn io_queue(&self) -> IoQueue {
+        IoQueue {
+            threads: self.io.threads as u64,
+            in_flight: self.busy.len() as u64,
+            waiting: self.deferred.len() as u64,
+            ..self.queue
+        }
     }
 
     /// For test rigs: fail the volume now, as if the next sync had
@@ -721,12 +976,18 @@ impl<D: Dir> InPlace<D> {
         }
         match op {
             Op::Read { offset, mut buf } => {
+                if self.pool.is_some() {
+                    let end = offset + buf.len() as u64;
+                    return self.on_thread(id, (offset, end, false), Job::Read { id, offset, buf });
+                }
                 // A failed read changes nothing and does not fail the
                 // volume: only its own request fails.
-                let result = self
-                    .home
-                    .read_at(offset, &mut buf)
-                    .map_err(|e| BlkError::Io(e.kind()));
+                let read = if self.io.direct {
+                    self.home.read_direct_at(offset, &mut buf)
+                } else {
+                    self.home.read_at(offset, &mut buf)
+                };
+                let result = read.map_err(|e| BlkError::Io(e.kind()));
                 self.complete(id, result, Some(buf));
             }
             Op::Flush => self.flush(id),
@@ -735,7 +996,19 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Err(BlkError::ReadOnly), buf);
             }
             Op::Write { offset, data } => {
-                let written = self.home.write_at(offset, &data);
+                if self.pool.is_some() {
+                    let end = offset + data.len() as u64;
+                    return self.on_thread(
+                        id,
+                        (offset, end, true),
+                        Job::Write { id, offset, data },
+                    );
+                }
+                let written = if self.io.direct {
+                    self.home.write_direct_at(offset, &data)
+                } else {
+                    self.home.write_at(offset, &data)
+                };
                 let result = self.mutated(written);
                 self.complete(id, result, Some(data));
             }
@@ -757,6 +1030,16 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
+    /// Hand `job` to the threads; `range` is its bytes and whether it
+    /// writes.
+    fn on_thread(&mut self, id: RequestId, range: (u64, u64, bool), job: Job) {
+        self.busy.insert(id, range);
+        self.queue.in_flight_max = self.queue.in_flight_max.max(self.busy.len() as u64);
+        if let Some(pool) = &self.pool {
+            pool.push(job);
+        }
+    }
+
     /// A mutation was tried: the volume fails with it if it failed.
     fn mutated(&mut self, done: io::Result<()>) -> Result<(), BlkError> {
         self.unsynced = true;
@@ -773,7 +1056,23 @@ impl<D: Dir> InPlace<D> {
 
     /// Zero a range: deallocate it, or write zeros where the file
     /// system has no such call (from then on, without asking again).
+    ///
+    /// With direct I/O, zeros are written by direct I/O: a deallocated
+    /// range would make the next writes to it allocate again. The state
+    /// the status shows ([`InPlace::zeroes`]) says so from the first.
     fn zero(&mut self, offset: u64, len: u64) -> io::Result<()> {
+        if self.io.direct {
+            const CHUNK: u64 = 1 << 20;
+            let zeros = Buf::filled((len.min(CHUNK) / skyzfs_blk::BLOCK_SIZE) as usize, 0);
+            let mut at = 0;
+            while at < len {
+                let n = (len - at).min(CHUNK) as usize;
+                self.home.write_direct_at(offset + at, &zeros[..n])?;
+                at += n as u64;
+            }
+            self.zeroes = Zeroes::WrittenDirect;
+            return Ok(());
+        }
         if self.zeroes != Zeroes::Written {
             match self.home.deallocate(offset, len) {
                 Ok(()) => {
@@ -872,6 +1171,110 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
+    /// Whether `op` must wait for a request on the threads: a read for
+    /// a write it overlaps, a write or a write-zeroes for a read or a
+    /// write it overlaps (so that overlapping requests keep the order
+    /// they came in), and a flush for every write (a flush covers what
+    /// was acknowledged before it; this one also waits for what was
+    /// submitted before it, the stricter reading).
+    fn must_wait(&self, op: &Op) -> bool {
+        if self.busy.is_empty() {
+            return false;
+        }
+        let (offset, len, write) = match op {
+            Op::Read { offset, buf } => (*offset, buf.len() as u64, false),
+            Op::Write { offset, data } => (*offset, data.len() as u64, true),
+            Op::WriteZeroes { offset, len } => (*offset, *len, true),
+            Op::Flush if self.mutants.has(Mutants::FLUSH_PASSES_WRITES) => return false,
+            Op::Flush => return self.busy.values().any(|&(_, _, write)| write),
+            Op::Discard { .. } => return false,
+        };
+        if self.mutants.has(Mutants::OVERLAP_UNORDERED) {
+            return false;
+        }
+        let end = offset.saturating_add(len);
+        self.busy
+            .values()
+            .any(|&(from, to, busy_write)| (write || busy_write) && from < end && offset < to)
+    }
+
+    /// Execute `request` now, or let it wait behind what waits already
+    /// or behind a request on the threads it must not run beside.
+    fn accept(&mut self, request: Request) {
+        if !self.deferred.is_empty() || self.must_wait(&request.op) {
+            self.deferred.push_back(request);
+            self.queue.waited += 1;
+            self.queue.waiting_max = self.queue.waiting_max.max(self.deferred.len() as u64);
+        } else {
+            self.execute(request.id, request.op);
+        }
+    }
+
+    /// Take what the threads did (with `timeout`, wait up to it for
+    /// something), then execute what no longer has to wait.
+    ///
+    /// A write's end is a mutation's, as on the caller's thread: it
+    /// counts for the next flush, and a failed one fails the volume. A
+    /// request that ends after the volume failed fails with it, which
+    /// rule R11 allows of one in flight at the failure.
+    ///
+    /// A thread that died (of a panic) fails the volume as a failed
+    /// write does, whatever its job was: what it did to the image is not
+    /// known, and fewer threads are left, perhaps none. Once the volume
+    /// has failed, the jobs no thread has begun are taken back and fail,
+    /// so that none waits for a thread that is gone; the jobs under way
+    /// on the threads still alive come back as they end, and fail.
+    fn collect(&mut self, timeout: Duration) {
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        let mut done = Vec::new();
+        pool.take(&mut done, timeout);
+        let died = pool.died() > 0 && !self.mutants.has(Mutants::DEATH_IGNORED);
+        if died && !self.failed {
+            self.fail();
+            self.settle_failed();
+        }
+        if self.failed {
+            for job in self.pool.as_ref().map(Pool::take_back).unwrap_or_default() {
+                let (id, _, buf) = job.into_parts();
+                self.busy.remove(&id);
+                self.complete(id, Err(BlkError::Failed), Some(buf));
+            }
+        }
+        for Done {
+            id,
+            write,
+            result,
+            buf,
+        } in done
+        {
+            self.busy.remove(&id);
+            let result = if write {
+                let result = self.mutated(result);
+                if self.failed {
+                    Err(BlkError::Failed)
+                } else {
+                    result
+                }
+            } else if self.failed {
+                Err(BlkError::Failed)
+            } else {
+                result.map_err(|e| BlkError::Io(e.kind()))
+            };
+            self.complete(id, result, Some(buf));
+        }
+        while let Some(front) = self.deferred.front() {
+            if self.must_wait(&front.op) {
+                break;
+            }
+            let Some(Request { id, op }) = self.deferred.pop_front() else {
+                break;
+            };
+            self.execute(id, op);
+        }
+    }
+
     /// See whether the sync under way has ended; with `wait`, wait for
     /// it.
     fn settle(&mut self, wait: bool) {
@@ -921,13 +1324,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
             return Err(SubmitError { kind, request });
         }
         self.ids.insert(request.id);
-        self.execute(request.id, request.op);
+        self.accept(request);
         Ok(())
     }
 
     /// Hands out what is complete. Looks whether the sync under way has
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
     }
@@ -940,9 +1344,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// The daemon's pump calls only `poll`, and is woken by the file's
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         if self.ready.is_empty() && !timeout.is_zero() {
-            self.settle(true);
+            if self.busy.is_empty() {
+                self.settle(true);
+            } else {
+                self.collect(timeout);
+            }
         }
         self.hand_out(out)
     }
@@ -983,5 +1392,6 @@ pub fn volatile_cache_explains(
 
 #[cfg(test)]
 pub(crate) mod harness;
+mod pool;
 #[cfg(test)]
 mod tests;

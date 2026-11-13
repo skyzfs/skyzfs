@@ -471,10 +471,10 @@ fn served_failure(store: StoreKind) -> Reason {
 
 /// The reason the failure note gives for a start of the in-place store
 /// that failed, true to the file that failed as far as the start can
-/// tell: the log store's hand-over with operations in its log to apply
-/// keeps the log's reason; the hand-over with nothing to apply, and the
-/// in-place store's own sync of the image, give the image's
-/// (`StartFailed`).
+/// tell: the log store's hand-over with a write or write-zeroes in its
+/// log to apply keeps the log's reason; the hand-over with nothing to
+/// apply, and the in-place store's own sync of the image, give the
+/// image's (`StartFailed`).
 fn start_failure(failed: StartFailed) -> Reason {
     match failed {
         StartFailed::Log => Reason::LogFailed,
@@ -515,6 +515,7 @@ fn log_shown(target: &Target) -> LogShown {
                 stepping: false,
                 own_syncs: 0,
                 zeroes: zeroes_shown(store.zeroes()),
+                io_queue: Some(store.io_queue()),
             }
         }
     };
@@ -528,6 +529,7 @@ fn log_shown(target: &Target) -> LogShown {
         stepping: log.stepping,
         own_syncs: log.own_syncs,
         zeroes: zeroes_shown(log.zeroes),
+        io_queue: None,
     }
 }
 
@@ -536,6 +538,7 @@ fn zeroes_shown(zeroes: Zeroes) -> ZeroesShown {
         Zeroes::Untried => ZeroesShown::Untried,
         Zeroes::Deallocated => ZeroesShown::Deallocated,
         Zeroes::Written => ZeroesShown::Written,
+        Zeroes::WrittenDirect => ZeroesShown::WrittenDirect,
     }
 }
 
@@ -624,6 +627,17 @@ pub fn serve(serve: &Serve) -> Exit {
 
 fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
+    // The test build's record of the requests (`--request-log`): opened
+    // before the volume or a device is touched, so that a path that
+    // cannot be written refuses the serve with nothing to undo.
+    #[cfg(feature = "test-hooks")]
+    let request_log = match &serve.hooks.request_log {
+        Some(path) => Some(
+            crate::record::open(path)
+                .map_err(|e| format!("the request log {}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     let mut records = Files::new(&serve.dir, &serve.run_dir, boot, LOCK_PAUSE)
         .map_err(|e| format!("{}: {e}", serve.dir.display()))?;
     if serve.allow_any_filesystem {
@@ -655,6 +669,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     options.writeback_unit = serve.writeback_kib << 10;
     options.home_writeback_unit = serve.home_writeback_kib << 10;
     options.readers = usize::from(serve.readers);
+    options.in_place_io = serve.in_place_io;
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -829,7 +844,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // where it cannot show that, it serves nothing. The volume
             // has not failed, and the device waits as after any start
             // that fails after the lifecycle added it.
-            Err(refused @ skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)) => {
+            Err(
+                refused @ (skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)
+                | skyzfs_local::inplace::IntoInPlaceError::Io(_)),
+            ) => {
                 return Err(format!(
                     "the in-place store: {refused}. Nothing was served and the volume has not \
                      failed"
@@ -869,6 +887,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                     record: SharedAck::new(ack),
                     flags: flags.clone(),
                 };
+                // Next to the kernel, below the delays: the record says
+                // what the kernel handed over and what it was given.
+                #[cfg(feature = "test-hooks")]
+                let queue = crate::record::Recorded::new(queue, request_log, number);
                 let (queue, ack) = Delayed::new(queue, ack, delay, hold, move || wake.wake());
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main
@@ -1228,8 +1250,8 @@ mod tests {
     /// with the log's (code 1 in the note), the in-place store's with
     /// the image's (code 7), while it serves and when its own sync fails
     /// at its start. A start of the in-place store that failed in the
-    /// log store's hand-over keeps the log's where the log held
-    /// operations to apply (`StartFailed::Log`).
+    /// log store's hand-over keeps the log's where the log held a write
+    /// or write-zeroes to apply (`StartFailed::Log`).
     #[test]
     fn each_store_notes_its_own_failure() {
         assert_eq!(served_failure(StoreKind::Log), Reason::LogFailed);

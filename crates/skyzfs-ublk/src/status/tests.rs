@@ -77,6 +77,14 @@ fn sample() -> Status {
                 zeroes: ZeroesShown::Written,
                 timing: Some(sample_timing()),
                 pump: Some(sample_pump()),
+                io_queue: Some(IoQueue {
+                    threads: 20,
+                    in_flight: 21,
+                    waiting: 22,
+                    waited: 23,
+                    in_flight_max: 24,
+                    waiting_max: 25,
+                }),
             },
             start_ms: 16,
             replayed_bytes: 17,
@@ -88,22 +96,24 @@ fn sample() -> Status {
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
     let mut expected = Vec::new();
-    expected.extend(b"SKYZSTA8");
+    expected.extend(b"SKYZSTA9");
     expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
     expected.extend([7; 16]);
     expected.extend([3; 16]);
     // The step under way is 1 at offset 160, between 14 and 16.
     // How write-zeroes are applied is 2, written, at offset 192.
     // The times are the 220 fields from offset 200, here 100 to 319
-    // but for the two that say the hint is off, 1.
+    // but for the two that say the hint is off, 1. The I/O threads'
+    // queue is the six fields 20 to 25 from offset 1960.
     for field in (1..=14u64)
         .chain([1, 16, 17, 18, 2])
         .chain((0..TIME_FIELDS).map(sample_field))
+        .chain(20..=25)
     {
         expected.extend(field.to_le_bytes());
     }
     assert_eq!(TIME_FIELDS, 220);
-    assert_eq!(bytes.len(), 1960);
+    assert_eq!(bytes.len(), 2008);
     assert_eq!(bytes.to_vec(), expected);
     // Where the times lie, by what they are.
     let timing = sample_timing();
@@ -239,6 +249,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
         log.shown.zeroes = ZeroesShown::Unsaid;
         log.shown.timing = None;
         log.shown.pump = None;
+        log.shown.io_queue = None;
     }
     assert_eq!(read, unsaid);
     let lines_of = |status: &Status| {
@@ -266,6 +277,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
             ZeroesShown::WrittenForBlocks,
             "written as zeros: the blocks of the volume's file system",
         ),
+        (ZeroesShown::WrittenDirect, "written as zeros by direct I/O"),
     ] {
         let mut status = sample();
         if let Some(log) = status.log.as_mut() {
@@ -281,6 +293,7 @@ fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applie
     if let Some(log) = unsaid.log.as_mut() {
         log.shown.timing = Some(sample_timing());
         log.shown.pump = Some(sample_pump());
+        log.shown.io_queue = sample().log.and_then(|log| log.shown.io_queue);
     }
     unsaid.version = VERSION;
     assert_eq!(decode(&unknown), Some(unsaid));
@@ -305,6 +318,7 @@ fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went()
     if let Some(log) = untimed.log.as_mut() {
         log.shown.timing = None;
         log.shown.pump = None;
+        log.shown.io_queue = None;
     }
     assert_eq!(read, untimed);
     let lines_of = |status: &Status| {
@@ -437,6 +451,60 @@ fn seventh_timing() -> skyzfs_local::store::Timing {
     timing.step_report = Default::default();
     timing.helper_requests = 0;
     timing
+}
+
+/// A file of the eighth version (1960 bytes, `SKYZSTA8`) is still read:
+/// everything where it was, and no I/O threads' queue, so the report
+/// shows none. The eighth's magic at the ninth's length is no file, nor
+/// the ninth's at the eighth's.
+#[test]
+fn a_file_of_the_eighth_version_is_read_without_the_io_queue() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut eighth = encode(&sample())[..1960].to_vec();
+    eighth[..8].copy_from_slice(b"SKYZSTA8");
+    fs::write(&path, &eighth).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    assert_eq!(read.version, 8);
+    let mut expected = sample();
+    expected.version = 8;
+    if let Some(log) = expected.log.as_mut() {
+        log.shown.io_queue = None;
+    }
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert!(lines.iter().all(|(key, _)| !key.starts_with("io_")));
+    let mut long = encode(&sample()).to_vec();
+    long[..8].copy_from_slice(b"SKYZSTA8");
+    fs::write(&path, &long).expect("write");
+    assert!(super::read(&path).is_err());
+    eighth[..8].copy_from_slice(b"SKYZSTA9");
+    fs::write(&path, &eighth).expect("write");
+    assert!(super::read(&path).is_err());
+}
+
+/// The log store has no I/O threads: a status with a queue of no
+/// threads shows no `io_` key.
+#[test]
+fn the_report_shows_the_io_queue_only_where_there_are_threads() {
+    let mut status = sample();
+    if let Some(log) = status.log.as_mut() {
+        log.shown.io_queue = Some(IoQueue::default());
+    }
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&status),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert!(lines.iter().all(|(key, _)| !key.starts_with("io_")));
 }
 
 /// A file of the seventh version (1856 bytes, `SKYZSTA7`) is still
@@ -934,10 +1002,18 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "start_ms",
             "replayed_bytes",
             "zeroes_applied",
+            "io_threads",
+            "io_in_flight",
+            "io_waiting",
+            "io_waited",
+            "io_in_flight_max",
+            "io_waiting_max",
             "pid",
             "counters"
         ]
     );
+    assert_eq!(value(&lines, "io_threads"), Some("20"));
+    assert_eq!(value(&lines, "io_waiting_max"), Some("25"));
     // The process to signal: only while the kernel shows a live server.
     assert_eq!(value(&lines, "pid"), Some("16909060"));
     assert_eq!(value(&lines, "state"), Some("serving"));
@@ -1347,6 +1423,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         (1584, b"SKYZSTA6", "6"),
         (1856, b"SKYZSTA7", "7"),
         (1960, b"SKYZSTA8", "8"),
+        (2008, b"SKYZSTA9", "9"),
     ] {
         let mut bytes = encode(&sample())[..len].to_vec();
         bytes[..8].copy_from_slice(magic);
@@ -1362,7 +1439,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 8);
+    assert_eq!(VERSION, 9);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

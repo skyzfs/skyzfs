@@ -56,10 +56,14 @@
 //!   position is stored then and not before. Nothing else waits;
 //! - `serve --refuse-holes`: the store behaves as on a file system
 //!   that cannot deallocate: a checkpoint writes zeros for a
-//!   write-zeroes record.
+//!   write-zeroes record;
+//! - `serve --request-log PATH`: every request the kernel hands over
+//!   and every answer it is given is appended to `PATH`, one line each
+//!   (the format is in `record.rs`). Either store.
 
 use std::path::PathBuf;
 
+use skyzfs_local::inplace::IoMode;
 use skyzfs_ublk::features::ASYNC_DELETE_OPTION;
 use std::process::ExitCode;
 
@@ -83,6 +87,22 @@ pub const DEFAULT_READERS: u16 = 4;
 
 /// The most reader threads `serve` takes.
 pub const MAX_READERS: u16 = 64;
+/// The most I/O threads `--io-threads` gives the in-place store: the
+/// store's own bound (`IoMode::MAX_THREADS`).
+pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
+/// The in-place store's I/O threads unless `--io-threads` is given: the
+/// store's own default (`IoMode::DEFAULT_THREADS`). It rests on the
+/// benchmark's slow-sync machines only and may change after a round on
+/// the merged daemon; it is that one constant, and the help says it
+/// (a test holds the two together).
+pub const DEFAULT_IO_THREADS: u16 = io_threads(IoMode::DEFAULT_THREADS);
+
+/// A count of the store's I/O threads as the command line takes it;
+/// one that does not fit does not compile.
+const fn io_threads(n: usize) -> u16 {
+    assert!(n <= u16::MAX as usize, "more I/O threads than a u16");
+    n as u16
+}
 
 /// The log's live size at which the daemon begins to checkpoint, in
 /// segments, unless told otherwise (design §5.1: two).
@@ -103,17 +123,48 @@ pub const DEFAULT_WRITEBACK_KIB: u64 = skyzfs_local::writeback::DEFAULT_UNIT >> 
 /// The largest `--writeback-kib`: 1 GiB.
 const MAX_WRITEBACK_KIB: u64 = 1 << 20;
 
-/// What is printed with a usage error.
+/// What is printed with a usage error ([`usage`]).
 pub const USAGE: &str = "usage:
-  skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
+  skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                  [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
-                 [--store log|in-place]
+                 [--store log|in-place] [--io-threads N]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
   skyzfsd help";
+
+/// The test hooks, which a build with the feature `test-hooks` takes and
+/// lists after [`USAGE`] and [`HELP`], and a default build refuses (see
+/// the module documentation). The kernel rig reads this list to see
+/// what a build takes (`serve --help`, a usage error, prints it).
+pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
+  skyzfsd create ... [--base-pattern SEED]
+  skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
+                 [--hold-one-request SECONDS:flush] [--boot-id-file PATH] [--recover-short N]
+                 [--commit-delay-ms N] [--step-pause-ms N | --step-pause-until PATH]
+                 [--step-pause-at POINT] [--refuse-holes] [--request-log PATH]";
+
+/// What a usage error prints: [`USAGE`], and in a build with the test
+/// hooks [`HOOKS_USAGE`] after it.
+pub fn usage() -> String {
+    with_hooks(USAGE)
+}
+
+/// What `help` prints: [`HELP`], and in a build with the test hooks
+/// [`HOOKS_USAGE`] after it.
+pub fn help() -> String {
+    with_hooks(HELP)
+}
+
+fn with_hooks(text: &str) -> String {
+    if cfg!(feature = "test-hooks") {
+        format!("{text}\n\n{HOOKS_USAGE}")
+    } else {
+        text.to_string()
+    }
+}
 
 /// What `help` prints: the usage, and what an operator has to know
 /// before using a command.
@@ -153,13 +204,17 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       DIR it made. BYTES is a multiple of 1 MiB. One
       line is printed: the size, the volume's id and the store's
       identity.
+      --zero-fill writes the new image with zeros and syncs it, so that
+      no later write of the in-place store allocates, and says how long
+      that took. Without it the image is a hole, and the first write to
+      each block allocates it.
       If a volume in DIR failed in this boot, create warns: the note
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                 [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
-                [--store log|in-place]
+                [--store log|in-place] [--io-threads N]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -214,6 +269,12 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       whatever the log store flushed. The log's options
       (--log-high, --log-low, --writeback-kib, --home-writeback-kib,
       --readers) are refused with it.
+      The in-place store reads and writes the image by direct I/O
+      (O_DIRECT), past the kernel's cache: the start refuses a file
+      system that offers none, or whose unit for it (STATX_DIOALIGN) is
+      above 4 KiB. --io-threads N (1 to 64, 8 unless given) does its
+      reads and writes on N threads of their own, so that up to N reach
+      the disk at once. Only with --store in-place.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -310,6 +371,9 @@ pub struct Create {
     pub run_dir: PathBuf,
     /// Test hook: a base that is not zeros, from this seed.
     pub base_pattern: Option<u64>,
+    /// `--zero-fill`: write the new image with zeros, so that no write
+    /// of the in-place store to it allocates.
+    pub zero_fill: bool,
 }
 
 /// `serve`: serve the volume until SIGTERM.
@@ -349,6 +413,9 @@ pub struct Serve {
     pub readers: u16,
     /// `--store`: which store serves the volume.
     pub store: StoreKind,
+    /// `--io-threads`: how the in-place store reads and writes (direct
+    /// I/O on that many threads).
+    pub in_place_io: skyzfs_local::inplace::IoMode,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
@@ -392,6 +459,8 @@ pub struct Hooks {
     /// The store writes zeros for a write-zeroes record, as on a file
     /// system that cannot deallocate.
     pub refuse_holes: bool,
+    /// Where the requests and their answers are written down.
+    pub request_log: Option<PathBuf>,
 }
 
 /// How long a checkpoint step waits in its middle.
@@ -524,6 +593,7 @@ const CREATE: &[Opt] = &[
     opt("--size", true, false),
     opt("--run-dir", true, false),
     opt("--base-pattern", true, true),
+    opt("--zero-fill", false, false),
 ];
 
 const SERVE: &[Opt] = &[
@@ -539,6 +609,7 @@ const SERVE: &[Opt] = &[
     opt("--home-writeback-kib", true, false),
     opt("--readers", true, false),
     opt("--store", true, false),
+    opt("--io-threads", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -550,6 +621,7 @@ const SERVE: &[Opt] = &[
     opt("--step-pause-until", true, true),
     opt("--step-pause-at", true, true),
     opt("--refuse-holes", false, true),
+    opt("--request-log", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -696,6 +768,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 size,
                 run_dir: run_dir(&given),
                 base_pattern: given.number("--base-pattern")?,
+                zero_fill: given.flag("--zero-fill"),
             }))
         }
         "serve" => {
@@ -800,7 +873,15 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 if let Some(name) = refused.into_iter().find(|name| given.flag(name)) {
                     return Err(UsageError::Value(name.into(), "not with --store in-place"));
                 }
+            } else if given.flag("--io-threads") {
+                return Err(UsageError::Value(
+                    "--io-threads".into(),
+                    "only with --store in-place",
+                ));
             }
+            let threads = small("--io-threads", DEFAULT_IO_THREADS, MAX_IO_THREADS)?;
+            let in_place_io = IoMode::with_threads(usize::from(threads))
+                .ok_or(UsageError::Value("--io-threads".into(), "out of range"))?;
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -814,6 +895,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 home_writeback_kib: unit("--home-writeback-kib", 0)?,
                 readers: small("--readers", DEFAULT_READERS, MAX_READERS)?,
                 store,
+                in_place_io,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {
@@ -825,6 +907,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                     refuse_holes: given.flag("--refuse-holes"),
+                    request_log: given.get("--request-log").map(PathBuf::from),
                 },
             }))
         }
