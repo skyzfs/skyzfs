@@ -3421,7 +3421,9 @@ impl<D: Dir> Store<D> {
     /// failed (the log's marker). The log store itself is unchanged by
     /// this: it is a checkpoint of everything, and a volume that is
     /// later opened by the log store again finds an empty log and the
-    /// home image as the in-place store left it.
+    /// home image as the in-place store left it. But a volume served in
+    /// place must not be served by the log store again: see the
+    /// warning in the [in-place store's documentation](crate::inplace).
     pub fn into_in_place(
         self,
         waker: Option<Waker>,

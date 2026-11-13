@@ -202,8 +202,10 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       since, or a mix of those within the block (a volatile-cache
       disk); a volume served so is not a prefix of its writes. A
       failure is final as with the log. The start applies and empties
-      the log first, so the volume can be served with either store from
-      one start to the next. The log's options (--log-high, --log-low,
+      the log first. A volume served in place must not be given back to
+      --store log: a write acknowledged in place and not flushed before
+      the daemon ended, however it ended, can be lost at a power cut
+      after it, whatever the log store flushed. The log's options (--log-high, --log-low,
       --writeback-kib, --home-writeback-kib, --readers) are refused with
       it.
 

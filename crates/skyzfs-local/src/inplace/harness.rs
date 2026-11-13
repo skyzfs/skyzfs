@@ -16,24 +16,18 @@
 //!   executes every request when it is submitted, so only flushes can
 //!   be in flight, and a kill finds their syncs where the seed of the
 //!   disk's delays has them.
-//! - `fail_log` stops the disk ([`SimDisk::halt_after`]): every write
-//!   and every sync fails from then on and changes nothing. The suite's
-//!   model holds a block that no flush covered to one whole version
-//!   after a failure, as the log store keeps it. On this store, with no
-//!   log, a write or a sync that fails half way leaves such a block as
-//!   a power cut does, any version for each sector: the simulated
-//!   disk's other faults ([`SimDisk::fail_write`], [`SimDisk::fail_sync`])
-//!   do that, and the suite would call it torn. That is a place where
-//!   this store promises less than the suite's rule R11, and `tests.rs`
-//!   tests what it does promise there with those faults: what a
-//!   completed flush covered is intact, and every other block is
-//!   explained by the volatile-cache disk.
+//! - `fail_log` makes every write and every sync fail from then on, as
+//!   the simulated disk fails them: a failed write leaves any subset of
+//!   its sectors, a failed sync may drop what it did not make durable.
 //! - `reopen_failed` takes the fault away, kills the process and starts
 //!   with the failure acknowledged.
 
 use std::time::Duration;
 
-use skyzfs_blk::conformance::{Capabilities, Capability, Harness, HarnessError, Spec};
+use skyzfs_blk::conformance::{
+    cases, Capabilities, Capability, CaseOutcome, Config, Harness, HarnessError, Report, Spec,
+    Status,
+};
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId};
 
 use super::{InPlace, Mutants};
@@ -173,6 +167,45 @@ impl BlockTarget for OnSim {
     }
 }
 
+/// The suite's cases that this store does not meet, by design: each
+/// reads the volume back after its log failed, and holds a block that
+/// no flush covered to one whole version. On this store a failed write
+/// or sync leaves such a block as a power cut does (the module's point
+/// 4), so the suite finds it torn. `tests.rs` pins that these two fail
+/// so and nothing else does, and tests what the store does promise
+/// there with the same faults.
+pub(crate) const NOT_MET: [&str; 2] = [
+    "prop_failures_match_model",
+    "reopened_failed_volume_holds_what_was_flushed",
+];
+
+/// Why: the reason [`run_suite`] reports for each of [`NOT_MET`].
+pub(crate) const NOT_MET_REASON: &str =
+    "not met by the in-place store, by design: a failed write or sync leaves the blocks \
+     no flush covered as a power cut does (the volatile-cache disk), and this case holds \
+     them whole; what the store promises there is tested apart";
+
+/// The suite as it runs on this store: every case, but the cases of
+/// [`NOT_MET`], which are reported as not exercised with
+/// [`NOT_MET_REASON`]. The suite has no way to say "not met by design"
+/// but that, and its report must not show these as passed.
+pub(crate) fn run_suite(harness: &mut InPlaceHarness, config: &Config) -> Report {
+    Report {
+        outcomes: cases::<InPlaceHarness>()
+            .into_iter()
+            .map(|case| CaseOutcome {
+                name: case.name,
+                rule: case.rule,
+                result: if NOT_MET.contains(&case.name) {
+                    Ok(Status::NotExercised(NOT_MET_REASON))
+                } else {
+                    case.run_on(harness, config)
+                },
+            })
+            .collect(),
+    }
+}
+
 impl Harness for InPlaceHarness {
     type Target = OnSim;
 
@@ -255,7 +288,8 @@ impl Harness for InPlaceHarness {
     }
 
     fn fail_log(&mut self, target: &mut OnSim) -> Result<(), HarnessError> {
-        target.disk.halt_after(0);
+        target.disk.fail_write(0, true);
+        target.disk.fail_sync(0, true);
         Ok(())
     }
 

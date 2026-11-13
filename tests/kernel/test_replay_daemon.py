@@ -187,18 +187,25 @@ class Pure(unittest.TestCase):
         def ctl(name, caught, by=None):
             return {'name': name, 'caught': caught, 'failed_by': by or {}, 'rig_errors': []}
         absent = dict(rd.ABSENT, **{'recover-short': rd.RECOVER_SHORT_NOT_HERE})
-        rows, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1})], expected=rd.EXPECTED, absent=absent)
+        stuck = ctl('stuck', True, {'device read': 1})
+        rows, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1}), stuck], expected=rd.EXPECTED,
+                                                  absent=absent)
         self.assertTrue(ok)
         self.assertEqual(sorted(r['name'] for r in rows if r.get('not_built')),
                          ['data', 'drop', 'intent', 'recover-short', 'reorder'])
         _, _, ok = replay_check.judge_controls([ctl('withheld', False)], expected=rd.EXPECTED, absent=absent)
+        self.assertFalse(ok)
+        # The stuck control is caught only by the read of the device.
+        _, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1}), ctl('stuck', True, {'start': 1})],
+                                               expected=rd.EXPECTED, absent=absent)
         self.assertFalse(ok)
         # A control of the table that did not run fails, unless it is said why it was not built.
         _, _, ok = replay_check.judge_controls([], expected=rd.EXPECTED, absent=rd.ABSENT)
         self.assertFalse(ok)
         # Asked for, the hooked control is judged as well.
         hooked = dict(rd.EXPECTED, **rd.EXPECTED_HOOKED)
-        _, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1}), ctl('recover-short', True, {'fsync': 1})],
+        _, _, ok = replay_check.judge_controls([ctl('withheld', True, {'fsync': 1}), stuck,
+                                                ctl('recover-short', True, {'fsync': 1})],
                                                expected=hooked, absent=rd.ABSENT)
         self.assertTrue(ok)
 
@@ -227,6 +234,8 @@ class Pure(unittest.TestCase):
 
     def test_the_provider_stages_are_verdicts(self):
         self.assertIn('deep: mount (writable)', rd.JUDGING)
+        # A mount that timed out judged nothing (replay_check.stage).
+        self.assertNotIn('deep: ' + replay_check.stage('mount (writable)', 124), rd.JUDGING)
         for s in ('volume mount', 'start', 'device read', 'stop', 'import', 'fsync: files', 'copies: differ'):
             self.assertIn(s, rd.JUDGING)
         self.assertNotIn('rig: losetup', rd.JUDGING)
@@ -411,9 +420,11 @@ class Pass(unittest.TestCase):
         return type('A', (), a)()
 
     def fake(self, fail_at=(), recover_caught=True, withheld_caught=True, hook_ops=None, at=None, kinds=None,
-             txg_fn=None, deep_marks=True):
+             txg_fn=None, deep_marks=True, stuck='caught'):
         """at: {prefix: fields} and kinds: {kind: fields} set on that point's result (a failure, an abort);
-        txg_fn(n) replaces the txg; deep_marks=False leaves the deep check unrecorded."""
+        txg_fn(n) replaces the txg; deep_marks=False leaves the deep check unrecorded; stuck: what the stuck
+        control's start does ('caught': stopped, the read fails; 'missed': stopped, the read passes;
+        'unplanted': no ready line)."""
         deep_at = []
         at, kinds = at or {}, kinds or {}
 
@@ -429,6 +440,18 @@ class Pass(unittest.TestCase):
                 r['txg'] = txg_fn(n)
             if hooks and hook_ops is not None and hook_ops(100 + n) is None:
                 r['start'] = {}
+            if rd.STOP_AFTER_READY in hooks:
+                r.update({'caught': dict(stopped_after_ready=True, ok=False, failed='device read',
+                                         detail='TIMEOUT after 20s; the reader ended once the server was killed'),
+                          'missed': dict(stopped_after_ready=True),
+                          'unplanted': dict(ok=False, failed='start', detail='neither ready nor ended'),
+                          'at once': dict(stopped_after_ready=True, ok=False, failed='device read',
+                                          detail='dd: error reading: Input/output error'),
+                          'not reaped': dict(stopped_after_ready=True, ok=False, failed='device read',
+                                             detail='TIMEOUT after 20s; the reader not reaped 60 s after',
+                                             abort='dd of /dev/ublkb0 did not end 60 s after the daemon was killed')
+                          }[stuck])
+                return r
             if n in fail_at or (hooks and recover_caught) or (marks is not None and withheld_caught):
                 r.update(ok=False, failed='fsync: files', detail='f.1 checksum differs')
             if marks is None and not hooks:
@@ -517,6 +540,47 @@ class Pass(unittest.TestCase):
                   at={later: {'abort': 'umount: busy'}})
         self.assertEqual(rd.check(self.args()), 1)
         self.assertIn('| calibration | start |', self.summary_text())
+
+    def test_the_stuck_control(self):
+        self.fake()
+        self.assertEqual(rd.check(self.args()), 0)
+        text = self.summary_text()
+        self.assertIn('stuck', text)
+        self.assertIn('reading the device', text)
+        # A stopped daemon whose device still reads: the table differs, a verdict.
+        self.fake(stuck='missed')
+        self.assertEqual(rd.check(self.args()), 1)
+        # No ready line, so no stop: planted nothing, the rig's error.
+        self.fake(stuck='unplanted')
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('the daemon was not stopped', self.summary_text())
+        # A read that failed at once, not at the limit, did not wait for the
+        # stopped daemon: it shows nothing, the rig's error.
+        self.fake(stuck='at once')
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('did not wait for the stopped daemon', self.summary_text())
+        # The reader outlived the daemon's death and its device's deletion:
+        # the run stops on the rig's error, and says it was this control.
+        self.fake(stuck='not reaped')
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertIn('the stuck control at prefix', self.summary_text())
+
+    def test_a_timed_out_zdb_at_the_end_in_a_stopped_run_is_the_rigs(self):
+        # The stopped path, as test_exit_codes is for the passing one: a
+        # zdb -bcc that timed out judged nothing.
+        self.fake()
+        point, run = rd.Checker.point, rd.run
+
+        def control_breaks(ck, n, kind, hooks=(), marks=None, fmarks=None):
+            if marks is not None:
+                raise rd.RigError('withheld: the snapshot could not be set up')
+            return point(ck, n, kind, hooks=hooks, marks=marks, fmarks=fmarks)
+
+        def zdb_hangs(cmd, timeout=300):
+            return (124, 'TIMEOUT after 300s', 300.0) if cmd[0] == 'zdb' and '-bcc' in cmd else run(cmd, timeout)
+        rd.Checker.point, rd.run = control_breaks, zdb_hangs
+        self.assertEqual(rd.check(self.args()), 2)
+        self.assertNotIn('Exit 1', self.summary_text())
 
     def test_a_failed_zdb_at_the_end_survives_a_later_rig_error(self):
         # zdb -bcc fails on the final image, then the withheld control's setup

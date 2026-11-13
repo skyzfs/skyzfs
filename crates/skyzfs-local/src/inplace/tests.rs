@@ -5,7 +5,7 @@ use skyzfs_blk::{
     Base, BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId, BLOCK_USIZE,
 };
 
-use super::harness::{InPlaceHarness, OnSim};
+use super::harness::{run_suite, InPlaceHarness, OnSim, NOT_MET, NOT_MET_REASON};
 use super::*;
 use crate::format::Key;
 use crate::log::LogError;
@@ -13,6 +13,9 @@ use crate::sim::{SeededCut, SimDisk};
 use crate::store::{OpenOptions, Store, StoreConfig, StoreError};
 
 const BLOCK: u64 = 4096;
+/// What a test gives a wait: it waits for a sync to end, not for the
+/// time (see `InPlace::wait`).
+const WAIT: Duration = Duration::from_secs(60);
 
 /// The cases of the suite that need a power cut (its table "Needs P").
 const NEED_A_POWER_CUT: [&str; 6] = [
@@ -41,6 +44,12 @@ fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
 /// they begin, so that writes and flushes arrive while a sync is under
 /// way. Exactly the cases that need a power cut are not exercised, and
 /// for that reason.
+///
+/// Two failure cases are not met by this store, by design (the
+/// harness's `NOT_MET`): they are reported as not exercised, with that
+/// reason, and
+/// `the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does` pins
+/// why.
 #[test]
 fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
     let config = Config {
@@ -48,18 +57,17 @@ fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
         ..Config::default()
     };
     for mut harness in harnesses(0) {
-        let report = run_all(&mut harness, &config);
+        let report = run_suite(&mut harness, &config);
         assert!(report.passed(), "in {harness:?}:\n{report}");
         let idle = report.not_exercised();
-        for case in NEED_A_POWER_CUT {
-            assert!(idle.contains(&case), "{case} ran in {harness:?}");
+        for case in NEED_A_POWER_CUT.iter().chain(&NOT_MET) {
+            assert!(idle.contains(case), "{case} ran in {harness:?}");
         }
         for (case, why) in report.unexercised() {
             let one_at_a_time = harness.queue_depth == 1 && why.contains("one request at a time");
-            assert!(
-                NEED_A_POWER_CUT.contains(&case) && why.contains("power") || one_at_a_time,
-                "{case}: {why}"
-            );
+            let cut = NEED_A_POWER_CUT.contains(&case) && why.contains("power");
+            let not_met = NOT_MET.contains(&case) && why == NOT_MET_REASON;
+            assert!(cut || not_met || one_at_a_time, "{case}: {why}");
         }
         for (case, what) in report.weaker() {
             assert!(what.contains("power"), "{case}: {what}");
@@ -67,19 +75,43 @@ fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
     }
 }
 
-/// The suite notices the defects of failure: a failed sync that is
-/// tried again, and a failed write that does not fail the volume.
+/// Why the cases of `NOT_MET` are not met: run as the suite has them,
+/// with the log failing by the simulated disk's faults, exactly those
+/// two fail, each with a block the suite's model reports as torn (the
+/// test checks that, not which block). That is the module's point 4 (a failure leaves unflushed
+/// blocks as a power cut does).
+#[test]
+fn the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does() {
+    let config = Config {
+        cases: 32,
+        ..Config::default()
+    };
+    for mut harness in harnesses(0) {
+        let report = run_all(&mut harness, &config);
+        let mut failed = report.failed();
+        failed.sort_unstable();
+        assert_eq!(failed, NOT_MET, "in {harness:?}:\n{report}");
+        for outcome in &report.outcomes {
+            if let Err(failure) = &outcome.result {
+                assert!(failure.0.contains("is Torn"), "{}: {failure}", outcome.name);
+            }
+        }
+    }
+}
+
+/// The suite notices a failed sync that is tried again. (A failed write
+/// that does not fail the volume is caught by
+/// `a_failed_write_fails_the_volume`: the suite's cases that catch it
+/// are the two this store does not meet.)
 #[test]
 fn the_suite_notices_a_failure_that_is_not_final() {
     let config = Config {
         cases: 32,
         ..Config::default()
     };
-    for mutant in [Mutants::SYNC_RETRIED, Mutants::WRITE_ERROR_PASSES] {
-        let mut harness = harnesses(mutant)[1];
-        let report = run_all(&mut harness, &config);
-        assert!(!report.passed(), "the defect {mutant:#x} is not noticed");
-    }
+    let mut harness = harnesses(Mutants::SYNC_RETRIED)[1];
+    let report = run_suite(&mut harness, &config);
+    assert!(!report.passed(), "the defect is not noticed");
 }
 
 /// A store on a simulated disk, with a log of a few records that the
@@ -144,7 +176,7 @@ fn run(store: &mut InPlace<SimDisk>, id: u64, op: Op) -> Completion {
         .unwrap();
     let mut done = Vec::new();
     while done.is_empty() {
-        store.wait(&mut done, Duration::ZERO);
+        store.wait(&mut done, WAIT);
     }
     done.pop().unwrap()
 }
@@ -287,9 +319,39 @@ fn a_failed_sync_fails_the_volume_for_good() {
     assert!(read(&mut store, 1).is_ok());
 }
 
-/// A failed write fails the volume as a failed sync does.
+/// A discard counts as a change: a flush behind a discard alone syncs,
+/// and so fails on a disk whose syncs fail. Without that, it would
+/// succeed after the client changed the volume.
+#[test]
+fn a_flush_behind_a_discard_syncs() {
+    for mutants in [0, Mutants::DISCARD_UNCHANGED] {
+        let disk = created(8, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        disk.fail_sync(0, true);
+        let discard = Op::Discard {
+            offset: 0,
+            len: BLOCK,
+        };
+        assert_eq!(run(&mut store, 1, discard).result, Ok(()));
+        let flushed = run(&mut store, 2, Op::Flush).result;
+        if mutants == 0 {
+            assert_eq!(flushed, Err(BlkError::Failed));
+        } else {
+            assert_eq!(flushed, Ok(()), "the defect is not noticed");
+        }
+    }
+}
+
+/// A failed write fails the volume as a failed sync does; a store
+/// that lets it pass is noticed.
 #[test]
 fn a_failed_write_fails_the_volume() {
+    let disk = created(5, 0);
+    let mut defective = start(&disk, Mutants::WRITE_ERROR_PASSES, false).unwrap();
+    disk.fail_write(0, false);
+    assert_ne!(write(&mut defective, 1, 0x11), Err(BlkError::Failed));
+    assert!(!defective.is_failed(), "the defect is not noticed");
+    drop(defective);
     let disk = created(5, 0);
     let mut store = start(&disk, 0, false).unwrap();
     disk.fail_write(0, false);
@@ -304,9 +366,10 @@ fn a_failed_write_fails_the_volume() {
     ));
 }
 
-/// The volume can go back to the log store: what the in-place store
-/// wrote is in the home image, and the log store
-/// reads it and goes on.
+/// The log store reads what the in-place store wrote: it is in the home
+/// image, and the empty log replays nothing over it. (Reading only: a
+/// volume served in place must not be given back to the log store to
+/// serve; see the ignored test below.)
 #[test]
 fn a_volume_goes_back_to_the_log_store() {
     let disk = created(6, 0);
@@ -328,6 +391,116 @@ fn a_volume_goes_back_to_the_log_store() {
     store.wait(&mut done, Duration::ZERO);
     assert_eq!(done[0].result, Ok(()));
     assert_eq!(done[0].buf.as_deref(), Some(&[0x77; BLOCK_USIZE][..]));
+}
+
+/// Read one block through the log store.
+fn log_read(store: &mut Store<SimDisk>, block: u64) -> Vec<u8> {
+    store
+        .submit(Request {
+            id: RequestId(500 + block),
+            op: Op::Read {
+                offset: block * BLOCK,
+                buf: Buf::filled(1, 0xEE),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    while done.is_empty() {
+        store.wait(&mut done, Duration::ZERO);
+    }
+    assert_eq!(done[0].result, Ok(()));
+    done[0].buf.as_deref().unwrap().to_vec()
+}
+
+/// Back on the log store, a completed flush covers what the in-place
+/// store acknowledged before its process was lost (rule R7): the log
+/// store's open syncs the home image. The in-place store writes block
+/// 7 and is lost; the volume is started with the log store (or, as the
+/// control, with the in-place store again), which writes block 9 and
+/// completes a flush; a power cut that keeps nothing unsynced leaves
+/// both.
+///
+/// It fails: the log store's open does not sync the home image, and
+/// its flush syncs the log alone, so block 7 is lost. Owed (the review
+/// of M1.3r, finding A); the lead ruled that the log store's open is
+/// not changed in M1.3r, and the module documentation and `skyzfsd
+/// help` say that a volume served in place must not be given back to
+/// the log store. Run it with `--ignored` to see the defect.
+#[test]
+#[ignore = "owed: back on the log store, a flush does not cover an in-place write (M1.3r, finding A)"]
+fn a_flush_on_the_log_store_covers_what_the_in_place_store_wrote() {
+    for back_in_place in [true, false] {
+        let disk = created(6, 0);
+        let mut store = start(&disk, 0, false).unwrap();
+        write(&mut store, 7, 0x77).unwrap();
+        drop(store);
+        disk.kill();
+        if back_in_place {
+            let mut store = start(&disk, 0, false).unwrap();
+            write(&mut store, 9, 0x99).unwrap();
+            assert_eq!(run(&mut store, 2, Op::Flush).result, Ok(()));
+        } else {
+            let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+            assert_eq!(log_read(&mut store, 7), vec![0x77; BLOCK_USIZE]);
+            for (id, op) in [
+                (
+                    1,
+                    Op::Write {
+                        offset: 9 * BLOCK,
+                        data: Buf::filled(1, 0x99),
+                    },
+                ),
+                (2, Op::Flush),
+            ] {
+                store
+                    .submit(Request {
+                        id: RequestId(id),
+                        op,
+                    })
+                    .unwrap();
+            }
+            let mut done = Vec::new();
+            while done.len() < 2 {
+                store.wait(&mut done, Duration::ZERO);
+            }
+            assert!(done.iter().all(|c| c.result.is_ok()), "{done:?}");
+        }
+        disk.power_cut(crate::sim::LoseAll);
+        let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        assert_eq!(
+            (log_read(&mut store, 7)[0], log_read(&mut store, 9)[0]),
+            (0x77, 0x99),
+            "back in place: {back_in_place}"
+        );
+    }
+}
+
+/// A wait with a zero timeout only looks: a sync under way that has not
+/// ended is left so, and a wait with a timeout waits for its end.
+#[test]
+fn a_wait_with_no_time_does_not_wait_for_a_sync() {
+    // The disk ends a sync after up to three looks, as its seed says:
+    // some seeds leave it under way at the first look.
+    let mut left_under_way = 0;
+    for seed in 1..=20 {
+        let disk = created(seed, 3);
+        let mut store = start(&disk, 0, false).unwrap();
+        write(&mut store, 1, 0x11).unwrap();
+        store
+            .submit(Request {
+                id: RequestId(2),
+                op: Op::Flush,
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        if store.wait(&mut done, Duration::ZERO) == 0 {
+            assert!(store.syncing());
+            left_under_way += 1;
+            assert_eq!(store.wait(&mut done, WAIT), 1);
+        }
+        assert_eq!(done[0].result, Ok(()));
+    }
+    assert!(left_under_way > 0, "every sync ended at the first look");
 }
 
 /// The start refuses a log store with requests in flight.
@@ -531,7 +704,7 @@ fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool,
                 store.poll(&mut done);
             }
             Step::Wait => {
-                store.wait(&mut done, Duration::ZERO);
+                store.wait(&mut done, WAIT);
             }
             // After a failure, the program ends with the process.
             Step::Kill if failing => break,

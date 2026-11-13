@@ -75,6 +75,10 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T13 | skyzfs/skyzfs#35 | An orderly stop is given the kill's wait before its device is read | The local store: what the kernel has shown |
 | M1.T15 | skyzfs/skyzfs#40 | The daemon's system calls and CPU profile in the benchmark, and the work disk's mount and write cache in each job's disk-sync line | The criterion: where the daemon's system time goes |
 | M1.T14 | skyzfs/skyzfs#39 | The power-cut replay rig through `skyzfsd`, the cut below the daemon | The local store: the power-cut replay below the daemon |
+| M1.T14a | skyzfs/skyzfs#42 | The replay rig: limits on the record phase, a control for a daemon that stops answering | The local store: the power-cut replay below the daemon |
+| M1.3r | skyzfs/skyzfs#43 | A store without a write log, `--store in-place` | The criterion: without the write log |
+| M1.T18 | none yet (the rig's input waits on a branch) | The in-place store in the benchmark and in the power-cut replay | The criterion: without the write log |
+| M1.T17 | none (measurement only) | The criterion's round on the current daemon | The criterion: the round on the current daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
 ### The contract (design §4.1)
@@ -333,7 +337,7 @@ The replay rig of M1.T2 records the writes of the pool's own device, which fits 
 - **The deep checks**, a scrub in a writable import and the every-copy check, run at the first and the last checked prefix of each transaction group. `zdb -e -bcc` runs on the image at the end of the log.
 - **Two budgets.** A pull request checks the marks and every flush boundary and no prefix between two flushes. The full budget, by dispatch, checks every record prefix. The daemon's log is written back before the flush, so a group's first prefix can lie between two flushes, and design §9 says every prefix: the summary says in one line how many of the prefixes were checked, and says "criterion shown" only for a full run with all of them, the ends deep-checked and exit 0. The lead ruled so when the review asked what the criterion means.
 - **Controls.** `withheld` holds the lower disk's writes between two fsync marks back until after the second mark, and must be caught by the fsynced files. The reference rig's other controls pick pool blocks in a record of the pool's own device and cannot be built on a record of the volume's file system. A control with the daemon's hook `--recover-short` was planned and withdrawn: the hook moves only the end that is compared with the acknowledged position, and after a reboot there is none, so it plants nothing. A hook that ends the recovery itself early would be a control; the daemon has none yet.
-- **A read that gets no answer.** Each read of the device has a limit. At the limit the rig kills the daemon and deletes the device before it waits for the reader, because a reader with direct I/O cannot be killed while its read is queued and a device with user recovery queues reads while it has no server. This is shown with stand-in processes, not on a device whose daemon stopped answering. The record phase has no such limit yet.
+- **A daemon that stops answering.** Each read of the device has a limit. At the limit the rig kills the daemon and deletes the device before it waits for the reader, because a reader with direct I/O cannot be killed while its read is queued and a device with user recovery queues reads while it has no server. Since M1.T14a a control shows it on a real device: `stuck` stops the daemon with SIGSTOP once it is ready, and the read must end at its limit of 20 s; it was caught on both images. The record phase's pool commands have limits as well, and a fill that does not fit the pool is refused before the run.
 - **Exit codes.** 0 passed; 1 a verdict against the daemon; 2 the rig's own error.
 
 What the runs showed[^t14runs]:
@@ -370,7 +374,7 @@ What the runs showed[^t14runs]:
 - One run per image, one workload, the whole-pool layout.
 - The cut is a prefix of the lower disk's recorded writes. A disk that loses or reorders writes it never flushed in another order than it received them is not modelled; the reference rig's `reorder` control has no counterpart here.
 - The lower disk is a loop file behind dm-log-writes on a runner, not a flash device.
-- One start in the 24.04 run took 1842 ms to recover, against 300 ms at most elsewhere; it passed, and nothing was looked into.
+- One start in the 24.04 run took 1842 ms to recover a log that its neighbours recovered in about 200 ms (73 MiB, 956 operations), and 71 of that machine's 669 starts went over 300 ms against none of 671 on 26.04. The daemon's own breakdown puts the time in recovery, which reads the log from xfs on a loop file. So it is the machine at that moment, not the log's size; one run cannot say more.
 
 ### The throughput criterion (design §9)
 
@@ -536,6 +540,92 @@ M1.3p took a third off the readers' CPU and their wait for a CPU, and the throug
 
 **The runners' work disk is mounted without barriers.** On the machines whose work disk is an nvme device the disk declares a volatile write cache (on those with `sda` it does not; see M1.T16 below), and its ext4 is mounted `nobarrier` (with `data=writeback`, `journal_async_commit`, `commit=30`). So no `fsync` on these runners sends the device a flush, the daemon's or the model's or postgres's, which is why the work disk's flush count is 0.00 per transaction in every row. A ratio still compares like with like on one disk. But **no sync cost measured on these runners includes a device flush**, and "slow-sync" and "fast-sync" name how fast the page cache is written back, not how fast the device makes it durable. What a flush costs on real flash is still to be measured (design §10).
 
+#### The round on the current daemon (M1.T17)
+
+Four jobs on `zfs-topology` at 9b6439c on 2026-11-12, the daemon with M1.3p and M1.3q, four readers; each job on one machine, the four machines different, every row once[^t17runs]. tpcb, 8 clients, 120 s, no origin delay, `TB_MEM_LIMIT` 1G, no barriers. The sequence in each job: model, daemon, daemon at 1 GiB, model, daemon, daemon at 1 GiB, model.
+
+| Job | Disk-sync, work disk, write cache | tps in sequence | Ratios (bracket's width) |
+|---|---|---|---|
+| A, 24.04 | 3120 MiB/s, `sda1`, write through | 3393, 3312, 3224, 3412, 3309, 3195, 3360 | 0.973 and 0.948 (0.6%); 0.977 and 0.944 (1.5%) |
+| B, 24.04 | 146 MiB/s, `nvme0n1p1`, write back | 3469, 3650, 3332, 3877, 3686, 3277, 4227 | 0.994 and 0.907 (11.1%: no verdict); 0.910 and 0.809 (8.6%) |
+| C, 26.04 | 3167 MiB/s, `sda1`, write through | 3579, 3480, 3329, 3622, 3499, 3409, 3640 | 0.966 and 0.925 (1.2%); 0.964 and 0.939 (0.5%) |
+| D, 26.04 | 151 MiB/s, `nvme0n1p1`, write back | 4015, 3550, 3754, 3998, 3822, 3298, 4466 | 0.886 and 0.937 (0.4%); 0.903 and 0.779 (11.1%: no verdict) |
+
+In each pair of ratios the first is the unbounded row and the second the row at 1 GiB. The summary does not name a machine's kind; the disk-sync rates fall into two groups with nothing between, about 3100 MiB/s on `sda` and about 150 MiB/s on nvme, and each image got one machine of each.
+
+| Machine kind, row | Counted ratios | Median | Rests on | By the rule |
+|---|---|---|---|---|
+| Fast-sync, unbounded | 0.973, 0.977, 0.966, 0.964 | **0.970** | 4 rows, 2 jobs | met |
+| Fast-sync, 1 GiB | 0.948, 0.944, 0.925, 0.939 | **0.942** | 4 rows, 2 jobs | met |
+| Slow-sync, unbounded | 0.910, 0.886 | 0.898 | 2 rows, 2 jobs | not decided: under four rows |
+| Slow-sync, 1 GiB | 0.809, 0.937 | 0.873 | 2 rows, 2 jobs | not decided: under four rows |
+
+- **On fast-sync machines the criterion is met on the merged daemon**, by the rule, for both rows, with brackets of 0.5 to 1.5%.
+- **On slow-sync machines it is not shown.** Half of the rows got no verdict because the model's own rows were 11% apart: the model climbed through both jobs, 3469 to 4227 and 4015 to 4466. The counted rows sit at the line, as M1.T15's row of this daemon did (0.889).
+- What separates the two kinds is the work disk: on `sda` (write through, a sync of 3100 MiB/s, which only a host that buffers the writes can give) the daemon's second write costs little; on nvme (write back, 150 MiB/s) it does. Neither is a flash device whose flush is real (M1.T16).
+- Nothing was rerun, and no job failed.
+
+#### Without the write log: the in-place store (M1.3r, M1.T18)
+
+The owner asked on 2026-11-12 whether the write log is needed at all, since the product claims the durability of its snapshots and a best-effort recovery point when the daemon dies. The answer has two parts.
+
+**What requires the log is the contract's own rule R10**, that after a power cut the volume is a prefix of the daemon's order with every operation whole. Only a journal gives that. ZFS asks less of a disk: what a completed flush covered is there, and anything written since may be old, new or torn. `skyzfsd serve --store in-place` (M1.3r, skyzfs/skyzfs#43, built as an experiment and merged on 2026-11-13 with the log store still the default) is a store that promises exactly that, named there **the volatile-cache disk**:
+
+- a write goes to its offset in the home image through the page cache and is acknowledged; a flush is an `fdatasync` of that file on the helper thread, and covers what was acknowledged before it was received; a discard does nothing;
+- requests run on the pump's thread, with no worker, no readers and no hand-off; there is no log, no index, no checkpoint and nothing to recover at a start;
+- a failed write or sync fails the volume for good, and the sync is never tried again;
+- what dies with the process is nothing that was acknowledged, because the page cache holds it.
+
+What it does not meet, as its description states first: R10; R11's reopening after a power cut; and after a failed write or sync the blocks no flush covered are left as a power cut leaves them, where the log store leaves them whole. The contract suite reports the six power-cut cases and two failure cases as not met by this store, and a separate test of 200 random programs with simulated power cuts, and as many with failing writes and syncs, checks the weaker promise sector by sector. Owed if it were to become the default: the daemon's failure path on a start that meets a failed disk, the failure marker written on the queue's thread, a mode of the daemon rig that drives it, and no way back to the log store (a flush of the log store does not cover what the in-place store had acknowledged; found by Codex and the review).
+
+**Measured** (M1.T18): four benchmark jobs as M1.T17's, every daemon row built at the experiment's head, the sequence model, log store, in place, model, in place, in place at 1 GiB, model; every row once[^t18runs].
+
+| Job | Disk-sync, work disk | tps in sequence | Log store | In place | In place, second row | In place at 1 GiB |
+|---|---|---|---|---|---|---|
+| A, 24.04 | 3642 MiB/s, `sda1` | 3385, 3281, 3417, 3445, 3395, 3301, 3400 | 0.961 | 1.000 | 0.992 | 0.965 |
+| B, 24.04 | 3608 MiB/s, `sda1` | 3231, 2928, 3242, 3375, 3231, 3275, 3432 | 0.887 | 0.982 | 0.949 | 0.962 |
+| C, 26.04 | 3596 MiB/s, `sda1` | 3705, 3648, 3765, 3706, 3773, 3636, 3756 | 0.984 | 1.016 | 1.011 | 0.975 |
+| D, 26.04 | 193 MiB/s, `nvme0n1p1` | 5712, 5233, 5866, 6189, 5726, 5226, 6083 | 0.879 | 0.986 | 0.933 | 0.852 |
+
+Every bracket was within the rule's 10% (0.0 to 8.0%).
+
+| Machine kind | Store, row | Ratios | Median | Rests on |
+|---|---|---|---|---|
+| Fast-sync | log | 0.961, 0.887, 0.984 | 0.961 | 3 rows, 3 jobs |
+| Fast-sync | in place | 1.000, 0.992, 0.982, 0.949, 1.016, 1.011 | **0.996** | 6 rows, 3 jobs |
+| Fast-sync | in place at 1 GiB | 0.965, 0.962, 0.975 | **0.965** | 3 rows, 3 jobs |
+| Slow-sync | log | 0.879 | | 1 row |
+| Slow-sync | in place | 0.986, 0.933 | 0.960 | 2 rows, 1 job |
+| Slow-sync | in place at 1 GiB | 0.852 | | 1 row |
+
+- **In place ran at the model's speed**, and beside the log store in the same bracket it was faster in all four jobs: by 4.1%, 10.7%, 3.2% and, on the slow-sync machine, 12.1%. The log row was always the earlier of the two, so their order was not varied.
+- **The daemon's CPU fell by more than half:** 9 to 10 s on the pump in a window of 120 s and nothing elsewhere, against 22 to 24 s over the log store's pump, worker and readers. Postgres got 4 to 14 s more CPU in the in-place row than in the log row of the same job.
+- **Bounded to 1 GiB on the slow-sync machine it was at 0.852**, one row. The pump used 12 s of CPU there against 9 s unbounded (12 to 15 s over the four jobs' bounded rows). The likely cause is that a read that misses the page cache is served on the pump's thread and holds every other request up while it waits; that is not shown, since a wait uses no CPU and nothing measured the pump's waits. A pool of readers for misses is the remedy if it is the cause, and is not built.
+- Three of the four machines were fast-sync, so the slow-sync figures rest on one job.
+
+**The power-cut replay with the in-place store**, full budget, one run per image[^t18replay]:
+
+| | Ubuntu 24.04 | Ubuntu 26.04 |
+|---|---|---|
+| Record prefixes checked | 594 of 594 | 596 of 596 |
+| fsync marks, sync marks, flush boundaries | 44, 17, 120 | 46, 17, 122 |
+| Transaction groups, prefixes deep-checked | 27, 54 | 27, 54 |
+| `withheld` | caught | caught |
+| `zdb -e -bcc` at the end | 0 | 0 |
+| The daemon's starts | 594, of 24 to 58 ms | 596, of 40 to 57 ms |
+| Written to the lower disk by the same workload | 181 MiB (430 MiB with the log store) | 181 MiB |
+| Failed prefixes | 0 | 0 |
+
+For this store the rig's prefixes follow the kernel's writeback order and not the daemon's, so the run shows the pool surviving states that are not prefixes of the daemon's order. It does not show a disk that loses or reorders unflushed writes in another order than it received them, nor a torn sector; that gap is wider for this store than for the log store, whose own order is a prefix by construction. One run per image.
+
+**Decided on 2026-11-13 (design, decision D5): the in-place store is adopted and the log store is retired.** The design's §4.1, §5.1, §5.2, §5.3 and §5.5 were rewritten for it the same day. The steps: the experiment merges with the log store still the default; M1.3s moves the contract's model in `skyzfs-blk` to the volatile-cache disk and closes what the experiment owed in the daemon; M1.T20 makes the rigs drive the in-place store and name the store they drive; M1.3t makes it the only store and removes the log store, its format, its options and its hooks. Volumes that hold a log are not migrated: there are none outside the rigs. Everything in these notes about the log store, from M1.2a to M1.3p, describes the store that is being removed; it stays as the record of what was built and why it was dropped.
+
+**What the log store's log was for, and what replaces it** (now in the design, §5.2; to be built in M2):
+
+- *A cheap flush.* Not borne out: the in-place flush was as fast or faster on these machines, with less than half the bytes written. Not measured on real flash.
+- *The cut as a position in the log, and the cut's blocks kept until uploaded (design §5.2, §5.3).* A cut needs the set of blocks changed since the cut before, frozen at the first flush after the uberblock write, and their content kept against later overwrites until uploaded. The log gave the first for nothing. Without it the daemon needs a map of changed blocks that survives the daemon's death, and a copy made before a block of a pending cut is overwritten. Neither is designed.
+- *The ordered stream of M9.* Needs an ordered record of the log device only, which is small.
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -569,9 +659,9 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 
 #### Open at this writing (2026-11-12)
 
-- M1.3p has one row pair on a runner (above); the rows the criterion's medians rest on are all of daemons before it.
+- Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42, open): a limit on the record phase and a control that stops the daemon once it is ready.
+- The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
 
@@ -636,6 +726,8 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The benchmark's system-call trace and profile (M1.T15, skyzfs/skyzfs#40); three looks by the review session and two findings by Codex | Blocking at the first look: `summarize` failed with a syntax error at the head, so no summary rendered; fixed, and a unit test now compiles the script's embedded Python and runs it. The review recounted the profile's raw samples and got the same table; with the checks around a copy counted as copy, copies are 6% of the pump's kernel samples and not 4%, and the conclusion stands on its one row. Codex: stale trace files of an earlier row, and a trace longer than the window; both fixed. |
 | 2026-11-12 | The power-cut replay through `skyzfsd` (M1.T14, skyzfs/skyzfs#39); six looks by the review session and four findings by Codex | Blocking at the first look, both in the split of exit codes: a wrong exit 0, and a verdict that had been reached reported as the rig's error; fixed. A question of what the criterion means, ruled by the lead: every record prefix, so the full budget checks them all and only such a run shows the criterion. Found at the fourth look and fixed, not blocking: a read of the device that gets no answer would have hung the rig to the job's limit with no prefix named. Left for a follow-up: the record phase has no time limit, a fill that does not fit is blamed on the daemon, two test gaps. |
 | 2026-11-12 | The benchmark's barriers input (M1.T16, skyzfs/skyzfs#41); four looks by the review session, nothing from Codex | Blocking: on a disk that declares `write through` a barriers-on job passed while no flush reached the disk and nothing said why; the step now reads the disk's write cache and stops there. The review's count over the day's runs corrected the notes: the runners split by work disk, not by image. Not run on a runner at the merged head. |
+| 2026-11-12 | The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42); three looks by the review session and one finding by Codex | Can merge; nothing blocking. Fixed on the way: a command that could not start was blamed on the daemon, and the `stuck` row did not show that the limit ended the read. The control closes what the review of M1.T14 could only read in the kernel's source. Kept: two pool commands without a limit. |
+| 2026-11-13 | The in-place store (M1.3r, skyzfs/skyzfs#43); three looks by the review session and two findings by Codex | Can merge as a step towards removing the log store. The review ran the suite with faults that tear: two failure cases that the harness's clean halt let pass fail on this store, so they are reported as not met, with a test that pins exactly those two. Found by Codex and the review, owed and not fixed: after a switch back to the log store a flush does not cover what the in-place store had acknowledged; it goes away with the log store, and blocks again if the removal is dropped or a release comes first. Owed for the removal: the store's own sync at a start is then the only one and a test must fail without it; a job on a pull request must drive this store; the failure marker is written on the queue's thread. |
 
 ## References
 
@@ -680,3 +772,6 @@ Every independent read of the design and every review of a work package, with wh
 [^t16runs]: `topology-bench.yml` by dispatch from the branch of M1.T16 with barriers on: run 43292513180 (Ubuntu 24.04) and run 43292520972 (Ubuntu 26.04); daemon b754692, which is `zfs-topology` at 7edc373.
 [^t14runs]: `skyzfs-replay-rig.yml`: run 43314111709 on the pull request's last head (e9b55ef), pull-request budget, both "through skyzfsd" jobs; and run 43282556301 by dispatch before the review, full budget as it then was. The daemon rig on the same head, run 43314111778, was as its table on the daemon and on the stand-in.
 [^t14full]: `skyzfs-replay-rig.yml`, run 43323450604, dispatched with `server=daemon` and `daemon_budget=full`; both "through skyzfsd" jobs ended with exit 0 and the summary line "criterion: shown by this run".
+[^t17runs]: `topology-bench.yml` by dispatch on `zfs-topology` at 9b6439c: runs 43331668450 (A) and 43331678908 (B) on Ubuntu 24.04, 43331689019 (C) and 43331698987 (D) on Ubuntu 26.04.
+[^t18runs]: `topology-bench.yml` by dispatch, every daemon row built at 3dd9288 of the experiment's branch: runs 43337935593 (A) and 43337946627 (B) on Ubuntu 24.04, 43337957099 (C) and 43337967297 (D) on Ubuntu 26.04.
+[^t18replay]: `skyzfs-replay-rig.yml`, run 43338376122, from the branch that adds the rig's `serve_args` input, with `server=daemon`, `daemon_budget=full` and `serve_args="--store in-place"`; both jobs ended with exit 0.

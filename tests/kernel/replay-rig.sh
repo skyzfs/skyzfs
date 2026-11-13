@@ -72,9 +72,12 @@
 # split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME,
 # RIG_EVERY_PREFIX=1 (every record prefix, no time limit). A
 # recording in which the daemon took no checkpoint step is the rig's
-# error (exit 2): it would say nothing about a cut inside a step. With
+# error (exit 2): it would say nothing about a cut inside a step, and
+# so is a fill that does not fit in the pool. With
 # RIG_SERVE_ARGS='--store in-place' there is no log and so no step, and
-# none is asked for.
+# none is asked for. Every command on the pool while recording runs
+# under a time limit (pool_step); a daemon that stops answering is then
+# a verdict, not a job that hangs.
 set -euo pipefail
 
 # shellcheck source=tests/lib/gnu-dd.sh
@@ -135,6 +138,8 @@ STOP=$WORK/stop
 SCRATCH=/dev/shm/skz-replay.$$
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+# shellcheck source=tests/lib/lim.sh
+. "$HERE/../lib/lim.sh"
 SLOG_LOOP=""; LOG_LOOP=""; UBLK_UP=""; WRITER=""
 LOWER_LOOP=""; LOWER_MOUNTED=""; SERVE_PID=""; PHASE=setup; VERDICT=""
 # Through the daemon, an error before the check is the rig's own (exit
@@ -180,6 +185,22 @@ serve_up() {
     done
     daemon_verdict "skyzfsd serve was not ready after 120 s"
 }
+# pool_step SECONDS WHAT COMMAND...: a command on the pool. Through the
+# daemon it runs under a time limit that holds when the command cannot
+# be killed (lim), since a daemon that stops answering leaves a command
+# on its device asleep in the kernel; a failure or the limit is then a
+# verdict. On the reference server it runs as it always did.
+pool_step() {
+    local secs=$1 what=$2 rc=0
+    shift 2
+    if [ -z "$SKYZFSD" ]; then "$@"; return; fi
+    lim "$secs" "$@" || rc=$?
+    [ "$rc" = 0 ] && return 0
+    # The command could not start (127), or lim could not (125): the rig's.
+    [ "$rc" != 127 ] && [ "$rc" != 125 ] || rig_error "$what could not be started (status $rc)"
+    [ "$rc" != 124 ] || daemon_verdict "$what had not ended after $secs s (left behind), and the pool's device is the daemon's"
+    daemon_verdict "$what failed with status $rc, and the pool's device is the daemon's"
+}
 # SIGTERM, then the device is deleted: an orderly stop and a detach.
 serve_down() {
     local i rc=0
@@ -224,12 +245,14 @@ cleanup() {
         if [ -n "$WRITER_KILLED" ]; then log "the writer had not ended 300 s after it was told to; killed"
         elif [ "$wrc" -ne 0 ]; then log "the writer ended with status $wrc"; fi
     fi
-    timeout 120 zpool export -f "$POOL" 2>/dev/null
-    if [ -n "$SERVE_PID" ]; then kill -9 "$SERVE_PID" 2>/dev/null; timeout 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >/dev/null 2>&1; fi
-    [ -z "$LOWER_MOUNTED" ] || timeout 120 umount "$LOWER_MNT" 2>/dev/null
+    # lim and not timeout(1): after a daemon that stopped answering, these
+    # can sleep in the kernel for ever, and timeout waits for its child.
+    lim 120 zpool export -f "$POOL" 2>/dev/null
+    if [ -n "$SERVE_PID" ]; then kill -9 "$SERVE_PID" 2>/dev/null; lim 60 "$SKYZFSD" detach --dir "$VOL" --run-dir "$REC_RUN" >/dev/null 2>&1; fi
+    [ -z "$LOWER_MOUNTED" ] || lim 120 umount "$LOWER_MNT" 2>/dev/null
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_LOOP" ] || losetup -d "$LOWER_LOOP" 2>/dev/null
-    [ -n "$UBLK_UP" ] && timeout 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1
+    [ -n "$UBLK_UP" ] && lim 60 ublk del -n "$UBLK_ID" >/dev/null 2>&1
     for l in "$SLOG_LOOP" "$LOG_LOOP"; do [ -n "$l" ] && losetup -d "$l" 2>/dev/null; done
     [ -d "$SCRATCH" ] && find "$SCRATCH" -maxdepth 1 -type f -delete && rmdir "$SCRATCH"
     if [ "$rc" -ne 0 ] && [ -n "$SKYZFSD" ] && [ "$PHASE" != check ] && [ "$rc" != 2 ] && [ "$rc" != 64 ] && [ -z "$VERDICT" ]; then
@@ -297,10 +320,10 @@ fi
 # Created on the bare device, before any recording: the pool's labels
 # are then where they are in production, and the record starts from an
 # exported pool, which is the base image every prefix is built on.
-zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MOUNTPOINT" -O atime=off \
+pool_step 300 "zpool create" zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MOUNTPOINT" -O atime=off \
     "$POOL" "$DEVICE" "${LOGVDEV[@]}"
 [ ! -b "${DEVICE}p1" ] || { echo "zpool create partitioned $DEVICE: the labels are not at byte 0" >&2; exit 1; }
-zpool export "$POOL"
+pool_step 300 "the export after zpool create" zpool export "$POOL"
 # The log device as it is now, for tools that cannot open the pool
 # without one (zdb): it matches the base image and nothing later.
 [ -z "$SLOG_LOOP" ] || cp --sparse=always "$WORK/slog.img" "$WORK/slog-base.img"
@@ -329,7 +352,7 @@ if [ -n "$SKYZFSD" ]; then
     mount "/dev/mapper/$LW" "$LOWER_MNT"; LOWER_MOUNTED=1
     serve_up
     log "recording below the daemon: $DEVICE"
-    zpool import -d "$DEVICE" -o cachefile=none "$POOL"
+    pool_step 300 "the import for recording" zpool import -d "$DEVICE" -o cachefile=none "$POOL"
 else
     dmsetup create "$LW" --table "0 $(blockdev --getsz "$DEVICE") log-writes $DEVICE $LOG_LOOP"
     zpool import -d "/dev/mapper/$LW" "${LOGDIR[@]}" -o cachefile=none "$POOL"
@@ -367,8 +390,21 @@ writer() {
 if [ -n "$SKYZFSD" ] && [ "$FILL_MB" -gt 0 ]; then
     # Not in the manifest: it is there to fill the daemon's log, so that
     # checkpoint steps run while the files are written.
-    "$DD" if=/dev/urandom of="$MOUNTPOINT/fill" bs=1M count="$FILL_MB" status=none \
-        || daemon_verdict "the fill file could not be written to the pool, and the pool's device is the daemon's"
+    # A fill that cannot fit is the rig's setting, not the daemon's failure:
+    # refused before it is written. 64 MiB are kept for the files.
+    avail=$(zfs get -Hp -o value available "$POOL")
+    [[ $avail =~ ^[0-9]+$ ]] || rig_error "zfs get available gave '$avail'"
+    [ $(((FILL_MB + 64) << 20)) -le "$avail" ] \
+        || rig_error "RIG_FILL_MB=$FILL_MB does not fit in the pool on RIG_VOLUME_MB=$VOLUME_MB: $((avail >> 20)) MiB available, and 64 MiB are kept for the files"
+    frc=0
+    lim 600 "$DD" if=/dev/urandom of="$MOUNTPOINT/fill" bs=1M count="$FILL_MB" status=none 2> "$WORK/fill.err" || frc=$?
+    if [ "$frc" != 0 ]; then
+        cat "$WORK/fill.err" >&2
+        # Out of space all the same: the sizes, so the rig's.
+        ! grep -q 'No space left' "$WORK/fill.err" || rig_error "the fill file ran out of space in the pool: $(head -c 200 "$WORK/fill.err")"
+        [ "$frc" != 124 ] || daemon_verdict "the fill file had not been written after 600 s (left behind), and the pool's device is the daemon's"
+        daemon_verdict "the fill file could not be written to the pool (status $frc), and the pool's device is the daemon's"
+    fi
 fi
 writer &
 WRITER=$!
@@ -376,7 +412,7 @@ log "workload: $SYNCS syncs, files of $FILE_KB KiB"
 for k in $(seq 1 "$SYNCS"); do
     sleep "$SYNC_SLEEP"
     c=$(wc -l < "$MANIFEST")
-    zpool sync "$POOL"
+    pool_step 300 "zpool sync $k" zpool sync "$POOL"
     # One word: the target takes exactly one argument after "mark".
     dmsetup message "$LW" 0 mark "sync-$k-$c"
 done
@@ -399,9 +435,9 @@ if [ "$wrc" -ne 0 ]; then
     exit "$wrc"
 fi
 c=$(wc -l < "$MANIFEST")
-zpool sync "$POOL"
+pool_step 300 "the last zpool sync" zpool sync "$POOL"
 dmsetup message "$LW" 0 mark "sync-$((SYNCS + 1))-$c"
-zpool export "$POOL"
+pool_step 300 "the export after recording" zpool export "$POOL"
 log "recorded: $c files, log-writes status: $(dmsetup status "$LW")"
 STEPS=""
 if [ -n "$SKYZFSD" ]; then
