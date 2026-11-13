@@ -1,0 +1,4 @@
+new kernel: 400 600 800 1000 1900 1100 2000 700   (reads rsect writes wsect flushes write_ms flush_ms read_ms)
+old kernel: 400 600 800 1000 0 1100 0 700
+per read ms 1.5 (600 ms over 400 reads) ; per write ms 3.0 (6000 ms over 2000 writes)
+an older row has 7 values: read_ms absent, shown as n/a
