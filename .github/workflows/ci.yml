@@ -162,11 +162,14 @@ jobs:
   # workspace's build leaves out. One job, so the build is shared; its
   # own cache, since an arm64 build cannot use an amd64 one. The
   # runner's pages are 4 KiB: kernels with 16 or 64 KiB pages are not
-  # covered here.
+  # covered here. ubuntu-26.04-arm and not 24.04-arm: the package
+  # fallback works there (tests/lib/apt-fallback.sh), and 24.04-arm has
+  # none, so an outage of ubuntu.com's names would fail every pull
+  # request's arm64 job.
   unit-arm64:
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-26.04-arm
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,

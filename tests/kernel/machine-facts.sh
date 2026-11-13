@@ -11,7 +11,7 @@ row() { printf '| %s | %s |\n' "$1" "$2"; }
 mod() { # name: where the module is, or "not in this kernel's tree"
     local f
     if f=$(modinfo -n "$1" 2>/dev/null); then echo "${f#/lib/modules/*/}"
-    elif grep -qw "^$1" /proc/modules 2>/dev/null; then echo "loaded, built in or from elsewhere"
+    elif grep -qw "^${1//-/_}" /proc/modules 2>/dev/null; then echo "loaded, built in or from elsewhere"
     else echo "not in this kernel's tree"; fi
 }
 pkg() { # name: the candidate version apt offers, or "not offered"
@@ -26,11 +26,18 @@ kver=$(uname -r)
 # table gives can be an alias such as /dev/root.
 work=$(findmnt -n -o SOURCE -T /mnt 2>/dev/null | head -n 1)
 majmin=$(findmnt -n -o MAJ:MIN -T /mnt 2>/dev/null | head -n 1 | tr -d " ")
-dev=$(basename "$(readlink -f "/sys/dev/block/$majmin" 2>/dev/null)")
+# A file system with no block device of its own (major 0, as tmpfs or
+# overlay) has no disk to name.
+if [ -n "$majmin" ] && [ -e "/sys/dev/block/$majmin" ]; then
+    dev=$(basename "$(readlink -f "/sys/dev/block/$majmin")")
+else
+    dev="no block device"
+fi
 parent=$dev
 [ -e "/sys/class/block/$dev/partition" ] && parent=$(basename "$(readlink -f "/sys/class/block/$dev/..")")
 
-model=$(xargs < "/sys/block/$parent/device/model" 2>/dev/null)
+model=""
+[ ! -r "/sys/block/$parent/device/model" ] || model=$(xargs < "/sys/block/$parent/device/model")
 
 echo "### The machine"
 echo
@@ -48,7 +55,9 @@ row "dm-log-writes" "$(mod dm-log-writes)"
 row "dm-snapshot" "$(mod dm-snapshot)"
 row "dm-delay" "$(mod dm-delay)"
 row "loop" "$(mod loop)"
-row "io_uring" "$(grep -qw io_uring_setup /proc/kallsyms 2>/dev/null && echo "in the kernel" || echo "not found in kallsyms")"
+# The system call's own entry (__x64_sys_ or __arm64_sys_io_uring_setup)
+# is there whether or not the compiler kept the static function apart.
+row "io_uring" "$(grep -q 'sys_io_uring_setup$' /proc/kallsyms 2>/dev/null && echo "in the kernel" || echo "not found in kallsyms")"
 for p in zfsutils-linux zfs-dkms "linux-modules-extra-$kver" libdevmapper-dev libudev-dev libclang-dev xfsprogs postgresql fio perf-tools-unstable "linux-tools-$kver" strace; do
     row "package $p" "$(pkg "$p")"
 done
