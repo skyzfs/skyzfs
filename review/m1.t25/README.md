@@ -2,6 +2,7 @@
 
 Review at 4e611b5 (base `zfs-topology` 0726a81), one file:
 `tests/kernel/daemon-rig.sh`, 38 lines added and 4 removed.
+Posted: https://github.com/skyzfs/skyzfs/pull/53#issuecomment-6848856263
 Verdict: nothing blocks; four small findings.
 
 ## What the change is
