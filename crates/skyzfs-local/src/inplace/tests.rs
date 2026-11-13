@@ -225,9 +225,6 @@ fn the_suite_notices_the_defects() {
             Mutants::ACK_BEFORE_WRITE,
             &["kill_keeps_acknowledged_operations"],
         ),
-        // A write acknowledged before a thread has written it: only a
-        // kill that drops what no thread has begun, as the harness's
-        // does, shows it.
         // A start that leaves the kernel's cache as it was: the reopen
         // of a failed volume serves what a failed sync left only there.
         // Only a writer through the cache leaves pages there: the store
