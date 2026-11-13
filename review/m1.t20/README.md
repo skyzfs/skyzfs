@@ -64,3 +64,20 @@ Posted as https://github.com/skyzfs/skyzfs/pull/45#issuecomment-6842914384.
 Findings 1 and 2 kept, not blocking. Not read: the 26.04 job's check a and b
 lines, the stand-in jobs' logs. The dispatch with `store=log` promised before
 the merge is not in this run.
+
+## Third look, at befb626 (2026-11-13)
+
+Posted: https://github.com/skyzfs/skyzfs/pull/45#issuecomment-6843824113
+
+Verdict: can merge; nothing new.
+
+Runs 43359257961 (pull request, in place) and 43359260246 (dispatch,
+`store=log`), green in every job. From the four daemon logs, both images:
+in place 34 PASS, 13 NA, 4 control FAIL, the NA lines being the table's 14
+names less `ctl_f_starts_refused`; with the log 44 PASS, 0 NA, 7 control FAIL.
+`pin_kill_under_load_applied_unacknowledged` PASS in both;
+`pin_unstored_zero_a/b/e` and `pin_serve_after_kill_accepts_log` NA in place
+and PASS with the log; `pin_c_delay_cases` PASS, all 26 cases; `c_declared`
+PASS 1, WEAKER 13, NOT_EXERCISED 12; the judge found no difference.
+Take-over medians with the log: 24.04 1279 ms then 1535 ms, 26.04 802 ms then
+803 ms; in place 520 ms and 282 ms.

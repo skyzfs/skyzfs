@@ -40,3 +40,22 @@ account.
 
 Not done: the head's own runs; the probe and canary runs the description
 cites; shellcheck; nothing on arm64.
+
+## Second look, at 1d66540 (2026-11-13)
+
+Posted: https://github.com/skyzfs/skyzfs/pull/48#issuecomment-6844008884
+
+Verdict: can merge; both findings dropped; nothing new.
+
+- Finding 1: `unit-arm64` now on `ubuntu-26.04-arm`, green at this head (run
+  43361020147, job 131678800028): three clippy and three test steps, 110 test
+  results, none failed; "aarch64, pages of 4096 bytes, kernel
+  7.0.0-1019-azure". The image reads `/etc/apt/apt-mirrors.txt`, so the
+  fallback covers it. Without a mirror list the script says "no fallback on
+  this image" (the lead's decision). `test_apt_fallback.sh` here: 40 ok, 1
+  skipped as root.
+- Finding 2: the four `machine-facts.sh` items, seen in the kernel-probe run
+  43361020091 on both images: io_uring "in the kernel"; 26.04's work disk is
+  `dm-0` and reads "model not said"; 24.04 runs kernel 7.0.0-1017-azure and
+  26.04 7.0.0-1016-aws.
+- Still running when posted: `test`, `s3-backends`, the four daemon-rig jobs.
