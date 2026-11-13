@@ -1,0 +1,45 @@
+planted, run 1: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+plain, run 1: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 2: rc=101; test result: FAILED. 287 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished
+test inplace::tests::the_in_place_store_passes_the_conformance_suite_on_large_pages ... FAILED
+---- inplace::tests::the_in_place_store_passes_the_conformance_suite_on_large_pages stdout ----
+test result: FAILED. 287 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished in 168.88s
+thread 'inplace::tests::the_in_place_store_passes_the_conformance_suite_on_large_pages' (17468) panicked at crates/skyzfs-local/src/inplace/tests.rs:1525:9:
+in InPlaceHarness { queue_depth: 16, sync_delay: 3, mutants: 0, io: IoMode { direct: true, threads: 8 }, page: 16384 }:
+ok    parameters_are_as_the_contract_fixes_them
+ok    fresh_device_reads_as_its_base
+ok    rejects_misaligned
+ok    rejects_out_of_bounds
+ok    rejects_empty_and_oversize
+ok    read_your_writes
+ok    write_zeroes_hides_the_base
+ok    discard_leaves_old_zeros_or_base
+ok    discard_never_hits_later_writes
+ok    flushed_operations_survive_power_cut
+ok    flush_covers_what_was_acknowledged_before_it
+ok    flush_covers_an_earlier_instance
+ok    power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may
+plain, run 2: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 3: rc=101; test result: FAILED. 287 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished
+test inplace::tests::the_in_place_store_passes_the_conformance_suite ... FAILED
+---- inplace::tests::the_in_place_store_passes_the_conformance_suite stdout ----
+test result: FAILED. 287 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished in 161.99s
+thread 'inplace::tests::the_in_place_store_passes_the_conformance_suite' (2625) panicked at crates/skyzfs-local/src/inplace/tests.rs:135:9:
+in InPlaceHarness { queue_depth: 16, sync_delay: 3, mutants: 0, io: IoMode { direct: true, threads: 8 }, page: 4096 }:
+ok    parameters_are_as_the_contract_fixes_them
+ok    fresh_device_reads_as_its_base
+ok    rejects_misaligned
+ok    rejects_out_of_bounds
+ok    rejects_empty_and_oversize
+ok    read_your_writes
+ok    write_zeroes_hides_the_base
+ok    discard_leaves_old_zeros_or_base
+ok    discard_never_hits_later_writes
+ok    flushed_operations_survive_power_cut
+ok    flush_covers_what_was_acknowledged_before_it
+ok    flush_covers_an_earlier_instance
+ok    power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may
+plain, run 3: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 4: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+plain, run 4: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+rc=0

@@ -1,0 +1,6 @@
+planted, run 1: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 2: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 3: rc=0; test result: ok. 288 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 
+planted, run 4: rc=101; test result: FAILED. 287 passed; 1 failed; 4 ignored; 0 measured; 0 filtered out; finished
+kept in OUT/m3-failure.txt
+rc=0

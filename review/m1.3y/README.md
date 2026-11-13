@@ -18,8 +18,9 @@ threads' queue.
 
 ## The review
 
-From the code nothing blocked the merge. One thing blocked as it stood,
-from CI: the daemon rig's ubuntu-26.04 job failed check c at this head.
+From the code nothing blocked the merge. One thing blocked, from CI:
+the daemon rig's ubuntu-26.04 job failed check c at this head, and its
+cause was open when these notes were written.
 
 ### The rig's failure (run 43430825700, job `ubuntu-26.04, daemon`)
 
@@ -37,18 +38,15 @@ issued again by the kernel, so the next server applies it whole after
 `#20`.
 
 No path to it was found in the store. What fits every line of the
-trace is a cause above the daemon (likely, not shown):
+trace is a cause above the daemon (possible, not shown, and weakened by
+what follows the list):
 
 1. The tool's write is one `write_all_at` on the device opened with
    `O_DIRECT`. A direct write to a block device that cannot drop a
    cached page of its range is done through the device's page cache
    instead (`blkdev_direct_write` returns 0 on `-EBUSY`, and
    `blkdev_write_iter` goes on with the buffered write; `block/fops.c`
-   at v7.0). The tool had run `blkdiscard` on the device 2 ms before
-   (`#5`), whose close of a writable descriptor makes udev probe a
-   device it watches, and a probe reads the device's head and tail
-   through the cache. The suite's window is the device's last 24
-   blocks.
+   at v7.0).
 2. `#21` goes that way: its seven blocks are dirty in the device's
    cache.
 3. `#20`, a direct write, first writes out what is dirty in its own
@@ -62,11 +60,30 @@ state is the one R8 allows (`#20` wins on every shared block). The
 model is wrong to take `#21` for one request. The artifact holds only
 the tool's side, so the requests themselves were not seen.
 
-What would show it: on a kernel, read the tail of a ublk device through
-the cache in a loop while two threads repeat `#20` and `#21`, and
-compare the write requests in `/sys/block/ublkbN/stat` (requests plus
-merges) with the write calls. What would help the next time: the rig
-keeping what the server was handed for each volume of check c.
+The first version of the review named a trigger for step 1: udev's
+probe after the tool's `blkdiscard` (`#5`, 2 ms before), reading the
+device's tail through the cache, where the suite's window is. That was
+wrong: the invalidation before a direct write fails on a dirty page or
+a busy buffer, not on a page a reader holds. Testing then ran the check
+the review had asked for (run 43443374413: 12,000 direct writes of the
+two shapes, alone, after a discard with udev's change events, and
+beside a buffered reader of the tail): every call reached the device as
+one request and `direct_write_fallback` was never called. Nothing in
+the suite was found that would dirty the device's cache. So the
+sequence fits the trace but is not likely, and whether the failure is
+this pull request's is open.
+
+Also considered, and not made to fit: a short result committed by a
+server (the pump commits a whole length or an error); a late write of
+`#20`'s data (only the second server had it); the tag buffers (each the
+largest request's size, back with its completion).
+
+What should tell the cases apart, in testing's traced runs of check c
+(with the daemon's request log): on `ublkb0` the write at sector 131016
+issued as `+56`, or as `+24` and then `131040 + 32` (cut above the
+daemon), or requeued after a completion (a short result from a server);
+and, if the third server was handed all seven blocks, whether the first
+three were issued to the disk under `home.img`.
 
 ### What the tests pin
 
@@ -76,9 +93,15 @@ keeping what the server was handed for each volume of check c.
    - a write does not wait for a read it overlaps: nothing fails;
    - a flush waits only when everything on the threads is a write:
      nothing fails;
-   - a read does not wait for a write it overlaps: the large-page
-     conformance suite fails in some runs of the whole test binary
-     (3 of 5) and in none of 20 runs of the test alone.
+   - a read does not wait for a write it overlaps: the conformance
+     suite fails in some runs of the whole test binary (4 of 9; the
+     large-page run twice, the 4 KiB run twice) and in none of 20 runs
+     of the large-page test alone. The case is
+     `failed_volume_fails_every_request`, "read #6: block 6 is Torn"
+     (`m3-failure.txt`): a write of block 6 and a read of it are in
+     flight when the disk fails, a failing write can leave a torn
+     block on the simulated disk, and the read shows it when it runs
+     beside the write.
    The overlap test cannot tell its clauses apart, because its read
    waits behind the deferred write whatever the clause says; the flush
    test holds two writes, so `.all(write)` passes where `.any(write)`
@@ -111,9 +134,9 @@ keeping what the server was handed for each volume of check c.
 - `m3-again.sh`, `m3-load.sh`, `m3-whole.sh`, `m3-text.sh` and their
   `.txt`: the plant "a read does not wait for a write it overlaps"
   against the large-page suite: alone (0 of 8), four copies side by
-  side (0 of 12), and as part of the whole test binary (fails in some
-  runs); each beside the same runs without the plant, which never
-  failed.
+  side (0 of 12), and as part of the whole test binary (2 of 4, then 1
+  of 4 with the text kept); beside the same runs without the plant,
+  which never failed. `m3-failure.txt` is the kept failure.
 - `rig-26.04-volume60.tsv`: from the failed job's `c-trace.tsv.gz`,
   volume 60 from the discard to the last outstanding call's return,
   and the two reads the model refuses. Columns: ms, volume, event,
