@@ -148,3 +148,51 @@ can fail a write.
 
 Not done: nothing on ublk; the cost of the drop at a take-over; clippy and the
 feature builds; the rigs of both heads were still running.
+
+## Third look, at fe54d96
+
+Posted as https://github.com/skyzfs/skyzfs/pull/46#issuecomment-6844771666.
+Read as `git diff 318e013 fe54d96` (318e013 is a clean merge of `zfs-topology`
+at a54b78b): six files, adbd490 and fe54d96.
+
+**Verdict: one new finding blocks (E). A fixed as to the overlay; B and D
+dropped; C answered, one point left that does not block.**
+
+- **E (blocks).** `count_sees_the_file` (`inplace.rs:490`, `:520`) reads block 0
+  through the cache just before the drop. The kernel reads ahead (4 pages on
+  6.18 ext4). Where block 0 is a hole the read returns at once while the pages
+  after it are under I/O; `POSIX_FADV_DONTNEED` leaves them; the second try
+  comes microseconds later. The start refuses: "2 pages of it stay in the cache
+  after two drops". A pool's label at byte 0 (design §4.2) is a hole of 8 KiB,
+  then data.
+  - CI at this head: replay rig through `skyzfsd`, ubuntu-26.04 (kernel 7.0, XFS
+    on a loop file), run 43368460688, job 131700180830: exit 1 with that line at
+    the restart after `zpool create` and export (`serve.log` in the artifact).
+  - `probe-r.rs` (appended to `tests/inplace_real.rs`; `PROBE_DIR`,
+    `PROBE_STARTS`, `PROBE_BLOCK`): blocks 2 and 3 written: 731 of 1500 starts
+    refused; blocks 1 and 2: 728; blocks 0 and 1: 0.
+  - `race.py DIR N`: the same sequence in a script, five layouts, 3000 tries
+    each: only "hole then data" leaves pages (500 after one drop, 24 after two).
+  - The order was my own remedy at the second look, untried then.
+  - Remedy tried in a scratch checkout: the look after the drop has counted 0
+    (move the call into the `left == 0` branch). Probe R: 1500 of 1500 served
+    for both failing layouts; 25 in-place tests and the real-file tests pass.
+    `race2.py`: that order and `POSIX_FADV_RANDOM` before the read both give 0
+    of 3000.
+- **A.** `probe-o.rs` (one start of a new volume in `PROBE_DIR`): ext4 serves;
+  an overlay refuses, "the file system's cache cannot be observed through this
+  file"; tmpfs refuses with the same line (a hole read keeps no page there).
+- **C.** With `TMPDIR` on an overlay or tmpfs the real-file tests and the
+  count's test skip; the reason shows only with `--nocapture`, a plain
+  `cargo test` prints "ok. 3 passed". Suggested: a skip is a failure where `CI`
+  (or a variable the workflows set) says so.
+- Plants (`plants3.sh`), all as the answer says: s1 the start does not look
+  (2 tests fail), s2 the look accepts 0 (1), s3 one try (1), s4 three tries (1),
+  s5 lock before marker (1), s6 the store's call counts 0 (2 of 3 real-file
+  tests), s6b the binding counts 0 (nothing fails, three skips), s7 the model
+  does not narrow the worlds (1).
+- Tests at fe54d96: `skyzfs-blk` 61 + 11 + 29 + 24 + 4 + 7; `skyzfs-local` 268
+  passed, 4 ignored, real files 3 + 3 + 12; `skyzfs-ublk-sys` 7; `skyzfs-ublk`
+  142 + 1 + 1; `skyzfsd` 53 + 3.
+- A trap met: a removal of `$d/*` in a loop is stopped by the harness's safety
+  check; make new directories with `mktemp -d` instead.
