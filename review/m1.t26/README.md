@@ -97,3 +97,21 @@ older copy in my context, and corrected it in the next message.
 - The copy of CLAUDE.md a session starts with can be older than the
   one on `zfs-topology`: grep the branch before saying what the guide
   does or does not say.
+
+
+## The rig on 36f3e7d (run 43420602078), read once
+
+All five kernel jobs green (daemon on ubuntu-24.04, 26.04 and
+26.04-arm; stand-in on 24.04 and 26.04). Two tables read:
+
+- ubuntu-26.04-arm, daemon (kernel 7.0.0-1019-azure): the reason pin is
+  PASS, all four lines name the image: its first arm64 run. Check c:
+  26 cases as declared (PASS 1, WEAKER 13, NOT_EXERCISED 12), 28 kills
+  that found no server (the path through `serve_rc` reading 3), no
+  FAILED line in the helper's logs.
+- ubuntu-24.04, stand-in: the pin is WAITING. Check c: 26 cases as
+  declared (PASS 1, WEAKER 15, NOT_EXERCISED 10), 47 such kills.
+
+So the helper's "PID STATUS" file holds on a kernel on both servers,
+and the second look's condition is met. Nothing was added on the pull
+request; the lead and testing were told.
