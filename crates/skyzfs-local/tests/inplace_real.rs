@@ -28,10 +28,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use skyzfs_blk::{Base, BlockTarget, Buf, Completion, Op, Request, RequestId};
-use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{InPlace, IoMode};
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
+use skyzfs_local::inplace::{
+    create, lock, InPlace, IoMode, OpenError, OpenOptions, Opened, VolumeConfig,
+};
+use skyzfs_local::store::HOME_NAME;
+use skyzfs_local::volume::system_write_unit;
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -41,14 +43,12 @@ const KILL_SEED: &str = "SKYZFS_KILL_SEED";
 
 type OnFiles = InPlace<FsDir>;
 
-fn config() -> StoreConfig {
-    StoreConfig {
+fn config() -> VolumeConfig {
+    VolumeConfig {
         volume: *b"in place on disk",
         size_mib: 16,
         base: Base::Empty,
-        align: 64,
-        segment_size: 8 << 20,
-        write_unit: Identity::system_write_unit(),
+        write_unit: system_write_unit(),
     }
 }
 
@@ -133,18 +133,19 @@ fn direct_io_is_offered(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// The log store's open, then the in-place store, with `io`.
-fn start_io(dir: &FsDir, io: IoMode) -> Result<OnFiles, StoreError> {
-    let mut options = OpenOptions::default();
-    options.in_place_io = io;
-    let (store, _) = Store::open(dir.clone(), options)?;
-    Ok(store.into_in_place(None).expect("the in-place store"))
+/// The open under the lock, then the start, with `io`.
+fn start_io(dir: &FsDir, io: IoMode) -> Result<OnFiles, OpenError> {
+    let options = OpenOptions {
+        io,
+        ..OpenOptions::default()
+    };
+    let opened = Opened::open(dir.clone(), lock(dir)?, options).map_err(|(e, _)| e)?;
+    Ok(opened.start(None).expect("the in-place store"))
 }
 
-/// The log store's open, then the in-place store.
-fn start(dir: &FsDir) -> Result<OnFiles, StoreError> {
-    let (store, _) = Store::open(dir.clone(), OpenOptions::default())?;
-    Ok(store.into_in_place(None).expect("the in-place store"))
+/// The open under the lock, then the start.
+fn start(dir: &FsDir) -> Result<OnFiles, OpenError> {
+    start_io(dir, IoMode::default())
 }
 
 /// Submit one request and wait for it.
@@ -188,15 +189,15 @@ fn flush(store: &mut OnFiles) {
 }
 
 /// Real files, round trip: a write, a write-zeroes and a discard, a
-/// flush on the file's helper thread, and a start again; and back to
-/// the log store, which reads the same.
+/// flush on the file's helper thread, and a start again, which reads
+/// the same.
 #[test]
 fn the_in_place_store_round_trips_on_real_files() {
     let tmp = tempfile::tempdir().unwrap();
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let mut store = start(&dir).unwrap();
     write(&mut store, 0, Buf::filled(4, 0x11));
     assert_eq!(
@@ -240,22 +241,6 @@ fn the_in_place_store_round_trips_on_real_files() {
     drop(store);
     let mut store = start(&dir).unwrap();
     expect(&read(&mut store, 0, 4));
-    drop(store);
-    let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
-    let mut store = store.serve().unwrap();
-    store
-        .submit(Request {
-            id: RequestId(0),
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::filled(4, 0xEE),
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    assert_eq!(store.wait(&mut done, TIMEOUT), 1);
-    assert_eq!(done[0].result, Ok(()));
-    expect(done[0].buf.as_deref().unwrap());
 }
 
 /// Direct I/O on real files, on four threads and on the default eight,
@@ -269,7 +254,7 @@ fn direct_io_on_threads_round_trips_on_real_files() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     skyzfs_local::store::fill_home(&dir).unwrap();
     let io = IoMode::with_threads(4).unwrap();
     let mut store = start_io(&dir, io).unwrap();
@@ -318,7 +303,7 @@ fn every_start_serves_where_the_image_begins_with_a_hole() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let mut store = start(&dir).unwrap();
     write(&mut store, 2, Buf::filled(2, 0x22));
     flush(&mut store);
@@ -326,8 +311,11 @@ fn every_start_serves_where_the_image_begins_with_a_hole() {
     let home = std::fs::File::open(tmp.path().join(HOME_NAME)).unwrap();
     for n in 0..200 {
         rustix::fs::fadvise(&home, 0, None, rustix::fs::Advice::DontNeed).unwrap();
-        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
-        if let Err(e) = store.into_in_place(None) {
+        let options = OpenOptions::default();
+        let opened = Opened::open(dir.clone(), lock(&dir).unwrap(), options)
+            .map_err(|(e, _)| e)
+            .unwrap();
+        if let Err(e) = opened.start(None) {
             panic!("start {n} refused: {e}");
         }
     }
@@ -393,9 +381,8 @@ fn inplace_kill_test_child() {
 /// that was acknowledged for it, or the one write that was in flight
 /// when the child died.
 ///
-/// This rests on the page cache: the kernel keeps what the child wrote
-/// to the file when the child dies, synced or not. And unlike the log
-/// store, the write in flight may be there in part: the in-place store
+/// This rests on the device (see the top of this file). The write in
+/// flight may be there in part: the in-place store
 /// writes its blocks straight to the file, and a process killed in the
 /// middle of a `pwrite` of several blocks leaves the blocks it had
 /// copied. Each block is whole: the kernel copies a page at a time and
@@ -406,7 +393,7 @@ fn acknowledged_writes_survive_kill_9_in_place() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let exe = std::env::current_exe().unwrap();
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];
     let mut next = 1u64;
@@ -456,14 +443,10 @@ fn acknowledged_writes_survive_kill_9_in_place() {
                 "round {round}: the child did not open the store"
             );
         }
-        // The in-place store holds the volume's lock as the log store
-        // does.
+        // The in-place store holds the volume's lock.
         assert!(
-            matches!(
-                Store::open(dir.clone(), OpenOptions::default()),
-                Err(StoreError::Locked)
-            ),
-            "round {round}: the store opened under a live instance"
+            matches!(lock(&dir), Err(OpenError::Locked)),
+            "round {round}: the volume was unlocked under a live instance"
         );
         for seen in 0..kill_after {
             assert!(

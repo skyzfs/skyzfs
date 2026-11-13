@@ -489,8 +489,8 @@ fn a_file_of_the_eighth_version_is_read_without_the_io_queue() {
     assert!(super::read(&path).is_err());
 }
 
-/// The log store has no I/O threads: a status with a queue of no
-/// threads shows no `io_` key.
+/// A status with a queue of no threads (the log store's, until M1.3t)
+/// shows no `io_` key.
 #[test]
 fn the_report_shows_the_io_queue_only_where_there_are_threads() {
     let mut status = sample();

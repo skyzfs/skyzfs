@@ -8,8 +8,9 @@
 //!    volume's directory nor the run directory is on ZFS.
 //! 2. The signals are blocked, before any thread exists.
 //! 3. The lifecycle's start ([`lifecycle::start`]): the lock, the
-//!    failure note, the acknowledged position, the store, the device.
-//! 4. The store goes behind its worker, the queue's thread is started
+//!    failure note, the store's open, the device.
+//! 4. The store is started (its sync of the home image, the drop of
+//!    the kernel's cache of it, its I/O threads), the queue's thread is started
 //!    and queues its fetch commands (they reach the driver at the
 //!    queue's first wait), and the device is started (or its recovery
 //!    ended). Then, once this instance's status file was written or
@@ -25,13 +26,12 @@
 //! |---|---|
 //! | a stop was asked and everything accepted was completed | 0 |
 //! | a stop was asked and the acknowledged position could not be stored | 1 |
-//! | the volume failed while it was served, or at the start of the in-place store (`--store in-place`) | 3 |
+//! | the volume failed while it was served, or at its start | 3 |
 //! | the queue went away, or the target did | 1 |
 //!
 //! After an orderly stop the device stays and waits for the next
-//! server. When the volume fails, the failure is noted with the store's
-//! reason (the log store's log, or the in-place store's image: a write
-//! or a sync of it), the device's note is removed and the device is
+//! server. When the volume fails, the failure is noted with the image's
+//! reason (a write or a sync of it), the device's note is removed and the device is
 //! deleted ([`lifecycle::fail_serving`]),
 //! under the volume's lock: the main thread has a hold of its own on
 //! the lock the store took, from the start until it returns, so the
@@ -70,7 +70,7 @@
 //! - A start that fails after the lifecycle has added or begun to
 //!   recover a device leaves that device as it is: the next start
 //!   finds it by its record and its note. The one exception is a start
-//!   of the in-place store that meets the failed disk: the volume has
+//!   whose sync of the image meets the failed disk: the volume has
 //!   failed, and it goes the way of a failure while served (the notes,
 //!   the delete, exit 3).
 
@@ -80,9 +80,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use skyzfs_local::inplace::StartFailed;
-use skyzfs_local::log::SUPER_NAME;
-use skyzfs_local::store::{FailureObserver, Marks, OpenOptions, StepBound, Waker, Zeroes};
+use skyzfs_local::fs::FsDir;
+use skyzfs_local::inplace::{InPlace, OpenOptions, StartError};
+use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
+use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
 use skyzfs_ublk::lifecycle::{self, Reason, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
@@ -94,13 +95,21 @@ use skyzfs_ublk_sys::queue::{Device, Open};
 use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
-use crate::cli::{Exit, Serve, StoreKind};
-use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES, SEGMENT_SIZE};
+use crate::cli::{Exit, Serve};
+use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
 
-mod target;
-pub use target::Target;
+/// The store that serves the volume: the in-place store, on the
+/// queue's thread. (Until M1.3t a choice between it and the log store
+/// behind its worker.)
+pub type Target = InPlace<FsDir>;
+
+/// The reason the failure note gives for a volume that failed while it
+/// was served or at its start: a write or a sync of the image (code 7).
+/// The log store's reasons (codes 1 to 3) are no longer given, and the
+/// note still reads them.
+const FAILURE: Reason = Reason::ImageFailed;
 
 /// How often a start asks again about a device of its own that is
 /// still shown as live: 50 times, 100 ms apart, 5 s.
@@ -459,77 +468,20 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
-/// The reason the failure note gives for a volume that failed while it
-/// was served: the log store's log, or the in-place store's image (a
-/// write or a sync of it: both fail the volume).
-fn served_failure(store: StoreKind) -> Reason {
-    match store {
-        StoreKind::Log => Reason::LogFailed,
-        StoreKind::InPlace => Reason::ImageFailed,
-    }
-}
-
-/// The reason the failure note gives for a start of the in-place store
-/// that failed, true to the file that failed as far as the start can
-/// tell: the log store's hand-over with a write or write-zeroes in its
-/// log to apply keeps the log's reason; the hand-over with nothing to
-/// apply, and the in-place store's own sync of the image, give the
-/// image's (`StartFailed`).
-fn start_failure(failed: StartFailed) -> Reason {
-    match failed {
-        StartFailed::Log => Reason::LogFailed,
-        StartFailed::Image => Reason::ImageFailed,
-    }
-}
-
-/// The store's times as the status file holds them: the file keeps no
-/// count of the batches a step's parts were measured over, so those
-/// are left out here as a reader of the file finds them.
-fn shown_timing(mut timing: skyzfs_local::store::Timing) -> skyzfs_local::store::Timing {
-    for part in [
-        &mut timing.step_walk,
-        &mut timing.step_save,
-        &mut timing.step_apply,
-        &mut timing.step_home_sync,
-        &mut timing.step_start,
-        &mut timing.step_end,
-        &mut timing.step_own_sync,
-    ] {
-        part.count = 0;
-    }
-    timing
-}
-
-/// The store's log state and times as the status file shows them. The
-/// in-place store has no log, no steps and no times of its own: the
-/// file shows zeros for those, and how write-zeroes reach the image.
-fn log_shown(target: &Target) -> LogShown {
-    let served = match target {
-        Target::Log(served) => served,
-        Target::InPlace(store) => {
-            return LogShown {
-                timing: None,
-                pump: None,
-                live: 0,
-                steps: 0,
-                stepping: false,
-                own_syncs: 0,
-                zeroes: zeroes_shown(store.zeroes()),
-                io_queue: Some(store.io_queue()),
-            }
-        }
-    };
-    // The state and the times of one moment.
-    let (log, timing) = &served.shown();
+/// The store's state as the status file shows it. The in-place store has
+/// no log, no steps and no times of its own: the file shows zeros for
+/// those (their fields stay until the status file's next version), how
+/// write-zeroes reach the image, and the I/O threads' queue.
+fn log_shown(store: &Target) -> LogShown {
     LogShown {
-        timing: Some(shown_timing(*timing)),
+        timing: None,
         pump: None,
-        live: log.live(),
-        steps: log.steps,
-        stepping: log.stepping,
-        own_syncs: log.own_syncs,
-        zeroes: zeroes_shown(log.zeroes),
-        io_queue: None,
+        live: 0,
+        steps: 0,
+        stepping: false,
+        own_syncs: 0,
+        zeroes: zeroes_shown(store.zeroes()),
+        io_queue: Some(store.io_queue()),
     }
 }
 
@@ -548,43 +500,32 @@ fn zeroes_shown(zeroes: Zeroes) -> ZeroesShown {
 fn post<Q: skyzfs_ublk::pump::Queue>(
     board: &Board,
     pump: &mut Pump<Delayed<Q, Ack>, Target, LateAck<Ack>>,
-    shown: &mut LogShown,
 ) {
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
     board.post(counters);
-    // The log, as the store's worker last showed it. The worker wakes
-    // this thread when a checkpoint step begins and when it ends; those
-    // two are written to the status file at once.
     let now = LogShown {
         pump: Some(pump.timing()),
         ..log_shown(pump.target())
     };
-    let step_changed = (now.steps, now.stepping) != (shown.steps, shown.stepping);
-    say_writeback_off(shown, &now);
-    board.post_log(now, step_changed);
-    *shown = now;
-}
-
-/// One line when the hint that starts writeback early is switched off
-/// for a kind of file: its file system said it has no such call.
-fn say_writeback_off(before: &LogShown, now: &LogShown) {
-    let off = |shown: &LogShown, at: usize| shown.timing.is_some_and(|t| t.writeback[at].off);
-    for (at, files) in [(0, "the log's segment files"), (1, "the home image")] {
-        if off(now, at) && !off(before, at) {
-            say(format_args!(
-                "the file system has no call to start writeback early: \
-                 the hint is off for {files} (the syncs are as they were)"
-            ));
-        }
-    }
+    board.post_log(now, false);
 }
 
 /// Run `serve`. Prints for itself: the ready line has to be out when
 /// the device serves, not when the daemon ends.
 pub fn serve(serve: &Serve) -> Exit {
-    if !serve.dir.join(SUPER_NAME).is_file() {
-        say(format_args!("{} holds no volume", serve.dir.display()));
+    // A quick look before anything else; the open under the lock reads
+    // and checks the volume file itself.
+    if !serve.dir.join(VOLUME_NAME).is_file() {
+        if serve.dir.join(LEGACY_NAME).is_file() {
+            say(format_args!(
+                "{}: {}",
+                serve.dir.display(),
+                VolumeError::Legacy
+            ));
+        } else {
+            say(format_args!("{} holds no volume", serve.dir.display()));
+        }
         return Exit::Error;
     }
     match skyzfs_ublk_sys::lock_all_memory() {
@@ -664,12 +605,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let wake = Wake::new().map_err(|e| format!("an event descriptor: {e}"))?;
     let flags = Arc::new(Flags::default());
 
-    let mut options = OpenOptions::default();
-    options.pretend_short_by = serve.hooks.recover_short;
-    options.writeback_unit = serve.writeback_kib << 10;
-    options.home_writeback_unit = serve.home_writeback_kib << 10;
-    options.readers = usize::from(serve.readers);
-    options.in_place_io = serve.in_place_io;
+    let mut options = OpenOptions {
+        io: serve.in_place_io,
+        ..OpenOptions::default()
+    };
     options.on_failure = Some(FailureObserver::new({
         let (flags, wake) = (flags.clone(), wake.clone());
         move || {
@@ -678,18 +617,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     }));
     let began = std::time::Instant::now();
-    // The in-place store's start counts the home image's cached pages
-    // after it drops them (`cachestat`); the log store does not ask.
+    // The store's start counts the home image's cached pages after it
+    // drops them (`cachestat`).
     let volume =
         StoreVolume::new(&serve.dir, options).with_cache_count(skyzfs_ublk_sys::cached_pages);
-    // With both units 0 the store never asks, and the call is not even
-    // given: the benchmark's row without the hint is the daemon as it
-    // was before it.
-    let volume = if serve.writeback_kib == 0 && serve.home_writeback_kib == 0 {
-        volume
-    } else {
-        volume.with_writeback(skyzfs_ublk_sys::start_writeback)
-    };
     let mut volume = TimedVolume::new(volume);
     let mut kernel = TimedControl::new(Kernel::new().map_err(|e| e.to_string())?);
     let wanted = Wanted {
@@ -702,7 +633,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         acknowledge_failure: serve.acknowledge_failure,
         async_delete_asserted: serve.async_delete_asserted,
     };
-    let mut ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
+    let ready = match lifecycle::start(&mut kernel, &mut records, &mut volume, &wanted) {
         Ok(ready) => ready,
         Err(Stop::Unsupported(why)) => return Err(not_served(&why)),
         Err(Stop::Held) => {
@@ -731,55 +662,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // cleanup after a failure: the failure note, the device's note and
     // the delete of the device by its number. Without it a detach or
     // another serve could act on the attachment in between.
-    let Some(_lock) = ready.store.share_lock() else {
-        return Err("the store holds no lock on the volume".into());
-    };
+    let _lock = ready.store.share_lock();
     let (number, shape) = (ready.number, ready.shape);
-    // From here the store checkpoints by itself (design §5.1): not
-    // before the device is this instance's. The steps begin when the
-    // store's worker is started, a few lines down: that is before the
-    // device is started and before the ready line, so a long log that
-    // this start found is worked off without waiting for the first
-    // request. The start itself does not wait for a step: it goes on
-    // while the worker steps. The first requests can wait for those
-    // steps: while the log is at or above the high mark the worker
-    // takes steps before it executes a request.
-    // (The in-place store has no log: none of this applies to it, and
-    // the command line refuses its options.)
-    if serve.store == StoreKind::Log {
-        ready.store.set_marks(Some(Marks {
-            high: u64::from(serve.log_high) * SEGMENT_SIZE,
-            low: u64::from(serve.log_low) * SEGMENT_SIZE,
-            step: StepBound::DAEMON,
-        }));
-    }
-    #[cfg(feature = "test-hooks")]
-    if serve.hooks.refuse_holes {
-        ready.store.set_refuse_holes(true);
-    }
-    #[cfg(feature = "test-hooks")]
-    if let Some(pause) = &serve.hooks.step_pause {
-        use crate::cli::StepPoint as At;
-        use skyzfs_local::store::{StepPause, StepPoint};
-        let pause = match pause {
-            crate::cli::StepPause::Ms(ms) => StepPause::For(Duration::from_millis(*ms)),
-            crate::cli::StepPause::Until(path) => StepPause::Until(path.clone()),
-        };
-        let at = match serve.hooks.step_pause_at {
-            At::Saved => StepPoint::Saved,
-            At::Written => StepPoint::Written,
-            At::Synced => StepPoint::Synced,
-            At::StartWritten => StepPoint::StartWritten,
-            At::StartDurable => StepPoint::StartDurable,
-        };
-        ready.store.set_step_pause_at(pause, at);
-    }
     let identity = ready.store.identity();
-    // What the server before this one had applied and never answered:
-    // the kernel issues those requests again, and they are applied a
-    // second time (design §4.1). A lower bound.
-    let recovered = ready.store.recovered_unacknowledged();
-    let (log_bytes, log_records) = ready.store.replayed();
+    // What the log store's start counted and the status file and the
+    // start's line still carry: zeros, with no log (M1.3t). Their
+    // fields and words stay until the status file's next version, so
+    // that what reads them reads on.
+    let recovered = 0u64;
+    let (log_bytes, log_records) = (0u64, 0u64);
     let took_over = ready.took_over;
     let to_device = began.elapsed();
     let ack = AckFile::open(&records.acknowledged_path(), identity, boot)
@@ -788,73 +679,50 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         let wake = wake.clone();
         move || wake.wake()
     });
-    let served = match serve.store {
-        StoreKind::Log => Target::Log(
-            ready
-                .store
-                .serve_with(Some(waker))
-                .map_err(|e| format!("the store's worker: {e}"))?,
-        ),
-        // The log is applied and emptied, the home image synced, and
-        // the queue's thread executes the requests itself; the sync of
-        // a flush runs on the image's helper thread, which wakes the
-        // queue's thread when it ends.
-        StoreKind::InPlace => match ready.store.into_in_place(Some(waker)) {
-            Ok(store) => Target::InPlace(Box::new(store)),
-            // The disk failed under the start: the volume has failed,
-            // and it goes the way of a volume that fails while it is
-            // served: the failure note, the device's note, the delete of
-            // the device, exit 3. The device is this instance's and is
-            // not started yet; it holds no request of this instance's.
-            // The store's failure marker comes last: it needs the disk
-            // that has just failed and may never end, and the note must
-            // not wait for it. (Where the log store's own checkpoint
-            // failed, its marker was tried already, as at any start of
-            // the log store.) The helper's end without a report is not a
-            // failure of the volume, and ends with exit 1 as it does
-            // while the log store serves (`Err(other)`).
-            Err(skyzfs_local::inplace::IntoInPlaceError::Failed(start)) => {
-                let (failure, written, deleted) = lifecycle::fail_serving(
-                    &mut kernel,
-                    &mut records,
-                    number,
-                    identity,
-                    start_failure(start.failed()),
-                );
-                say(format_args!(
-                    "the volume failed at the start of the in-place store ({}); client holds the \
-                     device: {:?}{}{}. Note: {}",
-                    failure.reason,
-                    failure.held,
-                    if written {
-                        ""
-                    } else {
-                        "; the failure note could not be written"
-                    },
-                    match &deleted {
-                        Ok(()) => String::new(),
-                        Err(undeleted) => format!("; {}", undeleted.said(number)),
-                    },
-                    status::POOL_WARNING
-                ));
-                start.finish();
-                return Ok(Exit::Failed);
-            }
-            // The start serves only what the disk holds (design §4.1):
-            // where it cannot show that, it serves nothing. The volume
-            // has not failed, and the device waits as after any start
-            // that fails after the lifecycle added it.
-            Err(
-                refused @ (skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)
-                | skyzfs_local::inplace::IntoInPlaceError::Io(_)),
-            ) => {
-                return Err(format!(
-                    "the in-place store: {refused}. Nothing was served and the volume has not \
-                     failed"
-                ))
-            }
-            Err(other) => return Err(format!("the in-place store: {other}")),
-        },
+    // The home image is synced and its cache dropped, and the I/O
+    // threads start; a flush's sync runs on the image's helper thread,
+    // which wakes the queue's thread when it ends, as do the I/O threads
+    // with their results.
+    let served = match ready.store.start(Some(waker)) {
+        Ok(store) => store,
+        // The disk failed under the start: the volume has failed, and it
+        // goes the way of a volume that fails while it is served: the
+        // failure note, the device's note, the delete of the device,
+        // exit 3. The device is this instance's and is not started yet;
+        // it holds no request of this instance's. The store's failure
+        // marker comes last: it needs the disk that has just failed and
+        // may never end, and the note must not wait for it.
+        Err(StartError::Failed(start)) => {
+            let (failure, written, deleted) =
+                lifecycle::fail_serving(&mut kernel, &mut records, number, identity, FAILURE);
+            say(format_args!(
+                "the volume failed at the start of the in-place store ({}); client holds the \
+                 device: {:?}{}{}. Note: {}",
+                failure.reason,
+                failure.held,
+                if written {
+                    ""
+                } else {
+                    "; the failure note could not be written"
+                },
+                match &deleted {
+                    Ok(()) => String::new(),
+                    Err(undeleted) => format!("; {}", undeleted.said(number)),
+                },
+                status::POOL_WARNING
+            ));
+            start.finish();
+            return Ok(Exit::Failed);
+        }
+        // The start serves only what the disk holds (design §4.1): where
+        // it cannot show that, it serves nothing. The volume has not
+        // failed, and the device waits as after any start that fails
+        // after the lifecycle added it.
+        Err(refused @ (StartError::CacheKept(_) | StartError::Io(_))) => {
+            return Err(format!(
+                "the in-place store: {refused}. Nothing was served and the volume has not failed"
+            ))
+        }
     };
 
     let queue_began = std::time::Instant::now();
@@ -865,11 +733,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
     let board = Arc::new(Board::new());
-    // The log as the start found it, on the board before the status
-    // thread's first write: without it the file says a live size of 0
-    // until the queue's thread has had its first turn, which on an
-    // idle device is the first request (seen on a kernel: `log_live 0`
-    // right after a start that had replayed 81 MB).
+    // The store as the start left it, on the board before the status
+    // thread's first write, which would otherwise show nothing of it
+    // until the queue's thread has had its first turn: on an idle
+    // device, the first request.
     let first_log = LogShown {
         pump: Some(skyzfs_ublk::pump::PumpTiming::default()),
         ..log_shown(&served)
@@ -895,10 +762,9 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main
                 // thread lets go of it.
-                let mut shown = first_log;
                 pumped(Pump::new(queue, served, ack), |pump, ended| {
                     answer_if_failed(pump, &flags, &|| again.wake());
-                    post(&board, pump, &mut shown);
+                    post(&board, pump);
                     if !ended {
                         faults(pump, &flags, &mut fail_after);
                     }
@@ -976,7 +842,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // queue's thread posts its counters after every turn, and each
     // post replaces the board's with newer ones of its own; `ready`
     // follows the first write. Only the queue's thread posts, but for
-    // the log's state at the start, which the main thread put on the
+    // the store's state at the start, which the main thread put on the
     // board before either thread existed.
     //
     // `ready` only after this instance's first status write was tried,
@@ -1061,8 +927,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // The failure note is written before that wait and not after
         // it. A daemon killed during the wait then leaves the note,
         // and the next start reads from it whether a client held the
-        // device. Without the note that start goes by the log's marker
-        // alone and counts the volume as held for the whole boot: safe,
+        // device. Without the note that start goes by the store's marker
+        // (`volume.failed`) alone and counts the volume as held for the whole boot: safe,
         // and a failure nobody held could then not be acknowledged.
         // Nothing speaks for the other order: the note is written in
         // the run directory either way, and what the next start finds
@@ -1072,13 +938,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         //
         // The volume's lock is held: by `_lock`, whatever the queue's
         // thread has done with the store.
-        let (failure, written) = lifecycle::note_failure(
-            &mut kernel,
-            &mut records,
-            number,
-            identity,
-            served_failure(serve.store),
-        );
+        let (failure, written) =
+            lifecycle::note_failure(&mut kernel, &mut records, number, identity, FAILURE);
         let (mut answered, mut ended) = (false, false);
         for _ in 0..ANSWER_LOOKS {
             // The thread's end first: a flag set just before the end
@@ -1146,13 +1007,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     finish(&board);
     // A failure can arrive with the queue's end.
     if flags.failed.load(Ordering::SeqCst) {
-        let (failure, written) = lifecycle::note_failure(
-            &mut kernel,
-            &mut records,
-            number,
-            identity,
-            served_failure(serve.store),
-        );
+        let (failure, written) =
+            lifecycle::note_failure(&mut kernel, &mut records, number, identity, FAILURE);
         let deleted = lifecycle::delete_failed(&mut kernel, &mut records, number);
         say(format_args!(
             "the volume failed while it was served ({}){}{}. Note: {}",
@@ -1246,18 +1102,12 @@ mod tests {
         assert!(!by_flag.contains(&alone), "{by_flag}");
     }
 
-    /// Each store's failure is noted with its own reason: the log store's
-    /// with the log's (code 1 in the note), the in-place store's with
-    /// the image's (code 7), while it serves and when its own sync fails
-    /// at its start. A start of the in-place store that failed in the
-    /// log store's hand-over keeps the log's where the log held a write
-    /// or write-zeroes to apply (`StartFailed::Log`).
+    /// A failure is noted with the image's reason (code 7), while the
+    /// store serves and when its own sync fails at its start; the log
+    /// store's reasons are no longer given (M1.3t).
     #[test]
-    fn each_store_notes_its_own_failure() {
-        assert_eq!(served_failure(StoreKind::Log), Reason::LogFailed);
-        assert_eq!(served_failure(StoreKind::InPlace), Reason::ImageFailed);
-        assert_eq!(start_failure(StartFailed::Log), Reason::LogFailed);
-        assert_eq!(start_failure(StartFailed::Image), Reason::ImageFailed);
+    fn a_failure_is_noted_as_the_images() {
+        assert_eq!(FAILURE, Reason::ImageFailed);
         assert_eq!(
             Reason::ImageFailed.to_string(),
             "a write or sync of the volume's image failed"
@@ -1547,23 +1397,26 @@ mod tests {
     /// runs, and the lock is free only when that thread drops it.
     #[test]
     fn the_volumes_lock_outlives_the_queues_thread_until_the_joiner_lets_go() {
-        use skyzfs_local::fs::FsDir;
-        use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+        use skyzfs_local::inplace::{create, lock, OpenError, OpenOptions, Opened, VolumeConfig};
+        use skyzfs_local::sim::SimDisk;
         for panics in [false, true] {
-            let keep = tempfile::tempdir().expect("a directory");
-            let dir = || FsDir::new(keep.path()).expect("the directory");
-            let config = StoreConfig {
+            let disk = SimDisk::new(1);
+            let config = VolumeConfig {
                 volume: *b"a volume on disk",
                 size_mib: 8,
                 base: skyzfs_blk::Base::Empty,
-                align: 4096,
-                segment_size: 8 << 20,
-                write_unit: skyzfs_local::format::Identity::system_write_unit(),
+                write_unit: 4096,
             };
-            let served = Store::create(dir(), &config, OpenOptions::default())
-                .expect("create")
-                .serve_with(None)
-                .expect("the worker");
+            create(&disk, &config).expect("create");
+            let served = Opened::open(
+                disk.clone(),
+                lock(&disk).expect("lock"),
+                OpenOptions::default(),
+            )
+            .map_err(|(e, _)| e)
+            .expect("open")
+            .start(None)
+            .expect("start");
             let turns = Arc::new(std::sync::atomic::AtomicU32::new(0));
             let thread = std::thread::spawn({
                 let turns = turns.clone();
@@ -1584,11 +1437,11 @@ mod tests {
             // The queue's thread is gone. This is the moment of the
             // failure's cleanup: nobody else gets the lock.
             assert!(
-                matches!(Store::lock_volume(&dir()), Err(StoreError::Locked)),
+                matches!(lock(&disk), Err(OpenError::Locked)),
                 "panics: {panics}: the lock was free after the queue's thread ended"
             );
             drop(store);
-            assert!(Store::lock_volume(&dir()).is_ok(), "panics: {panics}");
+            assert!(lock(&disk).is_ok(), "panics: {panics}");
         }
     }
     /// A queue that hands over three requests at its first wait and

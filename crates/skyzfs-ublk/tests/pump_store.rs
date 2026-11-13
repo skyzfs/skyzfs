@@ -1,21 +1,20 @@
-//! The pump over the real store behind its worker thread, with a queue
-//! of the test's own: the pair that the binding will put together.
-//! What the fakes in the pump's unit tests stand in for is here for
-//! real: the store's completions, its acknowledged position, and the
-//! record of it on a file.
+//! The pump over the in-place store on the simulated disk, with a queue
+//! of the test's own: the pair that the binding puts together. What the
+//! fakes in the pump's unit tests stand in for is here for real: the
+//! store's completions from its I/O threads, and its flushes on the
+//! file's helper. The store has no log and reports no acknowledged
+//! position, so the pump stores none: the record is never written
+//! (inert since M1.3t, which removed the log store; the plumbing goes
+//! in M1.3t-b).
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use skyzfs_blk::{Base, Buf};
-use skyzfs_local::format::{Identity, Lsn};
-use skyzfs_local::fs::FsDir;
-use skyzfs_local::store::{OpenOptions, Served, Store, StoreConfig, StoreError};
-use skyzfs_ublk::ack::{self, AckFile};
+use skyzfs_local::inplace::{create, lock, InPlace, OpenOptions, Opened, VolumeConfig};
+use skyzfs_local::sim::SimDisk;
 use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Wake};
 use skyzfs_ublk::translate::{op, Desc};
-
-const BOOT: [u8; 16] = [7; 16];
 
 enum Step {
     Fetch(Vec<Fetched>),
@@ -68,15 +67,14 @@ impl Queue for ScriptQueue {
     fn pause(&mut self) {}
 }
 
-/// The record on a file, noting each position as it is stored.
+/// A record that notes each position it is told to store.
+#[derive(Default)]
 struct Noting {
-    file: AckFile,
     stored: Vec<u64>,
 }
 
 impl AckRecord for Noting {
     fn advance(&mut self, position: u64) -> std::io::Result<()> {
-        self.file.advance(position)?;
         self.stored.push(position);
         Ok(())
     }
@@ -94,39 +92,32 @@ fn request(tag: u16, operation: u8, block: u64, blocks: u32) -> Fetched {
 }
 
 #[test]
-fn the_pump_serves_a_real_store_and_what_it_stored_is_what_the_next_open_must_reach() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let volume = dir.path().join("volume");
-    std::fs::create_dir(&volume).expect("the volume's directory");
-    let config = StoreConfig {
+fn the_pump_serves_the_in_place_store_and_stores_no_position() {
+    let disk = SimDisk::new(1);
+    let config = VolumeConfig {
         volume: *b"a volume on disk",
         size_mib: 8,
         base: Base::Empty,
-        align: 4096,
-        segment_size: 8 << 20,
-        write_unit: Identity::system_write_unit(),
+        write_unit: 4096,
     };
-    let store = Store::create(
-        FsDir::new(&volume).expect("the directory"),
-        &config,
+    create(&disk, &config).expect("create");
+    let opened = Opened::open(
+        disk.clone(),
+        lock(&disk).expect("lock"),
         OpenOptions::default(),
     )
-    .expect("create");
-    let identity = store.identity();
-    let served = store.serve().expect("serve");
+    .map_err(|(e, _)| e)
+    .expect("open");
+    let store = opened.start(None).expect("start");
 
-    let ack_path = dir.path().join("acknowledged");
-    let record = Noting {
-        file: AckFile::open(&ack_path, identity, BOOT).expect("the record"),
-        stored: Vec::new(),
-    };
     let mut queue = ScriptQueue::default();
     queue.script.push_back(Step::Fetch(vec![
         request(0, op::WRITE, 0, 1),
         request(1, op::WRITE, 1, 2),
         request(2, op::FLUSH, 0, 0),
     ]));
-    let mut pump: Pump<ScriptQueue, Served, Noting> = Pump::new(queue, served, record);
+    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>, Noting> =
+        Pump::new(queue, store, Noting::default());
     for _ in 0..10_000 {
         if pump.queue().committed.len() == 3 {
             break;
@@ -138,28 +129,17 @@ fn the_pump_serves_a_real_store_and_what_it_stored_is_what_the_next_open_must_re
     assert_eq!(results, [(0, 4096), (1, 8192), (2, 0)]);
 
     // The pump's own times: three requests submitted and committed,
-    // none of them a read; the position stored as often as the record
-    // was written, with at least one completion behind each.
+    // none of them a read; no position stored, so no time in the record
+    // and nothing behind it.
     let timing = pump.timing();
-    let stores = pump.ack().stored.len() as u64;
     assert_eq!(timing.to_submit.count, 3, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 3, "{timing:?}");
     assert_eq!(timing.read_to_commit.count, 0, "{timing:?}");
-    assert!(stores >= 1 && timing.store.count == stores, "{timing:?}");
-    assert!(
-        timing.behind_store >= stores && timing.behind_store <= 3,
-        "{timing:?}"
-    );
-    for spent in [timing.to_submit, timing.other_to_commit, timing.store] {
+    assert_eq!(timing.store.count, 0, "{timing:?}");
+    assert_eq!(timing.behind_store, 0, "{timing:?}");
+    for spent in [timing.to_submit, timing.other_to_commit] {
         assert!(spent.max_ns <= spent.sum_ns, "{timing:?}");
     }
-
-    // What the pump stored is what the store says it acknowledged, and
-    // it is on the file.
-    let acknowledged = pump.target().acknowledged().expect("two writes");
-    assert_eq!(pump.ack().stored.last().copied(), Some(acknowledged.0));
-    let on_file = ack::read(&ack_path).expect("read").expect("a record");
-    assert_eq!(on_file.position_for(&identity, &BOOT), Some(acknowledged.0));
 
     // The data comes back through the pump, in the queue's buffers.
     pump.queue().script.push_back(Step::Fetch(vec![
@@ -169,31 +149,14 @@ fn the_pump_serves_a_real_store_and_what_it_stored_is_what_the_next_open_must_re
     ]));
     pump.queue().script.push_back(Step::Stop);
     assert_eq!(pump.run(), Stopped::Orderly);
-    // Three reads more: committed as reads, and no position stored for
-    // them.
     let after = pump.timing();
     assert_eq!(after.to_submit.count, 6, "{after:?}");
     assert_eq!(after.read_to_commit.count, 3, "{after:?}");
     assert_eq!(after.other_to_commit.count, 3, "{after:?}");
-    assert_eq!(after.store.count, stores, "{after:?}");
     let returned = &pump.queue().returned;
     assert!(returned[&3].iter().all(|b| *b == 0x40));
     assert!(returned[&4].iter().all(|b| *b == 0x41));
     assert!(returned[&5].iter().all(|b| *b == 0), "never written");
     assert_eq!(pump.counters().in_flight, 0);
-    drop(pump);
-
-    // The next open must reach the stored position, and does. One that
-    // is told a position beyond the log is refused.
-    let reopen = |position: u64| {
-        let mut options = OpenOptions::default();
-        options.must_reach = Some(Lsn(position));
-        options.must_reach_identity = Some(identity);
-        Store::open(FsDir::new(&volume).expect("the directory"), options).map(|_| ())
-    };
-    reopen(acknowledged.0).expect("the log reaches what was acknowledged");
-    assert!(matches!(
-        reopen(acknowledged.0 + (1 << 30)),
-        Err(StoreError::Log(_))
-    ));
+    assert!(pump.ack().stored.is_empty(), "{:?}", pump.ack().stored);
 }

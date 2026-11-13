@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use skyzfs_blk::Base;
-use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::store::{Store, StoreConfig};
+use skyzfs_local::inplace::{Opened, VolumeConfig};
 use skyzfs_ublk::lifecycle::{
     AddError, Attachment, DeviceInfo, DeviceState, Failure, Held, Reason, Records, Shape,
 };
@@ -15,6 +14,14 @@ use skyzfs_ublk::pump::Counters;
 use skyzfs_ublk::status::Status;
 
 use super::*;
+
+/// The first phase of a start on the volume in `dir`, as the daemon's
+/// lifecycle takes it: the lock, then the open.
+fn open(dir: &Path) -> Result<Opened<FsDir>, OpenError> {
+    let dir = FsDir::new(dir).expect("the directory");
+    let lock = inplace::lock(&dir)?;
+    Opened::open(dir, lock, OpenOptions::default()).map_err(|(e, _)| e)
+}
 
 const BOOT: [u8; 16] = [7; 16];
 const NONCE: [u8; 16] = [0xA5; 16];
@@ -82,21 +89,13 @@ impl Setup {
         let (dir, run_dir) = (keep.path().join("volume"), keep.path().join("run"));
         std::fs::create_dir(&dir).expect("the volume's directory");
         std::fs::create_dir(&run_dir).expect("the run directory");
-        let config = StoreConfig {
+        let config = VolumeConfig {
             volume: *b"a volume on disk",
             size_mib: 8,
             base: Base::Empty,
-            align: 4096,
-            segment_size: 8 << 20,
-            write_unit: Identity::system_write_unit(),
+            write_unit: system_write_unit(),
         };
-        let store = Store::create(
-            FsDir::new(&dir).expect("the directory"),
-            &config,
-            OpenOptions::default(),
-        )
-        .expect("create");
-        drop(store);
+        inplace::create(&FsDir::new(&dir).expect("the directory"), &config).expect("create");
         Self {
             _keep: keep,
             volume: Volume { dir, run_dir },
@@ -137,9 +136,7 @@ impl Setup {
     fn sample(&self) -> Status {
         let dir = FsDir::new(&self.volume.dir).expect("the directory");
         Status {
-            identity: Store::identity_of(&dir)
-                .expect("read")
-                .expect("a superblock"),
+            identity: inplace::identity_of(&dir).expect("a volume file"),
             ..sample()
         }
     }
@@ -420,11 +417,7 @@ fn detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds() {
 fn detach_of_a_volume_a_daemon_holds_gives_up_after_two_seconds_and_touches_nothing() {
     assert_eq!(LOCK_PAUSE * LOCK_RETRIES, Duration::from_secs(2));
     let mut setup = Setup::new().attached(DeviceState::Waiting);
-    let (daemon, _) = Store::open(
-        FsDir::new(&setup.volume.dir).expect("the directory"),
-        OpenOptions::default(),
-    )
-    .expect("open");
+    let daemon = open(&setup.volume.dir).expect("open");
     let began = std::time::Instant::now();
     let output = setup.detach();
     assert!(began.elapsed() >= Duration::from_secs(2));
@@ -486,8 +479,8 @@ fn creating(dir: &Path, run_dir: &Path, size: u64, base_pattern: Option<u64>) ->
 }
 
 /// `create` makes a volume of the size asked for that the store opens,
-/// says its size, its id and its identity in one line, and fixes the
-/// alignment, the segment size and the write unit.
+/// says its size, its id and its identity in one line, and records the
+/// write unit in the volume file.
 #[test]
 fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
     let keep = tempfile::tempdir().expect("a directory");
@@ -498,16 +491,9 @@ fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
     let output = create(&creating(&dir, &run_dir, 8 << 20, None), id, Some(BOOT));
     assert_eq!((output.exit, output.err.as_str()), (Exit::Done, ""));
 
-    let (store, _) = Store::open(
-        FsDir::new(&dir).expect("the directory"),
-        OpenOptions::default(),
-    )
-    .expect("the store opens what create made");
+    let store = open(&dir).expect("the store opens what create made");
     let identity = store.identity();
-    assert_eq!(
-        skyzfs_blk::BlockTarget::geometry(&store).size_bytes(),
-        8 << 20
-    );
+    assert_eq!(store.geometry().size_bytes(), 8 << 20);
     drop(store);
     assert_eq!(
         output.out,
@@ -523,8 +509,10 @@ fn create_makes_a_volume_the_store_opens_and_says_what_it_made() {
     let home = std::fs::read(dir.join(skyzfs_local::store::HOME_NAME)).expect("the home image");
     assert_eq!(home.len(), 8 << 20);
     assert!(home.iter().all(|b| *b == 0));
-    // The segment size is the constant.
-    assert_eq!((SEGMENT_SIZE, ALIGN), (64 << 20, 4096));
+    // The volume file says what was made.
+    let made = skyzfs_local::volume::Volume::read(&FsDir::new(&dir).expect("dir")).expect("read");
+    assert_eq!((made.id, made.size, made.identity), (id, 8 << 20, identity));
+    assert_eq!(made.write_unit, system_write_unit());
 
     // And status and detach take it for a volume.
     let volume = Volume {
@@ -567,7 +555,7 @@ fn create_makes_the_last_part_and_refuses_a_missing_parent_a_file_and_a_volume()
     assert_eq!(output.exit, Exit::Done, "{}", output.err);
     let mode = std::fs::metadata(&made).expect("made").permissions().mode();
     assert_eq!(mode & 0o777, 0o700);
-    assert!(Store::open(FsDir::new(&made).expect("dir"), OpenOptions::default()).is_ok());
+    assert!(open(&made).is_ok());
 
     let dir = keep.path().join("volume");
 
@@ -589,10 +577,7 @@ fn create_makes_the_last_part_and_refuses_a_missing_parent_a_file_and_a_volume()
         Some(BOOT),
     );
     assert_eq!(first.exit, Exit::Done);
-    let before = Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default())
-        .expect("open")
-        .0
-        .identity();
+    let before = open(&dir).expect("open").identity();
     let again = create(
         &creating(&dir, &run_dir, 2 << 20, None),
         [2; 16],
@@ -604,13 +589,9 @@ fn create_makes_the_last_part_and_refuses_a_missing_parent_a_file_and_a_volume()
         "{}",
         again.err
     );
-    let (store, _) =
-        Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).expect("open");
+    let store = open(&dir).expect("open");
     assert_eq!(store.identity(), before);
-    assert_eq!(
-        skyzfs_blk::BlockTarget::geometry(&store).size_bytes(),
-        1 << 20
-    );
+    assert_eq!(store.geometry().size_bytes(), 1 << 20);
 }
 
 /// The test build's base: every block of the new volume is the
@@ -794,6 +775,7 @@ fn create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothin
         &["log.failed"],
         &["notes"],
         &["home.img.bak", "home.new", "log.000000"],
+        &["volume.failed"],
     ] {
         let dir = keep.path().join("volume");
         std::fs::create_dir(&dir).expect("the directory");
@@ -840,7 +822,26 @@ fn create_refuses_a_directory_with_files_that_are_not_its_own_and_touches_nothin
         Some(BOOT),
     );
     assert_eq!(output.exit, Exit::Done, "{}", output.err);
-    assert!(Store::open(FsDir::new(&dir).expect("dir"), OpenOptions::default()).is_ok());
+    assert!(open(&dir).is_ok());
+
+    // A volume of the log store (before M1.3t) is not replaced: refused,
+    // said as such, and left as it was.
+    let old = keep.path().join("old");
+    std::fs::create_dir(&old).expect("the directory");
+    std::fs::write(old.join("log.super"), b"a superblock").expect("write");
+    let before = listing(&old);
+    let output = create(
+        &creating(&old, &run_dir, 1 << 20, None),
+        [1; 16],
+        Some(BOOT),
+    );
+    assert_eq!(output.exit, Exit::Error);
+    assert!(
+        output.err.contains("log store") && output.err.contains("Nothing was done"),
+        "{}",
+        output.err
+    );
+    assert_eq!(listing(&old), before);
 }
 
 /// `status` and `detach` open the driver only when they have something
@@ -923,12 +924,8 @@ fn status_does_not_show_the_status_file_of_another_volume_in_the_same_directory(
     let mut setup = Setup::new().attached(DeviceState::Waiting);
     let own = setup.sample();
     assert_ne!(own.identity, sample().identity);
-    // The store's identity is what an open store says it is.
-    let (store, _) = Store::open(
-        FsDir::new(&setup.volume.dir).expect("dir"),
-        OpenOptions::default(),
-    )
-    .expect("open");
+    // The volume's identity is what an open volume says it is.
+    let store = open(&setup.volume.dir).expect("open");
     assert_eq!(store.identity(), own.identity);
     drop(store);
 
@@ -949,7 +946,7 @@ fn status_does_not_show_the_status_file_of_another_volume_in_the_same_directory(
 /// format does not carry and one that cannot be read.
 #[test]
 fn create_chooses_the_write_unit_by_the_file_systems_block_or_refuses() {
-    let system = Identity::system_write_unit();
+    let system = system_write_unit();
     assert_eq!(write_unit_on(Ok(4096)), Ok(system));
     assert_eq!(write_unit_on(Ok(65536)), Ok(65536));
     let large = write_unit_on(Ok(1 << 20)).expect_err("blocks of 1 MiB");

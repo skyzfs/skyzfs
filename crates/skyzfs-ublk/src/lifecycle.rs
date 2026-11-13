@@ -94,9 +94,9 @@
 //!   gone), then the stored position is emptied, then the note is
 //!   removed. A kill anywhere in that leaves the note, and the next
 //!   start asks again.
-//! - **A failure found by a start** (the log is short, the recovery
-//!   failed the log, a record cannot be read, the log's own marker is
-//!   found): the failure note is written **first**, then the device's
+//! - **A failure found by a start** (the store's own failure marker is
+//!   found; until M1.3t also a log that was short, a recovery that
+//!   failed the log, a record that could not be read): the failure note is written **first**, then the device's
 //!   note is removed, then the device is deleted. If the failure note
 //!   cannot be written the device is deleted all the same, and the
 //!   reason says so. Whether a client held the device is decided by
@@ -256,17 +256,21 @@ pub enum AddError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
     /// The log store's log failed: while it served the volume, or in the
-    /// checkpoint that hands the volume to the in-place store at a start
-    /// (where nothing was served yet). The daemon's line at the failure
-    /// says which, so the reason itself does not claim "while served".
+    /// checkpoint that handed the volume to the in-place store at a start.
+    /// No longer given since M1.3t removed the log store; kept so that a
+    /// note of an older daemon is read (code 1).
     LogFailed,
-    /// A start found the log shorter than what was acknowledged.
+    /// A start found the log shorter than what was acknowledged. No
+    /// longer given since M1.3t (code 2).
     Short,
-    /// The recovery of a start failed the log.
+    /// The recovery of a start failed the log. No longer given since
+    /// M1.3t (code 3).
     RecoveryFailed,
     /// A start found the log marked as failed.
     Marked,
-    /// A start could not read the record of what was acknowledged.
+    /// A start could not read the record of what was acknowledged. Not
+    /// given for the in-place store since M1.3t, which holds to no
+    /// position ([`Volume::reaches_positions`]) (code 5).
     PositionUnreadable,
     /// A start could not read the note for the volume's device.
     DeviceNoteUnreadable,
@@ -498,6 +502,16 @@ pub trait Volume {
         must_reach: Option<MustReach>,
         acknowledge_failure: bool,
     ) -> Result<(Self::Open, u64), (OpenError, Self::Lock)>;
+    /// Whether the open holds the volume to a position of what was
+    /// acknowledged (`must_reach`). The log store's did. The in-place
+    /// store has no log and does not (since M1.3t): then the lifecycle
+    /// does not read the record of what was acknowledged at all, so that
+    /// a record it cannot read does not fail a volume that would not use
+    /// it ([`Reason::PositionUnreadable`]). Goes with the rest of the
+    /// position plumbing in M1.3t-b.
+    fn reaches_positions(&self) -> bool {
+        true
+    }
 }
 
 /// The daemon may serve: the store is open and a device is its.
@@ -774,8 +788,8 @@ fn open<C: Control, R: Records, V: Volume>(
     wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<(V::Open, u64, Option<Reason>), Stop> {
-    let early = mutants
-        .has(Mutants::POSITION_BEFORE_LOCK)
+    let reads_position = volume.reaches_positions();
+    let early = (reads_position && mutants.has(Mutants::POSITION_BEFORE_LOCK))
         .then(|| records.acknowledged());
     let mut held = lock(records, volume, wanted.lock_retries)?;
 
@@ -791,7 +805,10 @@ fn open<C: Control, R: Records, V: Volume>(
     let (store, size) = loop {
         // An acknowledgement opens without a position to reach: what
         // was acknowledged to nobody may be gone.
-        let forgets = acknowledging.is_some() && !mutants.has(Mutants::POSITION_KEPT);
+        // A volume that holds to no position is not given one, and the
+        // record is not read.
+        let forgets =
+            !reads_position || (acknowledging.is_some() && !mutants.has(Mutants::POSITION_KEPT));
         let must_reach = if forgets {
             None
         } else {
@@ -1410,8 +1427,8 @@ fn give_up_device<C: Control, R: Records>(
 }
 
 /// The volume failed while it was served, or at the start of the
-/// in-place store, for `reason` (the store's: [`Reason::LogFailed`] or
-/// [`Reason::ImageFailed`]): the volume gives up its attachment. The
+/// in-place store, for `reason` (the store's: [`Reason::ImageFailed`]
+/// since M1.3t, [`Reason::LogFailed`] before it): the volume gives up its attachment. The
 /// failure note first, with what the kernel says about
 /// a client holding the device (unknown, when it cannot say), then the
 /// device's note, then the device, without waiting. The caller holds

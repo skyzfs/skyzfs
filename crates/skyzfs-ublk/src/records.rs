@@ -59,7 +59,8 @@
 //!
 //! [`FAILED`] in the volume's directory under the run directory: the
 //! volume failed in this boot (design §4.2, "a failed volume gives up
-//! its attachment"), its log or the in-place store's image. Made whole under another name and
+//! its attachment"): the in-place store's image (before M1.3t also the
+//! log store's log). Made whole under another name and
 //! renamed; not synced, because it has to live exactly as long as the
 //! boot. A note of another boot counts as none. It has no checksum:
 //! it is replaced whole by a rename on a memory file system, and one
@@ -74,7 +75,7 @@
 //! | 8 | 16 | the boot it was written in |
 //! | 24 | 16 | the store's identity, or zeros where it was not known |
 //! | 40 | 1 | whether a client held the device: 0 none did, 1 one did, 2 not known when the note was written |
-//! | 41 | 1 | the reason: 1 the log store's log failed (while serving, or in the start's checkpoint), 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read, 7 a write or sync of the in-place store's image failed (while serving, or in its own sync at its start) |
+//! | 41 | 1 | the reason: 1 the log store's log failed (while serving, or in the start's checkpoint), 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read, 7 a write or sync of the in-place store's image failed (while serving, or in its own sync at its start). Since M1.3t no daemon writes 1, 2, 3 or 5; they are read as before |
 //! | 42 | 6 | zero |
 //! | 48 | 8 | when it was written: milliseconds since boot |
 //! | 56 | 8 | zero |
@@ -88,7 +89,7 @@
 //! `skyzfsd status` says the same. The note lives in the run directory
 //! until the next boot, and a reboot clears it: once the failure has
 //! been dealt with, the next boot's start acknowledges the volume with
-//! `--acknowledge-failure` (the store's own failure marker, `log.failed`
+//! `--acknowledge-failure` (the store's own failure marker, `volume.failed`
 //! beside the image, outlives the note but is acknowledged then). To
 //! serve the volume with such a daemon within the same boot the note is
 //! not enough to remove: the marker outlives it, and while an

@@ -31,7 +31,7 @@ use crate::io::{Dir, DirectAlign, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
-/// should have here ([`Identity::write_unit`]).
+/// should have here ([`Volume::write_unit`](crate::volume::Volume::write_unit)).
 ///
 /// Linux: libc's `sysconf(_SC_PAGESIZE)`, through `rustix` (its feature
 /// `use-libc-auxv`). The C library takes it from `AT_PAGESZ` of the
@@ -39,8 +39,6 @@ use crate::io::{Dir, DirectAlign, File, HelperEnded, NotBegun};
 /// cannot fail as a read of `/proc/self/auxv` can (where `/proc` is not
 /// mounted, a 16 KiB kernel would have been taken for 4 KiB without a
 /// word). Apple silicon: 16 KiB, other Macs 4 KiB.
-///
-/// [`Identity::write_unit`]: crate::format::Identity::write_unit
 pub fn page_size() -> u32 {
     #[cfg(target_os = "linux")]
     if let Ok(size) = u32::try_from(rustix::param::page_size()) {
