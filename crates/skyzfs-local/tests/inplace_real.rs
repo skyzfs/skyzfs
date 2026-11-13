@@ -15,7 +15,10 @@
 //! design: on tmpfs the pages are the file and cannot be dropped, and
 //! through an overlay the count sees none. Where the temporary directory
 //! is on such a file system, each test is skipped and says why on
-//! standard error; set `TMPDIR` to run it.
+//! standard error (`--nocapture` shows it); set `TMPDIR` to run it.
+//! Where the variable `CI` is set, as GitHub sets it on every runner, a
+//! skip is a failure instead: a run there is expected to test, and a
+//! skip reads as a pass.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
@@ -25,7 +28,7 @@ use skyzfs_blk::{Base, BlockTarget, Buf, Completion, Op, Request, RequestId};
 use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::InPlace;
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -50,11 +53,13 @@ fn config() -> StoreConfig {
 /// the daemon's do: the in-place store's start refuses without it.
 fn on_disk(path: &std::path::Path) -> Option<FsDir> {
     if let Err(why) = the_cache_can_be_dropped_and_counted(path) {
-        eprintln!(
-            "skipped: {}: {why}; the in-place store refuses to start there by design. Set \
-             TMPDIR to a directory whose file system's cache can be dropped and counted",
+        let why = format!(
+            "{}: {why}; the in-place store refuses to start there by design. Set TMPDIR to \
+             a directory whose file system's cache can be dropped and counted",
             path.display()
         );
+        assert!(!on_ci(), "not skipped where CI is set: {why}");
+        eprintln!("skipped: {why}");
         return None;
     }
     Some(
@@ -64,8 +69,14 @@ fn on_disk(path: &std::path::Path) -> Option<FsDir> {
     )
 }
 
+/// Whether this is a CI run (see the module documentation).
+fn on_ci() -> bool {
+    std::env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false")
+}
+
 /// Whether the directory's file system can do what the in-place store's
-/// start needs (see the module documentation), and if not, why not.
+/// start needs (see the module documentation), and if not, why not. A
+/// count that fails other than as unsupported fails the test.
 fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), String> {
     use std::os::unix::fs::FileExt;
     let probe = path.join("cache-probe");
@@ -86,13 +97,13 @@ fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), St
     drop(file);
     std::fs::remove_file(&probe).unwrap();
     match (seen, left) {
-        (Err(e), _) => Err(format!(
-            "the kernel cannot count a file's cached pages ({e})"
-        )),
+        (Err(e), _) if e.kind() == std::io::ErrorKind::Unsupported => {
+            Err("the kernel cannot count a file's cached pages (cachestat)".into())
+        }
+        (Err(e), _) | (Ok(_), Err(e)) => panic!("counting a file's cached pages failed: {e}"),
         (Ok(0), _) => Err("the count does not see a page just read (an overlay?)".into()),
         (Ok(_), Ok(0)) => Ok(()),
         (Ok(_), Ok(n)) => Err(format!("{n} pages stay cached after a drop (tmpfs?)")),
-        (Ok(_), Err(e)) => Err(format!("counting after the drop failed ({e})")),
     }
 }
 
@@ -211,6 +222,36 @@ fn the_in_place_store_round_trips_on_real_files() {
     assert_eq!(store.wait(&mut done, TIMEOUT), 1);
     assert_eq!(done[0].result, Ok(()));
     expect(done[0].buf.as_deref().unwrap());
+}
+
+/// Every start serves where the image begins with blocks never
+/// written, as a pool's label does (8 KiB that nothing wrote, then the
+/// boot block). A read of such a block is answered at once while the
+/// kernel's read-ahead of the blocks after it is still under I/O, and a
+/// drop leaves pages under I/O; a start that read a block just before
+/// its drop could find them still there and refuse. The image's cache
+/// is dropped before each start, as after a boot: otherwise what one
+/// start leaves in the cache would answer the next one's reads without
+/// a read-ahead, and a read before the drop would go unnoticed.
+#[test]
+fn every_start_serves_where_the_image_begins_with_a_hole() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    let mut store = start(&dir).unwrap();
+    write(&mut store, 2, Buf::filled(2, 0x22));
+    flush(&mut store);
+    drop(store);
+    let home = std::fs::File::open(tmp.path().join(HOME_NAME)).unwrap();
+    for n in 0..200 {
+        rustix::fs::fadvise(&home, 0, None, rustix::fs::Advice::DontNeed).unwrap();
+        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
+        if let Err(e) = store.into_in_place(None) {
+            panic!("start {n} refused: {e}");
+        }
+    }
 }
 
 const CHILD_DIR: &str = "SKYZFS_INPLACE_KILL_TEST_DIR";

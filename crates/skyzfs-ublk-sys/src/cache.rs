@@ -75,7 +75,9 @@ mod tests {
     /// kernel before 6.5 the call answers unsupported, and that is all
     /// this test can show there. Where the temporary directory's file
     /// system keeps a file's pages (tmpfs) or the count does not see
-    /// them (an overlay), the test is skipped and says why.
+    /// them (an overlay), the test is skipped and says why on standard
+    /// error, except where the variable `CI` is set, as GitHub sets it
+    /// on every runner: there a skip, which reads as a pass, fails.
     #[test]
     fn the_pages_of_a_file_in_the_cache_are_counted() {
         let dir = tempfile_dir();
@@ -89,12 +91,15 @@ mod tests {
             .expect("a file");
         file.write_all_at(&[7u8; 1 << 20], 0).expect("written");
         let skip = |why: &str| {
-            eprintln!(
-                "skipped: {}: {why}; set TMPDIR to a directory whose file system's cache \
-                 can be dropped and counted",
+            let _ = std::fs::remove_dir_all(&dir);
+            let why = format!(
+                "{}: {why}; set TMPDIR to a directory whose file system's cache can be \
+                 dropped and counted",
                 dir.display()
             );
-            let _ = std::fs::remove_dir_all(&dir);
+            let on_ci = std::env::var_os("CI").is_some_and(|v| !v.is_empty() && v != "false");
+            assert!(!on_ci, "not skipped where CI is set: {why}");
+            eprintln!("skipped: {why}");
         };
         let written = match cached_pages(&file) {
             Ok(pages) => pages,

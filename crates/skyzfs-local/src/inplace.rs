@@ -178,8 +178,11 @@ impl Mutants {
     pub(crate) const CACHE_NOT_DROPPED: u32 = 1 << 7;
     /// The start does not check that the cache is gone.
     pub(crate) const CACHE_NOT_CHECKED: u32 = 1 << 8;
-    /// The start does not first show that the count sees the file.
+    /// The start does not show that the count sees the file.
     pub(crate) const CACHE_SIGHT_UNCHECKED: u32 = 1 << 9;
+    /// The start shows that the count sees the file before the drop,
+    /// not after it.
+    pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -503,14 +506,17 @@ impl<D: Dir> InPlace<D> {
     /// That holds whether this start acknowledges a failure or follows
     /// an instance that died between a failed sync and its marker,
     /// whose own sync then succeeds: the kernel reports a writeback
-    /// error once. The count is first shown to see this file
-    /// ([`InPlace::count_sees_the_file`]). The drop is advisory, so it is
-    /// tried twice; pages that stay, a drop that fails, a count that
-    /// does not see the file, or a kernel that cannot count the file's
-    /// cached pages refuse the start. Its cost: the first reads after a
-    /// start, a take-over included, come from the disk.
+    /// error once. The drop is advisory, so it is tried twice. Once the
+    /// count reads 0, it is shown to see this file at all
+    /// ([`InPlace::count_sees_the_file`]). Pages that stay, a drop that
+    /// fails, a count that does not see the file, or a kernel that
+    /// cannot count the file's cached pages refuse the start. Its cost:
+    /// the first reads after a start, a take-over included, come from
+    /// the disk.
     fn empty_cache(&mut self) -> Result<(), String> {
-        if !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED) {
+        let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
+        let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
+        if look && look_first {
             self.count_sees_the_file()?;
         }
         let mut left = 0;
@@ -520,26 +526,50 @@ impl<D: Dir> InPlace<D> {
                     .drop_cache()
                     .map_err(|e| format!("the drop failed: {e}"))?;
             }
-            if self.mutants.has(Mutants::CACHE_NOT_CHECKED) {
-                return Ok(());
-            }
-            left = self.cached_pages()?;
+            left = if self.mutants.has(Mutants::CACHE_NOT_CHECKED) {
+                0
+            } else {
+                self.cached_pages()?
+            };
             if left == 0 {
-                return Ok(());
+                break;
             }
         }
-        Err(format!(
-            "{left} pages of it stay in the cache after two drops; something else may map, \
-             lock or read the file"
-        ))
+        if left > 0 {
+            return Err(format!(
+                "{left} pages of it stay in the cache after two drops; something else may \
+                 map, lock or read the file"
+            ));
+        }
+        if look && !look_first {
+            self.count_sees_the_file()?;
+        }
+        Ok(())
     }
 
-    /// Show that the count sees this file's pages before it is trusted
-    /// to see none: a block read through the cache must count. On an
+    /// Show that the count, which has just read 0, sees this file's
+    /// pages at all: a block read through the cache must count. On an
     /// overlay file system `cachestat` counts the overlay file's own
     /// mapping, which holds no page (they are the file's below), and
     /// would read 0 whatever the cache holds; a file system without a
     /// page cache would read 0 too, and is refused the same way.
+    ///
+    /// The look reads block 0, which is a hole on every pool's volume
+    /// (the first 8 KiB of the label are never written), so it rests on
+    /// a read of a hole leaving a page in the cache. ext4 and XFS leave
+    /// one (the rigs' first start of a pool is on an image of holes
+    /// only); tmpfs leaves none, and a new volume there is refused here,
+    /// as it would be by the drop once it holds data.
+    ///
+    /// The look comes after the drop, and what it reads comes from the
+    /// disk and may stay. Before the drop it made starts refuse: the
+    /// read starts the kernel's read-ahead of the blocks after it, and
+    /// where the block read is a hole (as the first 8 KiB of a pool's
+    /// label are) it is answered at once, while the read-ahead is still
+    /// under I/O, and a drop leaves pages under I/O. In the review's
+    /// run, 731 of 1500 starts refused on such an image
+    /// (`every_start_serves_where_the_image_begins_with_a_hole` in
+    /// `tests/inplace_real.rs`).
     fn count_sees_the_file(&mut self) -> Result<(), String> {
         let mut block = vec![0u8; skyzfs_blk::BLOCK_USIZE];
         self.home
@@ -548,8 +578,9 @@ impl<D: Dir> InPlace<D> {
         if self.cached_pages()? == 0 {
             return Err(
                 "the file system's cache cannot be observed through this file: a block \
-                 just read through the cache counts 0 pages (as through an overlay file \
-                 system), so the start cannot show that the drop left none"
+                 just read through the cache counts 0 pages, so the start cannot show that \
+                 the drop left none (through an overlay file system, for example, the count \
+                 sees no page)"
                     .into(),
             );
         }
