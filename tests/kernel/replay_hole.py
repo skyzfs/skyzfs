@@ -469,16 +469,21 @@ def verdict(results):
     bad = [r for r in results if r['violations'] or r['failures']]
     pinned = [r for r in results if ON_DISK[r['kind']] != 'observed'
               and r.get('disk_zero_prefixes', 0) != ON_DISK[r['kind']]]
-    if [r for r in results if not r.get('control')]:
+    # The control is needed for a course that was checked. A course that
+    # never got that far (the daemon's create, its start, the course's
+    # writes or its stop failed: hole-rig.sh records the failure and no
+    # control) is the daemon's failure and stays a verdict.
+    if [r for r in results if not r.get('control') and not (r['failures'] and not r.get('checked'))]:
         return 2, ('A course was checked without its negative control: nothing shows that the check catches a '
                    'flush over data the disk does not have. Not a verdict.')
-    ctl = [r for r in results if r['control']['result'] != EXPECTED['withheld']]
+    ctl = [r for r in results if r.get('control') and r['control']['result'] != EXPECTED['withheld']]
     if ctl:
         return 2, 'A negative control was not caught: the check does not show what it should. Not a verdict.'
     if bad or pinned:
         why = []
         if bad:
-            why.append('a block read what it must not at a prefix, or a prefix did not start')
+            why.append('a block read what it must not at a prefix, a prefix did not start, or the daemon failed '
+                       'before the course could be checked')
         if pinned:
             why.append('on an image written through at create, a returned write whose data was on the disk read as '
                        'zeros (' + ', '.join(f"{r['fs']}: {r.get('disk_zero_prefixes', 0)} prefixes" for r in pinned)
@@ -503,7 +508,8 @@ def summary(results, kernel='', daemon=''):
         rng = r.get('range')
         span = (rng[1] - rng[0] + 1) if rng else '?'
         c = r.get('control') or {}
-        ctl = c.get('result', 'not asked') if c else 'not asked'
+        ctl = c.get('result', 'not asked') if c else ('none: not checked' if r['failures'] and not r.get('checked')
+                                                      else 'not asked')
         pin = ON_DISK.get(r['kind'], 'not in the table')
         pin = f'; must be {pin}' if pin != 'observed' else ''
         out.append(f"| {r['fs']} | {r['kind']} | {r['checked']} of {span} | {r['zero_prefixes']} "

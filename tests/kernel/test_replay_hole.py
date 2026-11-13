@@ -206,6 +206,15 @@ class Verdict(unittest.TestCase):
         # A kind the table does not name is the rig's error.
         self.assertEqual(rh.verdict([result(kind='preallocated')])[0], 2)
 
+    def test_a_daemon_that_failed_before_the_check_is_a_verdict(self):
+        # As hole-rig.sh's course_json writes it: nothing checked, no control.
+        failed = {'fs': 'ext4', 'kind': 'zero-fill', 'checked': 0, 'zero_prefixes': 0, 'zero_blocks': 0,
+                  'violations': [], 'failures': ['skyzfsd serve did not get ready'], 'rig_error': None,
+                  'control': None}
+        code, head = rh.verdict([result(), failed])
+        self.assertEqual(code, 1)
+        self.assertIn('A verdict against the daemon', head)
+
     def test_a_course_without_its_control_is_the_rigs_error(self):
         code, head = rh.verdict([result(), result(kind='fallocate', control=None)])
         self.assertEqual(code, 2)

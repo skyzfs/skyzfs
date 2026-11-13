@@ -423,10 +423,22 @@ jobs:
           BUDGET: ${{ needs.plan.outputs.budget }}
           SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '--store in-place' }}
           DAEMON_REF: ${{ inputs.daemon_ref || '' }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
         run: |
           [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
-          # The hole courses are of the in-place store whatever else is asked.
-          [[ " $SERVE_ARGS " == *" --store "* ]] || SERVE_ARGS="--store in-place $SERVE_ARGS"
+          # The hole courses are of the in-place store whatever else is
+          # asked: a --store of serve_args is replaced, and the summary
+          # says so. With the log store the first record that carries a
+          # block's data would be the log's, not the home image's.
+          read -r -a given <<< "$SERVE_ARGS"; kept=()
+          for ((i = 0; i < ${#given[@]}; i++)); do
+            case ${given[i]} in
+              --store) i=$((i + 1)); [ "${given[i]:-}" = in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`--store ${given[i]:-}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
+              --store=*) [ "${given[i]}" = --store=in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`${given[i]}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
+              *) kept+=("${given[i]}") ;;
+            esac
+          done
+          SERVE_ARGS="--store in-place${kept[*]:+ ${kept[*]}}"
           case $BUDGET in
             pull-request) every="" ;;
             full) every=1 ;;
@@ -436,7 +448,10 @@ jobs:
             echo "export RIG_SKYZFSD=$PWD/target/release/skyzfsd"
             echo "export RIG_HOLE_EVERY_PREFIX=$every RIG_BUDGET_NAME=$BUDGET"
             printf 'export RIG_SERVE_ARGS=%q\n' "$SERVE_ARGS"
-            printf 'export RIG_DAEMON_FROM=%q\n' "${DAEMON_REF:-the checkout, $(git rev-parse HEAD)}"
+            if [ -n "$DAEMON_REF" ]; then from=$DAEMON_REF
+            elif [ -n "$PR_HEAD" ]; then from="the pull request's head $PR_HEAD, merged with its base"
+            else from="the checkout, $(git rev-parse HEAD)"; fi
+            printf 'export RIG_DAEMON_FROM=%q\n' "$from"
           } > "$RUNNER_TEMP/rig.env"
           rc=0
           sudo bash -c '. "$1" && exec tests/kernel/hole-rig.sh "$2" /mnt/skz-hole' \
