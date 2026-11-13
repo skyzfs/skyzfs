@@ -6,9 +6,15 @@
 //! the log store's open recovers the log as always, the whole log is
 //! applied to the home image, the home image is synced, and from then
 //! on the log is empty and is never written. The volume's files stay
-//! those of the log store, so a volume can go back and forth between
-//! the two: an empty log replays nothing over what the in-place store
-//! wrote. What the log store keeps for the daemon (the lock, the
+//! those of the log store. **A volume served in place must not be given
+//! back to the log store**: the log store's open does not sync the home
+//! image, and its flushes sync the log alone, so a write this store
+//! acknowledged and no flush covered before its process was lost is
+//! covered by no flush of the log store after it, and a power cut can
+//! take it (rule R7). That is owed (the review of M1.3r, finding A;
+//! the ignored test
+//! `a_flush_on_the_log_store_covers_what_the_in_place_store_wrote`
+//! reproduces it). What the log store keeps for the daemon (the lock, the
 //! identity, the failure marker and the observer that hears of a
 //! failure first) is the log's and stays with it here.
 //!
