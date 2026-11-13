@@ -69,3 +69,10 @@ three kernel-run wirings, "no control is asked of a checked course that
 has a failure" is not held. `storeloop.sh` is the hole job's replacement
 of `--store` in `serve_args`, run on seven inputs (`storeloop.txt`).
 The hole jobs had not been created on this head when CI was read.
+
+## Head 2bd14b6
+
+Posted. a38a29d (the rig replaces any `--store` when run by hand) and
+2bd14b6 (a test that a checked course with failures still needs its
+control) are right; 24 tests pass. The hole jobs on this head were not
+read yet; one read is scheduled.

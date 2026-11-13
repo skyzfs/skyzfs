@@ -1,0 +1,9 @@
+[] -> serve --store in-place; IN_PLACE='1'
+[--io-threads 1] -> serve --store in-place --io-threads 1; IN_PLACE='1'
+[--log-high 8] -> RIG_SERVE_ARGS: --log-high is an option of the log store; name --store log beside it (a build from before M1.3t)
+  exit 64
+[--readers=2 --io-threads 1] -> RIG_SERVE_ARGS: --readers is an option of the log store; name --store log beside it (a build from before M1.3t)
+  exit 64
+[--store log --log-high 8] -> serve --store log --log-high 8; IN_PLACE=''
+[--store in-place] -> serve --store in-place; IN_PLACE='1'
+[--store=in-place --io-threads 2] -> serve --store=in-place --io-threads 2; IN_PLACE='1'
