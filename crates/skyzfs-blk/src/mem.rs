@@ -380,9 +380,11 @@ impl MemTarget {
             let mut first = lost.remove(0);
             if let Some((block, Effect::Data(data))) = first.effects.first_mut() {
                 // The new block, with the old one's bytes from the middle
-                // of its first sector on: torn inside a sector.
+                // of its first sector on: torn inside a sector. At byte
+                // 256, so that a model whose sector were half as large
+                // would take it.
                 let at = *block as usize * BLOCK_USIZE;
-                data[100..512].copy_from_slice(&self.image[at + 100..at + 512]);
+                data[256..512].copy_from_slice(&self.image[at + 256..at + 512]);
                 first.effects.truncate(1);
                 self.log.push(first);
             }

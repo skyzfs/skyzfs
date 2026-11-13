@@ -19,11 +19,16 @@ skyzfs-blk = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# For the real-file tests of the in-place store: the call that counts a
+# file's cached pages (`cachestat`), which this crate does not make.
+skyzfs-ublk-sys = { workspace = true }
 skyzfs-blk = { workspace = true, features = ["conformance"] }
 tempfile = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # For the value of O_DIRECT only: no call into libc, no unsafe.
 libc = "0.2"
-# For `fallocate`, to deallocate a range of the home image.
-rustix = { version = "1", features = ["fs"] }
+# For `fallocate`, to deallocate a range of the home image; `fadvise`,
+# to drop its cache; and the page size, from the auxiliary vector by
+# libc's `getauxval`.
+rustix = { version = "1", features = ["fs", "param", "use-libc-auxv"] }

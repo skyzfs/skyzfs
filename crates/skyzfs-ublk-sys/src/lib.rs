@@ -62,6 +62,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(target_os = "linux")]
+mod cache;
+#[cfg(target_os = "linux")]
 pub mod control;
 #[cfg(target_os = "linux")]
 mod mem;
@@ -93,6 +95,9 @@ pub use wake::Wake;
 
 #[cfg(target_os = "linux")]
 pub use writeback::start_writeback;
+
+#[cfg(target_os = "linux")]
+pub use cache::cached_pages;
 
 /// The driver flags the daemon asks for when it adds a device: user
 /// recovery, with reissue. They are also the mask under which a

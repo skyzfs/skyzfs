@@ -19,9 +19,14 @@
 //! - `fail_log` makes every write and every sync fail from then on, as
 //!   the simulated disk fails them: a failed write leaves any subset of
 //!   its sectors, a failed sync may drop what it did not make durable.
-//! - `reopen_failed` takes the fault away, cuts the power and starts
-//!   with the failure acknowledged: the volume is then as after a power
-//!   cut (rule R11).
+//! - `reopen_failed` takes the fault away, loses the process and
+//!   starts with the failure acknowledged, with the kernel's cache kept,
+//!   as the log store's harness does: what a failed sync left marked
+//!   clean and never written is still in the cache. The start drops the
+//!   cache and serves only what the disk holds, which is what makes the
+//!   volume as after a power cut (rule R11); the case
+//!   `reopened_failed_volume_holds_what_was_flushed` fails on a store
+//!   that does not.
 
 use std::time::Duration;
 
@@ -277,7 +282,7 @@ impl Harness for InPlaceHarness {
         } = target;
         drop(inner);
         disk.clear_faults();
-        disk.power_cut(SeededCut::new(0x0FA1_1ED0));
+        disk.kill();
         self.start(disk, geometry.read_only(), true, Some(geometry))
     }
 }

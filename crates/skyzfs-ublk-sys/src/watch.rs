@@ -28,8 +28,9 @@ pub struct Watching;
 const ROOM: usize = 1024;
 
 /// The watched ranges: start and end, both 0 for a free slot. A slot's
-/// end is written before its start and read after it, so a reader that
-/// sees a start sees its end.
+/// end is written before its start and read after it, the start with
+/// `Acquire`, so a reader that sees a start sees its end on any
+/// architecture, not only on amd64's stronger order.
 static STARTS: [AtomicUsize; ROOM] = [const { AtomicUsize::new(0) }; ROOM];
 static ENDS: [AtomicUsize; ROOM] = [const { AtomicUsize::new(0) }; ROOM];
 /// The slots in use, so that an allocator nobody asked to watch costs
@@ -59,9 +60,9 @@ pub fn freed() -> u64 {
 }
 
 fn given_back(start: usize, len: usize) {
-    let used = USED.load(Ordering::Relaxed).min(ROOM);
+    let used = USED.load(Ordering::Acquire).min(ROOM);
     for slot in 0..used {
-        let watched = STARTS[slot].load(Ordering::Relaxed);
+        let watched = STARTS[slot].load(Ordering::Acquire);
         if watched != 0 && watched < start + len && start < ENDS[slot].load(Ordering::Relaxed) {
             FREED.fetch_add(1, Ordering::SeqCst);
             return;
@@ -155,9 +156,27 @@ mod tests {
     /// too. It maps four pages of the system aligned to four, unmaps
     /// the first, and asks about the second: with pages of four of the
     /// system's, the range reaches the unmapped one; with the system's
-    /// own, it does not.
+    /// own, it does not. Another thread of the test binary can map a
+    /// page into the hole meanwhile; the answers count only when the
+    /// hole is still there after them, and the test tries again
+    /// otherwise.
     #[test]
     fn mapped_in_rounds_to_the_page_it_is_given() {
+        for _ in 0..100 {
+            if let Some((own, larger, hole)) = with_a_hole() {
+                assert!(own, "the page after the hole reads as unmapped");
+                assert!(!larger, "a page four times larger did not reach the hole");
+                assert!(!hole);
+                return;
+            }
+        }
+        panic!("another thread filled the hole every time");
+    }
+
+    /// Map, make the hole, ask `mapped_in` about the page after it with
+    /// the system's page and with one four times larger, and whether the
+    /// hole reads as mapped; `None` where the hole was filled.
+    fn with_a_hole() -> Option<(bool, bool, bool)> {
         let host = page_size();
         let large = 4 * host;
         // Room to find a start aligned to `large`.
@@ -182,15 +201,19 @@ mod tests {
         let unmapped = unsafe { libc::munmap(aligned as *mut libc::c_void, host) };
         assert_eq!(unmapped, 0);
         let second = aligned + host;
-        assert!(mapped_in(second, host, host));
-        assert!(!mapped_in(second, host, large));
-        assert!(!mapped_in(aligned, host, host));
-        assert!(mapped(second, host));
+        let answers = (
+            mapped_in(second, host, host) && mapped(second, host),
+            mapped_in(second, host, large),
+            mapped_in(aligned, host, host),
+        );
+        let filled = answers.2;
         // SAFETY: what is left of the mapping made above, around the
-        // page already unmapped; nothing refers to it.
+        // page already unmapped; nothing refers to it. A page another
+        // thread mapped into the hole is not touched.
         unsafe {
             libc::munmap(base as *mut libc::c_void, aligned - base);
             libc::munmap(second as *mut libc::c_void, base + room - second);
         }
+        (!filled).then_some(answers)
     }
 }

@@ -31,32 +31,20 @@ use crate::io::{Dir, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
-/// should have here ([`Identity::write_unit`]). 4096 where it cannot be
-/// found out.
+/// should have here ([`Identity::write_unit`]).
+///
+/// Linux: `AT_PAGESZ` of the process's auxiliary vector, through libc's
+/// `getauxval`, which every process has and which cannot fail as a read
+/// of `/proc/self/auxv` can (where `/proc` is not mounted, a 16 KiB
+/// kernel would have been taken for 4 KiB without a word). Apple
+/// silicon: 16 KiB, other Macs 4 KiB.
 ///
 /// [`Identity::write_unit`]: crate::format::Identity::write_unit
 pub fn page_size() -> u32 {
-    // Linux tells every process in its auxiliary vector: pairs of
-    // native words, the pair with key 6 (AT_PAGESZ) holding the size.
     #[cfg(target_os = "linux")]
-    if let Ok(auxv) = fs::read("/proc/self/auxv") {
-        const WORD: usize = std::mem::size_of::<usize>();
-        let (pairs, _) = auxv.as_chunks::<{ 2 * WORD }>();
-        for pair in pairs {
-            let (key, value) = pair.split_at(WORD);
-            let word = |bytes: &[u8]| {
-                let mut raw = [0u8; WORD];
-                raw.copy_from_slice(bytes);
-                usize::from_ne_bytes(raw)
-            };
-            if word(key) == 6 {
-                if let Ok(size) = u32::try_from(word(value)) {
-                    return size;
-                }
-            }
-        }
+    if let Ok(size) = u32::try_from(rustix::param::page_size()) {
+        return size;
     }
-    // Apple silicon has 16 KiB pages, other Macs 4 KiB.
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         16384
     } else {
@@ -70,12 +58,20 @@ pub fn page_size() -> u32 {
 /// [`io::ErrorKind::Unsupported`] where the file system has none.
 pub type WritebackCall = fn(&fs::File, u64, u64) -> io::Result<()>;
 
+/// The call that counts the pages of a file in the kernel's cache
+/// ([`File::cached_pages`]): given by whoever opens the store, since it
+/// is a system call this crate does not make itself (Linux: `cachestat`).
+/// It answers [`io::ErrorKind::Unsupported`] where the kernel has none.
+pub type CacheCountCall = fn(&fs::File) -> io::Result<u64>;
+
 /// A directory on a real file system.
 #[derive(Debug, Clone)]
 pub struct FsDir {
     path: PathBuf,
     /// Given to every file opened here: see [`FsDir::with_writeback`].
     writeback: Option<WritebackCall>,
+    /// Given to every file opened here: see [`FsDir::with_cache_count`].
+    cache_count: Option<CacheCountCall>,
 }
 
 impl FsDir {
@@ -91,6 +87,7 @@ impl FsDir {
         Ok(Self {
             path,
             writeback: None,
+            cache_count: None,
         })
     }
 
@@ -100,6 +97,17 @@ impl FsDir {
     pub fn with_writeback(self, call: WritebackCall) -> Self {
         Self {
             writeback: Some(call),
+            ..self
+        }
+    }
+
+    /// The same directory, whose files count their cached pages with
+    /// `call`. Without it, [`File::cached_pages`] of its files answers
+    /// unsupported, and the in-place store refuses to start
+    /// ([`crate::inplace`]).
+    pub fn with_cache_count(self, call: CacheCountCall) -> Self {
+        Self {
+            cache_count: Some(call),
             ..self
         }
     }
@@ -252,13 +260,13 @@ impl Dir for FsDir {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let path = self.path.join(name);
         let file = options.open(&path)?;
-        FsFile::new(file, &path, self.writeback)
+        FsFile::new(file, &path, self.writeback, self.cache_count)
     }
 
     fn open(&self, name: &str) -> io::Result<FsFile> {
         let path = self.path.join(name);
         let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
-        FsFile::new(file, &path, self.writeback)
+        FsFile::new(file, &path, self.writeback, self.cache_count)
     }
 
     fn remove(&self, name: &str) -> io::Result<()> {
@@ -326,6 +334,8 @@ pub struct FsFile {
     file: fs::File,
     /// See [`FsDir::with_writeback`].
     writeback: Option<WritebackCall>,
+    /// See [`FsDir::with_cache_count`].
+    cache_count: Option<CacheCountCall>,
     /// A second descriptor on the same file that bypasses the cache.
     /// `None`: the file system, or this system, has none to give.
     direct: Option<fs::File>,
@@ -411,11 +421,17 @@ const DIRECT_ALIGN: usize = 4096;
 
 impl FsFile {
     /// `file`, which was just opened as `path`.
-    fn new(file: fs::File, path: &Path, writeback: Option<WritebackCall>) -> io::Result<Self> {
+    fn new(
+        file: fs::File,
+        path: &Path,
+        writeback: Option<WritebackCall>,
+        cache_count: Option<CacheCountCall>,
+    ) -> io::Result<Self> {
         let direct = open_direct(&file, path)?;
         Ok(Self {
             file,
             writeback,
+            cache_count,
             direct,
             helper: None,
             #[cfg(test)]
@@ -622,6 +638,25 @@ impl File for FsFile {
     fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
         match self.writeback {
             Some(call) => call(&self.file, offset, len),
+            None => Err(io::ErrorKind::Unsupported.into()),
+        }
+    }
+
+    fn drop_cache(&mut self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            rustix::fs::fadvise(&self.file, 0, None, rustix::fs::Advice::DontNeed)
+                .map_err(io::Error::from)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    fn cached_pages(&self) -> io::Result<u64> {
+        match self.cache_count {
+            Some(call) => call(&self.file),
             None => Err(io::ErrorKind::Unsupported.into()),
         }
     }

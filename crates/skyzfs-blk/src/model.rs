@@ -456,12 +456,40 @@ impl World {
         out
     }
 
+    /// Where the last operation of the tail that covers `block` is a
+    /// discard: what the block may hold at the end of the tail, the
+    /// contents the discard allows (rule R6). Such a block may read
+    /// differently from one read to the next until the next write (§4.1),
+    /// a power cut or not.
+    fn discarded(&self, cx: &Context, block: u64) -> Option<Cell> {
+        let last = self
+            .tail
+            .iter()
+            .rev()
+            .find(|p| cx.ops[p.op].covers(block))?;
+        if !matches!(cx.ops[last.op].effect, Effect::Discard) {
+            return None;
+        }
+        let mut cell = cx.cell(&self.durable, block);
+        for placed in &self.tail {
+            let op = &cx.ops[placed.op];
+            if op.covers(block) {
+                cell = cx.step(op, block, cell);
+            }
+        }
+        Some(cell)
+    }
+
     /// Whether this world explains what was read back after a power cut
     /// (rule R10, the volatile-cache disk): each 512-byte sector of each
     /// block is that sector of one of the block's versions
     /// ([`World::versions`]), independently of every other sector. If
     /// it does, the world as the cut left it: what was read is durable,
-    /// and nothing is in flight.
+    /// and nothing is in flight. A block whose last operation is a
+    /// discard, read whole as one of the contents the discard allows,
+    /// keeps them all: the discard may have survived, and its reads may
+    /// still differ (§4.1). A block read as a mix of sectors is held to
+    /// the mix, a reading stricter than §4.1 says nothing against.
     fn after_cut(&self, cx: &mut Context, seen: &Readback) -> Option<World> {
         let mut durable = self.durable.clone();
         for (block, read) in seen {
@@ -475,10 +503,14 @@ impl World {
                 return None;
             }
             let id = cx.intern(read);
-            if id == cx.base_cid(*block) {
+            let cell = match self.discarded(cx, *block) {
+                Some(cell) if cell.contains(&id) => cell,
+                _ => vec![id],
+            };
+            if cell.len() == 1 && cell[0] == cx.base_cid(*block) {
                 durable.remove(block);
             } else {
-                durable.insert(*block, vec![id]);
+                durable.insert(*block, cell);
             }
         }
         Some(World {
@@ -1150,13 +1182,25 @@ impl Model {
             };
             if needed.contains(&block) {
                 // A cut leaves one state: a second read of the block
-                // returns what the first did.
+                // returns what the first did, unless the block may be
+                // discarded and both reads are contents its discard
+                // allows (§4.1: such reads may differ).
                 match seen.get(&block) {
                     Some(before) if &before[..] != bytes => {
-                        return Err(Violation::BadRecovery {
-                            block,
-                            kind: Mismatch::Inconsistent,
-                        })
+                        let (first, now) = (self.cx.lookup(before), self.cx.lookup(bytes));
+                        let free = self.worlds.iter().any(|world| {
+                            world.discarded(&self.cx, block).is_some_and(|cell| {
+                                [first, now]
+                                    .iter()
+                                    .all(|id| id.is_some_and(|id| cell.contains(&id)))
+                            })
+                        });
+                        if !free {
+                            return Err(Violation::BadRecovery {
+                                block,
+                                kind: Mismatch::Inconsistent,
+                            });
+                        }
                     }
                     Some(_) => {}
                     None => {
@@ -1555,19 +1599,34 @@ mod tests {
 
     /// R10, the volatile-cache disk: of a block written since its last
     /// flush, a sector holds the flushed content or a version written
-    /// since, and nothing older than the flush.
+    /// since, and nothing older than the flush. Twice: with the flushed
+    /// write folded into the durable content, and with it still in the
+    /// order behind a write to another block that is in flight across
+    /// the flush, where only the floor of a block's versions keeps the
+    /// content before the flush out.
     #[test]
     fn power_cut_keeps_no_version_older_than_the_last_flush() {
-        let mut c = Client::new();
-        c.wrote(0, 1, 1);
-        c.flush();
-        c.wrote(0, 1, 2);
-        c.wrote(0, 1, 3);
-        c.model.power_cut();
-        for answer in [1, 2, 3] {
-            assert!(c.would_see(0, &[answer]), "{answer}");
+        // Both blocks are read: a cut is judged once every block that
+        // may have changed has been read.
+        for held in [false, true] {
+            let mut c = Client::new();
+            let _other = held.then(|| c.write(1, 1, 9));
+            c.wrote(0, 1, 1);
+            c.flush();
+            c.wrote(0, 1, 2);
+            c.wrote(0, 1, 3);
+            c.model.power_cut();
+            for answer in [1, 2, 3] {
+                assert!(c.would_see(0, &[answer, 0]), "held {held}: {answer}");
+            }
+            assert!(
+                c.would_see(0, &[1, if held { 9 } else { 0 }]),
+                "held {held}"
+            );
+            for other in [0, 9] {
+                assert!(!c.would_see(0, &[0, other]), "held {held}");
+            }
         }
-        assert!(!c.would_see(0, &[0]));
     }
 
     /// R10: two writes that were in flight together and do not overlap
@@ -1599,23 +1658,81 @@ mod tests {
         // At a sector: allowed.
         let mut at_sector = vec![1u8; 2 * B];
         at_sector[512..1024].fill(0);
-        // Inside a sector: not.
-        let mut inside = vec![1u8; 2 * B];
-        inside[100..200].fill(0);
-        let mut probe = c.clone();
-        let r = probe.read(0, 2);
-        assert_eq!(
-            probe.returns(r, inside),
-            Err(Violation::BadRecovery {
-                block: 0,
-                kind: Mismatch::Torn
-            })
-        );
+        // Inside a sector: not, at byte 100 or at half a sector (which
+        // pins the sector's size from below).
+        for (from, to) in [(100, 200), (256, 512)] {
+            let mut inside = vec![1u8; 2 * B];
+            inside[from..to].fill(0);
+            let mut probe = c.clone();
+            let r = probe.read(0, 2);
+            assert_eq!(
+                probe.returns(r, inside),
+                Err(Violation::BadRecovery {
+                    block: 0,
+                    kind: Mismatch::Torn
+                }),
+                "a tear at bytes {from}..{to}"
+            );
+        }
         let r = c.read(0, 2);
         c.returns(r, at_sector.clone()).unwrap();
         c.model.power_cut();
         let r = c.read(0, 2);
         c.returns(r, at_sector).unwrap();
+    }
+
+    /// R6 and §4.1 across a power cut: a block whose discard was
+    /// acknowledged and not flushed may read as its old content or as
+    /// zeros, and differently from one read to the next, until the next
+    /// write; after the cut too, and also while other blocks are still
+    /// to be read back. A write ends the freedom.
+    #[test]
+    fn a_discarded_block_may_read_differently_after_a_power_cut() {
+        for other in [false, true] {
+            let mut c = Client::new();
+            c.wrote(0, 1, 1);
+            c.flush();
+            let d = c.discard(0, 1);
+            c.ack(d);
+            if other {
+                // Block 1 is still to be read back while block 0 is read
+                // twice: the reads are judged before the cut is.
+                c.wrote(1, 1, 2);
+            }
+            c.model.power_cut();
+            c.sees(0, &[1]).unwrap();
+            c.sees(0, &[0]).unwrap();
+            if other {
+                c.sees(1, &[2]).unwrap();
+            }
+            c.sees(0, &[1]).unwrap();
+            c.sees(0, &[0]).unwrap();
+            c.wrote(0, 1, 3);
+            assert!(!c.would_see(0, &[1]), "other {other}");
+            c.sees(0, &[3]).unwrap();
+        }
+    }
+
+    /// R10: a cut leaves one state. A block read a second time after
+    /// the cut, before every block that may have changed was read,
+    /// returns what it did the first time, though either answer alone
+    /// was allowed.
+    #[test]
+    fn power_cut_leaves_one_answer_per_block() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        c.wrote(1, 1, 2);
+        c.model.power_cut();
+        assert!(c.would_see(0, &[0]));
+        c.sees(0, &[1]).unwrap();
+        let r = c.read(0, 1);
+        assert_eq!(
+            c.returns(r, vec![0u8; B]),
+            Err(Violation::BadRecovery {
+                block: 0,
+                kind: Mismatch::Inconsistent
+            })
+        );
     }
 
     /// R10: a write in flight at the power cut may have landed, in whole
