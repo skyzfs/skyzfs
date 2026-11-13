@@ -153,3 +153,71 @@ the 2.4.1 source. Nothing was run.
 - Defects: fixed, footnotes and tables check clean. Two small ones are
   left: the header's date is still 2026-11-10, and §4.2 "Kernels" still
   says the ublk flags "must be pinned during M1" with no record of it.
+
+## Decision D5 (the in-place store): the design diff, reviewed for the lead
+
+Reviewed 3d5c653 and d112194 on `zfs-topology` (the design text at the pull
+request's head 7b65f2a). Posted as
+https://github.com/skyzfs/skyzfs/pull/2#issuecomment-6842283383. Nothing was
+run; ZFS claims were checked against 2.4.1.
+
+**Verdict: holds up. No counterexample to the cut as an instant; the
+volatile-cache disk is enough for ZFS. Three rules for §5.2's store are
+missing (nothing of it is built), and four passages say more than was run or
+are left from the log.**
+
+Read in 2.4.1 for this:
+
+- Frees deferred by two groups: `txg.h:49`, `metaslab.c:4571`, `:4630-4640`.
+  Not when free space is at or under the slop, or during device removal or
+  raidz expansion (`metaslab.c:4573-4578`). Slop is 1/32 of the pool or
+  128 MiB, whichever is larger (`spa_misc.c:1974-1992`), so on a pool under
+  4 GiB deferral stops at 128 MiB free. The deferred trees are in memory only
+  (`metaslab.c:2636-2652`): after an import that follows a crash the last
+  groups' frees are not deferred (my reading, not tested).
+- Uberblock ring: 128 KiB over the uberblock size, 32 slots at a 4 KiB block
+  (`vdev_impl.h:482-496`). A group overwrites the slot of 32 groups before.
+- Uberblocks go to up to three top-level vdevs that are not log devices when
+  the configuration is clean, and to every child when it is dirty
+  (`spa.c:10753-10780`). Import reads every slot of every label of every leaf
+  and takes the highest group (`vdev_label.c:1569-1586`).
+- Order in a sync: flush, even labels (flushed), uberblocks, flush (waited
+  for, result discarded), odd labels (`vdev_label.c:2060-2126`, `:1799-1836`).
+  No uberblock write when nothing changed (`:2063-2077`).
+- Every flush is issued with `ZIO_FLAG_DONT_PROPAGATE` (`zio.c:1731`), the
+  intent log's included; its own comment says the error is not handled
+  (`zil.c:1662-1668`).
+- A log record whose data block is unreadable ends the log at claim
+  (`zil.c:642-655`).
+- First group after a rewind reuses the number of the newest uberblock
+  (`spa.c:4713-4714`); ZFS's safe rewind is the deferral (`spa.c:6365`).
+- No `WRITE_ZEROES` in `module/os/linux/zfs`.
+
+Findings posted, most severe first:
+
+1. The record of what was copied aside (and the frozen maps, and the list of
+   pending cuts) must outlive the daemon as the map does.
+2. Not stated: an abandoned cut's map goes to the next cut; the durability
+   rule governs the upload and not only the publishing; when an intent bit is
+   cleared.
+3. §5.2 needs the daemon to know the machine restarted, §4.1 says it cannot
+   tell; the mapped file is to be trusted only in the boot that wrote it and
+   only if no sync of it failed.
+4. M2's exit criterion exercises none of these losses, and §10 says it
+   catches them.
+5. "A sync that began at or after the cut's instant" does not accept the sync
+   that the marking flush joined; wants "once the flush that marks the cut has
+   completed without error".
+6. §5.1 "a take-over costs tens of milliseconds whatever was written before
+   it" was not run (the measured starts were after replayed power cuts).
+7. §4.2 "What was acknowledged is checked at every start" is the log's check.
+8. Smaller: the bytes-written figure is the replay rig's; where the count of
+   cuts lives; three leftovers of the log in §9's table.
+
+Reasoned, not found in the text: the cut's window is wider than the rule
+uses (any instant from the first acknowledged uberblock write of N until
+N+1's frees are released); a half-applied write of a lost daemon can be in a
+cut and is harmless; "repairs add blocks that N does not reference" is wrong
+of repairs (they rewrite a block N may reach with the content its checksum
+demands). §5.5: not wrong; the rework has to carry the log device's labels
+and the records that point at the data device.
