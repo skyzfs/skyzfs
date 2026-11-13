@@ -626,6 +626,17 @@ pub fn serve(serve: &Serve) -> Exit {
 
 fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
+    // The test build's record of the requests (`--request-log`): opened
+    // before the volume or a device is touched, so that a path that
+    // cannot be written refuses the serve with nothing to undo.
+    #[cfg(feature = "test-hooks")]
+    let request_log = match &serve.hooks.request_log {
+        Some(path) => Some(
+            crate::record::open(path)
+                .map_err(|e| format!("the request log {}: {e}", path.display()))?,
+        ),
+        None => None,
+    };
     let mut records = Files::new(&serve.dir, &serve.run_dir, boot, LOCK_PAUSE)
         .map_err(|e| format!("{}: {e}", serve.dir.display()))?;
     if serve.allow_any_filesystem {
@@ -875,6 +886,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
                     record: SharedAck::new(ack),
                     flags: flags.clone(),
                 };
+                // Next to the kernel, below the delays: the record says
+                // what the kernel handed over and what it was given.
+                #[cfg(feature = "test-hooks")]
+                let queue = crate::record::Recorded::new(queue, request_log, number);
                 let (queue, ack) = Delayed::new(queue, ack, delay, hold, move || wake.wake());
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main

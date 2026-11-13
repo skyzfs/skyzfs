@@ -9,7 +9,8 @@ repository.workspace = true
 [features]
 # Options that inject faults, for the kernel rig. Not in a default build:
 # without it the daemon refuses them as a usage error.
-test-hooks = ["skyzfs-local/test-hooks"]
+# The request log (`serve --request-log`) reads CLOCK_MONOTONIC.
+test-hooks = ["skyzfs-local/test-hooks", "rustix/time"]
 
 [dependencies]
 skyzfs-blk = { workspace = true }

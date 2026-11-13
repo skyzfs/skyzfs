@@ -56,7 +56,10 @@
 //!   position is stored then and not before. Nothing else waits;
 //! - `serve --refuse-holes`: the store behaves as on a file system
 //!   that cannot deallocate: a checkpoint writes zeros for a
-//!   write-zeroes record.
+//!   write-zeroes record;
+//! - `serve --request-log PATH`: every request the kernel hands over
+//!   and every answer it is given is appended to `PATH`, one line each
+//!   (the format is in `record.rs`). Either store.
 
 use std::path::PathBuf;
 
@@ -425,6 +428,8 @@ pub struct Hooks {
     /// The store writes zeros for a write-zeroes record, as on a file
     /// system that cannot deallocate.
     pub refuse_holes: bool,
+    /// Where the requests and their answers are written down.
+    pub request_log: Option<PathBuf>,
 }
 
 /// How long a checkpoint step waits in its middle.
@@ -585,6 +590,7 @@ const SERVE: &[Opt] = &[
     opt("--step-pause-until", true, true),
     opt("--step-pause-at", true, true),
     opt("--refuse-holes", false, true),
+    opt("--request-log", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -870,6 +876,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                     refuse_holes: given.flag("--refuse-holes"),
+                    request_log: given.get("--request-log").map(PathBuf::from),
                 },
             }))
         }

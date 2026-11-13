@@ -432,7 +432,8 @@ fn serve_takes_the_writeback_unit() {
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes",
+         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes \
+         --request-log /tmp/requests.tsv",
     )
     .hooks;
     assert_eq!(
@@ -449,8 +450,12 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
             refuse_holes: true,
+            request_log: Some("/tmp/requests.tsv".into()),
         }
     );
+    // Either store: the record is the transport's.
+    let in_place = serve("serve --dir /v/a --store in-place --request-log /tmp/r.tsv");
+    assert_eq!(in_place.hooks.request_log, Some("/tmp/r.tsv".into()));
     assert!(!serve("serve --dir /v/a").hooks.refuse_holes);
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))
@@ -494,6 +499,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --boot-id-file /tmp/boot",
         "serve --dir /v/a --recover-short 1",
         "serve --dir /v/a --commit-delay-ms 20",
+        "serve --dir /v/a --request-log /tmp/r.tsv",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(
