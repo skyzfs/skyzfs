@@ -83,3 +83,32 @@ the start, the same in the control, and a failed read).
 arm64 still owed: run 43398226980 was cancelled at 09:35:26 by the
 concurrency group when 8a3fb89 was pushed, so its arm64 artifact ends in
 check c. The run at this head is 43402554528.
+
+
+## Check g on arm64 (run 43402554528, at 8a3fb89)
+
+Comment: https://github.com/skyzfs/skyzfs/pull/54#issuecomment-6850159107
+
+The first run of check g on arm64 (ubuntu-26.04-arm, kernel
+7.0.0-1019-azure): all seven pins PASS, the control FAILs, as on
+ubuntu-24.04 in the same run. The errseq observation is the same on
+both (a new descriptor's fdatasync ok, its syncfs EIO), and
+`obs_g_reads_while_failing` has 0 reads failed to the reader on either.
+
+Check d beside check g, the same two jobs (vdev read / write errors when
+suspended; `ereport.fs.zfs.data` in the 30 s window), one job each:
+
+| | arm64 | amd64 |
+|---|---|---|
+| d.2 | 227 / 137, 243 | 17 / 134, 299 |
+| d.3 | 197 / 134, 210 | 196 / 136, 251 |
+| g.3 | 512 / 580K, 1,504,977 | 238 / 321K, 595,016 |
+| g.1 | 3 / 4, 1,545,437 | 71 / 4, 569,645 |
+
+The daemon in that run is the checkout's (without #55), so its reason
+lines still say "the log failed while the volume was served".
+
+Trap: a run's artifact that ends early with "The rig failed. This is
+not a verdict on the server" may be a run cancelled by a newer push
+(the concurrency group): look at the jobs' conclusions before reading
+anything into it. Run 43398226980 was that.
