@@ -97,6 +97,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_daemon_check.py -v
       - run: bash tests/kernel/test_klog.sh
+      - run: bash tests/kernel/test_zfs_stuck.sh
       - run: bash tests/kernel/test_devnode.sh
       - run: bash tests/kernel/test_looks.sh
       - run: bash tests/kernel/test_ublksrvd_look.sh

@@ -142,6 +142,9 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # The looks at a device over a wait: look_word, looks_judge.
 # shellcheck source=tests/kernel/looks.sh
 . "$HERE/looks.sh"
+# What holds ZFS when a zpool command has run out: zfs_stuck_say.
+# shellcheck source=tests/kernel/zfs-stuck.sh
+. "$HERE/zfs-stuck.sh"
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -307,37 +310,11 @@ pool_create() { # pool bdev slog [zpool create options]
 pool_state() { # ONLINE, SUSPENDED, ...: from the kernel, which answers when zpool would block
     cat "/proc/spl/kstat/zfs/$1/state" 2>/dev/null || echo unknown
 }
-# [mark]: what holds ZFS when a zpool command has run out of its limit,
-# in one line. The zpool processes in uninterruptible sleep and the ZFS
-# function each waits in (from its kernel stack), the states of the
-# txg_sync threads, and, since MARK, the kernel's reports of hung tasks:
-# how many, in how many txg_sync was running, and the owners they name
-# of the locks waited on. Seen on arm64 (run 43389048554, M1.T25): after
-# a pool suspended, txg_sync stayed running for 18 minutes while the
-# first zpool status held the namespace lock, and every zpool command
-# after it waited behind that one. This says so; it judges nothing.
-zfs_stuck_say() {
-    local p c st fn waits="" txg="" k n run owners
-    for p in /proc/[0-9]*; do
-        c=$(cat "$p/comm" 2>/dev/null) || continue
-        case $c in zpool|txg_sync) ;; *) continue ;; esac
-        st=$(sed 's/^.*) //' "$p/stat" 2>/dev/null | cut -c1)
-        if [ "$c" = txg_sync ]; then txg+="${st:-?}"; continue; fi
-        [ "$st" = D ] || continue
-        fn=$(lim 5 cat "$p/stack" 2>/dev/null | grep -oE '(spa_namespace_enter|spa_config_enter|txg_wait_synced|spa_vdev_state_enter|zfs_ioc_[a-z_]+)' | head -n 1)
-        waits+="${p#/proc/}:${fn:-?} "
-    done
-    k="zpool processes waiting in the kernel: ${waits:-none}; txg_sync threads' states: ${txg:-none}"
-    if [ -n "${1:-}" ] && klog_since "$1" > "$OUT/stuck.tmp"; then
-        n=$(grep -c 'blocked for more than' "$OUT/stuck.tmp" || true)
-        run=$(grep -c 'task:txg_sync .*state:R' "$OUT/stuck.tmp" || true)
-        owners=$(grep -oE 'likely owned by task [^ ]+' "$OUT/stuck.tmp" | awk '{ sub(/\.$/, "", $NF); print $NF }' | sort | uniq -c | sort -rn | head -n 4 | awk '{ printf "%s x%s ", $2, $1 }')
-        k+="; the kernel since the mark: $n hung-task reports, txg_sync running in $run, lock owners named: ${owners:-none}"
-    fi
-    echo "$k"
-}
 pool_errors() { # "vdev errors N (read r, write w, checksum c), <scan line>, <errors line>"
-    lim 60 zpool status -p "$1" > "$OUT/status.tmp" 2>&1 || { echo "zpool status failed or timed out"; return; }
+    local rc=0
+    lim 60 zpool status -p "$1" > "$OUT/status.tmp" 2>&1 || rc=$?
+    if [ "$rc" = 124 ]; then echo "zpool status did not return in 60 s: $(zfs_stuck_say)"; return; fi
+    [ "$rc" = 0 ] || { echo "zpool status failed with $rc"; return; }
     awk '$2 ~ /^(ONLINE|DEGRADED|FAULTED|UNAVAIL|REMOVED)$/ && NF >= 5 { r += $3; w += $4; c += $5 }
          /scan:/ { sub(/^ *scan: */, ""); scan = $0 }
          /^errors:/ { sub(/^errors: */, ""); err = $0 }
@@ -1988,8 +1965,12 @@ fail_setup() {
     FS_ERR=""
     vol_up "$impl" "$dir" "$@" || { FS_ERR="not created or served (serve rc ${SERVE_RC:-none})"; return 1; }
     slog=$(new_slog "$name")
-    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1 \
-        || { FS_ERR="zpool create failed ($(tail -n 1 "$OUT/$name-create.log")); $(zfs_stuck_say)"; return 1; }
+    pool_create "$pool" "$BDEV" "$slog" -O primarycache=metadata > "$OUT/$name-create.log" 2>&1; i=$?
+    if [ "$i" = 124 ]; then
+        FS_ERR="zpool create ran out of its 180 s: $(zfs_stuck_say)"; return 1
+    elif [ "$i" != 0 ]; then
+        FS_ERR="zpool create failed with $i: $(tail -n 1 "$OUT/$name-create.log")"; return 1
+    fi
     for i in 0 1 2 3; do
         lim 120 "$DD" if=/dev/urandom of="$mnt/base.$i" bs=1M count=32 conv=fsync status=none || { FS_ERR="writing the first files failed"; return 1; }
     done
@@ -2179,7 +2160,7 @@ check_d_shorter() {
     st=$(pool_state skzd-d3)
     lim 30 zpool status -v skzd-d3 > "$OUT/d3-status-after-clear.log" 2>&1
     lim 300 zpool scrub -w skzd-d3 > "$OUT/d3-scrub.log" 2>&1
-    obs returned_device_with_older_content "the image was copied when the writer had $n files acknowledged; it had $v at the failure. After the copy came back and zpool clear (rc $rc): pool $st; $(pool_errors skzd-d3); the writer's files: $(lim 120 files_match "$WORK/mnt/skzd-d3" "$WORK/d3.record" 2>&1 | tail -n 1); status: $(grep -E 'state:|status:' "$OUT/d3-status-after-clear.log" | tr -s ' ' | tr '\n' ';')"
+    obs returned_device_with_older_content "the image was copied when the writer had $n files acknowledged; it had $v at the failure. After the copy came back and zpool clear (rc $rc$([ "$rc" = 124 ] && echo ", ran out of its 120 s: $(zfs_stuck_say)")): pool $st; $(pool_errors skzd-d3); the writer's files: $(lim 120 files_match "$WORK/mnt/skzd-d3" "$WORK/d3.record" 2>&1 | tail -n 1); status: $(grep -E 'state:|status:' "$OUT/d3-status-after-clear.log" | tr -s ' ' | tr '\n' ';')"
 }
 # d.5, an observation: a scrub in progress when the volume fails.
 check_d_scrub() {
