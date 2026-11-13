@@ -1065,3 +1065,83 @@ fn a_start_refuses_a_volume_whose_cache_stays() {
     disk.set_cache_counts(true);
     assert!(enter(&disk, 0).is_ok());
 }
+
+// Reads on threads of their own (an experiment).
+
+/// A write that overlaps a read under way on the readers waits until
+/// that read has completed, and so does everything received after it:
+/// the read returns what the block held before the write, whole, and
+/// the write and the read behind it complete after it. A write that
+/// overlaps no read is executed at once.
+#[test]
+fn a_write_waits_for_a_read_it_overlaps() {
+    let disk = created(14, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    assert!(store.reads.is_some(), "the store has readers");
+    write(&mut store, 1, 0x11).unwrap();
+    let request = |id, op| Request {
+        id: RequestId(id),
+        op,
+    };
+    store
+        .submit(request(
+            1,
+            Op::Read {
+                offset: BLOCK,
+                buf: Buf::zeroed(1),
+            },
+        ))
+        .unwrap();
+    store
+        .submit(request(
+            2,
+            Op::Write {
+                offset: BLOCK,
+                data: Buf::filled(1, 0x22),
+            },
+        ))
+        .unwrap();
+    store
+        .submit(request(
+            3,
+            Op::Read {
+                offset: BLOCK,
+                buf: Buf::zeroed(1),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        store.deferred.len(),
+        2,
+        "the write and the read behind it wait"
+    );
+    store
+        .submit(request(
+            4,
+            Op::Write {
+                offset: 5 * BLOCK,
+                data: Buf::filled(1, 0x55),
+            },
+        ))
+        .unwrap();
+    assert_eq!(
+        store.deferred.len(),
+        3,
+        "everything after a waiting request waits"
+    );
+    let mut done = Vec::new();
+    while done.len() < 4 {
+        store.wait(&mut done, WAIT);
+    }
+    let get = |id| {
+        done.iter()
+            .find(|c| c.id == RequestId(id))
+            .expect("completed")
+    };
+    assert_eq!(get(1).result, Ok(()));
+    assert_eq!(&get(1).buf.as_ref().unwrap()[..], &[0x11; BLOCK_USIZE][..]);
+    assert_eq!(get(2).result, Ok(()));
+    assert_eq!(&get(3).buf.as_ref().unwrap()[..], &[0x22; BLOCK_USIZE][..]);
+    assert_eq!(get(4).result, Ok(()));
+    assert!(store.deferred.is_empty());
+}

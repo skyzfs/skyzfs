@@ -211,8 +211,9 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       a write acknowledged in place and not flushed before the daemon
       ended, however it ended, can be lost at a power cut after it,
       whatever the log store flushed. The log's options
-      (--log-high, --log-low, --writeback-kib, --home-writeback-kib,
-      --readers) are refused with it.
+      (--log-high, --log-low, --writeback-kib, --home-writeback-kib)
+      are refused with it; its reads run on --readers threads of their
+      own, as the log store's do.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -784,13 +785,14 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
             };
             // The options of the log and its checkpoints, which the
             // in-place store does not have: refused rather than ignored.
+            // `--readers` is the in-place store's too: its reads run on
+            // that many threads of their own.
             if store == StoreKind::InPlace {
                 let refused = [
                     "--log-high",
                     "--log-low",
                     "--writeback-kib",
                     "--home-writeback-kib",
-                    "--readers",
                     "--step-pause-ms",
                     "--step-pause-until",
                     "--step-pause-at",

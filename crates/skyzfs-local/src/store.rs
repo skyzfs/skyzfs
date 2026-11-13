@@ -3431,6 +3431,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         self.into_in_place_with(waker, crate::inplace::Mutants::default())
     }
@@ -3443,6 +3444,7 @@ impl<D: Dir> Store<D> {
     where
         D: Clone + Send + 'static,
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
         use crate::inplace::{FailedStart, IntoInPlaceError};
         if !self.queue.is_empty() || !self.ids.is_empty() {
@@ -3482,6 +3484,7 @@ impl<D: Dir> Store<D> {
         }
         let identity = self.core.identity();
         let marker = self.core.log.marker_writer();
+        let readers = self.core.readers;
         let Core {
             log,
             home,
@@ -3499,6 +3502,7 @@ impl<D: Dir> Store<D> {
                 identity,
                 marker,
                 zeroes,
+                readers,
             },
             waker.map(|Waker(call)| call),
             mutants,

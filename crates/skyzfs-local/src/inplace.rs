@@ -186,6 +186,10 @@ pub enum IntoInPlaceError {
     /// volume. The volume has not failed.
     #[error("the start could not empty the kernel's cache of the home image: {0}")]
     CacheKept(String),
+    /// The reader threads could not be started, or their handles on the
+    /// home image not opened. The volume has not failed.
+    #[error("the in-place store's readers: {0}")]
+    Readers(String),
     /// The log still holds records after the checkpoint: a hold, or a
     /// part of it that is not durable.
     #[error("the log could not be emptied: {0}")]
@@ -218,6 +222,16 @@ pub struct InPlace<D: Dir> {
     zeroes: Zeroes,
     counts: Counts,
     mutants: Mutants,
+    /// The reader threads, where there are any ([`Parts::readers`]).
+    reads: Option<ReadPool>,
+    /// The reads under way on the readers: their byte ranges.
+    reading: std::collections::BTreeMap<RequestId, (u64, u64)>,
+    /// Requests that wait, in their order, behind a write or a
+    /// write-zeroes that overlaps a read under way: a read and a write of
+    /// the same page at once can tear the read (a buffered read takes no
+    /// lock against a buffered write). Everything received after such a
+    /// request waits behind it.
+    deferred: std::collections::VecDeque<Request>,
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: as for
     /// the log store, a start that does not find it goes by the
@@ -410,6 +424,142 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) zeroes: Zeroes,
     /// What writes the failure marker ([`Log::marker_writer`]).
     pub(crate) marker: MarkerWriter,
+    /// Reader threads ([`OpenOptions::readers`](crate::store::OpenOptions::readers)):
+    /// 0 reads on the caller's thread.
+    pub(crate) readers: usize,
+}
+
+/// A read handed to a reader thread.
+struct Job {
+    id: RequestId,
+    offset: u64,
+    buf: Buf,
+}
+
+/// What the reader threads and the store share.
+#[derive(Default)]
+struct PoolState {
+    jobs: std::collections::VecDeque<Job>,
+    done: Vec<Completion>,
+    ending: bool,
+}
+
+#[derive(Default)]
+struct PoolShared {
+    state: std::sync::Mutex<PoolState>,
+    /// The readers wait here for a job.
+    work: std::sync::Condvar,
+    /// The store waits here for a completion ([`BlockTarget::wait`]).
+    done: std::sync::Condvar,
+}
+
+impl PoolShared {
+    fn lock(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// Reads served off the caller's thread (an experiment, after M1.T22's
+/// profile showed the pump in `pread` 0.4 s of each second): threads of
+/// their own, each with a handle of its own on the home image, buffered
+/// as the store's own. A thread that ends a read wakes the store's
+/// owner as a sync's end does.
+struct ReadPool {
+    shared: Arc<PoolShared>,
+    threads: Vec<std::thread::JoinHandle<()>>,
+}
+
+impl ReadPool {
+    fn start<F: File + Send + 'static>(
+        files: Vec<F>,
+        wake: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> io::Result<Self> {
+        let shared = Arc::new(PoolShared::default());
+        let mut pool = Self {
+            shared: shared.clone(),
+            threads: Vec::new(),
+        };
+        for (n, file) in files.into_iter().enumerate() {
+            let shared = shared.clone();
+            let wake = wake.clone();
+            let thread = std::thread::Builder::new()
+                .name(format!("skyzfs-read-{n}"))
+                .spawn(move || read_loop(&file, &shared, wake.as_deref()))?;
+            pool.threads.push(thread);
+        }
+        Ok(pool)
+    }
+
+    fn push(&self, job: Job) {
+        self.shared.lock().jobs.push_back(job);
+        self.shared.work.notify_one();
+    }
+
+    /// Take what the readers completed; with `timeout`, wait up to it
+    /// for something.
+    fn take(&self, out: &mut Vec<Completion>, timeout: Duration) {
+        let mut state = self.shared.lock();
+        if state.done.is_empty() && !timeout.is_zero() {
+            state = self
+                .shared
+                .done
+                .wait_timeout_while(state, timeout, |s| s.done.is_empty())
+                .map(|(guard, _)| guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner().0);
+        }
+        out.append(&mut state.done);
+    }
+}
+
+impl Drop for ReadPool {
+    fn drop(&mut self) {
+        self.shared.lock().ending = true;
+        self.shared.work.notify_all();
+        for thread in self.threads.drain(..) {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn read_loop<F: File>(file: &F, shared: &PoolShared, wake: Option<&(dyn Fn() + Send + Sync)>) {
+    loop {
+        let job = {
+            let mut state = shared.lock();
+            loop {
+                if let Some(job) = state.jobs.pop_front() {
+                    break job;
+                }
+                if state.ending {
+                    return;
+                }
+                state = shared
+                    .work
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        };
+        let Job {
+            id,
+            offset,
+            mut buf,
+        } = job;
+        // A failed read changes nothing and does not fail the volume:
+        // only its own request fails.
+        let result = file
+            .read_at(offset, &mut buf)
+            .map_err(|e| BlkError::Io(e.kind()));
+        shared.lock().done.push(Completion {
+            id,
+            result,
+            buf: Some(buf),
+        });
+        shared.done.notify_all();
+        if let Some(wake) = wake {
+            wake();
+        }
+    }
 }
 
 impl<D: Dir> InPlace<D> {
@@ -425,7 +575,9 @@ impl<D: Dir> InPlace<D> {
     ) -> Result<Self, IntoInPlaceError>
     where
         D::Lock: Send + 'static,
+        D::File: Send + 'static,
     {
+        let readers = parts.readers;
         let mut store = Self {
             log: parts.log,
             home: parts.home,
@@ -442,6 +594,9 @@ impl<D: Dir> InPlace<D> {
             zeroes: parts.zeroes,
             counts: Counts::default(),
             mutants,
+            reads: None,
+            reading: std::collections::BTreeMap::new(),
+            deferred: std::collections::VecDeque::new(),
             marker: Marker::new(parts.marker, mutants),
         };
         // The checkpoint that entered this store synced the home image
@@ -459,6 +614,15 @@ impl<D: Dir> InPlace<D> {
             return Err(IntoInPlaceError::Failed(FailedStart { marker, lock }));
         }
         store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
+        if readers > 0 {
+            let files = (0..readers)
+                .map(|_| store.log.dir().open(crate::store::HOME_NAME))
+                .collect::<io::Result<Vec<_>>>()
+                .map_err(|e| IntoInPlaceError::Readers(format!("opening the home image: {e}")))?;
+            let pool = ReadPool::start(files, store.wake.clone())
+                .map_err(|e| IntoInPlaceError::Readers(format!("starting a thread: {e}")))?;
+            store.reads = Some(pool);
+        }
         Ok(store)
     }
 
@@ -586,6 +750,12 @@ impl<D: Dir> InPlace<D> {
             return self.complete(id, Err(BlkError::Failed), buf);
         }
         match op {
+            Op::Read { offset, buf } if self.reads.is_some() => {
+                self.reading.insert(id, (offset, offset + buf.len() as u64));
+                if let Some(pool) = &self.reads {
+                    pool.push(Job { id, offset, buf });
+                }
+            }
             Op::Read { offset, mut buf } => {
                 // A failed read changes nothing and does not fail the
                 // volume: only its own request fails.
@@ -738,6 +908,60 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
+    /// Whether `op` must wait for a read under way: a write or a
+    /// write-zeroes of a range a read on the readers covers.
+    fn must_wait(&self, op: &Op) -> bool {
+        let (offset, len) = match op {
+            Op::Write { offset, data } => (*offset, data.len() as u64),
+            Op::WriteZeroes { offset, len } => (*offset, *len),
+            _ => return false,
+        };
+        let end = offset.saturating_add(len);
+        self.reading
+            .values()
+            .any(|&(from, to)| from < end && offset < to)
+    }
+
+    /// Execute `request` now, or let it wait behind what waits already
+    /// or behind a read it overlaps.
+    fn accept(&mut self, request: Request) {
+        if !self.deferred.is_empty() || self.must_wait(&request.op) {
+            self.deferred.push_back(request);
+        } else {
+            self.execute(request.id, request.op);
+        }
+    }
+
+    /// Take what the readers completed (with `timeout`, wait up to it
+    /// for something), then execute what no longer has to wait.
+    fn collect(&mut self, timeout: Duration) {
+        let Some(pool) = &self.reads else {
+            return;
+        };
+        let mut done = Vec::new();
+        pool.take(&mut done, timeout);
+        for mut completion in done {
+            self.reading.remove(&completion.id);
+            // A read under way while the volume failed may have run after
+            // the failure tore what it read (a failed sync can drop
+            // pages): it fails with the volume, which rule R11 allows of
+            // a request in flight at the failure.
+            if self.failed {
+                completion.result = Err(BlkError::Failed);
+            }
+            self.ready.push(completion);
+        }
+        while let Some(front) = self.deferred.front() {
+            if self.must_wait(&front.op) {
+                break;
+            }
+            let Some(Request { id, op }) = self.deferred.pop_front() else {
+                break;
+            };
+            self.execute(id, op);
+        }
+    }
+
     /// See whether the sync under way has ended; with `wait`, wait for
     /// it.
     fn settle(&mut self, wait: bool) {
@@ -787,13 +1011,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
             return Err(SubmitError { kind, request });
         }
         self.ids.insert(request.id);
-        self.execute(request.id, request.op);
+        self.accept(request);
         Ok(())
     }
 
     /// Hands out what is complete. Looks whether the sync under way has
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
     }
@@ -806,9 +1031,14 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// The daemon's pump calls only `poll`, and is woken by the file's
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        self.collect(Duration::ZERO);
         self.settle(false);
         if self.ready.is_empty() && !timeout.is_zero() {
-            self.settle(true);
+            if self.reading.is_empty() {
+                self.settle(true);
+            } else {
+                self.collect(timeout);
+            }
         }
         self.hand_out(out)
     }

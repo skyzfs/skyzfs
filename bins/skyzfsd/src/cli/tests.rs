@@ -313,7 +313,6 @@ fn serve_takes_the_store() {
         "--log-low 1",
         "--writeback-kib 0",
         "--home-writeback-kib 0",
-        "--readers 1",
     ] {
         assert_eq!(
             plain(&format!("serve --dir /v/a --store in-place {log_only}")),
@@ -325,6 +324,11 @@ fn serve_takes_the_store() {
         );
         assert!(plain(&format!("serve --dir /v/a --store log {log_only}")).is_ok());
     }
+    // The in-place store's reads run on `--readers` threads.
+    assert_eq!(
+        serve("serve --dir /v/a --store in-place --readers 2").readers,
+        2
+    );
 }
 
 /// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
