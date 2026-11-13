@@ -109,7 +109,11 @@
 //! unit, but a volume created on the large-page host has a unit as
 //! large as its page, and the store saves no neighbours as the log
 //! store did. Direct I/O, which writes exactly the blocks it is given,
-//! is the candidate remedy (design §10).
+//! is the candidate remedy (design §10). With the experiment's direct
+//! I/O ([`IoMode`]), on the queue's thread or on threads, no seed of
+//! the 200 reaches such a block at either large page on the simulated
+//! disk (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`,
+//! which says what that rests on).
 //!
 //! The other rules (R1 to R9, R11, R12) hold as for the log store, and
 //! the conformance suite runs on this store with every capability

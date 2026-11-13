@@ -1261,6 +1261,42 @@ fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
     }
 }
 
+/// Direct I/O takes the exception away, on the simulated disk: a
+/// direct write writes its own sectors and no other block of its page,
+/// so a cut with garbage reaches only blocks being written, as on
+/// 4 KiB pages. The same programs through the cache reach a neighbour
+/// (`a_cut_with_garbage_may_reach_a_neighbour_on_large_pages`). The
+/// other endings hold too.
+///
+/// What this rests on: the simulated disk takes a direct write to touch
+/// nothing but its own sectors. On a file system whose block is larger
+/// than the write, a direct write into a hole or an unwritten extent
+/// also has the rest of that block zeroed. By my reading of the kernel
+/// (not shown here) those zeros cannot be read back as garbage: the
+/// block reads as zeros until its extent is converted to written, and
+/// the journal commit that makes the conversion durable flushes the
+/// disk's cache first. An image written with zeros at its creation
+/// ([`crate::store::fill_home`]) has no such block.
+#[test]
+fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
+    for page in LARGE_PAGES {
+        for io in EXPERIMENT.into_iter().filter(|io| io.direct) {
+            for ending in [
+                Ending::Cut { garbage: true },
+                Ending::Cut { garbage: false },
+                Ending::Failure { sync: false },
+                Ending::Failure { sync: true },
+            ] {
+                for seed in 1..=200 {
+                    if let Err(e) = volatile_cache_holds_with(seed, ending, 0, page, io) {
+                        panic!("page {page}, {io:?}, {ending:?}, seed {seed}: {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// A volume created where the page is 4 KiB is refused where it is
 /// 16 KiB, on the way into the in-place store: a write there would
 /// rewrite more than the volume's write unit. The refusal is the log
