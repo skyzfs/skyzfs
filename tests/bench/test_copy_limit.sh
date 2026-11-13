@@ -139,4 +139,15 @@ setup
 skz_create 4096 2> /dev/null
 check "with none, nothing is added" 'grep -q -- "--size 4096$" "$tt/create-args"'
 
+# 6. The label of a row after failed rows (TB_EARLIER_FAILED, set by the
+# workflow), taken out of the script like the functions.
+sed -n '/^LABEL=\${TB_LABEL/,/^esac/p' "$script" > "$tt/label.sh"
+check "the label's lines are found" 'grep -q "^esac" "$tt/label.sh"'
+label_for() { ( TB_LABEL=$1; TB_EARLIER_FAILED=$2; . "$tt/label.sh"; echo "$LABEL" ) 2>&1; }
+check "no failed row: the label is as given" '[ "$(label_for cur "")" = cur ]'
+check "one failed row" '[ "$(label_for cur 2)" = "cur; after failed row 2" ]'
+check "two failed rows" '[ "$(label_for cur "2 5")" = "cur; after failed rows 2,5" ]'
+check "no label of its own" '[ "$(label_for "" 3)" = "after failed row 3" ]'
+check "anything but row numbers is refused" '( TB_LABEL=x; TB_EARLIER_FAILED="1;x"; . "$tt/label.sh" ) 2> /dev/null; [ $? = 64 ]'
+
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

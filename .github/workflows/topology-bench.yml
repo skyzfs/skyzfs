@@ -408,16 +408,21 @@ jobs:
             sudo bash -c '. "$1" && shift && exec env "$@" tests/bench/topology-bench.sh' tb "$RUNNER_TEMP/tb.env" \
               "TB_LABEL=$label" "TB_OUT=$TB_OUT/$i" TB_REUSE_ORIGIN=1 "${args[@]}" || rc=$?
             echo "::endgroup::"
-            if [ "$rc" != 0 ]; then
-              echo "::error::sequence $i ($label) failed with $rc"
-              echo "Sequence $i ($label) failed with $rc; the rows after it ran." >> "$GITHUB_STEP_SUMMARY"
-              failed="$failed $i"
-            fi
             if sudo test -d "$TB_OUT/$i/skyzfsd-hang"; then
               hung=$i
-              echo "::error::sequence $i ($label): a step onto the daemon ran out of its limit; the sequence ends here"
-              echo "Sequence $i ($label): a step onto the daemon ran out of its limit, so the sequence ended there (${#entries[@]} rows asked for). The evidence is in skyzfsd-hang/ of its output." >> "$GITHUB_STEP_SUMMARY"
+              failed="$failed $i"
+              echo "::error::sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit; the sequence ends here"
+              echo "Sequence $i ($label) failed with $rc: a step onto the daemon ran out of its limit, so the sequence ended there (${#entries[@]} rows asked for). The evidence is in skyzfsd-hang/ of its output." >> "$GITHUB_STEP_SUMMARY"
               break
+            fi
+            if [ "$rc" != 0 ]; then
+              echo "::error::sequence $i ($label) failed with $rc"
+              if [ "$i" -lt "${#entries[@]}" ]; then
+                echo "Sequence $i ($label) failed with $rc; the rows after it ran, each marked \"after failed row\"." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "Sequence $i ($label) failed with $rc; it was the last row." >> "$GITHUB_STEP_SUMMARY"
+              fi
+              failed="$failed $i"
             fi
           done
           [ -z "$failed" ] || { echo "rows that failed:$failed${hung:+; the sequence ended after row $hung}"; exit 1; }
