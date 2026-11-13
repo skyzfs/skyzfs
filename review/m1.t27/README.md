@@ -43,3 +43,20 @@ Points of the reading:
   image was not written through.
 - dm-log-writes records whole bios, so the checker's "block whole" rule
   cannot differ here from §4.1's tear at a sector.
+
+## Second look, head 18311fa
+
+Posted on the pull request. One small blocking finding: a course whose
+daemon failed before the check (`course_json ... failure`, which has no
+control) now gets exit 2 "Not a verdict" from `verdict`, where d0efbfd
+gave exit 1. Reproduced by calling `verdict` with what `course_json`
+writes. Codex found the same, and also that `serve_args: --store log`
+by dispatch reaches the hole courses.
+
+`plants63b.py` (the thirteen plants and eleven more), results in
+`plants63-18311fa.txt`: 21 of 24 caught. Not caught, all wiring that
+only a kernel run shows: the rig not asking for the control (the rig
+itself now ends with exit 2), `check()` going on when data is missing,
+the script not passing on what the daemon was built from.
+
+The hole jobs had not started on this head when CI was read.
