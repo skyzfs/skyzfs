@@ -1,6 +1,6 @@
 """How fast the benchmark's work disk takes a sync after much was written.
 
-    python3 -I tests/bench/disk-sync.py DIR [MIB]
+    python3 -I tests/bench/disk-sync.py DIR [MIB [IMAGE]]
 
 Also says which block device DIR is on, its queue's stable_writes, and
 its queue's write_cache (write_back when the disk declares a volatile
@@ -13,7 +13,11 @@ Writes MIB (default 64) MiB to a new file under DIR through the page cache
 and times the fdatasync that follows; then the same amount with O_DIRECT,
 1 MiB a write, and its fdatasync. Prints one line of `key=value` fields,
 with the machine (boot id and host name, as the benchmark's rows carry it)
-so that a summary can set the figures beside the rows of that machine.
+so that a summary can set the figures beside the rows of that machine,
+and the machine's architecture and kernel (`arch`, `kernel`, from
+uname) and the runner image IMAGE names (`image`; the workflow passes
+the runner's ImageOS and ImageVersion as an argument, since sudo-rs does
+not carry the job's environment).
 
 The daemon's files sit on this disk. Its syncs wait for what the page cache
 holds of the file since the last sync (M1.T10, M1.3j: a home sync of 8 MiB
@@ -117,7 +121,10 @@ def main():
     total = int(sys.argv[2]) if len(sys.argv) > 2 else 64
     os.makedirs(where, exist_ok=True)
     path = os.path.join(where, f'disk-sync.{os.getpid()}')
-    fields = {'machine': machine().replace(' ', '_'), 'mib': total}
+    image = sys.argv[3] if len(sys.argv) > 3 else ''
+    u = os.uname()
+    fields = {'machine': machine().replace(' ', '_'), 'mib': total,
+              'arch': u.machine, 'kernel': u.release, 'image': image.replace(' ', '_') or 'not_said'}
     fields['dev'], fields['stable_writes'], fields['write_cache'] = queue_of(where)
     fields['fs'], fields['mount'], fields['super'] = mount_of(where)
     for name, direct in (('buffered', False), ('direct', True)):

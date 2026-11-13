@@ -85,6 +85,12 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.3y | skyzfs/skyzfs#58 | Direct I/O is the in-place store's I/O, on I/O threads (decision D6); the status says the threads' queue; `serve --request-log` in the test-hooks build | Direct I/O on the image (decision D6); A call that returned after the kill (M1.T28) |
 | M1.T28 | skyzfs/skyzfs#59, skyzfs/skyzfs#60, skyzfs/skyzfs#62 | Check c keeps the request log and the block trace and runs with udev's watch off; the model takes a request in flight at a daemon loss as possibly complete, where the harness says a completion can be held; the repeat rig with reads provoked | A call that returned after the kill (M1.T28) |
 | M1.3ab | skyzfs/skyzfs#61 | A test of the binding's `mapped()` raced another thread's mapping | The ublk transport: arm64 |
+| M1.3aa | skyzfs/skyzfs#64 | The binding reports ublk commands the driver ended otherwise than OK; the status counts them (`commands_failed`) | Direct I/O as built (M1.3y) |
+| M1.3t-a | skyzfs/skyzfs#65 | The rigs and the benchmark name the in-place store themselves, ahead of the log store's removal | The criterion: without the write log |
+| M1.T28 follow-up | skyzfs/skyzfs#66 | The tool hands the suite the result of a call that returned before the kill | A call that returned after the kill (M1.T28) |
+| M1.T21 (benchmark) | skyzfs/skyzfs#67 | The benchmark's runner input offers the arm64 images; the disk-sync table names image, architecture and kernel | arm64 (M1.T21) |
+| M1.T27 | skyzfs/skyzfs#63 | The power-cut replay of a direct write into a hole, through skyzfsd, as jobs of the replay rig | A direct write into a hole, at a power cut (M1.T27) |
+| M1.T29 | none (measurement only) | The thread count and the throughput rule on the merged direct I/O daemon, two rounds; the full power-cut replay | The thread count on the merged daemon (M1.T29, first round) |
 | M1.3x | skyzfs/skyzfs#55 | The failure note's reason for the in-place store: code 7, "a write or sync of the volume's image failed" | The ublk transport: a failed volume gives up its attachment |
 | M1.3w | skyzfs/skyzfs#52 | Two tests of the log store's times took their own total before the look they compare it with | The local store |
 | M1.T20a | skyzfs/skyzfs#44 | The replay rig names the daemon's store (`serve_args`); a pull request's daemon jobs drive `--store in-place` | The criterion: without the write log |
@@ -788,6 +794,8 @@ Per course: prefixes checked, prefixes at which a returned write read as zeros, 
 
 All of it is loss that design §4.1 allows. Decided on these figures: the image stays sparse (design §10).
 
+The table rests on one run an image, and a course's length varies from run to run: ext4 on a preallocated image had 100 prefixes on `ubuntu-24.04` in the table's run and 119 in a later one (43498059751). The rig is merged (skyzfs/skyzfs#63) and runs on every pull request that runs the daemon's replay jobs. It judges three things: every checked prefix as §4.1 allows, the control caught, and on a written-through image no prefix with the data on the disk and zeros in the file (0 in all four such courses of run 43515269154, on the merged direct I/O daemon).
+
 #### Direct I/O as built (M1.3y)
 
 `skyzfsd serve --store in-place` reads and writes the home image with `O_DIRECT` on a pool of I/O threads, eight by default (`--io-threads`, 1 to 64); there is no buffered served mode. What the package added to the experiment:
@@ -824,6 +832,21 @@ Eight threads minus one, in the same bracket: fast-sync -0.003, -0.005, +0.009 u
 - One of the slow-sync machines had the disk the notes knew as fast (`sda1`, write through) at 165 MiB/s; the disk's name no longer tells the kind, and a machine is classed by its measured rate. Its brackets were the steadiest of the round (0.1% to 0.9%). The arm64 images' disks are write through at 249 to 345 MiB/s.
 
 Runs: amd64 43497647957, 43498216158, 43498229135 (fast), 43498241766, 43498255284, 43498268163, 43498281407, 43498292940 (slow); arm64 43498318359, 43498330574, 43498341995, 43498353804.
+
+**Second round, the bounded cell.** Eight more `ubuntu-24.04` jobs, the same daemon, every daemon row bounded to 1 GiB: model, t8, t1, model, t1, t8, model, t8, t1, model, with t1 first in every second job, so each job gives three pairs of eight threads against one in the same bracket. Five machines had the slow-sync nvme disk (147 to 202 MiB/s), two the fast `sda1` (3104, 3268), and one a kind not seen before: `dm-0`, write through, 2698 MiB/s.
+
+| Machines | Brackets counted | 1 thread | 8 threads | 8 minus 1, same bracket |
+|---|---|---|---|---|
+| nvme, slow syncs (5 jobs) | 10 of 15 | 0.987 (0.930 to 1.235) | 1.013 (0.957 to 1.437) | +0.018 (-0.021, -0.015, +0.007, +0.012, +0.013, +0.023, +0.035, +0.039, +0.111, +0.202) |
+| `sda1`, fast syncs (2 jobs) | 6 of 6 | 0.951 | 0.956 | +0.007 (-0.006, -0.002, +0.006, +0.008, +0.008, +0.012) |
+| `dm-0` (1 job) | 3 of 3 | 0.901 (0.896, 0.901, 0.911) | 0.909 (0.902, 0.909, 0.913) | +0.001 (-0.002, +0.001, +0.017) |
+
+- The first round's 0.877 for eight threads under the bound on slow-sync machines is not reproduced: over ten rows the median is 1.013, and eight of the ten pairs favour eight threads. On fast-sync machines the two are within a point, as before. The default stays eight, settled for M1; the gain is small.
+- One nvme job (43513180484) had three of its four model rows slowed by its disk (1.34 to 1.69 ms a write against 0.14 to 0.78 in the other nvme jobs' model rows; 2587 to 3378 tps against 3549), and both its counted brackets hold such a row, so its ratios (1.235, 1.437, 0.958, 1.069) rest on slowed models. Without it: one thread 0.987, eight 0.997, the difference +0.0125 over eight pairs, six positive.
+- The `dm-0` machine put both thread counts at 0.90 to 0.91, about four points under `sda1`, with the model at 7338 to 7422 tps and the daemon at 6639 to 6759. One machine; it bears on the rule's median, not on the thread count.
+- A rule for a stalled row was fixed before this round: the work disk's time per flush is 10 ms or more. It marked no row here, and it sees almost nothing: the runners' work disks are mounted without barriers and get one flush in a 120 s row on nvme and none on a write-through disk, so the first round's "61 ms a flush" was one flush. A second rule was drawn from this round's figures and holds from the next round on: a row is stalled when its work disk's time per write is more than twice the median of its topology on its class of machine (medians fixed from this round: model 0.53 ms on nvme, 0.165 on `sda1`, 0.13 on `dm-0`; daemon 0.165, 0.10, 0.09). On this round it would mark the three slowed model rows above and one daemon row whose bracket was already too wide. Since it was drawn after the figures were seen, nothing here rests on it.
+
+Runs: 43513120960, 43513132569, 43513144817, 43513168011, 43513180484 (nvme), 43513192085, 43513203524 (`sda1`), 43513156369 (`dm-0`).
 
 #### The power-cut replay through the direct I/O daemon
 
@@ -893,7 +916,7 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
-- Direct I/O is built (M1.3y). On the merged daemon the rule is met in every fast-sync and arm64 cell (medians 0.935 or above, three or four rows a cell); the slow-sync cells are too noisy to judge, and bounded with eight threads the median is 0.877 over three rows (M1.T29). A second round aims at that cell; the thread default rests on it.
+- Direct I/O is built (M1.3y). On the merged daemon the rule is met in every fast-sync and arm64 cell (medians 0.935 or above, three or four rows a cell); the slow-sync cells are noisy: bounded with eight threads the median was 0.877 over three rows in one round and 1.013 over ten in the next (M1.T29). Eight threads are the default, settled. A `dm-0` class of machine appeared once, at 0.90 to 0.91. The exit round, after M1.3t, must give every class three counted rows a cell.
 - The binding drops ublk command results other than OK (M1.3aa). ext4 with `data=journal` is read as refused at the start, not run.
 - The image stays sparse (M1.T27); a full file system still fails the volume, until the store accounts for local space (M3).
 - A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
@@ -986,6 +1009,9 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-13 | The model's late completion (M1.T28, skyzfs/skyzfs#60); two looks by the review session, nothing from Codex | Can merge. Finding 1, decided by the lead: the new outcome is allowed only where the harness declares it, so the suites whose driver reissues every request keep the strict model (their time went from 72 s to 124 s and back to 73 s). A gap closed: two tests without a kernel hold the path from harness to model. |
 | 2026-11-13 | The repeat rig's provoking (M1.T28, skyzfs/skyzfs#62); one look by the review session, nothing from Codex | Can merge. The review replayed the kept volumes itself: only the two provoked ones are refused, and only by the model before skyzfs/skyzfs#60. The provoker's first form created a regular file at a device's path when the node had just gone (a harness error, "serve was not ready after 60 s"); it now opens without creating. |
 | 2026-11-13 | A test of `mapped()` that raced (M1.3ab, skyzfs/skyzfs#61); two looks by the review session, nothing from Codex | Can merge. The review reproduced the cause the author had inferred: another thread's larger mapping ending on the test's one-page hole. An attempt now counts only when the hole is empty before and after; the planted defect still fails every time. |
+| 2026-11-13 | The binding's command results (M1.3aa, skyzfs/skyzfs#64); two looks by the review session, nothing from Codex | Can merge. The review corrected the ground for what follows (M1.3ac): the driver's result does not tell a commit refused for an empty tag from a malformed one on any release read (v6.11, v6.17, v7.0); the first leaves the tag working, the second leaves it dead with its request held; and a count of zero failed commands does not show that no commit was sent twice. Decided by the lead: any refused commit stops the daemon for a take-over, once a kernel test shows the take-over gets the held request issued again. |
+| 2026-11-13 | The rigs name the store (M1.3t-a, skyzfs/skyzfs#65), the tool's hand-over (skyzfs/skyzfs#66) and the benchmark's arm64 runners (skyzfs/skyzfs#67); looks by the review session, nothing from Codex | Each can merge, one small defect fixed in #65. On #66 the repeat rig ran 10 of 10 passes on `ubuntu-26.04` and met the new outcome five times (run 43503235852). Found beside it by the author: `the_suite_notices_the_defects` notices one planted defect only by timing and fails alone, 4 of 4 runs (M1.3ad). |
+| 2026-11-13 | The hole rig (M1.T27, skyzfs/skyzfs#63); four looks by the review session and two findings by Codex | Can merge. Decided by the lead on the review's question: on a written-through image the count of prefixes with the data on the disk and zeros in the file is a pin at 0, since design §4.2 rests on it. One blocking finding fixed: a course whose daemon failed before its check ended as "not a verdict". Three small defects and Codex's two findings fixed. Also merged that day, one look each: the benchmark's time per read and per write on the work disk (skyzfs/skyzfs#68), where Codex found the row parser dropping the new field. |
 
 ## References
 
