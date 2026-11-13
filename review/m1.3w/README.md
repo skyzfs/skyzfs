@@ -42,3 +42,12 @@ Verdict: no findings; it can merge once `test` and `unit-arm64` are green.
 A trap met: a wait loop around a background run, with a sleep inside
 Python, is a way round the rule against polling and is refused. A
 background run reports its own end.
+
+## Second look, at b940a6e
+
+Posted: https://github.com/skyzfs/skyzfs/pull/52#issuecomment-6847380927
+`git diff aa3cc87 b940a6e`: the three bounds' messages print the test's
+total; the conditions are unchanged. With p2, p3 and p4 each assertion
+fails as before (5511, 4133, 4116) and the message begins with the total.
+The two tests pass at this head. Verdict unchanged: it can merge once CI is
+green at b940a6e.
