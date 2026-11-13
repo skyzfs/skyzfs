@@ -599,8 +599,8 @@ Every bracket was within the rule's 10% (0.0 to 8.0%).
 | Slow-sync | in place at 1 GiB | 0.852 | | 1 row |
 
 - **In place ran at the model's speed**, and beside the log store in the same bracket it was faster in all four jobs: by 4.1%, 10.7%, 3.2% and, on the slow-sync machine, 12.1%. The log row was always the earlier of the two, so their order was not varied.
-- **The daemon's CPU fell by more than half:** 9 to 10 s on the pump in a window of 120 s and nothing elsewhere, against 22 to 24 s over the log store's pump, worker and readers. Postgres got 4 to 8 s more CPU in the in-place rows.
-- **Bounded to 1 GiB on the slow-sync machine it was at 0.852**, one row: the pump used 12 to 15 s there, because a read that misses the page cache is served on the pump's thread and stalls it. A pool of readers for misses is the known remedy and is not built.
+- **The daemon's CPU fell by more than half:** 9 to 10 s on the pump in a window of 120 s and nothing elsewhere, against 22 to 24 s over the log store's pump, worker and readers. Postgres got 4 to 14 s more CPU in the in-place row than in the log row of the same job.
+- **Bounded to 1 GiB on the slow-sync machine it was at 0.852**, one row. The pump used 12 s of CPU there against 9 s unbounded (12 to 15 s over the four jobs' bounded rows). The likely cause is that a read that misses the page cache is served on the pump's thread and holds every other request up while it waits; that is not shown, since a wait uses no CPU and nothing measured the pump's waits. A pool of readers for misses is the remedy if it is the cause, and is not built.
 - Three of the four machines were fast-sync, so the slow-sync figures rest on one job.
 
 **The power-cut replay with the in-place store**, full budget, one run per image[^t18replay]:
