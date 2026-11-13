@@ -85,6 +85,13 @@ class Judging(unittest.TestCase):
             j = rh.judge(n, {0: 'other', 1: 'written', 2: 'zeros'}, self.w, self.f)
             self.assertEqual(len(j['violations']), 1, n)
 
+    def test_zeros_with_the_data_on_the_disk_are_counted_apart(self):
+        # Block 0 returned at 4; its data is in the log from prefix 7.
+        j = rh.judge(6, {0: 'zeros', 1: 'zeros', 2: 'zeros'}, self.w, self.f, {0: 7})
+        self.assertEqual((j['zeros_after_return'], j['zeros_on_disk']), ([0, 1], []))
+        j = rh.judge(8, {0: 'zeros', 1: 'zeros', 2: 'zeros'}, self.w, self.f, {0: 7})
+        self.assertEqual((j['zeros_after_return'], j['zeros_on_disk']), ([0, 1], [0]))
+
     def test_a_pending_block_may_read_its_write(self):
         j = rh.judge(3, {0: 'written', 1: 'zeros', 2: 'zeros'}, self.w, self.f)
         self.assertEqual((j['violations'], j['zeros_after_return']), ([], []))
@@ -126,6 +133,15 @@ class Withheld(unittest.TestCase):
             self.assertEqual(c['schedule'][c['point'] - 1], 8)
             self.assertEqual(c['schedule'][c['point']], 2)
 
+    def test_the_data_of_each_block_is_found_in_the_log(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, 'log')
+            logwrites.write_log(log, SS, [('mark', 'hole-start'), ('mark', 'w-0'), ('mark', 'w-1'),
+                                          ('write', 2 << 20, rh.content(1)), ('write', 1 << 20, rh.content(0)),
+                                          ('flush',), ('write', 1 << 20, rh.content(0))])
+            recs = logwrites.index(log, 0)['records']
+            self.assertEqual(rh.data_prefixes(recs, log, 3), {1: 4, 0: 5})
+
     def test_no_control_without_a_flush(self):
         with tempfile.TemporaryDirectory() as d:
             log = os.path.join(d, 'log')
@@ -137,7 +153,8 @@ class Withheld(unittest.TestCase):
 
 
 def result(**kw):
-    r = {'fs': 'ext4', 'kind': 'sparse', 'checked': 10, 'zero_prefixes': 3, 'zero_blocks': 4, 'violations': [],
+    r = {'fs': 'ext4', 'kind': 'sparse', 'checked': 10, 'zero_prefixes': 3, 'zero_blocks': 4,
+         'disk_zero_prefixes': 2, 'disk_zero_blocks': 2, 'violations': [],
          'failures': [], 'rig_error': None, 'control': {'result': 'caught', 'what': 'w', 'got': 'g'},
          'range': [2, 20], 'seconds': 5}
     r.update(kw)
@@ -154,11 +171,12 @@ class Verdict(unittest.TestCase):
         self.assertEqual(rh.verdict([result(control=None)])[0], 0)
 
     def test_the_summary_gives_the_three_counts_per_kind(self):
-        code, text = rh.summary([result(), result(kind='zero-fill', zero_prefixes=0, zero_blocks=0),
+        code, text = rh.summary([result(), result(kind='zero-fill', zero_prefixes=0, zero_blocks=0,
+                                                  disk_zero_prefixes=0, disk_zero_blocks=0),
                                  {'fs': 'xfs', 'kind': 'zero-fill', 'skipped': 'this daemon has no --zero-fill'}])
         self.assertEqual(code, 0)
-        self.assertIn('| ext4 | sparse | 10 of 19 | 3 (4 block reads) | 0 |', text)
-        self.assertIn('| ext4 | zero-fill | 10 of 19 | 0 (0 block reads) | 0 |', text)
+        self.assertIn('| ext4 | sparse | 10 of 19 | 3 (4 block reads) | 2 (2 block reads) | 0 |', text)
+        self.assertIn('| ext4 | zero-fill | 10 of 19 | 0 (0 block reads) | 0 (0 block reads) | 0 |', text)
         self.assertIn('not run: this daemon has no --zero-fill', text)
 
 

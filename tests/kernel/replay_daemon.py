@@ -337,7 +337,8 @@ class Daemon:
         # xfs refuses a second mount of a file system whose uuid it has
         # seen; another file system (the hole course's ext4) has no such
         # option.
-        self.mount_opts = list(getattr(a, 'mount_opts', None) or ['-o', 'nouuid'])
+        opts = getattr(a, 'mount_opts', None)
+        self.mount_opts = ['-o', 'nouuid'] if opts is None else list(opts)
 
     def reset(self, schedule=None):
         if os.path.exists(self.lower):

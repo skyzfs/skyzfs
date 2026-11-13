@@ -36,9 +36,18 @@ and judges each of the course's blocks:
 
 A prefix that breaks either is a verdict against the daemon (exit 1),
 as is a prefix at which the file system does not mount, the daemon does
-not start, or its device cannot be read. The measurement is the count
-of prefixes at which a block whose write had returned, and that no
-flush covered yet, read as zeros: "zeros after return", per image kind.
+not start, or its device cannot be read.
+
+The measurement: the prefixes at which a block whose write had
+returned, and that no returned flush covered yet, read as zeros
+("zeros after return"), per image kind, in two parts. dm-log-writes
+logs a completed write only at the next flush of the lower disk, so a
+returned write whose data is not in the prefix yet stood in the disk's
+volatile cache: any image loses it at such a cut ("in the disk's
+cache"). A block whose data is in the prefix, so on the disk, and that
+still reads zeros is the file system's uncommitted extent change
+("on the disk, not in the file"): the loss the image's allocation
+decides (design §10), which a written-through image should not show.
 
 Negative control (EXPECTED): `withheld` moves the lower disk's writes
 that carry one flushed block's data to just after that flush's mark,
@@ -185,11 +194,15 @@ def state_at(n, wmark, fmarks):
     return 'returned'
 
 
-def judge(n, reads, wmarks, fmarks):
-    """Judge prefix n -> dict(violations=[...], zeros_after_return=[i...], states={i: (state, read)}).
+def judge(n, reads, wmarks, fmarks, data_at=None):
+    """Judge prefix n -> dict(violations=[...], zeros_after_return=[i...], zeros_on_disk=[i...], states=...).
 
-    reads: {i: 'zeros' | 'written' | 'other'} for every block of the course."""
-    out = {'n': n, 'violations': [], 'zeros_after_return': [], 'states': {}}
+    reads: {i: 'zeros' | 'written' | 'other'} for every block of the course.
+    data_at: {i: the first prefix that holds the record carrying block i's
+    data}; a returned block that reads zeros at a prefix that holds its
+    data is also in zeros_on_disk."""
+    data_at = data_at or {}
+    out = {'n': n, 'violations': [], 'zeros_after_return': [], 'zeros_on_disk': [], 'states': {}}
     for i, got in sorted(reads.items()):
         st = state_at(n, wmarks[i], fmarks)
         out['states'][i] = (st, got)
@@ -199,6 +212,24 @@ def judge(n, reads, wmarks, fmarks):
             out['violations'].append(f'block {i}: a flush after its write had returned, and it reads {got}')
         elif st == 'returned' and got == 'zeros':
             out['zeros_after_return'].append(i)
+            if data_at.get(i, n + 1) <= n:
+                out['zeros_on_disk'].append(i)
+    return out
+
+
+def data_prefixes(records, log_path, n_blocks):
+    """-> {i: the first prefix whose last record carries block i's data}, for the blocks found in the log."""
+    heads = {HEADER % i: i for i in range(n_blocks)}
+    out = {}
+    with open(log_path, 'rb') as log:
+        for n, r in enumerate(records, 1):
+            if 'pos' not in r or not r['bytes']:
+                continue
+            log.seek(r['pos'])
+            data = log.read(r['bytes'])
+            for h, i in heads.items():
+                if i not in out and h in data:
+                    out[i] = n
     return out
 
 
@@ -284,7 +315,8 @@ def check(a):
     offs = man['offsets']
     start, end, wmarks, fmarks = marks_of(records)
     res = {'fs': a.fs, 'kind': a.kind, 'records': len(records), 'writes': len(offs), 'flushes': len(fmarks),
-           'checked': 0, 'zero_prefixes': 0, 'zero_blocks': 0, 'violations': [], 'failures': [],
+           'checked': 0, 'zero_prefixes': 0, 'zero_blocks': 0, 'disk_zero_prefixes': 0, 'disk_zero_blocks': 0,
+           'violations': [], 'failures': [],
            'rig_error': None, 'control': None, 'budget': a.budget_name}
     if start is None or len(wmarks) != len(offs):
         res['rig_error'] = (f'the log has {"no" if start is None else "a"} start mark and {len(wmarks)} write marks '
@@ -298,6 +330,8 @@ def check(a):
     ns.mount_opts = ['-o', 'nouuid'] if a.fs == 'xfs' else []
     daemon = rd.Daemon(ns, idx)
     image = os.path.join(a.work, 'hole.img')
+    data_at = data_prefixes(records, a.log, len(offs))
+    res['data_found'] = len(data_at)
     pts = plan(start, end, len(records), wmarks, fmarks, a.every_prefix, a.sample, a.seed)
     res['planned'] = len(pts)
     res['range'] = [start, len(records)]
@@ -320,14 +354,18 @@ def check(a):
                     rows.append(row)
                     break
             else:
-                j = judge(n, read_blocks(image, offs), wmarks, fmarks)
+                j = judge(n, read_blocks(image, offs), wmarks, fmarks, data_at)
                 row['zeros'] = j['zeros_after_return']
+                row['zeros_on_disk'] = j['zeros_on_disk']
                 if j['violations']:
                     row['violations'] = j['violations']
                     res['violations'] += [f'prefix {n}: {v}' for v in j['violations']]
                 if j['zeros_after_return']:
                     res['zero_prefixes'] += 1
                     res['zero_blocks'] += len(j['zeros_after_return'])
+                if j['zeros_on_disk']:
+                    res['disk_zero_prefixes'] += 1
+                    res['disk_zero_blocks'] += len(j['zeros_on_disk'])
                 res['checked'] += 1
             rows.append(row)
             if info.get('abort'):
@@ -388,24 +426,31 @@ def summary(results, kernel=''):
     code, head = verdict(results)
     out = ['## Power-cut replay: a direct write into a hole, through skyzfsd (M1.T27)', '',
            f'**{head}**' + (f' Kernel {kernel}.' if kernel else ''), '',
-           '| file system | image | prefixes checked (of the course\'s) | zeros after return | violations '
-           '| prefixes that did not start | control `withheld` | seconds |',
-           '|---|---|---|---|---|---|---|---|']
+           '| file system | image | prefixes checked (of the course\'s) | zeros after return '
+           '| of them on the disk, not in the file | violations | prefixes that did not start '
+           '| control `withheld` | seconds |',
+           '|---|---|---|---|---|---|---|---|---|']
     for r in results:
         if r.get('skipped'):
-            out.append(f"| {r['fs']} | {r['kind']} | not run: {r['skipped']} | | | | | |")
+            out.append(f"| {r['fs']} | {r['kind']} | not run: {r['skipped']} | | | | | | |")
             continue
         rng = r.get('range')
         span = (rng[1] - rng[0] + 1) if rng else '?'
         c = r.get('control') or {}
         ctl = c.get('result', 'not asked') if c else 'not asked'
         out.append(f"| {r['fs']} | {r['kind']} | {r['checked']} of {span} | {r['zero_prefixes']} "
-                   f"({r['zero_blocks']} block reads) | {len(r['violations'])} | {len(r['failures'])} | {ctl} "
-                   f"| {r.get('seconds', '?')} |")
+                   f"({r['zero_blocks']} block reads) | {r.get('disk_zero_prefixes', 0)} "
+                   f"({r.get('disk_zero_blocks', 0)} block reads) | {len(r['violations'])} | {len(r['failures'])} "
+                   f"| {ctl} | {r.get('seconds', '?')} |")
     out += ['', '"Zeros after return": prefixes at which a block whose write had returned, and that no '
-                'returned flush covered yet, read as zeros (design §4.1 allows it; it is the measurement for '
-                'the image\'s allocation, design §10). A violation: a block that read neither zeros nor its '
-                'write, or a block covered by a returned flush that did not read its write.', '']
+                'returned flush covered yet, read as zeros; design §4.1 allows it. dm-log-writes logs a '
+                'completed write only at the lower disk\'s next flush, so most of these are a write in the '
+                'disk\'s volatile cache, which any image loses at such a cut. "On the disk, not in the file": '
+                'those at which the block\'s data was already in the prefix, so on the disk, and the block '
+                'still read zeros: the file system had not committed the change of its extent tree. That is '
+                'the measurement for the image\'s allocation (design §10). A violation: a block that read '
+                'neither zeros nor its write, or a block covered by a returned flush that did not read its '
+                'write.', '']
     for r in (r for r in results if not r.get('skipped')):
         for k in ('rig_error',):
             if r.get(k):
