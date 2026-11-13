@@ -411,6 +411,46 @@ fn the_store_says_how_it_applies_write_zeroes() {
     }
 }
 
+/// What the start's hand-over said is not kept past this store's first
+/// write-zeroes: a log that held one is applied by deallocating its
+/// range, and the status says so until a write-zeroes on direct I/O
+/// says how this store applies them.
+#[test]
+fn the_first_write_zeroes_on_direct_io_replaces_what_the_hand_over_said() {
+    let disk = created(1, 0);
+    let (mut log_store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+    log_store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::WriteZeroes {
+                offset: 5 * BLOCK,
+                len: BLOCK,
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    while done.is_empty() {
+        log_store.wait(&mut done, WAIT);
+    }
+    assert_eq!(done[0].result, Ok(()));
+    drop(log_store);
+    disk.kill();
+    let mut store = start(&disk, 0, false).unwrap();
+    assert_eq!(store.zeroes(), Zeroes::Deallocated);
+    let done = run(
+        &mut store,
+        2,
+        Op::WriteZeroes {
+            offset: 3 * BLOCK,
+            len: BLOCK,
+        },
+    );
+    assert_eq!(done.result, Ok(()));
+    assert_eq!(store.zeroes(), Zeroes::WrittenDirect);
+    assert_eq!(read(&mut store, 3).unwrap(), vec![0; BLOCK_USIZE]);
+    assert_eq!(read(&mut store, 5).unwrap(), vec![0; BLOCK_USIZE]);
+}
+
 /// A flush with nothing written since the last sync completes without
 /// one; a flush after a write begins one.
 #[test]
