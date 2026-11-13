@@ -137,10 +137,12 @@ pub enum Fault {
     /// R9: a request that was in flight at a daemon loss fails when it is
     /// reissued.
     RejectReissued,
-    /// R10: a power cut keeps part of the first operation it loses.
+    /// R10: a power cut keeps part of a sector of the first write it
+    /// loses: a tear finer than the volatile-cache disk's sector.
     TearOnCut,
-    /// R10: a power cut loses an operation and keeps later ones.
-    CutDropsMiddle,
+    /// R10: a power cut leaves a sector that nothing ever wrote in a
+    /// block the first operation it loses had written.
+    CutLeavesForeign,
     /// R10: recovery serves the log it found without making it durable,
     /// so a second power cut takes back what the first recovery exposed.
     RecoveryNotDurable,
@@ -376,18 +378,34 @@ impl MemTarget {
         self.rebuild();
         if self.fault(Fault::TearOnCut) && !lost.is_empty() {
             let mut first = lost.remove(0);
-            if first.effects.len() > 1 {
-                first.effects.truncate(first.effects.len() / 2);
-            } else if let Some((block, Effect::Data(data))) = first.effects.first_mut() {
-                // Half the new block over half the old one.
+            if let Some((block, Effect::Data(data))) = first.effects.first_mut() {
+                // The new block, with the old one's bytes from the middle
+                // of its first sector on: torn inside a sector. At byte
+                // 256, so that a model whose sector were half as large
+                // would take it.
                 let at = *block as usize * BLOCK_USIZE;
-                data[BLOCK_USIZE / 2..]
-                    .copy_from_slice(&self.image[at + BLOCK_USIZE / 2..at + BLOCK_USIZE]);
+                data[256..512].copy_from_slice(&self.image[at + 256..at + 512]);
+                first.effects.truncate(1);
+                self.log.push(first);
             }
-            self.log.push(first);
         }
-        if self.fault(Fault::CutDropsMiddle) && keep >= 2 {
-            self.log.remove(self.durable);
+        if self.fault(Fault::CutLeavesForeign) {
+            let written = lost.iter().find_map(|record| {
+                record
+                    .effects
+                    .iter()
+                    .find_map(|(block, effect)| matches!(effect, Effect::Data(_)).then_some(*block))
+            });
+            if let Some(block) = written {
+                // A sector of bytes no write ever held.
+                let mut data = self.image
+                    [block as usize * BLOCK_USIZE..(block as usize + 1) * BLOCK_USIZE]
+                    .to_vec();
+                data[..512].fill(0xA5);
+                self.log.push(Record {
+                    effects: vec![(block, Effect::Data(data.into_boxed_slice()))],
+                });
+            }
         }
         self.late_discards.clear();
         self.recover();

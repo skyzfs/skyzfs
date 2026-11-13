@@ -165,6 +165,29 @@ pub trait File {
         Err(io::ErrorKind::Unsupported.into())
     }
 
+    /// Drop the file's clean pages from the kernel's cache, so that a
+    /// later read comes from the disk: a page that a failed sync marked
+    /// clean without writing it is then gone. Advisory: a page that is
+    /// dirty, under writeback, mapped or locked stays, and
+    /// [`File::cached_pages`] is what shows the result.
+    ///
+    /// Linux: `posix_fadvise` with `POSIX_FADV_DONTNEED` over the whole
+    /// file. Elsewhere, and in this default: unsupported.
+    fn drop_cache(&mut self) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// How many pages of the file the kernel's cache holds now, dirty
+    /// ones included: [`io::ErrorKind::Unsupported`] where that cannot
+    /// be asked without mapping the file.
+    ///
+    /// Linux: `cachestat` (6.5 and later), a call this crate does not
+    /// make itself ([`crate::fs::CacheCountCall`]). Elsewhere, and in
+    /// this default: unsupported.
+    fn cached_pages(&self) -> io::Result<u64> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
     /// Set the file's length to `len` with real, zero-filled space behind
     /// it, so that a later write inside it allocates nothing.
     fn preallocate(&mut self, len: u64) -> io::Result<()>;

@@ -25,7 +25,7 @@
 //! |---|---|
 //! | a stop was asked and everything accepted was completed | 0 |
 //! | a stop was asked and the acknowledged position could not be stored | 1 |
-//! | the volume failed while it was served | 3 |
+//! | the volume failed while it was served, or at the start of the in-place store (`--store in-place`) | 3 |
 //! | the queue went away, or the target did | 1 |
 //!
 //! After an orderly stop the device stays and waits for the next
@@ -67,7 +67,10 @@
 //!   a loop file on a dataset).
 //! - A start that fails after the lifecycle has added or begun to
 //!   recover a device leaves that device as it is: the next start
-//!   finds it by its record and its note.
+//!   finds it by its record and its note. The one exception is a start
+//!   of the in-place store that meets the failed disk: the volume has
+//!   failed, and it goes the way of a failure while served (the notes,
+//!   the delete, exit 3).
 
 use std::io;
 use std::path::Path;
@@ -634,7 +637,10 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         }
     }));
     let began = std::time::Instant::now();
-    let volume = StoreVolume::new(&serve.dir, options);
+    // The in-place store's start counts the home image's cached pages
+    // after it drops them (`cachestat`); the log store does not ask.
+    let volume =
+        StoreVolume::new(&serve.dir, options).with_cache_count(skyzfs_ublk_sys::cached_pages);
     // With both units 0 the store never asks, and the call is not even
     // given: the benchmark's row without the hint is the daemon as it
     // was before it.
@@ -751,15 +757,55 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // The log is applied and emptied, the home image synced, and
         // the queue's thread executes the requests itself; the sync of
         // a flush runs on the image's helper thread, which wakes the
-        // queue's thread when it ends. A start that fails here has
-        // failed the volume when the cause was the disk, as a failed
-        // step would: the next start finds the marker.
-        StoreKind::InPlace => Target::InPlace(Box::new(
-            ready
-                .store
-                .into_in_place(Some(waker))
-                .map_err(|e| format!("the in-place store: {e}"))?,
-        )),
+        // queue's thread when it ends.
+        StoreKind::InPlace => match ready.store.into_in_place(Some(waker)) {
+            Ok(store) => Target::InPlace(Box::new(store)),
+            // The disk failed under the start: the volume has failed,
+            // and it goes the way of a volume that fails while it is
+            // served: the failure note, the device's note, the delete of
+            // the device, exit 3. The device is this instance's and is
+            // not started yet; it holds no request of this instance's.
+            // The store's failure marker comes last: it needs the disk
+            // that has just failed and may never end, and the note must
+            // not wait for it. (Where the log store's own checkpoint
+            // failed, its marker was tried already, as at any start of
+            // the log store.) The helper's end without a report is not a
+            // failure of the volume, and ends with exit 1 as it does
+            // while the log store serves (`Err(other)`).
+            Err(skyzfs_local::inplace::IntoInPlaceError::Failed(start)) => {
+                let (failure, written, deleted) =
+                    lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
+                say(format_args!(
+                    "the volume failed at the start of the in-place store ({}); client holds the \
+                     device: {:?}{}{}. Note: {}",
+                    failure.reason,
+                    failure.held,
+                    if written {
+                        ""
+                    } else {
+                        "; the failure note could not be written"
+                    },
+                    match &deleted {
+                        Ok(()) => String::new(),
+                        Err(undeleted) => format!("; {}", undeleted.said(number)),
+                    },
+                    status::POOL_WARNING
+                ));
+                start.finish();
+                return Ok(Exit::Failed);
+            }
+            // The start serves only what the disk holds (design §4.1):
+            // where it cannot show that, it serves nothing. The volume
+            // has not failed, and the device waits as after any start
+            // that fails after the lifecycle added it.
+            Err(refused @ skyzfs_local::inplace::IntoInPlaceError::CacheKept(_)) => {
+                return Err(format!(
+                    "the in-place store: {refused}. Nothing was served and the volume has not \
+                     failed"
+                ))
+            }
+            Err(other) => return Err(format!("the in-place store: {other}")),
+        },
     };
 
     let queue_began = std::time::Instant::now();

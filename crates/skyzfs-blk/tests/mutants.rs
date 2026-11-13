@@ -168,23 +168,30 @@ fn catches_rejecting_reissued_requests() {
     );
 }
 
-/// R10: a target that keeps part of an operation across a power cut is
-/// caught by the cut-at-every-point case.
+/// R10: a target that tears a write inside a sector across a power cut
+/// is caught by the cut-at-every-point case.
 #[test]
-fn catches_torn_operations() {
+fn catches_a_tear_inside_a_sector() {
     caught(
         Fault::TearOnCut,
-        &["power_cut_at_every_point_leaves_a_prefix", FAILURES],
+        &[
+            "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may",
+            FAILURES,
+        ],
     );
 }
 
-/// R10: a target that loses an operation and keeps later ones does not
-/// leave a prefix.
+/// R10: a target whose power cut leaves a sector that nothing wrote is
+/// caught: the volatile-cache disk holds only versions that were
+/// written.
 #[test]
-fn catches_a_cut_that_is_not_a_prefix() {
+fn catches_a_cut_that_leaves_foreign_content() {
     caught(
-        Fault::CutDropsMiddle,
-        &["power_cut_at_every_point_leaves_a_prefix", FAILURES],
+        Fault::CutLeavesForeign,
+        &[
+            "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may",
+            FAILURES,
+        ],
     );
 }
 

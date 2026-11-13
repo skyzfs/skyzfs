@@ -1,12 +1,12 @@
 //! The conformance suite's harness for the in-place store on the
 //! simulated disk.
 //!
-//! It has every capability but the power cut: rule R10 is not this
-//! store's promise (see the [module documentation](super)), and a cut
-//! that kept a prefix of the writes would only imitate a disk that does
-//! not exist. The suite reports the cases that need a power cut as not
-//! exercised; what the store does promise at a power cut is tested
-//! apart, with the simulated disk's own cuts (`tests.rs`).
+//! It has every capability. A power cut is the simulated disk's own
+//! ([`SimDisk::power_cut`] with a [`SeededCut`] drawn from the suite's
+//! `keep`, without garbage): each sector keeps its durable content or
+//! any version written since, which is rule R10, the volatile-cache
+//! disk. The disk's garbage, which the rule does not allow and a real
+//! disk may still write, is tested apart (`tests.rs`).
 //!
 //! - `create` makes a log store, ages its log as the log store's
 //!   harness does, and enters the in-place store from it: the
@@ -19,20 +19,23 @@
 //! - `fail_log` makes every write and every sync fail from then on, as
 //!   the simulated disk fails them: a failed write leaves any subset of
 //!   its sectors, a failed sync may drop what it did not make durable.
-//! - `reopen_failed` takes the fault away, kills the process and starts
-//!   with the failure acknowledged.
+//! - `reopen_failed` takes the fault away, loses the process and
+//!   starts with the failure acknowledged, with the kernel's cache kept,
+//!   as the log store's harness does: what a failed sync left marked
+//!   clean and never written is still in the cache. The start drops the
+//!   cache and serves only what the disk holds, which is what makes the
+//!   volume as after a power cut (rule R11); the case
+//!   `reopened_failed_volume_holds_what_was_flushed` fails on a store
+//!   that does not.
 
 use std::time::Duration;
 
-use skyzfs_blk::conformance::{
-    cases, Capabilities, Capability, CaseOutcome, Config, Harness, HarnessError, Report, Spec,
-    Status,
-};
+use skyzfs_blk::conformance::{Capabilities, Harness, HarnessError, Spec};
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId};
 
 use super::{InPlace, Mutants};
 use crate::format::Key;
-use crate::sim::SimDisk;
+use crate::sim::{SeededCut, SimDisk};
 use crate::store::{OpenOptions, Store, StoreConfig};
 
 /// The log's segments: as the log store's harness has them.
@@ -167,51 +170,11 @@ impl BlockTarget for OnSim {
     }
 }
 
-/// The suite's cases that this store does not meet, by design: each
-/// reads the volume back after its log failed, and holds a block that
-/// no flush covered to one whole version. On this store a failed write
-/// or sync leaves such a block as a power cut does (the module's point
-/// 4), so the suite finds it torn. `tests.rs` pins that these two fail
-/// so and nothing else does, and tests what the store does promise
-/// there with the same faults.
-pub(crate) const NOT_MET: [&str; 2] = [
-    "prop_failures_match_model",
-    "reopened_failed_volume_holds_what_was_flushed",
-];
-
-/// Why: the reason [`run_suite`] reports for each of [`NOT_MET`].
-pub(crate) const NOT_MET_REASON: &str =
-    "not met by the in-place store, by design: a failed write or sync leaves the blocks \
-     no flush covered as a power cut does (the volatile-cache disk), and this case holds \
-     them whole; what the store promises there is tested apart";
-
-/// The suite as it runs on this store: every case, but the cases of
-/// [`NOT_MET`], which are reported as not exercised with
-/// [`NOT_MET_REASON`]. The suite has no way to say "not met by design"
-/// but that, and its report must not show these as passed.
-pub(crate) fn run_suite(harness: &mut InPlaceHarness, config: &Config) -> Report {
-    Report {
-        outcomes: cases::<InPlaceHarness>()
-            .into_iter()
-            .map(|case| CaseOutcome {
-                name: case.name,
-                rule: case.rule,
-                result: if NOT_MET.contains(&case.name) {
-                    Ok(Status::NotExercised(NOT_MET_REASON))
-                } else {
-                    case.run_on(harness, config)
-                },
-            })
-            .collect(),
-    }
-}
-
 impl Harness for InPlaceHarness {
     type Target = OnSim;
 
-    /// Everything but the power cut: see the module documentation.
     fn capabilities(&self) -> Capabilities {
-        Capabilities::ALL.without(Capability::PowerCut)
+        Capabilities::ALL
     }
 
     fn create(&mut self, spec: &Spec) -> Result<OnSim, HarnessError> {
@@ -277,14 +240,21 @@ impl Harness for InPlaceHarness {
         self.start(disk, geometry.read_only(), false, Some(geometry))
     }
 
+    /// The seeds of the simulated disk's cut worth trying: eight.
     fn cut_points(&mut self, _target: &OnSim) -> u64 {
-        0
+        7
     }
 
-    fn power_cut(&mut self, _target: OnSim, _keep: u64) -> Result<OnSim, HarnessError> {
-        Err(HarnessError(
-            "the in-place store has no power cut in the suite: its promise is not R10".into(),
-        ))
+    /// The simulated disk's own cut, drawn from `keep`.
+    fn power_cut(&mut self, target: OnSim, keep: u64) -> Result<OnSim, HarnessError> {
+        let OnSim {
+            inner,
+            disk,
+            geometry,
+        } = target;
+        drop(inner);
+        disk.power_cut(SeededCut::new(keep ^ 0x5EED_C0DE));
+        self.start(disk, geometry.read_only(), false, Some(geometry))
     }
 
     fn fail_log(&mut self, target: &mut OnSim) -> Result<(), HarnessError> {

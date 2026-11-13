@@ -21,13 +21,13 @@
 //!
 //! # What it promises: the volatile-cache disk
 //!
-//! This store does not meet rule R10 of the block contract (design
-//! §4.1: after a power cut the volume is a prefix of the daemon's
-//! order, every operation whole), nor, for the same reason, R11's
-//! "reopened as after a power cut". A write in place is whole only if
-//! a journal makes it so, and the journal is the log. What it promises
-//! instead is what a disk with a volatile write cache promises, the
-//! disk ZFS is built for. Call it **the volatile-cache disk**:
+//! What it promises is what a disk with a volatile write cache promises,
+//! the disk ZFS is built for: **the volatile-cache disk**, which is rule
+//! R10 of the block contract since decision D5 (design §4.1). The
+//! contract's first version asked for a prefix of the daemon's order
+//! with every operation whole; a write in place is whole only if a
+//! journal makes it so, and the journal was the log, which D5 dropped.
+//! The points, as this store keeps them:
 //!
 //! 1. **Process loss.** A write, write-zeroes or discard is
 //!    acknowledged once it is in the file system's cache. It is there
@@ -45,7 +45,18 @@
 //!    independently of every other sector and of every other block: a
 //!    later write can survive while an earlier one is lost, and a
 //!    write can be torn at a sector. A start makes what it finds
-//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)).
+//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)),
+//!    and then serves only what the disk holds: it drops the kernel's
+//!    cache of the home image and checks that no page of it is left
+//!    (`cachestat`), or refuses the volume (design §4.1). A failed sync
+//!    can leave pages marked clean that the disk never got, and no
+//!    later sync writes them; served from the cache, they would be
+//!    shown and then taken by a cut behind a completed flush. The drop
+//!    covers a start that acknowledges a failure as well as one after
+//!    an instance that died between a failed sync and its marker, whose
+//!    own sync succeeds because the kernel reports such an error once.
+//!    Its cost: the first reads after every start, a take-over
+//!    included, come from the disk.
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
 //!    then on every request fails, reads included, and a later start
@@ -54,8 +65,8 @@
 //!    dropped the pages and the error with them. What a completed flush
 //!    covered is intact after a failure; a failed write or sync may
 //!    leave every other block as point 3 leaves it at a power cut,
-//!    where the log store leaves it whole. That is less than the
-//!    suite's rule R11 asks.
+//!    which is what rule R11 asks of a failed volume that is opened
+//!    again.
 //!
 //! Where the disk writes a sector neither old nor new at a power cut
 //! (the simulated disk's garbage), point 3 holds for no sector a power
@@ -77,7 +88,9 @@
 //! flush covered: the log store refuses such a file system, and this
 //! store does not look.
 //!
-//! The rules R1 to R6, R8, R9 and R12 hold as for the log store.
+//! The other rules (R1 to R9, R11, R12) hold as for the log store, and
+//! the conformance suite runs on this store with every capability
+//! (`harness.rs`).
 //!
 //! # How it executes
 //!
@@ -135,6 +148,18 @@ impl Mutants {
     /// A discard is not counted as a change: a flush behind it alone
     /// does not sync.
     pub(crate) const DISCARD_UNCHANGED: u32 = 1 << 5;
+    /// No thread is started for the failure marker: it is written on
+    /// the caller's thread when the volume fails.
+    pub(crate) const MARKER_INLINE: u32 = 1 << 6;
+    /// The start does not drop the home image's cache.
+    pub(crate) const CACHE_NOT_DROPPED: u32 = 1 << 7;
+    /// The start does not check that the cache is gone.
+    pub(crate) const CACHE_NOT_CHECKED: u32 = 1 << 8;
+    /// The start does not show that the count sees the file.
+    pub(crate) const CACHE_SIGHT_UNCHECKED: u32 = 1 << 9;
+    /// The start shows that the count sees the file before the drop,
+    /// not after it.
+    pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -142,16 +167,30 @@ impl Mutants {
 }
 
 /// Why [`Store::into_in_place`](crate::store::Store::into_in_place) did not give an in-place store.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum IntoInPlaceError {
     /// The log store has requests queued or in flight.
     #[error("the store has requests in flight")]
     InFlight,
     /// The volume has failed, or failed on the way: the log could not
-    /// be applied or the home image could not be synced. The log's
-    /// marker says so to the next start.
+    /// be applied or the home image could not be synced. The failure
+    /// marker that says so to the next start may still be to write:
+    /// [`FailedStart`] writes it when it is finished or dropped, so
+    /// that the caller can first say what happened elsewhere.
     #[error("the volume has failed")]
-    Failed,
+    Failed(FailedStart),
+    /// The log store's helper ended without a report: what it did is
+    /// not known, and the volume is not marked as failed. The next
+    /// open applies the log again, as after the same event while the
+    /// log store serves.
+    #[error("the store's helper ended without a report")]
+    HelperEnded,
+    /// The kernel's cache of the home image could not be dropped after
+    /// the start's sync, or could not be shown to be gone: a start
+    /// serves only what the disk holds (design §4.1), and refuses the
+    /// volume. The volume has not failed.
+    #[error("the start could not empty the kernel's cache of the home image: {0}")]
+    CacheKept(String),
     /// The log still holds records after the checkpoint: a hold, or a
     /// part of it that is not durable.
     #[error("the log could not be emptied: {0}")]
@@ -164,7 +203,7 @@ pub struct InPlace<D: Dir> {
     /// The log, empty: for the failure marker and its observer.
     log: Log<D>,
     home: D::File,
-    _lock: Option<D::Lock>,
+    lock: Option<D::Lock>,
     geometry: Geometry,
     identity: [u8; 16],
     failed: bool,
@@ -184,6 +223,161 @@ pub struct InPlace<D: Dir> {
     zeroes: Zeroes,
     counts: Counts,
     mutants: Mutants,
+    /// The failure marker: not yet needed, being written on a thread
+    /// of its own, or tried. Whether it was written is not kept: as for
+    /// the log store, a start that does not find it goes by the
+    /// daemon's failure note.
+    marker: Marker,
+}
+
+/// Writes the failure marker, on whichever thread runs it.
+type MarkerWriter = Box<dyn FnOnce() -> bool + Send>;
+
+/// The failure marker's writer. A thread of its own is started for it
+/// when the store is assembled, before the first request, and waits:
+/// at the failure it is only told to write. Starting a thread at the
+/// moment of failure could wait for memory on the thread that must go
+/// on answering (the daemon locks its memory, and a failed disk often
+/// leaves the cache full of pages nobody can clean), or fail and leave
+/// the write to that thread. Where no thread can be started at
+/// assembly, the marker is written on the caller's thread when the
+/// volume fails.
+enum Marker {
+    /// The thread waits for the word to write (`go`); `go` dropped, it
+    /// ends without writing.
+    Parked {
+        go: std::sync::mpsc::Sender<()>,
+        thread: std::thread::JoinHandle<bool>,
+    },
+    /// No thread: written on the caller's thread when needed.
+    Inline(MarkerWriter),
+    /// The thread was told to write it.
+    Writing(std::thread::JoinHandle<bool>),
+    Done,
+}
+
+impl Marker {
+    fn new(write: MarkerWriter, mutants: Mutants) -> Self {
+        if mutants.has(Mutants::MARKER_INLINE) {
+            return Marker::Inline(write);
+        }
+        // The writer goes to the thread through a slot, so that it is
+        // still here when the thread cannot be started.
+        let slot = Arc::new(std::sync::Mutex::new(Some(write)));
+        let theirs = slot.clone();
+        let (go, word) = std::sync::mpsc::channel::<()>();
+        // A small stack: the daemon locks its memory, so a thread's stack
+        // stays resident for its life, and the marker's writer needs
+        // little (a create, a sync, a sync of the directory).
+        let started = std::thread::Builder::new()
+            .name("skyzfs-marker".into())
+            .stack_size(MARKER_STACK)
+            .spawn(move || {
+                if word.recv().is_err() {
+                    return false;
+                }
+                let write = theirs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                write.is_some_and(|write| write())
+            });
+        match started {
+            Ok(thread) => Marker::Parked { go, thread },
+            Err(_) => {
+                let write = slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                match write {
+                    Some(write) => Marker::Inline(write),
+                    None => Marker::Done,
+                }
+            }
+        }
+    }
+
+    /// Begin to write the marker: on its thread, which is told to, or
+    /// here where there is none.
+    fn begin(&mut self) {
+        match std::mem::replace(self, Marker::Done) {
+            Marker::Parked { go, thread } => {
+                // The thread only ends after the word or without `go`,
+                // so it is there to hear it.
+                let _ = go.send(());
+                *self = Marker::Writing(thread);
+            }
+            Marker::Inline(write) => {
+                write();
+            }
+            other => *self = other,
+        }
+    }
+
+    /// Wait for the marker's write where it was begun, and end the
+    /// thread without writing where it was not.
+    fn finish(&mut self) {
+        match std::mem::replace(self, Marker::Done) {
+            Marker::Parked { go, thread } => {
+                drop(go);
+                let _ = thread.join();
+            }
+            Marker::Writing(thread) => {
+                let _ = thread.join();
+            }
+            Marker::Inline(_) | Marker::Done => {}
+        }
+    }
+}
+
+/// The marker thread's stack, in bytes.
+const MARKER_STACK: usize = 256 << 10;
+
+/// A start of the in-place store that met the failed disk
+/// ([`IntoInPlaceError::Failed`]): it holds the volume's lock and the
+/// failure marker still to write. The marker needs the disk that has
+/// just failed and may take minutes or never end, so the caller first
+/// says what happened (the daemon's failure note, the delete of its
+/// device), then [`FailedStart::finish`]es it. Dropped, it writes the
+/// marker as well. The lock is released after the marker, so that no
+/// other start can open the volume between the two.
+pub struct FailedStart {
+    marker: Marker,
+    lock: Option<Box<dyn Send>>,
+}
+
+impl FailedStart {
+    /// A start that failed with the marker already tried, or with no
+    /// marker of this store's to write.
+    pub(crate) fn written() -> Self {
+        Self {
+            marker: Marker::Done,
+            lock: None,
+        }
+    }
+
+    /// Write the failure marker, wait for it, and release the lock.
+    pub fn finish(mut self) {
+        self.write();
+    }
+
+    fn write(&mut self) {
+        self.marker.begin();
+        self.marker.finish();
+        self.lock = None;
+    }
+}
+
+impl Drop for FailedStart {
+    fn drop(&mut self) {
+        self.write();
+    }
+}
+
+impl std::fmt::Debug for FailedStart {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FailedStart")
+    }
 }
 
 /// What the store has done, for its owner and for tests.
@@ -209,6 +403,15 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
     }
 }
 
+/// The store waits for its failure marker when it is dropped, before
+/// the lock is released, so that a start after it finds the marker (or
+/// the failure to write it); a marker never asked for ends its thread.
+impl<D: Dir> Drop for InPlace<D> {
+    fn drop(&mut self) {
+        self.marker.finish();
+    }
+}
+
 /// The parts of a log store an in-place store is made of.
 pub(crate) struct Parts<D: Dir> {
     pub(crate) log: Log<D>,
@@ -217,21 +420,28 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) geometry: Geometry,
     pub(crate) identity: [u8; 16],
     pub(crate) zeroes: Zeroes,
+    /// What writes the failure marker ([`Log::marker_writer`]).
+    pub(crate) marker: MarkerWriter,
 }
 
 impl<D: Dir> InPlace<D> {
     /// From the parts of a log store whose log is empty and whose home
     /// image holds everything: sync the home image, so that what this
-    /// start exposes is durable before the first request.
+    /// start exposes is durable before the first request. Where the
+    /// sync fails, the volume has failed, and the marker is handed back
+    /// unwritten with the lock ([`FailedStart`]).
     pub(crate) fn assemble(
         parts: Parts<D>,
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
         mutants: Mutants,
-    ) -> Result<Self, IntoInPlaceError> {
+    ) -> Result<Self, IntoInPlaceError>
+    where
+        D::Lock: Send + 'static,
+    {
         let mut store = Self {
             log: parts.log,
             home: parts.home,
-            _lock: parts.lock,
+            lock: parts.lock,
             geometry: parts.geometry,
             identity: parts.identity,
             failed: false,
@@ -244,16 +454,127 @@ impl<D: Dir> InPlace<D> {
             zeroes: parts.zeroes,
             counts: Counts::default(),
             mutants,
+            marker: Marker::new(parts.marker, mutants),
         };
         // The checkpoint that entered this store synced the home image
         // as well; this sync makes the start's promise rest on nothing
         // but this store, and costs nothing when nothing is dirty.
         store.counts.syncs += 1;
         if store.home.sync().is_err() {
-            store.fail();
-            return Err(IntoInPlaceError::Failed);
+            store.failed = true;
+            store.log.fail_without_marker();
+            let marker = std::mem::replace(&mut store.marker, Marker::Done);
+            let lock = store
+                .lock
+                .take()
+                .map(|lock| Box::new(lock) as Box<dyn Send>);
+            return Err(IntoInPlaceError::Failed(FailedStart { marker, lock }));
         }
+        store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
         Ok(store)
+    }
+
+    /// Drop the kernel's cache of the home image, and check that it is
+    /// gone: from here on every read comes from the disk. A failed sync
+    /// can leave pages marked clean that the disk never got, and no
+    /// later sync writes them; a start that served them would show
+    /// what a cut can still take, behind a flush that does not cover it
+    /// (design §4.1, "every start serves only what the disk holds").
+    /// That holds whether this start acknowledges a failure or follows
+    /// an instance that died between a failed sync and its marker,
+    /// whose own sync then succeeds: the kernel reports a writeback
+    /// error once. The drop is advisory, so it is tried twice. Once the
+    /// count reads 0, it is shown to see this file at all
+    /// ([`InPlace::count_sees_the_file`]). Pages that stay, a drop that
+    /// fails, a count that does not see the file, or a kernel that
+    /// cannot count the file's cached pages refuse the start. Its cost:
+    /// the first reads after a start, a take-over included, come from
+    /// the disk.
+    fn empty_cache(&mut self) -> Result<(), String> {
+        let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
+        let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
+        if look && look_first {
+            self.count_sees_the_file()?;
+        }
+        let mut left = 0;
+        for _ in 0..2 {
+            if !self.mutants.has(Mutants::CACHE_NOT_DROPPED) {
+                self.home
+                    .drop_cache()
+                    .map_err(|e| format!("the drop failed: {e}"))?;
+            }
+            left = if self.mutants.has(Mutants::CACHE_NOT_CHECKED) {
+                0
+            } else {
+                self.cached_pages()?
+            };
+            if left == 0 {
+                break;
+            }
+        }
+        if left > 0 {
+            return Err(format!(
+                "{left} pages of it stay in the cache after two drops; something else may \
+                 map, lock or read the file"
+            ));
+        }
+        if look && !look_first {
+            self.count_sees_the_file()?;
+        }
+        Ok(())
+    }
+
+    /// Show that the count, which has just read 0, sees this file's
+    /// pages at all: a block read through the cache must count. On an
+    /// overlay file system `cachestat` counts the overlay file's own
+    /// mapping, which holds no page (they are the file's below), and
+    /// would read 0 whatever the cache holds; a file system without a
+    /// page cache would read 0 too, and is refused the same way.
+    ///
+    /// The look reads block 0, which is a hole on every pool's volume
+    /// (the first 8 KiB of the label are never written), so it rests on
+    /// a read of a hole leaving a page in the cache. ext4 and XFS leave
+    /// one (the rigs' first start of a pool is on an image of holes
+    /// only); tmpfs leaves none, and a new volume there is refused here,
+    /// as it would be by the drop once it holds data.
+    ///
+    /// The look comes after the drop, and what it reads comes from the
+    /// disk and may stay. Before the drop it made starts refuse: the
+    /// read starts the kernel's read-ahead of the blocks after it, and
+    /// where the block read is a hole (as the first 8 KiB of a pool's
+    /// label are) it is answered at once, while the read-ahead is still
+    /// under I/O, and a drop leaves pages under I/O. In the review's
+    /// run, 731 of 1500 starts refused on such an image
+    /// (`every_start_serves_where_the_image_begins_with_a_hole` in
+    /// `tests/inplace_real.rs`).
+    fn count_sees_the_file(&mut self) -> Result<(), String> {
+        let mut block = vec![0u8; skyzfs_blk::BLOCK_USIZE];
+        self.home
+            .read_at(0, &mut block)
+            .map_err(|e| format!("reading a block of it failed: {e}"))?;
+        if self.cached_pages()? == 0 {
+            return Err(
+                "the file system's cache cannot be observed through this file: a block \
+                 just read through the cache counts 0 pages, so the start cannot show that \
+                 the drop left none (through an overlay file system, for example, the count \
+                 sees no page)"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// The home image's pages in the kernel's cache.
+    fn cached_pages(&self) -> Result<u64, String> {
+        match self.home.cached_pages() {
+            Ok(pages) => Ok(pages),
+            Err(e) if e.kind() == std::io::ErrorKind::Unsupported => Err(
+                "the kernel cannot count a file's cached pages without mapping it \
+                     (cachestat, Linux 6.5 and later)"
+                    .into(),
+            ),
+            Err(e) => Err(format!("counting its cached pages failed: {e}")),
+        }
     }
 
     /// The store's identity, as the log store's
@@ -299,13 +620,21 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
-    /// The volume fails: the observer hears of it first, then the
-    /// marker is written for the next start (the log's own order).
+    /// The volume fails: the observer hears of it at once, and the
+    /// marker's thread is told to write the marker for the next start.
+    /// The marker needs the disk that has just failed, and a sync on a
+    /// sick disk can take minutes or never return; the caller is the
+    /// queue's thread, which must go on answering what it holds with
+    /// the failure. (The log store writes its marker on its worker for
+    /// the same reason.) Where no thread could be started, it is
+    /// written here.
     fn fail(&mut self) {
         self.failed = true;
-        if !self.log.is_failed() {
-            self.log.mark_failed();
+        if self.log.is_failed() {
+            return;
         }
+        self.log.fail_without_marker();
+        self.marker.begin();
     }
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {

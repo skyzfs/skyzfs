@@ -176,7 +176,7 @@ const DISCARD_LATER: &str = "discard_never_hits_later_writes";
 const FLUSHED: &str = "flushed_operations_survive_power_cut";
 const FLUSH_COVERS: &str = "flush_covers_what_was_acknowledged_before_it";
 const FLUSH_EARLIER: &str = "flush_covers_an_earlier_instance";
-const EVERY_POINT: &str = "power_cut_at_every_point_leaves_a_prefix";
+const EVERY_POINT: &str = "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may";
 const RECOVERED: &str = "recovered_state_is_durable";
 const FIRST_REQUEST: &str = "first_request_after_power_cut_may_be_a_write";
 const OVERLAPPING: &str = "overlapping_operations_in_flight_apply_whole";
@@ -235,12 +235,13 @@ const TABLE: [Without; 6] = [
         ],
         // Without a power cut no fixed case shows what was durable. A
         // random program can, through a log failure and a reopen, and
-        // whether one does is the seed's luck.
+        // whether one does is the seed's luck. A cut that leaves what
+        // nothing wrote is seen all the same: the reopen of a failed
+        // volume, which a fixed case does, cuts the power.
         no_fixed_case: &[
             Fault::FlushDoesNothing,
             Fault::FlushJoinsOldSync,
             Fault::FlushForgetsEarlierInstance,
-            Fault::CutDropsMiddle,
             Fault::RecoveryNotDurable,
         ],
         invisible: &[],
@@ -329,7 +330,7 @@ const INVISIBLE_WITH_NOTHING: &[Fault] = &[
     Fault::FlushJoinsOldSync,
     Fault::FlushForgetsEarlierInstance,
     Fault::TearOnCut,
-    Fault::CutDropsMiddle,
+    Fault::CutLeavesForeign,
     Fault::RecoveryNotDurable,
     Fault::FailedServesReads,
     Fault::FlushSucceedsOnFailedLog,
@@ -355,7 +356,7 @@ const FAULTS: [Fault; 24] = [
     Fault::KillLosesUnflushed,
     Fault::RejectReissued,
     Fault::TearOnCut,
-    Fault::CutDropsMiddle,
+    Fault::CutLeavesForeign,
     Fault::RecoveryNotDurable,
     Fault::FailedServesReads,
     Fault::FlushSucceedsOnFailedLog,

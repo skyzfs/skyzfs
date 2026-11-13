@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use skyzfs_blk::BlockTarget;
 use skyzfs_local::format::Lsn;
-use skyzfs_local::fs::{FsDir, FsLock, WritebackCall};
+use skyzfs_local::fs::{CacheCountCall, FsDir, FsLock, WritebackCall};
 use skyzfs_local::log::{Corruption, LogError};
 use skyzfs_local::store::{OpenOptions, Store, StoreError};
 
@@ -36,6 +36,7 @@ pub struct StoreVolume {
     dir: PathBuf,
     options: OpenOptions,
     writeback: Option<WritebackCall>,
+    cache_count: Option<CacheCountCall>,
 }
 
 impl StoreVolume {
@@ -48,6 +49,7 @@ impl StoreVolume {
             dir: dir.into(),
             options,
             writeback: None,
+            cache_count: None,
         }
     }
 
@@ -56,6 +58,16 @@ impl StoreVolume {
     pub fn with_writeback(self, call: WritebackCall) -> Self {
         Self {
             writeback: Some(call),
+            ..self
+        }
+    }
+
+    /// The same, whose files count their pages in the kernel's cache
+    /// with `call` ([`FsDir::with_cache_count`]). Without it the
+    /// in-place store refuses to start.
+    pub fn with_cache_count(self, call: CacheCountCall) -> Self {
+        Self {
+            cache_count: Some(call),
             ..self
         }
     }
@@ -105,10 +117,16 @@ impl Volume for StoreVolume {
         acknowledge_failure: bool,
     ) -> Result<(Store<FsDir>, u64), (OpenError, FsLock)> {
         let dir = match FsDir::new(&self.dir) {
-            Ok(dir) => match self.writeback {
-                Some(call) => dir.with_writeback(call),
-                None => dir,
-            },
+            Ok(dir) => {
+                let dir = match self.writeback {
+                    Some(call) => dir.with_writeback(call),
+                    None => dir,
+                };
+                match self.cache_count {
+                    Some(call) => dir.with_cache_count(call),
+                    None => dir,
+                }
+            }
             Err(e) => return Err((OpenError::Other(e.to_string()), lock)),
         };
         let mut options = self.options.clone();

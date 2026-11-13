@@ -116,7 +116,7 @@ const TESTED: &[&str] = &[
     "flushed_operations_survive_power_cut",
     "flush_covers_what_was_acknowledged_before_it",
     "flush_covers_an_earlier_instance",
-    "power_cut_at_every_point_leaves_a_prefix",
+    "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may",
     "recovered_state_is_durable",
     "first_request_after_power_cut_may_be_a_write",
     "queue_depth_requests_complete_in_any_order",
@@ -274,12 +274,12 @@ fn flush_covers_an_earlier_instance() {
     passes("flush_covers_an_earlier_instance");
 }
 
-/// R10: a power cut at every record prefix of what the target persists,
-/// not only at flush boundaries, leaves a prefix of the daemon's order
-/// with every operation whole.
+/// R10: a power cut at every record of what the target persists, not
+/// only at flush boundaries, leaves what the volatile-cache disk may (a
+/// prefix of the order is one such state).
 #[test]
-fn power_cut_at_every_point_leaves_a_prefix() {
-    passes("power_cut_at_every_point_leaves_a_prefix");
+fn power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may() {
+    passes("power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may");
 }
 
 /// R10: what recovery exposes is stable and is durable before the first

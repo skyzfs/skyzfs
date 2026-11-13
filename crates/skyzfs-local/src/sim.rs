@@ -82,7 +82,7 @@
 //! - **A sync error reaches the caller that issued the sync.** A kernel
 //!   can report it to another descriptor of the file, or only once.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -314,6 +314,21 @@ struct Inode {
     sectors: BTreeMap<u64, Sector>,
     len: u64,
     durable_len: u64,
+    /// The file's 4096-byte pages in the cache: read or written through
+    /// it since the cache last lost them ([`File::cached_pages`]).
+    pages: BTreeSet<u64>,
+    /// Pages a read-ahead is still bringing in
+    /// ([`SimDisk::hold_read_ahead_of`]): no drop takes them, and they
+    /// count.
+    under_io: BTreeSet<u64>,
+}
+
+/// The 4096-byte pages that `len` bytes at `offset` touch.
+fn pages_of(offset: u64, len: u64) -> std::ops::Range<u64> {
+    if len == 0 {
+        return 0..0;
+    }
+    offset / 4096..(offset + len).div_ceil(4096)
 }
 
 impl Inode {
@@ -423,6 +438,9 @@ struct State {
     sync_delay: u64,
     /// The file whose syncs that end later do not end until released.
     held_syncs_of: Option<String>,
+    /// The file whose whole syncs ([`File::sync`]) do not return until
+    /// released.
+    held_whole_syncs_of: Option<String>,
     /// Callers waiting at the end of a held sync.
     held_waiting: u64,
     /// How many of the next syncs that would end later are not begun:
@@ -445,6 +463,18 @@ struct State {
     /// How many live handles are open on each inode.
     open: BTreeMap<u64, u64>,
     device_reads: bool,
+    /// How many of the next drops of a file's cache
+    /// ([`File::drop_cache`]) leave its pages, as where something else
+    /// maps, locks or reads them.
+    cache_kept: u64,
+    /// [`File::cached_pages`] answers; otherwise it is unsupported.
+    cache_counts: bool,
+    /// [`File::cached_pages`] answers 0 whatever the cache holds, as
+    /// `cachestat` through a file of an overlay file system does.
+    cache_count_blind: bool,
+    /// The file whose next read through the cache leaves pages after
+    /// it under I/O, and how many ([`SimDisk::hold_read_ahead_of`]).
+    read_ahead_of: Option<(String, u64)>,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
     stats: Stats,
@@ -579,6 +609,7 @@ impl SimDisk {
                 writebacks: Vec::new(),
                 sync_delay: 0,
                 held_syncs_of: None,
+                held_whole_syncs_of: None,
                 held_waiting: 0,
                 begins_refused: 0,
                 writes_of: BTreeMap::new(),
@@ -589,6 +620,10 @@ impl SimDisk {
                 next_lock: 0,
                 open: BTreeMap::new(),
                 device_reads: true,
+                cache_kept: 0,
+                cache_counts: true,
+                cache_count_blind: false,
+                read_ahead_of: None,
                 write_unit: SECTOR,
                 stats: Stats::default(),
             })),
@@ -636,6 +671,8 @@ impl SimDisk {
             let Some(inode) = state.inodes.get_mut(&id) else {
                 continue;
             };
+            inode.pages.clear();
+            inode.under_io.clear();
             for (index, sector) in &mut inode.sectors {
                 // The cache does not survive.
                 sector.cached = None;
@@ -784,6 +821,7 @@ impl SimDisk {
     pub fn drop_caches(&self) {
         let mut state = self.lock();
         for inode in state.inodes.values_mut() {
+            inode.pages.clear();
             for sector in inode.sectors.values_mut() {
                 sector.cached = None;
             }
@@ -796,6 +834,44 @@ impl SimDisk {
     /// sectors whose content the write does not change.
     pub fn set_write_unit(&self, bytes: u64) {
         self.lock().write_unit = (bytes / SECTOR).max(1) * SECTOR;
+    }
+
+    /// Whether a drop of a file's cache ([`File::drop_cache`]) leaves
+    /// its pages (it does not at first), as where something else maps
+    /// or locks them: they stay, and [`File::cached_pages`] counts them.
+    pub fn keep_cache(&self, kept: bool) {
+        self.lock().cache_kept = if kept { u64::MAX } else { 0 };
+    }
+
+    /// The next `drops` drops of a file's cache leave its pages, and
+    /// those after them do not.
+    pub fn keep_cache_for(&self, drops: u64) {
+        self.lock().cache_kept = drops;
+    }
+
+    /// Whether [`File::cached_pages`] answers 0 whatever the cache
+    /// holds (it does not at first), as `cachestat` does through a file
+    /// of an overlay file system, whose pages are the file's below.
+    pub fn blind_cache_count(&self, blind: bool) {
+        self.lock().cache_count_blind = blind;
+    }
+
+    /// The next read through the cache of the file named `name` also
+    /// brings in the `pages` pages after it, as the kernel's read-ahead
+    /// does, and leaves them under I/O: no drop of the file's cache
+    /// ([`File::drop_cache`], [`SimDisk::drop_caches`]) takes them, and
+    /// [`File::cached_pages`] counts them, until a power cut. Where the
+    /// block read is a hole, the kernel answers it at once while its
+    /// read-ahead is still being read from the disk, and a drop leaves
+    /// pages under I/O.
+    pub fn hold_read_ahead_of(&self, name: &str, pages: u64) {
+        self.lock().read_ahead_of = Some((name.to_string(), pages));
+    }
+
+    /// Whether [`File::cached_pages`] answers (it does at first) or is
+    /// unsupported, as on a kernel without `cachestat`.
+    pub fn set_cache_counts(&self, supported: bool) {
+        self.lock().cache_counts = supported;
     }
 
     /// Whether [`File::read_device_at`] works (it does at first) or
@@ -884,6 +960,14 @@ impl SimDisk {
         self.lock().held_syncs_of = Some(name.to_string());
     }
 
+    /// Whole syncs ([`File::sync`]) of the file named `name` do not
+    /// return until [`SimDisk::release_syncs`], or until the process is
+    /// gone, as on a disk that stalls. The caller waits, and counts in
+    /// [`SimDisk::held_waiters`].
+    pub fn hold_whole_syncs_of(&self, name: &str) {
+        self.lock().held_whole_syncs_of = Some(name.to_string());
+    }
+
     /// The next `calls` calls of [`File::sync_begin`] begin nothing and
     /// say so ([`NotBegun`]), as a file whose helper cannot be started
     /// does.
@@ -892,7 +976,8 @@ impl SimDisk {
     }
 
     /// How many callers wait now at the end of a held sync: a call of
-    /// [`File::sync_end`] that waits, and found the sync held.
+    /// [`File::sync_end`] that waits, and found the sync held, or a
+    /// whole sync held ([`SimDisk::hold_whole_syncs_of`]).
     pub fn held_waiters(&self) -> u64 {
         self.lock().held_waiting
     }
@@ -911,7 +996,10 @@ impl SimDisk {
 
     /// Let the held syncs end.
     pub fn release_syncs(&self) {
-        self.lock().held_syncs_of = None;
+        let mut state = self.lock();
+        state.held_syncs_of = None;
+        state.held_whole_syncs_of = None;
+        drop(state);
         self.released.notify_all();
     }
 
@@ -1239,6 +1327,23 @@ impl SimFile {
             }
             at += n as u64;
         }
+        // A read through the cache leaves its pages there, and its
+        // read-ahead's under I/O where one is held.
+        if !device {
+            let ahead = match &state.read_ahead_of {
+                Some((name, pages)) if state.name_of(self.inode) == Some(name.as_str()) => {
+                    let pages = *pages;
+                    state.read_ahead_of = None;
+                    pages
+                }
+                _ => 0,
+            };
+            if let Some(inode) = state.inodes.get_mut(&self.inode) {
+                let read = pages_of(offset, buf.len() as u64);
+                inode.under_io.extend(read.end..read.end + ahead);
+                inode.pages.extend(read);
+            }
+        }
         Ok(())
     }
 }
@@ -1274,6 +1379,8 @@ impl File for SimFile {
         let rng = &mut state.rng;
         let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        // A write goes through the cache and leaves its pages there.
+        inode.pages.extend(pages_of(offset, data.len() as u64));
         // The units the write touches, or the file system's blocks if
         // those are larger, are rewritten as a whole: their other
         // sectors are written again as they are.
@@ -1326,7 +1433,19 @@ impl File for SimFile {
     }
 
     fn sync(&mut self) -> io::Result<()> {
-        let mut guard = self.disk.lock();
+        let disk = self.disk.clone();
+        let mut guard = disk.lock();
+        while guard.held_whole_syncs_of.is_some()
+            && guard.held_whole_syncs_of.as_deref() == guard.name_of(self.inode)
+            && guard.generation == self.generation
+        {
+            guard.held_waiting += 1;
+            guard = disk
+                .released
+                .wait(guard)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.held_waiting -= 1;
+        }
         self.sync_locked(&mut guard, None)
     }
 
@@ -1532,6 +1651,53 @@ impl File for SimFile {
         state
             .block_size
             .ok_or_else(|| io::Error::other("the file system does not say"))
+    }
+
+    /// The file's pages leave the cache: what a failed sync left only
+    /// there is gone, as [`SimDisk::drop_caches`] does for every file;
+    /// unsynced versions stay, as dirty pages do (and count). With
+    /// [`SimDisk::keep_cache`] or [`SimDisk::keep_cache_for`], nothing
+    /// leaves.
+    fn drop_cache(&mut self) -> io::Result<()> {
+        let mut guard = self.disk.lock();
+        let state = &mut *guard;
+        self.check(state)?;
+        if state.cache_kept > 0 {
+            state.cache_kept -= 1;
+            return Ok(());
+        }
+        let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
+        inode.pages.clear();
+        for sector in inode.sectors.values_mut() {
+            sector.cached = None;
+        }
+        Ok(())
+    }
+
+    /// The pages read or written through the cache since it last lost
+    /// them, those a held read-ahead brings in, and those that hold a
+    /// version the disk has not (a failed sync's, an unsynced one). With [`SimDisk::blind_cache_count`],
+    /// 0.
+    fn cached_pages(&self) -> io::Result<u64> {
+        let guard = self.disk.lock();
+        self.check(&guard)?;
+        if !guard.cache_counts {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
+        if guard.cache_count_blind {
+            return Ok(0);
+        }
+        let inode = guard.inodes.get(&self.inode).ok_or_else(gone)?;
+        let mut pages = inode.pages.clone();
+        pages.extend(&inode.under_io);
+        pages.extend(
+            inode
+                .sectors
+                .iter()
+                .filter(|(_, sector)| sector.cached.is_some() || !sector.unsynced.is_empty())
+                .map(|(index, _)| index * SECTOR / 4096),
+        );
+        Ok(pages.len() as u64)
     }
 
     fn len(&self) -> io::Result<u64> {

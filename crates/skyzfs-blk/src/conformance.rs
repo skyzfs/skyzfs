@@ -34,10 +34,11 @@
 //!
 //! The two failures are kept apart (design §4.1): after [`Harness::kill`]
 //! every acknowledged operation must be readable; after
-//! [`Harness::power_cut`] the device must hold a prefix of the daemon's
-//! order that includes everything flushed. After every power cut the suite
-//! reads back each block an unflushed operation touched before it does
-//! anything else, which is what lets the model decide which prefix
+//! [`Harness::power_cut`] the device must hold what a disk with a volatile
+//! write cache may leave (rule R10): everything flushed, and of what was
+//! written since, any version for each sector. After every power cut the
+//! suite reads back each block an unflushed operation touched before it
+//! does anything else, which is what lets the model check what
 //! survived. The harness author does not have to arrange this.
 //!
 //! The suite works in a small window of blocks so that requests overlap,
@@ -92,7 +93,7 @@
 //! | `flushed_operations_survive_power_cut` | P | B |
 //! | `flush_covers_what_was_acknowledged_before_it` | P | |
 //! | `flush_covers_an_earlier_instance` | P | |
-//! | `power_cut_at_every_point_leaves_a_prefix` | P | B |
+//! | `power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may` | P | B |
 //! | `recovered_state_is_durable` | P | |
 //! | `first_request_after_power_cut_may_be_a_write` | P | B |
 //! | `queue_depth_requests_complete_in_any_order` | | |
@@ -118,7 +119,7 @@
 //!
 //! | Without | No fixed case notices | Of those, invisible at three seeds |
 //! |---|---|---|
-//! | a power cut | `FlushDoesNothing`, `FlushJoinsOldSync`, `FlushForgetsEarlierInstance`, `CutDropsMiddle`, `RecoveryNotDurable` | none: each was noticed by random programs at one to three of the seeds, through a log failure and a reopen |
+//! | a power cut | `FlushDoesNothing`, `FlushJoinsOldSync`, `FlushForgetsEarlierInstance`, `RecoveryNotDurable` | none: each was noticed by random programs at one to three of the seeds, through a log failure and a reopen |
 //! | a base | `WriteZeroesShowsBase`, `ReopenLosesFlushed`, `StrayWrite` | `WriteZeroesShowsBase`, `StrayWrite` |
 //! | a read-only device | `ReadOnlyAcceptsWrites` | the same |
 //! | a log failure | `FailedServesReads`, `FlushSucceedsOnFailedLog`, `FailureForgottenOnKill`, `ReopenLosesFlushed` | the same |
@@ -150,17 +151,18 @@
 //!   tell whether a flush that was
 //!   in flight when the log failed, and succeeded, had made anything
 //!   durable. Where it can, the suite asks what rule R11 promises:
-//!   a prefix of the daemon's order, as after a power cut (see
+//!   the volume as after a power cut (see
 //!   [`Model::reopened`](crate::model::Model::reopened)). The suite does
 //!   not cut the power on a failed volume before it is reopened.
 //! - Above 4 MiB the read-back is a sample: the windows the suite works
 //!   in, the start and the end of the device, and two blocks at each of
 //!   63 evenly spaced places. Damage to a block that no request named and
 //!   that the sample misses is not seen.
-//! - [`Harness::power_cut`] names a number of whole units to keep. The
-//!   device states a real log must turn into a prefix (a torn record, a
-//!   lost record followed by a surviving one) are the harness's to
-//!   produce: the store's harness in `skyzfs-local` does.
+//! - [`Harness::power_cut`] names one of the outcomes the harness can
+//!   produce (`keep`); which states a real disk leaves (a sector torn
+//!   from its block, a later write kept and an earlier one lost) are
+//!   the harness's to produce: the stores' harnesses in `skyzfs-local`
+//!   do.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -369,18 +371,20 @@ pub trait Harness {
     /// kill does nothing there.
     fn kill(&mut self, target: Self::Target, seed: u64) -> Result<Self::Target, HarnessError>;
 
-    /// How many places beyond the durable part of its log the target could
-    /// be cut at right now: the number of records, or of whatever units it
-    /// persists, that no flush covers yet. The suite cuts at every point
-    /// from 0 to this number. A rig that cannot cut inside its log returns
-    /// 0.
+    /// How many outcomes of a power cut are worth trying right now. A
+    /// store with a log counts the records, or whatever units it
+    /// persists, that no flush covers yet, and a cut keeps that many; a
+    /// store without one counts the ways it draws a cut. The suite cuts
+    /// at every point from 0 to this number. A rig that can only cut in
+    /// one way returns 0.
     fn cut_points(&mut self, target: &Self::Target) -> u64;
 
-    /// Power loss (rule R10): cut the power under `target` so that `keep`
-    /// units beyond the durable part of its log survive, and return the
-    /// device as it comes back. `keep` may exceed [`Harness::cut_points`]
-    /// (requests in flight may have added to the log); the harness then
-    /// picks any point, deterministically from `keep`.
+    /// Power loss (rule R10): cut the power under `target`, in the way
+    /// `keep` chooses (for a log, the units beyond its durable part that
+    /// survive; for a store without one, the seed of the cut), and
+    /// return the device as it comes back. `keep` may exceed
+    /// [`Harness::cut_points`]; the harness then picks any outcome,
+    /// deterministically from `keep`.
     ///
     /// Not called without [`Capability::PowerCut`]; such a harness
     /// returns an error here and 0 from [`Harness::cut_points`].
@@ -872,16 +876,16 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
             run: flush_covers_an_earlier_instance::<H>,
         },
         Case {
-            name: "power_cut_at_every_point_leaves_a_prefix",
-            rule: "R10: cut after every record the target has not flushed: the device holds a \
-                   prefix of the order, with every operation whole",
+            name: "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may",
+            rule: "R10: cut at every point the harness offers: the device holds everything \
+                   flushed and, of what was written since, any version for each sector",
             needs: Needs::CutPoints,
             requires: &[Capability::PowerCut],
             weaker: &[
                 (Capability::Base, "it runs on an empty volume only"),
             ],
             random: false,
-            run: power_cut_at_every_point_leaves_a_prefix::<H>,
+            run: power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may::<H>,
         },
         Case {
             name: "recovered_state_is_durable",
@@ -980,7 +984,7 @@ pub fn cases<H: Harness>() -> Vec<Case<H>> {
         },
         Case {
             name: "restart_after_the_log_failed_recovers_nothing",
-            rule: "R11 over R9: the log fails, no request completes, the daemon restarts:                    opened again, the volume holds a prefix with everything flushed, and an                    acknowledged operation that no flush covered may be gone",
+            rule: "R11 over R9: the log fails, no request completes, the daemon restarts:                    opened again, the volume is as after a power cut, with everything flushed, and an                    acknowledged operation that no flush covered may be gone",
             needs: Needs::Nothing,
             requires: &[Capability::FailLog, Capability::ReopenFailed],
             weaker: &[
@@ -1441,7 +1445,7 @@ impl<'a, H: Harness> Driver<'a, H> {
     }
 
     /// After a power cut or a reopen: read what the model needs to learn
-    /// which prefix the device holds.
+    /// what the device holds.
     fn read_back(&mut self) -> Outcome {
         let blocks = self.model.readback();
         let mut i = 0;
@@ -1929,7 +1933,10 @@ fn flush_covers_an_earlier_instance<H: Harness>(h: &mut H, cfg: &Config) -> Outc
     Ok(())
 }
 
-fn power_cut_at_every_point_leaves_a_prefix<H: Harness>(h: &mut H, cfg: &Config) -> Outcome {
+fn power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may<H: Harness>(
+    h: &mut H,
+    cfg: &Config,
+) -> Outcome {
     let mut point = 0;
     loop {
         let mut d = Driver::new(h, cfg, &on_base(h, Spec::CLONE))?;
