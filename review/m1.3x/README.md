@@ -11,10 +11,9 @@ start of the in-place store still writes the log's reason (code 1), and
 the refusal for the rest of the boot repeats it, while the serving case
 is fixed. `StartFailed::Image` comes only from `assemble`'s own
 `home.sync()`; everything the log store's part of the hand-over sees
-keeps code 1, including where the log is empty. Likely mechanism (not
-shown): a sync with something to write back issues a device flush,
-which fails on a partly-erroring table, so the log store's syncs in the
-hand-over see the error first on a sick disk.
+keeps code 1, including where the log is empty. (My guess at the
+mechanism then, a device flush failing under the log's sync, was wrong:
+see the fourth look.)
 
 ## What is here
 
@@ -91,3 +90,57 @@ false on its face, but still the log store's name on an image failure.
 
 Gates at 7808412: 496 passed over the three crates, 0 failed, 6
 ignored; fmt and clippy clean.
+
+
+## Fourth look, at 754a15a
+
+Comment: https://github.com/skyzfs/skyzfs/pull/55#issuecomment-6851711010
+
+Verdict: the blocking finding is fixed, nothing blocks, it can merge.
+The rule now (the lead's ruling, my option 1): a failed hand-over is
+the image's (code 7) when the log store's index is empty, read before
+the hand-over, and the log store's (code 1) otherwise.
+
+- `what-each-start-says.rs`: append to
+  `crates/skyzfs-local/src/inplace/tests.rs` in a worktree and run
+  `cargo test -p skyzfs-local --lib zz_review -- --nocapture`. For a
+  log that never held an operation, one emptied by an earlier start in
+  place, one with a write and one with a discard only, it fails each
+  sync of a start in turn, and every sync of each file, and prints what
+  the start reports.
+- `plants-handover.py WORKTREE`: six plants in `into_in_place_with`.
+  Always-Log is caught by the new test only, always-Image by the old
+  one only, the inverted test by both, "start equals end" by the new
+  test. Two are caught by nothing: a store that had failed before the
+  hand-over saying Image (not reachable from the daemon), and the index
+  read after the hand-over (no difference with one batch).
+
+What it showed:
+
+- **Every open seals the log with a record of its own** (`Log::seal`),
+  so the log's start never equals its end at a hand-over, and the
+  hand-over's checkpoint always takes a batch: a sync of `home.img` and
+  the log's give-up (`log.super`), operations or none. That is why g.3
+  failed in the log store's part with "0 operations" in the log, and
+  why "the log holds no record" could not have been the test.
+- The failing step is the checkpoint every time, never the log's flush
+  (after an open the log has nothing to make durable; `log.000000` is
+  not synced by a start at all).
+- A discard never enters the index, so a log with discards and no write
+  counts as nothing to apply and reports the image.
+- With a write in the log, a start that fails on `home.img`'s sync
+  still reports the log store: by the ruling, until M1.3t.
+
+Kernel: run 43413318350 (testing's M1.T26 branch at 1bf6f47, daemon
+built from 754a15a, ubuntu-24.04 only): g.3's start and refusal and
+g.1's line and refusal all name the image. Gates here: 497 passed over
+the three crates, 57 with the hooks, fmt and clippy clean.
+
+## Traps met (fourth look)
+
+- To see which step of a chained `and_then` fails, split it for one run
+  and print; guessing from which syncs exist led me to a wrong
+  mechanism two looks ago.
+- A plant driver that filters tests (`--lib inplace`) can report
+  "caught by nothing" for a plant another crate's tests would catch:
+  run a surviving plant against all three crates before saying so.
