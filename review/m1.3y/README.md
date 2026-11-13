@@ -208,3 +208,39 @@ the `sent`.
 
 Left for a change of its own: the binding reporting ublk command
 results other than OK, which it drops today.
+
+## The rig's failure, settled (after the third look)
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/58#issuecomment-6858311773.
+Testing reproduced the failure with the request log and the kernel's
+trace on (run 43455086383, pass 3, volume 60, the same case and seed).
+`rig-recurrence-volume60.txt` holds the lines that settle it, read here
+from that run's artifact:
+
+- the write `#21` was issued as one request (`131016 + 56`), the second
+  server received it whole and committed 28672 bytes, and the kernel
+  completed it before the kill;
+- udev's worker issued a read-ahead of block 16382, inside that
+  write's range, 86 microseconds after the write completed; the read
+  was requeued at the server's death and completed by the third
+  server 398 ms later;
+- the tool's call for `#21` returned at that moment and not before;
+- the third server was never handed `#21`.
+
+So the request was done before the kill and only the tool's system call
+was late: after a direct write to a block device the kernel drops the
+cached pages of the range and waited there for the page udev's read had
+locked. The tool took a call that had not returned for a request in
+flight, and the model required it to be applied anew after what was
+acknowledged before the kill. The daemon applied the two overlapping
+requests in the order it received them, which the contract allows.
+
+The first comment's sequence (a fallback through the page cache that
+cut the write in two) was wrong; its ingredients (udev's probe after
+the tool's `blkdiscard`, the page cache of the device's tail) were the
+right ones. The lesson for a review: where a kernel path says "wait",
+follow the wait to what the caller sees.
+
+The rig's fix is testing's: the model must not assume that a call
+outstanding at a kill is issued again.

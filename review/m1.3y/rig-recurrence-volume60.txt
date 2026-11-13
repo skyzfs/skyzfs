@@ -1,0 +1,66 @@
+# From the artifact of run 43455086383 (skyzfs-dio-split, pass 3, volume 60): the kernel's trace for sectors 131016, 131056 and 131064 between 391.637 and 392.038
+ skyzfs-blkcheck-93122   [002] .l.1.   391.637657: block_rq_issue: 259,0 WS 28672 () 131016 + 56 be,0,4 [skyzfs-blkcheck]
+    kworker/2:1H-544     [002] ...1.   391.637674: block_rq_issue: 259,0 WZS 4096 () 131064 + 8 be,0,4 [kworker/2:1H]
+   skyzfsd-queue-93020   [003] b....   391.638060: block_rq_complete: 259,0 WS () 131016 + 56 be,0,4 [0]
+   skyzfsd-queue-93020   [003] b....   391.638077: block_rq_complete: 259,0 WZS () 131064 + 8 be,0,4 [0]
+    (udev-synth)-93113   [001] ...1.   391.638146: block_rq_issue: 259,0 RA 4096 () 131056 + 8 be,0,4 [(udev-synth)]
+     kworker/3:1-60      [003] .....   391.668028: block_rq_requeue: 259,0 RA () 131056 + 8 be,0,4 [0]
+    kworker/3:1H-457     [003] ...1.   391.668066: block_rq_issue: 259,0 RA 4096 () 131056 + 8 be,0,4 [kworker/3:1H]
+    kworker/3:1H-457     [003] ...1.   391.668067: block_rq_requeue: 259,0 RA () 131056 + 8 be,0,4 [0]
+    kworker/1:1H-447     [001] ...1.   392.036438: block_rq_issue: 259,0 RA 4096 () 131056 + 8 be,0,4 [kworker/1:1H]
+   skyzfsd-queue-93175   [003] b....   392.036787: block_rq_complete: 259,0 RA () 131056 + 8 be,0,4 [0]
+    (udev-synth)-93113   [000] ...1.   392.037099: block_rq_issue: 259,0 RA 4096 () 131064 + 8 be,0,4 [(udev-synth)]
+   skyzfsd-queue-93175   [003] b....   392.037384: block_rq_complete: 259,0 RA () 131064 + 8 be,0,4 [0]
+
+# The daemon's request log, the second server's last lines and the third's first (mono_ns pid event tag op sector sectors result)
+391637356688	92999	send	-	-	-	-	2
+391637517435	92999	sent	-	-	-	-	2
+391637522432	92999	recv	1	write	130976	64	-
+391637604635	92999	commit	0	read	130944	8	4096
+391637608300	92999	send	-	-	-	-	1
+391637694937	92999	sent	-	-	-	-	1
+391637698893	92999	recv	2	write	131016	56	-
+391637702008	92999	recv	3	write_zeroes	131064	8	-
+391637793528	92999	recv	4	write	130888	8	-
+391637806227	92999	commit	1	write	130976	64	32768
+391637809912	92999	send	-	-	-	-	1
+391637936685	92999	sent	-	-	-	-	1
+391638046017	92999	commit	2	write	131016	56	28672
+391638052436	92999	commit	3	write_zeroes	131064	8	0
+391638055811	92999	send	-	-	-	-	2
+391638086576	92999	sent	-	-	-	-	2
+391638089661	92999	recv	5	write	130968	40	-
+391638252471	92999	recv	6	read	131056	8	-
+391638256036	92999	recv	7	write	130880	8	-
+391638273832	92999	commit	4	write	130888	8	4096
+391638277237	92999	commit	5	write	130968	40	20480
+391638281153	92999	send	-	-	-	-	2
+392035326839	93154	start	0	-	-	-	64
+392036527252	93154	recv	12	read	131056	8	-
+392036532170	93154	recv	13	write	130880	8	-
+392036534323	93154	recv	0	read	130904	56	-
+392036776310	93154	commit	12	read	131056	8	4096
+392036781097	93154	send	-	-	-	-	1
+392036914685	93154	sent	-	-	-	-	1
+392036919111	93154	recv	1	read	8	8	-
+
+# The tool's trace (ms volume event call ...)
+96434	60	kill	-	signal sent by the tool: Some(true)
+96674	60	before_kill	3	Ok(())
+96674	60	sorted	-	outstanding 1	kernel in flight [0, 0]
+97115	60	served_again	-	
+97115	60	carried	4	Ok(())
+97263	60	submit	17	write_zeroes	16383	1	
+97263	60	submit	20	write	16372	8	570e4f95e4a10b25,587ede009cd9a325,d3f85cb1e0daa325,e9e618a033329325,fc91dd1f2
+97264	60	submit	21	write	16377	7	964cfc9ff9404b25,6bafe44ab8087b25,29b89f4b2c577325,294d0326aea46325,c772ad29b
+97264	60	done	20	Ok(())		Ok(())
+97264	60	done	17	Ok(())		Ok(())
+97266	60	kill	-	signal sent by the tool: Some(true)
+97508	60	before_kill	22	Ok(())
+97508	60	before_kill	23	Ok(())
+97508	60	sorted	-	outstanding 3	kernel in flight [0, 0]
+97663	60	done	21	Ok(())		Ok(())
+98056	60	served_again	-	
+98056	60	carried	21	Ok(())
+98056	60	carried	24	Ok(())
+98056	60	carried	25	Ok(())
