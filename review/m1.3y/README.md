@@ -244,3 +244,21 @@ follow the wait to what the caller sees.
 
 The rig's fix is testing's: the model must not assume that a call
 outstanding at a kill is issued again.
+
+## Fourth look, b4b0211
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/58#issuecomment-6862889121.
+Nothing blocks. New since 697ba46: the record's text on when a commit
+reaches the kernel (88249ff), the status value 4 for write-zeroes
+written by direct I/O (08cfe8d, Codex's P2), and a clean merge of
+`zfs-topology` at 603a632.
+
+- 08cfe8d is right. The new test does not hold the stale case its own
+  text names (a "deallocated" left by the start's checkpoint): with
+  the state set only when nothing was said before, all 45 in-place
+  tests pass (`plants-b4b0211.txt`).
+- The status file's version stays 9; an older build reads 4 as "not
+  said", by the field's own rule.
+- The rigs on this head are the first with the M1.T28 fix. A scheduled
+  check reads the daemon rig's table once.
