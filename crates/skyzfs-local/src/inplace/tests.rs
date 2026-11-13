@@ -186,7 +186,7 @@ fn the_in_place_store_passes_the_conformance_suite() {
 /// the cases named for it: a flush that makes nothing durable, a failed
 /// sync tried again, a failed write that does not fail the volume, a
 /// start that does not drop the kernel's cache where something wrote
-/// through it. (A
+/// through it, a write acknowledged before it was written. (A
 /// flush that joins a sync begun
 /// before a write it must cover needs a cut to land between the two at a
 /// sector the write changed; the suite's programs do not reliably make
@@ -201,7 +201,7 @@ fn the_suite_notices_the_defects() {
     // The cases that must notice each defect: for a flush that syncs
     // nothing, the cases of the power cut, which the harness's cut
     // alone can fail (the failure cases notice it too).
-    let cases: [(u32, &[&str]); 4] = [
+    let cases: [(u32, &[&str]); 5] = [
         (
             Mutants::FLUSH_WITHOUT_SYNC,
             &[
@@ -218,6 +218,16 @@ fn the_suite_notices_the_defects() {
             ],
         ),
         (Mutants::WRITE_ERROR_PASSES, &["prop_failures_match_model"]),
+        // A write acknowledged before a thread has written it: only a
+        // kill that drops what no thread has begun, as the harness's
+        // does, shows it.
+        (
+            Mutants::ACK_BEFORE_WRITE,
+            &["kill_keeps_acknowledged_operations"],
+        ),
+        // A write acknowledged before a thread has written it: only a
+        // kill that drops what no thread has begun, as the harness's
+        // does, shows it.
         // A start that leaves the kernel's cache as it was: the reopen
         // of a failed volume serves what a failed sync left only there.
         // Only a writer through the cache leaves pages there: the store
@@ -1946,3 +1956,5 @@ fn a_cut_inside_a_create_leaves_a_whole_volume_or_none() {
     // Both outcomes happen, so the cuts reach inside the create.
     assert!(found[0] > 0 && found[1] > 0, "{found:?}");
 }
+
+mod ported;

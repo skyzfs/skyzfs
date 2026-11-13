@@ -5,14 +5,17 @@
 //! file's helper. The store has no log and reports no acknowledged
 //! position, so the pump stores none: the record is never written
 //! (inert since M1.3t, which removed the log store; the plumbing goes
-//! in M1.3t-b).
+//! in M1.3t-b). What the log store's version held of the next open,
+//! that it reaches what the pump stored, is here what the in-place
+//! store promises instead: after a power cut, the next start finds
+//! what the pump's flush covered.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 
 use skyzfs_blk::{Base, Buf};
 use skyzfs_local::inplace::{create, lock, InPlace, OpenOptions, Opened, VolumeConfig};
-use skyzfs_local::sim::SimDisk;
+use skyzfs_local::sim::{LoseAll, SimDisk};
 use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
@@ -141,22 +144,52 @@ fn the_pump_serves_the_in_place_store_and_stores_no_position() {
         assert!(spent.max_ns <= spent.sum_ns, "{timing:?}");
     }
 
-    // The data comes back through the pump, in the queue's buffers.
+    // The data comes back through the pump, in the queue's buffers. A
+    // write that no flush covers goes along.
     pump.queue().script.push_back(Step::Fetch(vec![
         request(3, op::READ, 0, 1),
         request(4, op::READ, 1, 2),
         request(5, op::READ, 3, 1),
+        request(6, op::WRITE, 5, 1),
     ]));
     pump.queue().script.push_back(Step::Stop);
     assert_eq!(pump.run(), Stopped::Orderly);
     let after = pump.timing();
-    assert_eq!(after.to_submit.count, 6, "{after:?}");
+    assert_eq!(after.to_submit.count, 7, "{after:?}");
     assert_eq!(after.read_to_commit.count, 3, "{after:?}");
-    assert_eq!(after.other_to_commit.count, 3, "{after:?}");
+    assert_eq!(after.other_to_commit.count, 4, "{after:?}");
     let returned = &pump.queue().returned;
     assert!(returned[&3].iter().all(|b| *b == 0x40));
     assert!(returned[&4].iter().all(|b| *b == 0x41));
     assert!(returned[&5].iter().all(|b| *b == 0), "never written");
     assert_eq!(pump.counters().in_flight, 0);
     assert!(pump.ack().stored.is_empty(), "{:?}", pump.ack().stored);
+
+    // The power is cut after the stop: the next start finds what the
+    // pump's flush covered. The write after it is lost, as the cut
+    // keeps nothing that no sync covered: the cut is a real one.
+    drop(pump.into_target());
+    disk.power_cut(LoseAll);
+    let opened = Opened::open(
+        disk.clone(),
+        lock(&disk).expect("lock"),
+        OpenOptions::default(),
+    )
+    .map_err(|(e, _)| e)
+    .expect("open again");
+    let store = opened.start(None).expect("start again");
+    let mut queue = ScriptQueue::default();
+    queue.script.push_back(Step::Fetch(vec![
+        request(7, op::READ, 0, 1),
+        request(8, op::READ, 1, 2),
+        request(9, op::READ, 5, 1),
+    ]));
+    queue.script.push_back(Step::Stop);
+    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>, Noting> =
+        Pump::new(queue, store, Noting::default());
+    assert_eq!(pump.run(), Stopped::Orderly);
+    let returned = &pump.queue().returned;
+    assert!(returned[&7].iter().all(|b| *b == 0x40), "flushed");
+    assert!(returned[&8].iter().all(|b| *b == 0x41), "flushed");
+    assert!(returned[&9].iter().all(|b| *b == 0), "not flushed, and cut");
 }

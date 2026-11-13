@@ -63,8 +63,10 @@ fn a_directory_that_is_not_a_volume_is_an_error_that_deletes_nothing() {
     ));
 }
 
-/// The failure marker refuses the open as `MarkedFailed`, and an open
-/// that acknowledges it removes it.
+/// The failure marker refuses the open as `MarkedFailed`, the refusal
+/// hands the lock back still held, and an open that acknowledges the
+/// marker removes it. (The held lock stands in for part of the log
+/// store's `the_lock_is_a_step_of_its_own_and_the_open_takes_it_over`.)
 #[test]
 fn a_marked_volume_is_refused_until_acknowledged() {
     let (_keep, dir) = created(8);
@@ -78,6 +80,12 @@ fn a_marked_volume_is_refused_until_acknowledged() {
     assert!(
         dir.join(MARKER_NAME).exists(),
         "an open that refuses writes nothing"
+    );
+    // The refusal hands the lock back still held: nothing else takes
+    // the volume between the refusal and the acknowledged open.
+    assert_eq!(
+        StoreVolume::new(&dir, OpenOptions::default()).lock().err(),
+        Some(LockError::Locked)
     );
     let (opened, _) = volume
         .open(lock, None, true)

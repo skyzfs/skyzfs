@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use skyzfs_blk::{Buf, RequestId};
 
+use super::Mutants;
 use crate::io::File;
 
 /// A request handed to a thread.
@@ -65,6 +66,12 @@ struct State {
     ending: bool,
     /// Threads that died of a panic.
     died: u64,
+    /// Threads waiting for a job.
+    #[cfg(test)]
+    waiting: usize,
+    /// Wakes that found no job and no end.
+    #[cfg(test)]
+    futile: u64,
 }
 
 #[derive(Default)]
@@ -74,6 +81,7 @@ struct Shared {
     work: Condvar,
     /// The store waits here for a job's end ([`Pool::take`]).
     done: Condvar,
+    mutants: Mutants,
 }
 
 impl Shared {
@@ -97,8 +105,12 @@ impl Pool {
         files: Vec<F>,
         direct: bool,
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
+        mutants: Mutants,
     ) -> io::Result<Self> {
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared {
+            mutants,
+            ..Shared::default()
+        });
         let mut pool = Self {
             shared: shared.clone(),
             threads: Vec::new(),
@@ -106,19 +118,28 @@ impl Pool {
         for (n, file) in files.into_iter().enumerate() {
             let shared = shared.clone();
             let wake = wake.clone();
-            // On an error the pool is dropped, which ends the threads
-            // already started.
-            let thread = std::thread::Builder::new()
-                .name(format!("skyzfs-io-{n}"))
-                .spawn(move || work(file, direct, &shared, wake.as_deref()))?;
-            pool.threads.push(thread);
+            match spawn(n, move || work(file, direct, &shared, wake.as_deref())) {
+                Ok(thread) => pool.threads.push(thread),
+                Err(e) => {
+                    if mutants.has(Mutants::POOL_LEAVES_STARTED) {
+                        std::mem::forget(pool);
+                    }
+                    // The pool is dropped, which ends the threads
+                    // already started.
+                    return Err(e);
+                }
+            }
         }
         Ok(pool)
     }
 
     pub(super) fn push(&self, job: Job) {
         self.shared.lock().jobs.push_back(job);
-        self.shared.work.notify_one();
+        if self.shared.mutants.has(Mutants::POOL_WAKES_ALL) {
+            self.shared.work.notify_all();
+        } else {
+            self.shared.work.notify_one();
+        }
     }
 
     /// Take the jobs that ended; with a `timeout`, wait up to it for one
@@ -145,6 +166,39 @@ impl Pool {
     pub(super) fn take_back(&self) -> Vec<Job> {
         self.shared.lock().jobs.drain(..).collect()
     }
+}
+
+/// Start thread `n` of the pool, running `f`.
+fn spawn(n: usize, f: impl FnOnce() + Send + 'static) -> io::Result<JoinHandle<()>> {
+    #[cfg(test)]
+    if tests::SPAWN_REFUSED_AT.with(std::cell::Cell::get) == Some(n) {
+        return Err(io::Error::other("a test refused the thread"));
+    }
+    std::thread::Builder::new()
+        .name(format!("skyzfs-io-{n}"))
+        .spawn(f)
+}
+
+/// Wait on `shared` for a job or the end. The tests count the waiting
+/// threads and the wakes that found nothing to do.
+#[cfg_attr(not(test), allow(unused_mut))]
+fn wait<'a>(shared: &'a Shared, mut state: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+    #[cfg(test)]
+    {
+        state.waiting += 1;
+    }
+    let mut state = shared
+        .work
+        .wait(state)
+        .unwrap_or_else(PoisonError::into_inner);
+    #[cfg(test)]
+    {
+        state.waiting -= 1;
+        if state.jobs.is_empty() && !state.ending {
+            state.futile += 1;
+        }
+    }
+    state
 }
 
 impl Drop for Pool {
@@ -204,22 +258,35 @@ fn work<F: File>(
         job: None,
         waking: false,
     };
+    let mutants = shared.mutants;
+    let mut after_job = false;
     loop {
         let job = {
             let mut state = shared.lock();
+            if after_job && mutants.has(Mutants::POOL_WAITS_FIRST) && !state.ending {
+                state = wait(shared, state);
+            }
             loop {
+                if state.ending && mutants.has(Mutants::POOL_ENDS_QUEUED) {
+                    return;
+                }
                 if let Some(job) = state.jobs.pop_front() {
                     break job;
                 }
                 if state.ending {
                     return;
                 }
-                state = shared
-                    .work
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
+                if mutants.has(Mutants::POOL_WAKE_LOST) {
+                    drop(state);
+                    std::thread::sleep(Duration::from_millis(1));
+                    state = shared.lock();
+                }
+                // The look above and this wait are under one hold of
+                // the lock, so that no push falls between them.
+                state = wait(shared, state);
             }
         };
+        after_job = true;
         let offset = match &job {
             Job::Read { offset, .. } | Job::Write { offset, .. } => *offset,
         };
@@ -247,3 +314,6 @@ fn work<F: File>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

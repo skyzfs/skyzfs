@@ -245,6 +245,15 @@ pub fn lock<D: Dir>(dir: &D) -> Result<D::Lock, OpenError> {
 /// nothing written ([`OpenError::NotEmpty`]), as is one that holds a
 /// volume, of this store or of the log store.
 pub fn create<D: Dir>(dir: &D, config: &VolumeConfig) -> Result<Volume, OpenError> {
+    create_with(dir, config, Mutants::default())
+}
+
+/// [`create`], with defects planted for the tests.
+pub(crate) fn create_with<D: Dir>(
+    dir: &D,
+    config: &VolumeConfig,
+    mutants: Mutants,
+) -> Result<Volume, OpenError> {
     let mut identity = [0u8; 16];
     getrandom::fill(&mut identity).map_err(|_| OpenError::NoRandomness)?;
     let volume = config.volume(identity).ok_or(OpenError::InvalidConfig)?;
@@ -252,8 +261,12 @@ pub fn create<D: Dir>(dir: &D, config: &VolumeConfig) -> Result<Volume, OpenErro
     // Before anything is made: every file of the volume is created in
     // this directory, under a name that did not exist, so it is on this
     // file system.
-    pages_within_unit(dir.page_size(), unit)?;
-    within_unit(Under::Directory, dir.block_size(), unit)?;
+    if !mutants.has(Mutants::ANY_PAGES) {
+        pages_within_unit(dir.page_size(), unit)?;
+    }
+    if !mutants.has(Mutants::ANY_BLOCKS) {
+        within_unit(Under::Directory, dir.block_size(), unit)?;
+    }
     // Before the lock, which makes a file: a directory with a file of
     // somebody else is refused and left exactly as it was. A directory
     // that holds a volume has its lock file already, and whether that
@@ -315,8 +328,9 @@ pub fn create<D: Dir>(dir: &D, config: &VolumeConfig) -> Result<Volume, OpenErro
 }
 
 /// The failure marker's writer: [`MARKER_NAME`] made (or found),
-/// synced, and the directory synced. Returns whether that worked.
-fn write_marker<D: Dir>(dir: &D) -> bool {
+/// synced, and the directory synced (unless `unsynced`, a planted
+/// defect). Returns whether that worked.
+fn write_marker<D: Dir>(dir: &D, unsynced: bool) -> bool {
     let file = match dir.create(MARKER_NAME) {
         Ok(file) => Some(file),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => dir.open(MARKER_NAME).ok(),
@@ -325,7 +339,7 @@ fn write_marker<D: Dir>(dir: &D) -> bool {
     let Some(mut file) = file else {
         return false;
     };
-    file.sync().is_ok() && dir.sync().is_ok()
+    file.sync().is_ok() && (unsynced || dir.sync().is_ok())
 }
 
 /// A volume opened under its lock, and not yet started: the first
@@ -363,7 +377,17 @@ impl<D: Dir> Opened<D> {
     /// and the directory synced; the home image must be of the volume's
     /// size. Nothing else is written, and no refusal fails the volume.
     pub fn open(dir: D, lock: D::Lock, options: OpenOptions) -> Result<Self, (OpenError, D::Lock)> {
-        match Self::open_unlocked(&dir, &options) {
+        Self::open_with(dir, lock, options, Mutants::default())
+    }
+
+    /// [`Opened::open`], with defects planted for the tests.
+    pub(crate) fn open_with(
+        dir: D,
+        lock: D::Lock,
+        options: OpenOptions,
+        mutants: Mutants,
+    ) -> Result<Self, (OpenError, D::Lock)> {
+        match Self::open_unlocked(&dir, &options, mutants) {
             Ok((home, volume, geometry, acknowledged)) => Ok(Self {
                 dir,
                 home,
@@ -380,11 +404,17 @@ impl<D: Dir> Opened<D> {
     fn open_unlocked(
         dir: &D,
         options: &OpenOptions,
+        mutants: Mutants,
     ) -> Result<(D::File, Volume, Geometry, bool), OpenError> {
         let volume = Volume::read(dir)?;
         let unit = u64::from(volume.write_unit);
-        pages_within_unit(dir.page_size(), unit)?;
-        within_unit(Under::Directory, dir.block_size(), unit)?;
+        if !mutants.has(Mutants::ANY_PAGES) {
+            pages_within_unit(dir.page_size(), unit)?;
+        }
+        let blocks = !mutants.has(Mutants::ANY_BLOCKS);
+        if blocks {
+            within_unit(Under::Directory, dir.block_size(), unit)?;
+        }
         let home = match dir.open(HOME_NAME) {
             Ok(home) => home,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -392,7 +422,9 @@ impl<D: Dir> Opened<D> {
             }
             Err(e) => return Err(io_error("opening the home image")(e)),
         };
-        within_unit(Under::Home, home.block_size(), unit)?;
+        if blocks {
+            within_unit(Under::Home, home.block_size(), unit)?;
+        }
         let size = home.len().map_err(io_error("reading the home image"))?;
         if size != volume.size {
             return Err(OpenError::Damaged(
@@ -472,7 +504,8 @@ impl<D: Dir> Opened<D> {
     {
         let marker: MarkerWriter = {
             let dir = self.dir.clone();
-            Box::new(move || write_marker(&dir))
+            let unsynced = mutants.has(Mutants::MARKER_UNSYNCED);
+            Box::new(move || write_marker(&dir, unsynced))
         };
         InPlace::assemble(
             Parts {

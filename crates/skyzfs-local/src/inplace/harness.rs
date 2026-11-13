@@ -11,11 +11,16 @@
 //! - `create` makes a volume ([`super::create`]), serves it once with
 //!   writes that no flush covers all of, and loses that process: the
 //!   suite's first start is a start after a lost process.
-//! - `kill` drops the store, kills the simulated process and starts
-//!   again: the open under the lock, then the start. Requests on the
-//!   I/O threads are done before the store is dropped, so only flushes
-//!   can be in flight, and a kill finds their syncs where the seed of
-//!   the disk's delays has them.
+//! - `kill` abandons the store as a kill of its process does
+//!   ([`InPlace::abandon`]): the requests no I/O thread has begun, and
+//!   those waiting in the store, are dropped undone, and the jobs under
+//!   way end. Then it kills the simulated process and starts again: the
+//!   open under the lock, then the start. What the threads had begun
+//!   at the kill depends on their timing, which no seed decides; the
+//!   suite submits every request in flight again
+//!   ([`InFlight::Reissued`](skyzfs_blk::model::InFlight)), so each
+//!   outcome is one the model allows. A kill finds the syncs of the
+//!   flushes in flight where the seed of the disk's delays has them.
 //! - `fail_log` makes every write and every sync fail from then on, as
 //!   the simulated disk fails them: a failed write leaves any subset of
 //!   its sectors, a failed sync may drop what it did not make durable.
@@ -253,7 +258,9 @@ impl Harness for InPlaceHarness {
             disk,
             geometry,
         } = target;
-        drop(inner);
+        if let Inner::Live(store) = inner {
+            store.abandon();
+        }
         disk.kill();
         self.start(disk, geometry.read_only(), false, Some(geometry))
     }

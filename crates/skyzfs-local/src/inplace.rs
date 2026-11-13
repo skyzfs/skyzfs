@@ -237,6 +237,39 @@ impl Mutants {
     pub(crate) const OVERLAP_UNORDERED: u32 = 1 << 13;
     /// The start does not sync the home image.
     pub(crate) const START_UNSYNCED: u32 = 1 << 14;
+    /// The failure observer is told after the marker is begun, not
+    /// before.
+    pub(crate) const OBSERVE_AFTER_MARKER: u32 = 1 << 15;
+    /// The failure marker is made without the directory's sync, so a
+    /// power cut can take it back.
+    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 16;
+    /// A failed read fails the volume (the log store's rule, which the
+    /// in-place store does not have).
+    pub(crate) const READ_ERROR_FAILS: u32 = 1 << 17;
+    /// Create and open do not hold the file systems' blocks to the
+    /// write unit.
+    pub(crate) const ANY_BLOCKS: u32 = 1 << 18;
+    /// Create and open do not hold the system's page to the write unit.
+    pub(crate) const ANY_PAGES: u32 = 1 << 19;
+    /// A job pushed to the I/O threads wakes every waiting thread, not
+    /// one.
+    pub(crate) const POOL_WAKES_ALL: u32 = 1 << 20;
+    /// An I/O thread looks at the queue and waits under two holds of
+    /// its lock: a job pushed between them wakes nobody.
+    pub(crate) const POOL_WAKE_LOST: u32 = 1 << 21;
+    /// At the end the I/O threads end without doing the jobs queued.
+    pub(crate) const POOL_ENDS_QUEUED: u32 = 1 << 22;
+    /// An I/O thread that ends a job waits to be woken before it looks
+    /// at the queue again.
+    pub(crate) const POOL_WAITS_FIRST: u32 = 1 << 23;
+    /// Where a thread cannot be started, the threads started before it
+    /// are left waiting.
+    pub(crate) const POOL_LEAVES_STARTED: u32 = 1 << 24;
+    /// A write handed to the threads is acknowledged at once, before a
+    /// thread has written it: a kill can lose it.
+    pub(crate) const ACK_BEFORE_WRITE: u32 = 1 << 25;
+    /// A failure writes no marker: the next start serves the volume.
+    pub(crate) const FAIL_UNMARKED: u32 = 1 << 26;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -378,6 +411,12 @@ pub struct InPlace<D: Dir> {
     /// The queue's counts and highs; the current figures are those of
     /// `busy` and `deferred`.
     queue: IoQueue,
+    /// Writes on the threads acknowledged before a thread wrote them,
+    /// under ids of their own on the threads (the client may use theirs
+    /// again at once), and how many there were: only under the defect
+    /// [`Mutants::ACK_BEFORE_WRITE`]. Such a write's end completes
+    /// nothing.
+    acked_early: (BTreeSet<RequestId>, u64),
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: a start
     /// that does not find it goes by the daemon's failure note.
@@ -575,6 +614,23 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
 /// The store waits for its failure marker when it is dropped, before
 /// the lock is released, so that a start after it finds the marker (or
 /// the failure to write it); a marker never asked for ends its thread.
+impl<D: Dir> InPlace<D> {
+    /// What a kill of the process does to the store, for the tests: the
+    /// requests no thread has begun, and those that wait in the store,
+    /// are dropped undone; the jobs under way on the threads end as the
+    /// kernel ends them, and their results are not taken; nothing
+    /// completes, nothing fails, and no marker is written. A drop,
+    /// instead, does everything submitted before the store goes.
+    #[cfg(test)]
+    pub(crate) fn abandon(mut self) {
+        if let Some(pool) = self.pool.take() {
+            drop(pool.take_back());
+        }
+        self.busy.clear();
+        self.deferred.clear();
+    }
+}
+
 impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
         // What was submitted is done before the store goes, as it is on
@@ -643,6 +699,7 @@ impl<D: Dir> InPlace<D> {
             busy: BTreeMap::new(),
             deferred: VecDeque::new(),
             queue: IoQueue::default(),
+            acked_early: (BTreeSet::new(), 0),
             marker: Marker::new(parts.marker, mutants),
         };
         // What the instance before this one wrote by direct I/O may be
@@ -698,7 +755,7 @@ impl<D: Dir> InPlace<D> {
                 .map(|_| self.dir.open(crate::store::HOME_NAME))
                 .collect::<io::Result<Vec<_>>>()
                 .map_err(|e| format!("opening the home image for the threads: {e}"))?;
-            let pool = Pool::start(files, self.io.direct, self.wake.clone())
+            let pool = Pool::start(files, self.io.direct, self.wake.clone(), self.mutants)
                 .map_err(|e| format!("starting a thread: {e}"))?;
             self.pool = Some(pool);
         }
@@ -881,10 +938,15 @@ impl<D: Dir> InPlace<D> {
         self.failed = true;
         // Once: the observer is taken when it is told, and a marker
         // begun or written is not begun again.
+        if self.mutants.has(Mutants::OBSERVE_AFTER_MARKER) {
+            self.marker.begin();
+        }
         if let Some(observer) = self.observer.take() {
             observer.call();
         }
-        self.marker.begin();
+        if !self.mutants.has(Mutants::FAIL_UNMARKED) {
+            self.marker.begin();
+        }
     }
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {
@@ -922,7 +984,14 @@ impl<D: Dir> InPlace<D> {
                 } else {
                     self.home.read_at(offset, &mut buf)
                 };
-                let result = read.map_err(|e| BlkError::Io(e.kind()));
+                let result = match read {
+                    Err(_) if self.mutants.has(Mutants::READ_ERROR_FAILS) => {
+                        self.fail();
+                        self.settle_failed();
+                        Err(BlkError::Failed)
+                    }
+                    read => read.map_err(|e| BlkError::Io(e.kind())),
+                };
                 self.complete(id, result, Some(buf));
             }
             Op::Flush => self.flush(id),
@@ -968,7 +1037,25 @@ impl<D: Dir> InPlace<D> {
     /// Hand `job` to the threads; `range` is its bytes and whether it
     /// writes.
     fn on_thread(&mut self, id: RequestId, range: (u64, u64, bool), job: Job) {
-        self.busy.insert(id, range);
+        let (key, job) = match job {
+            Job::Write { offset, data, .. } if self.mutants.has(Mutants::ACK_BEFORE_WRITE) => {
+                let (early, count) = &mut self.acked_early;
+                *count += 1;
+                let key = RequestId(u64::MAX - *count);
+                early.insert(key);
+                self.complete(id, Ok(()), Some(data.clone()));
+                (
+                    key,
+                    Job::Write {
+                        id: key,
+                        offset,
+                        data,
+                    },
+                )
+            }
+            job => (id, job),
+        };
+        self.busy.insert(key, range);
         self.queue.in_flight_max = self.queue.in_flight_max.max(self.busy.len() as u64);
         if let Some(pool) = &self.pool {
             pool.push(job);
@@ -1185,6 +1272,11 @@ impl<D: Dir> InPlace<D> {
         } in done
         {
             self.busy.remove(&id);
+            if self.acked_early.0.remove(&id) {
+                // Acknowledged already, under the defect.
+                let _ = self.mutated(result);
+                continue;
+            }
             let result = if write {
                 let result = self.mutated(result);
                 if self.failed {
@@ -1193,6 +1285,10 @@ impl<D: Dir> InPlace<D> {
                     result
                 }
             } else if self.failed {
+                Err(BlkError::Failed)
+            } else if result.is_err() && self.mutants.has(Mutants::READ_ERROR_FAILS) {
+                self.fail();
+                self.settle_failed();
                 Err(BlkError::Failed)
             } else {
                 result.map_err(|e| BlkError::Io(e.kind()))
@@ -1285,6 +1381,16 @@ impl<D: Dir> BlockTarget for InPlace<D> {
             if self.busy.is_empty() {
                 self.settle(true);
             } else {
+                self.collect(timeout);
+            }
+            // Every end of a job completes something, and a wait ends
+            // with it, but under the defect, where a write's end
+            // completes nothing: wait on, as for a request behind it.
+            while self.mutants.has(Mutants::ACK_BEFORE_WRITE) && self.ready.is_empty() {
+                if self.busy.is_empty() {
+                    self.settle(true);
+                    break;
+                }
                 self.collect(timeout);
             }
         }
