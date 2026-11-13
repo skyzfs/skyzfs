@@ -68,3 +68,20 @@ stale `__pycache__`; remove it between plants.
 
 Nothing on a kernel; no profile without a limit; none where the throttle
 fired; the strace path only by its unit test; arm64 not run.
+
+## Second look, at bd8feef
+
+Posted as https://github.com/skyzfs/skyzfs/pull/49#issuecomment-6844044932.
+**Can merge.** Findings 1 to 4 all dropped:
+
+- `lru_gen_` is out of `RECLAIM`; the throttle is
+  `^(balance_dirty_pages|__balance_dirty_pages)$`; `count_memcg` is in `MEMCG`.
+- The docstring and a fixture line cover perf's `[continued]` form.
+- `grep -q ' events, '` decides that perf wrote a summary; the counters are
+  printed with `%.0f`; a sentence under the table says what the slow share
+  means for calls that wait.
+
+Re-run over the two runs' artifacts: page reclaim 85 of 1,406 (6.0%) and 281
+of 4,495 (6.3%) on the queue thread; every such sample has a reclaim entry
+point in its chain (86 and 282 over all threads); write-back from a write 0.
+Three plants, each caught. Lint, test and coverage were queued when I posted.
