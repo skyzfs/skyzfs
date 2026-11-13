@@ -1,0 +1,45 @@
+kernel 6.18.44-fc-v445; blktrace.sh of 2f2aa70
+ready: yes
+before blktrace_on:
+  tracing_on             1 
+  current_tracer         nop 
+  trace_clock            [local] global counter uptime perf mono mono_raw boot tai x86-tsc 
+  buffer_size_kb         7 (expanded: 1408) 
+  buffer_total_size_kb   28 (expanded: 5632) 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 0
+  events/block/block_split 0
+  events/block/block_rq_requeue 0
+  events/block/block_rq_complete 0
+  MemFree kB             15386644
+  online CPUs            4
+while tracing:
+  tracing_on             1 
+  current_tracer         nop 
+  trace_clock            local global counter uptime perf [mono] mono_raw boot tai x86-tsc 
+  buffer_size_kb         8195 
+  buffer_total_size_kb   32780 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 1
+  events/block/block_split 1
+  events/block/block_rq_requeue 1
+  events/block/block_rq_complete 1
+  MemFree kB             15345560
+  online CPUs            4
+after blktrace_off:
+  tracing_on             1 
+  current_tracer         nop 
+  trace_clock            [local] global counter uptime perf mono mono_raw boot tai x86-tsc 
+  buffer_size_kb         1410 
+  buffer_total_size_kb   5640 
+head: cannot open '/sys/kernel/tracing/set_ftrace_filter' for reading: Operation not permitted
+  set_ftrace_filter      
+  events/block/block_rq_issue 0
+  events/block/block_split 0
+  events/block/block_rq_requeue 0
+  events/block/block_rq_complete 0
+  MemFree kB             15366968
+  online CPUs            4
+the trace: 156 lines, 73 block_rq_issue, 0 lines that say events were lost

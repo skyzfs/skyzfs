@@ -1,0 +1,14 @@
+== pass-1-m1.3y
+requeues by flags: {'RA': 133, 'FF': 16, 'WS': 42, 'RS': 42, 'WZS': 6, 'R': 8}
+buffered reads issued, by process: {'(udev-worker)': 45296, '(udev-synth)': 29817, 'dd': 21653, 'probe-bcache': 11544, '<...>': 171, 'kworker/0:': 60}
+buffered reads issued, by place: {'end (>=130560)': 28912, 'elsewhere': 79902}
+        kworker/2:1-51      [002] .....   132.505030: block_rq_requeue: 259,0 RA () 0 + 8 be,0,4 [0]
+       kworker/2:1H-554     [002] ...1.   132.505051: block_rq_requeue: 259,0 RA () 0 + 8 be,0,4 [0]
+        kworker/2:1-51      [002] .....   133.504724: block_rq_requeue: 259,0 RA () 129024 + 8 be,0,4 [0]
+== pass-10-m1.3y
+requeues by flags: {'RA': 163, 'FF': 14, 'WS': 58, 'RS': 38, 'WZS': 6, 'R': 8}
+buffered reads issued, by process: {'(udev-worker)': 47921, '(udev-synth)': 31697, 'dd': 22933, 'probe-bcache': 12756, '<...>': 197, 'kworker/2:': 63}
+buffered reads issued, by place: {'elsewhere': 85809, 'end (>=130560)': 30066}
+      skyzfsd-queue-635128  [003] .....   986.243428: block_rq_requeue: 259,0 RA () 64 + 8 be,0,4 [0]
+       kworker/3:1H-699     [003] ...1.   986.265053: block_rq_requeue: 259,0 RA () 64 + 8 be,0,4 [0]
+                 dd-636413  [002] ...1.   987.251595: block_rq_requeue: 259,0 RA () 130560 + 8 be,0,4 [0]

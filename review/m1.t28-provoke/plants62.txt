@@ -1,0 +1,21 @@
+== tests at 2f2aa70
+ok   not ready without an event
+all passed
+all passed
+Ran 57 tests in 0.352s  OK 
+== plant: 'not run: ' dropped from one of the two missing-evidence lines
+2525:        obs c_evidence "not run: no block trace: $C_TRACE_WHY. ${C_EVIDENCE}"
+2527:        obs c_evidence "not run: ${C_MISSING}${C_EVIDENCE}"
+FAIL: test_check_c_writes_its_evidence_on_every_path (__main__.CheckG.test_check_c_writes_its_evidence_on_every_path) Ran 57 tests in 0.141s FAILED (failures=1) 
+all passed
+== plant: the missing line says 'not  run' in other words (same count of the literal, different text after it)
+== plant: blktrace_word gives the first word again
+FAIL off: the buffer at the size it grows to when used
+1 failed
+1 failed
+== plant: tracing_on always put back as 1
+FAIL off: tracing_on as found
+1 failed
+== plant: tracing_on always put back as 0
+FAIL off: tracing_on on again
+1 failed
