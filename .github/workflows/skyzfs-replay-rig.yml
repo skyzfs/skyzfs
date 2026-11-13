@@ -36,6 +36,10 @@ name: skyzfs-replay-rig
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
 #     `daemon_budget` (full: every record prefix, about 45 minutes a job).
+# Which store the daemon jobs drive: on a pull request the in-place
+# store (`--store in-place`), which is the one that changes; by
+# dispatch what `serve_args` names, and without --store there the log
+# store, which is frozen until it is removed (M1.T20).
 on:
   workflow_dispatch:
     inputs:
@@ -64,7 +68,7 @@ on:
         options: [pull-request, full]
         default: full
       serve_args:
-        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --store in-place); empty = the default daemon"
+        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --store in-place); without --store the rig passes --store log. A pull request runs --store in-place"
         default: ""
   pull_request:
     paths:
@@ -281,7 +285,7 @@ jobs:
         env:
           BUDGET: ${{ needs.plan.outputs.budget }}
           DISCARD: ${{ inputs.discard || 'zero' }}
-          SERVE_ARGS: ${{ inputs.serve_args || '' }}
+          SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '' }}
         run: |
           [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
           # Options only: letters, digits and - = . , : / and spaces.
