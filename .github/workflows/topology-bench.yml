@@ -41,9 +41,12 @@ on:
         # (ubuntu-latest moved to 26.04: Rust coreutils dd, sudo-rs), so
         # a dispatch can pin it to check one image against the other.
         # Scheduled, push and pull_request runs take ubuntu-latest.
-        description: "Runner image"
+        # The -arm images are arm64 (design goal 8, M1.T21). Their work
+        # disk declares write through, so a sync costs nearly nothing
+        # there: compare their rows with each other, not with amd64's.
+        description: "Runner image (the -arm ones are arm64)"
         type: choice
-        options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04]
+        options: [ubuntu-latest, ubuntu-24.04, ubuntu-26.04, ubuntu-24.04-arm, ubuntu-26.04-arm]
         default: ubuntu-latest
       topologies:
         description: "space-separated subset of: nocache baseline twovol twovol-origin twovol-hydrated bcache opencas zfs zfs-plain zfs-l2arc zfs-slog zfs-slog-l2arc zfs-slog-rcache zfs-loop zfs-ublk zfs-skyzfsd"
@@ -356,7 +359,8 @@ jobs:
         # summary sets this line beside the rows of this machine.
         run: |
           mkdir -p "$TB_OUT"
-          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 | tee "$TB_OUT/disk-sync.txt"
+          # The image is an argument: sudo-rs does not carry the environment.
+          sudo python3 -I tests/bench/disk-sync.py "$TB_WORK/disk-sync" 64 "${ImageOS:-unknown}/${ImageVersion:-unknown}" | tee "$TB_OUT/disk-sync.txt"
           { echo '```'; cat "$TB_OUT/disk-sync.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run benchmark
