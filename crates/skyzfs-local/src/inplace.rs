@@ -367,16 +367,36 @@ const MARKER_STACK: usize = 256 << 10;
 pub struct FailedStart {
     marker: Marker,
     lock: Option<Box<dyn Send>>,
+    failed: StartFailed,
+}
+
+/// What failed at a start of the in-place store
+/// ([`FailedStart::failed`]), for the daemon's failure note: the two
+/// are told apart there (`skyzfs_ublk::lifecycle::Reason`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartFailed {
+    /// The log store, in the checkpoint that empties its log into the
+    /// home image before the in-place store takes over: the log store's
+    /// own failure, which its failure path has marked already.
+    Log,
+    /// The in-place store's own sync of the home image.
+    Image,
 }
 
 impl FailedStart {
-    /// A start that failed with the marker already tried, or with no
-    /// marker of this store's to write.
+    /// A start that the log store failed, with its marker already
+    /// tried.
     pub(crate) fn written() -> Self {
         Self {
             marker: Marker::Done,
             lock: None,
+            failed: StartFailed::Log,
         }
+    }
+
+    /// What failed.
+    pub fn failed(&self) -> StartFailed {
+        self.failed
     }
 
     /// Write the failure marker, wait for it, and release the lock.
@@ -491,7 +511,11 @@ impl<D: Dir> InPlace<D> {
                 .lock
                 .take()
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
-            return Err(IntoInPlaceError::Failed(FailedStart { marker, lock }));
+            return Err(IntoInPlaceError::Failed(FailedStart {
+                marker,
+                lock,
+                failed: StartFailed::Image,
+            }));
         }
         store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
         Ok(store)

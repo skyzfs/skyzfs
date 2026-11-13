@@ -167,7 +167,8 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       If the volume's own device is still shown as live by the kernel
       (the server before this one was killed a moment ago), serve asks
       again for up to 5 s before it gives up with status 5.
-      A volume whose log failed in this boot is not served again
+      A volume that failed in this boot (its log, or with --store
+      in-place a write or sync of its image) is not served again
       (status 4). If no client held its device, --acknowledge-failure
       serves it: what was acknowledged to nobody may be gone. If a
       client held the device, the volume is not served again before a

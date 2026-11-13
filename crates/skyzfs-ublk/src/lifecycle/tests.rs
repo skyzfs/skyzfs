@@ -2572,6 +2572,36 @@ fn an_unheld_failure_acknowledged(mutants: u32) -> Result<(), String> {
     )
 }
 
+/// A start after a failure of the in-place store's image: the note's
+/// reason is what the start says, held or not, and what it
+/// acknowledges. Nothing else differs from a failure of the log.
+#[test]
+fn a_start_says_the_reason_the_note_gives() {
+    let image = |held: bool| {
+        let mut world = failed_world(held);
+        world.failure = Ok(Some(Failure {
+            reason: Reason::ImageFailed,
+            ..note(held)
+        }));
+        world
+    };
+    let outcome = run_as(image(true), &ACKNOWLEDGING, 0);
+    let why = refusal(&outcome).unwrap();
+    assert!(
+        why.starts_with("a write or sync of the volume's image failed, while a client held"),
+        "{why}"
+    );
+    let outcome = run_as(image(false), &WANTED, 0);
+    let why = refusal(&outcome).unwrap();
+    assert!(
+        why.starts_with("a write or sync of the volume's image failed"),
+        "{why}"
+    );
+    let outcome = run_as(image(false), &ACKNOWLEDGING, 0);
+    let ready = outcome.result.as_ref().unwrap();
+    assert_eq!(ready.acknowledged, Some(Reason::ImageFailed));
+}
+
 #[test]
 fn a_noted_failure_is_refused_or_acknowledged_by_what_the_note_says() {
     let late = (
@@ -2833,10 +2863,11 @@ fn the_flag_changes_nothing_when_nothing_has_failed() {
     }
 }
 
-/// The log fails while the volume is served.
+/// The volume fails while it is served, for `reason`.
 fn fails_while_serving(
     client_holds: Option<bool>,
     dies_at: Option<usize>,
+    reason: Reason,
     mutants: u32,
 ) -> (World, (Failure, bool)) {
     let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
@@ -2845,41 +2876,51 @@ fn fails_while_serving(
     let (mut control, mut records, shared) = fakes(world);
     // The serving daemon holds the lock.
     let lock = Volume::lock(&mut control.clone()).ok();
-    let (failure, written, _) =
-        fail_serving_with(&mut control, &mut records, 4, [3; 16], Mutants(mutants));
+    let (failure, written, _) = fail_serving_with(
+        &mut control,
+        &mut records,
+        4,
+        [3; 16],
+        reason,
+        Mutants(mutants),
+    );
     let said = (failure, written);
     drop(lock);
     drop((control, records));
     (unwrap(shared), said)
 }
 
+/// The note carries the reason the caller gives: the store's (the log
+/// store's log, or the in-place store's image).
 #[test]
 fn a_failure_while_serving_is_noted_with_what_the_kernel_says_and_then_the_device_goes() {
     // The kernel says that a client holds the device, or cannot tell;
     // a control interface that could say "nobody" would be believed.
-    for (says, held) in [
-        (None, Held::Unknown),
-        (Some(true), Held::Yes),
-        (Some(false), Held::No),
-    ] {
-        let (world, (failure, written)) = fails_while_serving(says, None, 0);
-        let noted = Failure {
-            held,
-            reason: Reason::LogFailed,
-            identity: [3; 16],
-        };
-        assert_eq!((failure, written), (noted, true));
-        assert_eq!(world.failure, Ok(Some(noted)));
-        assert_eq!(
-            world.events,
-            [
-                Event::WriteFailure(held, Reason::LogFailed),
-                Event::RemoveNote(4),
-                Event::Delete(4),
-            ]
-        );
-        assert_eq!(world.under_lock, [true; 3]);
-        assert!(world.devices.is_empty());
+    for reason in [Reason::LogFailed, Reason::ImageFailed] {
+        for (says, held) in [
+            (None, Held::Unknown),
+            (Some(true), Held::Yes),
+            (Some(false), Held::No),
+        ] {
+            let (world, (failure, written)) = fails_while_serving(says, None, reason, 0);
+            let noted = Failure {
+                held,
+                reason,
+                identity: [3; 16],
+            };
+            assert_eq!((failure, written), (noted, true));
+            assert_eq!(world.failure, Ok(Some(noted)));
+            assert_eq!(
+                world.events,
+                [
+                    Event::WriteFailure(held, reason),
+                    Event::RemoveNote(4),
+                    Event::Delete(4),
+                ]
+            );
+            assert_eq!(world.under_lock, [true; 3]);
+            assert!(world.devices.is_empty());
+        }
     }
 
     // The note cannot be written: the device goes, and the caller is
@@ -2887,7 +2928,8 @@ fn a_failure_while_serving_is_noted_with_what_the_kernel_says_and_then_the_devic
     let mut world = World::new().attached(4, DeviceState::Live, EARLIER);
     world.failure_unwritable = true;
     let (mut control, mut records, shared) = fakes(world);
-    let (_, written, deleted) = fail_serving(&mut control, &mut records, 4, [3; 16]);
+    let (_, written, deleted) =
+        fail_serving(&mut control, &mut records, 4, [3; 16], Reason::ImageFailed);
     assert!(deleted.is_ok());
     drop((control, records));
     let world = unwrap(shared);
@@ -2999,7 +3041,7 @@ fn a_failing_start_killed_anywhere(mutants: u32) -> Result<(), String> {
 fn a_failing_server_killed_anywhere(mutants: u32) -> Result<(), String> {
     for says in [None, Some(false)] {
         for at in 0..=3 {
-            let (between, _) = fails_while_serving(says, Some(at), mutants);
+            let (between, _) = fails_while_serving(says, Some(at), Reason::LogFailed, mutants);
             refused_once_given_up(between, mutants, at)?;
         }
     }
@@ -3478,8 +3520,14 @@ fn a_delete_that_fails_leaves_a_device_the_next_start_deletes() {
         world.delete_refused = true;
         let (mut control, mut records, shared) = fakes(world);
         let lock = Volume::lock(&mut control.clone()).ok();
-        let (_, written, deleted) =
-            fail_serving_with(&mut control, &mut records, 4, [3; 16], Mutants(mutants));
+        let (_, written, deleted) = fail_serving_with(
+            &mut control,
+            &mut records,
+            4,
+            [3; 16],
+            Reason::LogFailed,
+            Mutants(mutants),
+        );
         drop(lock);
         drop((control, records));
         let mut world = unwrap(shared);

@@ -58,8 +58,8 @@
 //! # The failure note
 //!
 //! [`FAILED`] in the volume's directory under the run directory: the
-//! volume's log failed in this boot (design §4.2, "a failed volume
-//! gives up its attachment"). Made whole under another name and
+//! volume failed in this boot (design §4.2, "a failed volume gives up
+//! its attachment"), its log or the in-place store's image. Made whole under another name and
 //! renamed; not synced, because it has to live exactly as long as the
 //! boot. A note of another boot counts as none. It has no checksum:
 //! it is replaced whole by a rename on a memory file system, and one
@@ -74,10 +74,22 @@
 //! | 8 | 16 | the boot it was written in |
 //! | 24 | 16 | the store's identity, or zeros where it was not known |
 //! | 40 | 1 | whether a client held the device: 0 none did, 1 one did, 2 not known when the note was written |
-//! | 41 | 1 | the reason: 1 the log failed while serving, 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read |
+//! | 41 | 1 | the reason: 1 the log failed while serving, 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read, 7 a write or sync of the in-place store's image failed (while serving, or in its own sync at its start) |
 //! | 42 | 6 | zero |
 //! | 48 | 8 | when it was written: milliseconds since boot |
 //! | 56 | 8 | zero |
+//!
+//! **Code 7 is newer than the others** (M1.3x). A daemon older than it
+//! does not know the code, so a note with it is not a whole note to
+//! that daemon: its start refuses the volume as failed while a client
+//! held its device, for the rest of the boot and whatever
+//! `--acknowledge-failure` says ("the failure note cannot be read"),
+//! and deletes a device of the volume that waits for a server. Its
+//! `skyzfsd status` says the same. The note lives in the run directory
+//! until the next boot: to serve the volume with such a daemon before
+//! then, after the failure has been dealt with, remove the note by
+//! hand. This version reads all seven codes, and refuses an unknown
+//! one in the same way.
 //!
 //! The syncs are of the record's file and of its directory only. The
 //! daemon never syncs a file system or the whole machine: such a sync
@@ -202,13 +214,14 @@ pub struct StoredFailure {
     pub written_ms: u64,
 }
 
-const REASONS: [(u8, Reason); 6] = [
+const REASONS: [(u8, Reason); 7] = [
     (1, Reason::LogFailed),
     (2, Reason::Short),
     (3, Reason::RecoveryFailed),
     (4, Reason::Marked),
     (5, Reason::PositionUnreadable),
     (6, Reason::DeviceNoteUnreadable),
+    (7, Reason::ImageFailed),
 ];
 
 fn encode_failure(stored: &StoredFailure) -> [u8; FAILED_LEN] {

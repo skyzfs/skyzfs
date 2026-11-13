@@ -613,7 +613,10 @@ fn the_start_refuses_a_store_with_requests_in_flight() {
 /// the conversion makes, gives `Failed`, and the next start finds the
 /// volume marked as failed. Where the in-place store's own sync failed
 /// (the last), the marker is handed back unwritten, with the lock: no
-/// marker yet, and no other start, until the caller finishes it.
+/// marker yet, and no other start, until the caller finishes it. The
+/// start says what failed: the image at that sync, the log store at
+/// every one before it (the daemon's failure note gives the two
+/// different reasons).
 #[test]
 fn a_start_that_meets_the_failed_disk_fails_the_volume() {
     let mut handed_back = 0;
@@ -629,6 +632,12 @@ fn a_start_that_meets_the_failed_disk_fails_the_volume() {
         };
         failing += 1;
         let marked = || disk.list().unwrap().iter().any(|n| n == MARKER_NAME);
+        let failed = start_failed.failed();
+        assert_eq!(
+            failed == StartFailed::Image,
+            !marked(),
+            "sync {nth}: {failed:?}"
+        );
         if !marked() {
             handed_back += 1;
             assert!(matches!(
