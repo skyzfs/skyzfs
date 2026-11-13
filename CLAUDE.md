@@ -155,7 +155,18 @@ there, and the user decides when it merges.
   touched. `skyzfs-mirror-canary.yml` (dispatch only; input `force`
   takes the fallback path on a healthy day) tries it for real. A job
   that still fails on an unresolved name is an outage, not the change:
-  report it and do not rerun blind.
+  report it and do not rerun blind. On an arm64 image the fallback is a
+  mirror of `ubuntu-ports`. `ubuntu-24.04-arm` has no mirror list, so
+  it has no fallback, and its job summary says "no fallback on this
+  image": a failure on an unresolved name there is an outage.
+- **arm64.** amd64 and arm64 are both supported (design goal 8). The
+  job `unit-arm64` in `ci.yml` and `skyzfs-ci.yml` runs clippy and the
+  tests natively on `ubuntu-26.04-arm`, plain and with each of the two
+  features below, on every pull request. The kernel rigs take arm64
+  images by dispatch (their `images` inputs); what runs on a pull
+  request is said in each workflow's head. The hosted arm64 images have
+  4 KiB pages only: nothing here shows 16 KiB or 64 KiB pages on a real
+  kernel.
 - **The kernel probe.** `skyzfs-kernel-probe.yml` runs on a pull request
   that touches `tests/kernel/` or the workflow, and by dispatch. It
   fails when a property the design depends on does not hold on the
@@ -172,6 +183,9 @@ there, and the user decides when it merges.
   rig catches means changing that table on purpose. A newer push to a
   pull request cancels the older run. The dispatch input `discard`
   chooses whether a discarded range is zeroed or left as it was.
+  The daemon jobs name the store: on a pull request `--store in-place`,
+  by dispatch what the input `serve_args` says, and with no `--store`
+  there the log store, which is frozen until M1.3t removes it.
   Since M1.T14 the workflow also has the jobs "through skyzfsd", one
   per image (`tests/kernel/replay_daemon.py`): the cut is below the
   daemon, on the disk under its files, and each prefix is checked
@@ -204,7 +218,12 @@ there, and the user decides when it merges.
   which is what shows that the rig still catches what it caught. A push
   of the workflow file on a testing branch runs the stand-in. By
   dispatch the input `server` chooses `daemon` (the default), `stand-in`
-  or `both`, and `checks` the checks (for example `c` alone). The job
+  or `both`, `checks` the checks (for example `c` alone), and `store`
+  the daemon's store: `in-place` (the default, and what a pull request
+  drives) or `log`. With the in-place store the lines about a log
+  (checkpoints, the log's bound, the take-over time's growth) read NA,
+  and the expected table names them; the judge
+  `tests/kernel/daemon_check.py` fails on an NA that is not in it. The job
   `which server` says in its summary what was chosen, and artifacts are
   named `daemon-rig-<image>-<server>`. **The jobs build the pull
   request merged with its base as the base was when the pull request

@@ -238,8 +238,10 @@
 #   TB_SYSCALLS=1           zfs-skyzfsd only: trace the daemon's system calls
 #                           for TB_SYSCALLS_S seconds (default 20) in the
 #                           middle of the measured window, by thread
-#                           (`perf trace -s -p`, or `strace -f -T -p` where
-#                           perf cannot trace). The trace slows the
+#                           (`perf trace -S --duration -p`, or `strace -f
+#                           -T -p` where perf cannot trace), with how many
+#                           of each call took TB_SYSCALLS_SLOW_MS (default
+#                           1) or more. The trace slows the
 #                           daemon, so such a row is given no verdict; put
 #                           it after the last model row of a sequence
 #   TB_PERF_RECORD=1        zfs-skyzfsd only: `perf record -g` of the
@@ -568,8 +570,11 @@ if drows:
     if sc:
         print('\nThe daemon\'s system calls by thread (TB_SYSCALLS), traced in the middle of the window with the tool '
               'named, on the daemon\'s pid only. Per thread name (the readers together), the six calls that took the '
-              'most time: calls per transaction (at the row\'s tps over the trace\'s seconds) and µs per call. The trace '
-              'slows the daemon, so the row has no verdict:\n')
+              'most time: calls per transaction (at the row\'s tps over the trace\'s seconds) and µs per call, and, where '
+              'the trace counted them, the share of those calls that took the trace\'s slow mark or more (the column '
+              'names it). The share means slowness for calls that do work (pread64, pwrite64, fdatasync); calls that '
+              'wait for work (futex, rt_sigtimedwait, io_uring_enter waiting for a completion) are slow by design. '
+              'The trace slows the daemon, so the row has no verdict:\n')
         print('| workload | daemon row | tps | tool, s | thread (threads) | calls per txn, µs per call |')
         print('|---|---|---|---|---|---|')
         for r in sc:
@@ -578,7 +583,10 @@ if drows:
                 calls = sorted(t['calls'].items(), key=lambda x: -x[1][1])[:6]
                 if not calls:
                     continue
-                txt = ', '.join(f"{c} {n / txn:.3f} / {ms * 1000 / n:.1f}" for c, (n, ms) in calls if n)
+                slow = t.get('slow')
+                txt = ', '.join(f"{c} {n / txn:.3f} / {ms * 1000 / n:.1f}"
+                                + (f" ({100 * slow.get(c, 0) / n:.1f}% ≥ {s_['slow_ms']:g} ms)" if slow is not None else '')
+                                for c, (n, ms) in calls if n)
                 print(f"| {r['workload']} | {label(r)} | {r['tps']:.0f} | {s_['tool']}, {s_['seconds']:.0f} | "
                       f"{name} ({t['tids']}) | {txt} |")
     # Where the daemon's CPU went (TB_PERF_RECORD): per thread name, the
@@ -611,7 +619,8 @@ if drows:
               'The daemon columns are for zfs-skyzfsd: its own resident memory, the limit of its cgroup (TB_SKYZFSD_MEM), '
               'the page cache its files were charged for there, and how many times the cgroup reached its limit, '
               'during the window and since the daemon started, which includes the copy of the pool image and the '
-              'warm-up (counts, not MiB):\n')
+              'warm-up (counts, not MiB). The daemon\'s cgroup columns are read as pgbench returns, the others after '
+              'the sync and the 2 s wait that follow it:\n')
         print('| workload | topology | cgroup total | cgroup file | cgroup anon + shmem | ARC | ARC limit | host page cache | host dirty | buffered loops | daemon resident | daemon cgroup limit | daemon cgroup file | times at the limit in the window | since the daemon started |')
         print('|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|')
         for r, d in md:
@@ -624,6 +633,32 @@ if drows:
                   f"{nf(m.get('skz.VmRSS'), '.0f')} | {nf(m.get('skz.cgroup.max'), '.0f') if 'skz.cgroup.max' in m else ('none' if 'skz.VmRSS' in m else 'n/a')} | "
                   f"{nf(m.get('skz.cgroup.file'), '.0f')} | {nf(m.get('skz.cgroup.events.max.window'), '.0f')} | "
                   f"{nf(m.get('skz.cgroup.events.max.since_start'), '.0f')} |")
+    # Reclaim in the daemon's cgroup over the window (TB_SKYZFSD_MEM).
+    mr = [(r, d) for r, d in md if 'skz.cgroup.stat.pgscan.window' in r['diag']['mem_mb']]
+    if mr:
+        print('\nReclaim in the daemon\'s cgroup over the window: the differences of memory.stat and memory.events read '
+              'before it and right after pgbench returned, per 1000 transactions of the row. `scanned` and `taken` are pages the kernel '
+              'looked at and took back, in all, and of those by the daemon\'s own threads as they charged a page '
+              '(direct; the rest is kswapd); `refaults` are file pages read again soon after they were taken; `at high` '
+              'and `at max` are the times the group reached memory.high and memory.max. The page cache, dirty and under '
+              'write-back are MiB at the end of the window. A row marked "read after the sync" had no look when pgbench '
+              'returned, and its counts also hold the sync and the 2 s after the window:\n')
+        print('| workload | topology | tps | scanned / direct per ktxn | taken / direct per ktxn | refaults per ktxn | '
+              'major faults | at high / at max | file / dirty / writeback MiB |')
+        print('|---|---|---|---|---|---|---|---|---|')
+        for r, d in mr:
+            m = r['diag']['mem_mb']; txn = (r.get('pg', {}).get('xact_commit') or 0) / 1000
+            def w(k):
+                return m.get(f'skz.cgroup.stat.{k}.window')
+            def pk(k):
+                v = w(k)
+                return nf(v / txn if v is not None and txn else None, '.1f')
+            late = ' (read after the sync)' if r['diag'].get('skz_cgroup_look') == 'after the sync' else ''
+            print(f"| {r['workload']} | {label(r)}{late} | {r['tps'] or 0:.0f} | {pk('pgscan')} / {pk('pgscan_direct')} | "
+                  f"{pk('pgsteal')} / {pk('pgsteal_direct')} | {pk('workingset_refault_file')} | "
+                  f"{nf(w('pgmajfault'), '.0f')} | {nf(m.get('skz.cgroup.events.high.window'), '.0f')} / "
+                  f"{nf(m.get('skz.cgroup.events.max.window'), '.0f')} | {nf(m.get('skz.cgroup.file'), '.0f')} / "
+                  f"{nf(m.get('skz.cgroup.file_dirty'), '.1f')} / {nf(m.get('skz.cgroup.file_writeback'), '.1f')} |")
     zd = [(r, d) for r, d in drows if r.get('zfs')]
     if zd:
         MB = 1 << 20
@@ -831,6 +866,8 @@ SKYZFSD_ARGS=${TB_SKYZFSD_ARGS:-}
 SKYZFSD_MEM=${TB_SKYZFSD_MEM:-}
 SYSCALLS=${TB_SYSCALLS:-}
 SYSCALLS_S=${TB_SYSCALLS_S:-20}
+SYSCALLS_SLOW_MS=${TB_SYSCALLS_SLOW_MS:-1}
+[[ $SYSCALLS_SLOW_MS =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "TB_SYSCALLS_SLOW_MS must be a number of milliseconds: $SYSCALLS_SLOW_MS" >&2; exit 64; }
 PERF_RECORD=${TB_PERF_RECORD:-}
 [[ $SYSCALLS_S =~ ^[1-9][0-9]*$ ]] || { echo "TB_SYSCALLS_S must be a number of seconds: $SYSCALLS_S" >&2; exit 64; }
 # A trace or recording longer than the window would take in time after
@@ -1839,8 +1876,11 @@ syscall_trace() {
     sleep $(( DURATION > SYSCALLS_S ? (DURATION - SYSCALLS_S) / 2 : 0 ))
     kill -0 "$SKZ_PID" 2>/dev/null || { log "syscall trace: the daemon is gone"; return 0; }
     for t in /proc/"$SKZ_PID"/task/*; do echo "${t##*/} $(cat "$t/comm" 2>/dev/null)"; done > "$base.threads"
-    if command -v perf >/dev/null && timeout -s INT -k 10 "$SYSCALLS_S" perf trace -s -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
-        || { [ -s "$base.trace" ] && grep -q 'events' "$base.trace"; }; then
+    # -S: the summary of every call by thread, after one line for each
+    # call of SYSCALLS_SLOW_MS or more (--duration), from which
+    # syscalls.py counts the slow ones.
+    if command -v perf >/dev/null && timeout -s INT -k 10 "$SYSCALLS_S" perf trace -S --duration "$SYSCALLS_SLOW_MS" -p "$SKZ_PID" -o "$base.trace" > "$base.trace.err" 2>&1 \
+        || { [ -s "$base.trace" ] && grep -q ' events, ' "$base.trace"; }; then
         tool=perf
     elif command -v strace >/dev/null; then
         timeout -s INT -k 10 "$SYSCALLS_S" strace -f -qq -T -p "$SKZ_PID" -o "$base.trace" 2>> "$base.trace.err" || true
@@ -1848,7 +1888,7 @@ syscall_trace() {
     else
         log "syscall trace: neither perf nor strace is installed"; return 0
     fi
-    python3 "$HERE/syscalls.py" "$tool" "$base.trace" "$base.threads" "$SYSCALLS_S" > "$base.syscalls" \
+    python3 "$HERE/syscalls.py" "$tool" "$base.trace" "$base.threads" "$SYSCALLS_S" "$SYSCALLS_SLOW_MS" > "$base.syscalls" \
         || log "syscall trace: the $tool output could not be read: $(tail -n 3 "$base.trace.err" | tr '\n' ';')"
     log "syscall trace: $tool for ${SYSCALLS_S}s, $(wc -c < "$base.trace") bytes"
 }
@@ -1953,6 +1993,19 @@ work_disk() { # -> the kernel name of the disk under $WORK, or nothing
     [ ! -e "$d/partition" ] || d=$(dirname "$d")
     basename "$d"
 }
+skz_cgroup_mem() { # the daemon's cgroup: what it holds, its limit's events, its reclaim
+    local skzmax
+    [ -n "$SKZ_PID" ] && [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ] || return 0
+    echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
+    skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
+    awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
+    awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
+    # Reclaim in the group, counted in pages since it was made: what was
+    # scanned and taken back, by the writer itself (direct) or by
+    # kswapd, and the file pages read again soon after they were taken
+    # (refaults). Counts, sent as n MiB.
+    awk '$1 ~ /^(pgscan|pgsteal|pgscan_direct|pgsteal_direct|pgscan_kswapd|pgsteal_kswapd|workingset_refault_file|workingset_activate_file|pgmajfault)$/ { printf "mem skz.cgroup.stat.%s %.0f\n", $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.stat"
+}
 pressure_look() { # the pressure stall totals and the cgroups' CPU, and when they were read
     # Pressure stall information: the time some (and, for io and
     # memory, all) runnable tasks waited for the resource, in us: the
@@ -1974,9 +2027,11 @@ pressure_look() { # the pressure stall totals and the cgroups' CPU, and when the
         [ "$cg" = /proc/pressure ] || [ ! -r "$cg/cpu.stat" ] \
             || awk -v p="$pre" '$1 ~ /^(usage_usec|user_usec|system_usec)$/ { print "cgs", p $1, $2 }' "$cg/cpu.stat" 2>/dev/null || true
     done
+    # The daemon's cgroup as the window ends: its reclaim and what it
+    # holds, before the sync after the window adds its own.
+    skz_cgroup_mem
 }
 diag_stats() { # where the time goes: CPU, context switches, postgres's own I/O timers
-    local skzmax
     awk '$1 == "cpu" { print "cpu total", $2, $3, $4, $5, $6, $7, $8, $9 }
          $1 == "ctxt" { print "cpu ctxt", $2 }' /proc/stat
     # CPU ticks by thread name (kernel threads included). A process's
@@ -2037,12 +2092,7 @@ PY
     # (file = the page cache of its home image and log).
     if [ -n "$SKZ_PID" ]; then
         awk '$1 ~ /^(VmRSS|VmLck|RssAnon|RssFile|RssShmem):$/ { sub(":", "", $1); print "mem skz." $1, $2 * 1024 }' "/proc/$SKZ_PID/status" 2>/dev/null || true
-        if [ -n "$SKZ_CGROUP" ] && [ -f "$SKZ_CGROUP/memory.stat" ]; then
-            echo "mem skz.cgroup.current $(cat "$SKZ_CGROUP/memory.current")"
-            skzmax=$(cat "$SKZ_CGROUP/memory.max"); [ "$skzmax" = max ] || echo "mem skz.cgroup.max $skzmax"
-            awk '$1 ~ /^(anon|file|shmem|kernel|file_dirty|file_writeback)$/ { print "mem skz.cgroup." $1, $2 }' "$SKZ_CGROUP/memory.stat"
-            awk '$1 ~ /^(max|high|oom|oom_kill)$/ { print "mem skz.cgroup.events." $1, $2 * 1048576 }' "$SKZ_CGROUP/memory.events" 2>/dev/null || true
-        fi
+        # Its cgroup: through pressure_look, above.
     fi
     losetup --list --noheadings --output NAME,DIO,RO,BACK-FILE 2>/dev/null \
         | awk '{ n = split($4, a, "/"); print "loop", a[n], $2, $3 }' || true
@@ -2406,16 +2456,30 @@ if pe.get('cgs'):
     diag['cgroup_cpu_s'] = {k: (v - eb.get('cgs', {}).get(k, 0)) / 1e6 for k, v in pe['cgs'].items()
                             if k in eb.get('cgs', {})}
 # Memory at the end of the window, MiB, and how the loops are attached.
-if mem[base + '.after']: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in mem[base + '.after'].items()}
+# The daemon's cgroup (skz.cgroup.*) as read right after pgbench
+# returned (the .pressure file), so that the trace's end, the sync and
+# the wait after the window are not counted in its reclaim; the
+# after-look where that look did not read it.
+me = dict(mem[base + '.after'])
+if base + '.pressure' in mem:
+    me.update({k: v for k, v in mem[base + '.pressure'].items() if k.startswith('skz.cgroup.')})
+if me: diag['mem_mb'] = {k: round(v / MB, 1) for k, v in me.items()}
+if any(k.startswith('skz.cgroup.') for k in me):
+    diag['skz_cgroup_look'] = ('pgbench returned' if any(k.startswith('skz.cgroup.') for k in mem.get(base + '.pressure', {}))
+                               else 'after the sync')
 # The cgroup counts the times it reached its limit since it was made,
 # which is before the copy and the warm-up: the window's count is the
-# difference of the two snapshots. (The counts travel as n MiB.)
-for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events.oom', 'skz.cgroup.events.oom_kill'):
-    if ev in mem[base + '.after']:
+# difference of the two looks. (The counts travel as n MiB.)
+for ev in ('skz.cgroup.events.max', 'skz.cgroup.events.high', 'skz.cgroup.events.oom', 'skz.cgroup.events.oom_kill',
+           'skz.cgroup.stat.pgscan', 'skz.cgroup.stat.pgsteal', 'skz.cgroup.stat.pgscan_direct',
+           'skz.cgroup.stat.pgsteal_direct', 'skz.cgroup.stat.pgscan_kswapd', 'skz.cgroup.stat.pgsteal_kswapd',
+           'skz.cgroup.stat.workingset_refault_file', 'skz.cgroup.stat.workingset_activate_file',
+           'skz.cgroup.stat.pgmajfault'):
+    if ev in me:
         m_ = diag['mem_mb']
         m_[ev + '.since_start'] = m_.pop(ev)
         if ev in mem[base + '.before']:
-            m_[ev + '.window'] = round((mem[base + '.after'][ev] - mem[base + '.before'][ev]) / MB, 1)
+            m_[ev + '.window'] = round((me[ev] - mem[base + '.before'][ev]) / MB, 1)
 if loops[base + '.after']: diag['loops'] = loops[base + '.after']
 r['diag'] = diag
 # A row whose daemon was traced or recorded, by its setting: marked even

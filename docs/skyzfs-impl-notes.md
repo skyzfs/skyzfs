@@ -79,6 +79,11 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.3r | skyzfs/skyzfs#43 | A store without a write log, `--store in-place` | The criterion: without the write log |
 | M1.T18 | none yet (the rig's input waits on a branch) | The in-place store in the benchmark and in the power-cut replay | The criterion: without the write log |
 | M1.T19 | none (measurement only) | The confirming round: the two stores with their order swapped, both bounded | The criterion: without the write log |
+| M1.3s | skyzfs/skyzfs#46 | The conformance model's power cut is the volatile-cache disk; the in-place store's failure paths; every start drops the kernel's cache of the home image and checks it is gone | The criterion: without the write log |
+| M1.T20a | skyzfs/skyzfs#44 | The replay rig names the daemon's store (`serve_args`); a pull request's daemon jobs drive `--store in-place` | The criterion: without the write log |
+| M1.T20 | skyzfs/skyzfs#45 | The daemon rig drives the in-place store; rigs and benchmark name the store | The criterion: without the write log |
+| M1.T21a | skyzfs/skyzfs#48 | arm64: the unit job on every pull request, and the package fallback for arm64 images | The ublk transport: arm64 |
+| M1.T22 | skyzfs/skyzfs#49 | Where the bounded row's loss goes: the pump's profile, its system calls and the cgroup's reclaim, in the benchmark | The criterion: where the bounded row's loss goes |
 | M1.T17 | none (measurement only) | The criterion's round on the current daemon | The criterion: the round on the current daemon |
 | M1.T16 | skyzfs/skyzfs#41 | A benchmark job with barriers on the work disk | The criterion: with barriers on |
 
@@ -218,6 +223,21 @@ What the device must do (recovery that reissues, flushes that reach the daemon, 
 - **The override.** `--kernel-has-async-delete`, given to `serve` and to `detach`, says that the driver executes the delete although the release is older: a distribution kernel with the driver backported, or a 6.9.y or 6.10.y that carries the fix. It skips the release check only; the features are still checked. A refused start offers it only when the release is all that is missing. A delete that the driver then answers `ENOTSUPP` is told to the operator as a command the driver does not know.
 - **No fallback and no probe.** There is no fallback to the synchronous delete: it is the one that hangs under a suspended pool, which is the case the asynchronous one exists for. The review suggested probing instead of reading the release: add a device, delete it asynchronously, and see. Not taken: it adds and removes a device at every start, and a daemon killed between the two leaves a device nobody owns. It stays the alternative if release numbers prove a poor guide on distribution kernels.
 - **Evidence.** The rigs run on kernel 7.0 on both images, so the refusals are shown by unit tests on the driver's answers as read in the source (features word, `ENODEV`, `ENOTSUPP`, releases with suffixes), not on an old kernel. No kernel between 6.11 and 7.0 has run the daemon.
+
+#### arm64 (M1.T21)
+
+The owner made arm64 a supported architecture on 2026-11-13 (design goal 8). GitHub's `ubuntu-24.04-arm` and `ubuntu-26.04-arm` images have kernel 7.0, the ublk driver, a ZFS 2.4.1 module and 4 KiB pages; the kernel probe's pins pass on both. On 24.04-arm the ZFS commands are 2.2.2 beside the 2.4.1 module, as on the amd64 image. Their work disk is the root file system on a virtual disk that declares `write through`, ext4 mounted `nobarrier,data=writeback`: a sync costs nearly nothing there, so throughput figures from them will not compare with amd64's.
+
+What ran, one run per image, all on 4 KiB pages:
+
+| What | Run | Result |
+|---|---|---|
+| clippy and the tests, plain and with both features | 43356202495 | green; no failure particular to arm64; 12:52 from a cold cache |
+| The control rig | 43360550486 (24.04-arm), 43361103760 (26.04-arm) | every line as in the table; 2:54 and 2:27 |
+| The power-cut replay through `skyzfsd`, in place, pull-request budget | 43360579677 | exit 0 on both; 128 of 425 and 128 of 418 prefixes, 89 of 89 sampled flush boundaries on each, both controls caught |
+| The daemon rig, in place, daemon and stand-in | 43365073643 | every pin and control as in the table on both servers and both images; the review compared the judge's 78 rows with the amd64 images' row by row |
+
+The take-overs of the in-place store were slower on the arm runners: 10 and 13 of 20 above one second, against 2 and 0 of 20 on amd64 (run 43359257961: 264 to 1572 ms on 24.04, 281 to 288 ms on 26.04). The daemon's own line puts the time in the start's recovery, which on this store is the start's sync and cache drop on that runner's disk. Not shown on arm64: the full-budget replay, the throughput rule, and anything on a kernel with larger pages.
 
 #### Evidence from the rigs
 
@@ -654,6 +674,32 @@ For this store the rig's prefixes follow the kernel's writeback order and not th
 - *The cut as a position in the log, and the cut's blocks kept until uploaded (design §5.2, §5.3).* A cut needs the set of blocks changed since the cut before, frozen at the first flush after the uberblock write, and their content kept against later overwrites until uploaded. The log gave the first for nothing. Without it the daemon needs a map of changed blocks that survives the daemon's death, and a copy made before a block of a pending cut is overwritten. Neither is designed.
 - *The ordered stream of M9.* Needs an ordered record of the log device only, which is small.
 
+#### Where the bounded row's loss goes (M1.T22)
+
+The in-place store under a 1 GiB bound on the daemon's memory group stayed under the rule on slow-sync machines (0.873 over four rows, above). M1.T22 added the pump thread's profile, its system calls and the group's reclaim counters to the benchmark and ran the bounded row with them. Six jobs, each one machine for all its rows, the daemon at `zfs-topology`'s head of the day with `--store in-place`, origin delay 0; a traced or recorded row counts for no ratio.
+
+| Job | Machine | Unbounded | 1 GiB | Bracket |
+|---|---|---|---|---|
+| 43357382135 | slow-sync (157 MiB/s) | not run | 0.804, no verdict | 15.9% |
+| 43357385356 | fast-sync (3001 MiB/s), a kind not seen before, about 7500 tps | not run | 0.936 | 1.4% |
+| 43361592308 | fast-sync (2845 MiB/s) | 1.022 | 0.986 | 1.8% |
+| 43361598539 | slow-sync (164 MiB/s) | 0.971 | 0.886 | 7.1% |
+| 43367906399 | fast-sync (2780 MiB/s), the same new kind | 1.018 | 0.928 | 0.4% |
+
+**The pump reads the image itself and waits for each read.** On the in-place store only the pump's thread calls `pread64`, about 0.6 times a transaction. Its cost with and without the bound, on the three jobs that traced both (microseconds a call, and the pump's seconds in `pread64` per second):
+
+| Job | Unbounded | 1 GiB |
+|---|---|---|
+| 43361592308 (fast) | 23 µs, 0.05 s/s | 172 µs, 0.31 s/s |
+| 43361598539 (slow) | 6.5 µs, 0.02 s/s | 131 µs, 0.39 s/s |
+| 43367906399 (fast) | 4.0 µs, 0.02 s/s | 99 µs, 0.39 s/s |
+
+The first pair, bounded only: 292 µs a call on the slow-sync machine and 92 µs on the fast one. Under the bound the pump's time in `io_uring_enter` falls by about what its time in `pread64` grows. The syncing thread's `fdatasync` took 145 ms a call on the slow-sync machine and 0.39 ms on the fast one.
+
+**Reclaim itself is a small part of the pump's CPU.** Of the pump's kernel samples in the bounded recorded rows (999 Hz, 20 s; 1682 and 5482 samples, 84% and 82% in the kernel): page cache 42% and 44%, wake and switch 14%, page reclaim 6.0% and 6.3%, the memory group 2.6% and 4.1%, write-back from a write 0. All the reclaim is direct, on the daemon's own threads; the group hit its limit ten to twenty-eight thousand times in a 120 s window, and 0.3 to 0.6 file pages a transaction were refaults, pages evicted and read back soon after. Without the bound all of these are 0. The reclaim counts of these runs were read some seconds after the window's end and may be somewhat high; the tooling was corrected afterwards (skyzfs/skyzfs#49).
+
+**Reading.** Under the bound the group evicts pages of the home image that the pump then reads back, and each such read stops the pump. The slowdown of the reads shows on every machine; the ratio falls under 0.90 only on the slow-sync ones, two jobs, one of them without a verdict. Direct I/O on the image would end the eviction and make every read of the pump a disk read on that same thread, so the candidate that follows from the figures is reads off the pump's thread. An experiment build with them (four reader threads, buffered I/O) is being measured beside the current daemon (M1.T22b); its first three jobs fell on fast-sync machines and do not count.
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -685,11 +731,12 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - **So the hosted runners cannot say what a flush costs on real flash**, with barriers or without. That measurement needs a machine with a local flash device (design §10). A comparison with and without barriers on one runner was not ordered: it would price a flush that costs nothing.
 - The ratios, 0.916 and 0.949 unbounded and 0.897 and 0.861 at 1 GiB, are in the range of the rows before them. They are not added to the criterion's medians, because the mount differs from those rows'.
 
-#### Open at this writing (2026-11-12)
+#### Open at this writing (2026-11-13)
 
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
-- arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the test matrix on GitHub's arm64 runners (M1.T21) and an audit of the code for the architecture and the page size (M1.3v). Nothing has run on arm64 yet.
+- arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
+- The bounded row on slow-sync machines: the loss is the pump's own reads of evicted pages (M1.T22); reads off the pump's thread are being measured (M1.T22b).
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
 - No row on a fast-sync machine has been judged by the rule. A job cannot ask for one; it takes rounds until one falls to us.
 - Whether the criterion should be judged on fast-sync machines is the user's decision.
@@ -758,6 +805,12 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-12 | The replay rig's follow-up (M1.T14a, skyzfs/skyzfs#42); three looks by the review session and one finding by Codex | Can merge; nothing blocking. Fixed on the way: a command that could not start was blamed on the daemon, and the `stuck` row did not show that the limit ended the read. The control closes what the review of M1.T14 could only read in the kernel's source. Kept: two pool commands without a limit. |
 | 2026-11-13 | The in-place store (M1.3r, skyzfs/skyzfs#43); three looks by the review session and two findings by Codex | Can merge as a step towards removing the log store. The review ran the suite with faults that tear: two failure cases that the harness's clean halt let pass fail on this store, so they are reported as not met, with a test that pins exactly those two. Found by Codex and the review, owed and not fixed: after a switch back to the log store a flush does not cover what the in-place store had acknowledged; it goes away with the log store, and blocks again if the removal is dropped or a release comes first. Owed for the removal: the store's own sync at a start is then the only one and a test must fail without it; a job on a pull request must drive this store; the failure marker is written on the queue's thread. |
 | 2026-11-13 | Decision D5 in the design: the contract's volatile-cache disk, the in-place store and the cut without a log (design §4.1, §5.1, §5.2, §5.3, §5.5), by the review session, checked against OpenZFS 2.4.1 (skyzfs/skyzfs#2) | Holds up: no counterexample to the cut as an instant, and the volatile-cache disk is enough for ZFS. Eight findings, all taken up. What the log gave for nothing has to be rules for the store, and four were missing: the record of what was copied aside, the frozen maps and the list of pending cuts must outlive the daemon as the map does; an abandoned cut's map goes to the next cut; an intent bit is cleared only after the cut that carries the region is committed; the mapped state is trusted only in the boot that wrote it and if no sync of it failed. M2's exit criterion now exercises the losses that could cost a cut a block. Also: the rule on when a cut may leave the machine reworded so that an idle pool does not wait; the take-over time said only for what was measured; the log's check of what was acknowledged taken out of §4.2; repairs and half-applied writes stated correctly; when ZFS's deferral of reuse does not hold. |
+| 2026-11-13 | The replay rig names the store (M1.T20a, skyzfs/skyzfs#44), by the review session | Can merge; nothing blocking. |
+| 2026-11-13 | The daemon rig on the in-place store (M1.T20, skyzfs/skyzfs#45); three looks by the review session | Can merge; nothing blocking. Two findings fixed on the way: a check dropped its whole kill run with a delay for this store, and three kept pins could not fail on it. The lead ran the pull request's judge over the four daemon artifacts of runs 43359257961 (in place) and 43359260246 (the log store, by dispatch): no difference from the table in any; 13 NA lines in place. Noted by the review: the rig's failed-volume pin makes its failure without failing a sync, so it cannot see a start that serves what only the cache held (M1.T23 is to add that). |
+| 2026-11-13 | arm64 unit job and package fallback (M1.T21a, skyzfs/skyzfs#48); three looks by the review session and one finding by Codex | Can merge; nothing blocking. Found by the author: the fallback mirror has no arm64 packages, so the fallback would have broken apt on arm64; arm64 images now fall back to a mirror of `ubuntu-ports`. Taken from the review: the job every pull request gets runs on `ubuntu-26.04-arm`, where the fallback works; `ubuntu-24.04-arm` has no mirror list and says so. Codex: the canary failed on the image with no mirror list; fixed. |
+| 2026-11-13 | The profile's tooling (M1.T22, skyzfs/skyzfs#49); four looks by the review session and one finding by Codex | Can merge; nothing blocking. Corrected on the way, and the figures in these notes are the corrected ones: the profile's "page reclaim" kind had also counted refault handling (8% became 6.3% in one recording). Codex: the cgroup's reclaim counters were read after the sync and a wait that follow the window, not when pgbench returned; fixed, and the counts from runs before the fix are marked as possibly high. |
+| 2026-11-13 | Three findings by Codex on the design (skyzfs/skyzfs#2): a clone's mounts, the snapshot's state in a restore, and publication after a rewind | All three right and taken up: a clone is imported with `-N` and a root of its own; its datasets are rolled back to the snapshot before anything is mounted, and browsing exposes the snapshots themselves (§5.4); a snapshot is published by the first cut counted after the snapshot was asked for (§5.2). M2's and M3's criteria test them. |
+| 2026-11-13 | The model's power cut and the in-place store's failure paths (M1.3s, skyzfs/skyzfs#46); four looks by the review session, and findings by Codex | Can merge. Blocking at the first look: after a failed sync a later start could serve what only the kernel's cache held. The lead first ruled that a failed volume is refused in the boot of its failure; the author's fix replaced that, since it also covers a daemon that died between the failed sync and its marker: every start syncs the image, drops the kernel's cache of it and checks with `cachestat` that it is gone, and refuses otherwise (design §4.1). Blocking at the second look: through an overlay file system the count reads 0 whatever the cache holds; the start now looks that the count can see the file and refuses, by reason and not by name, where it cannot. Blocking at the third look, made by that fix: the look ran before the drop, its read-ahead kept pages, and a pool's volume was refused in 731 of 1500 starts on ext4 (the replay rig on 26.04 went red on it); with the look after the drop 0 of 1500. Also: the model keeps a discard's freedom; the failure note is written before the marker; a real-file test that is skipped fails where `CI` is set. Not seen and noted: a start whose drop falls within another reader's disk read of the image would refuse. The lead ran the pull request's judge over both daemon artifacts of run 43372945297: no difference from the table. |
 
 ## References
 
