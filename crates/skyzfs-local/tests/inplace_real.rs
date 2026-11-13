@@ -28,7 +28,7 @@ use skyzfs_blk::{Base, BlockTarget, Buf, Completion, Op, Request, RequestId};
 use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::InPlace;
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -229,7 +229,10 @@ fn the_in_place_store_round_trips_on_real_files() {
 /// boot block). A read of such a block is answered at once while the
 /// kernel's read-ahead of the blocks after it is still under I/O, and a
 /// drop leaves pages under I/O; a start that read a block just before
-/// its drop could find them still there and refuse.
+/// its drop could find them still there and refuse. The image's cache
+/// is dropped before each start, as after a boot: otherwise what one
+/// start leaves in the cache would answer the next one's reads without
+/// a read-ahead, and a read before the drop would go unnoticed.
 #[test]
 fn every_start_serves_where_the_image_begins_with_a_hole() {
     let tmp = tempfile::tempdir().unwrap();
@@ -241,7 +244,9 @@ fn every_start_serves_where_the_image_begins_with_a_hole() {
     write(&mut store, 2, Buf::filled(2, 0x22));
     flush(&mut store);
     drop(store);
+    let home = std::fs::File::open(tmp.path().join(HOME_NAME)).unwrap();
     for n in 0..200 {
+        rustix::fs::fadvise(&home, 0, None, rustix::fs::Advice::DontNeed).unwrap();
         let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
         if let Err(e) = store.into_in_place(None) {
             panic!("start {n} refused: {e}");
