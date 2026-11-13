@@ -177,15 +177,28 @@ pub trait Queue {
     /// then returns `Ok` or `Err`. The pump counts them
     /// ([`Counters::commands_aborted`], [`Counters::commands_failed`])
     /// and does nothing else about them. An abort is the queue being
-    /// stopped. Any other result is a command the driver refused when
-    /// it was submitted: no command is outstanding on that tag
-    /// afterwards, so no request comes on it again until the queue
-    /// stops. A refused commit completed nothing. Either the tag held
-    /// no request in the server's hands (a commit for nothing), or the
-    /// commit was malformed and the driver still counts its request as
-    /// the server's, unanswered. Whether that should fail the volume,
-    /// or the commit be made again, is not decided; the count and the
-    /// request log show it.
+    /// stopped. Any other result is a command that took no effect: one
+    /// the driver refused when it was submitted, or one io_uring could
+    /// not hand to the driver at all (a bad descriptor or address). A
+    /// refused commit completed nothing, and its tag is then in one of
+    /// two states, which the result does not tell apart (`-EINVAL`
+    /// comes of either kind on every release the daemon runs on):
+    ///
+    /// - **The tag held no request in the server's hands**: a second
+    ///   commit of one tag, or a commit of a tag that was never given a
+    ///   request. The commit was for nothing. A command that waits on
+    ///   the tag still waits, and requests come on it as before.
+    /// - **The commit was malformed**: no buffer for a read, the wrong
+    ///   thread, the wrong code, a tag out of range. The driver still
+    ///   counts the request as the server's, unanswered, and no command
+    ///   waits on the tag, so nothing comes on it again until the queue
+    ///   stops.
+    ///
+    /// A count of 0 does not show that no commit was sent twice: a
+    /// second commit that arrives after the tag's next request was
+    /// handed over is taken, and answers that request with the stale
+    /// result. What the daemon should do about a refusal is not decided
+    /// here (M1.3ac); the count and the request log show it.
     fn wait(
         &mut self,
         fetched: &mut Vec<Fetched>,
@@ -311,8 +324,9 @@ pub struct Counters {
     /// Commands the driver ended with its abort ([`ABORTED`]): the queue
     /// is being stopped. Each tag's last command ends so.
     pub commands_aborted: u64,
-    /// Commands the driver ended with any other result than OK: a
-    /// commit or a fetch it refused (see [`Queue::wait`]).
+    /// Commands that ended with any other result than OK: a commit or a
+    /// fetch the driver refused, or one io_uring could not hand to the
+    /// driver (see [`Queue::wait`]). None of them took effect.
     pub commands_failed: u64,
     /// The result of the last command counted in
     /// [`Counters::commands_failed`]; 0 before the first.
