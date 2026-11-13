@@ -34,6 +34,11 @@
 #   d  a failed volume: what ZFS does, and what the server refuses after
 #   e  one request held RIG_HOLD_S seconds (default 300)
 # RIG_SERVE_ARGS: options added to every serve.
+# RIG_STORE: the daemon's store, log or in-place (default log). It is
+#   always named on the daemon's serves (--store), never left to the
+#   daemon's default. With in-place, the pins and controls that rest on
+#   the log store are not taken: the rig writes NA and why, and the
+#   judge's table NOT_FOR_IN_PLACE has the same names.
 #   c  the conformance suite of skyzfs-blk through the block device:
 #      RIG_BLKCHECK is a built skyzfs-blkcheck, which drives the server
 #      through tests/kernel/blkcheck-helper.sh. RIG_C_CASES and
@@ -87,6 +92,18 @@ KILLS=${RIG_KILLS:-20}
 HOLD_S=${RIG_HOLD_S:-300}
 # Options for every serve, split at spaces: for the daemon on a runner,
 # "--unsafe-allow-unlocked-memory --unsafe-allow-any-filesystem".
+STORE=""
+if [ "$IMPL" = daemon ]; then
+    STORE=${RIG_STORE:-log}
+    case $STORE in log|in-place) ;; *) echo "RIG_STORE: '$STORE' is not a store; the stores are log and in-place" >&2; exit 64 ;; esac
+    # On every serve, the stand-in's controls too: it takes the option
+    # and has one store whatever the name (a file written in place).
+    RIG_SERVE_ARGS="--store $STORE${RIG_SERVE_ARGS:+ $RIG_SERVE_ARGS}"
+elif [ -n "${RIG_STORE:-}" ]; then
+    echo "RIG_STORE is for the daemon; the stand-in has one store" >&2; exit 64
+fi
+# A pin or control that rests on the log store, with --store in-place.
+in_place() { [ "$STORE" = in-place ]; }
 read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
 RUN_DIR=$WORK/run            # the server's --run-dir, so that a test can empty it
 VOL_BYTES=$((8 << 30))
@@ -228,7 +245,14 @@ vol_status() { lim 30 "$1" status --dir "$2" "${VOL_RUN_ARGS[@]}" 2>/dev/null; }
 # position could not be stored) is 0 in a healthy run. Counters are
 # since the instance started, so this reads the instance serving now.
 pin_unstored() {
-    local v; v=$(vol_stat "$SKYZFSD" "$2" unstored)
+    local v
+    # The in-place store reports no acknowledged position, so the daemon
+    # stores none and the count cannot be anything but 0.
+    if in_place; then
+        pin "unstored_zero_$1" NA "the in-place store has no acknowledged position to store, so no completion can wait for one"
+        return
+    fi
+    v=$(vol_stat "$SKYZFSD" "$2" unstored)
     case $v in
         0) pin "unstored_zero_$1" PASS "status says unstored 0 at the end of the check" ;;
         '') pin "unstored_zero_$1" ERROR "status gave no unstored" ;;
@@ -351,6 +375,7 @@ trap cleanup EXIT
 # ------------------------------------------------------------ setup
 step "setup"
 rec impl "$IMPL: $SKYZFSD"
+rec store "${STORE:-none: the stand-in has one store, a file it writes in place}"
 rec kernel "$(uname -r)"
 # The kernel reports a blocked task only so many times per boot (ten by
 # default) and then says nothing more: with the limit spent, a log
@@ -1288,6 +1313,7 @@ zero_arm() {
     kill_cleanup "$tag"
 }
 check_a_zeroes() {
+    if in_place; then pin write_zeroes_through_a_checkpoint NA "the in-place store takes no checkpoint, and refuses --refuse-holes"; return; fi
     local plain hard bad=""
     step "a: a write of zeros through a checkpoint"
     if [ "$IMPL" = reference ]; then
@@ -1537,10 +1563,10 @@ check_b_stop_under_load() {
     st=$(pool_state "$pool")
     fails=$(grep -c . "$OUT/b7-writer.log")
     files=$(lim 120 files_match "$WORK/mnt/$pool" "$WORK/b7.record" 2>&1 | tail -n 1)
-    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i$([ $i = 0 ] || echo " (THE SERVER DID NOT COME BACK: serve exit ${SERVE_RC:-none})"), recovered_unacknowledged '${rec:-not said}'; ${stuck}the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: ${files:-not read in 120 s}"
+    a="the server had counted ${w0:-?} then ${w1:-?} writes just before SIGTERM; serve exit $rc; serve again rc $i$([ $i = 0 ] || echo " (THE SERVER DID NOT COME BACK: serve exit ${SERVE_RC:-none})"), $(if in_place; then echo "recovered_unacknowledged not judged (the in-place store keeps no record of what it applied)"; else echo "recovered_unacknowledged '${rec:-not said}'"; fi); ${stuck}the writer's failed writes: $fails; pool $st, $(pool_errors "$pool"); files: ${files:-not read in 120 s}"
     if ! { [[ ${w0:-} =~ ^[0-9]+$ ]] && [[ ${w1:-} =~ ^[0-9]+$ ]] && [ "$w1" -gt "$w0" ]; }; then
         pin orderly_stop_under_load ERROR "the stop did not find the writer at work: $a"
-    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ -z "$stuck" ] && [ "$rec" = 0 ] && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
+    elif [ "$rc" = 0 ] && [ $i = 0 ] && [ -z "$stuck" ] && { [ "$rec" = 0 ] || in_place; } && [ "$fails" = 0 ] && [ "$st" = ONLINE ] && [[ $files == ok\ * ]]; then
         pin orderly_stop_under_load PASS "$a"
     elif [ "$rc" != 0 ]; then
         pin orderly_stop_under_load FAIL "serve ended with $rc on SIGTERM under plain load (wanted 0): $a; its log's end: $(tail -n 2 "$dir.serve.log" | tr '\n' ';' | cut -c1-300)"
@@ -1571,6 +1597,7 @@ check_b_steps() {
     local landed=0 said="" err="" state vdev scrub files fw why=""
     local -a pts=(saved written synced start-written start-durable saved written synced start-written start-durable)
     if [ "$IMPL" != daemon ]; then pin kills_inside_steps_lose_nothing WAITING "the stand-in has no checkpoint"; return; fi
+    if in_place; then pin kills_inside_steps_lose_nothing NA "the in-place store takes no checkpoint step, and refuses the --step-pause-* hooks"; return; fi
     step "b: kill -9 while a checkpoint step waits, at each of its five points, twice"
     unlink "$p" 2>/dev/null; unlink "$p.reached" 2>/dev/null
     if ! vol_up "$SKYZFSD" "$dir" --step-pause-until "$p" --step-pause-at "${pts[0]}"; then
@@ -1711,6 +1738,17 @@ check_b_delay() {
     kill_test "$SKYZFSD" bd "$kills"
     KT_SERVE_EXTRA=()
     kill_verdict; v=$KT_VERDICT
+    # The in-place store keeps no record of what it applied, so a new
+    # server cannot count writes applied and not acknowledged. The kills
+    # still land, by the delay, between a write's apply and its
+    # acknowledgement, where the kernel must issue the write again: the
+    # pin is judged as pin_kill_under_load is, without the count.
+    if in_place; then
+        pin kill_under_load_applied_unacknowledged "$v" "${KT_WHY:-writes were in flight just before $KT_INFLIGHT of $KT_DONE kills, each write acknowledged $ms ms after it was applied: no application write failed, no error on the vdev, scrub clean, $KT_FILES}; not counted: the in-place store keeps no record of what it applied"
+        ctl delay_before_apply NA "the control of the count of writes applied and not acknowledged, which the in-place store cannot take"
+        kill_cleanup bd
+        return
+    fi
     why="${KT_WHY:-no application write failed, no error on the vdev, scrub clean, $KT_FILES}; the servers found $KT_RECOVERED requests applied and not acknowledged over $KT_DONE take-overs ($KT_RECOVERED_UNSAID did not say)"
     if [ "$v" = PASS ] && { [ "$KT_RECOVERED" = 0 ] || [ "$KT_RECOVERED_UNSAID" != 0 ]; }; then v=ERROR; fi
     pin kill_under_load_applied_unacknowledged "$v" "$why"
@@ -1756,7 +1794,10 @@ check_b() {
     # rig's clock above: start_ms is the daemon's start until the
     # device served, the rest of a take-over is before and after it.
     obs b_takeover_starts "per take-over, in order, ms from the kill to the new serve's launch + from the launch to its ready line : the daemon's own start_ms : replayed_bytes: ${KT_STARTS:-none}"
-    if [ "$IMPL" = daemon ]; then
+    if in_place; then
+        pin takeover_time_does_not_grow NA "the in-place store has no log to replay, whose length the pin bounds; the take-over times are still observed (obs_b_takeover_ms)"
+        pin log_stays_below_high_mark NA "the in-place store has no log"
+    elif [ "$IMPL" = daemon ]; then
         takeover_pin "$KT_MS"
         log_bound_pin b
     else
@@ -1767,7 +1808,9 @@ check_b() {
     # that a kill left whole. Kills around a change of log segment and
     # right after a checkpoint are the daemon's to arrange; here every
     # kill is at a random moment under load.
-    if [ "$KT_REFUSED" -gt 0 ]; then
+    if in_place; then
+        pin serve_after_kill_accepts_log NA "the in-place store has no log, and a start checks nothing against what was acknowledged"
+    elif [ "$KT_REFUSED" -gt 0 ]; then
         pin serve_after_kill_accepts_log FAIL "$KT_REFUSED serve(s) after a kill exited $EXIT_REFUSED_FAILED: the volume was refused as failed"
     elif [ "$KT_DONE" -ge 1 ]; then
         pin serve_after_kill_accepts_log PASS "none of $KT_DONE serves after a kill was refused"
@@ -2382,14 +2425,16 @@ check_c_delay() {
     obs c_delay_kills "${n_live:-0} kills of a live server with a commit delay of $ms ms: ${n_at_death:-0} calls of the tool (reads and writes) were in flight at a death; the next server found ${found:-?} requests applied and not acknowledged over ${asked:-0} take-overs. The two count different things: a call may reach the server as several requests, and a read is never counted by the server. The whole pass took $(( $(date +%s) - t0 )) s"
     if [ $rc != 0 ]; then
         pin c_delay_cases ERROR "skyzfs-blkcheck exit $rc with the delay: $(tail -n 1 "$OUT/cd-blkcheck.err"). Whether the tool stopped or the server never answered a call: cd-trace.tsv.gz in the run's artifact, through \`skyzfs-blkcheck --replay\`"
-        pin c_kill_with_applied_unacknowledged ERROR "the pass with the delay did not end"
+        if in_place; then pin c_kill_with_applied_unacknowledged NA "the in-place store keeps no record of what it applied"; else pin c_kill_with_applied_unacknowledged ERROR "the pass with the delay did not end"; fi
         return
     fi
-    case ${found:-?} in
+    if in_place; then
+        pin c_kill_with_applied_unacknowledged NA "the in-place store keeps no record of what it applied, so a new server finds nothing applied and not acknowledged"
+    else case ${found:-?} in
         '?') pin c_kill_with_applied_unacknowledged ERROR "a take-over did not say what it found (status key recovered_unacknowledged) at ${asked:-0} take-overs" ;;
         0) pin c_kill_with_applied_unacknowledged ERROR "no server found a write applied and not acknowledged over ${asked:-0} take-overs: the delay did nothing, and the kill cases did not see a write applied twice" ;;
         *) pin c_kill_with_applied_unacknowledged PASS "$found requests were applied and not acknowledged at a server's death and issued again, over ${asked} take-overs" ;;
-    esac
+    esac; fi
     # Every case as in the pass without the delay.
     differ=$(join -t $'\t' -j 1 \
         <(awk -F'\t' '$1 == "case" { print $2 "\t" $3 }' "$OUT/c-cases.tsv" | sort) \
@@ -2456,6 +2501,11 @@ check_c_low() {
     local tool=${RIG_BLKCHECK:-} work=$WORK/cl rc t0 differ n sampler steps vols under most counts
     local -a can=(--can fail-log)
     if [ "$IMPL" != daemon ]; then pin c_suite_with_low_marks WAITING "the stand-in has no log and no checkpoint"; return; fi
+    if in_place; then
+        pin c_suite_with_low_marks NA "the in-place store has no log to fill to its high mark and takes no checkpoint step"
+        obs c_low_steps "not taken with the in-place store: no log, no step"
+        return
+    fi
     if [ "${C_RC:-1}" != 0 ]; then pin c_suite_with_low_marks ERROR "not run: the first pass of the suite did not end"; return; fi
     step "c: the suite again, with checkpoint steps between the calls of each case (each volume's log filled to just below the high mark first)"
     mkdir -p "$work"; : > "$WORK/cl.samples"
@@ -2550,6 +2600,9 @@ case $CHECKS in *" b "*)
     if [ "$IMPL" = reference ]; then
         ctl recovered_log_too_short WAITING "the stand-in has no log whose recovery could come out short"
         ctl recovered_log_too_short_no_log_device WAITING "the stand-in has no log whose recovery could come out short"
+    elif in_place; then
+        ctl recovered_log_too_short NA "the in-place store has no log whose recovery could come out short"
+        ctl recovered_log_too_short_no_log_device NA "the in-place store has no log whose recovery could come out short"
     else
         check_b_short
     fi ;;
@@ -2560,6 +2613,9 @@ esac
 case $CHECKS in *" f "*)
     if [ "$IMPL" = reference ]; then
         ctl f_starts_refused WAITING "the stand-in has no log whose recovery could come out short"
+    elif in_place; then
+        ctl f_starts_refused NA "the in-place store has no log whose recovery could come out short, so no start is refused"
+        for c in $F_ALL; do obs "f_refused_start_$c" "not taken with the in-place store: no start is refused"; done
     else
         check_f
     fi ;;

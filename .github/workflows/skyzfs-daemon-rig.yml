@@ -20,6 +20,11 @@ name: skyzfs-daemon-rig
 #     rig's files therefore runs both.
 #   - by dispatch: the input `server` (daemon, stand-in or both).
 #   - a push that changes this file on a testing branch: the stand-in.
+# Which store the daemon serves from (`--store`, always named): on a
+# pull request the in-place store, the one that changes; by dispatch the
+# input `store`, in-place unless it says log. The log store's code is
+# frozen until it is removed (M1.T20), and with the in-place store the
+# pins that rest on the log are NA (`NOT_FOR_IN_PLACE` in the judge).
 # The summary says for every pin what it rests on.
 on:
   workflow_dispatch:
@@ -44,6 +49,11 @@ on:
         type: choice
         options: [daemon, stand-in, both]
         default: daemon
+      store:
+        description: "the daemon's store: in-place, or log (frozen until it is removed; its checkpoint pins are taken only with it)"
+        type: choice
+        options: [in-place, log]
+        default: in-place
   # A workflow that has never run cannot be dispatched from a branch.
   # A push that changes this file runs it once on the testing branch.
   push:
@@ -160,7 +170,10 @@ jobs:
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
           SERVER: ${{ matrix.server }}
+          STORE: ${{ github.event_name == 'workflow_dispatch' && inputs.store || 'in-place' }}
         run: |
+          case $STORE in in-place|log) ;; *) echo "::error::store is in-place or log: '$STORE'"; exit 64 ;; esac
+          [ "$SERVER" != daemon ] || echo "The daemon's store: \`--store $STORE\`." >> "$GITHUB_STEP_SUMMARY"
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
           [[ $CHECKS =~ ^[abcdef](\ [abcdef])*$ ]] || { echo "::error::checks are letters of a b c d e f with a space between: '$CHECKS'"; exit 64; }
@@ -190,6 +203,7 @@ jobs:
             # override until a run shows that one is needed.
             if [ "$SERVER" = daemon ]; then
               printf 'export RIG_SKYZFSD=%q\n' "$PWD/target/release/skyzfsd"
+              printf 'export RIG_STORE=%q\n' "$STORE"
             fi
           } > "$RUNNER_TEMP/rig.env"
           echo "CHECKS=$CHECKS" >> "$GITHUB_ENV"
