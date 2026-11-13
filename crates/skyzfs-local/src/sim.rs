@@ -480,6 +480,14 @@ struct State {
     direct_align: Option<DirectAlign>,
     /// What a write rewrites as a whole, in bytes.
     write_unit: u64,
+    /// How many of the next direct reads and writes wait, before they
+    /// do anything, until [`SimDisk::release_direct_io`].
+    direct_holds: u64,
+    /// Releases of held direct I/O so far: a held call waits until it
+    /// changes.
+    direct_releases: u64,
+    /// The direct read or write after this many more panics.
+    direct_panic: Option<u64>,
     stats: Stats,
 }
 
@@ -646,6 +654,9 @@ impl SimDisk {
                     offset: SECTOR as u32,
                 }),
                 write_unit: SECTOR,
+                direct_holds: 0,
+                direct_releases: 0,
+                direct_panic: None,
                 stats: Stats::default(),
             })),
             released: Arc::new(Condvar::new()),
@@ -895,6 +906,29 @@ impl SimDisk {
     /// direct I/O, and it is unsupported.
     pub fn set_direct_align(&self, align: Option<DirectAlign>) {
         self.lock().direct_align = align;
+    }
+
+    /// The next `calls` direct reads and writes wait, before they do
+    /// anything, until [`SimDisk::release_direct_io`] or until the
+    /// process is gone; each counts in [`SimDisk::held_waiters`] while
+    /// it waits. Later calls go on.
+    pub fn hold_direct_io(&self, calls: u64) {
+        self.lock().direct_holds = calls;
+    }
+
+    /// Let the held direct reads and writes go on, and hold no more.
+    pub fn release_direct_io(&self) {
+        let mut state = self.lock();
+        state.direct_holds = 0;
+        state.direct_releases += 1;
+        drop(state);
+        self.released.notify_all();
+    }
+
+    /// The direct read or write after the next `after` panics, before it
+    /// does anything, as a bug in the call would.
+    pub fn panic_in_direct_io(&self, after: u64) {
+        self.lock().direct_panic = Some(after);
     }
 
     /// Whether [`File::cached_pages`] answers (it does at first) or is
@@ -1295,6 +1329,9 @@ impl SimFile {
 
     /// A write through the cache, or by direct I/O past it.
     fn write(&self, offset: u64, data: &[u8], how: Through) -> io::Result<()> {
+        if how == Through::Direct {
+            self.direct_gate();
+        }
         let mut guard = self.disk.lock();
         let state = &mut *guard;
         self.check(state)?;
@@ -1425,7 +1462,43 @@ fn gone() -> io::Error {
 }
 
 impl SimFile {
+    /// Where a direct read or write begins: it waits while held
+    /// ([`SimDisk::hold_direct_io`]), and panics where asked
+    /// ([`SimDisk::panic_in_direct_io`]), outside the disk's lock.
+    fn direct_gate(&self) {
+        let disk = &self.disk;
+        let mut guard = disk.lock();
+        if guard.direct_holds > 0 {
+            guard.direct_holds -= 1;
+            let release = guard.direct_releases;
+            guard.held_waiting += 1;
+            while guard.direct_releases == release && guard.generation == self.generation {
+                guard = disk
+                    .released
+                    .wait(guard)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+            guard.held_waiting -= 1;
+        }
+        let panics = match &mut guard.direct_panic {
+            Some(0) => {
+                guard.direct_panic = None;
+                true
+            }
+            Some(left) => {
+                *left -= 1;
+                false
+            }
+            None => false,
+        };
+        drop(guard);
+        assert!(!panics, "injected panic in direct I/O");
+    }
+
     fn read(&self, offset: u64, buf: &mut [u8], how: Through) -> io::Result<()> {
+        if how == Through::Direct {
+            self.direct_gate();
+        }
         let mut state = self.disk.lock();
         self.check(&state)?;
         if how == Through::Device && !state.device_reads {

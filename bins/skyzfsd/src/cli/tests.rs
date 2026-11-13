@@ -329,37 +329,41 @@ fn serve_takes_the_store() {
     }
 }
 
-/// The experiment's options: `--direct-io` and `--io-threads N` (0 to
-/// 64, 0 unless given) with the in-place store only, and
-/// `create --zero-fill`.
+/// The in-place store's I/O: direct, on 8 threads unless `--io-threads
+/// N` (1 to 64) says otherwise, with the in-place store only; there is
+/// no option for buffered I/O, and `--direct-io` (the experiment's) is
+/// gone. `create --zero-fill` stays.
 #[test]
-fn the_direct_io_experiment_has_its_options() {
+fn the_in_place_store_does_direct_io_on_its_threads() {
     use skyzfs_local::inplace::IoMode;
-    assert_eq!(
-        serve("serve --dir /v/a --store in-place").in_place_io,
-        IoMode::default()
-    );
-    assert_eq!(
-        serve("serve --dir /v/a --store in-place --direct-io --io-threads 8").in_place_io,
-        IoMode {
-            direct: true,
-            threads: 8
-        }
-    );
-    for log_store in ["--direct-io", "--io-threads 4"] {
-        assert_eq!(
-            plain(&format!("serve --dir /v/a {log_store}")),
-            Err(UsageError::Value(
-                log_store.split(' ').next().unwrap().into(),
-                "only with --store in-place"
-            )),
-            "{log_store}"
-        );
+    let default = serve("serve --dir /v/a --store in-place").in_place_io;
+    assert_eq!(default, IoMode::default());
+    assert!(default.direct());
+    assert_eq!(default.threads(), 8);
+    for n in [1, 32, 64] {
+        let io = serve(&format!(
+            "serve --dir /v/a --store in-place --io-threads {n}"
+        ))
+        .in_place_io;
+        assert_eq!(io, IoMode::with_threads(n).unwrap());
+        assert!(io.direct());
     }
-    assert!(matches!(
-        plain("serve --dir /v/a --store in-place --io-threads 65"),
-        Err(UsageError::Value(..))
-    ));
+    for n in [0, 65] {
+        assert!(matches!(
+            plain(&format!(
+                "serve --dir /v/a --store in-place --io-threads {n}"
+            )),
+            Err(UsageError::Value(..))
+        ));
+    }
+    assert_eq!(
+        plain("serve --dir /v/a --io-threads 4"),
+        Err(UsageError::Value(
+            "--io-threads".into(),
+            "only with --store in-place"
+        ))
+    );
+    assert!(plain("serve --dir /v/a --store in-place --direct-io").is_err());
     assert!(matches!(
         plain("create --dir /v/a --size 1048576 --zero-fill"),
         Ok(Command::Create(Create {

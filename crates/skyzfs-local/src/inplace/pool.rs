@@ -1,9 +1,19 @@
-//! The in-place store's reads and writes on threads of their own (an
-//! experiment: the direct I/O note of M1.3u). Each thread has a handle
-//! of its own on the home image and does one request at a time,
-//! through the cache or by direct I/O, so that as many requests reach
-//! the device at once as there are threads. The store decides what may
-//! run beside what ([`super::InPlace`]); a thread only executes.
+//! The in-place store's reads and writes on threads of their own
+//! (design, decision D6). Each thread has a handle of its own on the
+//! home image and does one request at a time, by direct I/O (through
+//! the cache in some tests), so that as many requests reach the device
+//! at once as there are threads. The store decides what may run beside
+//! what ([`super::InPlace`]); a thread only executes.
+//!
+//! A thread that panics dies, and says so first: the pool counts the
+//! death ([`Pool::died`]), and the job the thread held comes back to the
+//! store with its buffer and an error. The store then fails the
+//! volume and takes back the jobs no thread has begun
+//! ([`Pool::take_back`]), so that nothing waits for a thread that is
+//! gone. The release build unwinds on a panic (the workspace does not
+//! set `panic = "abort"`); where a build aborts instead, the process
+//! ends, and the kernel's device waits for the next server as after a
+//! `kill -9`.
 
 use std::collections::VecDeque;
 use std::io;
@@ -29,6 +39,16 @@ pub(super) enum Job {
     },
 }
 
+impl Job {
+    /// Its id, whether it writes, and its buffer.
+    pub(super) fn into_parts(self) -> (RequestId, bool, Buf) {
+        match self {
+            Job::Read { id, buf, .. } => (id, false, buf),
+            Job::Write { id, data, .. } => (id, true, data),
+        }
+    }
+}
+
 /// What a thread did with a [`Job`].
 pub(super) struct Done {
     pub(super) id: RequestId,
@@ -43,6 +63,8 @@ struct State {
     jobs: VecDeque<Job>,
     done: Vec<Done>,
     ending: bool,
+    /// Threads that died of a panic.
+    died: u64,
 }
 
 #[derive(Default)]
@@ -113,6 +135,16 @@ impl Pool {
         }
         out.append(&mut state.done);
     }
+
+    /// How many threads have died of a panic so far.
+    pub(super) fn died(&self) -> u64 {
+        self.shared.lock().died
+    }
+
+    /// Take back the jobs no thread has begun.
+    pub(super) fn take_back(&self) -> Vec<Job> {
+        self.shared.lock().jobs.drain(..).collect()
+    }
 }
 
 impl Drop for Pool {
@@ -125,12 +157,53 @@ impl Drop for Pool {
     }
 }
 
+/// A thread's life: on a panic, it reports the death and hands back
+/// the job the thread held, with its buffer, and wakes the store.
+struct Life<'a> {
+    shared: &'a Shared,
+    wake: Option<&'a (dyn Fn() + Send + Sync)>,
+    /// The job being executed: its id, whether it writes, its buffer.
+    job: Option<(RequestId, bool, Buf)>,
+    /// The thread is in `wake`: a panic there is not followed by
+    /// another call of it, which would abort the process.
+    waking: bool,
+}
+
+impl Drop for Life<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            return;
+        }
+        let mut state = self.shared.lock();
+        state.died += 1;
+        if let Some((id, write, buf)) = self.job.take() {
+            state.done.push(Done {
+                id,
+                write,
+                result: Err(io::Error::other("the I/O thread panicked")),
+                buf,
+            });
+        }
+        drop(state);
+        self.shared.done.notify_all();
+        if let (Some(wake), false) = (self.wake, self.waking) {
+            wake();
+        }
+    }
+}
+
 fn work<F: File>(
     mut file: F,
     direct: bool,
     shared: &Shared,
     wake: Option<&(dyn Fn() + Send + Sync)>,
 ) {
+    let mut life = Life {
+        shared,
+        wake,
+        job: None,
+        waking: false,
+    };
     loop {
         let job = {
             let mut state = shared.lock();
@@ -147,42 +220,30 @@ fn work<F: File>(
                     .unwrap_or_else(PoisonError::into_inner);
             }
         };
-        let done = match job {
-            Job::Read {
-                id,
-                offset,
-                mut buf,
-            } => {
-                let result = if direct {
-                    file.read_direct_at(offset, &mut buf)
-                } else {
-                    file.read_at(offset, &mut buf)
-                };
-                Done {
-                    id,
-                    write: false,
-                    result,
-                    buf,
-                }
-            }
-            Job::Write { id, offset, data } => {
-                let result = if direct {
-                    file.write_direct_at(offset, &data)
-                } else {
-                    file.write_at(offset, &data)
-                };
-                Done {
-                    id,
-                    write: true,
-                    result,
-                    buf: data,
-                }
-            }
+        let offset = match &job {
+            Job::Read { offset, .. } | Job::Write { offset, .. } => *offset,
         };
-        shared.lock().done.push(done);
+        // Held by `life` while it runs, so that a panic hands it back.
+        let (_, write, buf) = life.job.insert(job.into_parts());
+        let result = match (*write, direct) {
+            (false, true) => file.read_direct_at(offset, buf),
+            (false, false) => file.read_at(offset, buf),
+            (true, true) => file.write_direct_at(offset, buf),
+            (true, false) => file.write_at(offset, buf),
+        };
+        if let Some((id, write, buf)) = life.job.take() {
+            shared.lock().done.push(Done {
+                id,
+                write,
+                result,
+                buf,
+            });
+        }
         shared.done.notify_all();
         if let Some(wake) = wake {
+            life.waking = true;
             wake();
+            life.waking = false;
         }
     }
 }

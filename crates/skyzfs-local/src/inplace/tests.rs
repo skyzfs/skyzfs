@@ -46,33 +46,39 @@ fn harnesses_io(mutants: u32, io: IoMode) -> Vec<InPlaceHarness> {
         .collect()
 }
 
-/// The I/O of the direct I/O experiment: on the caller's thread and on
-/// four threads, and buffered on four threads.
-const EXPERIMENT: [IoMode; 3] = [
+/// The I/O other than the default (direct I/O on eight threads, which
+/// every test runs unless it says otherwise): direct I/O on one thread,
+/// the fewest the daemon takes; direct I/O on the caller's thread; and
+/// through the cache on the caller's thread, the store before decision
+/// D6, which only tests still use.
+const OTHER_IO: [IoMode; 3] = [
+    IoMode {
+        direct: true,
+        threads: 1,
+    },
     IoMode {
         direct: true,
         threads: 0,
     },
     IoMode {
-        direct: true,
-        threads: 4,
-    },
-    IoMode {
         direct: false,
-        threads: 4,
+        threads: 0,
     },
 ];
 
-/// The experiment: the suite passes on the in-place store with direct
-/// I/O and with threads, as it does on the caller's thread through the
-/// cache, with every capability.
+/// Through the kernel's cache, on the caller's thread: the store before
+/// decision D6, for the tests that need a writer through the cache.
+const BUFFERED: IoMode = OTHER_IO[2];
+
+/// The suite passes on the in-place store with each of the other I/O
+/// modes too, with every capability.
 #[test]
-fn the_in_place_store_passes_the_conformance_suite_with_direct_io_and_threads() {
+fn the_in_place_store_passes_the_conformance_suite_with_each_io() {
     let config = Config {
         cases: 32,
         ..Config::default()
     };
-    for io in EXPERIMENT {
+    for io in OTHER_IO {
         for mut harness in harnesses_io(0, io) {
             let report = run_all(&mut harness, &config);
             assert!(report.passed(), "in {harness:?}:\n{report}");
@@ -116,7 +122,8 @@ fn the_in_place_store_passes_the_conformance_suite() {
 /// The suite notices the defects of durability and of failure, each in
 /// the cases named for it: a flush that makes nothing durable, a failed
 /// sync tried again, a failed write that does not fail the volume, a
-/// start that does not drop the kernel's cache. (A
+/// start that does not drop the kernel's cache where something wrote
+/// through it. (A
 /// flush that joins a sync begun
 /// before a write it must cover needs a cut to land between the two at a
 /// sector the write changed; the suite's programs do not reliably make
@@ -150,13 +157,19 @@ fn the_suite_notices_the_defects() {
         (Mutants::WRITE_ERROR_PASSES, &["prop_failures_match_model"]),
         // A start that leaves the kernel's cache as it was: the reopen
         // of a failed volume serves what a failed sync left only there.
+        // Only a writer through the cache leaves pages there: the store
+        // writes through it in this case alone ([`BUFFERED`]).
         (
             Mutants::CACHE_NOT_DROPPED | Mutants::CACHE_NOT_CHECKED,
             &["reopened_failed_volume_holds_what_was_flushed"],
         ),
     ];
     for (mutant, must_fail) in cases {
-        let mut harness = harnesses(mutant)[2];
+        let mut harness = if mutant & Mutants::CACHE_NOT_DROPPED != 0 {
+            harnesses_io(mutant, BUFFERED)[2]
+        } else {
+            harnesses(mutant)[2]
+        };
         let report = run_all(&mut harness, &config);
         let failed = report.failed();
         for case in must_fail {
@@ -319,53 +332,294 @@ fn a_flush_with_nothing_to_make_durable_does_not_sync() {
 
 /// While a sync is under way: a flush with nothing written since its
 /// begin joins it, and one after a write waits for the next sync,
-/// which begins when this one ends and covers it.
+/// which begins when this one ends and covers it. Each write is done
+/// before the flush behind it arrives (on the threads, a flush waits
+/// for the writes there: `a_flush_waits_for_the_writes_on_the_threads`).
 #[test]
 fn a_flush_joins_a_sync_under_way_only_when_nothing_was_written_since_it_began() {
+    for io in [IoMode::default(), OTHER_IO[1]] {
+        let disk = created(3, 0);
+        let mut store = start_io(&disk, 0, false, io).unwrap();
+        disk.hold_syncs_of(crate::store::HOME_NAME);
+        let submit = |store: &mut InPlace<SimDisk>, id: u64, op: Op| {
+            store
+                .submit(Request {
+                    id: RequestId(id),
+                    op,
+                })
+                .unwrap()
+        };
+        let mut done = Vec::new();
+        // A write, done: its completion is taken, and no flush waits.
+        let written = |store: &mut InPlace<SimDisk>, done: &mut Vec<Completion>, id, byte| {
+            submit(
+                store,
+                id,
+                Op::Write {
+                    offset: 0,
+                    data: Buf::filled(1, byte),
+                },
+            );
+            while !done.iter().any(|c: &Completion| c.id.0 == id) {
+                store.poll(done);
+            }
+        };
+        let syncs = store.counts().syncs;
+        written(&mut store, &mut done, 1, 1);
+        submit(&mut store, 2, Op::Flush);
+        assert!(store.syncing(), "{io:?}");
+        submit(&mut store, 3, Op::Flush);
+        assert_eq!(store.counts().joined, 1, "{io:?}");
+        written(&mut store, &mut done, 4, 2);
+        submit(&mut store, 5, Op::Flush);
+        assert_eq!(
+            store.counts().joined,
+            1,
+            "{io:?}: a flush behind a write joined"
+        );
+        store.poll(&mut done);
+        let ids: Vec<u64> = done.iter().map(|c| c.id.0).collect();
+        assert_eq!(ids, [1, 4], "{io:?}: only the writes are done");
+        disk.release_syncs();
+        while store.in_flight() > 0 {
+            store.wait(&mut done, Duration::ZERO);
+        }
+        assert!(done.iter().all(|c| c.result.is_ok()), "{io:?}");
+        assert_eq!(store.counts().syncs, syncs + 2, "{io:?}");
+    }
+}
+
+/// A flush waits for every write on the threads: it covers what was
+/// acknowledged before it, and this store also makes it wait for what
+/// was submitted before it (the stricter reading). With the writes held
+/// on the threads, the flush does not complete or begin its sync until
+/// they are let go. The mutant that lets a flush pass the writes is
+/// noticed: the flush completes while a write is still held.
+#[test]
+fn a_flush_waits_for_the_writes_on_the_threads() {
+    for mutant in [0, Mutants::FLUSH_PASSES_WRITES] {
+        let disk = created(3, 0);
+        let mut store = start_io(&disk, mutant, false, IoMode::default()).unwrap();
+        // Two writes, held on the threads before they touch the image.
+        disk.hold_direct_io(2);
+        for id in [1, 2] {
+            store
+                .submit(Request {
+                    id: RequestId(id),
+                    op: Op::Write {
+                        offset: id * BLOCK,
+                        data: Buf::filled(1, id as u8),
+                    },
+                })
+                .unwrap();
+        }
+        until_held(&disk);
+        store
+            .submit(Request {
+                id: RequestId(3),
+                op: Op::Flush,
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        let flushed = done.iter().any(|c| c.id.0 == 3);
+        if mutant == 0 {
+            assert!(!flushed, "the flush did not wait for the writes");
+            assert!(!store.syncing(), "a sync began before the writes ended");
+        } else {
+            assert!(flushed, "the defect is not noticed");
+        }
+        disk.release_direct_io();
+        while store.in_flight() > 0 {
+            store.wait(&mut done, WAIT);
+        }
+        assert!(done.iter().all(|c| c.result.is_ok()));
+    }
+}
+
+/// A request waits for an overlapping one on the threads, so that
+/// overlapping requests take effect in the order they came: a write
+/// held on the threads, then a write to the same block, then a read of
+/// it. With the first write held, neither the second write nor the read
+/// runs. The mutant that lets them pass is noticed: the read completes
+/// while the first write is still held.
+#[test]
+fn an_overlapping_request_waits_for_the_one_on_the_threads() {
+    for mutant in [0, Mutants::OVERLAP_UNORDERED] {
+        let disk = created(3, 0);
+        let mut store = start_io(&disk, mutant, false, IoMode::default()).unwrap();
+        disk.hold_direct_io(1);
+        store
+            .submit(Request {
+                id: RequestId(1),
+                op: Op::Write {
+                    offset: 0,
+                    data: Buf::filled(1, 0x11),
+                },
+            })
+            .unwrap();
+        until_held(&disk);
+        store
+            .submit(Request {
+                id: RequestId(2),
+                op: Op::Write {
+                    offset: 0,
+                    data: Buf::filled(1, 0x22),
+                },
+            })
+            .unwrap();
+        store
+            .submit(Request {
+                id: RequestId(3),
+                op: Op::Read {
+                    offset: 0,
+                    buf: Buf::filled(1, 0),
+                },
+            })
+            .unwrap();
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        let read_done = done.iter().any(|c| c.id.0 == 3);
+        if mutant == 0 {
+            assert!(!read_done, "a request passed the write it overlaps");
+            assert_eq!(store.io_queue().waiting, 2, "the two wait");
+        } else {
+            assert!(read_done, "the defect is not noticed");
+        }
+        disk.release_direct_io();
+        while store.in_flight() > 0 {
+            store.wait(&mut done, WAIT);
+        }
+        assert!(done.iter().all(|c| c.result.is_ok()));
+    }
+}
+
+/// An I/O thread that panics dies and does not hang the store. The job
+/// it held comes back as a failed request; the volume fails from the
+/// death itself, so a panic in a read (which no error of its own fails
+/// the volume for) fails it too; and a request that waited for the dead
+/// thread fails with the volume, rather than waiting for a thread that
+/// is gone. A later start finds the volume marked as failed.
+#[test]
+fn a_panicking_io_thread_fails_the_volume() {
+    // One thread, so the panic takes the only worker and the second
+    // request waits for a thread that is gone.
+    let io = IoMode::for_tests(true, 1);
     let disk = created(3, 0);
-    let mut store = start(&disk, 0, false).unwrap();
-    disk.hold_syncs_of(crate::store::HOME_NAME);
-    let submit = |store: &mut InPlace<SimDisk>, id: u64, op: Op| {
+    let mut store = start_io(&disk, 0, false, io).unwrap();
+    disk.panic_in_direct_io(0);
+    // A read panics (a read's own I/O error does not fail the volume),
+    // and a write waits behind the dead thread.
+    store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::filled(1, 0),
+            },
+        })
+        .unwrap();
+    store
+        .submit(Request {
+            id: RequestId(2),
+            op: Op::Write {
+                offset: BLOCK,
+                data: Buf::filled(1, 0x22),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    while store.in_flight() > 0 {
+        store.wait(&mut done, WAIT);
+    }
+    assert!(store.is_failed(), "the panic did not fail the volume");
+    assert!(
+        done.iter().all(|c| c.result == Err(BlkError::Failed)),
+        "{done:?}"
+    );
+    drop(store);
+    disk.kill();
+    assert!(
+        matches!(
+            start(&disk, 0, false),
+            Err(StoreError::Log(LogError::MarkedFailed))
+        ),
+        "the next start does not find the volume failed"
+    );
+}
+
+/// The mutant that takes a thread's death for an I/O error of the one
+/// job it held is noticed: a panic in a read then fails only that read
+/// and leaves the volume serving, which it must not. One read alone, so
+/// nothing waits for the dead thread and the store can be dropped.
+#[test]
+fn a_thread_death_ignored_is_noticed() {
+    let io = IoMode::for_tests(true, 1);
+    let disk = created(3, 0);
+    let mut store = start_io(&disk, Mutants::DEATH_IGNORED, false, io).unwrap();
+    disk.panic_in_direct_io(0);
+    store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Read {
+                offset: 0,
+                buf: Buf::filled(1, 0),
+            },
+        })
+        .unwrap();
+    let mut done = Vec::new();
+    while done.is_empty() {
+        store.wait(&mut done, WAIT);
+    }
+    assert!(!store.is_failed(), "the defect is not noticed");
+    assert!(matches!(done[0].result, Err(BlkError::Io(_))), "{done:?}");
+}
+
+/// The I/O queue the status file shows: what is on the threads now,
+/// what waits, and the highs since the store began. With a write held
+/// on the threads and two requests waiting behind an overlap, the
+/// counts are one in flight and two waiting; once they are let go the
+/// current counts fall to zero and the highs stay.
+#[test]
+fn the_io_queue_counts_what_is_on_the_threads() {
+    let disk = created(3, 0);
+    let mut store = start_io(&disk, 0, false, IoMode::default()).unwrap();
+    assert_eq!(store.io_queue().threads, IoMode::DEFAULT_THREADS as u64);
+    disk.hold_direct_io(1);
+    store
+        .submit(Request {
+            id: RequestId(1),
+            op: Op::Write {
+                offset: 0,
+                data: Buf::filled(1, 0x11),
+            },
+        })
+        .unwrap();
+    until_held(&disk);
+    for id in [2, 3] {
         store
             .submit(Request {
                 id: RequestId(id),
-                op,
+                op: Op::Write {
+                    offset: 0,
+                    data: Buf::filled(1, id as u8),
+                },
             })
-            .unwrap()
-    };
-    let syncs = store.counts().syncs;
-    submit(
-        &mut store,
-        1,
-        Op::Write {
-            offset: 0,
-            data: Buf::filled(1, 1),
-        },
-    );
-    submit(&mut store, 2, Op::Flush);
-    assert!(store.syncing());
-    submit(&mut store, 3, Op::Flush);
-    assert_eq!(store.counts().joined, 1);
-    submit(
-        &mut store,
-        4,
-        Op::Write {
-            offset: 0,
-            data: Buf::filled(1, 2),
-        },
-    );
-    submit(&mut store, 5, Op::Flush);
-    assert_eq!(store.counts().joined, 1, "a flush behind a write joined");
-    let mut done = Vec::new();
-    store.poll(&mut done);
-    let ids: Vec<u64> = done.iter().map(|c| c.id.0).collect();
-    assert_eq!(ids, [1, 4], "only the writes are done");
-    disk.release_syncs();
-    while store.in_flight() > 0 {
-        store.wait(&mut done, Duration::ZERO);
+            .unwrap();
     }
-    assert!(done.iter().all(|c| c.result.is_ok()));
-    assert_eq!(store.counts().syncs, syncs + 2);
+    let q = store.io_queue();
+    assert_eq!((q.in_flight, q.waiting), (1, 2), "{q:?}");
+    disk.release_direct_io();
+    let mut done = Vec::new();
+    while store.in_flight() > 0 {
+        store.wait(&mut done, WAIT);
+    }
+    let q = store.io_queue();
+    assert_eq!((q.in_flight, q.waiting), (0, 0), "{q:?}");
+    assert!(
+        q.in_flight_max >= 1 && q.waiting_max >= 2 && q.waited >= 2,
+        "{q:?}"
+    );
 }
 
 /// A failed sync fails the volume for good: the flush fails, so does
@@ -962,6 +1216,13 @@ fn volatile_cache_holds_with(
         }
         settle(&mut done, &mut blocks, &mut flushes, failing)?;
     }
+    // What the threads hold ends before the process does, as the
+    // store's drop waits for it: a write among it that fails fails the
+    // volume, and the program counts as one that failed.
+    while store.io_queue().in_flight > 0 {
+        store.wait(&mut done, WAIT);
+        settle(&mut done, &mut blocks, &mut flushes, failing)?;
+    }
     let failed = store.is_failed();
     drop(store);
     match ending {
@@ -1015,13 +1276,12 @@ fn a_power_cut_leaves_what_the_volatile_cache_disk_promises() {
     }
 }
 
-/// The experiment: with direct I/O and with threads, a power cut, with
-/// garbage or without, and a failing write or sync leave what the
-/// volatile-cache disk promises, as through the cache on the caller's
-/// thread.
+/// With each of the other I/O modes, a power cut, with garbage or
+/// without, and a failing write or sync leave what the volatile-cache
+/// disk promises, as with the default.
 #[test]
-fn direct_io_and_threads_keep_what_the_volatile_cache_disk_promises() {
-    for io in EXPERIMENT {
+fn each_io_keeps_what_the_volatile_cache_disk_promises() {
+    for io in OTHER_IO {
         for seed in 1..=100 {
             for ending in [
                 Ending::Cut { garbage: false },
@@ -1037,25 +1297,14 @@ fn direct_io_and_threads_keep_what_the_volatile_cache_disk_promises() {
     }
 }
 
-/// The experiment's start: direct I/O where the file system has none,
-/// or where its alignment is coarser than a block, is refused, and the
-/// volume has not failed: it starts again through the cache.
+/// The start refuses, by reason, a file system that offers no direct
+/// I/O and one whose unit for it is above a block (4 KiB), and the
+/// volume has not failed: it starts where the unit is a block or less.
 #[test]
 fn a_start_refuses_direct_io_it_cannot_have() {
-    let direct = IoMode {
-        direct: true,
-        threads: 2,
-    };
     let disk = created(21, 0);
     let refused = |disk: &SimDisk| {
-        let (store, _) = Store::open(
-            disk.clone(),
-            OpenOptions {
-                in_place_io: direct,
-                ..OpenOptions::default()
-            },
-        )
-        .unwrap();
+        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
         match store.into_in_place(None) {
             Err(IntoInPlaceError::Io(why)) => why,
             other => panic!("{other:?}"),
@@ -1063,17 +1312,17 @@ fn a_start_refuses_direct_io_it_cannot_have() {
     };
     disk.set_direct_align(None);
     assert!(refused(&disk).contains("no direct I/O"));
-    disk.set_direct_align(Some(crate::io::DirectAlign {
-        memory: 512,
-        offset: 8192,
-    }));
-    assert!(refused(&disk).contains("8192"));
-    assert!(start(&disk, 0, false).is_ok());
-    disk.set_direct_align(Some(crate::io::DirectAlign {
-        memory: 4096,
-        offset: 4096,
-    }));
-    assert!(start_io(&disk, 0, false, direct).is_ok());
+    for offset in [8192, 16384] {
+        disk.set_direct_align(Some(crate::io::DirectAlign {
+            memory: 512,
+            offset,
+        }));
+        assert!(refused(&disk).contains(&offset.to_string()));
+    }
+    for (memory, offset) in [(4096, 4096), (512, 512), (4, 512)] {
+        disk.set_direct_align(Some(crate::io::DirectAlign { memory, offset }));
+        assert!(start(&disk, 0, false).is_ok(), "{memory} {offset}");
+    }
 }
 
 /// Where this store promises less than the suite's rule R11: a write
@@ -1199,12 +1448,17 @@ fn the_in_place_store_passes_the_conformance_suite_on_large_pages() {
 /// rewritten neighbour's sector into garbage breaks the rule on any
 /// page larger than a block, which is the store's documented exception
 /// (`a_cut_with_garbage_may_reach_a_neighbour_on_large_pages`).
+///
+/// This is the store writing through the cache, as only tests have it;
+/// with direct I/O, as served, every ending holds on large pages,
+/// garbage included
+/// (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`).
 #[test]
 fn a_power_cut_leaves_what_the_volatile_cache_disk_promises_on_large_pages() {
     for page in LARGE_PAGES {
         for seed in 1..=100 {
             let ending = Ending::Cut { garbage: false };
-            if let Err(e) = volatile_cache_holds_at(seed, ending, 0, page) {
+            if let Err(e) = volatile_cache_holds_with(seed, ending, 0, page, BUFFERED) {
                 panic!("page {page}: {e}");
             }
         }
@@ -1247,16 +1501,21 @@ fn the_power_cut_test_notices_the_defects_of_durability_on_large_pages() {
     }
 }
 
-/// The exception, pinned: where a cut can write garbage, a sector of a
-/// block that a flush covered and nothing wrote since can be lost on a
-/// large page, because a write to another block of the page rewrote
-/// it. On 4 KiB pages the same programs keep such blocks
-/// (`a_power_cut_leaves_what_the_volatile_cache_disk_promises`).
+/// The exception of writes through the cache, pinned, and the reason
+/// for decision D6: where a cut can write garbage, a sector of a block
+/// that a flush covered and nothing wrote since can be lost on a large
+/// page, because a write to another block of the page rewrote it. On
+/// 4 KiB pages the same programs keep such blocks
+/// (`a_power_cut_leaves_what_the_volatile_cache_disk_promises`), and so
+/// does direct I/O on large pages
+/// (`direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages`).
+/// The store writes through the cache only in tests.
 #[test]
 fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
     let ending = Ending::Cut { garbage: true };
     for page in LARGE_PAGES {
-        let reached = (1..=200).any(|seed| volatile_cache_holds_at(seed, ending, 0, page).is_err());
+        let reached = (1..=200)
+            .any(|seed| volatile_cache_holds_with(seed, ending, 0, page, BUFFERED).is_err());
         assert!(reached, "page {page}: no cut reached a neighbour");
     }
 }
@@ -1280,7 +1539,7 @@ fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
 #[test]
 fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
     for page in LARGE_PAGES {
-        for io in EXPERIMENT.into_iter().filter(|io| io.direct) {
+        for io in [IoMode::default(), OTHER_IO[0], OTHER_IO[1]] {
             for ending in [
                 Ending::Cut { garbage: true },
                 Ending::Cut { garbage: false },
@@ -1333,10 +1592,10 @@ fn a_volume_of_small_pages_is_refused_on_large_pages() {
 /// cut that keeps nothing unsynced: the two must be the same. A failed
 /// sync can leave a page marked clean that the disk never got; a start
 /// that served it from the cache would show what the cut then takes.
-fn shown_survives(seed: u64, mutants: u32) -> Result<bool, String> {
+fn shown_survives(seed: u64, mutants: u32, io: IoMode) -> Result<bool, String> {
     let e = |e: BlkError| e.to_string();
     let disk = created(seed, 0);
-    let mut store = start(&disk, mutants, false).map_err(|e| e.to_string())?;
+    let mut store = start_io(&disk, mutants, false, io).map_err(|e| e.to_string())?;
     write(&mut store, 4, 0x11).map_err(e)?;
     run(&mut store, 100, Op::Flush).result.map_err(e)?;
     write(&mut store, 4, 0x44).map_err(e)?;
@@ -1347,7 +1606,7 @@ fn shown_survives(seed: u64, mutants: u32) -> Result<bool, String> {
     drop(store);
     disk.clear_faults();
     disk.kill();
-    let mut store = start(&disk, mutants, true).map_err(|e| e.to_string())?;
+    let mut store = start_io(&disk, mutants, true, io).map_err(|e| e.to_string())?;
     let shown = read(&mut store, 4).map_err(e)?;
     write(&mut store, 5, 0x55).map_err(e)?;
     run(&mut store, 102, Op::Flush).result.map_err(e)?;
@@ -1358,17 +1617,27 @@ fn shown_survives(seed: u64, mutants: u32) -> Result<bool, String> {
 }
 
 /// Acceptance (design §4.1): what a start shows survives a completed
-/// flush and a power cut, also after a failed sync whose pages the
-/// kernel's cache kept, at 64 seeds of the failed sync's leavings. A
-/// start that does not drop the cache is noticed.
+/// flush and a power cut, also after a failed sync, at 64 seeds of the
+/// failed sync's leavings, with direct I/O and through the cache.
+///
+/// Through the cache, a failed sync can leave pages in the kernel's
+/// cache that the disk never got, and a start that does not drop the
+/// cache serves them: that is noticed. Direct I/O leaves no page there,
+/// so the same defect changes nothing with it; what the drop still
+/// guards under direct I/O is what a writer through the cache left
+/// just before the start: the log store's checkpoint that empties the
+/// log into the image when a volume enters the in-place store (M1.3t
+/// removes the log store).
 #[test]
 fn every_start_serves_only_what_the_disk_holds() {
-    for seed in 0..64 {
-        assert_eq!(shown_survives(seed, 0), Ok(true), "seed {seed}");
+    for io in [IoMode::default(), BUFFERED] {
+        for seed in 0..64 {
+            assert_eq!(shown_survives(seed, 0, io), Ok(true), "{io:?}, seed {seed}");
+        }
     }
     let dropped_nothing = Mutants::CACHE_NOT_DROPPED | Mutants::CACHE_NOT_CHECKED;
     let lost = (0..64)
-        .filter(|&seed| shown_survives(seed, dropped_nothing) == Ok(false))
+        .filter(|&seed| shown_survives(seed, dropped_nothing, BUFFERED) == Ok(false))
         .count();
     assert!(lost > 0, "a start that keeps the cache is not noticed");
 }

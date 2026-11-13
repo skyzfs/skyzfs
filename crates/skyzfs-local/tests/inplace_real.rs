@@ -1,21 +1,24 @@
 //! The in-place store on real files: a round trip, and a real
 //! `kill -9`.
 //!
-//! What the kill test shows rests on the page cache, and on nothing
-//! the store does: a write is acknowledged once it is in the file
-//! (`pwrite` has returned), and the kernel keeps what a process wrote
-//! to a file when the process dies. The test cuts no power, and the
-//! in-place store promises nothing more than the volatile-cache disk
-//! at a power cut (see `skyzfs_local::inplace`).
+//! What the kill test shows rests on the device, and on nothing the
+//! store does: the store reads and writes by direct I/O (decision D6),
+//! so a write is acknowledged once the device has taken it (the
+//! `pwrite` on the direct handle has returned), and a process that dies
+//! takes nothing of it along. The test cuts no power, and the in-place
+//! store promises nothing more than the volatile-cache disk at a power
+//! cut (see `skyzfs_local::inplace`).
 //!
-//! **These tests need a temporary directory on a file system whose page
-//! cache the kernel can drop and count for a file.** Every start of the
-//! in-place store drops the home image's cache and checks with
-//! `cachestat` that none of it is left, and refuses otherwise, by
-//! design: on tmpfs the pages are the file and cannot be dropped, and
-//! through an overlay the count sees none. Where the temporary directory
-//! is on such a file system, each test is skipped and says why on
-//! standard error (`--nocapture` shows it); set `TMPDIR` to run it.
+//! **These tests need a temporary directory on a file system that
+//! offers direct I/O with a unit of 4 KiB or less, and whose page cache
+//! the kernel can drop and count for a file.** The in-place store's
+//! start refuses a file system without such direct I/O, and it drops
+//! the home image's cache and checks with `cachestat` that none of it
+//! is left, and refuses otherwise, by design: on tmpfs the pages are
+//! the file and cannot be dropped, and through an overlay the count
+//! sees none. Where the temporary directory is on such a file system,
+//! each test is skipped and says why on standard error (`--nocapture`
+//! shows it); set `TMPDIR` to run it.
 //! Where the variable `CI` is set, as GitHub sets it on every runner, a
 //! skip is a failure instead: a run there is expected to test, and a
 //! skip reads as a pass.
@@ -50,9 +53,12 @@ fn config() -> StoreConfig {
 }
 
 /// The directory at `path`, whose files count their cached pages as
-/// the daemon's do: the in-place store's start refuses without it.
+/// the daemon's do: the in-place store's start refuses without it, and
+/// without direct I/O.
 fn on_disk(path: &std::path::Path) -> Option<FsDir> {
-    if let Err(why) = the_cache_can_be_dropped_and_counted(path) {
+    let usable =
+        the_cache_can_be_dropped_and_counted(path).and_then(|()| direct_io_is_offered(path));
+    if let Err(why) = usable {
         let why = format!(
             "{}: {why}; the in-place store refuses to start there by design. Set TMPDIR to \
              a directory whose file system's cache can be dropped and counted",
@@ -104,6 +110,26 @@ fn the_cache_can_be_dropped_and_counted(path: &std::path::Path) -> Result<(), St
         (Ok(0), _) => Err("the count does not see a page just read (an overlay?)".into()),
         (Ok(_), Ok(0)) => Ok(()),
         (Ok(_), Ok(n)) => Err(format!("{n} pages stay cached after a drop (tmpfs?)")),
+    }
+}
+
+/// Whether the directory's file system offers direct I/O with a unit of
+/// 4 KiB or less, as the in-place store's start asks, and if not, why
+/// not.
+fn direct_io_is_offered(path: &std::path::Path) -> Result<(), String> {
+    use skyzfs_local::io::{Dir, File};
+    let dir = FsDir::new(path).unwrap();
+    let probe = dir.create("direct-probe").unwrap();
+    let align = probe.direct_align();
+    drop(probe);
+    std::fs::remove_file(path.join("direct-probe")).unwrap();
+    match align {
+        Ok(align) if align.offset > 0 && BLOCK % u64::from(align.offset) == 0 => Ok(()),
+        Ok(align) => Err(format!(
+            "its unit for direct I/O is {} bytes, above 4 KiB",
+            align.offset
+        )),
+        Err(e) => Err(format!("it offers no direct I/O ({e})")),
     }
 }
 
@@ -232,11 +258,11 @@ fn the_in_place_store_round_trips_on_real_files() {
     expect(done[0].buf.as_deref().unwrap());
 }
 
-/// The experiment on real files: direct I/O on four threads, and the
-/// image written with zeros first (`fill_home`). Sixty-four writes of
-/// two blocks each go out together, then a flush, and every block
-/// reads back, through a start with direct I/O and through one
-/// through the cache.
+/// Direct I/O on real files, on four threads and on the default eight,
+/// and with the image written with zeros first (`fill_home`).
+/// Sixty-four writes of two blocks each go out together, then a flush,
+/// and every block reads back, through a start on four threads and
+/// through one with the default.
 #[test]
 fn direct_io_on_threads_round_trips_on_real_files() {
     let tmp = tempfile::tempdir().unwrap();
@@ -245,10 +271,7 @@ fn direct_io_on_threads_round_trips_on_real_files() {
     };
     drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
     skyzfs_local::store::fill_home(&dir).unwrap();
-    let io = IoMode {
-        direct: true,
-        threads: 4,
-    };
+    let io = IoMode::with_threads(4).unwrap();
     let mut store = start_io(&dir, io).unwrap();
     let pattern = |n: u64| (n as u8).wrapping_mul(37) | 1;
     for n in 0..64u64 {

@@ -188,6 +188,14 @@ impl Mutants {
     /// The start shows that the count sees the file before the drop,
     /// not after it.
     pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
+    /// A thread's death is taken for an I/O error of the job it held:
+    /// the volume goes on, and the jobs that wait for the threads are
+    /// left to them.
+    pub(crate) const DEATH_IGNORED: u32 = 1 << 11;
+    /// A flush does not wait for the writes on the threads.
+    pub(crate) const FLUSH_PASSES_WRITES: u32 = 1 << 12;
+    /// A request does not wait for an overlapping one on the threads.
+    pub(crate) const OVERLAP_UNORDERED: u32 = 1 << 13;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -230,18 +238,70 @@ pub enum IntoInPlaceError {
     NotEmpty(String),
 }
 
-/// How the in-place store reads and writes the home image (an
-/// experiment, M1.3u's direct I/O note): through the cache, as by
-/// default, or by direct I/O; on the caller's thread, as by default, or
-/// on `threads` threads of their own, so that up to that many requests
-/// reach the device at once.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How the in-place store reads and writes the home image: by direct
+/// I/O (design, decision D6), past the kernel's cache, on I/O threads of
+/// its own ([`IoMode::threads`], [`IoMode::DEFAULT_THREADS`] unless
+/// asked otherwise). Each thread has a handle of its own on the image
+/// and one request at the disk at a time, so that up to that many
+/// requests reach the device at once. The start checks the file
+/// system's alignment for direct I/O (`STATX_DIOALIGN`) and refuses by
+/// reason where it has none or its unit is above a block (4 KiB).
+///
+/// Test builds can also have the I/O done on the caller's thread, or
+/// through the kernel's cache ([`IoMode::for_tests`]): for a test that
+/// needs the cache, or a file system without direct I/O. Neither is a
+/// mode the store is served in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoMode {
-    /// Direct I/O: the start checks the file system's alignment
-    /// (`STATX_DIOALIGN`) and refuses where it is not met.
-    pub direct: bool,
-    /// Threads for reads and writes; 0 does them on the caller's thread.
-    pub threads: usize,
+    /// Direct I/O; without it, through the cache (test builds only).
+    direct: bool,
+    /// The I/O threads; 0 (test builds only) does the I/O on the
+    /// caller's thread.
+    threads: usize,
+}
+
+impl Default for IoMode {
+    fn default() -> Self {
+        Self {
+            direct: true,
+            threads: Self::DEFAULT_THREADS,
+        }
+    }
+}
+
+impl IoMode {
+    /// The I/O threads unless asked otherwise: on machines whose syncs
+    /// are slow, eight measured above one in every job that ran both
+    /// (design §9).
+    pub const DEFAULT_THREADS: usize = 8;
+    /// The most I/O threads the store takes.
+    pub const MAX_THREADS: usize = 64;
+
+    /// Direct I/O on `threads` I/O threads, 1 to [`IoMode::MAX_THREADS`];
+    /// `None` outside that range.
+    pub fn with_threads(threads: usize) -> Option<Self> {
+        (1..=Self::MAX_THREADS).contains(&threads).then_some(Self {
+            direct: true,
+            threads,
+        })
+    }
+
+    /// The I/O threads.
+    pub fn threads(&self) -> usize {
+        self.threads
+    }
+
+    /// Whether the I/O is direct: always, outside test builds.
+    pub fn direct(&self) -> bool {
+        self.direct
+    }
+
+    /// For tests: through the kernel's cache unless `direct`, and on the
+    /// caller's thread where `threads` is 0.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn for_tests(direct: bool, threads: usize) -> Self {
+        Self { direct, threads }
+    }
 }
 
 /// The store on the home image alone: see the
@@ -281,6 +341,9 @@ pub struct InPlace<D: Dir> {
     /// they must not run beside ([`InPlace::must_wait`]). Everything
     /// received after one of them waits behind it.
     deferred: VecDeque<Request>,
+    /// The queue's counts and highs; the current figures are those of
+    /// `busy` and `deferred`.
+    queue: IoQueue,
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: as for
     /// the log store, a start that does not find it goes by the
@@ -438,6 +501,29 @@ impl std::fmt::Debug for FailedStart {
     }
 }
 
+/// The I/O threads' queue, as the status file shows it
+/// ([`InPlace::io_queue`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoQueue {
+    /// The I/O threads; 0 where the I/O is done on the caller's thread
+    /// (test builds only).
+    pub threads: u64,
+    /// Reads and writes on the threads now: handed to a thread, and not
+    /// yet taken back by the store.
+    pub in_flight: u64,
+    /// Requests that wait now, in their order, for one on the threads
+    /// that they must not run beside ([`InPlace::must_wait`]), and every
+    /// request received after the first of them.
+    pub waiting: u64,
+    /// The requests that waited so since the store began: a count that
+    /// only grows.
+    pub waited: u64,
+    /// The most requests on the threads at once since the store began.
+    pub in_flight_max: u64,
+    /// The most requests that waited at once since the store began.
+    pub waiting_max: u64,
+}
+
 /// What the store has done, for its owner and for tests.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
@@ -527,6 +613,7 @@ impl<D: Dir> InPlace<D> {
             pool: None,
             busy: BTreeMap::new(),
             deferred: VecDeque::new(),
+            queue: IoQueue::default(),
             marker: Marker::new(parts.marker, mutants),
         };
         // The checkpoint that entered this store synced the home image
@@ -721,6 +808,17 @@ impl<D: Dir> InPlace<D> {
         self.ids.len()
     }
 
+    /// The I/O threads' queue: what is on them, what waits for them,
+    /// and the counts since the store began.
+    pub fn io_queue(&self) -> IoQueue {
+        IoQueue {
+            threads: self.io.threads as u64,
+            in_flight: self.busy.len() as u64,
+            waiting: self.deferred.len() as u64,
+            ..self.queue
+        }
+    }
+
     /// For test rigs: fail the volume now, as if the next sync had
     /// failed. Every later request fails, flushes under way and waiting
     /// included, and a later start finds the volume marked as failed.
@@ -773,10 +871,9 @@ impl<D: Dir> InPlace<D> {
         }
         match op {
             Op::Read { offset, mut buf } => {
-                if let Some(pool) = &self.pool {
-                    self.busy
-                        .insert(id, (offset, offset + buf.len() as u64, false));
-                    return pool.push(Job::Read { id, offset, buf });
+                if self.pool.is_some() {
+                    let end = offset + buf.len() as u64;
+                    return self.on_thread(id, (offset, end, false), Job::Read { id, offset, buf });
                 }
                 // A failed read changes nothing and does not fail the
                 // volume: only its own request fails.
@@ -794,10 +891,13 @@ impl<D: Dir> InPlace<D> {
                 self.complete(id, Err(BlkError::ReadOnly), buf);
             }
             Op::Write { offset, data } => {
-                if let Some(pool) = &self.pool {
-                    self.busy
-                        .insert(id, (offset, offset + data.len() as u64, true));
-                    return pool.push(Job::Write { id, offset, data });
+                if self.pool.is_some() {
+                    let end = offset + data.len() as u64;
+                    return self.on_thread(
+                        id,
+                        (offset, end, true),
+                        Job::Write { id, offset, data },
+                    );
                 }
                 let written = if self.io.direct {
                     self.home.write_direct_at(offset, &data)
@@ -822,6 +922,16 @@ impl<D: Dir> InPlace<D> {
                 }
                 self.complete(id, Ok(()), None)
             }
+        }
+    }
+
+    /// Hand `job` to the threads; `range` is its bytes and whether it
+    /// writes.
+    fn on_thread(&mut self, id: RequestId, range: (u64, u64, bool), job: Job) {
+        self.busy.insert(id, range);
+        self.queue.in_flight_max = self.queue.in_flight_max.max(self.busy.len() as u64);
+        if let Some(pool) = &self.pool {
+            pool.push(job);
         }
     }
 
@@ -968,9 +1078,13 @@ impl<D: Dir> InPlace<D> {
             Op::Read { offset, buf } => (*offset, buf.len() as u64, false),
             Op::Write { offset, data } => (*offset, data.len() as u64, true),
             Op::WriteZeroes { offset, len } => (*offset, *len, true),
+            Op::Flush if self.mutants.has(Mutants::FLUSH_PASSES_WRITES) => return false,
             Op::Flush => return self.busy.values().any(|&(_, _, write)| write),
             Op::Discard { .. } => return false,
         };
+        if self.mutants.has(Mutants::OVERLAP_UNORDERED) {
+            return false;
+        }
         let end = offset.saturating_add(len);
         self.busy
             .values()
@@ -982,6 +1096,8 @@ impl<D: Dir> InPlace<D> {
     fn accept(&mut self, request: Request) {
         if !self.deferred.is_empty() || self.must_wait(&request.op) {
             self.deferred.push_back(request);
+            self.queue.waited += 1;
+            self.queue.waiting_max = self.queue.waiting_max.max(self.deferred.len() as u64);
         } else {
             self.execute(request.id, request.op);
         }
@@ -994,12 +1110,31 @@ impl<D: Dir> InPlace<D> {
     /// counts for the next flush, and a failed one fails the volume. A
     /// request that ends after the volume failed fails with it, which
     /// rule R11 allows of one in flight at the failure.
+    ///
+    /// A thread that died (of a panic) fails the volume as a failed
+    /// write does, whatever its job was: what it did to the image is not
+    /// known, and fewer threads are left, perhaps none. Once the volume
+    /// has failed, the jobs no thread has begun are taken back and fail,
+    /// so that none waits for a thread that is gone; the jobs under way
+    /// on the threads still alive come back as they end, and fail.
     fn collect(&mut self, timeout: Duration) {
         let Some(pool) = &self.pool else {
             return;
         };
         let mut done = Vec::new();
         pool.take(&mut done, timeout);
+        let died = pool.died() > 0 && !self.mutants.has(Mutants::DEATH_IGNORED);
+        if died && !self.failed {
+            self.fail();
+            self.settle_failed();
+        }
+        if self.failed {
+            for job in self.pool.as_ref().map(Pool::take_back).unwrap_or_default() {
+                let (id, _, buf) = job.into_parts();
+                self.busy.remove(&id);
+                self.complete(id, Err(BlkError::Failed), Some(buf));
+            }
+        }
         for Done {
             id,
             write,
