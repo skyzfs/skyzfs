@@ -124,7 +124,7 @@ fn direct_io_is_offered(path: &std::path::Path) -> Result<(), String> {
     drop(probe);
     std::fs::remove_file(path.join("direct-probe")).unwrap();
     match align {
-        Ok(align) if align.offset > 0 && BLOCK % u64::from(align.offset) == 0 => Ok(()),
+        Ok(align) if align.offset > 0 && BLOCK.is_multiple_of(u64::from(align.offset)) => Ok(()),
         Ok(align) => Err(format!(
             "its unit for direct I/O is {} bytes, above 4 KiB",
             align.offset

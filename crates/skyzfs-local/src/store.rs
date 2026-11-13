@@ -332,8 +332,9 @@ pub struct OpenOptions {
     /// unchanged by this.
     pub readers: usize,
     /// How the in-place store, if the store is turned into one
-    /// ([`Store::into_in_place`]), reads and writes the home image (an
-    /// experiment). The log store does not use it.
+    /// ([`Store::into_in_place`]), reads and writes the home image: by
+    /// direct I/O on its I/O threads (decision D6). The log store does
+    /// not use it.
     pub in_place_io: crate::inplace::IoMode,
     pub(crate) mutants: Mutants,
     pub(crate) log_mutants: crate::log::Mutants,
@@ -2992,15 +2993,11 @@ impl Preimages {
     }
 }
 
-/// Write `len` zeros at `offset`: for a write-zeroes record on a file
-/// system that cannot deallocate ([`Zeroes::Written`]). The record's
-/// whole length is written, for a record that is one header in the
-/// log.
-/// Write the whole home image with zeros and sync it (an experiment,
-/// for direct I/O): a new image is a hole, and every first write to a
-/// part of it would allocate there, which a sync must then make
-/// durable as metadata. Its content does not change. Only for an image
-/// whose content is zeros: a new one with no base.
+/// Write the whole home image with zeros and sync it (`skyzfsd create
+/// --zero-fill`, not the default): a new image is a hole, and every
+/// first direct write to a part of it allocates there, which the next
+/// sync must make durable as metadata. Its content does not change.
+/// Only for an image whose content is zeros: a new one with no base.
 pub fn fill_home<D: Dir>(dir: &D) -> io::Result<()> {
     let mut home = dir.open(HOME_NAME)?;
     let len = home.len()?;
@@ -3008,6 +3005,10 @@ pub fn fill_home<D: Dir>(dir: &D) -> io::Result<()> {
     home.sync()
 }
 
+/// Write `len` zeros at `offset`: for a write-zeroes record on a file
+/// system that cannot deallocate ([`Zeroes::Written`]). The record's
+/// whole length is written, for a record that is one header in the
+/// log.
 pub(crate) fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
     const CHUNK: u64 = 1 << 20;
     let zeros = vec![0u8; len.min(CHUNK) as usize];
