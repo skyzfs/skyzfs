@@ -8,7 +8,8 @@ use skyzfs_blk::{
 use super::harness::{InPlaceHarness, OnSim};
 use super::*;
 use crate::format::Key;
-use crate::log::LogError;
+use crate::io::Dir;
+use crate::log::{LogError, MARKER_NAME};
 use crate::sim::{SeededCut, SimDisk};
 use crate::store::{OpenOptions, Store, StoreConfig, StoreError};
 
@@ -54,9 +55,11 @@ fn the_in_place_store_passes_the_conformance_suite() {
     }
 }
 
-/// The suite notices the defects of durability and of failure: a flush
-/// that makes nothing durable, a failed sync tried again, a failed
-/// write that does not fail the volume. (A flush that joins a sync begun
+/// The suite notices the defects of durability and of failure, each in
+/// the cases named for it: a flush that makes nothing durable, a failed
+/// sync tried again, a failed write that does not fail the volume, a
+/// start that does not drop the kernel's cache. (A
+/// flush that joins a sync begun
 /// before a write it must cover needs a cut to land between the two at a
 /// sector the write changed; the suite's programs do not reliably make
 /// one, and `the_power_cut_test_notices_the_defects_of_durability`
@@ -67,14 +70,43 @@ fn the_suite_notices_the_defects() {
         cases: 32,
         ..Config::default()
     };
-    for mutant in [
-        Mutants::FLUSH_WITHOUT_SYNC,
-        Mutants::SYNC_RETRIED,
-        Mutants::WRITE_ERROR_PASSES,
-    ] {
+    // The cases that must notice each defect: for a flush that syncs
+    // nothing, the cases of the power cut, which the harness's cut
+    // alone can fail (the failure cases notice it too).
+    let cases: [(u32, &[&str]); 4] = [
+        (
+            Mutants::FLUSH_WITHOUT_SYNC,
+            &[
+                "flushed_operations_survive_power_cut",
+                "flush_covers_what_was_acknowledged_before_it",
+                "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may",
+            ],
+        ),
+        (
+            Mutants::SYNC_RETRIED,
+            &[
+                "failed_volume_fails_every_request",
+                "reopened_failed_volume_holds_what_was_flushed",
+            ],
+        ),
+        (Mutants::WRITE_ERROR_PASSES, &["prop_failures_match_model"]),
+        // A start that leaves the kernel's cache as it was: the reopen
+        // of a failed volume serves what a failed sync left only there.
+        (
+            Mutants::CACHE_NOT_DROPPED | Mutants::CACHE_NOT_CHECKED,
+            &["reopened_failed_volume_holds_what_was_flushed"],
+        ),
+    ];
+    for (mutant, must_fail) in cases {
         let mut harness = harnesses(mutant)[2];
         let report = run_all(&mut harness, &config);
-        assert!(!report.passed(), "the defect {mutant:#x} is not noticed");
+        let failed = report.failed();
+        for case in must_fail {
+            assert!(
+                failed.contains(case),
+                "the defect {mutant:#x} is not noticed by {case}: {failed:?}"
+            );
+        }
     }
 }
 
@@ -306,31 +338,79 @@ fn a_flush_behind_a_discard_syncs() {
     }
 }
 
-/// The failure marker is written on a thread of its own, not on the
-/// thread that executes the requests (which in the daemon is the
-/// queue's): the request that met the failure is answered while the
-/// marker is still to be written, and the next start finds the marker
-/// once the store is dropped. With the marker written inline, the
-/// thread of its own is not used.
+/// A request that meets the failure is answered while the failure
+/// marker is still being written: the marker needs the disk that has
+/// just failed, and here its sync does not end until released. The
+/// store runs on a thread of the test's, so that a store that waited
+/// for the marker would hang only that thread; the test waits for the
+/// answer, an event (the bound only ends a test that would otherwise
+/// hang). After the release the store is dropped, and the next start
+/// finds the marker.
 #[test]
-fn the_failure_marker_is_written_on_a_thread_of_its_own() {
-    for mutants in [0, Mutants::MARKER_INLINE] {
-        let disk = created(10, 0);
-        let mut store = start(&disk, mutants, false).unwrap();
-        disk.fail_write(0, false);
-        assert_eq!(write(&mut store, 1, 0x11), Err(BlkError::Failed));
-        assert_eq!(
-            store.marker_on_its_own_thread(),
-            mutants == 0,
-            "mutants {mutants:#x}"
-        );
-        drop(store);
-        disk.kill();
-        assert!(matches!(
-            start(&disk, 0, false),
-            Err(StoreError::Log(LogError::MarkedFailed))
-        ));
+fn a_request_that_meets_the_failure_is_answered_while_the_marker_waits() {
+    let disk = created(10, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    disk.hold_whole_syncs_of(MARKER_NAME);
+    disk.fail_write(0, false);
+    let (tell, answer) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tell.send(write(&mut store, 1, 0x11));
+        store
+    });
+    assert_eq!(answer.recv_timeout(WAIT), Ok(Err(BlkError::Failed)));
+    // The marker's write is under way, held at its sync.
+    while disk.held_waiters() == 0 {
+        std::thread::yield_now();
     }
+    disk.release_syncs();
+    drop(worker.join().unwrap());
+    disk.kill();
+    assert!(matches!(
+        start(&disk, 0, false),
+        Err(StoreError::Log(LogError::MarkedFailed))
+    ));
+}
+
+/// The test above notices a marker written on the caller's thread
+/// (`MARKER_INLINE`), and so also a failure that waits for the marker's
+/// thread before it answers: the marker's sync holds a caller while the
+/// failed request is not answered. That is read once a caller waits at
+/// the held sync, and needs no time: with the defect, the caller is the
+/// store's thread, which answers only after the sync.
+#[test]
+fn the_marker_test_notices_a_marker_written_on_the_callers_thread() {
+    let disk = created(10, 0);
+    let mut store = start(&disk, Mutants::MARKER_INLINE, false).unwrap();
+    disk.hold_whole_syncs_of(MARKER_NAME);
+    disk.fail_write(0, false);
+    let (tell, answer) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tell.send(write(&mut store, 1, 0x11));
+        store
+    });
+    while disk.held_waiters() == 0 {
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        answer.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty),
+        "the request was answered while the marker's sync held its caller"
+    );
+    disk.release_syncs();
+    assert_eq!(answer.recv(), Ok(Err(BlkError::Failed)));
+    drop(worker.join().unwrap());
+}
+
+/// A store that never failed ends its marker's thread without writing
+/// a marker when it is dropped: the next start serves the volume.
+#[test]
+fn a_store_that_did_not_fail_writes_no_marker() {
+    let disk = created(11, 0);
+    let store = start(&disk, 0, false).unwrap();
+    drop(store);
+    disk.kill();
+    assert!(!disk.list().unwrap().iter().any(|n| n == MARKER_NAME));
+    assert!(start(&disk, 0, false).is_ok());
 }
 
 /// A failed write fails the volume as a failed sync does; a store
@@ -505,9 +585,57 @@ fn the_start_refuses_a_store_with_requests_in_flight() {
             op: Op::Flush,
         })
         .unwrap();
+    assert!(matches!(
+        store.into_in_place(None),
+        Err(IntoInPlaceError::InFlight)
+    ));
+}
+
+/// A start whose conversion meets the failed disk, at each of the syncs
+/// the conversion makes, gives `Failed`, and the next start finds the
+/// volume marked as failed. Where the in-place store's own sync failed
+/// (the last), the marker is handed back unwritten, with the lock: no
+/// marker yet, and no other start, until the caller finishes it.
+#[test]
+fn a_start_that_meets_the_failed_disk_fails_the_volume() {
+    let mut handed_back = 0;
+    let mut failing = 0;
+    for nth in 0.. {
+        let disk = created(12, 0);
+        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        disk.fail_sync(nth, false);
+        let start_failed = match store.into_in_place(None) {
+            Ok(_) => break,
+            Err(IntoInPlaceError::Failed(start_failed)) => start_failed,
+            Err(other) => panic!("sync {nth}: {other}"),
+        };
+        failing += 1;
+        let marked = || disk.list().unwrap().iter().any(|n| n == MARKER_NAME);
+        if !marked() {
+            handed_back += 1;
+            assert!(matches!(
+                Store::open(disk.clone(), OpenOptions::default()),
+                Err(StoreError::Locked)
+            ));
+            start_failed.finish();
+            assert!(marked(), "sync {nth}: no marker after the finish");
+        } else {
+            drop(start_failed);
+        }
+        disk.clear_faults();
+        disk.kill();
+        assert!(
+            matches!(
+                start(&disk, 0, false),
+                Err(StoreError::Log(LogError::MarkedFailed))
+            ),
+            "sync {nth}"
+        );
+    }
+    assert!(failing >= 2, "{failing} syncs failed the conversion");
     assert_eq!(
-        store.into_in_place(None).err(),
-        Some(IntoInPlaceError::InFlight)
+        handed_back, 1,
+        "the in-place store's own sync hands it back"
     );
 }
 
@@ -853,4 +981,87 @@ fn the_harness_gives_the_store() {
         })
         .unwrap();
     assert!(target.store().is_some());
+}
+
+// Every start serves only what the disk holds.
+
+/// What the reopened volume shows of block 4 after a failed sync, and
+/// what it holds after a write elsewhere, a completed flush and a power
+/// cut that keeps nothing unsynced: the two must be the same. A failed
+/// sync can leave a page marked clean that the disk never got; a start
+/// that served it from the cache would show what the cut then takes.
+fn shown_survives(seed: u64, mutants: u32) -> Result<bool, String> {
+    let e = |e: BlkError| e.to_string();
+    let disk = created(seed, 0);
+    let mut store = start(&disk, mutants, false).map_err(|e| e.to_string())?;
+    write(&mut store, 4, 0x11).map_err(e)?;
+    run(&mut store, 100, Op::Flush).result.map_err(e)?;
+    write(&mut store, 4, 0x44).map_err(e)?;
+    disk.fail_sync(0, false);
+    if run(&mut store, 101, Op::Flush).result.is_ok() {
+        return Err("the flush did not fail".into());
+    }
+    drop(store);
+    disk.clear_faults();
+    disk.kill();
+    let mut store = start(&disk, mutants, true).map_err(|e| e.to_string())?;
+    let shown = read(&mut store, 4).map_err(e)?;
+    write(&mut store, 5, 0x55).map_err(e)?;
+    run(&mut store, 102, Op::Flush).result.map_err(e)?;
+    drop(store);
+    disk.power_cut(crate::sim::LoseAll);
+    let mut store = start(&disk, 0, false).map_err(|e| e.to_string())?;
+    Ok(read(&mut store, 4).map_err(e)? == shown)
+}
+
+/// Acceptance (design §4.1): what a start shows survives a completed
+/// flush and a power cut, also after a failed sync whose pages the
+/// kernel's cache kept, at 64 seeds of the failed sync's leavings. A
+/// start that does not drop the cache is noticed.
+#[test]
+fn every_start_serves_only_what_the_disk_holds() {
+    for seed in 0..64 {
+        assert_eq!(shown_survives(seed, 0), Ok(true), "seed {seed}");
+    }
+    let dropped_nothing = Mutants::CACHE_NOT_DROPPED | Mutants::CACHE_NOT_CHECKED;
+    let lost = (0..64)
+        .filter(|&seed| shown_survives(seed, dropped_nothing) == Ok(false))
+        .count();
+    assert!(lost > 0, "a start that keeps the cache is not noticed");
+}
+
+/// Open and enter the in-place store, as a daemon would.
+fn enter(disk: &SimDisk, mutants: u32) -> Result<InPlace<SimDisk>, IntoInPlaceError> {
+    let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+    store.into_in_place_with(None, Mutants(mutants))
+}
+
+/// A start whose drop of the cache leaves pages (something else maps
+/// or locks the file), or that runs on a kernel that cannot count them,
+/// refuses the volume, which has not failed: the next start, with the
+/// cache dropped, serves it. A start that does not check is noticed.
+#[test]
+fn a_start_refuses_a_volume_whose_cache_stays() {
+    let disk = created(13, 0);
+    disk.keep_cache(true);
+    let refused = enter(&disk, 0);
+    assert!(
+        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("stay")),
+        "{refused:?}"
+    );
+    drop(refused);
+    assert!(
+        enter(&disk, Mutants::CACHE_NOT_CHECKED).is_ok(),
+        "the defect is noticed only if the start that does not check starts"
+    );
+    disk.keep_cache(false);
+    disk.set_cache_counts(false);
+    let refused = enter(&disk, 0);
+    assert!(
+        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("cachestat")),
+        "{refused:?}"
+    );
+    drop(refused);
+    disk.set_cache_counts(true);
+    assert!(enter(&disk, 0).is_ok());
 }

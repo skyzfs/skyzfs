@@ -3430,6 +3430,7 @@ impl<D: Dir> Store<D> {
     ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError>
     where
         D: Clone + Send + 'static,
+        D::Lock: Send + 'static,
     {
         self.into_in_place_with(waker, crate::inplace::Mutants::default())
     }
@@ -3441,13 +3442,24 @@ impl<D: Dir> Store<D> {
     ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError>
     where
         D: Clone + Send + 'static,
+        D::Lock: Send + 'static,
     {
-        use crate::inplace::IntoInPlaceError;
+        use crate::inplace::{FailedStart, IntoInPlaceError};
         if !self.queue.is_empty() || !self.ids.is_empty() {
             return Err(IntoInPlaceError::InFlight);
         }
+        // A failure of the log store marks the log as its own failure
+        // path does (here, on this thread), before this returns; only
+        // the in-place store's own sync hands its marker back unwritten.
+        let failed = |core: &Core<D>| {
+            if core.helper_ended {
+                IntoInPlaceError::HelperEnded
+            } else {
+                IntoInPlaceError::Failed(FailedStart::written())
+            }
+        };
         if self.core.failed {
-            return Err(IntoInPlaceError::Failed);
+            return Err(failed(&self.core));
         }
         self.core.marks = None;
         self.core.working = false;
@@ -3459,7 +3471,7 @@ impl<D: Dir> Store<D> {
             .and_then(|()| self.core.checkpoint())
             .and_then(|_| self.core.settle());
         if emptied.is_err() || self.core.failed {
-            return Err(IntoInPlaceError::Failed);
+            return Err(failed(&self.core));
         }
         let (start, end) = (self.core.log.floor(), self.core.log.tail());
         if start != end {

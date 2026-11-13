@@ -37,6 +37,14 @@ fn config() -> StoreConfig {
     }
 }
 
+/// The directory at `path`, whose files count their cached pages as
+/// the daemon's do: the in-place store's start refuses without it.
+fn on_disk(path: &std::path::Path) -> FsDir {
+    FsDir::new(path)
+        .unwrap()
+        .with_cache_count(skyzfs_ublk_sys::cached_pages)
+}
+
 /// The log store's open, then the in-place store.
 fn start(dir: &FsDir) -> Result<OnFiles, StoreError> {
     let (store, _) = Store::open(dir.clone(), OpenOptions::default())?;
@@ -89,7 +97,7 @@ fn flush(store: &mut OnFiles) {
 #[test]
 fn the_in_place_store_round_trips_on_real_files() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = FsDir::new(tmp.path()).unwrap();
+    let dir = on_disk(tmp.path());
     drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
     let mut store = start(&dir).unwrap();
     write(&mut store, 0, Buf::filled(4, 0x11));
@@ -180,7 +188,7 @@ fn inplace_kill_test_child() {
         return;
     };
     let from: u64 = std::env::var(CHILD_FROM).unwrap().parse().unwrap();
-    let dir = FsDir::new(path).unwrap();
+    let dir = on_disk(std::path::Path::new(&path));
     let mut store = start(&dir).unwrap();
     // The reports go to standard error, which the test harness does not
     // write to (as in `store_real.rs`).
@@ -220,7 +228,7 @@ fn inplace_kill_test_child() {
 #[test]
 fn acknowledged_writes_survive_kill_9_in_place() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = FsDir::new(tmp.path()).unwrap();
+    let dir = on_disk(tmp.path());
     drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
     let exe = std::env::current_exe().unwrap();
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];

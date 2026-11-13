@@ -19,6 +19,9 @@ skyzfs-blk = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# For the real-file tests of the in-place store: the call that counts a
+# file's cached pages (`cachestat`), which this crate does not make.
+skyzfs-ublk-sys = { workspace = true }
 skyzfs-blk = { workspace = true, features = ["conformance"] }
 tempfile = { workspace = true }
 

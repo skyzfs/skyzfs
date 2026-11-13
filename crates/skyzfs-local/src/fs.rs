@@ -70,12 +70,20 @@ pub fn page_size() -> u32 {
 /// [`io::ErrorKind::Unsupported`] where the file system has none.
 pub type WritebackCall = fn(&fs::File, u64, u64) -> io::Result<()>;
 
+/// The call that counts the pages of a file in the kernel's cache
+/// ([`File::cached_pages`]): given by whoever opens the store, since it
+/// is a system call this crate does not make itself (Linux: `cachestat`).
+/// It answers [`io::ErrorKind::Unsupported`] where the kernel has none.
+pub type CacheCountCall = fn(&fs::File) -> io::Result<u64>;
+
 /// A directory on a real file system.
 #[derive(Debug, Clone)]
 pub struct FsDir {
     path: PathBuf,
     /// Given to every file opened here: see [`FsDir::with_writeback`].
     writeback: Option<WritebackCall>,
+    /// Given to every file opened here: see [`FsDir::with_cache_count`].
+    cache_count: Option<CacheCountCall>,
 }
 
 impl FsDir {
@@ -91,6 +99,7 @@ impl FsDir {
         Ok(Self {
             path,
             writeback: None,
+            cache_count: None,
         })
     }
 
@@ -100,6 +109,17 @@ impl FsDir {
     pub fn with_writeback(self, call: WritebackCall) -> Self {
         Self {
             writeback: Some(call),
+            ..self
+        }
+    }
+
+    /// The same directory, whose files count their cached pages with
+    /// `call`. Without it, [`File::cached_pages`] of its files answers
+    /// unsupported, and the in-place store refuses to start
+    /// ([`crate::inplace`]).
+    pub fn with_cache_count(self, call: CacheCountCall) -> Self {
+        Self {
+            cache_count: Some(call),
             ..self
         }
     }
@@ -252,13 +272,13 @@ impl Dir for FsDir {
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let path = self.path.join(name);
         let file = options.open(&path)?;
-        FsFile::new(file, &path, self.writeback)
+        FsFile::new(file, &path, self.writeback, self.cache_count)
     }
 
     fn open(&self, name: &str) -> io::Result<FsFile> {
         let path = self.path.join(name);
         let file = fs::OpenOptions::new().read(true).write(true).open(&path)?;
-        FsFile::new(file, &path, self.writeback)
+        FsFile::new(file, &path, self.writeback, self.cache_count)
     }
 
     fn remove(&self, name: &str) -> io::Result<()> {
@@ -326,6 +346,8 @@ pub struct FsFile {
     file: fs::File,
     /// See [`FsDir::with_writeback`].
     writeback: Option<WritebackCall>,
+    /// See [`FsDir::with_cache_count`].
+    cache_count: Option<CacheCountCall>,
     /// A second descriptor on the same file that bypasses the cache.
     /// `None`: the file system, or this system, has none to give.
     direct: Option<fs::File>,
@@ -411,11 +433,17 @@ const DIRECT_ALIGN: usize = 4096;
 
 impl FsFile {
     /// `file`, which was just opened as `path`.
-    fn new(file: fs::File, path: &Path, writeback: Option<WritebackCall>) -> io::Result<Self> {
+    fn new(
+        file: fs::File,
+        path: &Path,
+        writeback: Option<WritebackCall>,
+        cache_count: Option<CacheCountCall>,
+    ) -> io::Result<Self> {
         let direct = open_direct(&file, path)?;
         Ok(Self {
             file,
             writeback,
+            cache_count,
             direct,
             helper: None,
             #[cfg(test)]
@@ -622,6 +650,25 @@ impl File for FsFile {
     fn start_writeback(&mut self, offset: u64, len: u64) -> io::Result<()> {
         match self.writeback {
             Some(call) => call(&self.file, offset, len),
+            None => Err(io::ErrorKind::Unsupported.into()),
+        }
+    }
+
+    fn drop_cache(&mut self) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            rustix::fs::fadvise(&self.file, 0, None, rustix::fs::Advice::DontNeed)
+                .map_err(io::Error::from)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    fn cached_pages(&self) -> io::Result<u64> {
+        match self.cache_count {
+            Some(call) => call(&self.file),
             None => Err(io::ErrorKind::Unsupported.into()),
         }
     }

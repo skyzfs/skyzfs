@@ -4221,6 +4221,7 @@ dependencies = [
  "proptest",
  "rustix 1.1.4",
  "skyzfs-blk",
+ "skyzfs-ublk-sys",
  "tempfile",
  "thiserror 2.0.19",
 ]
