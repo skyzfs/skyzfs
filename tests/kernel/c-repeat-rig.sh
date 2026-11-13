@@ -21,8 +21,12 @@
 # Environment: RIG_BLKCHECK (the tool), RIG_DAEMONS ("LABEL=PATH ..."),
 # RIG_ROUNDS (passes for each daemon, default 10), RIG_WATCH (on: udev's
 # rules as the image ships them, which watch ublk devices on Ubuntu 26.04;
-# off: the daemon rig's rule that turns the watch off), RIG_SERVE_ARGS
-# (default --store in-place).
+# off: the daemon rig's rule that turns the watch off), RIG_PROVOKE (1:
+# with the watch on, a loop opens every ublk device for writing and
+# closes it, every RIG_PROVOKE_MS ms (default 20), so that udev reads the
+# devices under the suite all through the pass: review's finding 4 on
+# #59, the case the model's half of M1.T28 is for, made frequent on
+# purpose), RIG_SERVE_ARGS (default --store in-place).
 #
 # It judges nothing: exit 0 when it ran, 2 for an error of its own. The
 # summary is OUT/summary.md.
@@ -42,6 +46,8 @@ TOOL=${RIG_BLKCHECK:?}
 read -r -a DAEMONS <<< "${RIG_DAEMONS:?}"
 ROUNDS=${RIG_ROUNDS:-10}
 WATCH=${RIG_WATCH:-on}
+PROVOKE=${RIG_PROVOKE:-}
+PROVOKE_MS=${RIG_PROVOKE_MS:-20}
 SERVE_ARGS=${RIG_SERVE_ARGS:---store in-place}
 NOWATCH=/etc/udev/rules.d/61-skyzfs-rig-ublkb-nowatch.rules
 SUM=$OUT/summary.md
@@ -50,6 +56,9 @@ note() { echo "$*" | tee -a "$SUM"; }
 
 [ "$(id -u)" = 0 ] || die "needs root"
 case $WATCH in on|off) ;; *) die "RIG_WATCH is on or off: '$WATCH'" ;; esac
+case $PROVOKE in ''|1) ;; *) die "RIG_PROVOKE is 1 or empty: '$PROVOKE'" ;; esac
+[[ $PROVOKE_MS =~ ^[0-9]+$ ]] || die "RIG_PROVOKE_MS is a number: '$PROVOKE_MS'"
+[ -z "$PROVOKE" ] || [ "$WATCH" = on ] || die "RIG_PROVOKE needs udev's watch on"
 [[ $ROUNDS =~ ^[0-9]+$ ]] || die "RIG_ROUNDS is a number: '$ROUNDS'"
 mkdir -p "$WORK"
 [ -e /dev/ublk-control ] || modprobe ublk_drv 2> "$OUT/modprobe.log" || {
@@ -58,10 +67,27 @@ mkdir -p "$WORK"
 }
 why=$(blktrace_ready) || die "$why"
 MONITOR=""
+PROVOKER=""
+# The provoker: a writable open and close of every ublk device, over and
+# over. The suite holds each device open, so the close is never the last
+# one and syncs nothing; between a create and the suite's open it may
+# be, and then waits at most for that device's server.
+provoke() {
+    local d s
+    s=$(awk -v ms="$PROVOKE_MS" 'BEGIN { printf "%.3f", ms / 1000 }')
+    while :; do
+        for d in /dev/ublkb*; do
+            [ -b "$d" ] || continue
+            { : > "$d"; } 2>/dev/null
+        done
+        sleep "$s"
+    done
+}
 # shellcheck disable=SC2317,SC2329  # reached through the trap
 cleanup() {
     blktrace_off
     [ -z "$MONITOR" ] || kill "$MONITOR" 2>/dev/null
+    [ -z "$PROVOKER" ] || kill "$PROVOKER" 2>/dev/null
     if [ "$WATCH" = off ]; then rm -f "$NOWATCH"; lim 30 udevadm control --reload; fi
 }
 trap cleanup EXIT
@@ -80,7 +106,8 @@ part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
 # shellcheck disable=SC1091
 note "## Check c's first pass, ${ROUNDS} times for each daemon, in turn, on this machine ($(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r))"
 note ""
-note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")"
+note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")$([ -n "$PROVOKE" ] && echo "; udev's reads provoked: every ublk device opened for writing and closed every $PROVOKE_MS ms")"
+note "- the tool: $TOOL"
 note "- the request log (--request-log): ${rl_said}the block trace is on the clock mono, as the log's mono_ns"
 note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); a volume's c-cN.extents (filefrag -b512) are in its sectors"
 note ""
@@ -94,6 +121,7 @@ for r in $(seq 1 "$ROUNDS"); do
         rm -rf "$w"; mkdir -p "$p" "$w"
         udevadm monitor --udev --subsystem-match=block > "$p/udev.txt" 2>&1 &
         MONITOR=$!
+        if [ -n "$PROVOKE" ]; then provoke & PROVOKER=$!; fi
         blktrace_on "$p/ftrace.txt"
         blktrace_mark "pass $r $label start"
         t0=$(date +%s)
@@ -105,6 +133,7 @@ for r in $(seq 1 "$ROUNDS"); do
         secs=$(( $(date +%s) - t0 ))
         blktrace_off
         kill "$MONITOR" 2>/dev/null; wait "$MONITOR" 2>/dev/null; MONITOR=""
+        if [ -n "$PROVOKER" ]; then kill "$PROVOKER" 2>/dev/null; wait "$PROVOKER" 2>/dev/null; PROVOKER=""; fi
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
         for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
