@@ -74,7 +74,7 @@
 //! | 8 | 16 | the boot it was written in |
 //! | 24 | 16 | the store's identity, or zeros where it was not known |
 //! | 40 | 1 | whether a client held the device: 0 none did, 1 one did, 2 not known when the note was written |
-//! | 41 | 1 | the reason: 1 the log failed while serving, 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read, 7 a write or sync of the in-place store's image failed (while serving, or in its own sync at its start) |
+//! | 41 | 1 | the reason: 1 the log store's log failed (while serving, or in the start's checkpoint), 2 the log was short, 3 the recovery failed the log, 4 marked as failed, 5 the acknowledged position could not be read, 6 the device's note could not be read, 7 a write or sync of the in-place store's image failed (while serving, or in its own sync at its start) |
 //! | 42 | 6 | zero |
 //! | 48 | 8 | when it was written: milliseconds since boot |
 //! | 56 | 8 | zero |
@@ -86,10 +86,17 @@
 //! `--acknowledge-failure` says ("the failure note cannot be read"),
 //! and deletes a device of the volume that waits for a server. Its
 //! `skyzfsd status` says the same. The note lives in the run directory
-//! until the next boot: to serve the volume with such a daemon before
-//! then, after the failure has been dealt with, remove the note by
-//! hand. This version reads all seven codes, and refuses an unknown
-//! one in the same way.
+//! until the next boot, and a reboot clears it: once the failure has
+//! been dealt with, the next boot's start acknowledges the volume with
+//! `--acknowledge-failure` (the store's own failure marker, `log.failed`
+//! beside the image, outlives the note but is acknowledged then). To
+//! serve the volume with such a daemon within the same boot the note is
+//! not enough to remove: the marker outlives it, and while an
+//! attachment record of this boot still names a device the start will
+//! not offer the acknowledgement, so it would write a fresh note. Both
+//! the note and the marker have to be removed by hand, which is the
+//! operator saying the disk is good again. This version reads all seven
+//! codes, and refuses an unknown one in the same way.
 //!
 //! The syncs are of the record's file and of its directory only. The
 //! daemon never syncs a file system or the whole machine: such a sync

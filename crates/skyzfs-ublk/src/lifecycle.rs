@@ -255,9 +255,10 @@ pub enum AddError {
 /// Why a volume failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
-    /// The log failed while the volume was served: the log store's
-    /// failure, also where it failed in the checkpoint that hands the
-    /// volume to the in-place store at a start.
+    /// The log store's log failed: while it served the volume, or in the
+    /// checkpoint that hands the volume to the in-place store at a start
+    /// (where nothing was served yet). The daemon's line at the failure
+    /// says which, so the reason itself does not claim "while served".
     LogFailed,
     /// A start found the log shorter than what was acknowledged.
     Short,
@@ -280,7 +281,7 @@ pub enum Reason {
 impl std::fmt::Display for Reason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Reason::LogFailed => "the log failed while the volume was served",
+            Reason::LogFailed => "the log store's log failed",
             Reason::Short => "the log is shorter than what was acknowledged",
             Reason::RecoveryFailed => "the recovery's sync failed",
             Reason::Marked => "the volume is marked as failed",
