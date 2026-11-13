@@ -46,6 +46,11 @@ PROBE_ROUNDS=${RIG_PROBE_ROUNDS:-2000}
 SERVE_ARGS=${RIG_SERVE_ARGS:---store in-place}
 T=/sys/kernel/tracing
 RL_SAID=""
+# Whether a daemon's build has the request log (M1.3y's test hooks). The
+# hooked build prints its hooks after the usage and exits 2: the text is
+# read whole, since under pipefail a pipe into grep would fail on that
+# status.
+has_request_log() { local h; h=$("$1" serve --help 2>&1); [[ $h == *--request-log* ]]; }
 SUM=$OUT/summary.md
 die() { echo "dio-split-rig: $*" | tee -a "$SUM" >&2; exit 2; }
 note() { echo "$*" | tee -a "$SUM"; }
@@ -108,11 +113,6 @@ trace_off() {
 }
 trap '[ -z "$TRACE_PID" ] || trace_off' EXIT
 
-# Whether a daemon's build has the request log (M1.3y's test hooks).
-# The hooked build prints its hooks after the usage and exits 2: the
-# text is read whole, since under pipefail a pipe into grep would fail on
-# that status.
-has_request_log() { local h; h=$("$1" serve --help 2>&1); [[ $h == *--request-log* ]]; }
 helper() { # WORK VERB N [DAEMON]
     local rl=""; has_request_log "$4" && rl=1
     BLK_WORK=$1 BLK_SKYZFSD=$4 BLK_SERVE_ARGS=$SERVE_ARGS BLK_REQUEST_LOG=$rl lim 120 "$HERE/blkcheck-helper.sh" "$2" "$3"
