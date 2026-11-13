@@ -36,6 +36,10 @@ name: skyzfs-replay-rig
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
 #     `daemon_budget` (full: every record prefix, about 45 minutes a job).
+# Which store the daemon jobs drive: on a pull request the in-place
+# store (`--store in-place`), which is the one that changes; by
+# dispatch what `serve_args` names, and without --store there the log
+# store, which is frozen until it is removed (M1.T20).
 on:
   workflow_dispatch:
     inputs:
@@ -63,6 +67,9 @@ on:
         type: choice
         options: [pull-request, full]
         default: full
+      serve_args:
+        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --store in-place); without --store the rig passes --store log. A pull request runs --store in-place"
+        default: ""
   pull_request:
     paths:
       - tests/kernel/**
@@ -278,8 +285,12 @@ jobs:
         env:
           BUDGET: ${{ needs.plan.outputs.budget }}
           DISCARD: ${{ inputs.discard || 'zero' }}
+          SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '' }}
         run: |
           [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
+          # Options only: letters, digits and - = . , : / and spaces.
+          [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
+          [ -z "$SERVE_ARGS" ] || echo "Serve options for every start: \`$SERVE_ARGS\`" >> "$GITHUB_STEP_SUMMARY"
           # The pull-request budget: every required prefix and every deep
           # check, the light check on a sample of the flush boundaries; it
           # does not show design §9's criterion, and its summary says so.
@@ -296,6 +307,7 @@ jobs:
             echo "export RIG_BUDGET_S=$budget_s RIG_BETWEEN_BUDGET_S=$between_s RIG_BUDGET_NAME=$BUDGET RIG_EVERY_PREFIX=$every"
             echo "export RIG_DISCARD=$DISCARD RIG_AUTOTRIM=on RIG_REQUIRE_WITNESS=1"
             printf 'export RIG_REPLAY_LOG=%q\n' "$RUNNER_TEMP/bin/replay-log"
+            printf 'export RIG_SERVE_ARGS=%q\n' "$SERVE_ARGS"
           } > "$RUNNER_TEMP/rig.env"
           rc=0
           sudo bash -c '. "$1" && exec tests/kernel/replay-rig.sh "$2" /mnt/skz-replay' \
