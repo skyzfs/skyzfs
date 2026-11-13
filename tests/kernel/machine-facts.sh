@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# What a runner is and has, as Markdown, before anything is installed:
+# the architecture and page size, the kernel, whether the modules the
+# rigs load are in the kernel's tree, whether the distribution offers
+# the packages the rigs install, and the work disk with its write
+# cache. Changes nothing on the machine but apt's package lists.
+# Exit 0 whatever it finds: it reports.
+set -u
+
+row() { printf '| %s | %s |\n' "$1" "$2"; }
+mod() { # name: where the module is, or "not in this kernel's tree"
+    local f
+    if f=$(modinfo -n "$1" 2>/dev/null); then echo "${f#/lib/modules/*/}"
+    elif grep -qw "^$1" /proc/modules 2>/dev/null; then echo "loaded, built in or from elsewhere"
+    else echo "not in this kernel's tree"; fi
+}
+pkg() { # name: the candidate version apt offers, or "not offered"
+    local v
+    v=$(apt-cache policy "$1" 2>/dev/null | awk '$1 == "Candidate:" { print $2; exit }')
+    if [ -n "$v" ] && [ "$v" != "(none)" ]; then echo "$v"; else echo "not offered"; fi
+}
+
+sudo apt-get update -qq >/dev/null 2>&1 || echo "apt-get update failed" >&2
+kver=$(uname -r)
+work=$(df --output=source / | tail -n 1)
+for d in /mnt "$HOME"; do
+    s=$(df --output=source "$d" 2>/dev/null | tail -n 1) && [ -n "$s" ] && { work=$s; break; }
+done
+dev=${work#/dev/}; parent=$dev
+[ -e "/sys/class/block/$dev/partition" ] && parent=$(basename "$(readlink -f "/sys/class/block/$dev/..")")
+
+echo "### The machine"
+echo
+echo "| | |"
+echo "|---|---|"
+row "architecture" "$(uname -m) ($(dpkg --print-architecture 2>/dev/null))"
+row "page size" "$(getconf PAGESIZE) bytes"
+row "kernel" "$kver"
+# shellcheck source=/dev/null
+row "os" "$(. /etc/os-release && echo "$PRETTY_NAME")"
+row "CPUs, memory" "$(nproc), $(awk '/MemTotal/ { printf "%.1f GiB", $2 / 1048576 }' /proc/meminfo)"
+row "ublk_drv" "$(mod ublk_drv)"
+row "zfs module" "$(mod zfs)"
+row "dm-log-writes" "$(mod dm-log-writes)"
+row "dm-snapshot" "$(mod dm-snapshot)"
+row "dm-delay" "$(mod dm-delay)"
+row "loop" "$(mod loop)"
+row "io_uring" "$(grep -qw io_uring_setup /proc/kallsyms 2>/dev/null && echo "in the kernel" || echo "not found in kallsyms")"
+for p in zfsutils-linux zfs-dkms "linux-modules-extra-$kver" libdevmapper-dev libudev-dev libclang-dev xfsprogs postgresql fio perf-tools-unstable "linux-tools-$kver" strace; do
+    row "package $p" "$(pkg "$p")"
+done
+row "/mnt" "$(df -h --output=source,size,avail,fstype /mnt 2>/dev/null | tail -n 1)"
+row "work disk" "$work, on $parent: write_cache $(cat "/sys/block/$parent/queue/write_cache" 2>/dev/null || echo 'not said'); rotational $(cat "/sys/block/$parent/queue/rotational" 2>/dev/null || echo '?')"
+row "its mount" "$(findmnt -n -o FSTYPE,OPTIONS -T /mnt 2>/dev/null)"
+echo
+exit 0

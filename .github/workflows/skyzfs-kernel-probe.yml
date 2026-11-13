@@ -16,6 +16,9 @@ on:
       ublksrv_ref:
         description: "ublk-org/ublksrv git ref to build. The default is v1.9, the commit the benchmark also builds"
         default: "6d0d922614ec18e6f2b5d476af8d540a1d9c1de8"
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04"]'
   # A pull request that changes the probe runs it. (Dispatching from a
   # branch works although the file is not on main: a workflow can be
   # dispatched through the API once it has run at all.)
@@ -38,13 +41,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-26.04, ubuntu-24.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-26.04","ubuntu-24.04"]') }}
     steps:
       - uses: actions/checkout@v6
       # While the names of the image's package mirrors do not resolve,
       # use a mirror outside ubuntu.com (tests/lib/apt-fallback.sh).
       - name: Package mirrors
         run: bash tests/lib/apt-fallback.sh
+      # What the machine is, before the probe installs anything: the
+      # architecture and page size, and whether what the rigs need is
+      # in the kernel's modules or the distribution (M1.T21, arm64).
+      - name: The machine
+        run: bash tests/kernel/machine-facts.sh | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Probe
         # The ref goes in a file: ubuntu-26.04's sudo-rs does not carry
         # the environment through.
