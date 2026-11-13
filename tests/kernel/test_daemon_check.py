@@ -504,6 +504,21 @@ class CheckG(unittest.TestCase):
             if check == 'g':
                 self.assertIn(name[len('obs_'):], branch, name)
 
+    def test_check_c_writes_its_evidence_on_every_path(self):
+        # M1.T28: check c ends in one place, which writes obs_c_evidence
+        # whether or not the pass with the delay ran; and the evidence is
+        # started and ended around both passes of the tool.
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
+        self.assertEqual(body.count('obs c_evidence '), 2, 'one line with a trace and one without')
+        self.assertIn('c_watch_back', body)
+        for tag in ('c', 'cd'):
+            self.assertIn(f'c_evidence_start {tag}\n', text)
+            self.assertIn(f'c_evidence_end {tag} "$work" "$rc"', text)
+        self.assertIn('c_watch_back', text[text.index('\ncleanup() {'):text.index('\ntrap cleanup EXIT')])
+
     def test_on_the_daemon_in_place_every_line_is_judged(self):
         r = in_place()
         rows, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')

@@ -35,6 +35,8 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
+# shellcheck source=tests/kernel/blktrace.sh
+. "$HERE/blktrace.sh"
 OUT=${1:?usage: dio-split-rig.sh OUT}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -44,7 +46,6 @@ read -r -a DAEMONS <<< "${RIG_DAEMONS:?}"
 ROUNDS=${RIG_ROUNDS:-0}
 PROBE_ROUNDS=${RIG_PROBE_ROUNDS:-2000}
 SERVE_ARGS=${RIG_SERVE_ARGS:---store in-place}
-T=/sys/kernel/tracing
 RL_SAID=""
 # Whether a daemon's build has the request log (M1.3y's test hooks). The
 # hooked build prints its hooks after the usage and exits 2: the text is
@@ -61,17 +62,13 @@ mkdir -p "$WORK"
     apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" >> "$OUT/modprobe.log" 2>&1
     modprobe ublk_drv 2>> "$OUT/modprobe.log" || die "no ublk driver"
 }
-# The requests issued to every device, a bio split, a request put back
-# in the queue (a short result from a server is requeued), and every
-# completion.
-EVENTS="block_rq_issue block_split block_rq_requeue block_rq_complete"
-for e in $EVENTS; do [ -d "$T/events/block/$e" ] || die "no ftrace event $e under $T"; done
-grep -qw mono "$T/trace_clock" || die "no trace clock mono"
+why=$(blktrace_ready) || die "$why"
 for d in "${DAEMONS[@]}"; do
     if has_request_log "${d#*=}"; then RL_SAID+="${d%%=*} yes; "; else RL_SAID+="${d%%=*} no; "; fi
 done
+export BLKTRACE_FALLBACK=1
 FALLBACK=""
-grep -qx 'direct_write_fallback' "$T/available_filter_functions" 2>/dev/null && FALLBACK=direct_write_fallback
+grep -qx 'direct_write_fallback' "$BLKTRACE_T/available_filter_functions" 2>/dev/null && FALLBACK=direct_write_fallback
 
 # shellcheck disable=SC1091
 note "## The direct-write split probe ($(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r))"
@@ -85,33 +82,7 @@ part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
 note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, $(stat -L -c '%t:%T' "$src" 2>/dev/null) in hex, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); the extents of a volume's files (c-cN.extents, filefrag -b512) are in its sectors"
 note "- function trace of the fallback: ${FALLBACK:-not traceable on this kernel (direct_write_fallback is not in available_filter_functions)}"
 
-TRACE_PID=""
-trace_on() { # FILE
-    echo 0 > "$T/tracing_on"
-    echo nop > "$T/current_tracer"
-    echo > "$T/trace"
-    echo 65536 > "$T/buffer_size_kb"
-    # The daemon's request log (--request-log) stamps CLOCK_MONOTONIC.
-    echo mono > "$T/trace_clock"
-    if [ -n "$FALLBACK" ]; then
-        echo "$FALLBACK" > "$T/set_ftrace_filter"
-        echo function > "$T/current_tracer"
-    fi
-    for e in $EVENTS; do echo 1 > "$T/events/block/$e/enable"; done
-    cat "$T/trace_pipe" > "$1" &
-    TRACE_PID=$!
-    echo 1 > "$T/tracing_on"
-}
-trace_off() {
-    echo 0 > "$T/tracing_on"
-    sleep 1
-    kill "$TRACE_PID" 2>/dev/null; wait "$TRACE_PID" 2>/dev/null
-    for e in $EVENTS; do echo 0 > "$T/events/block/$e/enable"; done
-    echo nop > "$T/current_tracer"
-    echo > "$T/set_ftrace_filter" 2>/dev/null
-    TRACE_PID=""
-}
-trap '[ -z "$TRACE_PID" ] || trace_off' EXIT
+trap blktrace_off EXIT
 
 helper() { # WORK VERB N [DAEMON]
     local rl=""; has_request_log "$4" && rl=1
@@ -133,10 +104,10 @@ for mode in plain discard reader; do
     udevadm monitor --udev --subsystem-match=block > "$OUT/probe-$mode-udev.txt" 2>&1 &
     mon=$!
     sleep 0.5
-    trace_on "$OUT/probe-$mode-ftrace.txt"
+    blktrace_on "$OUT/probe-$mode-ftrace.txt"
     lim 900 python3 "$HERE/dio_split_probe.py" "$dev" "$mode" "$PROBE_ROUNDS" "$OUT/probe-$mode.json" \
         > "$OUT/probe-$mode.out" 2> "$OUT/probe-$mode.err"; rc=$?
-    trace_off
+    blktrace_off
     kill "$mon" 2>/dev/null; wait "$mon" 2>/dev/null
     if [ $rc != 0 ]; then
         note "| $mode | probe exit $rc: $(tail -n 2 "$OUT/probe-$mode.err" | tr '\n' ' ') |"
@@ -182,8 +153,8 @@ for r in $(seq 1 "$ROUNDS"); do
         label=${d%%=*}; bin=${d#*=}
         p=$OUT/pass-$r-$label; w=$WORK/p$r-$label
         rm -rf "$w"; mkdir -p "$p" "$w"
-        trace_on "$p/ftrace.txt"
-        echo "pass $r $label start" > "$T/trace_marker"
+        blktrace_on "$p/ftrace.txt"
+        blktrace_mark "pass $r $label start"
         t0=$(date +%s)
         rl=""; has_request_log "$bin" && rl=1
         BLKCHECK_TRACE=$p/c-trace.tsv BLK_SKYZFSD=$bin BLK_WORK=$w BLK_SERVE_ARGS=$SERVE_ARGS BLK_REQUEST_LOG=$rl \
@@ -191,7 +162,7 @@ for r in $(seq 1 "$ROUNDS"); do
             --cases 16 --rounds 4 --timeout 60 \
             > "$p/c-cases.tsv" 2> "$p/c-blkcheck.err"; rc=$?
         secs=$(( $(date +%s) - t0 ))
-        trace_off
+        blktrace_off
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
         for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")

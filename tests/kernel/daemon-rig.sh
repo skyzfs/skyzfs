@@ -136,6 +136,8 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # klog_hung, klog_bad_since. A lost marker is "lost", never 0 lines.
 # shellcheck source=tests/kernel/klog.sh
 . "$HERE/klog.sh"
+# shellcheck source=tests/kernel/blktrace.sh
+. "$HERE/blktrace.sh"
 # Device paths: dev_strays, and why every dd to a device has conv=nocreat.
 # shellcheck source=tests/kernel/devnode.sh
 . "$HERE/devnode.sh"
@@ -363,6 +365,8 @@ PY
 cleanup() {
     set +e
     touch "$WORK/stop-all"
+    blktrace_off
+    c_watch_back
     local p
     for p in $(lim 30 zpool list -H -o name 2>/dev/null | grep '^skzd-'); do
         # A suspended pool cannot be exported; trying would block.
@@ -2344,6 +2348,71 @@ hold_test() {
 # =================================================================== c
 # The suite's verdict on each case, next to what the suite declares for
 # a harness that can do what this one can. The judge compares the two.
+# What check c keeps beside the tool's trace (M1.T28, skyzfs/skyzfs#58):
+# the daemon's own record of what each instance was handed and answered
+# (--request-log, in its test build from M1.3y on; a volume's file and
+# the extents of its files, by the helper), and the kernel's block
+# trace (tests/kernel/blktrace.sh: issue, split, requeue, completion,
+# on the clock of the request log). The artifact keeps them for a pass
+# in which a case failed or the tool did not end; a pass that passed
+# leaves only their counts in the line obs_c_evidence. A failure of
+# 43455086383 was read from both sides this way: the call the model took
+# as reissued had been applied and completed by the old server, and
+# returned late only because a udev read of the device, requeued at the
+# server's death, held the page the direct write's return waits on.
+# udev's watch on the suite's devices is turned off for check c, so that
+# a write's close does not make udev read the device under the suite.
+C_NOWATCH=/etc/udev/rules.d/61-skyzfs-rig-ublkb-nowatch.rules
+C_EVIDENCE=""
+# Whether a server's build keeps the request log: the hooked daemon
+# prints its hooks after the usage and exits 2, so the text is read whole
+# (under pipefail a pipe into grep would fail on that status).
+has_request_log() { local h; h=$("$1" serve --help 2>&1); [[ $h == *--request-log* ]]; }
+c_watch_off() {
+    printf '%s\n' '# The daemon rig, check c: no udev watch on ublk devices (M1.T28).' \
+        'ACTION!="remove", SUBSYSTEM=="block", KERNEL=="ublkb*", OPTIONS+="nowatch"' > "$C_NOWATCH" &&
+        lim 30 udevadm control --reload
+}
+c_watch_back() {
+    [ -e "$C_NOWATCH" ] || return 0
+    rm -f "$C_NOWATCH"
+    lim 30 udevadm control --reload
+}
+# c_evidence_start TAG: the block trace and a count of udev's change
+# events for the pass TAG (c or cd). C_TRACE_WHY is empty when the trace
+# can be taken.
+c_evidence_start() {
+    udevadm monitor --udev --subsystem-match=block > "$OUT/$1-udev.txt" 2>&1 &
+    C_MONITOR=$!
+    if [ -z "$C_TRACE_WHY" ]; then
+        blktrace_on "$OUT/$1-ftrace.txt"
+        blktrace_mark "check $1 start"
+    fi
+}
+# c_evidence_end TAG WORK RC: stop both; keep the evidence if a case of
+# the pass failed or the tool did not end; add the pass's part of the
+# line obs_c_evidence to C_EVIDENCE.
+c_evidence_end() {
+    local tag=$1 work=$2 rc=$3 f n_logs n_lines n_change kept
+    blktrace_off
+    kill "$C_MONITOR" 2>/dev/null; wait "$C_MONITOR" 2>/dev/null
+    n_change=$(grep -c 'change .*/ublkb[0-9]* (block)' "$OUT/$tag-udev.txt" 2>/dev/null)
+    n_logs=0
+    for f in "$work"/c*.requests.tsv "$work"/c*.extents; do
+        [ -s "$f" ] || continue
+        cp "$f" "$OUT/$tag-$(basename "$f")"
+        case $f in *.requests.tsv) n_logs=$((n_logs + 1)) ;; esac
+    done
+    n_lines=$(wc -l < "$OUT/$tag-ftrace.txt" 2>/dev/null || echo 0)
+    if [ "$rc" != 0 ] || awk -F'\t' '$1 == "case" && $3 == "FAIL" { f = 1 } END { exit !f }' "$OUT/$tag-cases.tsv" 2>/dev/null; then
+        gzip -f "$OUT/$tag-ftrace.txt" "$OUT/$tag"-c*.requests.tsv "$OUT/$tag"-c*.extents 2>/dev/null
+        kept="kept in the artifact ($tag-ftrace.txt.gz, $tag-cN.requests.tsv.gz, $tag-cN.extents.gz), since a case failed or the tool did not end"
+    else
+        rm -f "$OUT/$tag-ftrace.txt" "$OUT/$tag"-c*.requests.tsv "$OUT/$tag"-c*.extents
+        kept="not kept: no case failed"
+    fi
+    C_EVIDENCE+="pass $tag: change events of a ublk device $n_change; request logs $n_logs; block trace $n_lines lines; $kept. "
+}
 check_c() {
     local tool=${RIG_BLKCHECK:-} work=$WORK/c rc t0 name result detail tag declared n n_live n_before n_at_death n_with n_zero n_dead
     # What the harness can do beyond a plain device. A failed volume is
@@ -2355,14 +2424,23 @@ check_c() {
     step "c: the conformance suite through the block device"
     if [ ! -x "$tool" ]; then rec c_run "ERROR: no skyzfs-blkcheck at '$tool' (RIG_BLKCHECK)"; return; fi
     mkdir -p "$work"
+    # The evidence beside the tool's trace (see c_evidence_end).
+    C_EVIDENCE=""; C_RL=""
+    if has_request_log "$SKYZFSD"; then C_RL=1; C_EVIDENCE+="the server keeps a request log; "
+    else C_EVIDENCE+="the server keeps no request log (its build has no --request-log); "; fi
+    if c_watch_off; then C_EVIDENCE+="udev's watch on ublk devices off ($C_NOWATCH); "
+    else C_EVIDENCE+="udev's watch could NOT be turned off; "; fi
+    C_TRACE_WHY=$(blktrace_ready)
     t0=$(date +%s)
+    c_evidence_start c
     # Every request the tool issues is written down, with a digest of
     # each block: a failed case is diagnosed from this, not rerun.
-    BLKCHECK_TRACE=$OUT/c-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} \
+    BLKCHECK_TRACE=$OUT/c-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_SERVE_ARGS=${RIG_SERVE_ARGS:-} BLK_REQUEST_LOG=$C_RL \
         lim 2400 "$tool" --harness "$HERE/blkcheck-helper.sh" "${can[@]}" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/c-cases.tsv" 2> "$OUT/c-blkcheck.err"; rc=$?
     C_RC=$rc
+    c_evidence_end c "$work" "$rc"
     cp "$work/helper.log" "$OUT/c-helper.log" 2>/dev/null
     # At each kill the tool sorts the calls it has outstanding: those
     # the old server had completed (their resubmission is issued) and
@@ -2419,6 +2497,15 @@ check_c() {
         obs c_delay_kills "not run: the pass without the delay did not end"
         pin c_delay_cases ERROR "not run: the pass without the delay did not end"
         pin c_kill_with_applied_unacknowledged ERROR "not run: the pass without the delay did not end"
+        C_EVIDENCE+="no pass with the delay. "
+    fi
+    c_watch_back
+    # The trace is asked for on every run: a kernel without it is the
+    # rig's error, not a verdict.
+    if [ -n "$C_TRACE_WHY" ]; then
+        obs c_evidence "not run: no block trace: $C_TRACE_WHY. ${C_EVIDENCE}"
+    else
+        obs c_evidence "$C_EVIDENCE"
     fi
 }
 # The suite once more, with a server that applies a write and
@@ -2434,11 +2521,13 @@ check_c_delay() {
     step "c: the suite again, a write acknowledged $ms ms after it is applied"
     mkdir -p "$work"
     t0=$(date +%s)
-    BLKCHECK_TRACE=$OUT/cd-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work \
+    c_evidence_start cd
+    BLKCHECK_TRACE=$OUT/cd-trace.tsv BLK_SKYZFSD=$SKYZFSD BLK_WORK=$work BLK_REQUEST_LOG=$C_RL \
         BLK_SERVE_ARGS="${RIG_SERVE_ARGS:-} --commit-delay-ms $ms" \
         lim 3600 "$tool" --harness "$HERE/blkcheck-helper.sh" "$@" \
         --cases "${RIG_C_CASES:-16}" --rounds "${RIG_C_ROUNDS:-4}" --timeout 60 \
         > "$OUT/cd-cases.tsv" 2> "$OUT/cd-blkcheck.err"; rc=$?
+    c_evidence_end cd "$work" "$rc"
     cp "$work/helper.log" "$OUT/cd-helper.log" 2>/dev/null
     read -r n_live n_at_death <<< "$(awk -F'\t' '
         $3 == "sorted" { live++; split($5, w, " "); at_death += w[2] }
