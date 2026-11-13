@@ -9,7 +9,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/klog.sh"
 # shellcheck source=tests/kernel/zfs-stuck.sh
 . "$HERE/zfs-stuck.sh"
-T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+# Every path below is under $T, and the test removes $T/proc: an empty T
+# would make that /proc.
+if ! T=$(mktemp -d) || [ -z "$T" ] || [ ! -d "$T" ]; then echo "no temporary directory"; exit 2; fi
+trap 'rm -rf "$T"' EXIT
 fails=0
 is() { # name got want
     if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: got '$2', want '$3'"; fails=$((fails + 1)); fi
@@ -79,7 +82,20 @@ has "nothing stuck" "$out" "zpool processes waiting in the kernel: 0; txg_sync t
 # the stack of a task that cannot be looked at): the line still comes,
 # within the limit, with "?" for that process.
 rm -rf "$T/proc"; task 700 zpool D spa_config_enter; rm "$T/proc/700/stack"; mkfifo "$T/proc/700/stack"
-s=$(date +%s); out=$(zfs_stuck_say); e=$(( $(date +%s) - s ))
+# Under a limit of its own, so that a lost limit inside makes this case
+# fail and not hang: a reader left blocked on the fifo is let go by
+# opening it for writing.
+s=$(date +%s)
+( zfs_stuck_say > "$T/fifo.out" ) & p=$!
+for _ in $(seq 1 30); do kill -0 "$p" 2>/dev/null || break; sleep 1; done
+if kill -0 "$p" 2>/dev/null; then
+    kill -9 "$p" 2>/dev/null
+    # shellcheck disable=SC2016  # expanded by the inner shell
+    timeout 5 sh -c ': > "$1"' _ "$T/proc/700/stack"
+    echo "the stack read was not cut: still running after 30 s" > "$T/fifo.out"
+fi
+wait "$p" 2>/dev/null
+out=$(cat "$T/fifo.out"); e=$(( $(date +%s) - s ))
 is "a stack that cannot be read" "$out" "zpool processes waiting in the kernel: 1 (0 for the namespace lock; 700 in ?); txg_sync threads' states: none"
 if [ "$e" -le 10 ]; then echo "ok   it returns within the limit ($e s)"; else echo "FAIL it took $e s"; fails=$((fails + 1)); fi
 
