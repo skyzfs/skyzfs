@@ -35,12 +35,15 @@ blktrace_ready() {
 }
 
 # The word in brackets of a file such as trace_clock ("[local] global
-# mono"), or its first word (current_tracer, buffer_size_kb's
-# "7 (expanded: 1408)" gives 7).
+# mono"), the size a buffer grows to when it is used (buffer_size_kb's
+# "7 (expanded: 1408)" gives 1408: written back as 7 it would stay 7),
+# or the first word (current_tracer).
 blktrace_word() {
     local v
     v=$(cat "$1" 2>/dev/null) || return 0
-    if [[ $v =~ \[([^]]+)\] ]]; then echo "${BASH_REMATCH[1]}"; else echo "${v%% *}"; fi
+    if [[ $v =~ \[([^]]+)\] ]]; then echo "${BASH_REMATCH[1]}"
+    elif [[ $v =~ expanded:\ *([0-9]+) ]]; then echo "${BASH_REMATCH[1]}"
+    else echo "${v%% *}"; fi
 }
 
 blktrace_on() {

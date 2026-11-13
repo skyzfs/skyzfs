@@ -17,9 +17,9 @@ check() { # name, then a command that must succeed
 }
 is() { [ "$(cat "$T/$1")" = "$2" ]; }
 
-# A machine that is not at its defaults: tracing on, one event already
-# enabled, another clock and tracer.
-echo 1 > "$T/tracing_on"
+# A machine that is not at its defaults: tracing off, one event already
+# enabled, another clock and tracer, a buffer not yet expanded.
+echo 0 > "$T/tracing_on"
 echo '7 (expanded: 1408)' > "$T/buffer_size_kb"
 echo 'local [global] mono' > "$T/trace_clock"
 echo function > "$T/current_tracer"
@@ -47,13 +47,20 @@ blktrace_mark "a mark"
 check "the mark goes to trace_marker" is trace_marker "a mark"
 blktrace_off
 check "off: the trace reached its file" grep -q 'another' "$T/out.txt"
-check "off: tracing_on as found" is tracing_on 1
-check "off: the buffer as found" is buffer_size_kb 7
+check "off: tracing_on as found" is tracing_on 0
+check "off: the buffer at the size it grows to when used" is buffer_size_kb 1408
 check "off: the clock as found" is trace_clock global
 check "off: the tracer as found" is current_tracer function
 check "off: an event that was off is off" is events/block/block_rq_issue/enable 0
 check "off: an event that was on is on" is events/block/block_split/enable 1
 check "off twice does nothing" blktrace_off
+
+# And from tracing on, a buffer of a size set before.
+echo 1 > "$T/tracing_on"; echo 2048 > "$T/buffer_size_kb"
+blktrace_on "$T/out2.txt"
+blktrace_off
+check "off: tracing_on on again" is tracing_on 1
+check "off: a set size as found" is buffer_size_kb 2048
 
 rm -rf "$T/events/block/block_split"
 check "not ready without an event" eval '! blktrace_ready > /dev/null'
