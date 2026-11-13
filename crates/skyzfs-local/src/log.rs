@@ -1269,6 +1269,18 @@ impl<D: Dir> Log<D> {
         self.announce()
     }
 
+    /// Fail the log on behalf of its owner, as [`Log::mark_failed`],
+    /// but leave the marker to the owner, who writes it with what
+    /// [`Log::marker_writer`] gave it: on a thread of its own, so that a
+    /// disk that stalls on the marker does not hold the owner's thread.
+    /// The observer is told here, at once.
+    pub(crate) fn fail_without_marker(&mut self) {
+        self.failed = true;
+        if let Some(Observer(mut call)) = self.observer.take() {
+            call();
+        }
+    }
+
     /// Call `observer` once, at the moment the log fails: after the
     /// decision and before the marker is attempted. The marker needs
     /// the disk that has just failed, and a sync on a sick disk can
@@ -1297,6 +1309,17 @@ impl<D: Dir> Log<D> {
             }
         }
         written
+    }
+
+    /// What writes the failure marker, for an owner that writes it
+    /// itself ([`Log::fail_without_marker`]); it returns whether the
+    /// marker was written.
+    pub(crate) fn marker_writer(&self) -> Box<dyn FnOnce() -> bool + Send>
+    where
+        D: Clone + Send + 'static,
+    {
+        let (dir, mutants) = (self.dir.clone(), self.mutants);
+        Box::new(move || write_marker(&dir, mutants))
     }
 
     /// The key the log's headers are tagged with, for what the store

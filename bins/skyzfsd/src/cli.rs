@@ -196,18 +196,19 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       requests and beside each other.
       --store in-place serves the volume from its home image alone,
       with no log (log unless given): each write is written where it
-      belongs, and a flush syncs the image. It promises less at a power
-      cut: what a completed flush covered is there, and any other block
-      may hold its content as of the last flush, any version written
-      since, or a mix of those within the block (a volatile-cache
-      disk); a volume served so is not a prefix of its writes. A
-      failure is final as with the log. The start applies and empties
-      the log first. A volume served in place must not be given back to
-      --store log: a write acknowledged in place and not flushed before
-      the daemon ended, however it ended, can be lost at a power cut
-      after it, whatever the log store flushed. The log's options (--log-high, --log-low,
-      --writeback-kib, --home-writeback-kib, --readers) are refused with
-      it.
+      belongs, and a flush syncs the image. At a power cut it keeps
+      what the block contract asks (a volatile-cache disk): what a
+      completed flush covered is there, and any other block may hold
+      its content as of the last flush, any version written since, or
+      a mix of those within the block; a volume served so is not a
+      prefix of its writes, as one served with the log is. A failure is
+      final as with the log. The start applies and empties the log
+      first. A volume served in place must not be given back to --store
+      log: a write acknowledged in place and not flushed before the
+      daemon ended, however it ended, can be lost at a power cut after
+      it, whatever the log store flushed. The log's options
+      (--log-high, --log-low, --writeback-kib, --home-writeback-kib,
+      --readers) are refused with it.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops

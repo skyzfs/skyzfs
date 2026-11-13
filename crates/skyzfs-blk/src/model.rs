@@ -38,10 +38,13 @@
 //! - A **daemon loss** makes the whole log durable, as recovery does, and
 //!   returns the requests in flight to `waiting`. Each of them may already
 //!   be in the log, so each may end up in the order twice (rule R9).
-//! - A **power cut** leaves a prefix of the world's order. Which one is
-//!   unknown until the client reads, so the model asks for a **read-back**
-//!   of every block an unflushed operation touched before anything else
-//!   is submitted, and then keeps the prefixes that explain it (rule R10).
+//! - A **power cut** leaves what a disk with a volatile write cache may
+//!   (rule R10): each block holds its content at its last flush or a
+//!   version written since, chosen sector by sector. What it holds is
+//!   unknown until the client reads, so the model asks for a
+//!   **read-back** of every block an unflushed operation touched before
+//!   anything else is submitted, keeps the worlds that explain it, and
+//!   makes what was read durable in them.
 //!
 //! # Limits
 //!
@@ -56,8 +59,8 @@
 //! - Once the log has failed ([`Model::log_failed`]) and the first failure
 //!   has been delivered, nothing can be observed any more; the model then
 //!   only requires that everything fails, until the volume is opened
-//!   again ([`Model::reopened`]). There it asks for a prefix, as rule
-//!   R11 does.
+//!   again ([`Model::reopened`]). There the volume is as after a power
+//!   cut, as rule R11 says.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -119,6 +122,8 @@ struct Context {
     /// Every content that was ever meant for a block, to tell a torn block
     /// from a foreign one.
     history: BTreeMap<u64, Vec<Arc<[u8]>>>,
+    /// Every interned content, by its id.
+    contents: Vec<Arc<[u8]>>,
 }
 
 impl Context {
@@ -127,8 +132,14 @@ impl Context {
             return *id;
         }
         let id = self.ids.len() as Cid;
-        self.ids.insert(Arc::from(bytes), id);
+        let bytes: Arc<[u8]> = Arc::from(bytes);
+        self.ids.insert(bytes.clone(), id);
+        self.contents.push(bytes);
         id
+    }
+
+    fn bytes(&self, id: Cid) -> &[u8] {
+        &self.contents[id as usize]
     }
 
     fn lookup(&self, bytes: &[u8]) -> Option<Cid> {
@@ -415,75 +426,76 @@ impl World {
         false
     }
 
-    /// Every prefix of this world's order that explains what was read back
-    /// after a power cut, as a world of its own.
-    fn prefixes(&self, cx: &Context, seen: &Readback, out: &mut BTreeSet<World>) {
-        let n = self.tail.len();
-        // For each member, the blocks of which it is the last writer.
-        let mut last: Vec<Vec<u64>> = vec![Vec::new(); n];
-        let mut owner: BTreeMap<u64, usize> = BTreeMap::new();
+    /// What a block may hold after a power cut, by the volatile-cache
+    /// disk (rule R10): its content at the last completed flush that
+    /// covered it (or its durable content, if none did), and every
+    /// content written to it since, in this world's order. A discard's
+    /// content is everything it allows (rule R6).
+    fn versions(&self, cx: &Context, block: u64) -> Vec<Cid> {
+        let floor = self
+            .tail
+            .iter()
+            .rposition(|p| p.flushed && cx.ops[p.op].covers(block));
+        let mut cell = cx.cell(&self.durable, block);
+        let mut out = if floor.is_none() {
+            cell.clone()
+        } else {
+            Vec::new()
+        };
         for (i, placed) in self.tail.iter().enumerate() {
-            for block in cx.ops[placed.op].blocks() {
-                owner.insert(block, i);
+            let op = &cx.ops[placed.op];
+            if op.covers(block) {
+                cell = cx.step(op, block, cell);
+                if floor.is_none_or(|f| i >= f) {
+                    out.extend(cell.iter().copied());
+                }
             }
         }
-        for (block, i) in owner {
-            last[i].push(block);
-        }
-        let mut present = vec![false; n];
-        self.choose(cx, seen, &last, 0, self.durable.clone(), &mut present, out);
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn choose(
-        &self,
-        cx: &Context,
-        seen: &Readback,
-        last: &[Vec<u64>],
-        i: usize,
-        image: Image,
-        present: &mut Vec<bool>,
-        out: &mut BTreeSet<World>,
-    ) {
-        let agrees = |image: &Image, block: u64| {
-            let cell = cx.cell(image, block);
-            seen.get(&block)
-                .is_none_or(|all| all.iter().all(|s| s.is_some_and(|c| cell.contains(&c))))
-        };
-        if i == self.tail.len() {
-            if seen.keys().all(|block| agrees(&image, *block)) {
-                out.insert(World {
-                    durable: image,
-                    tail: Vec::new(),
-                    waiting: Vec::new(),
-                });
+    /// Whether this world explains what was read back after a power cut
+    /// (rule R10, the volatile-cache disk): each 512-byte sector of each
+    /// block is that sector of one of the block's versions
+    /// ([`World::versions`]), independently of every other sector. If
+    /// it does, the world as the cut left it: what was read is durable,
+    /// and nothing is in flight.
+    fn after_cut(&self, cx: &mut Context, seen: &Readback) -> Option<World> {
+        let mut durable = self.durable.clone();
+        for (block, read) in seen {
+            let versions = self.versions(cx, *block);
+            let explained = read.chunks(SECTOR).enumerate().all(|(s, sector)| {
+                versions
+                    .iter()
+                    .any(|v| &cx.bytes(*v)[s * SECTOR..(s + 1) * SECTOR] == sector)
+            });
+            if !explained {
+                return None;
             }
-            return;
-        }
-        let op = &cx.ops[self.tail[i].op];
-        // Kept: only if everything that must precede it was kept.
-        let allowed = (0..i).all(|j| present[j] || !cx.ordered(&self.tail[j], &self.tail[i]));
-        if allowed {
-            let mut with = image.clone();
-            cx.apply(&mut with, op);
-            if last[i].iter().all(|block| agrees(&with, *block)) {
-                present[i] = true;
-                self.choose(cx, seen, last, i + 1, with, present, out);
-                present[i] = false;
+            let id = cx.intern(read);
+            if id == cx.base_cid(*block) {
+                durable.remove(block);
+            } else {
+                durable.insert(*block, vec![id]);
             }
         }
-        // Lost: then every later operation on its blocks is lost too, so
-        // those blocks are final.
-        // An operation a flush covers is never lost.
-        if !self.tail[i].flushed && op.blocks().all(|block| agrees(&image, block)) {
-            self.choose(cx, seen, last, i + 1, image, present, out);
-        }
+        Some(World {
+            durable,
+            tail: Vec::new(),
+            waiting: Vec::new(),
+        })
     }
 }
 
-/// What the client read back after a power cut: for each block, every
-/// answer it got. `None` is content the model has never seen.
-type Readback = BTreeMap<u64, Vec<Option<Cid>>>;
+/// What the client read back after a power cut: for each block, what
+/// it read. A cut leaves one state, so every read of a block returns
+/// the same.
+type Readback = BTreeMap<u64, Arc<[u8]>>;
+
+/// The unit a power cut keeps or loses independently (rule R10).
+const SECTOR: usize = 512;
 
 #[derive(Debug, Clone)]
 enum Pending {
@@ -616,9 +628,9 @@ pub enum Violation {
         /// In what way.
         kind: Mismatch,
     },
-    /// What was read back after a power cut is not a prefix of any order
-    /// the daemon may have had that includes everything flushed (rule
-    /// R10).
+    /// What was read back after a power cut is not what the
+    /// volatile-cache disk may leave under any order the daemon may have
+    /// had (rule R10).
     #[error("after the power cut, block {block} is {kind:?}")]
     BadRecovery {
         /// The first block that cannot be explained.
@@ -663,6 +675,7 @@ impl Model {
             ops: Vec::new(),
             base_cids: BTreeMap::new(),
             history: BTreeMap::new(),
+            contents: Vec::new(),
         };
         cx.intern(&[0u8; BLOCK_USIZE]);
         Self {
@@ -1024,7 +1037,7 @@ impl Model {
     /// Not so once the log has failed (rule R11), whether or not the
     /// client has been told yet: the rule that an acknowledged operation
     /// survives the daemon holds for a log that has not failed. The
-    /// recovery of the daemon that returns cannot make its prefix
+    /// recovery of the daemon that returns cannot make what it finds
     /// durable, and of what was acknowledged the volume is held only to
     /// what a completed flush covered. The log that failed may have
     /// lost the rest, and a restart does not bring it back. This shows
@@ -1077,8 +1090,8 @@ impl Model {
     }
 
     /// Power was cut and the device has returned (rule R10). Requests in
-    /// flight are gone and will not complete. The device now holds a
-    /// prefix of the daemon's order; the model learns which from the
+    /// flight are gone and will not complete. The device now holds what
+    /// the volatile-cache disk may leave; the model learns what from the
     /// read-back that must follow (see [`Model::readback`]).
     pub fn power_cut(&mut self) {
         self.now += 1;
@@ -1119,11 +1132,11 @@ impl Model {
     /// and holds at least what every completed flush covered, on either
     /// side of the failure.
     ///
-    /// As after a power cut, the volume holds a prefix of the daemon's
-    /// order that includes everything flushed, and the model learns
-    /// which from a read-back (see [`Model::readback`]). Of the
-    /// operations no flush covered, any may be missing, but not an
-    /// earlier one without the later ones.
+    /// It is as after a power cut (rule R10), and the model learns what
+    /// it holds from a read-back (see [`Model::readback`]). Of the
+    /// operations no flush covered, any may be missing, in whole or in
+    /// part, sector by sector; an operation that failed or was in flight
+    /// at the failure counts as one of them.
     pub fn reopened(&mut self) {
         self.health = Health::Healthy;
         self.power_cut();
@@ -1132,22 +1145,29 @@ impl Model {
     fn read_back(&mut self, first: u64, buf: &[u8]) -> Result<(), Violation> {
         for (i, bytes) in buf.chunks(BLOCK_USIZE).enumerate() {
             let block = first + i as u64;
-            let Some(cid) = self.cx.lookup(bytes) else {
-                // Content the model has never seen fits no prefix.
-                return Err(Violation::BadRecovery {
-                    block,
-                    kind: self.classify(block, bytes),
-                });
-            };
-            let cid = Some(cid);
             let Some((needed, seen)) = &mut self.recovering else {
                 return Ok(());
             };
             if needed.contains(&block) {
-                seen.entry(block).or_default().push(cid);
+                // A cut leaves one state: a second read of the block
+                // returns what the first did.
+                match seen.get(&block) {
+                    Some(before) if &before[..] != bytes => {
+                        return Err(Violation::BadRecovery {
+                            block,
+                            kind: Mismatch::Inconsistent,
+                        })
+                    }
+                    Some(_) => {}
+                    None => {
+                        seen.insert(block, Arc::from(bytes));
+                    }
+                }
                 continue;
             }
-            // No unflushed operation touched it: every world agrees.
+            // Nothing written since its last flush, in any world: the
+            // block is unchanged.
+            let cid = self.cx.lookup(bytes);
             let cell = match self.worlds.first() {
                 Some(world) => self.cx.cell(&world.durable, block),
                 None => continue,
@@ -1169,24 +1189,27 @@ impl Model {
         if needed.iter().any(|b| !seen.contains_key(b)) {
             return Ok(());
         }
+        let seen = seen.clone();
         let mut next = BTreeSet::new();
-        for world in &self.worlds {
-            world.prefixes(&self.cx, seen, &mut next);
+        for world in std::mem::take(&mut self.worlds) {
+            if let Some(after) = world.after_cut(&mut self.cx, &seen) {
+                next.insert(after);
+            } else {
+                self.worlds.push(world);
+            }
         }
         if next.is_empty() {
-            // Name a block that no prefix of any world can hold.
-            let bad = seen.iter().find(|(block, answers)| {
+            // Name a block that no world explains.
+            let bad = seen.iter().find(|(block, read)| {
                 !self.worlds.iter().any(|world| {
-                    let nothing_certain = vec![false; world.tail.len()];
-                    answers
-                        .iter()
-                        .all(|s| world.explains(&self.cx, **block, *s, &nothing_certain))
+                    let one: Readback = BTreeMap::from([(**block, (*read).clone())]);
+                    world.after_cut(&mut self.cx.clone(), &one).is_some()
                 })
             });
             let violation = match bad {
-                Some((block, _)) => Violation::BadRecovery {
+                Some((block, read)) => Violation::BadRecovery {
                     block: *block,
-                    kind: Mismatch::Unexpected,
+                    kind: self.classify(*block, read),
                 },
                 None => Violation::BadRecovery {
                     block: seen.keys().next().copied().unwrap_or(0),
@@ -1513,26 +1536,38 @@ mod tests {
         c.sees(0, &[1]).unwrap();
     }
 
-    /// R10: a power cut leaves a prefix of the order. Of two writes, one
-    /// acknowledged before the other was submitted, the later cannot
-    /// survive without the earlier.
+    /// R10, the volatile-cache disk: a power cut need not leave a prefix
+    /// of the order. Of two writes, one acknowledged before the other
+    /// was submitted, the later may survive without the earlier. What
+    /// no write ever put in a block is not there.
     #[test]
-    fn power_cut_leaves_a_prefix() {
+    fn power_cut_need_not_leave_a_prefix() {
         let mut c = Client::new();
         c.wrote(0, 1, 1);
         c.wrote(1, 1, 2);
         c.model.power_cut();
         assert_eq!(c.model.readback(), vec![0, 1]);
-        assert!(c.would_see(0, &[0, 0]));
-        assert!(c.would_see(0, &[1, 0]));
-        assert!(c.would_see(0, &[1, 2]));
-        assert_eq!(
-            c.sees(0, &[0, 2]),
-            Err(Violation::BadRecovery {
-                block: 0,
-                kind: Mismatch::Inconsistent
-            })
-        );
+        for answer in [[0, 0], [1, 0], [1, 2], [0, 2]] {
+            assert!(c.would_see(0, &answer), "{answer:?}");
+        }
+        assert!(!c.would_see(0, &[2, 1]));
+    }
+
+    /// R10, the volatile-cache disk: of a block written since its last
+    /// flush, a sector holds the flushed content or a version written
+    /// since, and nothing older than the flush.
+    #[test]
+    fn power_cut_keeps_no_version_older_than_the_last_flush() {
+        let mut c = Client::new();
+        c.wrote(0, 1, 1);
+        c.flush();
+        c.wrote(0, 1, 2);
+        c.wrote(0, 1, 3);
+        c.model.power_cut();
+        for answer in [1, 2, 3] {
+            assert!(c.would_see(0, &[answer]), "{answer}");
+        }
+        assert!(!c.would_see(0, &[0]));
     }
 
     /// R10: two writes that were in flight together and do not overlap
@@ -1550,30 +1585,41 @@ mod tests {
         }
     }
 
-    /// R10: every operation in the recovered prefix is whole. Half of a
-    /// two-block write is not a prefix, and half a block is torn.
+    /// R10, the volatile-cache disk: an unflushed write may survive in
+    /// part, block by block and sector by sector, but not inside a
+    /// sector. What is read is then durable: a second cut keeps it.
     #[test]
-    fn power_cut_keeps_operations_whole() {
+    fn power_cut_may_tear_a_write_at_a_sector_and_no_finer() {
         let mut c = Client::new();
         c.wrote(0, 2, 1);
         c.model.power_cut();
         assert!(c.would_see(0, &[1, 1]));
         assert!(c.would_see(0, &[0, 0]));
-        assert!(!c.would_see(0, &[1, 0]));
-        let r = c.read(0, 2);
-        let mut torn = vec![1u8; 2 * B];
-        torn[B / 2..B].fill(0);
-        torn[B] = 1;
+        assert!(c.would_see(0, &[1, 0]));
+        // At a sector: allowed.
+        let mut at_sector = vec![1u8; 2 * B];
+        at_sector[512..1024].fill(0);
+        // Inside a sector: not.
+        let mut inside = vec![1u8; 2 * B];
+        inside[100..200].fill(0);
+        let mut probe = c.clone();
+        let r = probe.read(0, 2);
         assert_eq!(
-            c.returns(r, [&torn[..B], &[0u8; B][..]].concat()),
+            probe.returns(r, inside),
             Err(Violation::BadRecovery {
                 block: 0,
                 kind: Mismatch::Torn
             })
         );
+        let r = c.read(0, 2);
+        c.returns(r, at_sector.clone()).unwrap();
+        c.model.power_cut();
+        let r = c.read(0, 2);
+        c.returns(r, at_sector).unwrap();
     }
 
-    /// R10: a write in flight at the power cut may have landed, whole.
+    /// R10: a write in flight at the power cut may have landed, in whole
+    /// or in part.
     #[test]
     fn in_flight_write_may_land_at_power_cut() {
         let mut c = Client::new();
@@ -1582,7 +1628,8 @@ mod tests {
         assert_eq!(c.model.in_flight(), 0);
         assert!(c.would_see(0, &[0, 0]));
         assert!(c.would_see(0, &[1, 1]));
-        assert!(!c.would_see(0, &[0, 1]));
+        assert!(c.would_see(0, &[0, 1]));
+        assert!(!c.would_see(0, &[2, 1]));
     }
 
     /// R10: what is read after a power cut is stable, and a second power
@@ -1724,7 +1771,9 @@ mod tests {
             c.model.power_cut();
             c.would_see(0, &[1, 2])
         };
-        assert!(!history(false));
+        // Under the volatile-cache disk the cut no longer tells the two
+        // apart: a later write may survive an earlier one either way.
+        assert!(history(false));
         assert!(history(true));
     }
 
@@ -1789,8 +1838,8 @@ mod tests {
             c.sees(0, &[winner]).unwrap();
             assert!(!c.would_see(0, &[3 - winner]));
         }
-        // And across a power cut: Y is flushed, so it is there; X, in
-        // flight, may be under it or over it, or absent.
+        // And across a power cut: Y is flushed, so block 0 holds Y or X
+        // over it; X, in flight, may be absent from either block.
         let mut c = Client::new();
         let _x = c.write(0, 2, 1);
         let y = c.write(0, 1, 2);
@@ -1800,8 +1849,9 @@ mod tests {
         assert!(c.would_see(0, &[2, 0]));
         assert!(c.would_see(0, &[2, 1]));
         assert!(c.would_see(0, &[1, 1]));
+        assert!(c.would_see(0, &[1, 0]));
         assert!(!c.would_see(0, &[0, 0]));
-        assert!(!c.would_see(0, &[1, 0]));
+        assert!(!c.would_see(0, &[0, 1]));
     }
 
     /// R2, R11, R12: where a request is wrong in two ways, either error
@@ -1860,7 +1910,7 @@ mod tests {
 
     /// R11: a failed volume that is opened again serves again, and
     /// holds what a completed flush covered; what no flush covered may
-    /// be there or not, as a prefix.
+    /// be there or not, sector by sector, as after a power cut.
     #[test]
     fn reopened_volume_serves_again_and_keeps_what_was_flushed() {
         let mut c = Client::new();
@@ -2050,7 +2100,9 @@ mod tests {
             c.model.power_cut();
             c.would_see(0, &[1, 2])
         };
-        assert!(!history(false));
+        // As in `a_reissued_operation_may_be_in_the_order_twice`, the cut
+        // no longer tells the two apart.
+        assert!(history(false));
         assert!(history(true));
     }
 

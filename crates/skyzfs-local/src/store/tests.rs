@@ -1727,7 +1727,9 @@ fn the_store_passes_the_conformance_suite_while_it_checkpoints_in_steps() {
                 let idle: Vec<_> = report
                     .not_exercised()
                     .into_iter()
-                    .filter(|case| *case != "power_cut_at_every_point_leaves_a_prefix")
+                    .filter(|case| {
+                        *case != "power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may"
+                    })
                     .collect();
                 assert!(idle.is_empty(), "in {harness:?} not exercised: {idle:?}");
                 assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");
@@ -1779,7 +1781,7 @@ fn the_served_store_passes_the_conformance_suite() {
         // to the inline driver.
         assert_eq!(
             report.not_exercised(),
-            ["power_cut_at_every_point_leaves_a_prefix"],
+            ["power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may"],
             "in {harness:?}"
         );
         assert!(report.weaker().is_empty(), "in {harness:?}:\n{report}");

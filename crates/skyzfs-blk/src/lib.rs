@@ -53,11 +53,17 @@
 //!   were not acknowledged are reissued, in any order, and may include
 //!   ones the lost daemon had applied; the result is as the contract
 //!   describes all the same.
-//! - **R10 Power loss.** The recovered volume is a prefix of the daemon's
-//!   order that includes at least what every completed flush covered.
-//!   Every operation in it is whole. What recovery exposes is durable
-//!   before the first request is served: a second power cut does not take
-//!   it back.
+//! - **R10 Power loss: the volatile-cache disk** (design §4.1, decision
+//!   D5). Every block that a completed flush covered holds what it held
+//!   at that flush, or something written to it since. Of a block written
+//!   since the last flush that covered it, each 512-byte sector holds
+//!   that durable content or one of the versions written since (a
+//!   write-zeroes writes zeros; a discarded block holds anything its
+//!   discard allows, R6), independently of every other sector and of
+//!   every other block. A block nothing wrote since its last flush is
+//!   unchanged. The volume is not promised to be a prefix of the
+//!   daemon's order. What recovery exposes is durable before the first
+//!   request is served: a second power cut does not take it back.
 //! - **R11 Failed volume.** The write log has failed for good once a
 //!   write or a sync of it has failed; a disk that would refuse the
 //!   next sync and has not been asked has not failed yet. From the
@@ -69,9 +75,10 @@
 //!   complete either way; a flush among them succeeds only if its work
 //!   was done before the failure. A completed flush stays a promise,
 //!   whichever side of the failure it completed on: when the volume is
-//!   next opened for a new client, after a power cut or a repair, it
-//!   holds a prefix of the daemon's order that includes at least what
-//!   every completed flush covered, exactly as after a power cut. A
+//!   next opened for a new client, after a power cut or a repair, it is
+//!   as after a power cut, by R10: what every completed flush covered is
+//!   there, and an operation that failed or was in flight at the failure
+//!   counts as a version written since. A
 //!   daemon restart in between changes nothing about that: on a failed
 //!   volume it recovers nothing, and what was acknowledged and not
 //!   flushed may be gone.

@@ -5,7 +5,7 @@ use skyzfs_blk::{
     Base, BlkError, BlockTarget, Buf, Completion, Op, Request, RequestId, BLOCK_USIZE,
 };
 
-use super::harness::{run_suite, InPlaceHarness, OnSim, NOT_MET, NOT_MET_REASON};
+use super::harness::{InPlaceHarness, OnSim};
 use super::*;
 use crate::format::Key;
 use crate::log::LogError;
@@ -16,16 +16,6 @@ const BLOCK: u64 = 4096;
 /// What a test gives a wait: it waits for a sync to end, not for the
 /// time (see `InPlace::wait`).
 const WAIT: Duration = Duration::from_secs(60);
-
-/// The cases of the suite that need a power cut (its table "Needs P").
-const NEED_A_POWER_CUT: [&str; 6] = [
-    "flushed_operations_survive_power_cut",
-    "flush_covers_what_was_acknowledged_before_it",
-    "flush_covers_an_earlier_instance",
-    "power_cut_at_every_point_leaves_a_prefix",
-    "recovered_state_is_durable",
-    "first_request_after_power_cut_may_be_a_write",
-];
 
 fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
     [(1, 0), (16, 0), (16, 3)]
@@ -38,80 +28,54 @@ fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
         .collect()
 }
 
-/// Acceptance 1: the suite passes on the in-place store on the
-/// simulated disk, without the power cut, with one request at a time
-/// and with sixteen, and with syncs that end up to three looks after
-/// they begin, so that writes and flushes arrive while a sync is under
-/// way. Exactly the cases that need a power cut are not exercised, and
-/// for that reason.
-///
-/// Two failure cases are not met by this store, by design (the
-/// harness's `NOT_MET`): they are reported as not exercised, with that
-/// reason, and
-/// `the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does` pins
-/// why.
+/// The suite passes on the in-place store on the simulated disk, with
+/// every capability: the disk's own power cuts (without garbage), and a
+/// log that fails by the disk's own faults, which may tear what they
+/// leave. With one request at a time and with sixteen, and with syncs
+/// that end up to three looks after they begin, so that writes and
+/// flushes arrive while a sync is under way. Only what needs more than
+/// one request in flight is left out, at a depth of one.
 #[test]
-fn the_in_place_store_passes_the_conformance_suite_without_a_power_cut() {
-    let config = Config {
-        cases: 32,
-        ..Config::default()
-    };
-    for mut harness in harnesses(0) {
-        let report = run_suite(&mut harness, &config);
-        assert!(report.passed(), "in {harness:?}:\n{report}");
-        let idle = report.not_exercised();
-        for case in NEED_A_POWER_CUT.iter().chain(&NOT_MET) {
-            assert!(idle.contains(case), "{case} ran in {harness:?}");
-        }
-        for (case, why) in report.unexercised() {
-            let one_at_a_time = harness.queue_depth == 1 && why.contains("one request at a time");
-            let cut = NEED_A_POWER_CUT.contains(&case) && why.contains("power");
-            let not_met = NOT_MET.contains(&case) && why == NOT_MET_REASON;
-            assert!(cut || not_met || one_at_a_time, "{case}: {why}");
-        }
-        for (case, what) in report.weaker() {
-            assert!(what.contains("power"), "{case}: {what}");
-        }
-    }
-}
-
-/// Why the cases of `NOT_MET` are not met: run as the suite has them,
-/// with the log failing by the simulated disk's faults, exactly those
-/// two fail, each with a block the suite's model reports as torn (the
-/// test checks that, not which block). That is the module's point 4 (a failure leaves unflushed
-/// blocks as a power cut does).
-#[test]
-fn the_cases_not_met_fail_on_torn_blocks_and_nothing_else_does() {
+fn the_in_place_store_passes_the_conformance_suite() {
     let config = Config {
         cases: 32,
         ..Config::default()
     };
     for mut harness in harnesses(0) {
         let report = run_all(&mut harness, &config);
-        let mut failed = report.failed();
-        failed.sort_unstable();
-        assert_eq!(failed, NOT_MET, "in {harness:?}:\n{report}");
-        for outcome in &report.outcomes {
-            if let Err(failure) = &outcome.result {
-                assert!(failure.0.contains("is Torn"), "{}: {failure}", outcome.name);
-            }
+        assert!(report.passed(), "in {harness:?}:\n{report}");
+        for (case, why) in report.unexercised() {
+            assert!(
+                harness.queue_depth == 1 && why.contains("one request at a time"),
+                "{case}: {why}"
+            );
         }
+        assert!(report.weaker().is_empty(), "{harness:?}:\n{report}");
     }
 }
 
-/// The suite notices a failed sync that is tried again. (A failed write
-/// that does not fail the volume is caught by
-/// `a_failed_write_fails_the_volume`: the suite's cases that catch it
-/// are the two this store does not meet.)
+/// The suite notices the defects of durability and of failure: a flush
+/// that makes nothing durable, a failed sync tried again, a failed
+/// write that does not fail the volume. (A flush that joins a sync begun
+/// before a write it must cover needs a cut to land between the two at a
+/// sector the write changed; the suite's programs do not reliably make
+/// one, and `the_power_cut_test_notices_the_defects_of_durability`
+/// catches it.)
 #[test]
-fn the_suite_notices_a_failure_that_is_not_final() {
+fn the_suite_notices_the_defects() {
     let config = Config {
         cases: 32,
         ..Config::default()
     };
-    let mut harness = harnesses(Mutants::SYNC_RETRIED)[1];
-    let report = run_suite(&mut harness, &config);
-    assert!(!report.passed(), "the defect is not noticed");
+    for mutant in [
+        Mutants::FLUSH_WITHOUT_SYNC,
+        Mutants::SYNC_RETRIED,
+        Mutants::WRITE_ERROR_PASSES,
+    ] {
+        let mut harness = harnesses(mutant)[2];
+        let report = run_all(&mut harness, &config);
+        assert!(!report.passed(), "the defect {mutant:#x} is not noticed");
+    }
 }
 
 /// A store on a simulated disk, with a log of a few records that the
@@ -339,6 +303,33 @@ fn a_flush_behind_a_discard_syncs() {
         } else {
             assert_eq!(flushed, Ok(()), "the defect is not noticed");
         }
+    }
+}
+
+/// The failure marker is written on a thread of its own, not on the
+/// thread that executes the requests (which in the daemon is the
+/// queue's): the request that met the failure is answered while the
+/// marker is still to be written, and the next start finds the marker
+/// once the store is dropped. With the marker written inline, the
+/// thread of its own is not used.
+#[test]
+fn the_failure_marker_is_written_on_a_thread_of_its_own() {
+    for mutants in [0, Mutants::MARKER_INLINE] {
+        let disk = created(10, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        disk.fail_write(0, false);
+        assert_eq!(write(&mut store, 1, 0x11), Err(BlkError::Failed));
+        assert_eq!(
+            store.marker_on_its_own_thread(),
+            mutants == 0,
+            "mutants {mutants:#x}"
+        );
+        drop(store);
+        disk.kill();
+        assert!(matches!(
+            start(&disk, 0, false),
+            Err(StoreError::Log(LogError::MarkedFailed))
+        ));
     }
 }
 

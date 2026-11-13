@@ -21,13 +21,13 @@
 //!
 //! # What it promises: the volatile-cache disk
 //!
-//! This store does not meet rule R10 of the block contract (design
-//! §4.1: after a power cut the volume is a prefix of the daemon's
-//! order, every operation whole), nor, for the same reason, R11's
-//! "reopened as after a power cut". A write in place is whole only if
-//! a journal makes it so, and the journal is the log. What it promises
-//! instead is what a disk with a volatile write cache promises, the
-//! disk ZFS is built for. Call it **the volatile-cache disk**:
+//! What it promises is what a disk with a volatile write cache promises,
+//! the disk ZFS is built for: **the volatile-cache disk**, which is rule
+//! R10 of the block contract since decision D5 (design §4.1). The
+//! contract's first version asked for a prefix of the daemon's order
+//! with every operation whole; a write in place is whole only if a
+//! journal makes it so, and the journal was the log, which D5 dropped.
+//! The points, as this store keeps them:
 //!
 //! 1. **Process loss.** A write, write-zeroes or discard is
 //!    acknowledged once it is in the file system's cache. It is there
@@ -54,8 +54,8 @@
 //!    dropped the pages and the error with them. What a completed flush
 //!    covered is intact after a failure; a failed write or sync may
 //!    leave every other block as point 3 leaves it at a power cut,
-//!    where the log store leaves it whole. That is less than the
-//!    suite's rule R11 asks.
+//!    which is what rule R11 asks of a failed volume that is opened
+//!    again.
 //!
 //! Where the disk writes a sector neither old nor new at a power cut
 //! (the simulated disk's garbage), point 3 holds for no sector a power
@@ -77,7 +77,9 @@
 //! flush covered: the log store refuses such a file system, and this
 //! store does not look.
 //!
-//! The rules R1 to R6, R8, R9 and R12 hold as for the log store.
+//! The other rules (R1 to R9, R11, R12) hold as for the log store, and
+//! the conformance suite runs on this store with every capability
+//! (`harness.rs`).
 //!
 //! # How it executes
 //!
@@ -135,6 +137,8 @@ impl Mutants {
     /// A discard is not counted as a change: a flush behind it alone
     /// does not sync.
     pub(crate) const DISCARD_UNCHANGED: u32 = 1 << 5;
+    /// The failure marker is written on the caller's thread.
+    pub(crate) const MARKER_INLINE: u32 = 1 << 6;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -184,6 +188,20 @@ pub struct InPlace<D: Dir> {
     zeroes: Zeroes,
     counts: Counts,
     mutants: Mutants,
+    /// The failure marker: not yet needed, being written on a thread
+    /// of its own, or tried. Whether it was written is not kept: as for
+    /// the log store, a start that does not find it goes by the
+    /// daemon's failure note.
+    marker: Marker,
+}
+
+/// Writes the failure marker, on whichever thread runs it.
+type MarkerWriter = Box<dyn FnOnce() -> bool + Send>;
+
+enum Marker {
+    Unwritten(MarkerWriter),
+    Writing(std::thread::JoinHandle<bool>),
+    Done,
 }
 
 /// What the store has done, for its owner and for tests.
@@ -209,6 +227,16 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
     }
 }
 
+/// The store waits for its failure marker when it is dropped, so that
+/// a start after it finds the marker (or the failure to write it).
+impl<D: Dir> Drop for InPlace<D> {
+    fn drop(&mut self) {
+        if let Marker::Writing(thread) = std::mem::replace(&mut self.marker, Marker::Done) {
+            let _ = thread.join();
+        }
+    }
+}
+
 /// The parts of a log store an in-place store is made of.
 pub(crate) struct Parts<D: Dir> {
     pub(crate) log: Log<D>,
@@ -217,6 +245,8 @@ pub(crate) struct Parts<D: Dir> {
     pub(crate) geometry: Geometry,
     pub(crate) identity: [u8; 16],
     pub(crate) zeroes: Zeroes,
+    /// What writes the failure marker ([`Log::marker_writer`]).
+    pub(crate) marker: MarkerWriter,
 }
 
 impl<D: Dir> InPlace<D> {
@@ -244,6 +274,7 @@ impl<D: Dir> InPlace<D> {
             zeroes: parts.zeroes,
             counts: Counts::default(),
             mutants,
+            marker: Marker::Unwritten(parts.marker),
         };
         // The checkpoint that entered this store synced the home image
         // as well; this sync makes the start's promise rest on nothing
@@ -299,13 +330,59 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
-    /// The volume fails: the observer hears of it first, then the
-    /// marker is written for the next start (the log's own order).
+    /// The volume fails: the observer hears of it at once, and the
+    /// marker for the next start is written on a thread of its own. The
+    /// marker needs the disk that has just failed, and a sync on a sick
+    /// disk can take minutes or never return; the caller is the queue's
+    /// thread, which must go on answering what it holds with the
+    /// failure. (The log store writes its marker on its worker for the
+    /// same reason.) Where no thread can be started, it is written here.
     fn fail(&mut self) {
         self.failed = true;
-        if !self.log.is_failed() {
-            self.log.mark_failed();
+        if self.log.is_failed() {
+            return;
         }
+        self.log.fail_without_marker();
+        let Marker::Unwritten(write) = std::mem::replace(&mut self.marker, Marker::Done) else {
+            return;
+        };
+        if self.mutants.has(Mutants::MARKER_INLINE) {
+            write();
+            return;
+        }
+        // The writer goes to the thread through a slot, so that it is
+        // still here when the thread cannot be started.
+        let slot = Arc::new(std::sync::Mutex::new(Some(write)));
+        let theirs = slot.clone();
+        let started = std::thread::Builder::new()
+            .name("skyzfs-marker".into())
+            .spawn(move || {
+                let write = theirs
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                write.is_some_and(|write| write())
+            });
+        self.marker = match started {
+            Ok(thread) => Marker::Writing(thread),
+            Err(_) => {
+                let write = slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(write) = write {
+                    write();
+                }
+                Marker::Done
+            }
+        };
+    }
+
+    /// Whether the failure marker is being written, or was, on a thread
+    /// of its own: for the test that shows it is not the caller's.
+    #[cfg(test)]
+    pub(crate) fn marker_on_its_own_thread(&self) -> bool {
+        matches!(self.marker, Marker::Writing(_))
     }
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {

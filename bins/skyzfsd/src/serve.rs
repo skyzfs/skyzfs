@@ -751,15 +751,38 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         // The log is applied and emptied, the home image synced, and
         // the queue's thread executes the requests itself; the sync of
         // a flush runs on the image's helper thread, which wakes the
-        // queue's thread when it ends. A start that fails here has
-        // failed the volume when the cause was the disk, as a failed
-        // step would: the next start finds the marker.
-        StoreKind::InPlace => Target::InPlace(Box::new(
-            ready
-                .store
-                .into_in_place(Some(waker))
-                .map_err(|e| format!("the in-place store: {e}"))?,
-        )),
+        // queue's thread when it ends.
+        StoreKind::InPlace => match ready.store.into_in_place(Some(waker)) {
+            Ok(store) => Target::InPlace(Box::new(store)),
+            // The disk failed under the start: the volume has failed
+            // (the marker is written), and it goes the way of a volume
+            // that fails while it is served: the failure note, the
+            // device's note, the delete of the device, exit 3. The
+            // device is this instance's and is not started yet; it holds
+            // no request of this instance's.
+            Err(skyzfs_local::inplace::IntoInPlaceError::Failed) => {
+                let (failure, written, deleted) =
+                    lifecycle::fail_serving(&mut kernel, &mut records, number, identity);
+                say(format_args!(
+                    "the volume failed at the start of the in-place store ({}); client holds the \
+                     device: {:?}{}{}. Note: {}",
+                    failure.reason,
+                    failure.held,
+                    if written {
+                        ""
+                    } else {
+                        "; the failure note could not be written"
+                    },
+                    match &deleted {
+                        Ok(()) => String::new(),
+                        Err(undeleted) => format!("; {}", undeleted.said(number)),
+                    },
+                    status::POOL_WARNING
+                ));
+                return Ok(Exit::Failed);
+            }
+            Err(other) => return Err(format!("the in-place store: {other}")),
+        },
     };
 
     let queue_began = std::time::Instant::now();

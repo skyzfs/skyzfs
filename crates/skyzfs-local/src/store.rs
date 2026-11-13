@@ -3427,7 +3427,10 @@ impl<D: Dir> Store<D> {
     pub fn into_in_place(
         self,
         waker: Option<Waker>,
-    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError> {
+    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError>
+    where
+        D: Clone + Send + 'static,
+    {
         self.into_in_place_with(waker, crate::inplace::Mutants::default())
     }
 
@@ -3435,7 +3438,10 @@ impl<D: Dir> Store<D> {
         mut self,
         waker: Option<Waker>,
         mutants: crate::inplace::Mutants,
-    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError> {
+    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError>
+    where
+        D: Clone + Send + 'static,
+    {
         use crate::inplace::IntoInPlaceError;
         if !self.queue.is_empty() || !self.ids.is_empty() {
             return Err(IntoInPlaceError::InFlight);
@@ -3463,6 +3469,7 @@ impl<D: Dir> Store<D> {
             )));
         }
         let identity = self.core.identity();
+        let marker = self.core.log.marker_writer();
         let Core {
             log,
             home,
@@ -3478,6 +3485,7 @@ impl<D: Dir> Store<D> {
                 lock: _lock,
                 geometry,
                 identity,
+                marker,
                 zeroes,
             },
             waker.map(|Waker(call)| call),
