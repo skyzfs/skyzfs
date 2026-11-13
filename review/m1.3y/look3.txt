@@ -1,0 +1,26 @@
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+== cargo fmt --all --check
+exit 0
+== cargo clippy -p skyzfs-local -p skyzfs-ublk -p skyzfsd --all-targets -- -D warnings
+exit 0
+== cargo clippy -p skyzfs-local -p skyzfsd --all-targets --features skyzfs-local/test-hooks,skyzfsd/test-hooks -- -D warnings
+exit 0
+== cargo test -p skyzfsd --features skyzfsd/test-hooks
+      2 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 65 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.22s
+exit 0
+== cargo test -p skyzfs-local --lib inplace
+      1 test result: ok. 44 passed; 0 failed; 1 ignored; 0 measured; 249 filtered out; finished in 50.06s
+exit 0
+== plant: the send line after the wait
+exit 101
+      1 error: test failed, to rerun pass `-p skyzfsd --lib`
+      1 test record::tests::the_send_line_is_written_before_the_commits_go ... FAILED
+      1 test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.08s
+== plant: the send line after the flush
+exit 101
+      1 error: test failed, to rerun pass `-p skyzfsd --lib`
+      1 test record::tests::the_send_line_is_written_before_the_commits_go ... FAILED
+      1 test result: FAILED. 8 passed; 1 failed; 0 ignored; 0 measured; 56 filtered out; finished in 0.08s
+rc=0

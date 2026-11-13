@@ -185,3 +185,26 @@ drops would cover that.
 The first look's gates ran on rustc 1.97.0 (July), not the current
 stable: `rustup update stable` had not taken. The second look ran on
 1.100.0. Check `rustc --version` after the update, not before it.
+
+## The third look (head 697ba46)
+
+The comment is
+https://github.com/skyzfs/skyzfs/pull/58#issuecomment-6857625473.
+Nothing blocked from the code. The request log now writes `send N`
+before the wait or flush that hands commits to the kernel, and its text
+says what the record cannot show. `look3.sh` runs the gates on what
+changed and two plants (`send` written after the wait, after the
+flush); `look3.txt` is its output: both plants fail
+`the_send_line_is_written_before_the_commits_go` and nothing else.
+
+One exception to the new text, from reading libublk 0.4.8: when the
+ring is full the library submits at once from inside a commit, and the
+ring has only as many entries as the queue's depth, one of which the
+binding's wake poll holds until the next wait. A turn that commits on
+every tag after a wake therefore hands all but the last commit to the
+kernel before their `send` line. The exact statement is: a commit is
+with the kernel no earlier than its own `commit` line and no later than
+the `sent`.
+
+Left for a change of its own: the binding reporting ublk command
+results other than OK, which it drops today.
