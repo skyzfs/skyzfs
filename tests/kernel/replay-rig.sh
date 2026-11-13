@@ -74,8 +74,8 @@
 # recording in which the daemon took no checkpoint step is the rig's
 # error (exit 2): it would say nothing about a cut inside a step, and
 # so is a fill that does not fit in the pool. With
-# RIG_SERVE_ARGS='--store in-place' there is no log and so no step, and
-# none is asked for. Every command on the pool while recording runs
+# the in-place store (the default, M1.3t) there is no log and so no
+# step, and none is asked for. Every command on the pool while recording runs
 # under a time limit (pool_step); a daemon that stops answering is then
 # a verdict, not a job that hangs.
 set -euo pipefail
@@ -124,7 +124,9 @@ read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
 # `--store in-place` (M1.3r): the daemon keeps no log and takes no
 # checkpoint step, so a recording without one is what it should be.
 # The store is always named: the rig never rests on the daemon's
-# default, which is to change (M1.T20). Without --store it is the log.
+# default, which before M1.3t is the log. Without --store in
+# RIG_SERVE_ARGS the rig names the in-place store; --store log asks for
+# the log store of a build from before M1.3t.
 IN_PLACE=""; STORE_NAMED=""
 for i in "${!SERVE_ARGS[@]}"; do
     case ${SERVE_ARGS[$i]} in
@@ -132,7 +134,7 @@ for i in "${!SERVE_ARGS[@]}"; do
         --store) STORE_NAMED=1; [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
     esac
 done
-[ -n "$STORE_NAMED" ] || SERVE_ARGS=(--store log "${SERVE_ARGS[@]}")
+[ -n "$STORE_NAMED" ] || { SERVE_ARGS=(--store in-place "${SERVE_ARGS[@]}"); IN_PLACE=1; }
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec

@@ -1549,12 +1549,14 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
     # The store is always named (M1.T20), so that the daemon's default
-    # can change under the benchmark: --store log unless the arguments
-    # name one. A build from before the option (TB_SKYZFSD_REF of an
-    # older commit) has only the log store and is served as it was.
+    # cannot change under the benchmark: --store in-place unless the
+    # arguments name one (M1.3t removes the log store; before it the
+    # daemon's default was the log). A build from before the option
+    # (TB_SKYZFSD_REF of an older commit) has only the log store and is
+    # served as it was.
     if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
         && "$SKYZFSD" help 2>&1 | grep -q -- '--store'; then
-        args=(--store log "${args[@]}")
+        args=(--store in-place "${args[@]}")
     fi
     SKZ_SERVE_ARGS="${args[*]}"
     : > "$WORK/skyzfsd.ready"
