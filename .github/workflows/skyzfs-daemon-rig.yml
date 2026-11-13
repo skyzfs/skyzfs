@@ -27,6 +27,14 @@ name: skyzfs-daemon-rig
 # frozen until it is removed (M1.T20), and with the in-place store the
 # pins that rest on the log are NA (`NOT_FOR_IN_PLACE` in the judge).
 # The summary says for every pin what it rests on.
+#
+# Check g's negative control (M1.T23): the input `daemon_ref` builds the
+# daemon from another commit under this checkout's rig. With
+# cd0e76360b4a3e8597c8ac5d68182b9e05c077e3 (before #46: no cache drop at
+# a start), `checks: g`, the job must fail with three lines that differ:
+# pin_start_serves_what_the_disk_holds, pin_failed_start_fails_volume and
+# pin_failed_start_suspends_pool (run 43397129438). That is how to show
+# again that check g catches what it is for.
 on:
   workflow_dispatch:
     inputs:
