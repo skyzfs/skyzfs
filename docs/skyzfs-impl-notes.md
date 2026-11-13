@@ -82,6 +82,9 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.3s | skyzfs/skyzfs#46 | The conformance model's power cut is the volatile-cache disk; the in-place store's failure paths; every start drops the kernel's cache of the home image and checks it is gone | The criterion: without the write log |
 | M1.3v | skyzfs/skyzfs#47 | The code read for arm64 and for pages above 4 KiB: `mapped()` takes the system's page size; the in-place store's tests on the simulated disk at 16 KiB and 64 KiB pages | The ublk transport: arm64 |
 | M1.3z | skyzfs/skyzfs#57 | Two more tests of the log store's times that raced their own threads | The local store |
+| M1.3y | skyzfs/skyzfs#58 | Direct I/O is the in-place store's I/O, on I/O threads (decision D6); the status says the threads' queue; `serve --request-log` in the test-hooks build | Direct I/O on the image (decision D6); A call that returned after the kill (M1.T28) |
+| M1.T28 | skyzfs/skyzfs#59, skyzfs/skyzfs#60, skyzfs/skyzfs#62 | Check c keeps the request log and the block trace and runs with udev's watch off; the model takes a request in flight at a daemon loss as possibly complete, where the harness says a completion can be held; the repeat rig with reads provoked | A call that returned after the kill (M1.T28) |
+| M1.3ab | skyzfs/skyzfs#61 | A test of the binding's `mapped()` raced another thread's mapping | The ublk transport: arm64 |
 | M1.3x | skyzfs/skyzfs#55 | The failure note's reason for the in-place store: code 7, "a write or sync of the volume's image failed" | The ublk transport: a failed volume gives up its attachment |
 | M1.3w | skyzfs/skyzfs#52 | Two tests of the log store's times took their own total before the look they compare it with | The local store |
 | M1.T20a | skyzfs/skyzfs#44 | The replay rig names the daemon's store (`serve_args`); a pull request's daemon jobs drive `--store in-place` | The criterion: without the write log |
@@ -785,6 +788,47 @@ Per course: prefixes checked, prefixes at which a returned write read as zeros, 
 
 All of it is loss that design §4.1 allows. Decided on these figures: the image stays sparse (design §10).
 
+#### Direct I/O as built (M1.3y)
+
+`skyzfsd serve --store in-place` reads and writes the home image with `O_DIRECT` on a pool of I/O threads, eight by default (`--io-threads`, 1 to 64); there is no buffered served mode. What the package added to the experiment:
+
+- The start asks `statx` for the direct-I/O units and refuses, by reason and without failing the volume, a file system that reports none, or whose offset unit does not divide 4 KiB.
+- The store orders overlapping requests itself: a read waits for an overlapping write on the threads, a write or write-zeroes for an overlapping read or write, a flush for every write. Seven planted defects each fail a test and none hangs.
+- A thread that panics or dies fails the volume like a failed write.
+- The status file is version 9: the threads, requests on them and waiting now, how many waited, and the highs. `zeroes_applied` has a value 4, "written as zeros by direct I/O".
+- The start's sync and cache drop stay, and stay after the log store goes: they cover a file system that takes direct I/O and serves it through its cache.
+- `serve --request-log PATH`, in the build with test hooks only, records each request the kernel hands the daemon and each answer. It cannot show a commit the driver refused: the binding drops command results other than OK (M1.3aa).
+
+Not shown: ext4 with `data=journal` is read as reporting no direct-I/O unit, so that the start refuses it; no rig has run it. The throughput rule and the thread default on the merged daemon are still to be measured.
+
+#### A call that returned after the kill (M1.T28)
+
+The first daemon rig run on the direct I/O daemon failed check c on `ubuntu-26.04`: in the conformance suite through the block device, a read found one write's blocks where a second, overlapping write should have won (run 43430825700, volume 60 of seed 0x5ca1ab1e). `skyzfs-blkcheck --replay` reproduced it from the tool's trace, which showed only that the rig's bookkeeping agreed with itself.
+
+What it was, from a recurrence with the daemon's request log and the kernel's block trace on one clock (run 43455086383, pass 3): the kernel issued the second write whole; the old daemon applied and answered it; the kernel completed it, about 2 ms before the kill. The tool's `pwrite` returned only after the next daemon had taken over. A direct write to a block device returns after the page cache of its range is invalidated, and a buffered read by udev, probing the device after the suite's discard, held a page of that range and was itself waiting at the killed daemon. The tool counted the write as in flight at the death, and the model took a call in flight at a death as issued again, after whatever was acknowledged meanwhile. The daemon and the kernel did what the contract asks; what the disk held is one of the orders two concurrent writes may have. ZFS does not take this path: the wait is in the block device's `O_DIRECT` path for a userspace caller.
+
+Counts, check c on the daemon rig since M1.3s, each job a first pass and a pass with the delay:
+
+| | `ubuntu-24.04` | `ubuntu-26.04` | `ubuntu-26.04-arm` |
+|---|---|---|---|
+| Buffered daemon | 10 jobs, 0 failed | 10 jobs and 10 traced passes, 0 failed | 9 jobs, 0 failed |
+| Direct I/O daemon, before the fix | 3 jobs, 0 failed | 3 jobs, 2 failed (43430825700, 43453345076); 40 traced first passes, 1 failed | 3 jobs, 0 failed |
+
+Every failure was the same volume of the same seed. Why only `ubuntu-26.04` with direct I/O is not shown: its udev watches `ublkb*` (640 change events in a probe's discard mode against 1 in the others), and `ubuntu-24.04` issued no udev reads at all during check c.
+
+What was ruled out on the way: the kernel splitting the call, or a fallback to buffered writes. 0 of 13,500 overlapping direct writes were split or fell back (runs 43443374413 and 43447103915), alone, after a discard, and beside a buffered reader.
+
+The fix has two halves.
+
+- **The rig** (skyzfs/skyzfs#59): check c runs with udev's watch on `ublkb*` off, and keeps the request log and the block trace for a pass where a case failed. With the watch off and the model unchanged, 10 of 10 jobs on `ubuntu-26.04` with the direct I/O daemon passed (20 passes; runs 43463180252 to 43463225632). That removes this trigger only.
+- **The model** (skyzfs/skyzfs#60): a request in flight at a daemon loss that the lost daemon applied is either issued again or was completed and is not. Only a harness that says a completion can be held past the loss gets this reading, which is the device harness and `--replay`; the in-memory and the stores' suites keep the strict one, pinned by a planted fault. A request is still never lost or reordered against an acknowledged one. What the model no longer catches through a device: a server that acknowledges a reissued write without applying it, when the old daemon had applied it. From a block device's client the two cannot be told apart; the request log can.
+
+What shows the model's half: five volumes whose failures a kernel made (three from the runs above, two provoked) fail under the old model and are clean under the new. The repeat rig can provoke the case (skyzfs/skyzfs#62: the watch on, each device opened for writing and closed every 20 ms, and a reader of each device's last 256 KiB with the cache dropped after each read). Provoked, the old model failed 2 of 20 passes (43476467345, 43479660648) and the new 0 of 20 (43479646883, 43479653721), one runner a run; at that rate 0 of 20 happens by chance about one time in eight, so the runs alone do not show it. Two earlier ways of provoking, without the reader at the device's end, gave 0 of 10 each.
+
+On the first rig run of the merged direct I/O daemon with both halves (run 43492027748), all three images passed, the request log was kept for 61 volumes a pass, and 6 to 11 calls an image had been completed by the old server and were issued again by the tool.
+
+A lesson for the rig is in `CLAUDE.md`: a replay that agrees with the rig is not a verdict on the server.
+
 #### With barriers on, the runners' flush costs nothing (M1.T16)
 
 One job per image on 2026-11-12, each on one machine, each row once[^t16runs]. The job remounted the work disk with barriers before its first row, and `nobarrier` was gone from the first row to the last. The daemon is the merged one with M1.3p and before M1.3q. "ref" is the ublk project's reference server.
@@ -821,7 +865,8 @@ Ubuntu 26.04 (work disk `sda1`, disk-sync 176 MiB/s, the model rows 3.1% apart),
 - Slow-sync machines under the rule on the current daemon: two counted rows of each kind (M1.T17), two more needed, and the model's own rows there drift by more than the rule allows in half the jobs.
 - What a device flush costs the daemon and the model on real flash: not measurable on the hosted runners (M1.T16, above); it needs a machine with a local flash device.
 - arm64 as a supported architecture (the owner, 2026-11-13; design goal 8): the unit job and the rigs' first runs are in (M1.T21, above), an audit of the code for the architecture and the page size is under review (M1.3v), and the rigs' matrices take arm64 with skyzfs/skyzfs#50. Owed for M1's exit: the full-budget replay and a throughput round on arm64.
-- Direct I/O is decided (D6) on an experiment build's figures; M1.3y builds it, and the rule, bounded and unbounded, is shown again on that daemon on both kinds of machine and on arm64.
+- Direct I/O is built (M1.3y) on an experiment build's figures; the rule, bounded and unbounded, and the thread default are still to be measured on the merged daemon on both kinds of machine and on arm64.
+- The binding drops ublk command results other than OK (M1.3aa). ext4 with `data=journal` is read as refused at the start, not run.
 - The image stays sparse (M1.T27); a full file system still fails the volume, until the store accounts for local space (M3).
 - A benchmark row through the in-place daemon under the bound hung once, cause unknown (M1.T24).
 - The in-place store as the only store (decision D5): M1.3s, M1.T20 and M1.3t, in that order; then the power-cut replay and the throughput rule shown again on the merged daemon. The bounded row on slow-sync machines is measured for both stores (M1.T19).
@@ -908,6 +953,11 @@ Every independent read of the design and every review of a work package, with wh
 | 2026-11-13 | The in-place store's failure reason (M1.3x, skyzfs/skyzfs#55); four looks by the review session, nothing from Codex | Can merge. Found by check g: the daemon reported "the log failed" for a failed sync of the image. Blocking at the second look, from check g run on the pull request's own build: the fix covered the serving case and not a failed start, where the log store's part of the hand-over meets the disk's error first. Ruled by the lead: at an in-place start a failed hand-over is the image's (code 7) when the log held nothing to apply and the log store's (code 1) when it held records; with an empty log a failure of the log file's own sync therefore reads as the image's, accepted until M1.3t removes the hand-over. Also fixed: the format note's remedy for an older daemon did not work as written (the store's marker outlives the note; the review ran it). No unit test can reach the daemon's three call sites (plants there pass all 57 daemon tests): the pin is a line of check g that reads the reason (M1.T26), which passed 4 of 4 on a daemon built from this head (run 43413318350). An older daemon that meets a note with code 7 refuses to start. The lead ran the judge over the three daemon artifacts of run 43413321393, the arm64 one among them: no difference from the table. |
 | 2026-11-13 | The failure-reason pin and four rig fixes (M1.T26, skyzfs/skyzfs#56); two looks by the review session and one finding by Codex | Can merge. Blocking and fixed: the new pin was missing from the check's list, so a run on the stand-in or the log store ended as a rig error (Codex's finding too); and a daemon that does not fail the volume where it must ended the run as a rig error and not as a verdict. Ruled by the lead with the review: a missing failure line is a verdict against the daemon. The negative control then ends with exit 1 and four lines differing (run 43420754305). On the merged daemon the pin passes 4 of 4 on both amd64 images and on arm64 (run 43420602078). The rig fixes: a watcher that stopped at the suspension, an observation left out with the log store, two points on the stuck-ZFS test, and a race in which the suite's helper read the daemon's exit status before the wrapper had written it (seen once on `zfs-topology`, run 43411310544). |
 | 2026-11-13 | Two more timing tests (M1.3z, skyzfs/skyzfs#57); one look by the review session, nothing from Codex | Can merge; no findings. One test looked before the reader thread was back in its wait (it failed once in a coverage job, reader idle 0); the other began its 200 ms hold before the step had reached its barrier (199.80 ms against a bound of 200 ms in the package's own gate run). Each is shown by a planted delay that fails the old test and passes the new one, with a control plant that still fails. The review ran the old barrier test under load with nothing planted: 4 failures in 40 runs, and 0 in 40 for the new one. Test code only; no assertion is weakened. |
+| 2026-11-13 | Direct I/O as the store's I/O (M1.3y, skyzfs/skyzfs#58); four looks by the review session and one finding by Codex | Can merge; no blocking finding from the code. The first look's red daemon rig job was taken first for the server's (by the replay), then for a split above the daemon (by the review), and was neither: see M1.T28. Non-blocking findings taken: a test for each clause of the store's ordering, bounded waits in the tests of a dying thread, the request log's `send` line the right way round. Codex: `zeroes_applied` stayed stale under direct I/O; value 4 added. Left for M1.3aa: the binding drops command results other than OK, and one test gap. |
+| 2026-11-13 | Check c's evidence and udev's watch (M1.T28, skyzfs/skyzfs#59); two looks by the review session, nothing from Codex | Can merge. Two small defects fixed (ftrace put back as found; the rig's error decided from what each pass left). Finding 4, taken as skyzfs/skyzfs#62: with the watch off no rig reaches the case the model's half is for. |
+| 2026-11-13 | The model's late completion (M1.T28, skyzfs/skyzfs#60); two looks by the review session, nothing from Codex | Can merge. Finding 1, decided by the lead: the new outcome is allowed only where the harness declares it, so the suites whose driver reissues every request keep the strict model (their time went from 72 s to 124 s and back to 73 s). A gap closed: two tests without a kernel hold the path from harness to model. |
+| 2026-11-13 | The repeat rig's provoking (M1.T28, skyzfs/skyzfs#62); one look by the review session, nothing from Codex | Can merge. The review replayed the kept volumes itself: only the two provoked ones are refused, and only by the model before skyzfs/skyzfs#60. The provoker's first form created a regular file at a device's path when the node had just gone (a harness error, "serve was not ready after 60 s"); it now opens without creating. |
+| 2026-11-13 | A test of `mapped()` that raced (M1.3ab, skyzfs/skyzfs#61); two looks by the review session, nothing from Codex | Can merge. The review reproduced the cause the author had inferred: another thread's larger mapping ending on the test's one-page hole. An attempt now counts only when the hole is empty before and after; the planted defect still fails every time. |
 
 ## References
 
