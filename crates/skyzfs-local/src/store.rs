@@ -2989,7 +2989,7 @@ impl Preimages {
 /// system that cannot deallocate ([`Zeroes::Written`]). The record's
 /// whole length is written, for a record that is one header in the
 /// log.
-fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
+pub(crate) fn write_zeros<F: File>(file: &mut F, offset: u64, len: u64) -> io::Result<()> {
     const CHUNK: u64 = 1 << 20;
     let zeros = vec![0u8; len.min(CHUNK) as usize];
     let mut at = 0;
@@ -3406,6 +3406,81 @@ impl<D: Dir> Store<D> {
             return Err(BlkError::Failed);
         }
         self.core.flush(SyncKind::FLUSH)
+    }
+
+    /// Give the log up for the in-place store
+    /// ([`crate::inplace`]): make everything appended durable, apply
+    /// the whole log to the home image, and hand the home image, the
+    /// empty log (for its failure marker and observer) and the lock to
+    /// an [`InPlace`](crate::inplace::InPlace) store, which syncs the
+    /// home image before it is returned. `waker` is called when a sync
+    /// that a flush began ends on the file's helper.
+    ///
+    /// Refused while requests are queued or in flight. On a failed
+    /// volume, and where any step fails, an error, and the volume has
+    /// failed (the log's marker). The log store itself is unchanged by
+    /// this: it is a checkpoint of everything, and a volume that is
+    /// later opened by the log store again finds an empty log and the
+    /// home image as the in-place store left it.
+    pub fn into_in_place(
+        self,
+        waker: Option<Waker>,
+    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError> {
+        self.into_in_place_with(waker, crate::inplace::Mutants::default())
+    }
+
+    pub(crate) fn into_in_place_with(
+        mut self,
+        waker: Option<Waker>,
+        mutants: crate::inplace::Mutants,
+    ) -> Result<crate::inplace::InPlace<D>, crate::inplace::IntoInPlaceError> {
+        use crate::inplace::IntoInPlaceError;
+        if !self.queue.is_empty() || !self.ids.is_empty() {
+            return Err(IntoInPlaceError::InFlight);
+        }
+        if self.core.failed {
+            return Err(IntoInPlaceError::Failed);
+        }
+        self.core.marks = None;
+        self.core.working = false;
+        self.core.log.set_hold(None);
+        let emptied = self
+            .core
+            .settle()
+            .and_then(|()| self.core.flush(SyncKind::FLUSH))
+            .and_then(|()| self.core.checkpoint())
+            .and_then(|_| self.core.settle());
+        if emptied.is_err() || self.core.failed {
+            return Err(IntoInPlaceError::Failed);
+        }
+        let (start, end) = (self.core.log.floor(), self.core.log.tail());
+        if start != end {
+            return Err(IntoInPlaceError::NotEmpty(format!(
+                "the log holds {} to {} after a checkpoint of all of it",
+                start.0, end.0
+            )));
+        }
+        let identity = self.core.identity();
+        let Core {
+            log,
+            home,
+            _lock,
+            geometry,
+            zeroes,
+            ..
+        } = self.core;
+        crate::inplace::InPlace::assemble(
+            crate::inplace::Parts {
+                log,
+                home,
+                lock: _lock,
+                geometry,
+                identity,
+                zeroes,
+            },
+            waker.map(|Waker(call)| call),
+            mutants,
+        )
     }
 
     /// Let the store checkpoint by itself, by `marks`, or not at all.

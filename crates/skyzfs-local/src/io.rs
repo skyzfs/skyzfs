@@ -108,8 +108,9 @@ pub trait File {
     /// [`File::sync_end`], so that the caller can do other things
     /// meanwhile. What it makes durable is what was written to the file
     /// before this call, as [`File::sync`] would; what is written after
-    /// it may or may not be. A caller writes nothing to the file until
-    /// the sync has ended, and begins no other on it.
+    /// it may or may not be. A caller may write to the file meanwhile
+    /// (the in-place store does); it begins no other sync on it until
+    /// this one has ended.
     ///
     /// `wake` is called once the sync has ended, if the file says that
     /// it is ([`File::sync_wakes`]). By default nothing begins here:

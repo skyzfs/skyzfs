@@ -5,6 +5,7 @@
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
 //!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
 //!                [--writeback-kib KIB] [--home-writeback-kib KIB] [--readers N]
+//!                [--store log|in-place]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -108,6 +109,7 @@ pub const USAGE: &str = "usage:
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                  [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                  [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
+                 [--store log|in-place]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -157,6 +159,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
                 [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
+                [--store log|in-place]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -191,6 +194,18 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       Reads are executed by --readers threads of their own (4 unless
       given, 1 to 64), beside the thread that executes the other
       requests and beside each other.
+      --store in-place serves the volume from its home image alone,
+      with no log (log unless given): each write is written where it
+      belongs, and a flush syncs the image. It promises less at a power
+      cut: what a completed flush covered is there, and any other block
+      may hold its content as of the last flush, any version written
+      since, or a mix of those within the block (a volatile-cache
+      disk); a volume served so is not a prefix of its writes. A
+      failure is final as with the log. The start applies and empties
+      the log first, so the volume can be served with either store from
+      one start to the next. The log's options (--log-high, --log-low,
+      --writeback-kib, --home-writeback-kib, --readers) are refused with
+      it.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -323,12 +338,28 @@ pub struct Serve {
     /// How many threads execute reads: 1 is the daemon before there
     /// were several.
     pub readers: u16,
+    /// `--store`: which store serves the volume.
+    pub store: StoreKind,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
     /// Take a volume directory on any file system. For tests.
     pub allow_any_filesystem: bool,
     /// The fault hooks.
     pub hooks: Hooks,
+}
+
+/// `--store`: which store serves the volume. Both keep the same files:
+/// the in-place store is entered from the log store's open with a
+/// checkpoint of everything ([`skyzfs_local::inplace`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum StoreKind {
+    /// `log`, the default: the write log and its checkpoints (rules R1
+    /// to R12).
+    #[default]
+    Log,
+    /// `in-place`: the home image alone, with the volatile-cache disk's
+    /// promise at a power cut.
+    InPlace,
 }
 
 /// The fault hooks of `serve`: all off in a default build.
@@ -498,6 +529,7 @@ const SERVE: &[Opt] = &[
     opt("--writeback-kib", true, false),
     opt("--home-writeback-kib", true, false),
     opt("--readers", true, false),
+    opt("--store", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
     opt("--fail-log-after", true, true),
@@ -732,6 +764,34 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 Some(text) => StepPoint::parse(text)?,
                 None => StepPoint::default(),
             };
+            let store = match given.get("--store") {
+                None | Some("log") => StoreKind::Log,
+                Some("in-place") => StoreKind::InPlace,
+                Some(_) => {
+                    return Err(UsageError::Value(
+                        "--store".into(),
+                        "expected log or in-place",
+                    ))
+                }
+            };
+            // The options of the log and its checkpoints, which the
+            // in-place store does not have: refused rather than ignored.
+            if store == StoreKind::InPlace {
+                let refused = [
+                    "--log-high",
+                    "--log-low",
+                    "--writeback-kib",
+                    "--home-writeback-kib",
+                    "--readers",
+                    "--step-pause-ms",
+                    "--step-pause-until",
+                    "--step-pause-at",
+                    "--refuse-holes",
+                ];
+                if let Some(name) = refused.into_iter().find(|name| given.flag(name)) {
+                    return Err(UsageError::Value(name.into(), "not with --store in-place"));
+                }
+            }
             Ok(Command::Serve(Serve {
                 dir,
                 run_dir,
@@ -744,6 +804,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 writeback_kib: unit("--writeback-kib", DEFAULT_WRITEBACK_KIB)?,
                 home_writeback_kib: unit("--home-writeback-kib", 0)?,
                 readers: small("--readers", DEFAULT_READERS, MAX_READERS)?,
+                store,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
                 hooks: Hooks {

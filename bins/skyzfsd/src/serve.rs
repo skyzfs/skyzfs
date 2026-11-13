@@ -88,10 +88,13 @@ use skyzfs_ublk_sys::queue::{Device, Open};
 use skyzfs_ublk_sys::signals::{self, Signal};
 use skyzfs_ublk_sys::{Wake, FLAGS};
 
-use crate::cli::{Exit, Serve};
+use crate::cli::{Exit, Serve, StoreKind};
 use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES, SEGMENT_SIZE};
 use crate::delay::{Delayed, LateAck};
 use crate::timing::{TimedControl, TimedVolume};
+
+mod target;
+pub use target::Target;
 
 /// How often a start asks again about a device of its own that is
 /// still shown as live: 50 times, 100 ms apart, 5 s.
@@ -429,7 +432,7 @@ pub fn appended(counters: &skyzfs_ublk::pump::Counters) -> u64 {
 /// are refused by the command line.
 #[cfg(feature = "test-hooks")]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    pump: &mut Pump<Q, skyzfs_local::store::Served, LateAck<Ack>>,
+    pump: &mut Pump<Q, Target, LateAck<Ack>>,
     flags: &Flags,
     fail_after: &mut Option<u64>,
 ) {
@@ -444,7 +447,7 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 
 #[cfg(not(feature = "test-hooks"))]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    _pump: &mut Pump<Q, skyzfs_local::store::Served, LateAck<Ack>>,
+    _pump: &mut Pump<Q, Target, LateAck<Ack>>,
     _flags: &Flags,
     _fail_after: &mut Option<u64>,
 ) {
@@ -468,8 +471,24 @@ fn shown_timing(mut timing: skyzfs_local::store::Timing) -> skyzfs_local::store:
     timing
 }
 
-/// The store's log state and times as the status file shows them.
-fn log_shown(served: &skyzfs_local::store::Served) -> LogShown {
+/// The store's log state and times as the status file shows them. The
+/// in-place store has no log, no steps and no times of its own: the
+/// file shows zeros for those, and how write-zeroes reach the image.
+fn log_shown(target: &Target) -> LogShown {
+    let served = match target {
+        Target::Log(served) => served,
+        Target::InPlace(store) => {
+            return LogShown {
+                timing: None,
+                pump: None,
+                live: 0,
+                steps: 0,
+                stepping: false,
+                own_syncs: 0,
+                zeroes: zeroes_shown(store.zeroes()),
+            }
+        }
+    };
     // The state and the times of one moment.
     let (log, timing) = &served.shown();
     LogShown {
@@ -479,11 +498,15 @@ fn log_shown(served: &skyzfs_local::store::Served) -> LogShown {
         steps: log.steps,
         stepping: log.stepping,
         own_syncs: log.own_syncs,
-        zeroes: match log.zeroes {
-            Zeroes::Untried => ZeroesShown::Untried,
-            Zeroes::Deallocated => ZeroesShown::Deallocated,
-            Zeroes::Written => ZeroesShown::Written,
-        },
+        zeroes: zeroes_shown(log.zeroes),
+    }
+}
+
+fn zeroes_shown(zeroes: Zeroes) -> ZeroesShown {
+    match zeroes {
+        Zeroes::Untried => ZeroesShown::Untried,
+        Zeroes::Deallocated => ZeroesShown::Deallocated,
+        Zeroes::Written => ZeroesShown::Written,
     }
 }
 
@@ -492,7 +515,7 @@ fn log_shown(served: &skyzfs_local::store::Served) -> LogShown {
 /// as in flight.
 fn post<Q: skyzfs_ublk::pump::Queue>(
     board: &Board,
-    pump: &mut Pump<Delayed<Q, Ack>, skyzfs_local::store::Served, LateAck<Ack>>,
+    pump: &mut Pump<Delayed<Q, Ack>, Target, LateAck<Ack>>,
     shown: &mut LogShown,
 ) {
     let mut counters = pump.counters();
@@ -674,11 +697,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // while the worker steps. The first requests can wait for those
     // steps: while the log is at or above the high mark the worker
     // takes steps before it executes a request.
-    ready.store.set_marks(Some(Marks {
-        high: u64::from(serve.log_high) * SEGMENT_SIZE,
-        low: u64::from(serve.log_low) * SEGMENT_SIZE,
-        step: StepBound::DAEMON,
-    }));
+    // (The in-place store has no log: none of this applies to it, and
+    // the command line refuses its options.)
+    if serve.store == StoreKind::Log {
+        ready.store.set_marks(Some(Marks {
+            high: u64::from(serve.log_high) * SEGMENT_SIZE,
+            low: u64::from(serve.log_low) * SEGMENT_SIZE,
+            step: StepBound::DAEMON,
+        }));
+    }
     #[cfg(feature = "test-hooks")]
     if serve.hooks.refuse_holes {
         ready.store.set_refuse_holes(true);
@@ -710,13 +737,30 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let to_device = began.elapsed();
     let ack = AckFile::open(&records.acknowledged_path(), identity, boot)
         .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
-    let served = ready
-        .store
-        .serve_with(Some(Waker::new({
-            let wake = wake.clone();
-            move || wake.wake()
-        })))
-        .map_err(|e| format!("the store's worker: {e}"))?;
+    let waker = Waker::new({
+        let wake = wake.clone();
+        move || wake.wake()
+    });
+    let served = match serve.store {
+        StoreKind::Log => Target::Log(
+            ready
+                .store
+                .serve_with(Some(waker))
+                .map_err(|e| format!("the store's worker: {e}"))?,
+        ),
+        // The log is applied and emptied, the home image synced, and
+        // the queue's thread executes the requests itself; the sync of
+        // a flush runs on the image's helper thread, which wakes the
+        // queue's thread when it ends. A start that fails here has
+        // failed the volume when the cause was the disk, as a failed
+        // step would: the next start finds the marker.
+        StoreKind::InPlace => Target::InPlace(Box::new(
+            ready
+                .store
+                .into_in_place(Some(waker))
+                .map_err(|e| format!("the in-place store: {e}"))?,
+        )),
+    };
 
     let queue_began = std::time::Instant::now();
     let device = Device::open(&Open {
