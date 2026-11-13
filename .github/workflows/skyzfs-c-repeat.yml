@@ -65,6 +65,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
           tool=$PWD/target/release/skyzfs-blkcheck
+          from="the checkout, $(git rev-parse HEAD)"
           if [ -n "$BLKCHECK_REF" ]; then
             [[ $BLKCHECK_REF =~ ^[0-9a-f]{40}$ ]] || { echo "::error::blkcheck_ref is a commit's 40 hex digits: '$BLKCHECK_REF'"; exit 64; }
             git fetch --no-tags --depth=1 origin "$BLKCHECK_REF"
@@ -72,6 +73,7 @@ jobs:
             (cd "$RUNNER_TEMP/tool-src" && CARGO_TARGET_DIR=$RUNNER_TEMP/target cargo build --release --locked -p skyzfs-blkcheck)
             cp "$RUNNER_TEMP/target/release/skyzfs-blkcheck" "$RUNNER_TEMP/skyzfs-blkcheck"
             tool=$RUNNER_TEMP/skyzfs-blkcheck
+            from=$BLKCHECK_REF
             echo "- the tool: skyzfs-blkcheck built from \`$BLKCHECK_REF\`" >> "$GITHUB_STEP_SUMMARY"
           else
             cargo build --release --locked -p skyzfs-blkcheck
@@ -97,6 +99,7 @@ jobs:
           done
           {
             printf 'export RIG_BLKCHECK=%q\n' "$tool"
+            printf 'export RIG_BLKCHECK_FROM=%q\n' "$from"
             printf 'export RIG_DAEMONS=%q\n' "${list# }"
             printf 'export RIG_ROUNDS=%q\n' "$ROUNDS"
             printf 'export RIG_WATCH=%q\n' "$WATCH"

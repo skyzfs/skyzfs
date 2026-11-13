@@ -33,7 +33,8 @@
 # after the restart. Every failure of #58's signature was a write at
 # the device's end, where udev's probe reads; a reader of the whole
 # device (43472772939) was rarely there at a kill and gave none),
-# RIG_SERVE_ARGS (default --store in-place).
+# RIG_SERVE_ARGS (default --store in-place), RIG_BLKCHECK_FROM (what
+# the tool was built from, for the summary).
 #
 # It judges nothing: exit 0 when it ran, 2 for an error of its own. The
 # summary is OUT/summary.md.
@@ -45,6 +46,8 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$HERE/blktrace.sh"
 # shellcheck source=tests/kernel/request-log.sh
 . "$HERE/request-log.sh"
+# shellcheck source=tests/lib/gnu-dd.sh
+. "$HERE/../lib/gnu-dd.sh"
 OUT=${1:?usage: c-repeat-rig.sh OUT}
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
@@ -91,7 +94,7 @@ provoke() {
             [ "${n:-0}" -ge 262144 ] || continue
             # nocache: the pages are dropped after the read, so that the
             # next round reads from the server again.
-            dd if="$d" of=/dev/null bs=4k skip=$(( n / 4096 - 64 )) count=64 iflag=nocache status=none 2>/dev/null
+            "$DD" if="$d" of=/dev/null bs=4k skip=$(( n / 4096 - 64 )) count=64 iflag=nocache status=none 2>/dev/null
         done
     done &
     while :; do
@@ -99,19 +102,31 @@ provoke() {
             # Never `: > "$d"`: that opens with O_CREAT, and a node that goes
             # between the test and the open leaves a regular file at the
             # device's path, where the next device of that number gets no
-            # node (the create that waited 60 s in 43468133700). dd with
-            # nocreat opens for writing and creates nothing.
+            # node (the create that waited 60 s in 43468133700). GNU dd
+            # with nocreat opens for writing and creates nothing ("$DD":
+            # 26.04's plain dd is not GNU's).
             [ -b "$d" ] || continue
-            dd if=/dev/null of="$d" conv=nocreat,notrunc status=none 2>/dev/null
+            "$DD" if=/dev/null of="$d" conv=nocreat,notrunc status=none 2>/dev/null
         done
         sleep "$s"
     done
+}
+# The provoker runs in a process group of its own, so that a stop
+# reaches every process under it, the dd a loop waits for among them: a
+# read of a device whose server is dead waits for the next server, and a
+# dd left behind would hold its device open.
+provoke_start() { set -m; provoke & PROVOKER=$!; set +m; }
+provoke_stop() {
+    [ -n "$PROVOKER" ] || return 0
+    kill -- "-$PROVOKER" 2>/dev/null
+    wait "$PROVOKER" 2>/dev/null
+    PROVOKER=""
 }
 # shellcheck disable=SC2317,SC2329  # reached through the trap
 cleanup() {
     blktrace_off
     [ -z "$MONITOR" ] || kill "$MONITOR" 2>/dev/null
-    [ -z "$PROVOKER" ] || { pkill -P "$PROVOKER" 2>/dev/null; kill "$PROVOKER" 2>/dev/null; }
+    provoke_stop
     if [ "$WATCH" = off ]; then rm -f "$NOWATCH"; lim 30 udevadm control --reload; fi
 }
 trap cleanup EXIT
@@ -131,7 +146,7 @@ part=$(basename "$(realpath "$src" 2>/dev/null)" 2>/dev/null)
 note "## Check c's first pass, ${ROUNDS} times for each daemon, in turn, on this machine ($(. /etc/os-release && echo "$PRETTY_NAME"), kernel $(uname -r))"
 note ""
 note "- udev $(udevadm --version 2>/dev/null | head -n 1); its watch on ublk devices: $WATCH$([ "$WATCH" = on ] && echo ' (the rules as the image ships them)' || echo " ($NOWATCH)")$([ -n "$PROVOKE" ] && echo "; reads provoked: every ublk device opened for writing and closed, and its last 256 KiB read through the page cache without a pause (the opens every $PROVOKE_MS ms)")"
-note "- the tool: $TOOL"
+note "- the tool: $TOOL${RIG_BLKCHECK_FROM:+, built from $RIG_BLKCHECK_FROM}"
 note "- the request log (--request-log): ${rl_said}the block trace is on the clock mono, as the log's mono_ns"
 note "- the volumes' file system: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$WORK" 2>/dev/null) ($part, starts at sector $(cat "/sys/class/block/$part/start" 2>/dev/null || echo '?') of its disk); a volume's c-cN.extents (filefrag -b512) are in its sectors"
 note ""
@@ -145,7 +160,7 @@ for r in $(seq 1 "$ROUNDS"); do
         rm -rf "$w"; mkdir -p "$p" "$w"
         udevadm monitor --udev --subsystem-match=block > "$p/udev.txt" 2>&1 &
         MONITOR=$!
-        if [ -n "$PROVOKE" ]; then provoke & PROVOKER=$!; fi
+        if [ -n "$PROVOKE" ]; then provoke_start; fi
         blktrace_on "$p/ftrace.txt"
         blktrace_mark "pass $r $label start"
         t0=$(date +%s)
@@ -157,7 +172,7 @@ for r in $(seq 1 "$ROUNDS"); do
         secs=$(( $(date +%s) - t0 ))
         blktrace_off
         kill "$MONITOR" 2>/dev/null; wait "$MONITOR" 2>/dev/null; MONITOR=""
-        if [ -n "$PROVOKER" ]; then pkill -P "$PROVOKER" 2>/dev/null; kill "$PROVOKER" 2>/dev/null; wait "$PROVOKER" 2>/dev/null; PROVOKER=""; fi
+        provoke_stop
         cp "$w/helper.log" "$p/c-helper.log" 2>/dev/null
         for f in "$w"/*.serve.log "$w"/*.requests.tsv "$w"/*.extents; do [ -s "$f" ] && cp "$f" "$p/c-$(basename "$f")"; done
         fails=$(awk -F'\t' '$1 == "case" && $3 == "FAIL" { printf "%s: %s; ", $2, substr($4, 1, 160) }' "$p/c-cases.tsv")
