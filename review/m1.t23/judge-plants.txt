@@ -1,0 +1,23 @@
+Plants in tests/kernel/daemon_check.py at 8833a95, each with plant.py
+FILE OLD NEW, then `python3 -B tests/kernel/test_daemon_check.py`, then
+restored. Remove tests/kernel/__pycache__/daemon_check*.pyc before each
+run: two plants of the same length within one second share the cache,
+and the second then reports the first's result.
+
+j1  if store == 'log' and name in ONLY_IN_PLACE:  ->  if False and ...
+    fails test_with_the_log_store_it_is_na
+j6  ONLY_IN_PLACE ... if row[0] == 'g'  ->  ... and name.startswith('pin_')
+    fails test_with_the_log_store_it_is_na
+j2  pin_sync_failure_suspends_pool's last word 'WAITING' -> 'PASS'
+    fails test_on_the_stand_in_it_waits
+j3  'obs_g_failed_sync' out of DAEMON_ONLY_OBSERVED
+    fails test_its_observations_are_the_daemons
+j4  ctl_g_old_content_after_good_sync expected PASS
+    fails test_a_control_that_passes_differs, test_every_pin_says_what_it_rests_on
+j5  pin_start_serves_what_the_disk_holds expected FAIL
+    fails test_a_start_that_serves_the_cache_differs, test_every_pin_says_what_it_rests_on
+j9  pin_failed_start_fails_volume expected FAIL
+j10 pin_sync_failed_volume_refused expected FAIL
+    each fails test_every_pin_says_what_it_rests_on
+j11 CHECKS without 'g'            fails eight tests
+j8  DEFAULT_CHECKS without g      fails five tests
