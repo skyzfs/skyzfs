@@ -243,8 +243,10 @@ there, and the user decides when it merges.
   only the cache held, and what the daemon and the pool do when the
   disk fails at a start or while serving. Its negative control is a
   daemon from before the cache drop, by dispatch: `daemon_ref` with
-  cd0e763's full id and `checks: g` (run 43397129438), where three
-  lines must differ. Check f (what a pool does after a
+  cd0e763's full id and `checks: g` (run 43420754305), where four
+  lines must differ, the daemon's failure reason among them
+  (`pin_failure_reason_is_the_images`, M1.T26: the reason the daemon
+  gives for a failed image is read in four places). Check f (what a pool does after a
   refused start; the input `f_courses` names the courses) runs by
   dispatch only, one course per job, and judges nothing but its
   control. The summary
