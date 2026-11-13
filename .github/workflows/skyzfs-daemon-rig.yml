@@ -149,7 +149,7 @@ jobs:
             exclude='[]'
           else
             exclude='[{"image":"ubuntu-26.04-arm","server":"stand-in"},{"image":"ubuntu-24.04-arm","server":"stand-in"}]'
-            echo "On arm64 the daemon only; the stand-in there runs by dispatch." | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "The stand-in on arm64 runs by dispatch only." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           echo "exclude=$exclude" >> "$GITHUB_OUTPUT"
 
