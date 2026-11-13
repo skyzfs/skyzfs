@@ -422,6 +422,7 @@ jobs:
         env:
           BUDGET: ${{ needs.plan.outputs.budget }}
           SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '--store in-place' }}
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
         run: |
           [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
           # The hole courses are of the in-place store whatever else is asked.
@@ -435,6 +436,7 @@ jobs:
             echo "export RIG_SKYZFSD=$PWD/target/release/skyzfsd"
             echo "export RIG_HOLE_EVERY_PREFIX=$every RIG_BUDGET_NAME=$BUDGET"
             printf 'export RIG_SERVE_ARGS=%q\n' "$SERVE_ARGS"
+            printf 'export RIG_DAEMON_FROM=%q\n' "${DAEMON_REF:-the checkout, $(git rev-parse HEAD)}"
           } > "$RUNNER_TEMP/rig.env"
           rc=0
           sudo bash -c '. "$1" && exec tests/kernel/hole-rig.sh "$2" /mnt/skz-hole' \

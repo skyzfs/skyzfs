@@ -31,7 +31,8 @@
 # RIG_HOLE_TAIL=2, RIG_HOLE_EVERY_PREFIX=1 (every prefix of each
 # course, no time limit) or RIG_HOLE_SAMPLE=40 and RIG_HOLE_BUDGET_S=240
 # (the marks' prefixes and this many more at random, in this many
-# seconds a course), RIG_BUDGET_NAME.
+# seconds a course), RIG_BUDGET_NAME, RIG_DAEMON_FROM (what the daemon
+# was built from, for the summary).
 #
 # Exit: 0 every prefix as design §4.1 allows; 1 a verdict against the
 # daemon; 2 the rig's own error, not a verdict. The summary is
@@ -234,6 +235,6 @@ for fs in "${FSES[@]}"; do
     done
 done
 rc=0
-python3 -I "$HERE/replay_hole.py" summary "$OUT"/hole-result-*.json --kernel "$(uname -r)" --out "$OUT/hole-summary.md" > /dev/null || rc=$?
+python3 -I "$HERE/replay_hole.py" summary "$OUT"/hole-result-*.json --kernel "$(uname -r)" --daemon "${RIG_DAEMON_FROM:-}" --out "$OUT/hole-summary.md" > /dev/null || rc=$?
 cat "$OUT/hole-summary.md"
 exit "$rc"

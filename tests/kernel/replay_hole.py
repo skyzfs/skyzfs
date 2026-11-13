@@ -28,8 +28,12 @@ prefix, mounts it (the journal replays as after a power cut), starts
 the daemon as after a reboot (replay_daemon.Daemon), reads the device,
 and judges each of the course's blocks:
 
-  - every block reads as zeros or as what its write wrote, whole per
-    4 KiB block, and never anything else;
+  - every block reads as zeros or as what its write wrote, judged by
+    512-byte sector: a block whose sectors are each zeros or that
+    sector of its write, some of each, is torn, which §4.1 allows for
+    a write no returned flush covers (dm-log-writes records whole bios
+    and each write of the course is one bio, so this rig sees none);
+    any other byte is a violation;
   - a block whose write had returned and was covered by a flush that
     had returned (a mark f-K after its w-I, both in the prefix) holds
     what its write wrote.
@@ -70,6 +74,7 @@ import replay_daemon as rd  # noqa: E402
 from replay_check import run  # noqa: E402
 
 BLOCK = 4096
+SECTOR = 512
 # A block's content: this line, with the write's number, over and over.
 HEADER = b'SKZ-HOLE-%06d\n'
 KINDS = ('sparse', 'fallocate', 'zero-fill')
@@ -83,11 +88,20 @@ def content(i):
 
 
 def what(data, i):
-    """'zeros', 'written' (block i's write) or 'other'."""
+    """'zeros', 'written' (block i's write), 'torn' or 'other'.
+
+    Torn: each 512-byte sector is zeros or that sector of block i's
+    write, and both occur. Design §4.1 allows a write that no returned
+    flush covers to tear at a sector."""
     if data == bytes(len(data)):
         return 'zeros'
-    if data == content(i):
+    want = content(i)
+    if data == want:
         return 'written'
+    zero = bytes(SECTOR)
+    if len(data) == len(want) and all(data[s:s + SECTOR] in (want[s:s + SECTOR], zero)
+                                      for s in range(0, len(data), SECTOR)):
+        return 'torn'
     return 'other'
 
 
@@ -202,7 +216,7 @@ def judge(n, reads, wmarks, fmarks, data_at=None):
     data}; a returned block that reads zeros at a prefix that holds its
     data is also in zeros_on_disk."""
     data_at = data_at or {}
-    out = {'n': n, 'violations': [], 'zeros_after_return': [], 'zeros_on_disk': [], 'states': {}}
+    out = {'n': n, 'violations': [], 'zeros_after_return': [], 'zeros_on_disk': [], 'torn': [], 'states': {}}
     for i, got in sorted(reads.items()):
         st = state_at(n, wmarks[i], fmarks)
         out['states'][i] = (st, got)
@@ -210,6 +224,8 @@ def judge(n, reads, wmarks, fmarks, data_at=None):
             out['violations'].append(f'block {i} ({st}) reads neither zeros nor its write')
         elif st == 'flushed' and got != 'written':
             out['violations'].append(f'block {i}: a flush after its write had returned, and it reads {got}')
+        elif got == 'torn':
+            out['torn'].append(i)
         elif st == 'returned' and got == 'zeros':
             out['zeros_after_return'].append(i)
             if data_at.get(i, n + 1) <= n:
@@ -231,6 +247,20 @@ def data_prefixes(records, log_path, n_blocks):
                 if i not in out and h in data:
                     out[i] = n
     return out
+
+
+def data_missing(data_at, n_blocks):
+    """The rig's error when the log lacks a block's data, else None.
+
+    Every write of the course reaches the lower disk before the
+    recording ends (the daemon's stop syncs, the unmount flushes). A
+    block whose data the search misses would count as "not on the disk"
+    and lower the third figure without a word."""
+    missing = sorted(set(range(n_blocks)) - set(data_at))
+    if not missing:
+        return None
+    return (f'the data of {len(missing)} of {n_blocks} blocks was not found in the log (blocks {missing[:8]}): '
+            f'the search does not match what the course wrote')
 
 
 def plan(start, end, total, wmarks, fmarks, every, sample, seed=1):
@@ -316,6 +346,7 @@ def check(a):
     start, end, wmarks, fmarks = marks_of(records)
     res = {'fs': a.fs, 'kind': a.kind, 'records': len(records), 'writes': len(offs), 'flushes': len(fmarks),
            'checked': 0, 'zero_prefixes': 0, 'zero_blocks': 0, 'disk_zero_prefixes': 0, 'disk_zero_blocks': 0,
+           'torn_blocks': 0,
            'violations': [], 'failures': [],
            'rig_error': None, 'control': None, 'budget': a.budget_name}
     if start is None or len(wmarks) != len(offs):
@@ -332,6 +363,9 @@ def check(a):
     image = os.path.join(a.work, 'hole.img')
     data_at = data_prefixes(records, a.log, len(offs))
     res['data_found'] = len(data_at)
+    res['rig_error'] = data_missing(data_at, len(offs))
+    if res['rig_error']:
+        return res
     pts = plan(start, end, len(records), wmarks, fmarks, a.every_prefix, a.sample, a.seed)
     res['planned'] = len(pts)
     res['range'] = [start, len(records)]
@@ -357,6 +391,9 @@ def check(a):
                 j = judge(n, read_blocks(image, offs), wmarks, fmarks, data_at)
                 row['zeros'] = j['zeros_after_return']
                 row['zeros_on_disk'] = j['zeros_on_disk']
+                if j['torn']:
+                    row['torn'] = j['torn']
+                    res['torn_blocks'] += len(j['torn'])
                 if j['violations']:
                     row['violations'] = j['violations']
                     res['violations'] += [f'prefix {n}: {v}' for v in j['violations']]
@@ -414,7 +451,10 @@ def verdict(results):
     if errors:
         return 2, 'The rig failed. This is not a verdict on the daemon.'
     bad = [r for r in results if r['violations'] or r['failures']]
-    ctl = [r for r in results if r.get('control') and r['control']['result'] != EXPECTED['withheld']]
+    if [r for r in results if not r.get('control')]:
+        return 2, ('A course was checked without its negative control: nothing shows that the check catches a '
+                   'flush over data the disk does not have. Not a verdict.')
+    ctl = [r for r in results if r['control']['result'] != EXPECTED['withheld']]
     if ctl:
         return 2, 'A negative control was not caught: the check does not show what it should. Not a verdict.'
     if bad:
@@ -422,10 +462,11 @@ def verdict(results):
     return 0, 'Every checked prefix as design §4.1 allows.'
 
 
-def summary(results, kernel=''):
+def summary(results, kernel='', daemon=''):
     code, head = verdict(results)
     out = ['## Power-cut replay: a direct write into a hole, through skyzfsd (M1.T27)', '',
-           f'**{head}**' + (f' Kernel {kernel}.' if kernel else ''), '',
+           f'**{head}**' + (f' Kernel {kernel}.' if kernel else '') + (f' The daemon: {daemon}.' if daemon else ''),
+           '',
            '| file system | image | prefixes checked (of the course\'s) | zeros after return '
            '| of them on the disk, not in the file | violations | prefixes that did not start '
            '| control `withheld` | seconds |',
@@ -449,12 +490,15 @@ def summary(results, kernel=''):
                 'those at which the block\'s data was already in the prefix, so on the disk, and the block '
                 'still read zeros: the file system had not committed the change of its extent tree. That is '
                 'the measurement for the image\'s allocation (design §10). A violation: a block that read '
-                'neither zeros nor its write, or a block covered by a returned flush that did not read its '
+                'neither zeros nor its write, sector by sector, or a block covered by a returned flush that did not read its '
                 'write.', '']
     for r in (r for r in results if not r.get('skipped')):
         for k in ('rig_error',):
             if r.get(k):
                 out.append(f"- {r['fs']} {r['kind']}: the rig's error: {r[k][:600]}")
+        if r.get('torn_blocks'):
+            out.append(f"- {r['fs']} {r['kind']}: {r['torn_blocks']} block reads torn at a sector, before a "
+                       f"flush covered the write (design §4.1 allows it)")
         for v in (r.get('violations') or [])[:8]:
             out.append(f"- {r['fs']} {r['kind']}: {v}")
         for v in (r.get('failures') or [])[:8]:
@@ -494,6 +538,7 @@ def main():
     s = sub.add_parser('summary', help='the summary of the courses checked')
     s.add_argument('results', nargs='+', help='the JSON of each check')
     s.add_argument('--kernel', default='')
+    s.add_argument('--daemon', default='', help='what the daemon was built from, for the summary')
     s.add_argument('--out', required=True)
     a = ap.parse_args()
     if a.cmd == 'course':
@@ -508,7 +553,7 @@ def main():
     for p in a.results:
         with open(p) as f:
             results.append(json.load(f))
-    code, text = summary(results, a.kernel)
+    code, text = summary(results, a.kernel, a.daemon)
     with open(a.out, 'w') as f:
         f.write(text)
     print(text)

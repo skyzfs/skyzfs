@@ -21,8 +21,15 @@ class Content(unittest.TestCase):
         self.assertEqual(rh.what(rh.content(7), 7), 'written')
         self.assertEqual(rh.what(bytes(rh.BLOCK), 7), 'zeros')
         self.assertEqual(rh.what(rh.content(8), 7), 'other')
+        # Torn at a sector: each sector zeros or the write's (design §4.1).
         half = rh.content(7)[:2048] + bytes(2048)
-        self.assertEqual(rh.what(half, 7), 'other')
+        self.assertEqual(rh.what(half, 7), 'torn')
+        odd = bytes(512) + rh.content(7)[512:1024] + bytes(3072)
+        self.assertEqual(rh.what(odd, 7), 'torn')
+        # A sector of anything else is other, wherever it is.
+        self.assertEqual(rh.what(half[:1024] + b'x' * 512 + half[1536:], 7), 'other')
+        self.assertEqual(rh.what(rh.content(7)[:2047] + bytes(2049), 7), 'other')
+        self.assertEqual(rh.what(rh.content(8)[:512] + bytes(3584), 7), 'other')
 
     def test_offsets_are_spread_distinct_and_in_their_own_mib(self):
         offs = rh.offsets(16, 256 << 20)
@@ -92,6 +99,18 @@ class Judging(unittest.TestCase):
         j = rh.judge(8, {0: 'zeros', 1: 'zeros', 2: 'zeros'}, self.w, self.f, {0: 7})
         self.assertEqual((j['zeros_after_return'], j['zeros_on_disk']), ([0, 1], [0]))
 
+    def test_the_data_on_the_disk_at_the_prefix_itself_counts(self):
+        j = rh.judge(7, {0: 'zeros', 1: 'zeros', 2: 'zeros'}, self.w, self.f, {0: 7})
+        self.assertEqual(j['zeros_on_disk'], [0])
+
+    def test_a_torn_block_is_allowed_until_a_flush_covers_it(self):
+        for n in (3, 8):
+            j = rh.judge(n, {0: 'torn', 1: 'written', 2: 'zeros'}, self.w, self.f)
+            self.assertEqual((j['violations'], j['torn'], j['zeros_after_return']), ([], [0], []), n)
+        j = rh.judge(9, {0: 'torn', 1: 'written', 2: 'zeros'}, self.w, self.f)
+        self.assertEqual(len(j['violations']), 1)
+        self.assertIn('block 0: a flush after its write had returned, and it reads torn', j['violations'][0])
+
     def test_a_pending_block_may_read_its_write(self):
         j = rh.judge(3, {0: 'written', 1: 'zeros', 2: 'zeros'}, self.w, self.f)
         self.assertEqual((j['violations'], j['zeros_after_return']), ([], []))
@@ -142,6 +161,10 @@ class Withheld(unittest.TestCase):
             recs = logwrites.index(log, 0)['records']
             self.assertEqual(rh.data_prefixes(recs, log, 3), {1: 4, 0: 5})
 
+    def test_a_block_whose_data_is_not_in_the_log_is_the_rigs_error(self):
+        self.assertIsNone(rh.data_missing({0: 3, 1: 5, 2: 9}, 3))
+        self.assertIn('1 of 3 blocks', rh.data_missing({0: 3, 2: 9}, 3))
+
     def test_no_control_without_a_flush(self):
         with tempfile.TemporaryDirectory() as d:
             log = os.path.join(d, 'log')
@@ -168,7 +191,21 @@ class Verdict(unittest.TestCase):
         self.assertEqual(rh.verdict([result(failures=['prefix 3: start: exit 1'])])[0], 1)
         self.assertEqual(rh.verdict([result(rig_error='losetup')])[0], 2)
         self.assertEqual(rh.verdict([result(control={'result': 'not caught', 'what': 'w'})])[0], 2)
-        self.assertEqual(rh.verdict([result(control=None)])[0], 0)
+        self.assertEqual(rh.verdict([result(control={'result': 'not built', 'what': 'w'})])[0], 2)
+
+    def test_a_course_without_its_control_is_the_rigs_error(self):
+        code, head = rh.verdict([result(), result(kind='fallocate', control=None)])
+        self.assertEqual(code, 2)
+        self.assertIn('without its negative control', head)
+
+    def test_no_course_checked_is_the_rigs_error(self):
+        self.assertEqual(rh.verdict([])[0], 2)
+        self.assertEqual(rh.verdict([{'fs': 'xfs', 'kind': 'zero-fill', 'skipped': 'no --zero-fill'}])[0], 2)
+
+    def test_the_summary_names_the_daemon_and_torn_reads(self):
+        _, text = rh.summary([result(torn_blocks=2)], daemon='0123abc')
+        self.assertIn('The daemon: 0123abc.', text)
+        self.assertIn('ext4 sparse: 2 block reads torn at a sector', text)
 
     def test_the_summary_gives_the_three_counts_per_kind(self):
         code, text = rh.summary([result(), result(kind='zero-fill', zero_prefixes=0, zero_blocks=0,
