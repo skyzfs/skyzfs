@@ -27,8 +27,11 @@ on:
         type: boolean
         default: false
       mirror:
-        description: another fallback to try, a URL ending in /ubuntu/ (empty for the script's own)
+        description: another fallback to try, a URL ending in /ubuntu/ or /ubuntu-ports/ (empty for the script's own)
         default: ''
+      images:
+        description: "runner images, a JSON list: amd64 ubuntu-24.04 ubuntu-26.04, arm64 ubuntu-24.04-arm ubuntu-26.04-arm"
+        default: '["ubuntu-24.04","ubuntu-26.04"]'
 
 permissions:
   contents: read
@@ -41,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [ubuntu-24.04, ubuntu-26.04]
+        image: ${{ fromJSON(inputs.images || '["ubuntu-24.04","ubuntu-26.04"]') }}
     env:
       MIRROR: ${{ inputs.mirror }}
       FORCE: ${{ inputs.force }}

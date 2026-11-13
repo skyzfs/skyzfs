@@ -111,5 +111,16 @@ has "no list on the machine: says so" "$OUT" "nothing changed"
 is "no option that switches a check off, no key" \
     "$(grep -v '^#' "$S" | grep -c -i -E 'trusted=|allow-unauth|AllowInsecure|AllowUnauth|apt-key|\.gpg|signed-by|apt\.conf')" 0
 
+# The fallback's tree follows the machine's architecture: arm64 packages
+# are only in ubuntu-ports. A fallback named by hand is kept as given.
+# shellcheck source=tests/lib/apt-fallback.sh
+fallback_for() { ( unset APT_FALLBACK_MIRROR; APT_FALLBACK_ARCH=$1; . "$S"; echo "$APT_FALLBACK_MIRROR" ); }
+is "amd64: the archive" "$(fallback_for amd64)" "https://mirrors.edge.kernel.org/ubuntu/"
+is "i386: the archive" "$(fallback_for i386)" "https://mirrors.edge.kernel.org/ubuntu/"
+is "arm64: the ports tree" "$(fallback_for arm64)" "https://mirrors.edge.kernel.org/ubuntu-ports/"
+is "riscv64: the ports tree" "$(fallback_for riscv64)" "https://mirrors.edge.kernel.org/ubuntu-ports/"
+# shellcheck source=tests/lib/apt-fallback.sh
+is "a fallback named by hand is kept" "$( ( APT_FALLBACK_MIRROR=https://m.example/ubuntu-ports/ APT_FALLBACK_ARCH=amd64; . "$S"; echo "$APT_FALLBACK_MIRROR" ) )" "https://m.example/ubuntu-ports/"
+
 [ "$fails" = 0 ] || { echo "$fails failed"; exit 1; }
 echo "all passed"

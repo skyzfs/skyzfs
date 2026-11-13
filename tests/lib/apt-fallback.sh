@@ -38,12 +38,22 @@
 #   APT_MIRROR_LIST      the list file
 #   APT_SOURCES          the files and directories that hold apt's sources
 #   APT_FALLBACK_MIRROR  the fallback
+#   APT_FALLBACK_ARCH    the machine's architecture, as dpkg names it,
+#                        which chooses the fallback's tree
 #   APT_FALLBACK_LOOKUP  a command that is given a host name and
 #                        succeeds when it resolves
 set -uo pipefail
 
-# The one place that names the fallback.
-APT_FALLBACK_MIRROR=${APT_FALLBACK_MIRROR:-https://mirrors.edge.kernel.org/ubuntu/}
+# The one place that names the fallback. Ubuntu serves amd64 and i386
+# from its archive and every other architecture (arm64 on the -arm
+# runner images) from a separate tree, ubuntu-ports: a fallback of the
+# wrong tree has no packages for the machine.
+APT_FALLBACK_ARCH=${APT_FALLBACK_ARCH:-$(dpkg --print-architecture 2>/dev/null || echo amd64)}
+case $APT_FALLBACK_ARCH in
+    amd64|i386) fb_tree=ubuntu ;;
+    *) fb_tree=ubuntu-ports ;;
+esac
+APT_FALLBACK_MIRROR=${APT_FALLBACK_MIRROR:-https://mirrors.edge.kernel.org/$fb_tree/}
 APT_MIRROR_LIST=${APT_MIRROR_LIST:-/etc/apt/apt-mirrors.txt}
 APT_SOURCES=${APT_SOURCES:-/etc/apt/sources.list /etc/apt/sources.list.d}
 # A name that resolves answers in milliseconds; a dead one takes
