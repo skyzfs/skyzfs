@@ -88,7 +88,10 @@
 //! `KernelQueue::commit_with_no_buffer_for_tests`). The request is not
 //! answered otherwise. The program prints a line of step
 //! `refuse-commit` when it sends the commit, `sent for a read at byte
-//! B on tag T` (or a write, or `a flush`), and one with the driver's
+//! B on tag T` (or a write, or `a flush`); if the library will not put
+//! it on the ring, `not sent for ... on tag T: REASON` instead, and the
+//! request is answered as any other and the server goes on (no test
+//! step can then pass). Then one line with the driver's
 //! answer: `refused: errno E (...)`, `aborted` (the queue was being
 //! stopped), or `taken` (the tag was handed its next request, so the
 //! driver took the commit). On a refusal the server ends at once, as
@@ -414,13 +417,14 @@ mod run {
 
     /// A queue that can commit a request with no buffer: the malformed
     /// commit of `--refuse-one-commit`.
+    /// An error says that nothing was sent.
     trait NoBuffer: Queue {
-        fn commit_with_no_buffer(&mut self, tag: u16, result: i32);
+        fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()>;
     }
 
     impl NoBuffer for KernelQueue<'_> {
-        fn commit_with_no_buffer(&mut self, tag: u16, result: i32) {
-            self.commit_with_no_buffer_for_tests(tag, result);
+        fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()> {
+            self.commit_with_no_buffer_for_tests(tag, result)
         }
     }
 
@@ -492,13 +496,22 @@ mod run {
                 }
                 if refuse.is_some_and(|what| matches(what, &f.desc)) {
                     refuse = None;
-                    say(
-                        "refuse-commit",
-                        &format!("sent for {} on tag {}", named(&f.desc), f.tag),
-                    );
-                    queue.commit_with_no_buffer(f.tag, -libc::EIO);
-                    refusing = Some(f.tag);
-                    continue;
+                    match queue.commit_with_no_buffer(f.tag, -libc::EIO) {
+                        Ok(()) => {
+                            say(
+                                "refuse-commit",
+                                &format!("sent for {} on tag {}", named(&f.desc), f.tag),
+                            );
+                            refusing = Some(f.tag);
+                            continue;
+                        }
+                        // Nothing was sent: the request is answered as
+                        // any other, so that nothing waits on it.
+                        Err(e) => say(
+                            "refuse-commit",
+                            &format!("not sent for {} on tag {}: {e}", named(&f.desc), f.tag),
+                        ),
+                    }
                 }
                 match hold {
                     Some(h) if matches(h.what, &f.desc) => {
@@ -825,6 +838,8 @@ mod run {
             turns: VecDeque<Turn>,
             commits: Vec<(u16, i32, bool)>,
             no_buffer: Vec<(u16, i32)>,
+            /// The library refuses a commit with no buffer.
+            no_buffer_not_sent: bool,
         }
 
         impl Queue for Scripted {
@@ -857,8 +872,12 @@ mod run {
         }
 
         impl NoBuffer for Scripted {
-            fn commit_with_no_buffer(&mut self, tag: u16, result: i32) {
+            fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()> {
+                if self.no_buffer_not_sent {
+                    return Err(io::Error::other("refused by the library"));
+                }
                 self.no_buffer.push((tag, result));
+                Ok(())
             }
         }
 
@@ -884,6 +903,17 @@ mod run {
         /// Serve `turns` with `plan`; what was committed, the lines
         /// said, and the counts.
         fn run(turns: Vec<Turn>, plan: Plan) -> (Scripted, Vec<String>, Arc<Counts>) {
+            run_on(
+                Scripted {
+                    turns: turns.into(),
+                    ..Scripted::default()
+                },
+                plan,
+            )
+        }
+
+        /// [`run`] on a queue made by the caller.
+        fn run_on(mut queue: Scripted, plan: Plan) -> (Scripted, Vec<String>, Arc<Counts>) {
             let path = std::env::temp_dir().join(format!(
                 "skyzfs-ublk-control-server-{}-{:?}",
                 std::process::id(),
@@ -898,10 +928,6 @@ mod run {
                 .expect("a file");
             file.set_len(1 << 20).expect("its size");
             let _ = std::fs::remove_file(&path);
-            let mut queue = Scripted {
-                turns: turns.into(),
-                ..Scripted::default()
-            };
             let lines = RefCell::new(Vec::new());
             let counts = Arc::new(Counts::default());
             server(
@@ -1001,6 +1027,42 @@ mod run {
             assert!(!counts.refused.load(Ordering::SeqCst));
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// A commit with no buffer that the library will not send is
+        /// said so, and the request is answered as any other: nothing
+        /// waits on it, nothing is counted as refused, and the server
+        /// goes on.
+        #[test]
+        fn a_commit_with_no_buffer_that_is_not_sent_is_said_and_the_request_answered() {
+            let plan = Plan {
+                refuse: Some(What::Read(0)),
+                ..Plan::default()
+            };
+            let turns: Vec<Turn> = vec![
+                (vec![read(2, 0)], Vec::new(), Ok(Woken::Work)),
+                (vec![read(3, 4096)], Vec::new(), Ok(Woken::Work)),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, lines, counts) = run_on(
+                Scripted {
+                    turns: turns.into(),
+                    no_buffer_not_sent: true,
+                    ..Scripted::default()
+                },
+                plan,
+            );
+            assert!(queue.no_buffer.is_empty());
+            assert_eq!(queue.commits, vec![(2, 4096, true), (3, 4096, true)]);
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-commit\tnot sent for a read at byte 0 on tag 2: refused by the library"
+                        .to_string()
+                ]
+            );
+            assert!(!counts.refused.load(Ordering::SeqCst));
+            assert_eq!(counts.handed.load(Ordering::SeqCst), 2);
         }
 
         /// Every command the driver ends otherwise than OK is counted,

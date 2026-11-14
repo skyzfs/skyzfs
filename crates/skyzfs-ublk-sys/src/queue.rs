@@ -505,13 +505,16 @@ impl<'q> KernelQueue<'q> {
     /// server's, unanswered, and no command waits on the tag. That is
     /// the malformed kind of refused commit ([`Queue::wait`]). The tag's
     /// buffer is left where it is, and no memory is named.
+    ///
+    /// An error is the library's refusal to put the commit on the ring,
+    /// before anything is sent: the request is then still the server's
+    /// to answer. For this queue's flags the library has no reason to
+    /// refuse it.
     #[doc(hidden)]
-    pub fn commit_with_no_buffer_for_tests(&mut self, tag: u16, result: i32) {
-        let _ = self.queue.complete_io_cmd_unified(
-            tag,
-            BufDesc::Slice(&[]),
-            Ok(UblkIORes::Result(result)),
-        );
+    pub fn commit_with_no_buffer_for_tests(&mut self, tag: u16, result: i32) -> io::Result<()> {
+        self.queue
+            .complete_io_cmd_unified(tag, BufDesc::Slice(&[]), Ok(UblkIORes::Result(result)))
+            .map_err(|e| io::Error::other(e.to_string()))
     }
 
     /// Put a poll of the wake descriptor on the ring: it completes
