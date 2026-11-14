@@ -119,6 +119,12 @@ is "  its stacks are kept" "$(grep -c '^-- 401000 zpool D$' "$ZS_STACKS")" 1
 task 394977 zpool D zfs_ioc_clear
 out=$(ZS_WHERE="d: the pool suspends" zfs_stuck_say)
 is "nor one in zfs_ioc_clear alone" "$(cat "$ZS_FILE")" ""
+# Nor txg_sync waiting in the kernel with no zpool waiting for a lock:
+# the stuck state is named by its lock waiters, not by txg_sync.
+task 403032 txg_sync D
+out=$(ZS_WHERE="d: the pool suspends" zfs_stuck_say)
+is "nor txg_sync in D alone" "$(cat "$ZS_FILE")" ""
+has "  which the line says" "$out" "txg_sync threads' states: RD"
 # Namespace waiters alone mark it.
 task 407787 zpool D spa_namespace_enter
 out=$(ZS_WHERE="d: a namespace waiter" zfs_stuck_say)
