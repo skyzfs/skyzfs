@@ -6,28 +6,29 @@
 //! `status` and `detach` do not open the store. `detach` takes the volume's lock, as the
 //! lifecycle demands; `status` takes nothing and changes nothing.
 //!
-//! Both first ask whether the directory holds a volume at all (the
-//! log's superblock is there), so that a mistyped `--dir` is an error
-//! and no lock file is made in a directory that is no volume. That
-//! check is this module's own reading: the design does not say what a
-//! command does with a directory that is no volume.
+//! Both first ask whether the directory holds a volume at all (its
+//! volume file is there, or the log store's superblock of a volume made
+//! before M1.3t), so that a mistyped `--dir` is an error and no lock
+//! file is made in a directory that is no volume. That check is this
+//! module's own reading: the design does not say what a command does
+//! with a directory that is no volume. A volume of the log store, which
+//! `serve` refuses, is taken here: `detach` can then remove a device an
+//! older daemon left for it, and `status` say its state (this module's
+//! reading too, for M1.3t).
 //!
 //! # What `create` fixes
 //!
-//! A new volume has 4096-byte record alignment, log segments of
-//! [`SEGMENT_SIZE`], and a write unit that is the larger of the
-//! system's page size and the block size of the file system the
-//! directory is on ([`Identity::write_unit_for`]): the files are
-//! written through the page cache, and a file system writes back
-//! whole blocks, so that is how far a write can reach. A directory
-//! whose file system has blocks above 65536 bytes (a network file
-//! system that reports its transfer size, for one), blocks that are no
-//! power of two, or a block size that cannot be read is refused: the
-//! format carries no such unit, and the store's protection against a
-//! power cut rests on it. None of them is an option: they
-//! are recorded with the volume, and a later version that wants others
-//! makes new volumes with others. If the directory is missing, `create`
-//! makes it (its last component only, mode 0700); a missing parent, a
+//! A new volume has a write unit that is the larger of the system's
+//! page size and the block size of the file system the directory is on
+//! ([`write_unit_for`]): a file system writes back whole blocks, so
+//! that is how far a write can reach. The volume file records it, and
+//! every start holds the system to it. A directory whose file system has
+//! blocks above 65536 bytes (a network file system that reports its
+//! transfer size, for one), blocks that are no power of two, or a block
+//! size that cannot be read is refused: the volume file carries no such
+//! unit. It is not an option: a later version that wants others makes
+//! new volumes with others. If the directory is missing, `create`
+//! makes it (its last component only, mode 0700);//! makes it (its last component only, mode 0700); a missing parent, a
 //! path that is not a directory and a directory that holds a volume
 //! are errors. `create` replaces nothing, and a `create` that fails
 //! after it made the directory removes the directory again if it is
@@ -39,10 +40,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use skyzfs_blk::Base;
-use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::log::{LogError, SUPER_NAME};
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError};
+use skyzfs_local::inplace::{self, OpenError, OpenOptions, VolumeConfig};
+use skyzfs_local::volume::{
+    system_write_unit, write_unit_for, VolumeError, LEGACY_NAME, VOLUME_NAME,
+};
 use skyzfs_ublk::lifecycle::{self, Control, Detached, Held, Whose};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Noted};
@@ -63,14 +65,6 @@ pub const LOCK_PAUSE: Duration = Duration::from_millis(100);
 /// number of a device nobody holds takes to come free
 /// (`control_delete_frees_the_number_within`, with its detail line).
 pub const GONE_RETRIES: u32 = 50;
-
-/// The size of a new volume's log segments: 64 MiB. A constant, and
-/// recorded with the volume.
-pub const SEGMENT_SIZE: u64 = 64 << 20;
-
-/// The record alignment of a new volume's log: 4096, so that the log
-/// can be written with direct I/O.
-pub const ALIGN: u32 = 4096;
 
 /// What a command prints, and how it exits.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +187,8 @@ impl<F: FnMut() -> io::Result<Box<dyn Control>>> Control for Lazy<F> {
 /// The records of the volume in `dir`, if `dir` holds a volume.
 fn files(volume: &Volume, boot: [u8; 16]) -> Result<Files, Output> {
     let dir: &Path = &volume.dir;
-    match dir.join(SUPER_NAME).try_exists() {
+    let holds = |name: &str| dir.join(name).try_exists();
+    match holds(VOLUME_NAME).and_then(|found| Ok(found || holds(LEGACY_NAME)?)) {
         Ok(true) => {}
         Ok(false) => return Err(Output::error(format!("no volume in {}", dir.display()))),
         Err(e) => return Err(Output::error(format!("{}: {e}", dir.display()))),
@@ -231,11 +226,18 @@ pub fn status(volume: &Volume, control: &mut dyn Control, now: &Now) -> Output {
     // The run directory is named after the volume's directory, so a
     // volume that was in this directory before and was made again
     // leaves its status file where this one's would be. Counters are
-    // shown only from a file that names this store. The store is not
-    // opened for that: its identity is read from the superblock.
+    // shown only from a file that names this volume. The volume is not
+    // opened for that: its identity is read from its volume file. A
+    // volume of the log store has none, and its counters are not shown.
     let file = match file {
         None => None,
-        Some(file) => match FsDir::new(&volume.dir).and_then(|dir| Store::identity_of(&dir)) {
+        Some(file) => match FsDir::new(&volume.dir)
+            .map_err(|e| e.to_string())
+            .and_then(|dir| match skyzfs_local::volume::Volume::read(&dir) {
+                Ok(found) => Ok(Some(found.identity)),
+                Err(VolumeError::Io(kind)) => Err(format!("{kind:?}")),
+                Err(_) => Ok(None),
+            }) {
             Ok(Some(identity)) if identity == file.identity => Some(file),
             Ok(_) => None,
             Err(e) => {
@@ -398,9 +400,9 @@ fn hex(bytes: &[u8; 16]) -> String {
 /// the note stays).
 ///
 /// On success one line: `created DIR: N bytes, volume ID, identity
-/// IDENTITY`, the two in hex. The identity is the store's
-/// ([`Store::identity`]): what tells this volume from another made
-/// later in the same directory.
+/// IDENTITY`, the two in hex. The identity is the volume file's
+/// ([`skyzfs_local::volume::Volume::identity`], random at create): what
+/// tells this volume from another made later in the same directory.
 pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
     let (made, write_unit) = match in_directory(&create.dir, |dir| make(create, dir, id)) {
         Ok(made) => made,
@@ -410,7 +412,7 @@ pub fn create(create: &Create, id: [u8; 16], boot: Option<[u8; 16]>) -> Output {
     let mut warning = boot
         .and_then(|boot| create_warning(&create.dir, &create.run_dir, &boot))
         .map_or_else(String::new, |warning| format!("skyzfsd: {warning}\n"));
-    if let Some(note) = write_unit_note(write_unit, Identity::system_write_unit()) {
+    if let Some(note) = write_unit_note(write_unit, system_write_unit()) {
         let _ = writeln!(warning, "skyzfsd: {shown}: {note}");
     }
     Output {
@@ -476,8 +478,8 @@ fn unmake(path: &Path) {
     let Ok(dir) = FsDir::new(path) else {
         return;
     };
-    if let Ok(lock) = Store::lock_volume(&dir) {
-        if !path.join(SUPER_NAME).exists() {
+    if let Ok(lock) = inplace::lock(&dir) {
+        if !path.join(VOLUME_NAME).exists() {
             let lock_name = skyzfs_local::fs::LOCK_NAME;
             for name in skyzfs_local::store::CREATE_LEFTOVERS {
                 if name != lock_name {
@@ -498,7 +500,7 @@ fn unmake(path: &Path) {
 /// (words that follow the directory's path).
 fn write_unit_on(block: io::Result<u64>) -> Result<u32, String> {
     match block {
-        Ok(block) => Identity::write_unit_for(block).ok_or_else(|| {
+        Ok(block) => write_unit_for(block).ok_or_else(|| {
             format!(
                 "is on a file system with blocks of {block} bytes: a volume's write unit must \
                  be at least the file system's block, and it is a power of two of at most \
@@ -513,9 +515,8 @@ fn write_unit_on(block: io::Result<u64>) -> Result<u32, String> {
 }
 
 /// What `create` says, on standard error, about a write unit that is
-/// not the system's page size: the volume then pads its log and saves
-/// neighbours by a larger unit than a volume on this system otherwise
-/// would, and whoever made it should know why. Nothing for the usual
+/// not the system's page size: the volume records the larger unit, and
+/// whoever made it should know why. Nothing for the usual
 /// case, so that the line `created ...` stays all there is to read.
 fn write_unit_note(unit: u32, page: u32) -> Option<String> {
     (unit != page).then(|| {
@@ -526,48 +527,52 @@ fn write_unit_note(unit: u32, page: u32) -> Option<String> {
     })
 }
 
-/// Make the store of `create` in `dir`; its identity and the write
+/// Make the volume of `create` in `dir`; its identity and the write
 /// unit it was given.
 fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Output> {
     use skyzfs_local::io::Dir as _;
     let shown = create.dir.display();
     let write_unit = write_unit_on(dir.block_size())
         .map_err(|why| Output::error(format_args!("{shown} {why}. Nothing was done")))?;
-    let config = StoreConfig {
+    let config = VolumeConfig {
         volume: id,
         size_mib: create.size >> 20,
         base: create.base_pattern.map_or(Base::Empty, Base::Pattern),
-        align: ALIGN,
-        segment_size: SEGMENT_SIZE,
         write_unit,
     };
-    match Store::create(dir.clone(), &config, OpenOptions::default()) {
-        Ok(store) if create.zero_fill && create.base_pattern.is_none() => {
-            let began = std::time::Instant::now();
-            skyzfs_local::store::fill_home(&dir).map_err(|e| {
-                Output::error(format_args!(
-                    "{shown}: writing the image with zeros: {e}. The volume is made, its image \
-                     only in part written"
-                ))
-            })?;
-            eprintln!(
-                "skyzfsd: {shown}: the image written with zeros in {:.1} s",
-                began.elapsed().as_secs_f64()
-            );
-            Ok((store.identity(), write_unit))
+    // With --zero-fill the zeros are written inside the creation, under
+    // the lock and before the volume file is made, so that no serve can
+    // start on the volume while they are written.
+    let zero_fill = create.zero_fill && create.base_pattern.is_none();
+    let began = std::time::Instant::now();
+    let made = if zero_fill {
+        inplace::create_zero_filled(&dir, &config)
+    } else {
+        inplace::create(&dir, &config)
+    };
+    match made {
+        Ok(made) => {
+            if zero_fill {
+                eprintln!(
+                    "skyzfsd: {shown}: the image written with zeros in {:.1} s",
+                    began.elapsed().as_secs_f64()
+                );
+            }
+            Ok((made.identity, write_unit))
         }
-        Ok(store) => Ok((store.identity(), write_unit)),
-        Err(StoreError::Log(LogError::Exists)) => Err(Output::error(format_args!(
+        Err(OpenError::Exists) => Err(Output::error(format_args!(
             "{shown} holds a volume already. Nothing was done"
         ))),
-        Err(StoreError::NotEmpty | StoreError::Log(LogError::NotEmpty)) => {
-            Err(Output::error(format_args!(
-                "{shown} holds {}, which is not left by a create: create makes a volume only \
-                 in a directory that holds nothing else. Nothing was done",
-                stranger(&create.dir)
-            )))
-        }
-        Err(StoreError::Locked) => Err(Output::said(
+        Err(OpenError::Volume(VolumeError::Legacy)) => Err(Output::error(format_args!(
+            "{shown}: {}. Nothing was done",
+            VolumeError::Legacy
+        ))),
+        Err(OpenError::NotEmpty) => Err(Output::error(format_args!(
+            "{shown} holds {}, which is not left by a create: create makes a volume only in a \
+             directory that holds nothing else. Nothing was done",
+            stranger(&create.dir)
+        ))),
+        Err(OpenError::Locked) => Err(Output::said(
             Exit::RefusedHeld,
             "",
             &format!("{shown} is in use by another instance. Nothing was done"),
@@ -578,7 +583,7 @@ fn make(create: &Create, dir: FsDir, id: [u8; 16]) -> Result<([u8; 16], u32), Ou
     }
 }
 
-/// The file in `dir` that made the store refuse it, for the message.
+/// The file in `dir` that made the create refuse it, for the message.
 fn stranger(dir: &Path) -> String {
     let names: Vec<String> = std::fs::read_dir(dir)
         .into_iter()

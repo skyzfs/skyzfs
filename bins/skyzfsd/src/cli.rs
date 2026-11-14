@@ -3,15 +3,18 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
-//!                [--queues 1] [--depth N] [--log-high SEGMENTS] [--log-low SEGMENTS]
-//!                [--writeback-kib KIB] [--home-writeback-kib KIB] [--readers N]
-//!                [--store log|in-place]
+//!                [--queues 1] [--depth N] [--io-threads N] [--store in-place]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
 //! ```
 //!
 //! `--queues` takes only 1: this milestone serves one queue.
+//!
+//! `--store` is what is left of the choice of a store, which M1.3t
+//! removed with the log store: `in-place` is accepted and changes
+//! nothing, and `log` is refused. It goes once the rigs no longer name
+//! it (M1.3t-d).
 //!
 //! An option is `--name value` or `--name=value`, and is given at most
 //! once. Numbers are decimal. Anything else is a usage error, which is
@@ -29,37 +32,20 @@
 //! is a usage error:
 //!
 //! - `create --base-pattern SEED`: a base that is not zeros;
-//! - `serve --fail-log-after N`: the log fails once N requests that
-//!   append to it are completed: writes, write-zeroes and discards.
-//!   Reads and flushes do not count;
+//! - `serve --fail-log-after N`: the volume fails, as after a failed
+//!   sync of its image, once N requests that change it are completed:
+//!   writes, write-zeroes and discards. Reads and flushes do not count.
+//!   (The name is the log store's, which the rigs still use.);
 //! - `serve --hold-one-request SECONDS:read:OFFSET`,
 //!   `SECONDS:write:OFFSET` or `SECONDS:flush`: the first request of
 //!   that kind that covers that byte is held for so long;
 //! - `serve --boot-id-file PATH`: read the boot id from this file and
 //!   not from the kernel;
-//! - `serve --recover-short N`: this instance's recovery counts the log
-//!   as N records shorter than it found it;
-//! - `serve --step-pause-ms N` or `serve --step-pause-until PATH`:
-//!   every checkpoint step waits for N ms or until a file of that
-//!   path exists (a step that arrives there first makes the empty
-//!   file `PATH.reached`, and nothing here ever removes it or `PATH`:
-//!   a caller that uses a path again removes both files first, or the
-//!   next step does not wait and `PATH.reached` says nothing new). One
-//!   of the two at most. `--step-pause-at POINT`
-//!   says where, and needs one of them: `saved` (the blocks the step
-//!   writes over are saved), `written` (the home image is written and
-//!   not synced; this unless given), `synced` (the home image is
-//!   durable and the log starts where it did), `start-written` (the
-//!   log's new start is written and not durable) or `start-durable`;
 //! - `serve --commit-delay-ms N`: every request's result is given to
-//!   the kernel N ms after the store completed it, and the acknowledged
-//!   position is stored then and not before. Nothing else waits;
-//! - `serve --refuse-holes`: the store behaves as on a file system
-//!   that cannot deallocate: a checkpoint writes zeros for a
-//!   write-zeroes record;
+//!   the kernel N ms after the store completed it. Nothing else waits;
 //! - `serve --request-log PATH`: every request the kernel hands over
 //!   and every answer it is given is appended to `PATH`, one line each
-//!   (the format is in `record.rs`). Either store.
+//!   (the format is in `record.rs`).
 
 use std::path::PathBuf;
 
@@ -82,11 +68,6 @@ pub const MAX_DEPTH: u16 = 4096;
 /// is a usage error until more are served.
 pub const MAX_QUEUES: u16 = 1;
 
-/// How many threads execute reads unless told otherwise.
-pub const DEFAULT_READERS: u16 = 4;
-
-/// The most reader threads `serve` takes.
-pub const MAX_READERS: u16 = 64;
 /// The most I/O threads `--io-threads` gives the in-place store: the
 /// store's own bound (`IoMode::MAX_THREADS`).
 pub const MAX_IO_THREADS: u16 = io_threads(IoMode::MAX_THREADS);
@@ -104,32 +85,14 @@ const fn io_threads(n: usize) -> u16 {
     n as u16
 }
 
-/// The log's live size at which the daemon begins to checkpoint, in
-/// segments, unless told otherwise (design §5.1: two).
-pub const DEFAULT_LOG_HIGH: u32 = 2;
-
-/// The live size below which it stops, in segments, unless told
-/// otherwise: one.
-pub const DEFAULT_LOG_LOW: u32 = 1;
-
-/// The most segments either mark takes: 64 GiB of log.
-pub const MAX_LOG_SEGMENTS: u32 = 1024;
-
 /// One mebibyte: a volume's size is a multiple of it.
 const MIB: u64 = 1 << 20;
-
-/// `--writeback-kib` unless given: the store's default unit.
-pub const DEFAULT_WRITEBACK_KIB: u64 = skyzfs_local::writeback::DEFAULT_UNIT >> 10;
-/// The largest `--writeback-kib`: 1 GiB.
-const MAX_WRITEBACK_KIB: u64 = 1 << 20;
 
 /// What is printed with a usage error ([`usage`]).
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                 [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
-                 [--store log|in-place] [--io-threads N]
+                 [--io-threads N] [--kernel-has-async-delete] [--store in-place]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -142,9 +105,8 @@ pub const USAGE: &str = "usage:
 pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
   skyzfsd create ... [--base-pattern SEED]
   skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
-                 [--hold-one-request SECONDS:flush] [--boot-id-file PATH] [--recover-short N]
-                 [--commit-delay-ms N] [--step-pause-ms N | --step-pause-until PATH]
-                 [--step-pause-at POINT] [--refuse-holes] [--request-log PATH]";
+                 [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
+                 [--commit-delay-ms N] [--request-log PATH]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -199,9 +161,9 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       Make a new, empty volume in DIR. DIR is made if it is missing
       (its parent must exist) and must hold no volume and no file but
       what an interrupted create leaves (lock, home.new, home.img,
-      log.000000, log.super.new: files under exactly these names are
-      removed, whoever put them there); a create that fails removes a
-      DIR it made. BYTES is a multiple of 1 MiB. One
+      volume.new: files under exactly these names are removed, whoever
+      put them there); a create that fails removes a DIR it made. The
+      file volume, made last, says what the volume is. BYTES is a multiple of 1 MiB. One
       line is printed: the size, the volume's id and the store's
       identity.
       --zero-fill writes the new image with zeros and syncs it, so that
@@ -212,9 +174,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--log-high SEGMENTS] [--log-low SEGMENTS] [--writeback-kib KIB]
-                [--home-writeback-kib KIB] [--readers N] [--kernel-has-async-delete]
-                [--store log|in-place] [--io-threads N]
+                [--io-threads N] [--kernel-has-async-delete] [--store in-place]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -222,59 +182,33 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       If the volume's own device is still shown as live by the kernel
       (the server before this one was killed a moment ago), serve asks
       again for up to 5 s before it gives up with status 5.
-      A volume that failed in this boot (its log, or with --store
-      in-place a write or sync of its image) is not served again
-      (status 4). If no client held its device, --acknowledge-failure
-      serves it: what was acknowledged to nobody may be gone. If a
-      client held the device, the volume is not served again before a
-      reboot, whatever is given.
+      A volume that failed in this boot (a write or sync of its image)
+      is not served again (status 4). If no client held its device,
+      --acknowledge-failure serves it: what was acknowledged to nobody
+      may be gone. If a client held the device, the volume is not
+      served again before a reboot, whatever is given.
       One queue is all this version serves.
-      While it serves, the daemon checkpoints the volume's log into
-      its home image: when the log holds --log-high segments (64 MiB
-      each; 2 unless given) it works it off in small steps between
-      the requests until it holds less than --log-low (1 unless
-      given). The high mark bounds the log, and with it the time the
-      next start takes to read it; a write load is slowed at the mark.
-      Both are at least 1, and low is below high.
-      The daemon writes the volume's files through the page cache and
-      syncs them when it must. Once --writeback-kib KiB of the log's
-      writes wait (1024 unless given), it asks the kernel to start
-      writing them to the disk, so that the sync that follows has less
-      left to wait for. It is a hint: nothing about what is durable, or
-      when, depends on it. 0 never asks. A file system that has no such
-      call is not asked again, and the status says so.
-      --home-writeback-kib does the same for a step's writes into the
-      home image (0, never, unless given): a thread of the daemon's
-      syncs the home image while the requests are served, and the hint
-      would cost the requests time that the sync does not need.
-      Reads are executed by --readers threads of their own (4 unless
-      given, 1 to 64), beside the thread that executes the other
-      requests and beside each other.
-      --store in-place serves the volume from its home image alone,
-      with no log (log unless given): each write is written where it
-      belongs, and a flush syncs the image. At a power cut it keeps
-      what the block contract asks (a volatile-cache disk): what a
-      completed flush covered is there, and any other block may hold
-      its content as of the last flush, any version written since, or
-      a mix of those within the block; a volume served so is not a
-      prefix of its writes, as one served with the log is. A failure is
-      final as with the log. The start applies and empties the log
-      first, syncs the image, and drops the kernel's cache of it, so
-      that it serves only what the disk holds: it refuses the volume
-      where pages stay cached or the kernel cannot count them
+      The volume is served from its home image alone: each write is
+      written where it belongs, and a flush syncs the image. At a power
+      cut it keeps what the block contract asks (a volatile-cache
+      disk): what a completed flush covered is there, and any other
+      block may hold its content as of the last flush, any version
+      written since, or a mix of those within the block. A failure is
+      final. The start syncs the image and drops the kernel's cache of
+      it, so that it serves only what the disk holds: it refuses the
+      volume where pages stay cached or the kernel cannot count them
       (cachestat, Linux 6.5), and the first reads after it are cold.
-      A volume served in place must not be given back to --store log:
-      a write acknowledged in place and not flushed before the daemon
-      ended, however it ended, can be lost at a power cut after it,
-      whatever the log store flushed. The log's options
-      (--log-high, --log-low, --writeback-kib, --home-writeback-kib,
-      --readers) are refused with it.
-      The in-place store reads and writes the image by direct I/O
-      (O_DIRECT), past the kernel's cache: the start refuses a file
-      system that offers none, or whose unit for it (STATX_DIOALIGN) is
-      above 4 KiB. --io-threads N (1 to 64, 8 unless given) does its
-      reads and writes on N threads of their own, so that up to N reach
-      the disk at once. Only with --store in-place.
+      The image is read and written by direct I/O (O_DIRECT), past the
+      kernel's cache: the start refuses a file system that offers none,
+      or whose unit for it (STATX_DIOALIGN) is above 4 KiB.
+      --io-threads N (1 to 64, 8 unless given) does the reads and
+      writes on N threads of their own, so that up to N reach the disk
+      at once.
+      A volume made by a daemon with a log store (before M1.3t) is
+      refused, as is a directory whose file volume is missing or
+      damaged: none of these fails the volume. Create it again.
+      --store in-place is accepted and changes nothing; --store log is
+      refused: the log store was removed.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -289,8 +223,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       `key value` per line. It opens no store and asks no daemon.
 
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
-3 the volume failed while it was served, or at the start of the
-in-place store; 4 refused, the volume failed in this boot; 5 refused,
+3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,
 another instance or a live server holds the volume; 6 detach deleted
 the device and a client still holds it open.
 After a detach only 0 says that nothing of the volume is left attached
@@ -395,26 +328,8 @@ pub struct Serve {
     pub queues: u16,
     /// Depth of each queue of a device this instance adds.
     pub depth: u16,
-    /// The log's live size, in segments, at which the daemon begins
-    /// to checkpoint (design §5.1).
-    pub log_high: u32,
-    /// The live size, in segments, below which it stops: below
-    /// `log_high`.
-    pub log_low: u32,
-    /// Ask the kernel to start writing a file's writes to the disk once
-    /// this many KiB of them wait; 0 never asks
-    /// ([`skyzfs_local::writeback`]).
-    pub writeback_kib: u64,
-    /// The same for a step's writes into the home image; 0 unless
-    /// given.
-    pub home_writeback_kib: u64,
-    /// How many threads execute reads: 1 is the daemon before there
-    /// were several.
-    pub readers: u16,
-    /// `--store`: which store serves the volume.
-    pub store: StoreKind,
-    /// `--io-threads`: how the in-place store reads and writes (direct
-    /// I/O on that many threads).
+    /// `--io-threads`: how the store reads and writes (direct I/O on
+    /// that many threads).
     pub in_place_io: skyzfs_local::inplace::IoMode,
     /// Run although the memory cannot be locked. For tests.
     pub allow_unlocked_memory: bool,
@@ -424,84 +339,20 @@ pub struct Serve {
     pub hooks: Hooks,
 }
 
-/// `--store`: which store serves the volume. Both keep the same files:
-/// the in-place store is entered from the log store's open with a
-/// checkpoint of everything ([`skyzfs_local::inplace`]).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum StoreKind {
-    /// `log`, the default: the write log and its checkpoints (rules R1
-    /// to R12).
-    #[default]
-    Log,
-    /// `in-place`: the home image alone, with the volatile-cache disk's
-    /// promise at a power cut.
-    InPlace,
-}
-
 /// The fault hooks of `serve`: all off in a default build.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hooks {
-    /// The log fails once this many requests that append to it
+    /// The volume fails once this many requests that change it
     /// (writes, write-zeroes, discards) are completed.
     pub fail_log_after: Option<u64>,
     /// One request to hold.
     pub hold: Option<Hold>,
     /// Where to read the boot id from.
     pub boot_id_file: Option<PathBuf>,
-    /// The recovery counts the log as so many records shorter.
-    pub recover_short: u32,
-    /// Every checkpoint step waits.
-    pub step_pause: Option<StepPause>,
-    /// Where it waits.
-    pub step_pause_at: StepPoint,
     /// Every commit is delayed by so many milliseconds.
     pub commit_delay_ms: Option<u64>,
-    /// The store writes zeros for a write-zeroes record, as on a file
-    /// system that cannot deallocate.
-    pub refuse_holes: bool,
     /// Where the requests and their answers are written down.
     pub request_log: Option<PathBuf>,
-}
-
-/// How long a checkpoint step waits in its middle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StepPause {
-    /// For so many milliseconds.
-    Ms(u64),
-    /// Until a file of this path exists.
-    Until(PathBuf),
-}
-
-/// Where a checkpoint step waits: the cuts between its parts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StepPoint {
-    /// The blocks it writes over are saved.
-    Saved,
-    /// The home image is written and not synced.
-    #[default]
-    Written,
-    /// The home image is durable; the log starts where it did.
-    Synced,
-    /// The log's new start is written and not durable.
-    StartWritten,
-    /// The log's new start is durable.
-    StartDurable,
-}
-
-impl StepPoint {
-    fn parse(text: &str) -> Result<Self, UsageError> {
-        match text {
-            "saved" => Ok(Self::Saved),
-            "written" => Ok(Self::Written),
-            "synced" => Ok(Self::Synced),
-            "start-written" => Ok(Self::StartWritten),
-            "start-durable" => Ok(Self::StartDurable),
-            _ => Err(UsageError::Value(
-                "--step-pause-at".into(),
-                "one of saved, written, synced, start-written, start-durable",
-            )),
-        }
-    }
 }
 
 /// One request to hold for a while.
@@ -603,11 +454,6 @@ const SERVE: &[Opt] = &[
     opt(ASYNC_DELETE_OPTION, false, false),
     opt("--queues", true, false),
     opt("--depth", true, false),
-    opt("--log-high", true, false),
-    opt("--log-low", true, false),
-    opt("--writeback-kib", true, false),
-    opt("--home-writeback-kib", true, false),
-    opt("--readers", true, false),
     opt("--store", true, false),
     opt("--io-threads", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
@@ -615,12 +461,7 @@ const SERVE: &[Opt] = &[
     opt("--fail-log-after", true, true),
     opt("--hold-one-request", true, true),
     opt("--boot-id-file", true, true),
-    opt("--recover-short", true, true),
     opt("--commit-delay-ms", true, true),
-    opt("--step-pause-ms", true, true),
-    opt("--step-pause-until", true, true),
-    opt("--step-pause-at", true, true),
-    opt("--refuse-holes", false, true),
     opt("--request-log", true, true),
 ];
 
@@ -783,101 +624,18 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     .filter(|n| (1..=most).contains(n))
                     .ok_or(UsageError::Value(name.into(), "out of range"))
             };
-            // A writeback unit in KiB: at most 1 GiB, 0 for never.
-            let unit = |name: &'static str, default: u64| match given.number(name)? {
-                None => Ok(default),
-                Some(kib) if kib <= MAX_WRITEBACK_KIB => Ok(kib),
-                Some(_) => Err(UsageError::Value(
-                    name.into(),
-                    "out of range: at most 1048576 (1 GiB)",
-                )),
-            };
-            let recover_short = given.number("--recover-short")?.unwrap_or(0);
-            let recover_short = u32::try_from(recover_short)
-                .map_err(|_| UsageError::Value("--recover-short".into(), "out of range"))?;
-            let segments = |name: &'static str, default: u32| {
-                let Some(n) = given.number(name)? else {
-                    return Ok(default);
-                };
-                u32::try_from(n)
-                    .ok()
-                    .filter(|n| (1..=MAX_LOG_SEGMENTS).contains(n))
-                    .ok_or(UsageError::Value(name.into(), "out of range"))
-            };
-            let log_high = segments("--log-high", DEFAULT_LOG_HIGH)?;
-            let log_low = segments("--log-low", DEFAULT_LOG_LOW.min(log_high.max(2) - 1))?;
-            // The refusal names an option that was given, and the
-            // default it collided with if the other was not.
-            if log_high < 2 {
-                return Err(UsageError::Value(
-                    "--log-high".into(),
-                    "at least 2: the low mark is at least 1 and below it",
-                ));
-            }
-            if log_low >= log_high {
-                let why = if given.get("--log-high").is_some() {
-                    "not below --log-high"
-                } else {
-                    "not below --log-high, which is 2 unless given"
-                };
-                return Err(UsageError::Value("--log-low".into(), why));
-            }
-            let step_pause = match (
-                given.number("--step-pause-ms")?,
-                given.get("--step-pause-until"),
-            ) {
-                (Some(_), Some(_)) => {
-                    return Err(UsageError::Value(
-                        "--step-pause-until".into(),
-                        "not together with --step-pause-ms",
-                    ))
-                }
-                (Some(ms), None) => Some(StepPause::Ms(ms)),
-                (None, Some(path)) => Some(StepPause::Until(PathBuf::from(path))),
-                (None, None) => None,
-            };
-            let step_pause_at = match given.get("--step-pause-at") {
-                Some(_) if step_pause.is_none() => {
-                    return Err(UsageError::Value(
-                        "--step-pause-at".into(),
-                        "only with --step-pause-ms or --step-pause-until",
-                    ))
-                }
-                Some(text) => StepPoint::parse(text)?,
-                None => StepPoint::default(),
-            };
-            let store = match given.get("--store") {
-                None | Some("log") => StoreKind::Log,
-                Some("in-place") => StoreKind::InPlace,
-                Some(_) => {
+            // What is left of the choice of a store (M1.3t): the one
+            // store there is, named, changes nothing; the log store is
+            // gone.
+            match given.get("--store") {
+                None | Some("in-place") => {}
+                Some("log") => {
                     return Err(UsageError::Value(
                         "--store".into(),
-                        "expected log or in-place",
+                        "the log store was removed in M1.3t: only in-place",
                     ))
                 }
-            };
-            // The options of the log and its checkpoints, which the
-            // in-place store does not have: refused rather than ignored.
-            if store == StoreKind::InPlace {
-                let refused = [
-                    "--log-high",
-                    "--log-low",
-                    "--writeback-kib",
-                    "--home-writeback-kib",
-                    "--readers",
-                    "--step-pause-ms",
-                    "--step-pause-until",
-                    "--step-pause-at",
-                    "--refuse-holes",
-                ];
-                if let Some(name) = refused.into_iter().find(|name| given.flag(name)) {
-                    return Err(UsageError::Value(name.into(), "not with --store in-place"));
-                }
-            } else if given.flag("--io-threads") {
-                return Err(UsageError::Value(
-                    "--io-threads".into(),
-                    "only with --store in-place",
-                ));
+                Some(_) => return Err(UsageError::Value("--store".into(), "expected in-place")),
             }
             let threads = small("--io-threads", DEFAULT_IO_THREADS, MAX_IO_THREADS)?;
             let in_place_io = IoMode::with_threads(usize::from(threads))
@@ -889,12 +647,6 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                 async_delete_asserted: given.flag(ASYNC_DELETE_OPTION),
                 queues: small("--queues", 1, MAX_QUEUES)?,
                 depth: small("--depth", DEFAULT_DEPTH, MAX_DEPTH)?,
-                log_high,
-                log_low,
-                writeback_kib: unit("--writeback-kib", DEFAULT_WRITEBACK_KIB)?,
-                home_writeback_kib: unit("--home-writeback-kib", 0)?,
-                readers: small("--readers", DEFAULT_READERS, MAX_READERS)?,
-                store,
                 in_place_io,
                 allow_unlocked_memory: given.flag("--unsafe-allow-unlocked-memory"),
                 allow_any_filesystem: given.flag("--unsafe-allow-any-filesystem"),
@@ -902,11 +654,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     fail_log_after: given.number("--fail-log-after")?,
                     hold: given.get("--hold-one-request").map(hold).transpose()?,
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
-                    recover_short,
-                    step_pause,
-                    step_pause_at,
                     commit_delay_ms: given.number("--commit-delay-ms")?,
-                    refuse_holes: given.flag("--refuse-holes"),
                     request_log: given.get("--request-log").map(PathBuf::from),
                 },
             }))

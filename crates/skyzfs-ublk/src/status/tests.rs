@@ -569,8 +569,8 @@ fn the_report_shows_the_last_command_failure_only_after_one() {
     assert_eq!(value(&lines, "last_command_failure"), None);
 }
 
-/// The log store has no I/O threads: a status with a queue of no
-/// threads shows no `io_` key.
+/// A status with a queue of no threads (the log store's, until M1.3t)
+/// shows no `io_` key.
 #[test]
 fn the_report_shows_the_io_queue_only_where_there_are_threads() {
     let mut status = sample();

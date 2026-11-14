@@ -82,6 +82,10 @@ struct World {
     torn_attachment: bool,
     /// The note of this device is there and is not a whole record.
     torn_note: Option<u32>,
+    /// Whether the volume holds to a position of what was acknowledged
+    /// (`Volume::reaches_positions`): the log store's did, the in-place
+    /// store's does not.
+    reaches_positions: bool,
     acknowledged: Result<Option<MustReach>, ()>,
     /// The record of what was acknowledged cannot be read once, and can
     /// from then on.
@@ -166,6 +170,7 @@ impl World {
             torn_note: None,
             acknowledged: Ok(None),
             ack_unreadable_once: false,
+            reaches_positions: true,
             log_end: 1000,
             identity: [3; 16],
             opens: VecDeque::new(),
@@ -535,6 +540,10 @@ impl Volume for Fake {
             Ok(()) => Ok((Opened { lock: Some(lock) }, SIZE)),
             Err(error) => Err((error, lock)),
         }
+    }
+
+    fn reaches_positions(&self) -> bool {
+        self.0.borrow().reaches_positions
     }
 }
 
@@ -2749,6 +2758,39 @@ fn a_failure_found_at_the_start_is_noted_before_the_device_is_deleted() {
         .expect("failed")
         .contains("the failure note could not be written"));
     assert!(outcome.world.devices.is_empty());
+}
+
+/// A volume that holds to no position (the in-place store's, since
+/// M1.3t) is served where the record of what was acknowledged cannot be
+/// read: the record is not read, no position is given, and the volume
+/// does not fail by `PositionUnreadable`. A volume that holds to one
+/// fails by it, as before.
+#[test]
+fn a_volume_that_holds_to_no_position_does_not_read_the_record() {
+    for reaches in [false, true] {
+        let mut world = World::new();
+        world.acknowledged = Err(());
+        world.reaches_positions = reaches;
+        let outcome = run(world, 0);
+        assert_eq!(rules(&outcome), Ok(()));
+        if reaches {
+            assert!(matches!(outcome.result, Err(Stop::Failed(_))));
+            assert_eq!(
+                outcome.world.failure.map(|f| f.map(|f| f.reason)),
+                Ok(Some(Reason::PositionUnreadable))
+            );
+        } else {
+            assert!(outcome.result.is_ok(), "{:?}", outcome.result.err());
+            assert!(
+                outcome
+                    .world
+                    .events
+                    .iter()
+                    .all(|e| !matches!(e, Event::Open(Some(_), _))),
+                "a position was given"
+            );
+        }
+    }
 }
 
 /// Point 6: the log's marker and no note of this boot.

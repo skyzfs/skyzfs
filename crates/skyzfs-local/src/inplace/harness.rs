@@ -8,14 +8,19 @@
 //! disk. The disk's garbage, which the rule does not allow and a real
 //! disk may still write, is tested apart (`tests.rs`).
 //!
-//! - `create` makes a log store, ages its log as the log store's
-//!   harness does, and enters the in-place store from it: the
-//!   checkpoint of everything is part of every start.
-//! - `kill` drops the store, kills the simulated process and starts
-//!   again: the log store's open, then the in-place store. A store
-//!   executes every request when it is submitted, so only flushes can
-//!   be in flight, and a kill finds their syncs where the seed of the
-//!   disk's delays has them.
+//! - `create` makes a volume ([`super::create`]), serves it once with
+//!   writes that no flush covers all of, and loses that process: the
+//!   suite's first start is a start after a lost process.
+//! - `kill` abandons the store as a kill of its process does
+//!   ([`InPlace::abandon`]): the requests no I/O thread has begun, and
+//!   those waiting in the store, are dropped undone, and the jobs under
+//!   way end. Then it kills the simulated process and starts again: the
+//!   open under the lock, then the start. What the threads had begun
+//!   at the kill depends on their timing, which no seed decides; the
+//!   suite submits every request in flight again
+//!   ([`InFlight::Reissued`](skyzfs_blk::model::InFlight)), so each
+//!   outcome is one the model allows. A kill finds the syncs of the
+//!   flushes in flight where the seed of the disk's delays has them.
 //! - `fail_log` makes every write and every sync fail from then on, as
 //!   the simulated disk fails them: a failed write leaves any subset of
 //!   its sectors, a failed sync may drop what it did not make durable.
@@ -28,9 +33,9 @@
 //!   faults come wherever the threads are, which is where a real
 //!   failure comes.
 //! - `reopen_failed` takes the fault away, loses the process and
-//!   starts with the failure acknowledged, with the kernel's cache kept,
-//!   as the log store's harness does: what a failed sync left marked
-//!   clean and never written is still in the cache. The start drops the
+//!   starts with the failure acknowledged, with the kernel's cache kept:
+//!   what a failed sync left marked clean and never written is still in
+//!   the cache. The start drops the
 //!   cache and serves only what the disk holds, which is what makes the
 //!   volume as after a power cut (rule R11); the case
 //!   `reopened_failed_volume_holds_what_was_flushed` fails on a store
@@ -41,13 +46,9 @@ use std::time::Duration;
 use skyzfs_blk::conformance::{Capabilities, Harness, HarnessError, Spec};
 use skyzfs_blk::{BlkError, BlockTarget, Buf, Completion, Geometry, Op, Request, RequestId};
 
-use super::{InPlace, Mutants};
-use crate::format::Key;
+use super::{create, lock, InPlace, Mutants, OpenOptions, Opened, VolumeConfig};
 use crate::sim::{SeededCut, SimDisk};
-use crate::store::{OpenOptions, Store, StoreConfig, HOME_NAME};
-
-/// The log's segments: as the log store's harness has them.
-const SEGMENT: u64 = (1 << 20) + (128 << 10);
+use crate::store::HOME_NAME;
 
 /// Whether a target created with `seed` has its failure come when the
 /// I/O threads have ended their jobs and a flush's sync is under way
@@ -81,13 +82,13 @@ impl InPlaceHarness {
             queue_depth: self.queue_depth,
             read_only,
             acknowledge_failure,
-            in_place_io: self.io,
+            io: self.io,
             ..OpenOptions::default()
         }
     }
 
-    /// Start on `disk`: the log store's open, then the in-place store.
-    /// A volume marked as failed is not served again: everything fails.
+    /// Start on `disk`: the open under the lock, then the start. A
+    /// volume marked as failed is not served again: everything fails.
     fn start(
         &self,
         disk: SimDisk,
@@ -97,9 +98,11 @@ impl InPlaceHarness {
         settle_at_failure: bool,
     ) -> Result<OnSim, HarnessError> {
         disk.set_sync_delay(self.sync_delay);
-        let opened = Store::open(disk.clone(), self.options(read_only, acknowledge_failure));
+        let options = self.options(read_only, acknowledge_failure);
+        let opened = lock(&disk)
+            .and_then(|lock| Opened::open(disk.clone(), lock, options).map_err(|(e, _)| e));
         let store = match opened {
-            Ok((store, _)) => store,
+            Ok(opened) => opened,
             // A volume marked as failed, or one whose start meets the
             // failed disk, is not served.
             Err(error) => {
@@ -114,9 +117,9 @@ impl InPlaceHarness {
             }
         };
         let geometry = store.geometry();
-        let inner = match store.into_in_place_with(None, Mutants(self.mutants)) {
+        let inner = match store.start_with(None, Mutants(self.mutants)) {
             Ok(store) => Inner::Live(Box::new(store)),
-            // The start's checkpoint or sync met the failed disk.
+            // The start's sync met the failed disk.
             Err(_) if before.is_some() => Inner::Gone(Vec::new()),
             Err(error) => return Err(HarnessError(format!("the in-place store: {error}"))),
         };
@@ -214,28 +217,31 @@ impl Harness for InPlaceHarness {
         disk.set_block_size(Some(self.page));
         let write_unit =
             u32::try_from(self.page).map_err(|_| HarnessError("a page above 4 GiB".into()))?;
-        let config = StoreConfig {
+        let config = VolumeConfig {
             volume: *b"in-place volume.",
             size_mib: 4,
             base: spec.base,
-            align: 64,
-            // Room for a request of a megabyte beside the two units a
-            // segment keeps.
-            segment_size: SEGMENT.max((1 << 20) + 3 * self.page),
             write_unit,
         };
-        let key = Key(*b"a key for tests!");
-        let mut store = Store::create_keyed(disk.clone(), &config, key, self.options(false, false))
-            .map_err(|e| HarnessError(format!("create: {e}")))?;
-        // A log with records in it, which the start applies: a megabyte
-        // of what the volume holds anyway, and as many single blocks as
-        // the seed decides, half of them not flushed.
+        create(&disk, &config).map_err(|e| HarnessError(format!("create: {e}")))?;
+        // A first instance that wrote and was lost: a megabyte of what
+        // the volume holds anyway, and as many single blocks as the
+        // seed decides, a flush among them, and the rest not flushed.
+        // Without the defect under test: the ageing is not what is judged.
+        let plain = InPlaceHarness {
+            mutants: 0,
+            ..*self
+        };
+        let mut first = plain.start(disk, false, false, None, false)?;
+        let store = first
+            .store()
+            .ok_or_else(|| HarnessError("the first start did not serve".into()))?;
         let blocks = (1 << 20) / skyzfs_blk::BLOCK_USIZE;
         let mut data = Buf::zeroed(blocks);
         for (i, block) in data.chunks_mut(skyzfs_blk::BLOCK_USIZE).enumerate() {
             spec.base.fill_block(i as u64, block);
         }
-        let first = Buf::from_blocks(&data[..skyzfs_blk::BLOCK_USIZE])
+        let one = Buf::from_blocks(&data[..skyzfs_blk::BLOCK_USIZE])
             .ok_or_else(|| HarnessError("no buffer".into()))?;
         let mut ops = vec![Op::Write { offset: 0, data }];
         for i in 0..spec.seed % 24 {
@@ -244,9 +250,10 @@ impl Harness for InPlaceHarness {
             }
             ops.push(Op::Write {
                 offset: 0,
-                data: first.clone(),
+                data: one.clone(),
             });
         }
+        // One at a time, whatever the queue's depth.
         let mut done = Vec::new();
         for (i, op) in ops.into_iter().enumerate() {
             store
@@ -255,12 +262,15 @@ impl Harness for InPlaceHarness {
                     op,
                 })
                 .map_err(|e| HarnessError(e.to_string()))?;
-            store.wait(&mut done, Duration::ZERO);
+            while done.len() <= i {
+                store.wait(&mut done, Duration::from_secs(60));
+            }
         }
         if done.iter().any(|c| c.result.is_err()) {
-            return Err(HarnessError("ageing the log failed".into()));
+            return Err(HarnessError("the first instance's writes failed".into()));
         }
-        drop(store);
+        let OnSim { inner, disk, .. } = first;
+        drop(inner);
         disk.kill();
         self.start(
             disk,
@@ -278,7 +288,9 @@ impl Harness for InPlaceHarness {
             geometry,
             settle_at_failure,
         } = target;
-        drop(inner);
+        if let Inner::Live(store) = inner {
+            store.abandon();
+        }
         disk.kill();
         self.start(
             disk,

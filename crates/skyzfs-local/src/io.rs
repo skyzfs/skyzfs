@@ -84,6 +84,20 @@ pub trait File {
     /// error ([`io::ErrorKind::UnexpectedEof`]).
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()>;
 
+    /// As [`File::read_at`], through the cache, but asking the kernel to
+    /// read the pages of `buf` and nothing after them: no read-ahead is
+    /// left under I/O behind the read, where no drop of the cache can
+    /// take it until it ends ([`File::drop_cache`]).
+    ///
+    /// Linux: the open file is advised `POSIX_FADV_RANDOM` for the read,
+    /// which turns its read-ahead off, and `POSIX_FADV_NORMAL` after it,
+    /// so that later reads through the file read ahead as before (a
+    /// store with no I/O threads serves its reads through it). In this
+    /// default: a plain read.
+    fn read_alone_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read_at(offset, buf)
+    }
+
     /// Fill `buf` from `offset` with what the device holds, bypassing
     /// the operating system's cache. Data written and not yet synced is
     /// included (the device has been handed it, durable or not); data the

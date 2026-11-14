@@ -7,11 +7,10 @@ use skyzfs_blk::{
 
 use super::harness::{InPlaceHarness, OnSim};
 use super::*;
-use crate::format::Key;
 use crate::io::Dir;
-use crate::log::{LogError, MARKER_NAME};
-use crate::sim::{SeededCut, SimDisk};
-use crate::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
+use crate::sim::{LoseAll, SeededCut, SimDisk};
+use crate::store::HOME_NAME;
+use crate::volume::MARKER_NAME;
 
 const BLOCK: u64 = 4096;
 /// What a test gives a wait: it waits for a sync to end, not for the
@@ -187,7 +186,8 @@ fn the_in_place_store_passes_the_conformance_suite() {
 /// the cases named for it: a flush that makes nothing durable, a failed
 /// sync tried again, a failed write that does not fail the volume, a
 /// start that does not drop the kernel's cache where something wrote
-/// through it. A failed sync tried again shows only where a sync is
+/// through it, a write acknowledged before it was written. A failed
+/// sync tried again shows only where a sync is
 /// under way when the failure comes; the harness makes that so for a
 /// third of the seeds (`harness::settles_at_failure`), so that the
 /// defect is noticed in every run, also when this test runs alone
@@ -209,7 +209,7 @@ fn the_suite_notices_the_defects() {
     // The cases that must notice each defect: for a flush that syncs
     // nothing, the cases of the power cut, which the harness's cut
     // alone can fail (the failure cases notice it too).
-    let cases: [(u32, &[&str]); 4] = [
+    let cases: [(u32, &[&str]); 5] = [
         (
             Mutants::FLUSH_WITHOUT_SYNC,
             &[
@@ -226,6 +226,13 @@ fn the_suite_notices_the_defects() {
             ],
         ),
         (Mutants::WRITE_ERROR_PASSES, &["prop_failures_match_model"]),
+        // A write acknowledged before a thread has written it: only a
+        // kill that drops what no thread has begun, as the harness's
+        // does, shows it.
+        (
+            Mutants::ACK_BEFORE_WRITE,
+            &["kill_keeps_acknowledged_operations"],
+        ),
         // A start that leaves the kernel's cache as it was: the reopen
         // of a failed volume serves what a failed sync left only there.
         // Only a writer through the cache leaves pages there: the store
@@ -252,8 +259,8 @@ fn the_suite_notices_the_defects() {
     }
 }
 
-/// A store on a simulated disk, with a log of a few records that the
-/// start applies.
+/// A volume on a simulated disk, served once: block 3 holds 0x33,
+/// written by an instance that was lost before any flush covered it.
 fn created(seed: u64, sync_delay: u64) -> SimDisk {
     created_at(seed, sync_delay, 4096)
 }
@@ -266,44 +273,22 @@ fn created_at(seed: u64, sync_delay: u64, page: u64) -> SimDisk {
     disk.set_page_size(page);
     disk.set_block_size(Some(page));
     disk.set_sync_delay(sync_delay);
-    let config = StoreConfig {
+    let config = VolumeConfig {
         volume: *b"in-place volume.",
         size_mib: 1,
         base: Base::Empty,
-        align: 64,
-        // Room for a request of a megabyte beside the two units a
-        // segment keeps.
-        segment_size: (1 << 20) + (128 << 10).max(3 * page),
         write_unit: u32::try_from(page).unwrap(),
     };
-    let mut store = Store::create_keyed(
-        disk.clone(),
-        &config,
-        Key(*b"a key for tests!"),
-        OpenOptions::default(),
-    )
-    .unwrap();
-    // Something in the log: block 3 holds 0x33, not flushed.
-    let data = Buf::filled(1, 0x33);
-    store
-        .submit(Request {
-            id: RequestId(0),
-            op: Op::Write {
-                offset: 3 * BLOCK,
-                data,
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    store.wait(&mut done, Duration::ZERO);
-    assert_eq!(done[0].result, Ok(()));
+    create(&disk, &config).unwrap();
+    let mut store = start(&disk, 0, false).unwrap();
+    write(&mut store, 3, 0x33).unwrap();
     drop(store);
     disk.kill();
     disk
 }
 
-/// Start on `disk`: the log store's open, then the in-place store.
-fn start(disk: &SimDisk, mutants: u32, acknowledge: bool) -> Result<InPlace<SimDisk>, StoreError> {
+/// Start on `disk`: the open under the lock, then the start.
+fn start(disk: &SimDisk, mutants: u32, acknowledge: bool) -> Result<InPlace<SimDisk>, OpenError> {
     start_io(disk, mutants, acknowledge, IoMode::default())
 }
 
@@ -312,16 +297,20 @@ fn start_io(
     mutants: u32,
     acknowledge: bool,
     io: IoMode,
-) -> Result<InPlace<SimDisk>, StoreError> {
+) -> Result<InPlace<SimDisk>, OpenError> {
+    Ok(opened(disk, acknowledge, io)?
+        .start_with(None, Mutants(mutants))
+        .expect("the in-place store"))
+}
+
+/// The first phase of a start alone.
+fn opened(disk: &SimDisk, acknowledge: bool, io: IoMode) -> Result<Opened<SimDisk>, OpenError> {
     let options = OpenOptions {
         acknowledge_failure: acknowledge,
-        in_place_io: io,
+        io,
         ..OpenOptions::default()
     };
-    let (store, _) = Store::open(disk.clone(), options)?;
-    Ok(store
-        .into_in_place_with(None, Mutants(mutants))
-        .expect("the in-place store"))
+    Opened::open(disk.clone(), lock(disk)?, options).map_err(|(e, _)| e)
 }
 
 /// Submit and run until it completes.
@@ -364,13 +353,14 @@ fn read(store: &mut InPlace<SimDisk>, block: u64) -> Result<Vec<u8>, BlkError> {
     Ok(done.buf.unwrap().to_vec())
 }
 
-/// The start applies the log and syncs the home image (acceptance 3):
-/// what the log held is read, and what the in-place store wrote
-/// before the process was lost, which no flush covered, is durable
-/// once the next start is done. A power cut right after that start,
-/// which keeps nothing that was not synced, takes nothing back.
+/// The start syncs the home image: what the instance before it wrote,
+/// which no flush covered, is durable once the next start is done. A
+/// power cut right after that start, which keeps nothing that was not
+/// synced, takes nothing back. (The test of the same with the power
+/// cut drawn from seeds, which notices a start that does not sync, is
+/// `a_power_cut_after_a_start_keeps_what_the_instance_before_wrote`.)
 #[test]
-fn the_start_applies_the_log_and_makes_the_home_image_durable() {
+fn the_start_makes_what_the_instance_before_wrote_durable() {
     let disk = created(1, 0);
     let mut store = start(&disk, 0, false).unwrap();
     assert_eq!(read(&mut store, 3).unwrap(), vec![0x33; BLOCK_USIZE]);
@@ -384,6 +374,46 @@ fn the_start_applies_the_log_and_makes_the_home_image_durable() {
     let mut store = start(&disk, 0, false).unwrap();
     assert_eq!(read(&mut store, 3).unwrap(), vec![0x33; BLOCK_USIZE]);
     assert_eq!(read(&mut store, 5).unwrap(), vec![0x55; BLOCK_USIZE]);
+}
+
+/// Whether what an instance wrote by direct I/O and never flushed is
+/// still there after the next start, a power cut drawn from `seed`
+/// right after that start, and a third start. The writes reach the
+/// simulated device and not its durable state: only a sync makes them
+/// durable, and the start's own is the only one between them and the
+/// cut. The start's check of the cache does not see them, as a
+/// kernel's count of the page cache does not see a device's volatile
+/// cache: without the sync, nothing else stands between them and the
+/// cut.
+fn kept_after_a_start_and_a_cut(seed: u64, mutants: u32) -> bool {
+    let disk = created(seed, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    for block in 4..12 {
+        write(&mut store, block, block as u8).unwrap();
+    }
+    drop(store);
+    disk.kill();
+    drop(start(&disk, mutants, false).unwrap());
+    disk.power_cut(SeededCut::new(seed));
+    let mut store = start(&disk, 0, false).unwrap();
+    (4..12).all(|block| read(&mut store, block).unwrap() == vec![block as u8; BLOCK_USIZE])
+        && read(&mut store, 3).unwrap() == vec![0x33; BLOCK_USIZE]
+}
+
+/// A power cut right after a start keeps what the instance before it
+/// wrote and never flushed, whatever the cut keeps of what was not
+/// synced: the start's sync made it durable (point 3 of the module
+/// documentation). A start that does not sync (`START_UNSYNCED`) is
+/// noticed: some cut takes a write back.
+#[test]
+fn a_power_cut_after_a_start_keeps_what_the_instance_before_wrote() {
+    for seed in 1..=50 {
+        assert!(kept_after_a_start_and_a_cut(seed, 0), "seed {seed}");
+    }
+    let lost = (1..=50)
+        .filter(|&seed| !kept_after_a_start_and_a_cut(seed, Mutants::START_UNSYNCED))
+        .count();
+    assert!(lost > 0, "a start that does not sync is not noticed");
 }
 
 /// How write-zeroes reach the home image, as the status file shows it:
@@ -416,46 +446,6 @@ fn the_store_says_how_it_applies_write_zeroes() {
         assert_eq!(store.zeroes(), applied, "{io:?}");
         assert_eq!(read(&mut store, 3).unwrap(), vec![0; BLOCK_USIZE]);
     }
-}
-
-/// What the start's hand-over said is not kept past this store's first
-/// write-zeroes: a log that held one is applied by deallocating its
-/// range, and the status says so until a write-zeroes on direct I/O
-/// says how this store applies them.
-#[test]
-fn the_first_write_zeroes_on_direct_io_replaces_what_the_hand_over_said() {
-    let disk = created(1, 0);
-    let (mut log_store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-    log_store
-        .submit(Request {
-            id: RequestId(1),
-            op: Op::WriteZeroes {
-                offset: 5 * BLOCK,
-                len: BLOCK,
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    while done.is_empty() {
-        log_store.wait(&mut done, WAIT);
-    }
-    assert_eq!(done[0].result, Ok(()));
-    drop(log_store);
-    disk.kill();
-    let mut store = start(&disk, 0, false).unwrap();
-    assert_eq!(store.zeroes(), Zeroes::Deallocated);
-    let done = run(
-        &mut store,
-        2,
-        Op::WriteZeroes {
-            offset: 3 * BLOCK,
-            len: BLOCK,
-        },
-    );
-    assert_eq!(done.result, Ok(()));
-    assert_eq!(store.zeroes(), Zeroes::WrittenDirect);
-    assert_eq!(read(&mut store, 3).unwrap(), vec![0; BLOCK_USIZE]);
-    assert_eq!(read(&mut store, 5).unwrap(), vec![0; BLOCK_USIZE]);
 }
 
 /// A flush with nothing written since the last sync completes without
@@ -784,10 +774,7 @@ fn a_panicking_io_thread_fails_the_volume() {
     drop(store);
     disk.kill();
     assert!(
-        matches!(
-            start(&disk, 0, false),
-            Err(StoreError::Log(LogError::MarkedFailed))
-        ),
+        matches!(start(&disk, 0, false), Err(OpenError::MarkedFailed)),
         "the next start does not find the volume failed"
     );
 }
@@ -881,7 +868,7 @@ fn a_failed_sync_fails_the_volume_for_good() {
     disk.kill();
     assert!(matches!(
         start(&disk, 0, false),
-        Err(StoreError::Log(LogError::MarkedFailed))
+        Err(OpenError::MarkedFailed)
     ));
     let mut store = start(&disk, 0, true).unwrap();
     assert!(read(&mut store, 1).is_ok());
@@ -937,7 +924,7 @@ fn a_request_that_meets_the_failure_is_answered_while_the_marker_waits() {
     disk.kill();
     assert!(matches!(
         start(&disk, 0, false),
-        Err(StoreError::Log(LogError::MarkedFailed))
+        Err(OpenError::MarkedFailed)
     ));
 }
 
@@ -1001,117 +988,8 @@ fn a_failed_write_fails_the_volume() {
     disk.kill();
     assert!(matches!(
         start(&disk, 0, false),
-        Err(StoreError::Log(LogError::MarkedFailed))
+        Err(OpenError::MarkedFailed)
     ));
-}
-
-/// The log store reads what the in-place store wrote: it is in the home
-/// image, and the empty log replays nothing over it. (Reading only: a
-/// volume served in place must not be given back to the log store to
-/// serve; see the ignored test below.)
-#[test]
-fn a_volume_goes_back_to_the_log_store() {
-    let disk = created(6, 0);
-    let mut store = start(&disk, 0, false).unwrap();
-    write(&mut store, 7, 0x77).unwrap();
-    drop(store);
-    disk.kill();
-    let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-    store
-        .submit(Request {
-            id: RequestId(1),
-            op: Op::Read {
-                offset: 7 * BLOCK,
-                buf: Buf::filled(1, 0),
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    store.wait(&mut done, Duration::ZERO);
-    assert_eq!(done[0].result, Ok(()));
-    assert_eq!(done[0].buf.as_deref(), Some(&[0x77; BLOCK_USIZE][..]));
-}
-
-/// Read one block through the log store.
-fn log_read(store: &mut Store<SimDisk>, block: u64) -> Vec<u8> {
-    store
-        .submit(Request {
-            id: RequestId(500 + block),
-            op: Op::Read {
-                offset: block * BLOCK,
-                buf: Buf::filled(1, 0xEE),
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    while done.is_empty() {
-        store.wait(&mut done, Duration::ZERO);
-    }
-    assert_eq!(done[0].result, Ok(()));
-    done[0].buf.as_deref().unwrap().to_vec()
-}
-
-/// Back on the log store, a completed flush covers what the in-place
-/// store acknowledged before its process was lost (rule R7): the log
-/// store's open syncs the home image. The in-place store writes block
-/// 7 and is lost; the volume is started with the log store (or, as the
-/// control, with the in-place store again), which writes block 9 and
-/// completes a flush; a power cut that keeps nothing unsynced leaves
-/// both.
-///
-/// It fails: the log store's open does not sync the home image, and
-/// its flush syncs the log alone, so block 7 is lost. Owed (the review
-/// of M1.3r, finding A); the lead ruled that the log store's open is
-/// not changed in M1.3r, and the module documentation and `skyzfsd
-/// help` say that a volume served in place must not be given back to
-/// the log store. Run it with `--ignored` to see the defect.
-#[test]
-#[ignore = "owed: back on the log store, a flush does not cover an in-place write (M1.3r, finding A)"]
-fn a_flush_on_the_log_store_covers_what_the_in_place_store_wrote() {
-    for back_in_place in [true, false] {
-        let disk = created(6, 0);
-        let mut store = start(&disk, 0, false).unwrap();
-        write(&mut store, 7, 0x77).unwrap();
-        drop(store);
-        disk.kill();
-        if back_in_place {
-            let mut store = start(&disk, 0, false).unwrap();
-            write(&mut store, 9, 0x99).unwrap();
-            assert_eq!(run(&mut store, 2, Op::Flush).result, Ok(()));
-        } else {
-            let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-            assert_eq!(log_read(&mut store, 7), vec![0x77; BLOCK_USIZE]);
-            for (id, op) in [
-                (
-                    1,
-                    Op::Write {
-                        offset: 9 * BLOCK,
-                        data: Buf::filled(1, 0x99),
-                    },
-                ),
-                (2, Op::Flush),
-            ] {
-                store
-                    .submit(Request {
-                        id: RequestId(id),
-                        op,
-                    })
-                    .unwrap();
-            }
-            let mut done = Vec::new();
-            while done.len() < 2 {
-                store.wait(&mut done, Duration::ZERO);
-            }
-            assert!(done.iter().all(|c| c.result.is_ok()), "{done:?}");
-        }
-        disk.power_cut(crate::sim::LoseAll);
-        let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-        assert_eq!(
-            (log_read(&mut store, 7)[0], log_read(&mut store, 9)[0]),
-            (0x77, 0x99),
-            "back in place: {back_in_place}"
-        );
-    }
 }
 
 /// A wait with a zero timeout only looks: a sync under way that has not
@@ -1142,143 +1020,47 @@ fn a_wait_with_no_time_does_not_wait_for_a_sync() {
     assert!(left_under_way > 0, "every sync ended at the first look");
 }
 
-/// The start refuses a log store with requests in flight.
-#[test]
-fn the_start_refuses_a_store_with_requests_in_flight() {
-    let disk = created(7, 0);
-    let (mut store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-    store
-        .submit(Request {
-            id: RequestId(1),
-            op: Op::Flush,
-        })
-        .unwrap();
-    assert!(matches!(
-        store.into_in_place(None),
-        Err(IntoInPlaceError::InFlight)
-    ));
-}
-
-/// A start whose conversion meets the failed disk, at each of the syncs
-/// the conversion makes, gives `Failed`, and the next start finds the
-/// volume marked as failed. Where the in-place store's own sync failed
-/// (the last), the marker is handed back unwritten, with the lock: no
-/// marker yet, and no other start, until the caller finishes it. The
-/// start says what failed: here the log holds operations to apply, so
-/// the image at that sync, the log store at every one before it (the
-/// daemon's failure note gives the two different reasons). With
-/// nothing to apply, see
-/// `a_start_with_nothing_to_apply_reports_the_image_at_every_sync`.
+/// A start whose sync meets the failed disk gives `Failed`: the volume
+/// has failed, and the marker is handed back unwritten, with the lock:
+/// no marker yet, and no other start, until the caller finishes it. The
+/// lock is released after the marker, so that while the marker's sync
+/// is held no other start opens the volume. The next start finds the
+/// volume marked as failed. The start makes one sync, so a fault on the
+/// second lets it serve.
 #[test]
 fn a_start_that_meets_the_failed_disk_fails_the_volume() {
-    let mut handed_back = 0;
     let mut failing = 0;
     for nth in 0.. {
         let disk = created(12, 0);
-        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        let opened = opened(&disk, false, IoMode::default()).unwrap();
         disk.fail_sync(nth, false);
-        let start_failed = match store.into_in_place(None) {
+        let start_failed = match opened.start(None) {
             Ok(_) => break,
-            Err(IntoInPlaceError::Failed(start_failed)) => start_failed,
+            Err(StartError::Failed(start_failed)) => start_failed,
             Err(other) => panic!("sync {nth}: {other}"),
         };
         failing += 1;
         let marked = || disk.list().unwrap().iter().any(|n| n == MARKER_NAME);
-        let failed = start_failed.failed();
-        assert_eq!(
-            failed == StartFailed::Image,
-            !marked(),
-            "sync {nth}: {failed:?}"
+        assert!(!marked(), "sync {nth}: the marker was not handed back");
+        assert!(matches!(lock(&disk), Err(OpenError::Locked)));
+        disk.hold_whole_syncs_of(MARKER_NAME);
+        let finishing = std::thread::spawn(move || start_failed.finish());
+        until_held(&disk);
+        assert!(
+            matches!(lock(&disk), Err(OpenError::Locked)),
+            "sync {nth}: the volume was unlocked while its marker was being written"
         );
-        if !marked() {
-            handed_back += 1;
-            assert!(matches!(
-                Store::open(disk.clone(), OpenOptions::default()),
-                Err(StoreError::Locked)
-            ));
-            // The lock is released after the marker: while the marker's
-            // sync is held, no other start opens the volume.
-            disk.hold_whole_syncs_of(MARKER_NAME);
-            let finishing = std::thread::spawn(move || start_failed.finish());
-            until_held(&disk);
-            assert!(
-                matches!(
-                    Store::open(disk.clone(), OpenOptions::default()),
-                    Err(StoreError::Locked)
-                ),
-                "sync {nth}: the volume opened while its marker was being written"
-            );
-            disk.release_syncs();
-            finishing.join().unwrap();
-            assert!(marked(), "sync {nth}: no marker after the finish");
-        } else {
-            drop(start_failed);
-        }
+        disk.release_syncs();
+        finishing.join().unwrap();
+        assert!(marked(), "sync {nth}: no marker after the finish");
         disk.clear_faults();
         disk.kill();
         assert!(
-            matches!(
-                start(&disk, 0, false),
-                Err(StoreError::Log(LogError::MarkedFailed))
-            ),
+            matches!(start(&disk, 0, false), Err(OpenError::MarkedFailed)),
             "sync {nth}"
         );
     }
-    assert!(failing >= 2, "{failing} syncs failed the conversion");
-    assert_eq!(
-        handed_back, 1,
-        "the in-place store's own sync hands it back"
-    );
-}
-
-/// A start whose log holds nothing to apply, as after an earlier start
-/// in place (check g's volume, whose log held 0 operations): a failure
-/// at each sync the start makes, the log store's hand-over (whose
-/// marker is written) and the in-place store's own (whose marker is
-/// handed back) alike, is reported as the image's. Nothing of the log
-/// store's own is at stake there; a failure of the log file's own sync
-/// is reported so too, which is accepted until M1.3t removes the
-/// hand-over (`StartFailed`). The next start finds the volume failed.
-#[test]
-fn a_start_with_nothing_to_apply_reports_the_image_at_every_sync() {
-    let mut failing = 0;
-    let mut handed_back = 0;
-    for nth in 0.. {
-        let disk = created(12, 0);
-        // A first start applies the log; the next has nothing to apply.
-        drop(start(&disk, 0, false).unwrap());
-        disk.kill();
-        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-        disk.fail_sync(nth, false);
-        let start_failed = match store.into_in_place(None) {
-            Ok(_) => break,
-            Err(IntoInPlaceError::Failed(start_failed)) => start_failed,
-            Err(other) => panic!("sync {nth}: {other}"),
-        };
-        failing += 1;
-        assert_eq!(start_failed.failed(), StartFailed::Image, "sync {nth}");
-        if !disk.list().unwrap().iter().any(|n| n == MARKER_NAME) {
-            handed_back += 1;
-        }
-        drop(start_failed);
-        disk.clear_faults();
-        disk.kill();
-        assert!(
-            matches!(
-                start(&disk, 0, false),
-                Err(StoreError::Log(LogError::MarkedFailed))
-            ),
-            "sync {nth}"
-        );
-    }
-    assert!(
-        failing >= 2,
-        "{failing} syncs failed the start: the hand-over's are not reached"
-    );
-    assert_eq!(
-        handed_back, 1,
-        "the in-place store's own sync hands it back"
-    );
+    assert_eq!(failing, 1, "the start makes one sync");
 }
 
 // The volatile-cache disk under the simulated disk's own power cuts.
@@ -1604,12 +1386,10 @@ fn each_io_keeps_what_the_volatile_cache_disk_promises() {
 #[test]
 fn a_start_refuses_direct_io_it_cannot_have() {
     let disk = created(21, 0);
-    let refused = |disk: &SimDisk| {
-        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-        match store.into_in_place(None) {
-            Err(IntoInPlaceError::Io(why)) => why,
-            other => panic!("{other:?}"),
-        }
+    let refused = |disk: &SimDisk| match opened(disk, false, IoMode::default()).unwrap().start(None)
+    {
+        Err(StartError::Io(why)) => why,
+        other => panic!("{other:?}"),
     };
     disk.set_direct_align(None);
     assert!(refused(&disk).contains("no direct I/O"));
@@ -1836,7 +1616,7 @@ fn a_cut_with_garbage_may_reach_a_neighbour_on_large_pages() {
 /// block reads as zeros until its extent is converted to written, and
 /// the journal commit that makes the conversion durable flushes the
 /// disk's cache first. An image written with zeros at its creation
-/// ([`crate::store::fill_home`]) has no such block.
+/// ([`create_zero_filled`]) has no such block.
 #[test]
 fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
     for page in LARGE_PAGES {
@@ -1858,27 +1638,26 @@ fn direct_io_keeps_a_cut_with_garbage_from_the_neighbours_on_large_pages() {
 }
 
 /// A volume created where the page is 4 KiB is refused where it is
-/// 16 KiB, on the way into the in-place store: a write there would
-/// rewrite more than the volume's write unit. The refusal is the log
-/// store's open, which the in-place store's start goes through.
+/// 16 KiB: the open reads the write unit from the volume file and holds
+/// the system's page to it.
 #[test]
 fn a_volume_of_small_pages_is_refused_on_large_pages() {
     let disk = created(5, 0);
     disk.set_page_size(16 << 10);
     disk.set_write_unit(16 << 10);
-    let (opened, _) = match Store::open(disk.clone(), OpenOptions::default()) {
-        Err(error) => (error, ()),
+    let refused = match start(&disk, 0, false) {
+        Err(error) => error,
         Ok(_) => panic!("a volume of 4 KiB pages opened on 16 KiB pages"),
     };
     assert!(
         matches!(
-            opened,
-            StoreError::Pages {
+            refused,
+            OpenError::Pages {
                 page: 16384,
                 unit: 4096
             }
         ),
-        "{opened}"
+        "{refused}"
     );
     // Where the page is 4 KiB again, it starts.
     disk.set_page_size(4096);
@@ -1926,10 +1705,10 @@ fn shown_survives(seed: u64, mutants: u32, io: IoMode) -> Result<bool, String> {
 /// cache serves them: that is noticed. Direct I/O leaves no page there,
 /// so the same defect changes nothing with it; what the drop still
 /// guards under direct I/O is what a writer through the cache left
-/// before the start: the log store's checkpoint that empties the log
-/// into the image when a volume enters the in-place store (M1.3t
-/// removes the log store), or a file system that serves direct
-/// requests through its cache (the drop stays for it).
+/// before the start (until M1.3t, the log store's checkpoint that
+/// emptied its log into the image when a volume entered the in-place
+/// store), or a file system that serves direct requests through its
+/// cache (the drop stays for it).
 #[test]
 fn every_start_serves_only_what_the_disk_holds() {
     for io in [IoMode::default(), BUFFERED] {
@@ -1944,10 +1723,11 @@ fn every_start_serves_only_what_the_disk_holds() {
     assert!(lost > 0, "a start that keeps the cache is not noticed");
 }
 
-/// Open and enter the in-place store, as a daemon would.
-fn enter(disk: &SimDisk, mutants: u32) -> Result<InPlace<SimDisk>, IntoInPlaceError> {
-    let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
-    store.into_in_place_with(None, Mutants(mutants))
+/// Open and start the in-place store, as a daemon would.
+fn enter(disk: &SimDisk, mutants: u32) -> Result<InPlace<SimDisk>, StartError> {
+    opened(disk, false, IoMode::default())
+        .unwrap()
+        .start_with(None, Mutants(mutants))
 }
 
 /// A start whose drop of the cache leaves pages (something else maps,
@@ -1960,7 +1740,7 @@ fn a_start_refuses_a_volume_whose_cache_stays() {
     disk.keep_cache(true);
     let refused = enter(&disk, 0);
     assert!(
-        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("stay")),
+        matches!(&refused, Err(StartError::CacheKept(why)) if why.contains("stay")),
         "{refused:?}"
     );
     drop(refused);
@@ -1972,7 +1752,7 @@ fn a_start_refuses_a_volume_whose_cache_stays() {
     disk.set_cache_counts(false);
     let refused = enter(&disk, 0);
     assert!(
-        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("cachestat")),
+        matches!(&refused, Err(StartError::CacheKept(why)) if why.contains("cachestat")),
         "{refused:?}"
     );
     drop(refused);
@@ -1992,7 +1772,7 @@ fn a_start_refuses_where_the_count_cannot_see_the_file() {
     disk.keep_cache(true);
     let refused = enter(&disk, 0);
     assert!(
-        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("cannot be observed")),
+        matches!(&refused, Err(StartError::CacheKept(why)) if why.contains("cannot be observed")),
         "{refused:?}"
     );
     drop(refused);
@@ -2010,19 +1790,53 @@ fn a_start_refuses_where_the_count_cannot_see_the_file() {
 /// under I/O, and the start would refuse a healthy volume, as it did on
 /// a pool's label (the third look at M1.3s). A start that looks first
 /// is noticed: it refuses.
+///
+/// The look now reads its block alone, with no read-ahead
+/// (`a_start_right_after_a_start_serves`), and a look before the drop
+/// would then leave nothing the drop cannot take. The order still
+/// stands where a read alone reads ahead after all (the advice is
+/// advisory, and a system without it reads as usual), so the look
+/// before the drop is planted with the look that reads ahead.
 #[test]
 fn the_look_comes_after_the_drop() {
-    for (mutants, serves) in [(0, true), (Mutants::LOOK_BEFORE_DROP, false)] {
+    let ahead = Mutants::LOOK_READS_AHEAD;
+    for (mutants, serves) in [
+        (0, true),
+        (ahead, true),
+        (ahead | Mutants::LOOK_BEFORE_DROP, false),
+    ] {
         let disk = created(17, 0);
-        let (store, _) = Store::open(disk.clone(), OpenOptions::default()).unwrap();
+        let opened = opened(&disk, false, IoMode::default()).unwrap();
         disk.hold_read_ahead_of(HOME_NAME, 3);
-        let entered = store.into_in_place_with(None, Mutants(mutants));
+        let entered = opened.start_with(None, Mutants(mutants));
         match entered {
             Ok(_) => assert!(serves, "{mutants:#x}: the start that looks first served"),
-            Err(IntoInPlaceError::CacheKept(why)) if !serves => {
+            Err(StartError::CacheKept(why)) if !serves => {
                 assert!(why.contains("two drops"), "{why}");
             }
             Err(e) => panic!("{mutants:#x}: {e:?}"),
+        }
+    }
+}
+
+/// The look reads its block alone: it leaves no read-ahead under I/O,
+/// which the next start's drop could not take, so a start right after
+/// a start serves. A look that reads ahead is noticed: the second
+/// start refuses.
+#[test]
+fn a_start_right_after_a_start_serves() {
+    for (mutants, serves) in [(0, true), (Mutants::LOOK_READS_AHEAD, false)] {
+        let disk = created(18, 0);
+        disk.hold_read_ahead_of(HOME_NAME, 3);
+        if let Err(e) = enter(&disk, mutants) {
+            panic!("{mutants:#x}: the first start: {e:?}");
+        }
+        match enter(&disk, mutants) {
+            Ok(_) => assert!(serves, "{mutants:#x}: the second start served"),
+            Err(StartError::CacheKept(why)) if !serves => {
+                assert!(why.contains("two drops"), "{why}");
+            }
+            Err(e) => panic!("{mutants:#x}: the second start: {e:?}"),
         }
     }
 }
@@ -2040,10 +1854,183 @@ fn the_start_drops_the_cache_twice_before_it_refuses() {
     disk.keep_cache_for(2);
     let refused = enter(&disk, 0);
     assert!(
-        matches!(&refused, Err(IntoInPlaceError::CacheKept(why)) if why.contains("two drops")),
+        matches!(&refused, Err(StartError::CacheKept(why)) if why.contains("two drops")),
         "{refused:?}"
     );
     drop(refused);
     disk.keep_cache_for(0);
     assert!(enter(&disk, 0).is_ok());
 }
+
+/// Mark the volume on `disk` as failed by hand, durably.
+fn mark(disk: &SimDisk) {
+    use crate::io::File as _;
+    let mut marker = disk.create(MARKER_NAME).unwrap();
+    marker.sync().unwrap();
+    drop(marker);
+    disk.sync().unwrap();
+}
+
+/// An acknowledged failure marker is removed, durably, before the open
+/// returns: a power cut right after the open finds no marker. Without
+/// the directory's sync after the remove, the cut brings the marker
+/// back and the next start refuses the volume once more.
+#[test]
+fn an_acknowledged_marker_is_gone_for_good_once_the_open_returns() {
+    let io = IoMode::default();
+    let disk = created(5, 0);
+    mark(&disk);
+    assert!(matches!(
+        opened(&disk, false, io),
+        Err(OpenError::MarkedFailed)
+    ));
+    let open = opened(&disk, true, io).unwrap();
+    assert!(open.acknowledged());
+    drop(open);
+    disk.power_cut(LoseAll);
+    let open = opened(&disk, false, io).expect("the marker came back after the cut");
+    assert!(!open.acknowledged());
+}
+
+/// A marker the open cannot remove durably refuses the start, which has
+/// served nothing, and the volume stays marked: the remove is not on
+/// the disk until the directory's sync, and that sync failed.
+#[test]
+fn a_marker_that_cannot_be_removed_refuses_the_start() {
+    let io = IoMode::default();
+    let disk = created(6, 0);
+    mark(&disk);
+    disk.fail_sync(0, true);
+    match opened(&disk, true, io) {
+        Err(OpenError::Io { during, .. }) => assert_eq!(during, "removing the failure marker"),
+        other => panic!("{other:?}"),
+    }
+    disk.clear_faults();
+    disk.power_cut(LoseAll);
+    assert!(matches!(
+        opened(&disk, false, io),
+        Err(OpenError::MarkedFailed)
+    ));
+}
+
+/// The open refuses, by reason, a volume whose home image is missing or
+/// not of the volume file's size, and a directory without a volume file
+/// or with the log store's superblock. None of these marks the volume.
+#[test]
+fn the_open_refuses_a_volume_that_does_not_hold_together() {
+    use crate::io::File as _;
+    use crate::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
+    let io = IoMode::default();
+    let unmarked = |disk: &SimDisk, what: &str| {
+        assert!(
+            !disk.list().unwrap().iter().any(|name| name == MARKER_NAME),
+            "{what}: the refusal marked the volume"
+        );
+    };
+    let disk = created(7, 0);
+    let mut home = disk.open(HOME_NAME).unwrap();
+    let len = home.len().unwrap();
+    home.extend(len + 4096).unwrap();
+    drop(home);
+    assert!(
+        matches!(opened(&disk, false, io), Err(OpenError::Damaged(why)) if why.contains("size")),
+        "a home image of another size"
+    );
+    unmarked(&disk, "a home image of another size");
+    disk.remove(HOME_NAME).unwrap();
+    assert!(
+        matches!(opened(&disk, false, io), Err(OpenError::Damaged(why)) if why.contains("no home image")),
+        "no home image"
+    );
+    unmarked(&disk, "no home image");
+    let disk = created(8, 0);
+    disk.remove(VOLUME_NAME).unwrap();
+    assert!(matches!(
+        opened(&disk, false, io),
+        Err(OpenError::Volume(VolumeError::Missing))
+    ));
+    unmarked(&disk, "no volume file");
+    drop(disk.create(LEGACY_NAME).unwrap());
+    assert!(matches!(
+        opened(&disk, false, io),
+        Err(OpenError::Volume(VolumeError::Legacy))
+    ));
+    unmarked(&disk, "a log store's directory");
+}
+
+/// A cut inside a create leaves either a whole volume or none. The power
+/// goes after each of the create's writes and syncs in turn, and
+/// whatever the cut keeps of what was not synced, the directory holds
+/// no volume file, and a create run again makes one, or the volume
+/// opens with its base. Without the home image's sync before the volume
+/// file is made, a cut can keep the volume file and not the base.
+#[test]
+fn a_cut_inside_a_create_leaves_a_whole_volume_or_none() {
+    use crate::volume::{Volume, VolumeError};
+    let config = VolumeConfig {
+        volume: *b"in-place volume.",
+        size_mib: 1,
+        base: Base::Pattern(7),
+        write_unit: 4096,
+    };
+    let mut base = vec![0u8; BLOCK_USIZE];
+    config.base.fill_block(9, &mut base);
+    let mut found = [0u32; 2];
+    for calls in 0..10 {
+        for seed in 0..64 {
+            let disk = SimDisk::new(seed);
+            disk.halt_after(calls);
+            let created = create(&disk, &config);
+            disk.power_cut(SeededCut::new(seed));
+            let at = format!("after {calls} calls, seed {seed}");
+            match Volume::read(&disk) {
+                Ok(_) => {
+                    let mut store = start(&disk, 0, false).unwrap_or_else(|e| panic!("{at}: {e}"));
+                    assert_eq!(read(&mut store, 9).unwrap(), base, "{at}");
+                    found[0] += 1;
+                }
+                Err(VolumeError::Missing) => {
+                    assert!(created.is_err(), "{at}: lost");
+                    create(&disk, &config).unwrap_or_else(|e| panic!("{at}: again: {e}"));
+                    found[1] += 1;
+                }
+                Err(other) => panic!("{at}: {other}"),
+            }
+        }
+    }
+    // Both outcomes happen, so the cuts reach inside the create.
+    assert!(found[0] > 0 && found[1] > 0, "{found:?}");
+}
+
+/// `create --zero-fill` writes its zeros inside the creation, into the
+/// image under its creation's name, under the lock and before the
+/// volume file: while they are written there is no volume to serve,
+/// and a creation whose zeros fail leaves none. Without the zeros the
+/// same refusing disk lets the creation through, since an empty base
+/// writes nothing into the image.
+#[test]
+fn a_create_with_zeros_makes_the_volume_only_once_they_are_written() {
+    use crate::store::HOME_NEW_NAME;
+    use crate::volume::{Volume, VolumeError};
+    let config = VolumeConfig {
+        volume: *b"in-place volume.",
+        size_mib: 1,
+        base: Base::Empty,
+        write_unit: 4096,
+    };
+    let disk = SimDisk::new(3);
+    disk.fail_write_of(HOME_NEW_NAME);
+    let refused = create_zero_filled(&disk, &config);
+    assert!(matches!(&refused, Err(OpenError::Io { .. })), "{refused:?}");
+    assert!(matches!(Volume::read(&disk), Err(VolumeError::Missing)));
+    assert!(
+        create(&disk, &config).is_ok(),
+        "an empty base writes nothing"
+    );
+    let disk = SimDisk::new(4);
+    create_zero_filled(&disk, &config).unwrap();
+    let mut store = start(&disk, 0, false).unwrap();
+    assert_eq!(read(&mut store, 9).unwrap(), vec![0u8; BLOCK_USIZE]);
+}
+
+mod ported;

@@ -8,7 +8,7 @@
 //! the name on its own.
 //!
 //! Files are created readable and writable by their owner only (mode
-//! 0600 on Unix): the log's superblock holds the log's key.
+//! 0600 on Unix): a volume's image holds its client's data.
 //!
 //! [`File::read_device_at`] is a read through a second descriptor opened
 //! with `O_DIRECT`, on Linux only. It is opened together with the file,
@@ -31,7 +31,7 @@ use crate::io::{Dir, DirectAlign, File, HelperEnded, NotBegun};
 
 /// The size of a page of memory on this system: what its kernel writes
 /// back as a whole, and so the least write unit a log on buffered files
-/// should have here ([`Identity::write_unit`]).
+/// should have here ([`Volume::write_unit`](crate::volume::Volume::write_unit)).
 ///
 /// Linux: libc's `sysconf(_SC_PAGESIZE)`, through `rustix` (its feature
 /// `use-libc-auxv`). The C library takes it from `AT_PAGESZ` of the
@@ -39,8 +39,6 @@ use crate::io::{Dir, DirectAlign, File, HelperEnded, NotBegun};
 /// cannot fail as a read of `/proc/self/auxv` can (where `/proc` is not
 /// mounted, a 16 KiB kernel would have been taken for 4 KiB without a
 /// word). Apple silicon: 16 KiB, other Macs 4 KiB.
-///
-/// [`Identity::write_unit`]: crate::format::Identity::write_unit
 pub fn page_size() -> u32 {
     #[cfg(target_os = "linux")]
     if let Ok(size) = u32::try_from(rustix::param::page_size()) {
@@ -551,6 +549,21 @@ impl File for FsFile {
         read_exact_at(&self.file, buf, offset)
     }
 
+    fn read_alone_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::{fadvise, Advice};
+            fadvise(&self.file, 0, None, Advice::Random)?;
+            let read = read_exact_at(&self.file, buf, offset);
+            let restored = fadvise(&self.file, 0, None, Advice::Normal);
+            read?;
+            restored?;
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        read_exact_at(&self.file, buf, offset)
+    }
+
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
         let direct = self.direct()?;
         // Direct reads take whole aligned blocks into aligned memory, so
@@ -1045,7 +1058,7 @@ mod tests {
     }
 
     /// Real files: a new file can be read and written by its owner
-    /// only, since one of the log's files holds the log's key.
+    /// only, since a volume's image holds its client's data.
     #[cfg(unix)]
     #[test]
     fn real_files_are_private_to_their_owner() {

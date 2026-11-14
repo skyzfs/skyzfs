@@ -291,6 +291,12 @@ struct Sector {
     /// A page a failed sync marked clean without writing it: what the
     /// cache shows in place of the durable content.
     cached: Option<Box<[u8]>>,
+    /// Whether the newest unsynced version was written by direct I/O:
+    /// it is on the device, and no page of the cache holds it, so
+    /// [`File::cached_pages`] does not count it (a kernel's `cachestat`
+    /// does not see a device's volatile cache). A version written
+    /// through the cache is a dirty page until a sync.
+    direct: bool,
 }
 
 impl Sector {
@@ -895,7 +901,8 @@ impl SimDisk {
     /// [`File::cached_pages`] counts them, until a power cut. Where the
     /// block read is a hole, the kernel answers it at once while its
     /// read-ahead is still being read from the disk, and a drop leaves
-    /// pages under I/O.
+    /// pages under I/O. A read alone ([`File::read_alone_at`]) asks for
+    /// no read-ahead, and does not take this one.
     pub fn hold_read_ahead_of(&self, name: &str, pages: u64) {
         self.lock().read_ahead_of = Some((name.to_string(), pages));
     }
@@ -1389,6 +1396,7 @@ impl SimFile {
                 };
                 sector.cached = None;
                 sector.unsynced.push(same);
+                sector.direct = false;
             }
         }
         let mut at = offset;
@@ -1417,6 +1425,7 @@ impl SimFile {
             // The page is dirty again, whatever a failed sync made of it.
             sector.cached = None;
             sector.unsynced.push(bytes);
+            sector.direct = how == Through::Direct;
             inode.len = inode.len.max(index * SECTOR + (from + n) as u64);
         }
         if failing {
@@ -1495,7 +1504,9 @@ impl SimFile {
         assert!(!panics, "injected panic in direct I/O");
     }
 
-    fn read(&self, offset: u64, buf: &mut [u8], how: Through) -> io::Result<()> {
+    /// Read through `how`; `ahead` lets a read through the cache take
+    /// a held read-ahead ([`SimDisk::hold_read_ahead_of`]).
+    fn read(&self, offset: u64, buf: &mut [u8], how: Through, ahead: bool) -> io::Result<()> {
         if how == Through::Direct {
             self.direct_gate();
         }
@@ -1542,7 +1553,9 @@ impl SimFile {
         // read-ahead's under I/O where one is held.
         if !device {
             let ahead = match &state.read_ahead_of {
-                Some((name, pages)) if state.name_of(self.inode) == Some(name.as_str()) => {
+                Some((name, pages))
+                    if ahead && state.name_of(self.inode) == Some(name.as_str()) =>
+                {
                     let pages = *pages;
                     state.read_ahead_of = None;
                     pages
@@ -1561,11 +1574,17 @@ impl SimFile {
 
 impl File for SimFile {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Cache)
+        self.read(offset, buf, Through::Cache, true)
+    }
+
+    /// A read through the cache that takes no held read-ahead, as with
+    /// `POSIX_FADV_RANDOM`.
+    fn read_alone_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+        self.read(offset, buf, Through::Cache, false)
     }
 
     fn read_device_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Device)
+        self.read(offset, buf, Through::Device, false)
     }
 
     fn direct_align(&self) -> io::Result<DirectAlign> {
@@ -1577,7 +1596,7 @@ impl File for SimFile {
     }
 
     fn read_direct_at(&self, offset: u64, buf: &mut [u8]) -> io::Result<()> {
-        self.read(offset, buf, Through::Direct)
+        self.read(offset, buf, Through::Direct, false)
     }
 
     fn write_direct_at(&self, offset: u64, data: &[u8]) -> io::Result<()> {
@@ -1783,6 +1802,7 @@ impl File for SimFile {
                 };
                 sector.cached = None;
                 sector.unsynced.push(same);
+                sector.direct = false;
             }
         }
         for index in offset / SECTOR..end / SECTOR {
@@ -1793,6 +1813,7 @@ impl File for SimFile {
             let sector = inode.sectors.entry(index).or_default();
             sector.cached = None;
             sector.unsynced.push(zeros());
+            sector.direct = false;
         }
         if failing {
             Err(injected("deallocate"))
@@ -1832,8 +1853,9 @@ impl File for SimFile {
 
     /// The pages read or written through the cache since it last lost
     /// them, those a held read-ahead brings in, and those that hold a
-    /// version the disk has not (a failed sync's, an unsynced one). With [`SimDisk::blind_cache_count`],
-    /// 0.
+    /// version the disk has not (a failed sync's, or an unsynced one
+    /// written through the cache: one written by direct I/O is on the
+    /// device and in no page). With [`SimDisk::blind_cache_count`], 0.
     fn cached_pages(&self) -> io::Result<u64> {
         let guard = self.disk.lock();
         self.check(&guard)?;
@@ -1850,7 +1872,9 @@ impl File for SimFile {
             inode
                 .sectors
                 .iter()
-                .filter(|(_, sector)| sector.cached.is_some() || !sector.unsynced.is_empty())
+                .filter(|(_, sector)| {
+                    sector.cached.is_some() || (!sector.unsynced.is_empty() && !sector.direct)
+                })
                 .map(|(index, _)| index * SECTOR / 4096),
         );
         Ok(pages.len() as u64)
@@ -2012,7 +2036,11 @@ mod tests {
     }
 
     /// Direct I/O and the cache: a direct write leaves no page of its
-    /// range in the cache, and a direct read brings none in.
+    /// range in the cache, also before a sync makes it durable (it is
+    /// in the device's volatile cache, which a count of the page cache
+    /// does not see), and a direct read brings none in. A write through
+    /// the cache leaves a dirty page that a drop does not drop until a
+    /// sync.
     #[test]
     fn direct_io_leaves_no_page_in_the_cache() {
         let disk = disk_with(16, 1);
@@ -2023,7 +2051,12 @@ mod tests {
         assert_eq!(f.cached_pages().unwrap(), 1);
         f.write_direct_at(0, &skyzfs_blk::Buf::filled(1, 2))
             .unwrap();
+        assert_eq!(f.cached_pages().unwrap(), 0, "unsynced");
+        f.write_at(4096, &skyzfs_blk::Buf::filled(1, 3)).unwrap();
+        f.drop_cache().unwrap();
+        assert_eq!(f.cached_pages().unwrap(), 1, "a dirty page");
         f.sync().unwrap();
+        f.drop_cache().unwrap();
         assert_eq!(f.cached_pages().unwrap(), 0);
         f.read_direct_at(0, &mut buf).unwrap();
         assert_eq!(&buf[..], &[2; 4096][..]);

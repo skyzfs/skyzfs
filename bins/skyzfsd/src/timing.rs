@@ -64,6 +64,10 @@ impl<V: Volume> Volume for TimedVolume<V> {
         self.recovery += began.elapsed();
         opened
     }
+
+    fn reaches_positions(&self) -> bool {
+        self.inner.reaches_positions()
+    }
 }
 
 /// A control interface that notes how long a device stayed live while
@@ -135,6 +139,42 @@ impl<C: Control> Control for TimedControl<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A volume that says it reaches positions, and does nothing else.
+    struct Positions;
+
+    impl Volume for Positions {
+        type Lock = ();
+        type Open = ();
+        fn lock(&mut self) -> Result<(), LockError> {
+            Ok(())
+        }
+        fn open(
+            &mut self,
+            _lock: (),
+            _must_reach: Option<MustReach>,
+            _acknowledge_failure: bool,
+        ) -> Result<((), u64), (OpenError, ())> {
+            Ok(((), 0))
+        }
+        fn reaches_positions(&self) -> bool {
+            true
+        }
+    }
+
+    /// The timed volume says what the volume it wraps says about
+    /// positions. The daemon serves the in-place store through it; a
+    /// wrapper that said `true` would have the lifecycle read, and fail
+    /// the volume on, a record of positions the store does not use
+    /// (code 5).
+    #[test]
+    fn the_timed_volume_says_whether_its_volume_reaches_positions() {
+        use skyzfs_local::inplace::OpenOptions;
+        use skyzfs_ublk::volume::StoreVolume;
+        let in_place = StoreVolume::new(std::path::Path::new("unused"), OpenOptions::default());
+        assert!(!TimedVolume::new(in_place).reaches_positions());
+        assert!(TimedVolume::new(Positions).reaches_positions());
+    }
 
     struct Scripted(Vec<DeviceState>);
 

@@ -91,121 +91,6 @@ fn create_takes_a_directory_and_a_size_in_bytes() {
     }
 }
 
-/// The hook that makes a checkpoint step wait: a time or a file, not
-/// both, and not in a default build.
-#[test]
-fn the_step_pause_is_a_time_or_a_file() {
-    let pause = |line: &str| serve(&format!("serve --dir /v/a {line}")).hooks.step_pause;
-    assert_eq!(pause(""), None);
-    assert_eq!(pause("--step-pause-ms 250"), Some(StepPause::Ms(250)));
-    assert_eq!(
-        pause("--step-pause-until /tmp/go"),
-        Some(StepPause::Until("/tmp/go".into()))
-    );
-    assert!(parse_with(
-        "serve --dir /v/a --step-pause-ms 1 --step-pause-until /tmp/go"
-            .split(' ')
-            .map(str::to_string),
-        true
-    )
-    .is_err());
-    for hook in ["--step-pause-ms 1", "--step-pause-until /tmp/go"] {
-        assert!(
-            plain(&format!("serve --dir /v/a {hook}")).is_err(),
-            "{hook} was taken by a default build"
-        );
-    }
-}
-
-/// Where the step waits: after the home image is written unless given,
-/// one of the five cuts by name, and only beside a pause.
-#[test]
-fn the_step_pause_has_a_point() {
-    let at = |line: &str| {
-        serve(&format!("serve --dir /v/a --step-pause-ms 5 {line}"))
-            .hooks
-            .step_pause_at
-    };
-    assert_eq!(at(""), StepPoint::Written);
-    for (name, point) in [
-        ("saved", StepPoint::Saved),
-        ("written", StepPoint::Written),
-        ("synced", StepPoint::Synced),
-        ("start-written", StepPoint::StartWritten),
-        ("start-durable", StepPoint::StartDurable),
-    ] {
-        assert_eq!(at(&format!("--step-pause-at {name}")), point);
-    }
-    for line in [
-        "serve --dir /v/a --step-pause-ms 5 --step-pause-at later",
-        "serve --dir /v/a --step-pause-ms 5 --step-pause-at Saved",
-        "serve --dir /v/a --step-pause-at saved",
-    ] {
-        assert!(
-            parse_with(line.split(' ').map(str::to_string), true).is_err(),
-            "{line} was taken"
-        );
-    }
-    assert!(
-        plain("serve --dir /v/a --step-pause-ms 5 --step-pause-at saved").is_err(),
-        "the point was taken by a default build"
-    );
-}
-
-/// The two marks of the checkpoint rule: two segments and one unless
-/// given, each at least one, low below high. A high mark of one is
-/// refused without a low mark too: nothing is below it.
-#[test]
-fn serve_takes_the_marks_of_the_log_and_refuses_marks_that_cannot_work() {
-    let marks = |line: &str| {
-        let s = serve(&format!("serve --dir /v/a {line}"));
-        (s.log_high, s.log_low)
-    };
-    assert_eq!(marks(""), (2, 1));
-    assert_eq!(marks("--log-high 8"), (8, 1));
-    assert_eq!(marks("--log-high 8 --log-low 7"), (8, 7));
-    assert_eq!(marks("--log-low 1 --log-high 1024"), (1024, 1));
-    for bad in [
-        "--log-high 0",
-        "--log-high 1",
-        "--log-low 0",
-        "--log-low 2",
-        "--log-high 4 --log-low 4",
-        "--log-high 4 --log-low 5",
-        "--log-high 1025",
-        "--log-high x",
-        "--log-high 2 --log-high 3",
-    ] {
-        assert!(
-            plain(&format!("serve --dir /v/a {bad}")).is_err(),
-            "{bad} was taken"
-        );
-    }
-    // The refusal names an option the user gave, and the default it
-    // collided with when the other mark was not given.
-    for (line, said) in [
-        (
-            "--log-high 1",
-            "--log-high: at least 2: the low mark is at least 1 and below it",
-        ),
-        (
-            "--log-high 1 --log-low 1",
-            "--log-high: at least 2: the low mark is at least 1 and below it",
-        ),
-        (
-            "--log-low 2",
-            "--log-low: not below --log-high, which is 2 unless given",
-        ),
-        (
-            "--log-high 4 --log-low 4",
-            "--log-low: not below --log-high",
-        ),
-    ] {
-        let refused = plain(&format!("serve --dir /v/a {line}")).expect_err(line);
-        assert_eq!(refused.to_string(), said, "{line}");
-    }
-}
-
 /// `serve --dir DIR` with its defaults: the run directory `/run/skyzfsd`,
 /// one queue of depth 64, no acknowledgement, the deployment rules on,
 /// no hook. Each option changes its own field.
@@ -218,12 +103,6 @@ fn serve_has_the_agreed_defaults_and_options() {
         async_delete_asserted: false,
         queues: 1,
         depth: 64,
-        log_high: 2,
-        log_low: 1,
-        writeback_kib: 1024,
-        home_writeback_kib: 0,
-        readers: DEFAULT_READERS,
-        store: StoreKind::Log,
         in_place_io: skyzfs_local::inplace::IoMode::default(),
         allow_unlocked_memory: false,
         allow_any_filesystem: false,
@@ -270,69 +149,74 @@ fn serve_has_the_agreed_defaults_and_options() {
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
 }
 
-/// `--readers`: 4 unless given, 1 to 64.
+/// `--store` is what is left of the choice of a store (M1.3t):
+/// `in-place` is accepted and changes nothing, `log` is refused with a
+/// word that the log store was removed, and anything else is a usage
+/// error. The options of the log and its checkpoints, and its hooks,
+/// are options of nothing now: usage errors.
 #[test]
-fn serve_takes_the_number_of_readers() {
-    assert_eq!(serve("serve --dir /v/a").readers, 4);
-    assert_eq!(serve("serve --dir /v/a --readers 1").readers, 1);
-    assert_eq!(serve("serve --dir /v/a --readers 64").readers, 64);
-    for bad in ["0", "65", "x", "-1"] {
-        assert!(
-            matches!(
-                plain(&format!("serve --dir /v/a --readers {bad}")),
-                Err(UsageError::Value(..))
-            ),
-            "{bad}"
-        );
-    }
-}
-
-/// `--store`: log unless given, or in-place; anything else is a usage
-/// error, and so is an option of the log beside in-place.
-#[test]
-fn serve_takes_the_store() {
-    assert_eq!(serve("serve --dir /v/a").store, StoreKind::Log);
-    assert_eq!(serve("serve --dir /v/a --store log").store, StoreKind::Log);
+fn serve_takes_only_the_in_place_store() {
+    let plain_serve = |line: &str| match plain(line) {
+        Ok(Command::Serve(serve)) => serve,
+        other => panic!("{line}: {other:?}"),
+    };
+    let default = plain_serve("serve --dir /v/a");
+    assert_eq!(plain_serve("serve --dir /v/a --store in-place"), default);
     assert_eq!(
-        serve("serve --dir /v/a --store in-place").store,
-        StoreKind::InPlace
+        plain_serve("serve --dir /v/a --store=in-place --depth 16"),
+        Serve {
+            depth: 16,
+            ..default
+        }
     );
     assert_eq!(
-        serve("serve --dir /v/a --store=in-place --depth 16").store,
-        StoreKind::InPlace
+        plain("serve --dir /v/a --store log"),
+        Err(UsageError::Value(
+            "--store".into(),
+            "the log store was removed in M1.3t: only in-place"
+        ))
     );
     for bad in ["inplace", "LOG", "x"] {
-        assert!(
-            matches!(
-                plain(&format!("serve --dir /v/a --store {bad}")),
-                Err(UsageError::Value(..))
-            ),
+        assert_eq!(
+            plain(&format!("serve --dir /v/a --store {bad}")),
+            Err(UsageError::Value("--store".into(), "expected in-place")),
             "{bad}"
         );
     }
-    for log_only in [
+    for gone in [
         "--log-high 4",
         "--log-low 1",
         "--writeback-kib 0",
         "--home-writeback-kib 0",
         "--readers 1",
     ] {
+        let name = gone.split(' ').next().unwrap();
         assert_eq!(
-            plain(&format!("serve --dir /v/a --store in-place {log_only}")),
-            Err(UsageError::Value(
-                log_only.split(' ').next().unwrap().into(),
-                "not with --store in-place"
-            )),
-            "{log_only}"
+            plain(&format!("serve --dir /v/a {gone}")),
+            Err(UsageError::Unknown(name.into())),
+            "{gone}"
         );
-        assert!(plain(&format!("serve --dir /v/a --store log {log_only}")).is_ok());
+    }
+    for gone in [
+        "--recover-short 1",
+        "--step-pause-ms 5",
+        "--step-pause-until /tmp/go",
+        "--step-pause-at saved",
+        "--refuse-holes",
+    ] {
+        let name = gone.split(' ').next().unwrap();
+        assert_eq!(
+            hooked(&format!("serve --dir /v/a {gone}")),
+            Err(UsageError::Unknown(name.into())),
+            "{gone}"
+        );
     }
 }
 
-/// The in-place store's I/O: direct, on 8 threads unless `--io-threads
-/// N` (1 to 64) says otherwise, with the in-place store only; there is
-/// no option for buffered I/O, and `--direct-io` (the experiment's) is
-/// gone. `create --zero-fill` stays.
+/// The store's I/O: direct, on 8 threads unless `--io-threads N` (1 to
+/// 64) says otherwise; there is no option for buffered I/O, and
+/// `--direct-io` (the experiment's) is gone. `create --zero-fill`
+/// stays.
 #[test]
 fn the_in_place_store_does_direct_io_on_its_threads() {
     use skyzfs_local::inplace::IoMode;
@@ -357,11 +241,8 @@ fn the_in_place_store_does_direct_io_on_its_threads() {
         ));
     }
     assert_eq!(
-        plain("serve --dir /v/a --io-threads 4"),
-        Err(UsageError::Value(
-            "--io-threads".into(),
-            "only with --store in-place"
-        ))
+        serve("serve --dir /v/a --io-threads 4").in_place_io,
+        IoMode::with_threads(4).unwrap()
     );
     assert!(plain("serve --dir /v/a --store in-place --direct-io").is_err());
     assert!(matches!(
@@ -385,55 +266,15 @@ fn the_io_threads_default_is_the_stores() {
     assert!(HELP.contains(&said), "the help does not say {said:?}");
 }
 
-/// `--writeback-kib`: 1024 unless given, 0 for never, at most 1 GiB;
-/// `--home-writeback-kib` the same, 0 unless given.
-#[test]
-fn serve_takes_the_writeback_unit() {
-    assert_eq!(serve("serve --dir /v/a").writeback_kib, 1024);
-    assert_eq!(serve("serve --dir /v/a").home_writeback_kib, 0);
-    assert_eq!(
-        serve("serve --dir /v/a --home-writeback-kib 1024").home_writeback_kib,
-        1024
-    );
-    assert_eq!(
-        serve("serve --dir /v/a --home-writeback-kib 1048576").home_writeback_kib,
-        1 << 20
-    );
-    for bad in ["1048577", "x", "-1"] {
-        assert!(
-            matches!(
-                plain(&format!("serve --dir /v/a --home-writeback-kib {bad}")),
-                Err(UsageError::Value(..))
-            ),
-            "{bad}"
-        );
-    }
-    assert_eq!(serve("serve --dir /v/a --writeback-kib 0").writeback_kib, 0);
-    assert_eq!(
-        serve("serve --dir /v/a --writeback-kib 1048576").writeback_kib,
-        1 << 20
-    );
-    for bad in ["1048577", "x", "-1"] {
-        assert!(
-            matches!(
-                plain(&format!("serve --dir /v/a --writeback-kib {bad}")),
-                Err(UsageError::Value(..))
-            ),
-            "{bad}"
-        );
-    }
-}
-
-/// The fault hooks of the rig, in a build that has them: the log fails
-/// after N requests; one request is held, a read or a write that covers
-/// a byte or a flush; the boot id comes from a file; the recovery is
-/// short by N records.
+/// The fault hooks of the rig, in a build that has them: the volume
+/// fails after N requests; one request is held, a read or a write that
+/// covers a byte or a flush; the boot id comes from a file; the commits
+/// are delayed; the requests are written down.
 #[test]
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --recover-short 1 --commit-delay-ms 20 --refuse-holes \
-         --request-log /tmp/requests.tsv",
+         --boot-id-file /tmp/boot --commit-delay-ms 20 --request-log /tmp/requests.tsv",
     )
     .hooks;
     assert_eq!(
@@ -445,18 +286,12 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
                 what: Held::Read(4096),
             }),
             boot_id_file: Some("/tmp/boot".into()),
-            recover_short: 1,
-            step_pause: None,
-            step_pause_at: StepPoint::Written,
             commit_delay_ms: Some(20),
-            refuse_holes: true,
             request_log: Some("/tmp/requests.tsv".into()),
         }
     );
-    // Either store: the record is the transport's.
-    let in_place = serve("serve --dir /v/a --store in-place --request-log /tmp/r.tsv");
-    assert_eq!(in_place.hooks.request_log, Some("/tmp/r.tsv".into()));
-    assert!(!serve("serve --dir /v/a").hooks.refuse_holes);
+    let named = serve("serve --dir /v/a --store in-place --request-log /tmp/r.tsv");
+    assert_eq!(named.hooks.request_log, Some("/tmp/r.tsv".into()));
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))
             .hooks
@@ -497,7 +332,6 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --fail-log-after 100",
         "serve --dir /v/a --hold-one-request 300:flush",
         "serve --dir /v/a --boot-id-file /tmp/boot",
-        "serve --dir /v/a --recover-short 1",
         "serve --dir /v/a --commit-delay-ms 20",
         "serve --dir /v/a --request-log /tmp/r.tsv",
         "create --dir /v/a --size 1048576 --base-pattern 1",
@@ -509,7 +343,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         assert!(hooked(hook).is_ok(), "{hook}");
     }
     // The build decides for the public entry point.
-    let built = parse(args("serve --dir /v/a --recover-short 1"));
+    let built = parse(args("serve --dir /v/a --commit-delay-ms 1"));
     assert_eq!(built.is_ok(), cfg!(feature = "test-hooks"));
 }
 
