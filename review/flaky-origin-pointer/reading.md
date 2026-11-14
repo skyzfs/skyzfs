@@ -18,11 +18,11 @@ Line 1206 is `body["served"]`. Lines 1203 to 1205 passed:
 
 So the export's engine served g1 while the row named g2.
 
-The test's own check at api.rs:1160 had passed: the export's engine
+The test's own check at api.rs:1163 had passed: the export's engine
 head was g2 right after the forward repoint. So the export went from g2
 back to g1 **after** the POST had returned.
 
-Between 1160 and 1202 no API call swaps an engine:
+Between 1163 and 1202 no API call swaps an engine:
 - `snap/nope` returns 404 and `head` returns 400 before any repoint;
 - creating `golden` swaps nothing;
 - the origin POST naming `snap/golden` returns 400 at `repoint_forward`.
@@ -31,7 +31,7 @@ Between 1160 and 1202 no API call swaps an engine:
 
 - **The sync task reconciles on every snapshot ref.**
   `crates/skynbd-nbd/src/sync.rs:60-65` calls `origin::reconcile` on every
-  `snap/` ref event. Here the event is g2's creation, at api.rs:1146.
+  `snap/` ref event. Here the event is g2's creation, at api.rs:1139.
 - **`reconcile` reads the row, then swaps later.**
   `crates/skynbd-nbd/src/origin.rs:161-183`:
   1. it reads the row (`resolve`, origin.rs:63-75);
@@ -75,7 +75,7 @@ race is lost:
 
 The test does wait for the POST's effect:
 - the POST's answer said `served` g2;
-- its check at line 1160 saw g2.
+- its check at line 1163 saw g2.
 
 Polling the GET until it reads g2 would hide the defect.
 
