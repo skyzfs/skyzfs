@@ -73,6 +73,10 @@ case $step in
                 printf 'served\t%s\tended by the refused commit; handed 1 reads 0 writes 0 flushes\n' "$n"
                 [ "$SCENARIO" = refused_stays_live ] || state waiting
                 [ "$SCENARIO" = refused_hangs ] || exit 0 ;;
+            # The driver's answer and the program's end, each without the other.
+            refused_crashes) printf "$sent"; printf 'refuse-commit\t%s\trefused: errno 22 (Invalid argument)\n' "$n"; state waiting; exit 101 ;;
+            aborted_then_ended) printf "$sent"; printf 'refuse-commit\t%s\taborted\n' "$n"
+                printf 'served\t%s\tended by the refused commit; handed 1 reads\n' "$n"; state waiting; exit 0 ;;
             aborted) printf "$sent"; printf 'refuse-commit\t%s\taborted\n' "$n" ;;
             taken) printf "$sent" ;;
             not_sent) printf 'refuse-commit\t%s\tnot sent for %s on tag 3: refused by the library\n' "$n" "$req" ;;
@@ -166,6 +170,12 @@ has "  the server was killed" "$RC_WHY" "it ended by itself: NO: it was still se
 has "  the reader's error" "$RC_WHY" "Input/output error"
 course aborted 48 2 read --refuse-one-commit "read:$RC_AT"
 is "an aborted commit" "$RC_VERDICT" FAIL
+course refused_crashes 54 30 read --refuse-one-commit "read:$RC_AT"
+is "a refusal after which the program crashed" "$RC_VERDICT" FAIL
+has "  says it has no last line of its own" "$RC_WHY" "it ended by itself: yes; its last line: ''"
+course aborted_then_ended 55 30 read --refuse-one-commit "read:$RC_AT"
+is "a program that ended by a refusal the driver did not make" "$RC_VERDICT" FAIL
+has "  says what the driver answered" "$RC_WHY" "then 'aborted'"
 course not_sent 49 2 read --refuse-one-commit "read:$RC_AT"
 is "a commit the library did not send" "$RC_VERDICT" FAIL
 has "  says so" "$RC_WHY" "the program said 'not sent for a read at byte $RC_AT on tag 3: refused by the library'"

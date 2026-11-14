@@ -925,9 +925,9 @@ fi
 # ============================================== the library's directory
 step "nothing of the binding under /run/ublksrvd"
 SEEN=$OUT/ublksrvd-seen.log; : > "$SEEN"
-for n in $OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
+for n in $OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
 n=$(grep -c '^entry ' "$SEEN")
-pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $OWN4 $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
+pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')"
 
 step "done"
