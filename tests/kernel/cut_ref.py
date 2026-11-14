@@ -207,6 +207,54 @@ def cuts(records, ubs, rule='design'):
     return out, taken
 
 
+def opens(records, read, dev_bytes, cs):
+    """Which uberblock the labels hold as the best at each cut's instant
+    -> {n: {'txg', 'timestamp', 'rootbp', 'itself'}}.
+
+    ZFS opens a pool at the uberblock with the highest group in any
+    label's ring, the timestamp breaking a tie (vdev_uberblock_compare).
+    The ring is followed through the record: a write over a slot leaves
+    the uberblock it carries there, or none, and a discard none. A cut
+    opens as itself when that best uberblock is the cut's own state;
+    after a rewind import the ring still holds the abandoned history's
+    higher groups (run 43631961753), and until the new history's pass
+    them a cut does not (design §5.2, "Whether a cut opens as itself")."""
+    labels = label_offsets(dev_bytes)
+    rings = [(lo + RING_START, lo + LABEL) for lo in labels]
+    slots, out = {}, {}
+    by_prefix = {}
+    for c in cs:
+        by_prefix.setdefault(c['prefix'], []).append(c)
+
+    def note(prefix):
+        for c in by_prefix.get(prefix, ()):
+            best = max(slots.values(), key=lambda u: (u['txg'], u['timestamp']), default=None)
+            out[c['n']] = {'txg': best['txg'] if best else None, 'timestamp': best['timestamp'] if best else None,
+                           'rootbp': best['rootbp'] if best else None,
+                           'itself': bool(best) and (best['txg'], best['rootbp']) == (c['txg'], c['rootbp'])}
+    for r in records:
+        note(r['i'])
+        a, b = r.get('offset', 0), r.get('offset', 0) + r.get('bytes', 0)
+        ring = [(max(a, lo), min(b, hi), lo) for lo, hi in rings if a < hi and b > lo]
+        if not ring:
+            continue
+        if 'discard' in r['flags']:
+            for x, y, lo in ring:
+                for o in range(x + (-(x - lo) % SLOT_ALIGN), y, SLOT_ALIGN):
+                    slots.pop(o, None)
+        elif is_write(r):
+            data = read(r)
+            for x, y, lo in ring:
+                for o in range(x + (-(x - lo) % SLOT_ALIGN), y, SLOT_ALIGN):
+                    u = parse_uberblock(data[o - a:o - a + UB_BYTES])
+                    if u is not None and u['txg'] > 0:
+                        slots[o] = u
+                    else:
+                        slots.pop(o, None)
+    note(len(records))
+    return out
+
+
 def stale(cs):
     """The cuts whose pool state (group and root block pointer) equals that
     of a cut before the one just before them -> {n: the older cut's n}.

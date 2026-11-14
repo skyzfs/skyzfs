@@ -134,7 +134,8 @@ class Expected(unittest.TestCase):
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cut-record.sh')) as f:
             line = next(ln for ln in f if ln.startswith('ALL='))
         recs = set(line.split('"')[1].split())
-        self.assertEqual(len(recs), 7)
+        self.assertEqual(set(cut_check.RECS), recs)
+        self.assertEqual(set(cut_check.EXPECTED_OPENS), recs)
         for ctl, table in cut_check.EXPECTED.items():
             self.assertEqual(set(table), recs, ctl)
             for v in table.values():

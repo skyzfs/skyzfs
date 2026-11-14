@@ -74,17 +74,25 @@ POOL = 'skzcut'
 # where the record has nothing that tells them from the design's: no
 # flush between copies of an uberblock (count-repeats) and no group
 # written twice (txg-alone).
+RECS = ('life', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full')
 EXPECTED = {
-    'early': {r: 'caught' for r in ('life', 'rewind', 'multihost', 'config', 'stray', 'autotrim', 'full')},
-    'withheld': {r: 'caught' for r in ('life', 'rewind', 'multihost', 'config', 'stray', 'autotrim', 'full')},
-    'later': {r: 'caught' for r in ('life', 'rewind', 'multihost', 'config', 'stray', 'autotrim', 'full')},
-    'txg-alone': {'life': 'same', 'rewind': 'caught', 'multihost': 'same', 'config': 'same', 'stray': 'same',
-                  'autotrim': 'same', 'full': 'same'},
+    'early': {r: 'caught' for r in RECS},
+    'withheld': {r: 'caught' for r in RECS},
+    'later': {r: 'caught' for r in RECS},
+    # A rewind import with -T writes the new history under groups the
+    # abandoned one used (run 43631961753); -F is thought to count on
+    # from the failed group, which the recording shows.
+    'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindsync='caught', rewindf=('same', 'caught')),
     # A stray flush lands between two copies of an uberblock only by
     # chance (none did in run 43631961753): either outcome, never missed.
-    'count-repeats': {'life': 'same', 'rewind': 'same', 'multihost': 'caught', 'config': 'same',
-                      'stray': ('same', 'caught'), 'autotrim': 'same', 'full': 'same'},
+    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught')),
 }
+# Whether every cut opens as itself: not after a rewind import with -T,
+# until the new history's groups pass the abandoned ones (run
+# 43631961753, design §5.2 "Whether a cut opens as itself"); a stale
+# multihost cut does not either.
+EXPECTED_OPENS = dict({r: 'all' for r in RECS}, rewind='not all', rewindsync='not all', rewindf=('all', 'not all'),
+                      multihost=('all', 'not all'))
 
 
 def as_expected(verdict, want):
@@ -240,9 +248,13 @@ class Check:
         logwrites.advance(self.log, self.idx, self.image, self.at, n, schedule)
         self.at = n
 
-    def group(self):
-        """zdb's choice of uberblock -> (txg, timestamp) or a reason it gave none."""
-        rc, out, _ = run(['zdb', '-e', '-p', self.imgdir, '-u', POOL], 120)
+    def zdb(self, args, txg=None, timeout=120):
+        return run(['zdb', '-e', '-p', self.imgdir] + (['-t', str(txg)] if txg else []) + args + [POOL], timeout)
+
+    def group(self, txg=None):
+        """zdb's choice of uberblock (the highest group, or the highest
+        at or below txg) -> (txg, timestamp) or a reason it gave none."""
+        rc, out, _ = self.zdb(['-u'], txg)
         if rc in replay_check.RIG_RC:
             raise RigError(f'zdb -u: {replay_check.stage("zdb -u", rc)}')
         t, ts = UB_TXG_RE.search(out), UB_TS_RE.search(out)
@@ -251,15 +263,16 @@ class Check:
             return None, f'zdb -u exit {rc}: {" | ".join(said)[:300]}'
         return (int(t.group(1)), int(ts.group(1))), ''
 
-    def copies(self):
-        rc, out, _ = run(['zdb', '-e', '-p', self.imgdir, '-bbbbb', POOL], 600)
+    def copies(self, txg=None):
+        rc, out, _ = self.zdb(['-bbbbb'], txg, 600)
         failed, detail, counts = replay_check.every_copy_verdict(rc, out, self.image)
         if failed and failed.startswith('rig:'):
             raise RigError(f'{failed}: {detail}')
         bps = replay_check.zdb_blocks(out)['bps'] if not failed else []
         return failed, detail, counts, [bp for bp in bps if bp['type'] != 'ZIL intent log']
 
-    def kimport(self):
+    def kimport(self, txg=None):
+        """A read-only import (at txg with -T) -> (ok, what zpool said)."""
         rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', POOL], 60)
         if rc == 0:
             raise RigError(f'a pool named {POOL} is still imported')
@@ -269,7 +282,7 @@ class Check:
         loop = out.strip()
         try:
             rc, out, _ = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none', '-N', '-f',
-                              '-R', self.alt, POOL], 180)
+                              '-R', self.alt] + (['-T', str(txg)] if txg else []) + [POOL], 180)
             said = out.strip()[-300:]
             if rc in replay_check.RIG_RC:
                 raise RigError(f'zpool import: {replay_check.stage("import", rc)}')
@@ -281,35 +294,52 @@ class Check:
         finally:
             run(['losetup', '-d', loop])
 
-    def judge(self, cut, kernel=True, stale=False):
-        """The checks at the image as it is, for this cut -> (failed check or None, detail, bps).
-
-        A stale cut (cut_ref.stale) carries the group of an older state:
-        the pool may open at a later group, never at an earlier one."""
-        g, why = self.group()
-        if g is None:
-            return 'group', why, []
-        low = ''
-        if stale and g[0] > cut['txg']:
-            low = f"stale: the pool opens at group {g[0]}, {g[0] - cut['txg']} above the cut's; "
-        elif g != (cut['txg'], cut['timestamp']):
-            why = f"zdb selects group {g[0]} (timestamp {g[1]}), the cut is {cut['txg']} ({cut['timestamp']})"
-            if kernel:
-                # What the volume then is: the state zdb selected, every
-                # copy, and the kernel's import with no rewind option.
-                failed, detail, counts, _ = self.copies()
-                ok, said = self.kimport()
-                why += (f"; the pool at group {g[0]}: every copy {'FAILS: ' + detail if failed else 'passes'}"
-                        f" ({counts.get('copies', 0)} copies), read-only import {'ok' if ok else 'FAILS: ' + said}")
-            return 'group', why, []
-        failed, detail, counts, bps = self.copies()
+    def whole(self, cut, txg=None, kernel=True):
+        """Every copy, then the read-only import, of the state at txg (or
+        the one zdb selects) -> (failed check or None, detail, bps)."""
+        failed, detail, counts, bps = self.copies(txg)
         if failed:
             return 'copies', detail, []
         if kernel:
-            ok, said = self.kimport()
+            ok, said = self.kimport(txg)
             if not ok:
                 return 'import', said, bps
-        return None, f"{low}{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies", bps
+        return None, f"{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies", bps
+
+    def judge(self, cut, pred, kernel=True):
+        """The checks at the image as it is, for this cut -> (failed check
+        or None, detail, bps, what was seen).
+
+        pred is the reference's reading of the rings (cut_ref.opens): the
+        uberblock ZFS should choose at this instant. zdb must choose it.
+        A cut that opens as itself must be whole: every copy and the
+        read-only import. One that does not (after a rewind import, or a
+        stale cut) must be whole at its own group (zdb -t, import -T),
+        and the line says what the state zdb chose is."""
+        seen = {'zdb_txg': None, 'itself': pred['itself'], 'whole': False}
+        g, why = self.group()
+        if g is None:
+            return 'group', why, [], seen
+        seen['zdb_txg'] = g[0]
+        if g != (pred['txg'], pred['timestamp']):
+            return ('opens', f"zdb selects group {g[0]} (timestamp {g[1]}), the rings' best is {pred['txg']} "
+                    f"({pred['timestamp']}); the cut is {cut['txg']}", [], seen)
+        if pred['itself']:
+            failed, detail, bps = self.whole(cut, None, kernel)
+            seen['whole'] = not failed
+            return failed, detail, bps, seen
+        g2, why = self.group(cut['txg'])
+        if g2 is None or g2 != (cut['txg'], cut['timestamp']):
+            return 'group', f"zdb -t {cut['txg']} selects {g2 or why}, not the cut's uberblock", [], seen
+        failed, detail, bps = self.whole(cut, cut['txg'], kernel)
+        seen['whole'] = not failed
+        if failed:
+            return failed, f'at its own group: {detail}', [], seen
+        note = f"does not open as itself: the pool opens at group {g[0]}"
+        if kernel:
+            f2, d2, _ = self.whole(cut, None, kernel)
+            note += f", and that state is {'NOT whole: ' + f2 + ': ' + d2 if f2 else 'whole: ' + d2}"
+        return None, f'{note}; at its own group (zdb -t, import -T): {detail}', bps, seen
 
 
 def control_verdict(failed):
@@ -343,26 +373,45 @@ def main():
         if not cs:
             raise RigError('the reference finds no cut in the record')
         # Every cut, in order, on one image.
-        failures, bps_at = [], {}
+        failures, bps_at, opened = [], {}, {}
         stale = cut_ref.stale(cs)
-        fresh = [c for c in cs if c['n'] not in stale]
+        op = cut_ref.opens(ck.records, ck.read, dev, cs)
+        fresh = [c for c in cs if c['n'] not in stale and op[c['n']]['itself']]
         mid = fresh[len(fresh) // 2]
-        lows = []
+        notself = []
         for c in cs:
             ck.advance(c['prefix'])
-            failed, detail, bps = ck.judge(c, stale=c['n'] in stale)
-            if c['n'] in stale and not failed:
-                lows.append(f"cut {c['n']} (group {c['txg']}, the state of cut {stale[c['n']]}): {detail.split(';')[0]}")
+            failed, detail, bps, seen = ck.judge(c, op[c['n']])
+            opened[c['n']] = seen
+            if not op[c['n']]['itself'] and not failed:
+                notself.append(f"cut {c['n']} (group {c['txg']}{', stale' if c['n'] in stale else ''}): {detail}")
             if failed:
                 failures.append(c)
                 put(f"cut_{c['n']}", 'FAIL', f"group {c['txg']} at record {c['prefix']}: {failed}: {detail}")
             if c is mid:
                 bps_at['mid'] = bps
+        with open(os.path.join(rdir, 'fixture', 'opens.tsv'), 'w') as f:
+            f.write('# what real ZFS made of each reference cut (cut_check.py): zdb_txg the group zdb -e -u selected\n'
+                    '# at the cut\'s instant, ring_txg the best uberblock in the labels by the reference, itself 1 when\n'
+                    '# that is the cut\'s own state, whole 1 when the cut passed every copy and the read-only import at\n'
+                    '# its own group\n# n\ttxg\tprefix\tzdb_txg\tring_txg\titself\twhole\n')
+            for c in cs:
+                o, s2 = op[c['n']], opened[c['n']]
+                f.write(f"{c['n']}\t{c['txg']}\t{c['prefix']}\t{s2['zdb_txg']}\t{o['txg']}\t{int(o['itself'])}\t"
+                        f"{int(s2['whole'])}\n")
         put('cuts', 'PASS' if not failures else 'FAIL',
-            f"{len(cs) - len(failures)} of {len(cs)} cuts: the group, every copy, the read-only import")
-        put('obs_stale_cuts', str(len(stale)), '; '.join(lows[:6]) if lows else
-            'no cut carries the state of an older cut')
-        if failures:
+            f"{len(cs) - len(failures)} of {len(cs)} cuts: zdb selects the uberblock the rings hold as the best, "
+            f"and the cut is whole at its group (every copy, the read-only import)")
+        n_self = sum(1 for c in cs if op[c['n']]['itself'])
+        verdict = 'ALL' if n_self == len(cs) else 'NOT_ALL'
+        want = EXPECTED_OPENS.get(name)
+        ok = as_expected(verdict.lower().replace('_', ' '), want)
+        put('opens_as_itself', verdict, f"{n_self} of {len(cs)} cuts open as themselves"
+            + (f"; the others: {'; '.join(notself[:8])}" if notself else '')
+            + f" (expected: {' or '.join(want) if isinstance(want, tuple) else want}{'' if ok else '; DIFFERS'})")
+        put('obs_stale_cuts', str(len(stale)), ', '.join(f"cut {n} (the state of cut {m})" for n, m in stale.items())
+            or 'no cut carries the state of an older cut')
+        if failures or not ok:
             rc = 1
         # The sessions against the kstat.
         kstats = {}
@@ -396,7 +445,7 @@ def main():
         ecs, _ = cut_ref.cuts(ck.records, cut_ref.scan(ck.records, ck.read, dev), 'early')
         early = next(c for c in ecs if c['n'] == mid['n'])
         ck.advance(early['prefix'])
-        failed, detail, _ = ck.judge(mid, kernel=False)
+        failed, detail, _, _ = ck.judge(mid, op[mid['n']], kernel=False)
         got['early'] = (control_verdict(failed), f"cut {mid['n']} (group {mid['txg']}) at record {early['prefix']} "
                         f"and not {mid['prefix']}: {failed or 'passed'}: {detail}")
         v = pick_withheld(ck.records, mid, bps)
@@ -408,7 +457,7 @@ def main():
             ck.advance(0)
             ck.advance(len(sched), sched)
             ck.at = None
-            failed, detail, _ = ck.judge(mid, kernel=False)
+            failed, detail, _, _ = ck.judge(mid, op[mid['n']], kernel=False)
             r = ck.records[v]
             got['withheld'] = (control_verdict(failed), f"cut {mid['n']} without record {v} ({r['bytes']} bytes at "
                                f"{r['offset']}): {failed or 'passed'}: {detail}")
@@ -436,7 +485,7 @@ def main():
             ck.advance(0)
             ck.advance(len(sched), sched)
             ck.at = None
-            failed, detail, _ = ck.judge(c, kernel=False)
+            failed, detail, _, _ = ck.judge(c, op[c['n']], kernel=False)
             r = ck.records[v]
             got['later'] = (control_verdict(failed), f"cut {c['n']} (group {c['txg']}) with record {v} "
                             f"({'+'.join(r['flags']) or 'write'}, {r['bytes']} bytes at {r['offset']}, "

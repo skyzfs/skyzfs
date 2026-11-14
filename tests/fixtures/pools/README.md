@@ -66,6 +66,24 @@ that marked it. `flush_record` is the first flush after it. `prefix` is
 the number of records before the cut's instant: the volume at the
 instant is the device after records `0 .. prefix-1`.
 
+## `opens.tsv` (from the run after 71e2509)
+
+What real ZFS made of each reference cut, a line a cut:
+
+```text
+n  txg  prefix  zdb_txg  ring_txg  itself  whole
+```
+
+`zdb_txg` is the group `zdb -e -u` selected on the volume at the cut's
+instant, `ring_txg` the best uberblock in the labels' rings by the
+reference (the highest group, then the newest timestamp, following
+every write and discard of the ring through the record), `itself` 1 when
+that is the cut's own state (design §5.2, "Whether a cut opens as
+itself"), and `whole` 1 when the cut passed every copy and the read-only
+import at its own group (with `zdb -t` and `zpool import -T` where it
+does not open as itself). M2.1b's test: the cuts the store says open as
+themselves are exactly those with `itself` 1.
+
 ## `check.tsv`
 
 The check's lines for the recording (`tests/kernel/cut_check.py`), from

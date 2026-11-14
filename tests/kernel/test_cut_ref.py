@@ -189,6 +189,35 @@ class Cuts(Fixture):
         cs, _ = self.run_log(entries)
         self.assertEqual([(c['txg'], c['rootbp'][0]) for c in cs], [(10, 1000), (11, 2000), (11, 3000), (12, 4000)])
 
+    def test_after_a_rewind_a_cut_below_the_abandoned_groups_does_not_open_as_itself(self):
+        # 10, 11, 12 written; a rewind to 10; the new history writes
+        # 11 and 12 (new roots), then 13. Each group's uberblocks go to
+        # slot txg % 32 in each label.
+        entries = group(10, 1) + group(11, 2) + group(12, 3) + group(11, 5) + group(12, 6) + group(13, 7)
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs)
+        self.assertEqual([(c['txg'], op[c['n']]['itself'], op[c['n']]['txg']) for c in cs],
+                         [(10, True, 10), (11, True, 11), (12, True, 12), (11, False, 12), (12, True, 12), (13, True, 13)])
+        # The new 11 overwrote the old 11's slots but not the old 12's:
+        # the new 11 opens at the abandoned 12. The new 12 overwrites
+        # it and opens as itself. With 14 abandoned, two new groups do
+        # not open as themselves.
+        entries = group(10, 1) + group(14, 9) + group(11, 5) + group(12, 6) + group(15, 7)
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs)
+        self.assertEqual([(c['txg'], op[c['n']]['itself'], op[c['n']]['txg']) for c in cs],
+                         [(10, True, 10), (14, True, 14), (11, False, 14), (12, False, 14), (15, True, 15)])
+
+    def test_a_discard_or_an_overwrite_clears_a_slot(self):
+        entries = group(10, 1) + group(14, 9) + [('discard', slot_at(k, 14), SLOT) for k in range(4)] + group(11, 5)
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs)
+        self.assertEqual([op[c['n']]['itself'] for c in cs], [True, True, True])
+        entries = group(10, 1) + group(14, 9) + [('write', slot_at(k, 14), bytes(SLOT)) for k in range(4)] + group(11, 5)
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs)
+        self.assertEqual([op[c['n']]['itself'] for c in cs], [True, True, True])
+
     def test_the_rule_keyed_on_the_group_alone_misses_it(self):
         entries = group(10, 1) + group(11, 2) + group(11, 3) + group(12, 4)
         cs, _ = self.run_log(entries, rule='txg-alone')

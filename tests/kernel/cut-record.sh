@@ -21,6 +21,15 @@
 #              with a snapshot destroyed, export
 #   rewind     create, load, export, an import rewound a few groups
 #              (zpool import -T), load, export
+#   rewindsync as rewind, then after the import a small write and a
+#              `zpool sync` at a time until the newest group that wrote
+#              passes the abandoned history's newest (zdb -u after the
+#              export); OUT/NAME/rewind-sync.txt says how many and how
+#              long
+#   rewindf    create, load, export, the newest group's root block (the
+#              MOS's objset, all its copies) overwritten with zeros
+#              through the recorded device, `zpool import -F`, load,
+#              export; OUT/NAME/rewind-f.txt says what the import said
 #   multihost  multihost=on (the host id is 5eed1234 for every
 #              recording), load for 20 s, so that MMP writes uberblocks
 #              of its own
@@ -57,7 +66,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
-ALL="life rewind multihost config stray autotrim full"
+ALL="life rewind rewindsync rewindf multihost config stray autotrim full"
 RECS=${*:-$ALL}
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
@@ -193,6 +202,61 @@ rec_rewind() {
     export_pool
     log "rewind: importing at group $t of ${groups[-1]}"
     import_pool -T "$t"
+    load 3
+    export_pool
+}
+# The newest uberblock of the exported pool, by zdb: GROUP and the root
+# block pointer's line.
+newest_ub() { timeout 60 zdb -e -p "$DEV" -u "$POOL" 2> /dev/null; }
+groups_written() { awk 'NR > 2 && $3 == "C" && $6 > 0 { print $1 }' "/proc/spl/kstat/zfs/$POOL/txgs"; }
+rec_rewindsync() {
+    local groups t old k t0 top
+    create_pool
+    load 8
+    mapfile -t groups < <(committed)
+    [ "${#groups[@]}" -ge 6 ] || rig_error "only ${#groups[@]} groups committed before the rewind"
+    t=${groups[$(( ${#groups[@]} - 4 ))]}
+    export_pool
+    old=$(newest_ub | awk '$1 == "txg" { print $3; exit }')
+    [[ $old =~ ^[0-9]+$ ]] || rig_error "zdb gave no newest group after the export"
+    import_pool -T "$t"
+    t0=$(date +%s%N); k=0; top=0
+    while [ "$k" -lt 300 ]; do
+        top=$(groups_written | tail -n 1)
+        [ "${top:-0}" -le "$old" ] || break
+        k=$((k + 1))
+        dd if=/dev/urandom of="$MNT/sync-$k" bs=4K count=1 status=none
+        z 60 zpool sync "$POOL"
+    done
+    printf 'rewound to %s; abandoned newest %s; %s syncs, %s ms, until group %s wrote
+' \
+        "$t" "$old" "$k" "$(( ($(date +%s%N) - t0) / 1000000 ))" "$top" > "$RDIR/rewind-sync.txt"
+    [ "${top:-0}" -gt "$old" ] || rig_error "300 syncs did not pass group $old"
+    load 1
+    export_pool
+}
+rec_rewindf() {
+    local ub dvas d off asize n=0
+    create_pool
+    load 6
+    export_pool
+    ub=$(newest_ub)
+    echo "$ub" > "$RDIR/newest-before-damage.txt"
+    mapfile -t dvas < <(sed -n 's/^[[:space:]]*rootbp = //p' <<< "$ub" | grep -o 'DVA\[[0-9]\]=<[0-9]*:[0-9a-f]*:[0-9a-f]*>')
+    [ "${#dvas[@]}" -ge 1 ] || rig_error "zdb gave no root block pointer: $(head -c 300 <<< "$ub")"
+    mark "damage"
+    for d in "${dvas[@]}"; do
+        off=$(( 0x$(cut -d: -f2 <<< "$d") + (4 << 20) )); asize=$(( 0x$(cut -d: -f3 <<< "$d" | tr -d '>') ))
+        dd if=/dev/zero of="$DEV" bs=512 seek=$((off / 512)) count=$((asize / 512)) oflag=direct conv=notrunc status=none
+        n=$((n + 1))
+    done
+    printf 'zeroed %s copies of the root block of group %s: %s\n' "$n" "$(awk '$1 == "txg" { print $3; exit }' <<< "$ub")" "${dvas[*]}" > "$RDIR/rewind-f.txt"
+    session_begin
+    if ! timeout 300 zpool import -d "$DEV" -o cachefile=none -F "$POOL" >> "$RDIR/rewind-f.txt" 2>&1; then
+        rig_error "zpool import -F failed: $(tail -n 3 "$RDIR/rewind-f.txt" | tr '\n' ' ')"
+    fi
+    mark "session-$SESSION-ready"
+    committed | tail -n 3 | tr '\n' ' ' | sed 's/^/groups committed after the import: /' >> "$RDIR/rewind-f.txt"
     load 3
     export_pool
 }
