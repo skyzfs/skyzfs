@@ -120,3 +120,9 @@ in-place run on 26.04 at the base (pull request 70's job 132234680729)
 the 61 judged lines have the same verdict, line for line: the NA lines
 are those of the log (checkpoints, the log's bound, `unstored`,
 `write_zeroes_through_a_checkpoint`, the delay pass of c).
+
+### The lead on finding 2 (2026-11-14)
+
+The lead reads "held nowhere" strictly, as the review did: a port that
+lets the planted breach of the deleted test pass every test holds less
+than what it replaced. Both items of finding 2 block, with finding 1.
