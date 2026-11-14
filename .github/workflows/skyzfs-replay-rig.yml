@@ -36,10 +36,10 @@ name: skyzfs-replay-rig
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
 #     `daemon_budget` (full: every record prefix, about 45 minutes a job).
-# Which store the daemon jobs drive: on a pull request the in-place
-# store (`--store in-place`); by dispatch what `serve_args` names, and
-# without --store there the in-place store too (the log store is being
-# removed, M1.3t).
+# The daemon has one store since M1.3t (the log store is removed), and
+# the jobs name none. A build of `daemon_ref` from before M1.3t, whose
+# help offers `[--store`, is served with `--store in-place` put first,
+# and the summary says so.
 #
 # The jobs `hole` (M1.T27, `tests/kernel/hole-rig.sh` and
 # `tests/kernel/replay_hole.py`) run wherever the daemon jobs run, and
@@ -85,7 +85,7 @@ on:
         options: [pull-request, full]
         default: full
       serve_args:
-        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --io-threads 1); without --store the rig passes --store in-place, as on a pull request; the log store's options (--log-high and the like) need --store log beside them, on a build from before M1.3t"
+        description: "daemon jobs only: options for every skyzfsd serve of the rig, separated by spaces (for example --io-threads 1); the log store's options are refused (M1.3t removed it)"
         default: ""
       daemon_ref:
         description: "daemon and hole jobs: build skyzfsd from this commit (40 hex digits) and not from the checkout, under the rig of the checkout. Empty: the checkout"
@@ -321,11 +321,17 @@ jobs:
         env:
           BUDGET: ${{ needs.plan.outputs.budget }}
           DISCARD: ${{ inputs.discard || 'zero' }}
-          SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '--store in-place' }}
+          SERVE_ARGS: ${{ github.event_name != 'pull_request' && inputs.serve_args || '' }}
+          DAEMON_REF: ${{ inputs.daemon_ref || '' }}
         run: |
           [[ $DISCARD == zero || $DISCARD == skip ]] || { echo "::error::discard is zero or skip: $DISCARD"; exit 64; }
           # Options only: letters, digits and - = . , : / and spaces.
           [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
+          # A build from before M1.3t defaults to the log store.
+          if [ -n "$DAEMON_REF" ] && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
+            SERVE_ARGS="--store in-place${SERVE_ARGS:+ $SERVE_ARGS}"
+            echo "The build of \`$DAEMON_REF\` has a choice of store, and is served with \`--store in-place\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
           [ -z "$SERVE_ARGS" ] || echo "Serve options for every start: \`$SERVE_ARGS\`" >> "$GITHUB_STEP_SUMMARY"
           # The pull-request budget: every required prefix and every deep
           # check, the light check on a sample of the flush boundaries; it
@@ -421,24 +427,18 @@ jobs:
       - name: Record and check the courses
         env:
           BUDGET: ${{ needs.plan.outputs.budget }}
-          SERVE_ARGS: ${{ github.event_name == 'pull_request' && '--store in-place' || inputs.serve_args || '--store in-place' }}
+          SERVE_ARGS: ${{ github.event_name != 'pull_request' && inputs.serve_args || '' }}
           DAEMON_REF: ${{ inputs.daemon_ref || '' }}
           PR_HEAD: ${{ github.event.pull_request.head.sha || '' }}
         run: |
           [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
-          # The hole courses are of the in-place store whatever else is
-          # asked: a --store of serve_args is replaced, and the summary
-          # says so. With the log store the first record that carries a
-          # block's data would be the log's, not the home image's.
-          read -r -a given <<< "$SERVE_ARGS"; kept=()
-          for ((i = 0; i < ${#given[@]}; i++)); do
-            case ${given[i]} in
-              --store) i=$((i + 1)); [ "${given[i]:-}" = in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`--store ${given[i]:-}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
-              --store=*) [ "${given[i]}" = --store=in-place ] || echo "The hole courses ran with \`--store in-place\`, not \`${given[i]}\` of serve_args." >> "$GITHUB_STEP_SUMMARY" ;;
-              *) kept+=("${given[i]}") ;;
-            esac
-          done
-          SERVE_ARGS="--store in-place${kept[*]:+ ${kept[*]}}"
+          # A build from before M1.3t defaults to the log store, whose
+          # first record of a block's data would be the log's, not the
+          # home image's.
+          if [ -n "$DAEMON_REF" ] && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
+            SERVE_ARGS="--store in-place${SERVE_ARGS:+ $SERVE_ARGS}"
+            echo "The build of \`$DAEMON_REF\` has a choice of store, and is served with \`--store in-place\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
           case $BUDGET in
             pull-request) every="" ;;
             full) every=1 ;;

@@ -218,11 +218,12 @@
 #                           hash of the binary that read the row's status
 #                           (always the row's own)
 #   TB_SKYZFSD_ARGS=        extra arguments for its `serve`, comma-separated
-#                           ("--store,in-place,--io-threads,4"). With no
-#                           --store the row names --store in-place; the log
-#                           store's options (--log-high,8,--log-low,4: its
-#                           marks, in segments of 64 MiB) need --store,log
-#                           beside them, on a build from before M1.3t
+#                           ("--io-threads,4"). The daemon has one store
+#                           since M1.3t and the row names none, but for
+#                           a build from before it (TB_SKYZFSD_REF), whose
+#                           help offers --store: that one is served with
+#                           --store in-place. The log store's options and
+#                           --store log are refused
 #   TB_SKYZFSD_MEM=         cgroup v2 memory.max for the daemon (e.g. 1G).
 #                           The daemon's files (home image and log) go
 #                           through the host's page cache, which is
@@ -1559,24 +1560,28 @@ skz_low_bytes() {
 skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
-    # The store is always named (M1.T20), so that the daemon's default
-    # cannot change under the benchmark: --store in-place unless the
-    # arguments name one (M1.3t removes the log store; before it the
-    # daemon's default was the log). A build from before the option
-    # (TB_SKYZFSD_REF of an older commit) has only the log store and is
-    # served as it was.
+    # The daemon has one store since M1.3t (the log store is removed).
+    # Its options, and a --store other than in-place, are the row's
+    # mistake and end it before a serve. A build from before M1.3t
+    # (TB_SKYZFSD_REF of an older commit), whose help offers --store,
+    # defaults to the log store: it is served with --store in-place, so
+    # that every row runs the store the benchmark is about. A build from
+    # before the option has only the log store and is served as it was.
+    local o i
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        o=${args[i]}
+        case $o in
+            --store=in-place) continue ;;
+            --store) [ "${args[i + 1]:-}" != in-place ] || { i=$((i + 1)); continue; } ;;
+        esac
+        case ${o%%=*} in
+            --store|--log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
+                log "TB_SKYZFSD_ARGS: $o is of the log store, which M1.3t removed"
+                return 64 ;;
+        esac
+    done
     if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
         && "$SKYZFSD" help 2>&1 | grep -q -- '--store'; then
-        # The daemon refuses the log store's options with the in-place
-        # store: such a row names --store log (a build before M1.3t).
-        local o
-        for o in "${args[@]}"; do
-            case ${o%%=*} in
-                --log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
-                    log "TB_SKYZFSD_ARGS: ${o%%=*} is an option of the log store; name --store,log beside it (a build from before M1.3t)"
-                    return 64 ;;
-            esac
-        done
         args=(--store in-place "${args[@]}")
     fi
     SKZ_SERVE_ARGS="${args[*]}"
@@ -1641,7 +1646,10 @@ skz_stop() { # SIGTERM, a wait of 60 s, then SIGKILL; the device detached; the v
 # finished checkpoint leaves. If the daemon rests with the log at or
 # above the low mark (a step only begins at the high mark), waiting
 # longer changes nothing: after 30 s of rest the script goes on and the
-# row says where the log stood. 1: never at rest in 600 s.
+# row says where the log stood. 1: never at rest in 600 s. A daemon
+# whose status has no log (M1.3t removed the log store, and its keys
+# may go with it) is at rest at once when nothing is held and the
+# write count stands still: a key that is absent is not waited for.
 skz_settle() {
     local low t0 step unst held w0 w1 ll rest=0 said=""
     low=$(skz_low_bytes)
@@ -1649,9 +1657,13 @@ skz_settle() {
     while [ $(( $(date +%s) - t0 )) -lt 600 ]; do
         w0=$(skz_stat writes); sleep 1
         w1=$(skz_stat writes); step=$(skz_stat checkpoint_step); unst=$(skz_stat unstored); held=$(skz_stat held); ll=$(skz_stat log_live)
-        if [ "$step" = none ] && [ "$unst" = 0 ] && [ "$held" = 0 ] && [ -n "$w0" ] && [ "$w0" = "$w1" ] && [[ $ll =~ ^[0-9]+$ ]]; then
+        if { [ "$step" = none ] || [ -z "$step" ]; } && { [ "$unst" = 0 ] || [ -z "$unst" ]; } && [ "$held" = 0 ] && [ -n "$w0" ] && [ "$w0" = "$w1" ] \
+            && { [[ $ll =~ ^[0-9]+$ ]] || [ -z "$ll" ]; }; then
             rest=$((rest + 1))
-            if [ "$ll" -lt "$low" ]; then
+            if [ -z "$ll" ]; then
+                said="at rest after $(( $(date +%s) - t0 )) s: held 0, the write count still over a second; the status has no log"
+                break
+            elif [ "$ll" -lt "$low" ]; then
                 said="at rest after $(( $(date +%s) - t0 )) s: no step under way, unstored 0, held 0, log_live $ll under the low mark of $low"
                 break
             elif [ "$rest" -ge 30 ]; then

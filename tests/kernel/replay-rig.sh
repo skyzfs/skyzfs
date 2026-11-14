@@ -67,15 +67,12 @@
 # mounting the lower disk and starting the daemon as after a reboot.
 # Knobs of this mode: RIG_VOLUME_MB=1024, RIG_FILL_MB=160 (a file
 # written at the start of the workload and synced by the first sync, so
-# that the log passes the daemon's high mark and checkpoint steps fall
-# inside the recording), RIG_SERVE_ARGS (options for every serve,
-# split at spaces), RIG_BETWEEN_BUDGET_S=0, RIG_BUDGET_NAME,
-# RIG_EVERY_PREFIX=1 (every record prefix, no time limit). A
-# recording in which the daemon took no checkpoint step is the rig's
-# error (exit 2): it would say nothing about a cut inside a step, and
-# so is a fill that does not fit in the pool. With
-# the in-place store (the default, M1.3t) there is no log and so no
-# step, and none is asked for. Every command on the pool while recording runs
+# that the workload begins with a large write), RIG_SERVE_ARGS (options
+# for every serve, split at spaces), RIG_BETWEEN_BUDGET_S=0,
+# RIG_BUDGET_NAME, RIG_EVERY_PREFIX=1 (every record prefix, no time
+# limit). A fill that does not fit in the pool is the rig's error
+# (exit 2). The daemon's store keeps no log since M1.3t, so there is no
+# checkpoint step to cut inside. Every command on the pool while recording runs
 # under a time limit (pool_step); a daemon that stops answering is then
 # a verdict, not a job that hangs.
 set -euo pipefail
@@ -121,32 +118,23 @@ LOWER_MB=$((VOLUME_MB * 3))
 FILL_MB=${RIG_FILL_MB:-160}
 for v in "$VOLUME_MB" "$FILL_MB"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
-# `--store in-place` (M1.3r): the daemon keeps no log and takes no
-# checkpoint step, so a recording without one is what it should be.
-# The store is always named: the rig never rests on the daemon's
-# default, which before M1.3t is the log. Without --store in
-# RIG_SERVE_ARGS the rig names the in-place store; --store log asks for
-# the log store of a build from before M1.3t.
-IN_PLACE=""; STORE_NAMED=""
+# The daemon has one store since M1.3t, and the rig names none. A build
+# from before it (input daemon_ref) is given `--store in-place` by the
+# workflow, and that alone is taken. The log store's options would end
+# the first start with a usage error that reads as a verdict: they are
+# the caller's mistake, said before the run.
 for i in "${!SERVE_ARGS[@]}"; do
-    case ${SERVE_ARGS[$i]} in
-        --store=*) STORE_NAMED=1; [ "${SERVE_ARGS[$i]}" != --store=in-place ] || IN_PLACE=1 ;;
-        --store) STORE_NAMED=1; [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || IN_PLACE=1 ;;
+    o=${SERVE_ARGS[$i]}
+    case $o in
+        --store=in-place) continue ;;
+        --store) [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || continue ;;
+    esac
+    case ${o%%=*} in
+        --store|--log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
+            echo "RIG_SERVE_ARGS: $o is of the log store, which M1.3t removed" >&2
+            exit 64 ;;
     esac
 done
-if [ -z "$STORE_NAMED" ]; then
-    # The options of the log store, which the daemon refuses with the
-    # in-place store: asked for with no store named, they would end the
-    # first start with a usage error that reads as a verdict.
-    for o in "${SERVE_ARGS[@]}"; do
-        case ${o%%=*} in
-            --log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
-                echo "RIG_SERVE_ARGS: ${o%%=*} is an option of the log store; name --store log beside it (a build from before M1.3t)" >&2
-                exit 64 ;;
-        esac
-    done
-    SERVE_ARGS=(--store in-place "${SERVE_ARGS[@]}"); IN_PLACE=1
-fi
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec
@@ -474,14 +462,11 @@ log "log: $(du -m "$WORK/log.img" | cut -f1) MiB on disk"
 
 if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exit 0; fi
 if [ -n "$SKYZFSD" ]; then
-    [[ ${STEPS:-} =~ ^[0-9]+$ ]] || rig_error "the daemon's status after recording gave no checkpoint_steps: $(head -c 300 "$OUT/status-after-recording.txt")"
-    if [ -n "$IN_PLACE" ]; then
-        # No log, so no step: there is no cut inside one to look for.
-        [ "$STEPS" = 0 ] || rig_error "the in-place store reports $STEPS checkpoint steps, and it has no log"
-        STEPS="none: the in-place store has no log"
-    else
-        [ "$STEPS" -gt 0 ] || rig_error "the daemon took no checkpoint step while recording (RIG_FILL_MB=$FILL_MB, serve options: ${SERVE_ARGS[*]:-none}): a run without one says nothing about a cut inside a step"
-    fi
+    # No log, so no step: there is no cut inside one to look for. A
+    # status that still counts steps must count none; one that no
+    # longer has the key is the same.
+    [ -z "${STEPS:-}" ] || [ "$STEPS" = 0 ] || rig_error "the daemon reports $STEPS checkpoint steps, and its store has no log"
+    STEPS="none: the daemon's store has no log"
     PHASE=check
     args=(--log "$WORK/log.img" --base "$WORK/base.img" --manifest "$MANIFEST" --pool "$POOL" --mountpoint "$MOUNTPOINT"
           --work "$WORK/check" --out "$OUT" --skyzfsd "$SKYZFSD" --ublk "$(command -v ublk)" --dd "$DD" --volume vol

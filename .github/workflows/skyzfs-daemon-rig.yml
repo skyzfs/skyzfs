@@ -21,11 +21,11 @@ name: skyzfs-daemon-rig
 #     rig's files therefore runs both.
 #   - by dispatch: the input `server` (daemon, stand-in or both).
 #   - a push that changes this file on a testing branch: the stand-in.
-# Which store the daemon serves from (`--store`, always named): the
-# in-place store, on a pull request and by dispatch. The log store is
-# being removed (M1.3t), and with the in-place store the pins that rest
-# on the log are NA (`NOT_FOR_IN_PLACE` in the judge).
-# The summary says for every pin what it rests on.
+# The daemon has one store since M1.3t (the log store is removed), and
+# the rig names none. The pins that rested on the log store went with
+# it; two lines the stand-in carries and the daemon's store cannot are
+# NA on the daemon (`NOT_ON_THE_DAEMON` in the judge). The summary says
+# for every pin what it rests on.
 #
 # Check g's negative control (M1.T23): the input `daemon_ref` builds the
 # daemon from another commit under this checkout's rig. With
@@ -36,7 +36,10 @@ name: skyzfs-daemon-rig
 # pin_failure_reason_is_the_images (a daemon from before #55 names the
 # log), and since M1.T30 pin_data_journal_refused (a daemon from before
 # direct I/O serves on ext4 data=journal, run 43526201758). That is how
-# to show again that check g catches what it is for.
+# to show again that check g catches what it is for. A build from
+# before M1.3t, as cd0e763 is, defaults to the log store: it is given
+# `--store in-place` when its help offers `[--store`, so that the
+# control runs the store the check is about.
 on:
   workflow_dispatch:
     inputs:
@@ -44,11 +47,8 @@ on:
         description: "runner images, a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm"]'
       checks:
-        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request, g a disk that fails under the in-place store (daemon only); f (never by default) the courses after a refused start, daemon only, about 25 minutes"
+        description: "which checks: a parameters, b kill under load, c the conformance suite, d a failed volume, e a held request, g a disk that fails under the daemon's home image (daemon only)"
         default: "a b c d e g"
-      f_courses:
-        description: "check f only: which courses, of scrub export reopen clear writers zed zedreopen long longnolog (long and longnolog: check b's 300 s courses until M1.T8). One course per run gives it a clean machine"
-        default: "scrub export reopen clear writers zed zedreopen long longnolog"
       kills:
         description: "kill -9 of the server under load, how many times"
         default: "20"
@@ -63,11 +63,6 @@ on:
       daemon_ref:
         description: "build the daemon from this commit (40 hex digits) and not from the checkout, with the rig of the checkout: a negative control, e.g. a build without a rule a check pins. Empty: the checkout"
         default: ""
-      store:
-        description: "the daemon's store: in-place (the log store is being removed, M1.3t)"
-        type: choice
-        options: [in-place]
-        default: in-place
   # A workflow that has never run cannot be dispatched from a branch.
   # A push that changes this file runs it once on the testing branch.
   push:
@@ -197,17 +192,13 @@ jobs:
         env:
           CHECKS: ${{ inputs.checks || 'a b c d e g' }}
           DAEMON_REF: ${{ inputs.daemon_ref || '' }}
-          F_COURSES: ${{ inputs.f_courses || 'scrub export reopen clear writers zed zedreopen long longnolog' }}
           KILLS: ${{ inputs.kills || '20' }}
           HOLD_S: ${{ inputs.hold_s || '300' }}
           SERVER: ${{ matrix.server }}
-          STORE: ${{ github.event_name == 'workflow_dispatch' && inputs.store || 'in-place' }}
         run: |
-          case $STORE in in-place) ;; *) echo "::error::store is in-place: '$STORE' (the log store is being removed, M1.3t)"; exit 64 ;; esac
-          [ "$SERVER" != daemon ] || echo "The daemon's store: \`--store $STORE\`." >> "$GITHUB_STEP_SUMMARY"
           # Single letters with one space between: "abcde" or a lone
           # space would run nothing.
-          [[ $CHECKS =~ ^[abcdefg](\ [abcdefg])*$ ]] || { echo "::error::checks are letters of a b c d e f g with a space between: '$CHECKS'"; exit 64; }
+          [[ $CHECKS =~ ^[abcdeg](\ [abcdeg])*$ ]] || { echo "::error::checks are letters of a b c d e g with a space between: '$CHECKS'"; exit 64; }
           for v in "$KILLS" "$HOLD_S"; do
             [[ $v =~ ^[0-9]+$ ]] || { echo "::error::not a number: $v"; exit 64; }
           done
@@ -222,6 +213,7 @@ jobs:
               sudo apt-get update
               sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
               daemon_bin=$PWD/target/release/skyzfsd
+          serve_args=""
               if [ -n "$DAEMON_REF" ]; then
                 # A negative control: another build of the daemon under
                 # the rig of this checkout.
@@ -231,6 +223,11 @@ jobs:
                 (cd "$RUNNER_TEMP/daemon-src" && cargo build --release --locked -p skyzfsd --features test-hooks)
                 daemon_bin=$RUNNER_TEMP/daemon-src/target/release/skyzfsd
                 echo "The daemon was built from \`$DAEMON_REF\`, not from this checkout: a negative control, whose lines may differ from the table on purpose." >> "$GITHUB_STEP_SUMMARY"
+                # A build from before M1.3t defaults to the log store.
+                if grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
+                  serve_args="--store in-place"
+                  echo "That build has a choice of store, and is served with \`--store in-place\`." >> "$GITHUB_STEP_SUMMARY"
+                fi
               else
                 cargo build --release --locked -p skyzfsd --features test-hooks
               fi ;;
@@ -240,13 +237,12 @@ jobs:
           {
             printf 'export RIG_BLKCHECK=%q\n' "$PWD/target/release/skyzfs-blkcheck"
             printf 'export RIG_CHECKS=%q\n' "$CHECKS"
-            printf 'export RIG_F_COURSES=%q\n' "$F_COURSES"
             echo "export RIG_KILLS=$KILLS RIG_HOLD_S=$HOLD_S"
             # On the daemon, with its own defaults: no --unsafe-allow-*
             # override until a run shows that one is needed.
             if [ "$SERVER" = daemon ]; then
               printf 'export RIG_SKYZFSD=%q\n' "$daemon_bin"
-              printf 'export RIG_STORE=%q\n' "$STORE"
+              [ -z "$serve_args" ] || printf 'export RIG_SERVE_ARGS=%q\n' "$serve_args"
               [ -z "$DAEMON_REF" ] || printf 'export RIG_DAEMON_REF=%q\n' "built from $DAEMON_REF (input daemon_ref), not the checkout"
             fi
           } > "$RUNNER_TEMP/rig.env"

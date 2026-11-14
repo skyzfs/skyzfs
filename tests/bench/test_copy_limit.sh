@@ -33,7 +33,7 @@ setup() {
     WORK=$tt/work; OUT=$tt/out; rm -rf -- "$WORK" "$OUT"; mkdir -p "$WORK" "$OUT"
     head -c 3145728 /dev/zero > "$WORK/zfs-origin.img"
     SKZ_DIR=$WORK/vol; SKZ_RUN=$WORK/run; SKZ_PID=$$; SKZ_CGROUP=""; SKZ_DEV=/dev/null; SKZ_UP=""
-    SKYZFSD_ARGS="--store,in-place"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
+    SKYZFSD_ARGS="--io-threads,8"; SKYZFSD_CREATE_ARGS=""; SKYZFSD_MEM=1G; TB_SKYZFSD_REF="test"
     SKZ_SYSRQ=$tt/sysrq; : > "$SKZ_SYSRQ"
     : > "$tt/calls"; : > "$tt/log"
     rm -f "$tt/hang-on" "$tt/dd-count" "$tt/sync-hang-on" "$tt/sync-count"
