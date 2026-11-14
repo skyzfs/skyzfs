@@ -28,7 +28,9 @@ i  op  offset  bytes  data
 - `i`: the record's number, from 0.
 - `op`: `write`, `write+fua`, `write+flush` (a write with REQ_PREFLUSH:
   the flush comes before its data), `flush` (no data), `discard`, or
-  `mark` (a mark the rig put in the record; `data` is its text).
+  `mark` (a mark the rig put in the record; `data` is its text). The
+  reference takes `write+fua` as the daemon serves it: the write, then
+  a flush (the pump's), whose barrier comes after the write.
 - `offset`, `bytes`: on the device, in bytes.
 - `data`: the write's bytes in hex, for every write that touches one of
   the four labels; `-` for any other write and for the other ops.

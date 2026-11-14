@@ -25,7 +25,9 @@ The rule, as the design states it:
   - The volume at the cut's instant is the device after every record
     before the flush (`prefix`, a count of records). A flush that
     carries data (a write with REQ_PREFLUSH) flushes before its data, so
-    its own data is not in the cut.
+    its own data is not in the cut. A write with FUA is a write and then
+    a flush, as the daemon serves it (its pump adds the flush): its
+    barrier comes after the write, so its data is in the cut.
 
 This module parses uberblocks itself, from the on-disk format, and does
 not use the daemon's parser (M2.1) or logwrites.py's 'ub' flag: the
@@ -158,17 +160,22 @@ def cuts(records, ubs, rule='design'):
     seen = set()                # groups seen, for txg-alone
     mark = None
     last_flush = None           # the prefix of the last flush's barrier, for `early`
+
+    def barrier(r, prefix):
+        nonlocal mark, newest, last_flush
+        if mark is not None:
+            out.append({'n': len(out) + 1, 'txg': mark['txg'], 'rootbp': mark['rootbp'], 'timestamp': mark['timestamp'],
+                        'ub_record': mark['record'], 'flush_record': r['i'],
+                        'prefix': prefix if rule != 'early' else mark['early']})
+            newest = (mark['txg'], mark['rootbp'])
+            mark = None
+        last_flush = prefix
+
     for r in records:
         flags = set(r['flags'])
         if 'flush' in flags:
             # A flush that carries data flushes before its data.
-            if mark is not None:
-                prefix = r['i'] if rule != 'early' else mark['early']
-                out.append({'n': len(out) + 1, 'txg': mark['txg'], 'rootbp': mark['rootbp'], 'timestamp': mark['timestamp'],
-                            'ub_record': mark['record'], 'flush_record': r['i'], 'prefix': prefix})
-                newest = (mark['txg'], mark['rootbp'])
-                mark = None
-            last_flush = r['i']
+            barrier(r, r['i'])
         for u in by_record.get(r['i'], ()):
             u = dict(u)
             key = (u['txg'], u['rootbp'])
@@ -192,6 +199,11 @@ def cuts(records, ubs, rule='design'):
                 mark = {'txg': u['txg'], 'rootbp': u['rootbp'], 'record': u['record'], 'timestamp': u['timestamp'],
                         'early': last_flush if last_flush is not None else 0}
             taken.append(u)
+        if 'fua' in flags and is_write(r):
+            # The daemon adds a flush after a write with FUA (its pump),
+            # and the store receives it as a flush: a write and then a
+            # flush, whose barrier comes after the write.
+            barrier(r, r['i'] + 1)
     return out, taken
 
 

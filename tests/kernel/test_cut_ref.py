@@ -51,16 +51,18 @@ class Fixture(unittest.TestCase):
         self.addCleanup(self.dir.cleanup)
         self.log = os.path.join(self.dir.name, 'log')
 
-    def run_log(self, entries, rule='design', preflush=()):
+    def run_log(self, entries, rule='design', preflush=(), fua=()):
         logwrites.write_log(self.log, SS, entries)
-        if preflush:
-            # Set the flush flag on these entries' headers: a write with REQ_PREFLUSH.
+        if preflush or fua:
+            # Set flags on these entries' headers: a write with
+            # REQ_PREFLUSH, or with REQ_FUA.
             with open(self.log, 'r+b') as f:
-                pos, k = SS, 0
+                pos = SS
                 for k, e in enumerate(entries):
-                    if k in preflush:
+                    flags = (logwrites.FLUSH if k in preflush else 0) | (logwrites.FUA if k in fua else 0)
+                    if flags:
                         f.seek(pos + 16)
-                        f.write(struct.pack('<Q', logwrites.FLUSH))
+                        f.write(struct.pack('<Q', flags))
                     pos += SS + (len(e[2]) if e[0] == 'write' else 0)
         self.idx = logwrites.index(self.log, DEV)
         idx, read = cut_ref.load_from(self.idx, self.log)
@@ -131,6 +133,20 @@ class Cuts(Fixture):
         entries = [('write', 1 << 20, b'\1' * SS), ('write', slot_at(0, 9), ub(9, 1)), ('flush',)]
         cs, _ = self.run_log(entries, preflush={1})
         self.assertEqual([(c['txg'], c['flush_record'], c['prefix']) for c in cs], [(9, 2, 2)])
+
+    def test_a_fua_write_is_a_write_and_then_a_flush(self):
+        # An uberblock write with FUA: the daemon's pump adds a flush
+        # after it, so the cut is at that barrier, with the write in it.
+        entries = [('write', 1 << 20, b'\1' * SS), ('flush',), ('write', slot_at(0, 9), ub(9, 1)),
+                   ('write', slot_at(1, 9), ub(9, 1)), ('flush',)]
+        cs, _ = self.run_log(entries, fua={2})
+        self.assertEqual([(c['txg'], c['flush_record'], c['prefix']) for c in cs], [(9, 2, 3)])
+        # A data write with FUA after the uberblock is the flush too.
+        entries = [('write', slot_at(0, 9), ub(9, 1)), ('write', 1 << 20, b'\1' * SS), ('flush',)]
+        cs, _ = self.run_log(entries, fua={1})
+        self.assertEqual([(c['flush_record'], c['prefix']) for c in cs], [(1, 2)])
+        cs, _ = self.run_log(entries, fua={1}, rule='early')
+        self.assertEqual([c['prefix'] for c in cs], [0])
 
     def test_mmp_writes_of_the_same_state_are_repeats(self):
         entries = group(10, 1) + [('write', slot_at(0, 31), ub(10, 1, mmp=True)), ('flush',)] + group(11, 2)
