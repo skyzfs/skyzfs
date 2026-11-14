@@ -307,14 +307,19 @@ impl Mutants {
     /// when nothing on the threads holds the request back itself: the
     /// half of a flush's barrier that M1 left untested (design §5.2).
     pub(crate) const PASSES_WAITING_FLUSH: u64 = 1 << 35;
+    /// A repeat is not compared with the state a flush carries to its
+    /// barrier: another label's copy of the same uberblock, applied
+    /// between that flush's receipt and its barrier, marks it again, and
+    /// the next flush cuts the same state twice (the review of M2.1).
+    pub(crate) const REPEAT_WHILE_CARRIED: u64 = 1 << 36;
     /// Whether a cut opens as itself is judged by the group alone, not
     /// by ZFS's order (the group, then the timestamp, then the
     /// multihost sequence).
-    pub(crate) const ORDER_BY_GROUP: u64 = 1 << 36;
+    pub(crate) const ORDER_BY_GROUP: u64 = 1 << 37;
     /// The start does not read the rings: they are taken to hold no
     /// uberblock, and what was written before the store began is not
     /// seen.
-    pub(crate) const RINGS_UNREAD: u64 = 1 << 37;
+    pub(crate) const RINGS_UNREAD: u64 = 1 << 38;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0

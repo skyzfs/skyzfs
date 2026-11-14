@@ -18,13 +18,20 @@
 //!   ring written whole) is taken slot by slot, in their order on the
 //!   volume.
 //! - **A repeat marks nothing and changes no mark**: an uberblock whose
-//!   group and root block pointer equal those of the mark, or those of
-//!   the newest cut ([`skyzfs_uberblock::is_repeat`]). The newest cut is
-//!   there for multihost: a multihost write that still carries the group
-//!   before can be applied after the group's own uberblock writes, and
-//!   compared with the write before it alone it would move the mark back
-//!   (design §5.2, "What counts as a repeat", from this package's
-//!   finding).
+//!   group and root block pointer equal those of the mark, those of a
+//!   cut a flush carries to its barrier, or those of the newest cut
+//!   ([`skyzfs_uberblock::is_repeat`]). The newest cut is there for
+//!   multihost: a multihost write that still carries the group before
+//!   can be applied after the group's own uberblock writes, and compared
+//!   with the write before it alone it would move the mark back (design
+//!   §5.2, "What counts as a repeat", from this package's finding). The
+//!   carried cut is there because a flush takes the mark when it is
+//!   received and counts the cut at its barrier: ZFS issues a group's
+//!   four label writes at once, and one of them can be applied between
+//!   a stray flush's receipt and its barrier. Compared with the mark and
+//!   the newest cut alone it would mark the same state again, and the
+//!   next flush would cut it twice (the review of this package, and
+//!   Codex's).
 //! - **The mark is taken by the first flush received after it**, which
 //!   then carries a cut, and the mark is gone. A flush received while
 //!   the uberblock write was still being written carries none: it was
@@ -99,6 +106,14 @@
 //!   flush was received, so at the cut's instant that uberblock is in
 //!   the volume with every block of its group (§5.2's first reason), and
 //!   nothing it reaches has been overwritten (its second).
+//! - **That argument has a premise: the volume holds the whole pool**,
+//!   as the one data device the pool was created on (§5.2, the premise
+//!   before "Three details"). A volume that joined a pool by `zpool
+//!   attach` or `zpool replace`, or a pool with a second data device,
+//!   makes cuts whose group is right and whose volume is not a complete
+//!   pool at it, and the uberblocks cannot show that. The store counts
+//!   such cuts all the same: the agent checks the pool's layout before
+//!   it publishes one (M2.6).
 //! - **Whether a cut opens as itself errs only toward "no"** (the
 //!   conservative readings of M2.1b, where the design is silent). The
 //!   view holds every slot with the magic and a group above zero and
@@ -374,7 +389,12 @@ impl CutRule {
             let same = |other: Option<State>| other.is_some_and(|o| o.txg == state.txg);
             return !(same(mark) || same(self.newest));
         }
-        !is_repeat(mark.as_ref(), self.newest.as_ref(), state)
+        let carried = !self.mutants.has(Mutants::REPEAT_WHILE_CARRIED)
+            && self
+                .carrying
+                .values()
+                .any(|carried| is_repeat(Some(&carried.state), None, state));
+        !carried && !is_repeat(mark.as_ref(), self.newest.as_ref(), state)
     }
 
     fn count(&mut self, id: RequestId, uberblock: Uberblock) {

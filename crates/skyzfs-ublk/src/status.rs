@@ -260,10 +260,12 @@ impl ZeroesShown {
 /// The keys of the pump's times in `status`, in the file's order. All
 /// are nanoseconds but the three counts. A key ending in `_max_ns` is
 /// the longest since the daemon started serving; every other value only
-/// grows, and a script takes the difference of two looks. They begin
-/// with `pump_`, not `time_`: the benchmark reads the `time_` keys as
-/// those of the log store's versions, which the in-place store never
-/// printed.
+/// grows, and a script takes the difference of two looks. Through
+/// version 10 they were printed as `time_pump_*`, with their values for
+/// the in-place store too, among the log store's `time_*` keys, which
+/// that store left at zero. Version 11 drops the log store's keys and
+/// prints the pump's as `pump_*`: the benchmark reads them under the
+/// new names on a version 11 file (M2.T0b).
 pub const PUMP_KEYS: [&str; PUMP_FIELDS] = [
     "pump_submit_count",
     "pump_submit_ns",
