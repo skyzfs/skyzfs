@@ -25,8 +25,8 @@
 # File systems (RIG_HOLE_FS): ext4 and xfs, each made fresh per course.
 #
 # Knobs (environment): RIG_SKYZFSD (required: a build with its test
-# hooks), RIG_SERVE_ARGS (options for every serve; the store is
-# always in place, a --store among them is replaced), RIG_HOLE_FS="ext4
+# hooks), RIG_SERVE_ARGS (options for every serve; a build from before
+# M1.3t is given --store in-place there), RIG_HOLE_FS="ext4
 # xfs", RIG_HOLE_KINDS="sparse fallocate zero-fill",
 # RIG_HOLE_VOLUME_MB=256, RIG_HOLE_WRITES=16, RIG_HOLE_FLUSH_EVERY=3,
 # RIG_HOLE_TAIL=2, RIG_HOLE_EVERY_PREFIX=1 (every prefix of each
@@ -56,16 +56,15 @@ OUT=$(cd "$OUT" && pwd)
 
 SKYZFSD=${RIG_SKYZFSD:?RIG_SKYZFSD names skyzfsd built with its test hooks}
 [ -x "$SKYZFSD" ] || { echo "RIG_SKYZFSD=$SKYZFSD is not an executable" >&2; exit 64; }
-read -r -a GIVEN <<< "${RIG_SERVE_ARGS:-}"
-# The courses are of the in-place store whatever the options name: a
-# --store among them is replaced (with the log store the first record
-# that carries a block's data would be the log's, not the image's).
-SERVE_ARGS=(--store in-place)
-for ((i = 0; i < ${#GIVEN[@]}; i++)); do
-    case ${GIVEN[i]} in
-        --store) i=$((i + 1)) ;;
-        --store=*) ;;
-        *) SERVE_ARGS+=("${GIVEN[i]}") ;;
+read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
+# The courses are of the daemon's store, which writes a block's data
+# into the home image (the log store, removed by M1.3t, would have
+# written it into its log first). Only `--store in-place` is taken, for
+# a build from before M1.3t.
+for ((i = 0; i < ${#SERVE_ARGS[@]}; i++)); do
+    case ${SERVE_ARGS[i]} in
+        --store) i=$((i + 1)); [ "${SERVE_ARGS[i]:-}" = in-place ] || { echo "RIG_SERVE_ARGS: --store ${SERVE_ARGS[i]:-}: the courses are of the store that writes in place" >&2; exit 64; } ;;
+        --store=*) [ "${SERVE_ARGS[i]}" = --store=in-place ] || { echo "RIG_SERVE_ARGS: ${SERVE_ARGS[i]}: the courses are of the store that writes in place" >&2; exit 64; } ;;
     esac
 done
 read -r -a FSES <<< "${RIG_HOLE_FS:-ext4 xfs}"

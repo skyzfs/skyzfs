@@ -33,7 +33,7 @@
 # after the restart. Every failure of #58's signature was a write at
 # the device's end, where udev's probe reads; a reader of the whole
 # device (43472772939) was rarely there at a kill and gave none),
-# RIG_SERVE_ARGS (--store in-place is added unless it names a store), RIG_BLKCHECK_FROM (what
+# RIG_SERVE_ARGS (the daemon has one store since M1.3t, and none is named), RIG_BLKCHECK_FROM (what
 # the tool was built from, for the summary).
 #
 # It judges nothing: exit 0 when it ran, 2 for an error of its own. The
@@ -59,9 +59,6 @@ WATCH=${RIG_WATCH:-on}
 PROVOKE=${RIG_PROVOKE:-}
 PROVOKE_MS=${RIG_PROVOKE_MS:-20}
 SERVE_ARGS=${RIG_SERVE_ARGS:-}
-# The store is always named (M1.T20, M1.3t): in place unless the options
-# name one.
-[[ " $SERVE_ARGS " == *" --store "* || " $SERVE_ARGS " == *" --store="* ]] || SERVE_ARGS="--store in-place${SERVE_ARGS:+ $SERVE_ARGS}"
 NOWATCH=/etc/udev/rules.d/61-skyzfs-rig-ublkb-nowatch.rules
 SUM=$OUT/summary.md
 die() { echo "c-repeat-rig: $*" | tee -a "$SUM" >&2; exit 2; }

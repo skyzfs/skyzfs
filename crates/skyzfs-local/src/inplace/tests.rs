@@ -1665,6 +1665,79 @@ fn a_volume_of_small_pages_is_refused_on_large_pages() {
     assert!(start(&disk, 0, false).is_ok());
 }
 
+/// The home image is held to the write unit for itself, and not only
+/// through its directory: an image that lies on a file system of its
+/// own (a mount point, a link elsewhere) whose blocks are larger than
+/// the volume's write unit, or whose block size cannot be read, is
+/// refused by the open with the reason naming the home image, while the
+/// directory's blocks fit. Such a file system can rewrite a whole block
+/// around a write, neighbours that a flush covered included, which is
+/// what holding every file system under the volume to its write unit
+/// rules out ([`OpenError::Blocks`]). The design names the volume's
+/// write unit and is silent on a home image elsewhere than its
+/// directory: the open's existing reading, a refusal, is what is held
+/// here. The refusal writes nothing and fails nothing: no marker, and the volume
+/// opens once the image is back where the blocks fit. Plants: the open
+/// checks the directory only (`HOME_ANY_BLOCKS`), or nothing
+/// (`ANY_BLOCKS`): the image is opened.
+#[test]
+fn an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks() {
+    let unit = 4096;
+    let open = |disk: &SimDisk, mutants: u32| {
+        Opened::open_with(
+            disk.clone(),
+            lock(disk).expect("free"),
+            OpenOptions::default(),
+            Mutants(mutants),
+        )
+        .map(|_| ())
+        .map_err(|(e, _)| e)
+    };
+    for block in [Some(2 * unit), Some(1 << 20), None] {
+        let disk = created(42, 0);
+        disk.set_block_size_of(HOME_NAME, block)
+            .expect("the home image");
+        assert_eq!(Dir::block_size(&disk).unwrap(), unit, "the directory's fit");
+        let (names, stats) = (disk.list().unwrap(), disk.stats());
+        let refused = open(&disk, 0);
+        match (block, &refused) {
+            (
+                Some(larger),
+                Err(OpenError::Blocks {
+                    what: Under::Home,
+                    block,
+                    unit: u,
+                }),
+            ) => assert_eq!((*block, *u), (larger, unit)),
+            (
+                None,
+                Err(OpenError::BlocksUnknown {
+                    what: Under::Home, ..
+                }),
+            ) => {}
+            other => panic!("{block:?}: {other:?}"),
+        }
+        let said = refused.unwrap_err().to_string();
+        assert!(said.contains("home image"), "{said}");
+        assert_eq!(disk.list().unwrap(), names, "{block:?}");
+        assert!(!names.iter().any(|name| name == MARKER_NAME));
+        assert_eq!(
+            (disk.stats().writes, disk.stats().syncs),
+            (stats.writes, stats.syncs),
+            "{block:?}: written"
+        );
+        for plant in [Mutants::HOME_ANY_BLOCKS, Mutants::ANY_BLOCKS] {
+            assert!(
+                open(&disk, plant).is_ok(),
+                "{block:?}: the defect {plant:#x} is not noticed"
+            );
+        }
+        disk.same_block_size_as_the_disk(HOME_NAME)
+            .expect("the home image");
+        assert!(start(&disk, 0, false).is_ok(), "{block:?}: not again");
+    }
+}
+
 // Every start serves only what the disk holds.
 
 /// What the reopened volume shows of block 4 after a failed sync, and

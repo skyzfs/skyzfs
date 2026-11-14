@@ -276,6 +276,10 @@ impl Mutants {
     /// The start's look reads with the kernel's read-ahead, which the
     /// next start's drop cannot take while it is under I/O.
     pub(crate) const LOOK_READS_AHEAD: u32 = 1 << 27;
+    /// The open holds the directory's file system to the write unit and
+    /// not the home image's: an image on a file system of its own (a
+    /// mount point, a link elsewhere) goes unchecked.
+    pub(crate) const HOME_ANY_BLOCKS: u32 = 1 << 28;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
