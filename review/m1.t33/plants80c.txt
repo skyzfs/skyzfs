@@ -1,0 +1,3 @@
+T1 the take-over's own end is not looked at rc 1 ["FAIL a take-over that ended by itself fails: 'FAIL: ' not in 'PASS: after the take-over (live after 2 ms; hand", "FAIL   and is named, with its error: 'THE TAKE-OVER HAD ENDED BY ITSELF, with exit 1' not in 'PASS: after the ", "FAIL   and the program's own error: 'the queue's thread panicked' not in 'PASS: after the take-over (live afte"]
+T2 a take-over that ended by itself is named but not failed rc 1 ["FAIL a take-over that ended by itself fails: 'FAIL: ' not in 'PASS: after the take-over (live after 2 ms; hand"]
+clean rc 0 []

@@ -12,3 +12,22 @@
   (https://github.com/skyzfs/skyzfs/pull/80#issuecomment-6873394800):
   the lead asked for a write course and a flush course before the merge;
   not ready until they are in and looked at.
+- Second look at f3f7d77 (7aaae9c, 0486339, f3f7d77):
+  `look2-posted.md`
+  (https://github.com/skyzfs/skyzfs/pull/80#issuecomment-6873777468).
+  Verdict: blocked. `pin_refused_flush_completes_after_take_over` FAILs
+  on all three images (control rig 43569917318): the control program's
+  `answer()` computes `start_sector * 512` before matching on the kind
+  and overflows for a flush (`skyzfs-ublk-control.rs:370:18` in the
+  artifact's control.err). Outside #80's diff; the lead decides who
+  fixes it. The write branch, the delete branch and f3f7d77's naming
+  are right.
+- `plants80b.py`, `plants80b.txt`: R2, R4, R1b and W1-W7 at 0486339
+  (W5, a flush client without fsync, passes every test: only a kernel
+  shows it).
+- `plants80c.py`, `plants80c.txt`: T1 and T2 on f3f7d77's check of a
+  take-over that ended by itself; both caught.
+- `repro80.py`, `repro80.txt`: a test through the program's Scripted
+  queue that hands a flush with start sector u64::MAX. It panics at
+  370:18 as on the kernel, and passes with `saturating_mul`. The script
+  restores the file it changes.

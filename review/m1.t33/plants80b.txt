@@ -1,0 +1,11 @@
+R2 the driver's answer is not checked: table rc 0 []; refused rc 1 ["FAIL a program that ended by a refusal the driver did not make: got 'PASS', want 'FAIL'"]
+R4 the program's last line is not checked: table rc 0 []; refused rc 1 ["FAIL a refusal after which the program crashed: got 'PASS', want 'FAIL'"]
+R1b the sent line is not checked (any kind passes): table rc 0 []; refused rc 1 ["FAIL a refused read where a write was to be refused: got 'PASS', want 'FAIL'", "FAIL a refused read where a flush was to be refused: got 'PASS', want 'FAIL'", "FAIL a refusal of another read: got 'PASS', want 'FAIL'"]
+W1 the write is not read back through the device: table rc 0 []; refused rc 1 ["FAIL a write the device does not read back fails: 'FAIL: ' not in 'PASS: after the take-over (live a"]
+W2 the write is not read back from the image: table rc 0 []; refused rc 1 ["FAIL a write that is not in the image fails: 'FAIL: ' not in 'PASS: after the take-over (live after "]
+W3 the write is not read back at all: table rc 0 []; refused rc 1 ["FAIL a write lost at the take-over fails: 'FAIL: ' not in 'PASS: after the take-over (live after 2 m", "FAIL a write the device does not read back fails: 'FAIL: ' not in 'PASS: after the take-over (live a", "FAIL a write that is not in the image fails: 'FAIL: ' not in 'PASS: after the take-over (live after "]
+W4 a writer that failed passes: table rc 0 []; refused rc 1 ["FAIL a write that landed and was answered with an error fails: 'FAIL: ' not in 'PASS: after the take"]
+W5 the flush client does not fsync: table rc 0 []; refused rc 0 []
+W6 the write course refuses a read: table rc 0 []; refused rc 1 ["FAIL write: the server ends by the refusal: 'PASS: the program said 'sent for a' not in 'FAIL: the p"]
+W7 the flush pin is the read pin: table rc 1 ['test_every_line_the_rig_names_is_in_the_table']; refused rc 1 ["FAIL   with its data: 'its data is the old block' not in 'PASS: after the take-over (live after 2 ms", "FAIL flush: completes after the take-over: 'PASS: ' not in ''"]
+clean
