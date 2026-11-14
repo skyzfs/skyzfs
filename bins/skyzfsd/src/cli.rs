@@ -220,6 +220,10 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
   skyzfsd status --dir DIR [--run-dir DIR]
       Print the volume's state and the serving daemon's counters, one
       `key value` per line. It opens no store and asks no daemon.
+      `cuts` counts the pool's transaction groups whose uberblock the
+      daemon wrote and then saw a flush cover, from 0 at each start, and
+      `cut_group` is the newest one's group. A pool made on a partition
+      of the device, not on the whole device, makes no cuts.
 
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,

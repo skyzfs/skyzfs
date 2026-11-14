@@ -1,0 +1,9 @@
+[package]
+name = "skyzfs-uberblock"
+description = "Where a ZFS vdev's labels and uberblock rings lie, and what in a write is an uberblock write (design §5.2). No I/O."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[dependencies]

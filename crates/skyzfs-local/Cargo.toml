@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 crc32c = { workspace = true }
 getrandom = { workspace = true }
 skyzfs-blk = { workspace = true }
+skyzfs-uberblock = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

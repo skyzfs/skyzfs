@@ -66,7 +66,7 @@ pub(crate) struct InPlaceHarness {
     /// The simulated disk ends a sync begun on the helper after up to
     /// this many looks ([`SimDisk::set_sync_delay`]).
     pub(crate) sync_delay: u64,
-    pub(crate) mutants: u32,
+    pub(crate) mutants: u64,
     /// How the store reads and writes ([`super::IoMode`]).
     pub(crate) io: super::IoMode,
     /// The system's page, which is the simulated disk's write unit, its

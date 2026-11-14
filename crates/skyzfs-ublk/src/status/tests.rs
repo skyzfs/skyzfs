@@ -11,39 +11,10 @@ fn counters(reads: u64, held: u64) -> Counters {
     }
 }
 
-/// Times whose fields in the file are 100, 101, and so on, in the
-/// file's order, but for the two that say whether the hint is off,
-/// which are a yes or a no and so 1 ([`OFF_FIELDS`]).
-fn sample_timing() -> skyzfs_local::store::Timing {
-    let mut bytes = [0u8; LEN];
-    for field in 0..TIME_FIELDS {
-        let at = 200 + 8 * field;
-        bytes[at..at + 8].copy_from_slice(&sample_field(field).to_le_bytes());
-    }
-    timing_at(&bytes, false, true, true)
-}
-
-/// The pump's times with the same fields: 242 to 258.
+/// The pump's times whose fields in the file are 100 to 112, in the
+/// file's order.
 fn sample_pump() -> PumpTiming {
-    let mut bytes = [0u8; LEN];
-    for field in 0..TIME_FIELDS {
-        let at = 200 + 8 * field;
-        bytes[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
-    }
-    pump_at(&bytes, false)
-}
-
-/// The time fields that say whether the hint is off for the log and
-/// for the home image.
-const OFF_FIELDS: [usize; 2] = [176, 181];
-
-/// What the sample has in time field `field`.
-fn sample_field(field: usize) -> u64 {
-    if OFF_FIELDS.contains(&field) {
-        1
-    } else {
-        100 + field as u64
-    }
+    pump_of(&std::array::from_fn(|i| 100 + i as u64))
 }
 
 fn sample() -> Status {
@@ -63,482 +34,343 @@ fn sample() -> Status {
             write_zeroes: 6,
             refused: 7,
             in_flight: 8,
-            unstored: 9,
             commands_aborted: 26,
             commands_failed: 27,
             last_command_failure: -28,
         },
         failures: 10,
         first_write_copies: 11,
-        recovered_unacknowledged: 12,
-        log: Some(LogStatus {
-            shown: LogShown {
-                live: 13,
-                steps: 14,
-                stepping: true,
-                own_syncs: 18,
-                zeroes: ZeroesShown::Written,
-                timing: Some(sample_timing()),
-                pump: Some(sample_pump()),
-                io_queue: Some(IoQueue {
-                    threads: 20,
-                    in_flight: 21,
-                    waiting: 22,
-                    waited: 23,
-                    in_flight_max: 24,
-                    waiting_max: 25,
+        start_ms: 16,
+        shown: StoreShown {
+            zeroes: ZeroesShown::WrittenDirect,
+            pump: sample_pump(),
+            io_queue: Some(IoQueue {
+                threads: 20,
+                in_flight: 21,
+                waiting: 22,
+                waited: 23,
+                in_flight_max: 24,
+                waiting_max: 25,
+            }),
+            cuts: Some(Cuts {
+                count: 29,
+                newest: Some(Cut {
+                    number: 29,
+                    group: 30,
                 }),
-            },
-            start_ms: 16,
-            replayed_bytes: 17,
-        }),
+            }),
+        },
     }
 }
 
+/// The file is the table at the top of `status.rs`, field by field, and
+/// is read back as it was written.
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    let mut expected = Vec::new();
-    expected.extend(b"SKYZST10");
-    expected.extend([4, 3, 2, 1, 0x12, 0x11, 0x22, 0x21]);
-    expected.extend([7; 16]);
-    expected.extend([3; 16]);
-    // The step under way is 1 at offset 160, between 14 and 16.
-    // How write-zeroes are applied is 2, written, at offset 192.
-    // The times are the 220 fields from offset 200, here 100 to 319
-    // but for the two that say the hint is off, 1. The I/O threads'
-    // queue is the six fields 20 to 25 from offset 1960. The commands
-    // the driver ended otherwise than OK are 26 and 27 from offset 2008,
-    // and the last failure's result, -28, in the next field's first four
-    // bytes.
-    for field in (1..=14u64)
-        .chain([1, 16, 17, 18, 2])
-        .chain((0..TIME_FIELDS).map(sample_field))
-        .chain(20..=27)
-    {
-        expected.extend(field.to_le_bytes());
+    assert_eq!(bytes.len(), 336);
+    assert_eq!(&bytes[..8], b"SKYZST11");
+    assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
+    assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
+    assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
+    assert_eq!(bytes[16..32], [7; 16]);
+    assert_eq!(bytes[32..48], [3; 16]);
+    let mut fields = vec![
+        (48, 1),
+        (56, 2),
+        (64, 3),
+        (72, 4),
+        (80, 5),
+        (88, 6),
+        (96, 7),
+        (104, 8),
+        (112, 10),
+        (120, 11),
+        (128, 16),
+        (136, 4),
+    ];
+    fields.extend((0..13).map(|i| (144 + 8 * i, 100 + i as u64)));
+    fields.extend([
+        (248, 20),
+        (256, 21),
+        (264, 22),
+        (272, 23),
+        (280, 24),
+        (288, 25),
+        (296, 26),
+        (304, 27),
+        (320, 29),
+        (328, 30),
+    ]);
+    for (at, value) in fields {
+        assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
     }
-    expected.extend((-28i32).to_le_bytes());
-    expected.extend([0; 4]);
-    assert_eq!(TIME_FIELDS, 220);
-    assert_eq!(bytes.len(), 2032);
-    assert_eq!(bytes.to_vec(), expected);
-    // Where the times lie, by what they are.
-    let timing = sample_timing();
-    assert_eq!(timing.requests[0].wait.count, 100);
-    assert_eq!(timing.requests[0].call.max_ns, 104);
-    assert_eq!(timing.requests[1].wait.sum_ns, 106);
-    assert_eq!(timing.requests[4].call.count, 120);
-    assert_eq!(timing.step_walk.sum_ns, 125);
-    assert_eq!(timing.step_save.sum_ns, 127);
-    assert_eq!(timing.step_home_sync.max_ns, 132);
-    assert_eq!(timing.step_end.sum_ns, 135);
-    assert_eq!(timing.step_own_sync.sum_ns, 137);
-    assert_eq!((timing.gate.count, timing.gate.max_ns), (139, 141));
-    assert_eq!((timing.worker[0], timing.worker[14]), (142, 156));
-    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][14]), (157, 231));
-    assert_eq!(timing.wait_by[1][9], 181);
-    assert_eq!(timing.longest_wait_cause, [232, 233, 234, 235, 236]);
-    assert_eq!(timing.longest_wait_cause_ns, [237, 238, 239, 240, 241]);
-    let pump = sample_pump();
-    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (242, 244));
-    assert_eq!(pump.read_to_commit.sum_ns, 246);
-    assert_eq!(pump.other_to_commit.count, 248);
-    assert_eq!((pump.store.sum_ns, pump.behind_store), (252, 254));
-    // The times to the taking have no count in the file: it is the
-    // commits'.
-    let taken = (pump.read_to_taken, pump.other_to_taken);
-    assert_eq!(
-        (taken.0.count, taken.0.sum_ns, taken.0.max_ns),
-        (245, 255, 256)
-    );
-    assert_eq!(
-        (taken.1.count, taken.1.sum_ns, taken.1.max_ns),
-        (248, 257, 258)
-    );
-    let barriers = (timing.barrier_home, timing.barrier_reuse);
-    assert_eq!(
-        (barriers.0.count, barriers.0.sum_ns, barriers.0.max_ns),
-        (259, 260, 261)
-    );
-    assert_eq!(barriers.1.max_ns, 264);
-    assert_eq!(timing.reader, [265, 266, 267]);
-    assert_eq!(timing.read_unflushed, [268, 269, 270]);
-    assert_eq!((timing.worker_as_of_ns, timing.reader_as_of_ns), (271, 272));
-    let hinted = |count, bytes, ns, refused| skyzfs_local::writeback::Hinted {
-        count,
-        bytes,
-        ns,
-        off: true,
-        refused,
-    };
-    assert_eq!(
-        timing.writeback,
-        [hinted(273, 274, 275, 277), hinted(278, 279, 280, 282)]
-    );
-    let synced = |at: u64| skyzfs_local::store::Synced {
-        count: at,
-        sum_ns: at + 1,
-        bytes: at + 2,
-        handed: at + 3,
-    };
-    assert_eq!(timing.syncs[0], synced(283));
-    assert_eq!(timing.syncs[3], synced(295));
-    assert_eq!(timing.syncs[5], synced(303));
-    // The eighth version's: the sixteenth activity after the seventh's
-    // fields, and the helper's.
-    assert_eq!(timing.worker[15], 307);
-    assert_eq!((timing.wait_by[0][15], timing.wait_by[4][15]), (308, 312));
-    let spent = |at: u64| skyzfs_local::store::Spent {
-        count: at,
-        sum_ns: at + 1,
-        max_ns: at + 2,
-    };
-    assert_eq!(
-        (timing.helper, timing.step_report),
-        (spent(313), spent(316))
-    );
-    assert_eq!(timing.helper_requests, 319);
+    assert_eq!(bytes[312..316], (-28i32).to_le_bytes());
+    assert_eq!(bytes[316..320], [0; 4]);
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
-/// A file of the second version (144 bytes, `SKYZSTA2`) is still read:
-/// everything it has, and nothing of the log. The report then has no
-/// key of the log.
+/// Before the first cut the file holds a count of 0 and a group of 0,
+/// which read back as no newest cut.
 #[test]
-fn a_file_of_the_second_version_is_read_without_the_log() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut second = encode(&sample())[..144].to_vec();
-    second[..8].copy_from_slice(b"SKYZSTA2");
-    fs::write(&path, &second).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    assert_eq!(
-        read,
-        Status {
-            version: 2,
-            log: None,
-            ..before_the_tenth(sample())
+fn before_the_first_cut_the_file_has_no_group() {
+    let mut status = sample();
+    status.shown.cuts = Some(Cuts::default());
+    let bytes = encode(&status);
+    assert_eq!(u64_at(&bytes, 320), 0);
+    assert_eq!(u64_at(&bytes, 328), 0);
+    assert_eq!(decode(&bytes), Some(status));
+}
+
+/// A file of the tenth version (2032 bytes, `SKYZST10`) as a daemon
+/// with the in-place store wrote it: the fields this version keeps at
+/// the tenth's places, and every other byte, the log store's fields
+/// among them, 0x5a, so that a field read from a wrong place shows.
+fn tenth_file() -> Vec<u8> {
+    let status = sample();
+    let mut bytes = vec![0x5au8; 2032];
+    bytes[..8].copy_from_slice(b"SKYZST10");
+    bytes[8..48].copy_from_slice(&encode(&status)[8..48]);
+    let mut put = |at: usize, value: u64| bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+    let c = &status.counters;
+    for (i, value) in [
+        status.written_ms,
+        c.reads,
+        c.writes,
+        c.flushes,
+        c.discards,
+        c.write_zeroes,
+        c.refused,
+        c.in_flight,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        put(48 + 8 * i, value);
+    }
+    put(tenth::FAILURES, status.failures);
+    put(tenth::FIRST_WRITE_COPIES, status.first_write_copies);
+    put(tenth::START_MS, status.start_ms);
+    put(tenth::ZEROES, 4);
+    let pump = pump_fields(&status.shown.pump);
+    for (i, value) in pump.into_iter().enumerate() {
+        if i < 9 {
+            put(tenth::PUMP + 8 * i, value);
+        } else {
+            put(tenth::TAKEN + 8 * (i - 9), value);
         }
+    }
+    let q = status.shown.io_queue.unwrap_or_default();
+    for (i, value) in [
+        q.threads,
+        q.in_flight,
+        q.waiting,
+        q.waited,
+        q.in_flight_max,
+        q.waiting_max,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        put(tenth::IO_QUEUE + 8 * i, value);
+    }
+    put(tenth::COMMANDS, c.commands_aborted);
+    put(tenth::COMMANDS + 8, c.commands_failed);
+    put(
+        tenth::COMMANDS + 16,
+        u64::from(u32::from_le_bytes(c.last_command_failure.to_le_bytes())),
     );
-    let lines = report(
-        Some(&located(DeviceState::Live, Whose::Ours)),
-        Some(&read),
-        Noted::Nothing,
-        &[7; 16],
-        5,
-    );
-    assert_eq!(value(&lines, "writes"), Some("3"));
-    assert_eq!(value(&lines, "log_live"), None);
-    // The third version's magic at the second's length is no file.
-    second[..8].copy_from_slice(b"SKYZSTA3");
-    fs::write(&path, &second).expect("write");
-    assert!(super::read(&path).is_err());
+    bytes
 }
 
-/// A file of the third version (192 bytes, `SKYZSTA3`) is still read:
-/// everything it has, and nothing on how write-zeroes are applied, of
-/// which the report then has no line. The fourth version says it, in
-/// each of its three states, and a value it does not know is read as
-/// not said.
-#[test]
-fn a_file_of_the_third_version_is_read_and_the_fourth_says_how_zeroes_are_applied() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut third = encode(&sample())[..192].to_vec();
-    third[..8].copy_from_slice(b"SKYZSTA3");
-    fs::write(&path, &third).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    let mut unsaid = Status {
-        version: 3,
-        ..before_the_tenth(sample())
-    };
-    if let Some(log) = unsaid.log.as_mut() {
-        log.shown.zeroes = ZeroesShown::Unsaid;
-        log.shown.timing = None;
-        log.shown.pump = None;
-        log.shown.io_queue = None;
+/// The sample as a file of an older version holds it: `version`, no
+/// cuts, and nothing of what that version did not have.
+fn as_of(version: u32) -> Status {
+    let mut status = sample();
+    status.version = version;
+    status.shown.cuts = None;
+    if version < 10 {
+        status.counters.commands_aborted = 0;
+        status.counters.commands_failed = 0;
+        status.counters.last_command_failure = 0;
     }
-    assert_eq!(read, unsaid);
-    let lines_of = |status: &Status| {
-        report(
-            Some(&located(DeviceState::Live, Whose::Ours)),
-            Some(status),
-            Noted::Nothing,
-            &[7; 16],
-            5,
-        )
-    };
-    let lines = lines_of(&read);
-    assert_eq!(value(&lines, "checkpoint_syncs"), Some("18"));
-    assert_eq!(value(&lines, "zeroes_applied"), None);
-    // The fourth version's magic at the third's length is no file.
-    third[..8].copy_from_slice(b"SKYZSTA4");
-    fs::write(&path, &third).expect("write");
-    assert!(super::read(&path).is_err());
-
-    for (zeroes, says) in [
-        (ZeroesShown::Untried, "not yet"),
-        (ZeroesShown::Deallocated, "deallocated in the home image"),
-        (ZeroesShown::Written, "written as zeros: the file system"),
-        (
-            ZeroesShown::WrittenForBlocks,
-            "written as zeros: the blocks of the volume's file system",
-        ),
-        (ZeroesShown::WrittenDirect, "written as zeros by direct I/O"),
-    ] {
-        let mut status = sample();
-        if let Some(log) = status.log.as_mut() {
-            log.shown.zeroes = zeroes;
-        }
-        assert_eq!(decode(&encode(&status)), Some(status));
-        let lines = lines_of(&status);
-        let said = value(&lines, "zeroes_applied").unwrap_or_default();
-        assert!(said.starts_with(says), "{zeroes:?}: {said}");
+    if version < 9 {
+        status.shown.io_queue = None;
     }
-    let mut unknown = encode(&sample());
-    unknown[192..200].copy_from_slice(&7u64.to_le_bytes());
-    if let Some(log) = unsaid.log.as_mut() {
-        log.shown.timing = Some(sample_timing());
-        log.shown.pump = Some(sample_pump());
-        log.shown.io_queue = sample().log.and_then(|log| log.shown.io_queue);
-    }
-    unsaid.version = VERSION;
-    unsaid.counters = sample().counters;
-    assert_eq!(decode(&unknown), Some(unsaid));
-}
-
-/// A file of the fourth version (200 bytes, `SKYZSTA4`) is still read:
-/// everything it has, and no times, of which the report then has no
-/// line. The fifth version has them, one line each under a key of its
-/// own, in the file's order.
-#[test]
-fn a_file_of_the_fourth_version_is_read_and_the_fifth_says_where_the_time_went() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut fourth = encode(&sample())[..200].to_vec();
-    fourth[..8].copy_from_slice(b"SKYZSTA4");
-    fs::write(&path, &fourth).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    let mut untimed = Status {
-        version: 4,
-        ..before_the_tenth(sample())
-    };
-    if let Some(log) = untimed.log.as_mut() {
-        log.shown.timing = None;
-        log.shown.pump = None;
-        log.shown.io_queue = None;
-    }
-    assert_eq!(read, untimed);
-    let lines_of = |status: &Status| {
-        report(
-            Some(&located(DeviceState::Live, Whose::Ours)),
-            Some(status),
-            Noted::Nothing,
-            &[7; 16],
-            5,
-        )
-    };
-    let lines = lines_of(&read);
-    assert_eq!(
-        value(&lines, "zeroes_applied").map(|s| &s[..7]),
-        Some("written")
-    );
-    assert!(lines.iter().all(|(key, _)| !key.starts_with("time_")));
-    // The fifth version's magic at the fourth's length is no file, nor
-    // the fourth's at the fifth's.
-    fourth[..8].copy_from_slice(b"SKYZSTA5");
-    fs::write(&path, &fourth).expect("write");
-    assert!(super::read(&path).is_err());
-    let mut fifth = encode(&sample()).to_vec();
-    fifth[..8].copy_from_slice(b"SKYZSTA4");
-    fs::write(&path, &fifth).expect("write");
-    assert!(super::read(&path).is_err());
-    // Nor the sixth's at the fifth's length, nor the fifth's at the
-    // sixth's.
-    let mut short = encode(&sample())[..1424].to_vec();
-    fs::write(&path, &short).expect("write");
-    assert!(super::read(&path).is_err());
-    short[..8].copy_from_slice(b"SKYZSTA5");
-    let mut long = encode(&sample()).to_vec();
-    long[..8].copy_from_slice(b"SKYZSTA5");
-    fs::write(&path, &long).expect("write");
-    assert!(super::read(&path).is_err());
-
-    let lines = lines_of(&sample());
-    let timed: Vec<(&str, &str)> = lines
-        .iter()
-        .filter(|(key, _)| key.starts_with("time_"))
-        .map(|(key, value)| (*key, value.as_str()))
-        .collect();
-    assert_eq!(timed.len(), TIME_FIELDS);
-    for (n, (key, value)) in timed.iter().enumerate() {
-        assert_eq!(*key, TIME_KEYS[n]);
-        // A cause the reader has no name for is printed as its number.
-        assert_eq!(*value, sample_field(n).to_string(), "{key}");
-    }
-    // A cause is said by its name.
-    let mut named = sample();
-    if let Some(timing) = named.log.as_mut().and_then(|log| log.shown.timing.as_mut()) {
-        timing.longest_wait_cause = [9, 3, 0, 13, 14];
-    }
-    let lines = lines_of(&named);
-    for (key, cause) in [
-        ("time_read_longest_wait_cause", "step_home_sync"),
-        ("time_write_longest_wait_cause", "flush"),
-        ("time_flush_longest_wait_cause", "idle"),
-        ("time_discard_longest_wait_cause", "other"),
-        ("time_zeroes_longest_wait_cause", "step_barrier"),
-    ] {
-        assert_eq!(value(&lines, key), Some(cause), "{key}");
-    }
-    for (key, value) in [
-        ("time_read_longest_wait_cause_ns", "237"),
-        ("time_worker_idle_ns", "142"),
-        ("time_worker_step_barrier_ns", "156"),
-        ("time_pump_submit_ns", "243"),
-        ("time_pump_commit_read_max_ns", "247"),
-        ("time_pump_store_count", "251"),
-        ("time_pump_store_completions", "254"),
-        ("time_write_wait_by_step_home_sync_ns", "181"),
-        ("time_zeroes_wait_by_step_barrier_ns", "231"),
-        ("time_barrier_home_count", "259"),
-        ("time_barrier_reuse_max_ns", "264"),
-        ("time_reader_idle_ns", "265"),
-        ("time_reader_other_ns", "267"),
-        ("time_read_unflushed_count", "268"),
-        ("time_read_unflushed_mismatched", "270"),
-        ("time_worker_as_of_ns", "271"),
-        ("time_reader_as_of_ns", "272"),
-        ("time_writeback_log_count", "273"),
-        ("time_writeback_log_off", "1"),
-        ("time_writeback_log_refused", "277"),
-        ("time_writeback_home_bytes", "279"),
-        ("time_sync_flush_count", "283"),
-        ("time_sync_home_bytes", "297"),
-        ("time_sync_superblock_handed", "306"),
-        ("time_worker_step_report_ns", "307"),
-        ("time_read_wait_by_step_report_ns", "308"),
-        ("time_zeroes_wait_by_step_report_ns", "312"),
-        ("time_helper_count", "313"),
-        ("time_helper_max_ns", "315"),
-        ("time_step_report_ns", "317"),
-        ("time_helper_requests", "319"),
-    ] {
-        assert_eq!(self::value(&lines, key), Some(value), "{key}");
-    }
-    for (key, value) in [
-        ("time_read_count", "100"),
-        ("time_read_wait_ns", "101"),
-        ("time_write_call_max_ns", "109"),
-        ("time_zeroes_count", "120"),
-        ("time_step_walk_ns", "125"),
-        ("time_step_home_sync_ns", "131"),
-        ("time_step_end_max_ns", "136"),
-        ("time_step_own_sync_max_ns", "138"),
-        ("time_gate_ns", "140"),
-        ("time_read_wait_by_step_walk_ns", "163"),
-    ] {
-        assert_eq!(value_of(&timed, key), Some(value), "{key}");
-    }
-    let mut keys: Vec<&str> = TIME_KEYS.to_vec();
-    keys.sort_unstable();
-    keys.dedup();
-    assert_eq!(keys.len(), TIME_FIELDS);
-}
-
-/// The sample's times as a file of the seventh version has them: the
-/// worker's sixteenth activity, the waits by it and the helper's at
-/// zero.
-fn seventh_timing() -> skyzfs_local::store::Timing {
-    let mut timing = sample_timing();
-    timing.worker[15] = 0;
-    for kind in &mut timing.wait_by {
-        kind[15] = 0;
-    }
-    timing.helper = Default::default();
-    timing.step_report = Default::default();
-    timing.helper_requests = 0;
-    timing
-}
-
-/// A file of the eighth version (1960 bytes, `SKYZSTA8`) is still read:
-/// everything where it was, and no I/O threads' queue, so the report
-/// shows none. The eighth's magic at the ninth's length is no file, nor
-/// the ninth's at the eighth's.
-#[test]
-fn a_file_of_the_eighth_version_is_read_without_the_io_queue() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut eighth = encode(&sample())[..1960].to_vec();
-    eighth[..8].copy_from_slice(b"SKYZSTA8");
-    fs::write(&path, &eighth).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    assert_eq!(read.version, 8);
-    let mut expected = before_the_tenth(sample());
-    expected.version = 8;
-    if let Some(log) = expected.log.as_mut() {
-        log.shown.io_queue = None;
-    }
-    assert_eq!(read, expected);
-    let lines = report(
-        Some(&located(DeviceState::Live, Whose::Ours)),
-        Some(&read),
-        Noted::Nothing,
-        &[7; 16],
-        5,
-    );
-    assert!(lines.iter().all(|(key, _)| !key.starts_with("io_")));
-    let mut long = encode(&sample()).to_vec();
-    long[..8].copy_from_slice(b"SKYZSTA8");
-    fs::write(&path, &long).expect("write");
-    assert!(super::read(&path).is_err());
-    eighth[..8].copy_from_slice(b"SKYZSTA9");
-    fs::write(&path, &eighth).expect("write");
-    assert!(super::read(&path).is_err());
-}
-
-/// The sample as a file of a version before the tenth has it: no
-/// command the driver ended otherwise than OK.
-fn before_the_tenth(mut status: Status) -> Status {
-    status.counters.commands_aborted = 0;
-    status.counters.commands_failed = 0;
-    status.counters.last_command_failure = 0;
     status
 }
 
-/// A file of the ninth version (2008 bytes, `SKYZSTA9`) is still read:
-/// everything where it was, and the commands the driver ended otherwise
-/// than OK at zero, which the report does not show. The ninth's magic
-/// at the tenth's length is no file, nor the tenth's at the ninth's.
+/// The keys only the log store's versions printed. `status` prints none
+/// of them, whatever version it read (M2.1; testing's M2.T0).
+const LOG_STORE_KEYS: [&str; 7] = [
+    "unstored",
+    "recovered_unacknowledged",
+    "log_live",
+    "checkpoint_steps",
+    "checkpoint_syncs",
+    "checkpoint_step",
+    "replayed_bytes",
+];
+
+/// Whether the report has a key of the log store's versions.
+fn has_log_store_keys(lines: &[(&'static str, String)]) -> bool {
+    lines
+        .iter()
+        .any(|(key, _)| LOG_STORE_KEYS.contains(key) || key.starts_with("time_"))
+}
+
+/// Files of the tenth, ninth (2008 bytes, `SKYZSTA9`) and eighth (1960
+/// bytes, `SKYZSTA8`) versions are still read: what this version keeps,
+/// from the tenth's places; the commands the driver ended otherwise
+/// than OK only from the tenth, the I/O threads' queue from the ninth
+/// on; no cuts, and none of the log store's fields. The report shows no
+/// key that the file did not hold.
 #[test]
-fn a_file_of_the_ninth_version_is_read_without_the_commands() {
+fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut ninth = encode(&sample())[..2008].to_vec();
-    ninth[..8].copy_from_slice(b"SKYZSTA9");
-    fs::write(&path, &ninth).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    assert_eq!(read.version, 9);
-    let mut expected = before_the_tenth(sample());
-    expected.version = 9;
-    assert_eq!(read, expected);
+    for (version, len, magic) in [
+        (10, 2032, b"SKYZST10"),
+        (9, 2008, b"SKYZSTA9"),
+        (8, 1960, b"SKYZSTA8"),
+    ] {
+        let mut bytes = tenth_file()[..len].to_vec();
+        bytes[..8].copy_from_slice(magic);
+        fs::write(&path, &bytes).expect("write");
+        let read = read(&path).expect("read").expect("a status");
+        assert_eq!(read, as_of(version), "version {version}");
+        let lines = report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&read),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        );
+        assert!(!has_log_store_keys(&lines), "version {version}: {lines:?}");
+        assert_eq!(value(&lines, "cuts"), None);
+        assert_eq!(value(&lines, "cut_group"), None);
+        assert_eq!(
+            value(&lines, "status_version"),
+            Some(version.to_string().as_str())
+        );
+        assert_eq!(value(&lines, "start_ms"), Some("16"));
+        assert_eq!(value(&lines, "first_write_copies"), Some("11"));
+        assert_eq!(value(&lines, "status_write_failures"), Some("10"));
+        assert_eq!(value(&lines, "pump_submit_count"), Some("100"));
+        assert_eq!(value(&lines, "pump_taken_other_max_ns"), Some("112"));
+        assert_eq!(
+            lines.iter().any(|(key, _)| key.starts_with("commands_")),
+            version >= 10
+        );
+        assert_eq!(value(&lines, "io_threads"), (version >= 9).then_some("20"));
+    }
+}
+
+/// A magic at another version's length is no file, in each direction.
+#[test]
+fn a_magic_at_another_versions_length_is_an_error() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let versions: [(&[u8; 8], usize); 4] = [
+        (b"SKYZST11", 336),
+        (b"SKYZST10", 2032),
+        (b"SKYZSTA9", 2008),
+        (b"SKYZSTA8", 1960),
+    ];
+    for (magic, _) in versions {
+        for (other, len) in versions {
+            if magic == other {
+                continue;
+            }
+            let mut bytes = vec![0u8; len];
+            bytes[..8].copy_from_slice(magic);
+            fs::write(&path, &bytes).expect("write");
+            assert!(
+                read(&path).is_err(),
+                "{} at {len} bytes",
+                String::from_utf8_lossy(magic)
+            );
+        }
+    }
+}
+
+/// A file of a version before the eighth (from a daemon before M1.3m)
+/// is no status, and not an error. Its magic at another length is.
+#[test]
+fn a_file_of_a_version_before_the_eighth_reads_as_no_status() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    for (len, magic) in [
+        (1856, b"SKYZSTA7"),
+        (1584, b"SKYZSTA6"),
+        (1424, b"SKYZSTA5"),
+        (200, b"SKYZSTA4"),
+        (192, b"SKYZSTA3"),
+        (144, b"SKYZSTA2"),
+        (128, b"SKYZSTA1"),
+    ] {
+        let mut bytes = vec![0x5au8; len];
+        bytes[..8].copy_from_slice(magic);
+        fs::write(&path, &bytes).expect("write");
+        assert_eq!(read(&path).expect("read"), None, "{len} bytes");
+        bytes.push(0);
+        fs::write(&path, &bytes).expect("write");
+        assert!(read(&path).is_err(), "{} bytes", len + 1);
+    }
+}
+
+/// The report shows the count of cuts from a file that holds it, and
+/// the newest cut's group once there is a cut.
+#[test]
+fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
+    let mut status = sample();
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
-        Some(&read),
+        Some(&status),
         Noted::Nothing,
         &[7; 16],
         5,
     );
-    assert!(lines.iter().all(|(key, _)| !key.contains("command")));
-    assert_eq!(value(&lines, "io_threads"), Some("20"));
-    let mut long = encode(&sample()).to_vec();
-    long[..8].copy_from_slice(b"SKYZSTA9");
-    fs::write(&path, &long).expect("write");
-    assert!(super::read(&path).is_err());
-    ninth[..8].copy_from_slice(b"SKYZST10");
-    fs::write(&path, &ninth).expect("write");
-    assert!(super::read(&path).is_err());
+    assert_eq!(value(&lines, "cuts"), Some("29"));
+    assert_eq!(value(&lines, "cut_group"), Some("30"));
+    status.shown.cuts = Some(Cuts::default());
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&status),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cuts"), Some("0"));
+    assert_eq!(value(&lines, "cut_group"), None);
+}
+
+/// How write-zeroes are applied is shown only where the file says it: a
+/// value this version does not know (3 was the log store's) shows no
+/// key.
+#[test]
+fn the_report_shows_how_write_zeroes_are_applied_only_where_the_file_says() {
+    let mut status = sample();
+    for (code, shown) in [
+        (0, true),
+        (1, true),
+        (2, true),
+        (3, false),
+        (4, true),
+        (5, false),
+    ] {
+        status.shown.zeroes = ZeroesShown::of(code);
+        let bytes = encode(&status);
+        assert_eq!(u64_at(&bytes, 136), if shown { code } else { u64::MAX });
+        let lines = report(
+            Some(&located(DeviceState::Live, Whose::Ours)),
+            Some(&status),
+            Noted::Nothing,
+            &[7; 16],
+            5,
+        );
+        assert_eq!(value(&lines, "zeroes_applied").is_some(), shown, "{code}");
+    }
 }
 
 /// The result of the last failed command is shown only once one has
@@ -569,14 +401,12 @@ fn the_report_shows_the_last_command_failure_only_after_one() {
     assert_eq!(value(&lines, "last_command_failure"), None);
 }
 
-/// A status with a queue of no threads (the log store's, until M1.3t)
-/// shows no `io_` key.
+/// A status with a queue of no threads (a test build that does the I/O
+/// on the caller's thread) shows no `io_` key.
 #[test]
 fn the_report_shows_the_io_queue_only_where_there_are_threads() {
     let mut status = sample();
-    if let Some(log) = status.log.as_mut() {
-        log.shown.io_queue = Some(IoQueue::default());
-    }
+    status.shown.io_queue = Some(IoQueue::default());
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
         Some(&status),
@@ -587,194 +417,40 @@ fn the_report_shows_the_io_queue_only_where_there_are_threads() {
     assert!(lines.iter().all(|(key, _)| !key.starts_with("io_")));
 }
 
-/// A file of the seventh version (1856 bytes, `SKYZSTA7`) is still
-/// read: everything where it was, and the eighth's fields at zero.
+/// A change of the store's state alone (a new cut) is written as a
+/// change of the counters is: within the interval, with no other post.
 #[test]
-fn a_file_of_the_seventh_version_is_read_without_the_helper() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut seventh = encode(&sample())[..1856].to_vec();
-    seventh[..8].copy_from_slice(b"SKYZSTA7");
-    fs::write(&path, &seventh).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    assert_eq!(read.version, 7);
-    let timing = read.log.expect("the log").shown.timing.expect("times");
-    assert_eq!(timing, seventh_timing());
-    // The seventh version's magic at the eighth's length is no file,
-    // nor the eighth's at the seventh's.
-    let mut long = encode(&sample()).to_vec();
-    long[..8].copy_from_slice(b"SKYZSTA7");
-    fs::write(&path, &long).expect("write");
-    assert!(super::read(&path).is_err());
-    seventh[..8].copy_from_slice(b"SKYZSTA8");
-    fs::write(&path, &seventh).expect("write");
-    assert!(super::read(&path).is_err());
-}
-
-/// A file of the sixth version (1584 bytes, `SKYZSTA6`) is still read:
-/// everything where it was, and the hint and the syncs at zero.
-#[test]
-fn a_file_of_the_sixth_version_is_read_without_the_hint_and_the_syncs() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut sixth = encode(&sample())[..1584].to_vec();
-    sixth[..8].copy_from_slice(b"SKYZSTA6");
-    fs::write(&path, &sixth).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    let timing = read.log.expect("the log").shown.timing.expect("times");
-    let mut expected = seventh_timing();
-    expected.writeback = Default::default();
-    expected.syncs = Default::default();
-    assert_eq!(timing, expected);
-    // The sixth version's magic at the seventh's length is no file,
-    // nor the seventh's at the sixth's.
-    let mut long = encode(&sample()).to_vec();
-    long[..8].copy_from_slice(b"SKYZSTA6");
-    fs::write(&path, &long).expect("write");
-    assert!(super::read(&path).is_err());
-    sixth[..8].copy_from_slice(b"SKYZSTA7");
-    fs::write(&path, &sixth).expect("write");
-    assert!(super::read(&path).is_err());
-}
-
-/// A file of the fifth version (1424 bytes, `SKYZSTA5`) is still read:
-/// its fourteen activities where they were, the fifteenth at zero, and
-/// nothing from the barriers on. Its fields here are 100, 101, and so
-/// on from offset 200, as the fifth version's own layout test had them.
-#[test]
-fn a_file_of_the_fifth_version_is_read_with_its_fourteen_activities() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut fifth = encode(&sample())[..1424].to_vec();
-    fifth[..8].copy_from_slice(b"SKYZSTA5");
-    for field in 0..153 {
-        let at = 200 + 8 * field;
-        fifth[at..at + 8].copy_from_slice(&(100 + field as u64).to_le_bytes());
-    }
-    fs::write(&path, &fifth).expect("write");
-    let read = read(&path).expect("read").expect("a status");
-    let log = read.log.expect("the log");
-    let (timing, pump) = (
-        log.shown.timing.expect("times"),
-        log.shown.pump.expect("pump"),
-    );
-    assert_eq!(
-        (timing.worker[0], timing.worker[13], timing.worker[14]),
-        (142, 155, 0)
-    );
-    assert_eq!((timing.wait_by[0][0], timing.wait_by[4][13]), (156, 225));
-    assert_eq!((timing.wait_by[0][14], timing.wait_by[4][14]), (0, 0));
-    assert_eq!(timing.wait_by[1][9], 179);
-    assert_eq!(timing.longest_wait_cause, [226, 227, 228, 229, 230]);
-    assert_eq!(timing.longest_wait_cause_ns, [231, 232, 233, 234, 235]);
-    assert_eq!((pump.to_submit.count, pump.to_submit.max_ns), (236, 238));
-    assert_eq!((pump.store.sum_ns, pump.behind_store), (246, 248));
-    assert_eq!(
-        (pump.read_to_taken.sum_ns, pump.other_to_taken.max_ns),
-        (249, 252)
-    );
-    assert_eq!(timing.barrier_home, Spent::default());
-    assert_eq!(timing.barrier_reuse, Spent::default());
-    assert_eq!((timing.reader, timing.read_unflushed), ([0; 3], [0; 3]));
-}
-
-fn value_of<'a>(lines: &[(&str, &'a str)], key: &str) -> Option<&'a str> {
-    lines.iter().find(|(k, _)| *k == key).map(|(_, v)| *v)
-}
-
-/// The report shows the log: its live size, the steps taken, whether
-/// one is under way, and what the start took and replayed.
-#[test]
-fn the_report_shows_the_log_and_the_start() {
-    let lines = report(
-        Some(&located(DeviceState::Live, Whose::Ours)),
-        Some(&sample()),
-        Noted::Nothing,
-        &[7; 16],
-        5,
-    );
-    assert_eq!(value(&lines, "log_live"), Some("13"));
-    assert_eq!(value(&lines, "checkpoint_steps"), Some("14"));
-    assert_eq!(value(&lines, "checkpoint_syncs"), Some("18"));
-    assert_eq!(value(&lines, "checkpoint_step"), Some("under way"));
-    assert_eq!(value(&lines, "start_ms"), Some("16"));
-    assert_eq!(value(&lines, "replayed_bytes"), Some("17"));
-    let resting = Status {
-        log: Some(LogStatus::default()),
-        ..sample()
-    };
-    let lines = report(
-        Some(&located(DeviceState::Live, Whose::Ours)),
-        Some(&resting),
-        Noted::Nothing,
-        &[7; 16],
-        5,
-    );
-    assert_eq!(value(&lines, "checkpoint_step"), Some("none"));
-}
-
-/// A change of the log that is posted "at once" is written without
-/// waiting for the interval, each one: the begin and the end of a step
-/// are both in the file's history although they are closer together
-/// than the interval. A change posted without it keeps the pace.
-#[test]
-fn a_steps_begin_and_end_are_written_at_once() {
+fn a_change_of_the_store_alone_is_written() {
     let board = Arc::new(Board::new());
-    let (wrote, written) = mpsc::channel::<LogShown>();
+    let (wrote, written) = mpsc::channel::<StoreShown>();
     let publisher = std::thread::spawn({
         let board = board.clone();
-        // An interval no test waits for.
         move || {
-            board.publish_with_log(Pace::new(3_600_000), |_, log, _| {
-                wrote.send(*log).map_err(|_| io::Error::other("gone"))
+            board.publish_with_store(Pace::new(20), |_, shown, _| {
+                wrote.send(*shown).map_err(|_| io::Error::other("gone"))
             })
         }
     });
-    let wait = Duration::from_secs(10);
-    // The first write: nothing was written yet.
-    assert_eq!(written.recv_timeout(wait), Ok(LogShown::default()));
-    let begun = LogShown {
-        live: 100,
-        steps: 0,
-        stepping: true,
-        own_syncs: 0,
-        ..LogShown::default()
+    let wait = Duration::from_secs(20);
+    // The first write: nothing was posted yet.
+    assert_eq!(written.recv_timeout(wait), Ok(StoreShown::default()));
+    let cut = StoreShown {
+        cuts: Some(Cuts {
+            count: 1,
+            newest: Some(Cut {
+                number: 1,
+                group: 9,
+            }),
+        }),
+        ..StoreShown::default()
     };
-    board.post_log(begun, true);
-    assert_eq!(written.recv_timeout(wait), Ok(begun));
-    let ended = LogShown {
-        live: 60,
-        steps: 1,
-        stepping: false,
-        own_syncs: 1,
-        ..LogShown::default()
-    };
-    board.post_log(ended, true);
-    assert_eq!(written.recv_timeout(wait), Ok(ended));
-    // Not at once: it waits for the interval, which never ends here.
-    let grown = LogShown { live: 90, ..ended };
-    board.post_log(grown, false);
+    board.post_store(cut);
+    assert_eq!(written.recv_timeout(wait), Ok(cut));
+    // Posting the same state again writes nothing.
+    board.post_store(cut);
     assert!(written.recv_timeout(Duration::from_millis(100)).is_err());
-    // The stop writes what is posted.
     board.stop();
-    assert_eq!(written.recv_timeout(wait), Ok(grown));
     assert_eq!(publisher.join().expect("the publisher"), 0);
-}
-
-/// A file of the first version (128 bytes, `SKYZSTA1`) is no status,
-/// and not an error: nothing that wrote one ever served.
-#[test]
-fn a_file_of_the_first_version_reads_as_no_status() {
-    let dir = tempfile::tempdir().expect("a directory");
-    let path = dir.path().join(STATUS);
-    let mut old = encode(&sample())[..128].to_vec();
-    old[..8].copy_from_slice(b"SKYZSTA1");
-    fs::write(&path, &old).expect("write");
-    assert_eq!(read(&path).expect("read"), None);
-    // The new magic at the old length is a part of a file: an error.
-    old[..8].copy_from_slice(b"SKYZSTA2");
-    fs::write(&path, &old).expect("write");
-    assert!(read(&path).is_err());
 }
 
 #[test]
@@ -1047,13 +723,13 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
         251,
     );
     let keys: Vec<&str> = lines.iter().map(|(k, _)| *k).collect();
-    // The times are between how write-zeroes are applied and the pid,
-    // in the order of `TIME_KEYS`; the other keys are as they were.
-    let at = keys.iter().position(|k| *k == "zeroes_applied").unwrap() + 1;
-    assert_eq!(keys[at..at + TIME_FIELDS], TIME_KEYS);
+    // The pump's times are between the cuts and the I/O threads, in the
+    // order of `PUMP_KEYS`; the other keys are in this order.
+    let at = keys.iter().position(|k| *k == "cut_group").unwrap() + 1;
+    assert_eq!(keys[at..at + PUMP_FIELDS], PUMP_KEYS);
     let keys: Vec<&str> = keys
         .into_iter()
-        .filter(|k| !k.starts_with("time_"))
+        .filter(|k| !k.starts_with("pump_"))
         .collect();
     assert_eq!(
         keys,
@@ -1069,22 +745,17 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "write_zeroes",
             "refused",
             "held",
-            "unstored",
             "commands_aborted",
             "commands_failed",
             "last_command_failure",
             "first_write_copies",
-            "recovered_unacknowledged",
             "status_write_failures",
             "age_ms",
             "status_version",
-            "log_live",
-            "checkpoint_steps",
-            "checkpoint_syncs",
-            "checkpoint_step",
             "start_ms",
-            "replayed_bytes",
             "zeroes_applied",
+            "cuts",
+            "cut_group",
             "io_threads",
             "io_in_flight",
             "io_waiting",
@@ -1095,6 +766,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "counters"
         ]
     );
+    assert!(!has_log_store_keys(&lines));
     assert_eq!(value(&lines, "io_threads"), Some("20"));
     assert_eq!(value(&lines, "io_waiting_max"), Some("25"));
     // The process to signal: only while the kernel shows a live server.
@@ -1106,7 +778,6 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
     assert_eq!(value(&lines, "depth"), Some("32"));
     assert_eq!(value(&lines, "reads"), Some("2"));
     assert_eq!(value(&lines, "held"), Some("8"));
-    assert_eq!(value(&lines, "unstored"), Some("9"));
     assert_eq!(value(&lines, "age_ms"), Some("250"));
     assert_eq!(
         value(&lines, "counters"),
@@ -1494,22 +1165,26 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
     assert!(scenario(Mutants::OWED_FORGOTTEN).is_err(), "forgotten");
 }
 
-/// `status` says which version of the file it read (`status_version`),
-/// not a `time_` key: a script that reads the times tells by it the
-/// zeros of fields an older file did not have from counted zeros.
+/// `status` says which version of the file it read (`status_version`):
+/// a script tells by it a field an older file did not have from a zero
+/// the daemon counted.
 #[test]
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    for (len, magic, version) in [
-        (1424, b"SKYZSTA5", "5"),
-        (1584, b"SKYZSTA6", "6"),
-        (1856, b"SKYZSTA7", "7"),
-        (1960, b"SKYZSTA8", "8"),
-        (2008, b"SKYZSTA9", "9"),
-        (2032, b"SKYZST10", "10"),
+    let mut eleventh = encode(&sample()).to_vec();
+    for (version, magic) in [
+        ("8", b"SKYZSTA8"),
+        ("9", b"SKYZSTA9"),
+        ("10", b"SKYZST10"),
+        ("11", b"SKYZST11"),
     ] {
-        let mut bytes = encode(&sample())[..len].to_vec();
+        let mut bytes = match version {
+            "8" => tenth_file()[..1960].to_vec(),
+            "9" => tenth_file()[..2008].to_vec(),
+            "10" => tenth_file(),
+            _ => std::mem::take(&mut eleventh),
+        };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");
         let read = read(&path).expect("read").expect("a status");
@@ -1523,7 +1198,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 10);
+    assert_eq!(VERSION, 11);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.
@@ -1591,18 +1266,18 @@ fn a_post_wakes_the_publisher_only_when_it_waits_for_a_change() {
     );
 }
 
-/// A log posted to be written at once wakes the publishing thread also
-/// while it waits out its interval, and is written then, not at the
-/// interval's end. The interval is an hour, so a write seen within the
-/// test is before its end, and the test rests on events: the thread is
-/// seen waiting for a change; a post of new counters wakes it (a wake
-/// counted under the board's lock, which it lets go only in its next
-/// wait, now one for the interval's end); the log is posted at once;
-/// the write is seen. Before that write the only bound is the test's
-/// limit of 20 s against the hour. Planted by hand: with `post_log`
-/// waking the thread only when it waits for a change, the test fails.
+/// A write asked for again wakes the publishing thread also while it
+/// waits out its interval, and is made then, not at the interval's end.
+/// The interval is an hour, so a write seen within the test is before
+/// its end, and the test rests on events: the thread is seen waiting
+/// for a change; a post of new counters wakes it (a wake counted under
+/// the board's lock, which it lets go only in its next wait, now one
+/// for the interval's end); a write is asked for again; the write is
+/// seen. Before that write the only bound is the test's limit of 20 s
+/// against the hour. Planted by hand: with `write_again` waking the
+/// thread only when it waits for a change, the test fails.
 #[test]
-fn a_log_posted_at_once_is_written_within_an_interval() {
+fn a_write_asked_for_again_is_made_within_an_interval() {
     fn until(what: &str, done: impl Fn() -> bool) {
         let began = Instant::now();
         while !done() {
@@ -1615,8 +1290,8 @@ fn a_log_posted_at_once_is_written_within_an_interval() {
     let thread = std::thread::spawn({
         let (board, written) = (board.clone(), written.clone());
         move || {
-            board.publish_with_log(Pace::new(3_600_000), |_, log, _| {
-                written.lock().expect("lock").push(log.live);
+            board.publish(Pace::new(3_600_000), |counters, _| {
+                written.lock().expect("lock").push(counters.reads);
                 Ok(())
             })
         }
@@ -1629,13 +1304,9 @@ fn a_log_posted_at_once_is_written_within_an_interval() {
         board.wakes_and_attempts().0 > wakes
     });
     assert!(!board.awaits_change(), "waits for the interval's end");
-    let log = LogShown {
-        live: 77,
-        ..LogShown::default()
-    };
-    board.post_log(log, true);
-    until("the write asked for at once", || {
-        written.lock().expect("lock").last() == Some(&77)
+    board.write_again();
+    until("the write asked for again", || {
+        written.lock().expect("lock").last() == Some(&1)
     });
     assert_eq!(
         board.wakes_and_attempts().1,

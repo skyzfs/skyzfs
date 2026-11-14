@@ -817,10 +817,10 @@ fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
 
 /// The pump's own times. A write and a read complete together and lie
 /// ready 20 ms before the pump takes them: that is each one's time to
-/// the taking, and its time to the commit holds it. Nothing is stored
-/// before a commit any more, so the times of the store that was there
-/// until M1.3t-b stay zero. (Until then this test held a store of 30 ms
-/// between the taking and the commit.)
+/// the taking, and its time to the commit holds it. (Until M1.3t-b this
+/// test held a store of 30 ms between the taking and the commit; the
+/// fields that timed it were dropped with the status file's eleventh
+/// version, M2.1.)
 #[test]
 fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
     const LAY: std::time::Duration = std::time::Duration::from_millis(20);
@@ -834,8 +834,6 @@ fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
     assert_eq!(rig.committed().len(), 2);
     let timing = rig.pump.timing();
     assert_eq!(timing.to_submit.count, 2, "{timing:?}");
-    assert_eq!(timing.store.count, 0, "{timing:?}");
-    assert_eq!(timing.behind_store, 0, "{timing:?}");
     assert_eq!(timing.read_to_commit.count, 1, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 1, "{timing:?}");
     for (taken, commit) in [
