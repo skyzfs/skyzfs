@@ -65,6 +65,10 @@ impl Export {
 #[derive(Default)]
 pub struct ExportRegistry {
     map: RwLock<HashMap<String, Export>>,
+    /// One lock per export whose engine is swapped in place (the origin
+    /// export, M1.3ai): see [`ExportRegistry::swap_lock`]. Never
+    /// removed: one small entry per such export ever named.
+    swaps: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl ExportRegistry {
@@ -88,6 +92,20 @@ impl ExportRegistry {
         let mut v: Vec<String> = self.map.read().await.keys().cloned().collect();
         v.sort();
         v
+    }
+
+    /// The lock that orders the swaps of export `name`'s engine (M1.3ai).
+    /// Whoever converges such an export holds it from reading what the
+    /// export should serve to the swap, so that a swap decided on an
+    /// older reading cannot land after one decided on a newer. It is not
+    /// the export's own `RwLock`: requests keep flowing while it is held,
+    /// and an engine opens under it, not under that.
+    pub async fn swap_lock(&self, name: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let lock = {
+            let mut swaps = self.swaps.lock().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(swaps.entry(name.to_string()).or_default())
+        };
+        lock.lock_owned().await
     }
 }
 

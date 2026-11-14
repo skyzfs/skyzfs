@@ -1115,7 +1115,12 @@ async fn set_origin(
         };
         match outcome {
             skynbd_refs::TxnOutcome::Committed => {
-                skynbd_nbd::origin::repoint(&state.registry, &binding, target.commit).await?;
+                // Converge through the row, under the export's swap lock
+                // (M1.3ai): a sync task's reconcile that read the row
+                // before this commit, or a concurrent repoint whose
+                // swap would land after this one, then cannot leave
+                // the export on an older generation than the row names.
+                skynbd_nbd::origin::reconcile(&state.registry, &binding).await?;
                 let served = origin_served(&state, &vol, &h).await;
                 return Ok(Json(origin_info(
                     &vol,

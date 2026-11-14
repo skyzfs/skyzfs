@@ -18,6 +18,18 @@
 //! node whose stage attaches `<vol>/origin` the instant its lineage
 //! serve returns must find it there — neither racing the sync task's
 //! initial pass nor stranded by one transient failure inside it.
+//!
+//! **Order (M1.3ai).** Every swap of the export happens under its
+//! [`ExportRegistry::swap_lock`], held from reading the row to the
+//! swap. [`reconcile`] reads the row under it, so whoever converges
+//! last swaps to what the row names then. Without it, a sync task's
+//! reconcile that read the row before an API repoint could swap the
+//! older generation back in after the API's swap: the export would
+//! serve a generation the row no longer names, and whose `origin` pin
+//! has moved (Invariants D and E), until the next generation event.
+//! The API converges after its commit with [`reconcile`] too, not by
+//! swapping to its own target, so two repoints whose swaps would land
+//! out of order both swap to the row as it stands.
 
 use std::sync::Arc;
 
@@ -94,11 +106,26 @@ pub async fn resolve(
     Ok(newest.map(|(_, r)| r))
 }
 
-/// Point `<vol>/origin` at `commit`, creating the export if absent. The
-/// new engine opens *outside* the lock so reads keep flowing while the
-/// committed state loads; the swap itself is one assignment under the
-/// exclusive lock every attached connection already shares.
+/// Point `<vol>/origin` at `commit`, creating the export if absent,
+/// under the export's [`ExportRegistry::swap_lock`]. A caller that wrote
+/// the row converges with [`reconcile`] instead, which reads the row
+/// under the same lock: a swap to a commit read before the lock was
+/// taken can be older than the row by the time it lands.
 pub async fn repoint(
+    registry: &ExportRegistry,
+    b: &VolumeBinding,
+    commit: CommitHash,
+) -> Result<(), EngineError> {
+    let _order = registry.swap_lock(&origin_export_name(&b.vol_name)).await;
+    swap(registry, b, commit).await
+}
+
+/// The swap itself, for a caller that holds the export's swap lock. The
+/// new engine opens *outside* the export's `RwLock` so reads keep
+/// flowing while the committed state loads; the swap itself is one
+/// assignment under the exclusive lock every attached connection
+/// already shares.
+async fn swap(
     registry: &ExportRegistry,
     b: &VolumeBinding,
     commit: CommitHash,
@@ -159,7 +186,19 @@ pub async fn repoint(
 /// publish, and the whole point of the pointer is that the origin moves
 /// only by explicit repoint.
 pub async fn reconcile(registry: &ExportRegistry, b: &VolumeBinding) -> Result<(), EngineError> {
+    reconcile_with(registry, b, || async {}).await
+}
+
+/// [`reconcile`], with `between` awaited after the row is resolved and
+/// before the export is swapped: the window a test holds open.
+async fn reconcile_with<F: std::future::Future<Output = ()>>(
+    registry: &ExportRegistry,
+    b: &VolumeBinding,
+    between: impl FnOnce() -> F,
+) -> Result<(), EngineError> {
     let export_name = origin_export_name(&b.vol_name);
+    // Held from the row's reading to the swap (M1.3ai, module doc).
+    let _order = registry.swap_lock(&export_name).await;
     let has_row = b
         .refs
         .meta_get(b.vol_id, ORIGIN_META_KEY)
@@ -174,11 +213,128 @@ pub async fn reconcile(registry: &ExportRegistry, b: &VolumeBinding) -> Result<(
         .await
         .map_err(EngineError::Refs)?
     {
-        Some(r) => repoint(registry, b, r.commit).await,
+        Some(r) => {
+            between().await;
+            swap(registry, b, r.commit).await
+        }
         // Stale row over a volume with no generations left at all.
         None => {
             registry.unregister(&export_name).await;
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use skynbd_engine::EngineConfig;
+    use skynbd_refs::{MemoryRefStore, RefOp};
+    use skynbd_store::{MemoryStore, ObjectStore};
+
+    /// A volume with two published generations, `snap/g1` and
+    /// `snap/g2`, and its binding as `lin`.
+    async fn two_generations() -> (VolumeBinding, CommitHash, CommitHash) {
+        let store: Arc<dyn ObjectStore> = Arc::new(MemoryStore::new());
+        let refs: Arc<dyn RefStore> = Arc::new(MemoryRefStore::new());
+        let vol = VolumeId(ulid::Ulid::new());
+        let mut engine: crate::DynEngine = Engine::create_volume(
+            Arc::clone(&store),
+            Arc::clone(&refs),
+            vol,
+            64 * 1024,
+            EngineConfig::default(),
+        )
+        .await
+        .expect("a volume");
+        engine.write(0, &[0xA1; 4096]).expect("a write");
+        let (_, g1) = engine.snapshot_create("g1").await.expect("g1");
+        engine.write(0, &[0xB2; 4096]).expect("a write");
+        let (_, g2) = engine.snapshot_create("g2").await.expect("g2");
+        let binding = VolumeBinding {
+            vol_id: vol,
+            vol_name: "lin".into(),
+            store,
+            refs,
+            cfg: EngineConfig::default(),
+        };
+        (binding, g1, g2)
+    }
+
+    async fn point_at(b: &VolumeBinding, ref_name: &str) {
+        b.refs
+            .transact(
+                b.vol_id,
+                vec![RefOp::MetaPut {
+                    key: ORIGIN_META_KEY.into(),
+                    value: ref_name.as_bytes().to_vec(),
+                }],
+            )
+            .await
+            .expect("the row");
+    }
+
+    async fn served(registry: &ExportRegistry) -> Option<CommitHash> {
+        let export = registry.get("lin/origin").await?;
+        let commit = export.engine.read().await.head_commit_hash();
+        Some(commit)
+    }
+
+    /// A reconcile that read the row before a repoint does not undo it
+    /// (M1.3ai; testing's flaky `origin_pointer_lifecycle`, the
+    /// review's reading). The sync task's reconcile reads the row
+    /// (g1) and is held there; the API then moves the row to g2 and
+    /// converges the export as it does after its commit. Without an
+    /// order between the two, the API's swap lands first and the held
+    /// reconcile then swaps g1 back in: the export serves a generation
+    /// the row no longer names, and whose pin has moved. With the
+    /// order, the API's convergence waits for the held one and then
+    /// reads the row itself.
+    ///
+    /// The test gives the API's convergence 500 ms to finish while the
+    /// other is held: unordered, it does (all in memory); ordered, it
+    /// cannot. Either way the verdict is the same: the export ends
+    /// serving what the row names.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reconcile_that_read_the_row_before_a_repoint_does_not_undo_it() {
+        let (binding, g1, g2) = two_generations().await;
+        let registry = Arc::new(ExportRegistry::new());
+        point_at(&binding, "snap/g1").await;
+        reconcile(&registry, &binding).await.expect("g1 served");
+        assert_eq!(served(&registry).await, Some(g1));
+
+        let binding = Arc::new(binding);
+        let (resolved, was_resolved) = tokio::sync::oneshot::channel();
+        let (go, gone) = tokio::sync::oneshot::channel::<()>();
+        let stale = tokio::spawn({
+            let (registry, binding) = (Arc::clone(&registry), Arc::clone(&binding));
+            async move {
+                reconcile_with(&registry, &binding, || async move {
+                    let _ = resolved.send(());
+                    let _ = gone.await;
+                })
+                .await
+            }
+        });
+        was_resolved.await.expect("the held reconcile read the row");
+
+        point_at(&binding, "snap/g2").await;
+        let mut api = tokio::spawn({
+            let (registry, binding) = (Arc::clone(&registry), Arc::clone(&binding));
+            async move { reconcile(&registry, &binding).await }
+        });
+        let api_first = tokio::time::timeout(std::time::Duration::from_millis(500), &mut api).await;
+        let _ = go.send(());
+        stale.await.expect("joined").expect("the held reconcile");
+        match api_first {
+            Ok(done) => done.expect("joined").expect("the API's convergence"),
+            Err(_) => api.await.expect("joined").expect("the API's convergence"),
+        }
+        assert_eq!(
+            served(&registry).await,
+            Some(g2),
+            "the export serves what the row names, not what a reconcile read before it moved"
+        );
     }
 }

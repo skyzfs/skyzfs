@@ -1205,3 +1205,109 @@ async fn origin_pointer_lifecycle() {
     assert_eq!(body["initialized"], true);
     assert_eq!(body["served"], "snap/g2");
 }
+
+/// A repoint over the API converges the origin export only under the
+/// export's swap lock, and through the row as it stands then (M1.3ai).
+/// The test holds the lock, as a sync task's reconcile does between its
+/// reading of the row and its swap. The POST commits its row and then
+/// waits. While it waits, the row moves on to a newer generation, as a
+/// concurrent repoint's commit moves it. Once the lock is let go, the
+/// POST converges on what the row names then, not on its own target:
+/// a swap to the target would leave the export on an older generation
+/// than the row names.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_origin_repoint_converges_under_the_swap_lock_through_the_row() {
+    let (router, state, engine) = fixture().await;
+    let (refs, vol_id) = {
+        let vols = state.volumes.read().await;
+        let h = &vols["vol1"];
+        (Arc::clone(&h.refs), h.vol_id)
+    };
+    for (name, byte) in [("g0", 0xA0u8), ("g1", 0xB1), ("g2", 0xC2)] {
+        engine.write().await.write(0, &[byte; 4096]).unwrap();
+        let (st, _) = call(
+            &router,
+            "POST",
+            "/v1/volumes/vol1/snapshots",
+            Some(serde_json::json!({ "name": name })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED);
+    }
+    let (st, body) = call(
+        &router,
+        "POST",
+        "/v1/volumes/vol1/origin",
+        Some(serde_json::json!({"ref": "snap/g0"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["served"], "snap/g0");
+    let served = || async {
+        let export = state.registry.get("vol1/origin").await.unwrap();
+        let commit = export.engine.read().await.head_commit_hash();
+        commit
+    };
+    let commit = |name: &'static str| {
+        let refs = Arc::clone(&refs);
+        async move { refs.get(vol_id, name).await.unwrap().unwrap().commit }
+    };
+    let row = || async {
+        let bytes = refs
+            .meta_get(vol_id, skynbd_nbd::origin::ORIGIN_META_KEY)
+            .await
+            .unwrap()
+            .unwrap();
+        String::from_utf8(bytes).unwrap()
+    };
+
+    let held = state.registry.swap_lock("vol1/origin").await;
+    let mut post = tokio::spawn({
+        let router = router.clone();
+        async move {
+            call(
+                &router,
+                "POST",
+                "/v1/volumes/vol1/origin",
+                Some(serde_json::json!({"ref": "snap/g1"})),
+            )
+            .await
+        }
+    });
+    // The POST's commit lands at once ...
+    let began = std::time::Instant::now();
+    while row().await != "snap/g1" {
+        assert!(
+            began.elapsed() < std::time::Duration::from_secs(10),
+            "the POST's commit"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    // ... and its convergence waits for the lock: no answer, no swap.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), &mut post)
+            .await
+            .is_err(),
+        "the POST converged while the export's swap lock was held"
+    );
+    assert_eq!(served().await, commit("snap/g0").await);
+    // A concurrent repoint's commit moves the row on meanwhile.
+    refs.transact(
+        vol_id,
+        vec![skynbd_refs::RefOp::MetaPut {
+            key: skynbd_nbd::origin::ORIGIN_META_KEY.into(),
+            value: b"snap/g2".to_vec(),
+        }],
+    )
+    .await
+    .unwrap();
+    drop(held);
+    let (st, body) = post.await.unwrap();
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["served"], "snap/g2", "{body}");
+    assert_eq!(
+        served().await,
+        commit("snap/g2").await,
+        "the export serves what the row names"
+    );
+}
