@@ -90,12 +90,16 @@ EXPECTED = {
     # A later write over a block a cut reaches comes only when ZFS reuses
     # space a cut reached: in the nearly full pool and with autotrim's
     # discards; never in the short recordings on a mostly empty pool
-    # (runs 43631961753 and 43637989615, every candidate cut).
+    # (runs 43631961753 and 43637989615, every candidate cut); in slog
+    # once, a write 123 records after cut 7's instant (run 43645075993).
     'later': dict({r: 'not built' for r in RECS}, autotrim='caught', full='caught',
-                  multihost=('not built', 'caught'), rewindf=('not built', 'caught')),
+                  multihost=('not built', 'caught'), rewindf=('not built', 'caught'), slog=('not built', 'caught')),
     # A rewind import with -T writes the new history under groups the
-    # abandoned one used (run 43631961753); -F is thought to count on
-    # from the failed group, which the recording shows.
+    # abandoned one used (run 43631961753). In rewindf -F is refused (the
+    # export rewrote the labels' config in the failed group) and -FX
+    # writes the failed group again with another root block pointer
+    # during the import, before the kstat's history begins (run
+    # 43645075993): dropped_states catches it, the sessions cannot.
     # It differs only where the new history writes a group the abandoned
     # one used: in rewind group 51 (both runs); in rewindsync the syncs
     # outran it and group 51 wrote nothing (run 43637989615).
@@ -226,6 +230,30 @@ def pick_later(records, cut, bps):
     return None
 
 
+def dropped_states(cs, rcs, op):
+    """The design's cuts a rule's list lacks where the volume opens as
+    that cut, at a state other than the rule's newest cut then: the rule
+    says the volume holds an older state when it holds a newer one.
+    cs, rcs: the design's and the rule's cuts; op: cut_ref.opens of cs.
+    -> [detail]. The session check cannot see a group written before the
+    kstat's history begins (rewindf: -FX writes the failed group again
+    during the import, run 43645075993)."""
+    have = {(c['txg'], c['prefix']) for c in rcs}
+    out = []
+    for c in cs:
+        o = op.get(c['n'])
+        if (c['txg'], c['prefix']) in have or not o or not o['itself']:
+            continue
+        older = [r for r in rcs if r['prefix'] <= c['prefix']]
+        r = older[-1] if older else None
+        if r is None or (r['txg'], r['rootbp']) != (c['txg'], c['rootbp']):
+            out.append(f"at cut {c['n']}'s instant (record {c['prefix']}) the volume opens as cut {c['n']} "
+                       f"(group {c['txg']}), and the rule's newest cut is "
+                       + (f"group {r['txg']} at record {r['prefix']}" + (', another root block pointer' if r['txg'] == c['txg'] else '')
+                          if r else 'none'))
+    return out
+
+
 def later_candidates(cs, mid):
     """The cuts tried for the control `later`, in order: the middle one,
     then a quarter, an eighth and a sixteenth of the way, then the first."""
@@ -245,11 +273,14 @@ class Check:
         self.logdev = logdev
         self.last_import = None
         # A pool with multihost=on: ZFS 2.4 imports one that was not
-        # exported only after a claim, uberblocks it writes and reads
-        # back, read-only import or not (spa_activity_check_claim). On a
-        # read-only device the claim fails and the import is refused as
-        # "imported on host '<unknown>' (hostid=0)" (run 43638676548), so
-        # such a pool is imported from a writable copy of the image.
+        # exported only after a claim, uberblocks it writes to every
+        # writable leaf and reads back (spa_activity_check_claim,
+        # mmp_claim_uberblock). A read-only import opens no leaf for
+        # writing, so the claim has no good write and the import is
+        # refused as "imported on host '<unknown>' (hostid=0)" (runs
+        # 43638676548 and 43645075993, the second on a writable device).
+        # Such a pool is imported writable, from a copy of the cut's
+        # image, and the line obs_multihost_import says so.
         self.multihost = False
         self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
@@ -324,7 +355,8 @@ class Check:
         return failed, detail, counts, [bp for bp in bps if bp['type'] != 'ZIL intent log']
 
     def kimport(self, txg=None):
-        """A read-only import (at txg with -T) -> (ok, what zpool said)."""
+        """A read-only import (at txg with -T; writable from a copy for a
+        multihost pool, see __init__) -> (ok, what zpool said)."""
         rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', POOL], 60)
         if rc == 0:
             raise RigError(f'a pool named {POOL} is still imported')
@@ -339,7 +371,8 @@ class Check:
             raise RigError(f'losetup: {out.strip()}')
         loop = out.strip()
         try:
-            rc, out, _ = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none', '-N', '-f',
+            rc, out, _ = run(['zpool', 'import', '-d', loop] + ([] if self.multihost else ['-o', 'readonly=on'])
+                             + ['-o', 'cachefile=none', '-N', '-f',
                               '-R', self.alt] + (['-m'] if self.logdev else []) + (['-T', str(txg)] if txg else [])
                              + [POOL], 180)
             said = out.strip()[-300:]
@@ -450,6 +483,9 @@ def main():
         about += f'\nkernel {os.uname().release} {os.uname().machine}'
         cs, taken = cut_ref.write_fixture(os.path.join(rdir, 'fixture'), ck.idx, ck.read, about)
         ck.multihost = any(u.get('mmp_delay') for u in taken)
+        if ck.multihost:
+            put('obs_multihost_import', 'INFO', 'the imports are writable, each from a copy of the cut\'s image: ZFS 2.4 '
+                'refuses a read-only import of a multihost pool that was not exported (its claim writes uberblocks)')
         put('records', 'INFO', f"{len(ck.records)}, of which {sum(1 for u in taken if u['taken'] == 'marks')} "
             f"uberblock writes mark, of {len(taken)}")
         if not cs:
@@ -584,7 +620,7 @@ def main():
                 got[rule] = ('same', f'{len(rcs)} cuts, as the design rule')
                 continue
             rsv = session_verdicts(rcs, ck.records, kstats)
-            rbad = [d for _, ok, d in rsv if not ok]
+            rbad = [d for _, ok, d in rsv if not ok] + dropped_states(cs, rcs, op)[:3]
             got[rule] = ('caught' if rbad else 'missed', f'{len(rcs)} cuts against {len(cs)}: '
                          + ('; '.join(rbad) if rbad else 'every session as committed'))
         for ctl, (verdict, detail) in got.items():

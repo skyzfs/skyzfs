@@ -124,6 +124,34 @@ class Later(unittest.TestCase):
         self.assertEqual([c['n'] for c in cut_check.later_candidates(cs[:2], cs[1])], [2, 1])
 
 
+class Dropped(unittest.TestCase):
+    """A rule that drops a cut whose state the volume then holds (rewindf: -FX wrote group 43 again)."""
+
+    def setUp(self):
+        self.cs = [cut(1, 42, 10), cut(2, 43, 20), cut(3, 43, 30), cut(4, 46, 40)]
+        self.cs[2]['rootbp'] = (9,)
+        self.op = {c['n']: {'itself': True} for c in self.cs}
+
+    def test_a_dropped_state_is_caught(self):
+        rcs = [self.cs[0], self.cs[1], self.cs[3]]
+        d = cut_check.dropped_states(self.cs, rcs, self.op)
+        self.assertEqual(len(d), 1)
+        self.assertIn("cut 3's instant", d[0])
+        self.assertIn('another root block pointer', d[0])
+
+    def test_the_same_list_drops_nothing(self):
+        self.assertEqual(cut_check.dropped_states(self.cs, list(self.cs), self.op), [])
+
+    def test_a_cut_that_does_not_open_as_itself_is_not_held_against_the_rule(self):
+        self.op[3]['itself'] = False
+        self.assertEqual(cut_check.dropped_states(self.cs, [self.cs[0], self.cs[1], self.cs[3]], self.op), [])
+
+    def test_a_rule_with_no_cut_yet(self):
+        d = cut_check.dropped_states(self.cs[:1], [], self.op)
+        self.assertEqual(len(d), 1)
+        self.assertIn('none', d[0])
+
+
 class Expected(unittest.TestCase):
     def test_a_set_takes_either(self):
         self.assertTrue(cut_check.as_expected('same', ('same', 'caught')))
