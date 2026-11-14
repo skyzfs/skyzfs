@@ -122,15 +122,23 @@
 //! - Another with the driver's answer, when it comes: `refused: errno E
 //!   (...)`, `aborted` (the queue was being stopped), or `taken` (tag 0
 //!   was handed a request, so the driver took a fetch with no buffer;
-//!   the request is answered as any other). The program goes on after
-//!   each.
+//!   having told it no address for that request's data, the program
+//!   answers it with an I/O error and does not touch the file). The
+//!   program goes on after each.
 //! - After `--recovery-wait-ms`, the start's command is sent as
 //!   without the option, from a thread of its own: step `start`, or
 //!   `end-recovery` for a device that waits for a server. Its line is
 //!   `returned after T ms: ok` or `returned after T ms: errno E (...)`,
 //!   with T counted from the command; or, if it has not returned 10 s
-//!   after it was sent, `no answer after 10000 ms`, and the line
-//!   `returned after ...` follows if it returns later.
+//!   after it was sent, `no answer after 10000 ms; its thread waits in
+//!   CALL (wchan W)`, and the line `returned after ...` follows if it
+//!   returns later. CALL is the system call the command's thread is in,
+//!   from `/proc`. The command goes to the driver on an io_uring, so
+//!   `io_uring_enter` is a wait for the kernel's answer to it; `futex`
+//!   is the wait before it, the library's or the binding's, for the
+//!   queue's buffers to be registered. Another call is `syscall N`, a
+//!   thread in none `running`, and `unknown` if `/proc` said nothing. W
+//!   is the thread's wait channel, as the kernel names it.
 //!
 //! Whatever the start answered, and also when the queue has ended, the
 //! program then serves what the driver hands over and ends only on
@@ -626,9 +634,14 @@ mod run {
                 }
                 if refusing_fetch == Some(f.tag) {
                     // The tag was handed a request: the driver took the
-                    // fetch with no buffer.
+                    // fetch with no buffer. It was told no address for
+                    // this request's data, so the request is answered
+                    // with an I/O error and the file is not touched.
                     refusing_fetch = None;
                     say("refuse-fetch", "taken");
+                    counts.failed.fetch_add(1, Ordering::Relaxed);
+                    queue.commit(f.tag, -libc::EIO, None);
+                    continue;
                 }
                 if refuse.is_some_and(|what| matches(what, &f.desc)) {
                     refuse = None;
@@ -862,9 +875,11 @@ mod run {
             Then::Recovery => "end-recovery",
         };
         let (done, answer) = std::sync::mpsc::channel();
+        let (named, its_tid) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let _ = named.send(own_tid());
             let from = Instant::now();
-            let started = device.start();
+            let started = device.start_from_another_thread_for_tests();
             let _ = done.send((started, from.elapsed()));
         });
         let said = |(started, took): (io::Result<()>, Duration)| {
@@ -881,10 +896,15 @@ mod run {
                 None
             }
             Err(RecvTimeoutError::Timeout) => {
+                let tid = its_tid.try_recv().ok().flatten();
                 say(
                     step,
                     n,
-                    &format!("no answer after {} ms", START_LIMIT.as_millis()),
+                    &format!(
+                        "no answer after {} ms; its thread waits in {}",
+                        START_LIMIT.as_millis(),
+                        tid.map_or_else(|| "unknown".into(), waits_in)
+                    ),
                 )?;
                 Some(answer)
             }
@@ -904,6 +924,44 @@ mod run {
             if signals::wait(Duration::from_millis(100)) == Some(Signal::Stop) {
                 return Ok("a signal");
             }
+        }
+    }
+
+    /// The calling thread's id, from `/proc/thread-self`.
+    fn own_tid() -> Option<u32> {
+        let link = std::fs::read_link("/proc/thread-self").ok()?;
+        link.file_name()?.to_str()?.parse().ok()
+    }
+
+    /// Where thread `tid` of this process waits, as the kernel says:
+    /// the system call it is in and its wait channel. A wait for the
+    /// kernel's answer to the command, which goes on an io_uring, is in
+    /// `io_uring_enter`; the wait before the command for the queue's
+    /// buffers is in `futex`.
+    fn waits_in(tid: u32) -> String {
+        let read = |what: &str| {
+            std::fs::read_to_string(format!("/proc/self/task/{tid}/{what}")).unwrap_or_default()
+        };
+        let wchan = read("wchan");
+        let wchan = match wchan.trim() {
+            "" => "unknown",
+            known => known,
+        };
+        format!("{} (wchan {wchan})", syscall_name(&read("syscall")))
+    }
+
+    /// The system call of a thread's `syscall` file: its first field,
+    /// named if it is `io_uring_enter` or `futex`, `running` if the thread is
+    /// not in one, `unknown` if the file said nothing.
+    fn syscall_name(text: &str) -> String {
+        match text.split_whitespace().next() {
+            None => "unknown".into(),
+            Some(first) => match first.parse::<libc::c_long>() {
+                Ok(libc::SYS_io_uring_enter) => "io_uring_enter".into(),
+                Ok(libc::SYS_futex) => "futex".into(),
+                Ok(n) => format!("syscall {n}"),
+                Err(_) => first.to_string(),
+            },
         }
     }
 
@@ -1275,8 +1333,9 @@ mod run {
         }
 
         /// A first fetch with no buffer that the driver takes (its tag
-        /// is handed a request) is said `taken`, and the request is
-        /// answered as any other; one the driver aborts is said
+        /// is handed a request) is said `taken`, and that request is
+        /// answered with an I/O error, the file not touched: the driver
+        /// was told no address for its data. One the driver aborts is said
         /// `aborted`. Only the tag named is followed: another tag's
         /// refused fetch is counted and not said, and a later command
         /// of the tag named is not said either.
@@ -1306,7 +1365,13 @@ mod run {
                     "refuse-fetch\ttaken".to_string(),
                 ]
             );
-            assert_eq!(queue.commits, vec![(0, 4096, true)]);
+            assert_eq!(
+                queue.commits,
+                vec![(0, -libc::EIO, false)],
+                "answered with an error, the file not touched"
+            );
+            assert_eq!(counts.failed.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.reads.load(Ordering::SeqCst), 0);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             let aborted: Vec<Turn> = vec![(
@@ -1321,6 +1386,29 @@ mod run {
             );
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// Where the start's thread waits is read from its `syscall`
+        /// and `wchan` files: `io_uring_enter` (the command is with the
+        /// kernel) and `futex` (the wait for the buffers) by name, other
+        /// calls by number.
+        #[test]
+        fn a_threads_wait_is_named_by_its_system_call() {
+            let enter = format!(
+                "{} 0x3 0x1 0x1 0x1 0x0 0x0 0x7ffc 0x7f00",
+                libc::SYS_io_uring_enter
+            );
+            assert_eq!(syscall_name(&enter), "io_uring_enter");
+            let futex = format!(
+                "{} 0x55 0x80 0x0 0x0 0x0 0x0 0x7ffc 0x7f00",
+                libc::SYS_futex
+            );
+            assert_eq!(syscall_name(&futex), "futex");
+            assert_eq!(syscall_name("999999 0x0"), "syscall 999999");
+            assert_eq!(syscall_name("running\n"), "running");
+            assert_eq!(syscall_name(""), "unknown");
+            let tid = own_tid().expect("this thread's id");
+            assert!(waits_in(tid).contains("(wchan "), "{}", waits_in(tid));
         }
 
         /// A commit with no buffer that the library will not send is
