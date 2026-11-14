@@ -1433,6 +1433,15 @@ fn step(n: u32, line: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{line}: said {text:?}, which is not one line of the step"))
 }
 
+/// The number after `key` in a line of the control test program's
+/// counters (`... key N ...`).
+#[cfg(feature = "control-test-program")]
+fn counted(line: &str, key: &str) -> Option<u64> {
+    let mut words = line.split_whitespace();
+    words.find(|&w| w == key)?;
+    words.next()?.parse().ok()
+}
+
 /// A server of the control test program: started, its first line read,
 /// then ended by `SIGTERM` and its second line read.
 #[cfg(feature = "control-test-program")]
@@ -1579,6 +1588,21 @@ fn the_control_test_program_answers_each_step_in_one_line() {
 /// queue, the program says so in its lines and ends by itself, and the
 /// number is free. This is the measure the rig uses with a request
 /// held: the time printed here is the one without.
+///
+/// It also prints `control_commands_aborted_at_stop_detail` with the
+/// number of the queue's commands that the driver ended with its abort
+/// (`UBLK_IO_RES_ABORT`) at that stop, as the program's server counted
+/// them (its `served` line). How the wait is arranged: the device has a
+/// depth of 8, and the delete is sent 300 ms after the device went
+/// live, from a second thread, while the server waits; by then nothing
+/// reads or writes the device but what the kernel and udev may ask at
+/// a start, which the server answers as it comes. The driver stops the
+/// device (`ublk_stop_dev`: `del_gendisk`, which waits for what is in
+/// flight, then `ublk_cancel_dev`) and ends the command that waits on
+/// each tag with its abort: in `ublk_drv.c` at v6.11, v6.17 and v7.0
+/// that is every tag, so the figure the source gives is 8. The rig
+/// judges it; this test only prints it, and fails if the line has no
+/// count.
 #[cfg(feature = "control-test-program")]
 #[test]
 #[ignore = "needs root and the ublk driver"]
@@ -1622,6 +1646,14 @@ fn the_control_test_program_deletes_its_own_device_while_it_serves() {
             from.elapsed(),
             lines.join(" | ")
         );
+        let aborted = lines
+            .iter()
+            .find(|l| l.starts_with(&format!("served\t{n}\t")))
+            .and_then(|l| counted(l, "commands_aborted"));
+        match aborted {
+            Some(aborted) => println!("control_commands_aborted_at_stop_detail\t{aborted}"),
+            None => return Err(format!("no count of aborted commands in {said:?}")),
+        }
         if !status.success()
             || !has(&format!("serve\t{n}\tlive after "))
             || !has(&format!("self-delete\t{n}\tsent after 300 ms"))
