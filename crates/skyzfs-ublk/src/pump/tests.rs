@@ -38,6 +38,9 @@ enum Step {
     Unfetched(Vec<Unfetched>),
     /// The same, and then the queue is down.
     UnfetchedDown(Vec<Unfetched>),
+    /// Requests handed over, and commands ended otherwise than OK, in
+    /// one wait.
+    FetchAndUnfetched(Vec<Fetched>, Vec<Unfetched>),
     Nothing,
     Stop(Vec<Fetched>),
     Down,
@@ -109,6 +112,12 @@ impl Queue for FakeQueue {
             Some(Step::UnfetchedDown(more)) => {
                 unfetched.extend(more);
                 Err(QueueDown)
+            }
+            Some(Step::FetchAndUnfetched(more, ended)) => {
+                self.hand_over(&more);
+                fetched.extend(more);
+                unfetched.extend(ended);
+                Ok(Wake::Work)
             }
         }
     }
@@ -1326,18 +1335,21 @@ fn unfetched(tag: u16, command: Command, result: i32) -> Unfetched {
 
 /// Commands the driver ended with a result other than OK fetched
 /// nothing, and the pump counts them: aborts apart from the others,
-/// and the result of the last of those. Nothing else follows from
-/// them: no commit, no request, no change to what is in flight. (Until
-/// M1.3aa the queue dropped them, and nothing showed them.)
+/// and the result of the last of those. An abort, a refused fetch and
+/// another command refused change nothing else: no commit, no request,
+/// no change to what is in flight. (Until M1.3aa the queue dropped
+/// them, and nothing showed them. A refused commit ends the pump since
+/// M1.3ac part 3: see
+/// `a_commit_the_driver_refuses_ends_the_pump_for_a_take_over`.)
 #[test]
 fn commands_the_driver_ended_otherwise_than_ok_are_counted() {
     let mut rig = Rig::new(0, 4, 4);
     assert_eq!(rig.fetch(&[request(2, op::READ, 0, 0, 1)]), None);
     let before = rig.committed();
     rig.pump.queue().script.push_back(Step::Unfetched(vec![
-        unfetched(1, Command::Commit, -22),
+        unfetched(1, Command::Fetch, -22),
         unfetched(3, Command::Fetch, ABORTED),
-        unfetched(0, Command::Commit, -16),
+        unfetched(0, Command::Fetch, -16),
         unfetched(3, Command::Other(0x23), 1),
         unfetched(0, Command::Commit, ABORTED),
     ]));
@@ -1348,7 +1360,9 @@ fn commands_the_driver_ended_otherwise_than_ok_are_counted() {
     assert_eq!(c.last_command_failure, 1, "the last failure");
     assert_eq!(c.in_flight, 1, "in flight");
     assert_eq!(rig.committed(), before, "nothing committed for them");
-    // A pump whose volume failed counts them too.
+    // A pump whose volume failed counts them too, a refused commit
+    // among them, and goes on answering with the I/O error: the device
+    // is deleted, and the delete answers the refused request.
     let mut rig = Rig::new(0, 4, 4);
     rig.pump.fail();
     rig.pump
@@ -1387,4 +1401,71 @@ fn commands_ended_by_a_wait_that_ends_down_are_counted() {
             "failed {failed}"
         );
     }
+}
+
+/// A commit the driver refuses ends the pump, with the tag and the
+/// error number, for a take-over (M1.3ac part 3). The refused commit
+/// took no effect: the request it answered, if any, is still the
+/// server's in the driver's eyes, and the kernel hands it to the next
+/// server. So nothing more is answered on this queue, and nothing of
+/// the wait that brought the refusal is taken: not the request handed
+/// over with it, not a completion that waited, not the refused tag
+/// again. A refusal ends the pump also while it drains for a stop, and
+/// the first refused commit of a wait is the one named. Mutant: the
+/// refusal is only counted, as before.
+#[test]
+fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.complete(0);
+        rig.turn();
+        expect(rig.committed(), vec![(0, BLOCK)], "the first answer")?;
+        rig.complete(1);
+        rig.pump.queue().script.push_back(Step::FetchAndUnfetched(
+            vec![write(2, 2)],
+            vec![
+                unfetched(3, Command::Commit, ABORTED),
+                unfetched(0, Command::Commit, -22),
+                unfetched(1, Command::Fetch, -5),
+            ],
+        ));
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::CommitRefused { tag: 0, errno: 22 }),
+            "how the pump ended",
+        )?;
+        expect(
+            rig.committed(),
+            vec![(0, BLOCK)],
+            "committed after the refusal",
+        )?;
+        expect(
+            rig.submitted(),
+            vec![(0, "write"), (1, "write")],
+            "submitted after the refusal",
+        )?;
+        let c = rig.pump.counters();
+        expect((c.commands_aborted, c.commands_failed), (1, 2), "counted")?;
+
+        // While it drains for a stop.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.complete(0);
+        rig.turn();
+        rig.pump.queue().script.push_back(Step::Stop(Vec::new()));
+        expect(rig.pump.turn(), None, "draining")?;
+        rig.pump
+            .queue()
+            .script
+            .push_back(Step::Unfetched(vec![unfetched(0, Command::Commit, -22)]));
+        rig.complete(1);
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::CommitRefused { tag: 0, errno: 22 }),
+            "how a stop ended",
+        )?;
+        expect(rig.committed(), vec![(0, BLOCK)], "committed in the stop")
+    }
+    caught(scenario, Mutants::COMMIT_REFUSAL_IGNORED);
 }

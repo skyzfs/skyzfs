@@ -28,6 +28,7 @@
 //! | the volume failed while it was served, or at its start | 3 |
 //! | the queue went away, or the target did | 1 |
 //! | the kernel's driver broke its rule: it handed over a tag the queue does not have, or one whose request was still out ([`Stopped::BrokenRule`]) | 7 |
+//! | the kernel's driver refused one of serve's answers, a commit ([`Stopped::CommitRefused`]) | 8 |
 //!
 //! After a broken rule nothing more is answered on the queue, since an
 //! answer could complete the wrong request. The breach is the
@@ -35,6 +36,19 @@
 //! written, and the device is neither stopped nor deleted, so that it
 //! waits for the next server as after a kill, and the kernel issues
 //! again what was not answered (M1.3ac).
+//!
+//! A refused commit ends serve the same way (M1.3ac part 3), with
+//! status 8, so that a reader tells "the driver refused our answer"
+//! from "the driver broke its rule". The refused answer took no
+//! effect: its request is still the server's in the driver's eyes,
+//! and the next server is handed exactly that request again and
+//! completes it (the control rig: a read, a write and a flush; a
+//! delete instead fails it at once). Nothing more is answered on the
+//! queue, and the refusal says nothing against the store, so the
+//! volume is not failed. Also after a signal: the stop was then not
+//! orderly. A refused commit while the volume has failed is only
+//! counted, and serve ends as a failed volume (3): the device is
+//! deleted, which answers the refused request.
 //!
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted with the image's
@@ -992,14 +1006,19 @@ fn run(serve: &Serve) -> Result<Exit, String> {
 /// How serve ends once the queue's thread of device `number` has ended
 /// with `stopped` and no failure came with it: 0 after an asked stop
 /// that ended in order; 7, with its line, when the kernel's driver
-/// broke its rule (the device is left as it is, waiting for the next
-/// server); an error otherwise.
+/// broke its rule, and 8, with its line, when it refused a commit (in
+/// both the device is left as it is, waiting for the next server); an
+/// error otherwise.
 fn ended(number: u32, asked_to_stop: bool, stopped: Stopped) -> Result<Exit, String> {
     match stopped {
         Stopped::Orderly if asked_to_stop => Ok(Exit::Done),
         Stopped::BrokenRule { tag } => {
             say(broken_rule_said(number, tag));
             Ok(Exit::BrokenRule)
+        }
+        Stopped::CommitRefused { tag, errno } => {
+            say(commit_refused_said(number, tag, errno));
+            Ok(Exit::CommitRefused)
         }
         other => Err(format!("the queue of device {number} ended: {other:?}")),
     }
@@ -1012,6 +1031,16 @@ fn broken_rule_said(number: u32, tag: u16) -> String {
          whose request was still out, against the driver's rule: nothing more is answered on \
          this queue, the volume is not failed, and device {number} waits for the next server, \
          as after a kill"
+    )
+}
+
+/// What serve says when the kernel's driver refused a commit.
+fn commit_refused_said(number: u32, tag: u16, errno: i32) -> String {
+    format!(
+        "the kernel refused serve's answer on tag {tag} of device {number} ({}): nothing more is \
+         answered on this queue, the volume is not failed, and device {number} waits for the \
+         next server, which is handed again what was not answered",
+        io::Error::from_raw_os_error(errno)
     )
 }
 
@@ -1546,6 +1575,163 @@ mod tests {
         }
         assert!(ended(3, false, Stopped::QueueDown).is_err());
         assert_eq!(ended(3, true, Stopped::Orderly), Ok(Exit::Done));
+    }
+
+    /// A queue that hands over a write on tag 0 and a read on tag 1 at
+    /// its first wait; at its second, the driver refuses the commit of
+    /// tag 0 and hands over a write on tag 2. It notes its waits and
+    /// what is committed.
+    #[derive(Default)]
+    struct Refusing {
+        waits: u32,
+        committed: Arc<std::sync::Mutex<Vec<(u16, i32)>>>,
+    }
+
+    impl skyzfs_ublk::pump::Queue for Refusing {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+            unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            use skyzfs_ublk::pump::{Command, Fetched, Unfetched};
+            use skyzfs_ublk::translate::{op, Desc};
+            let request = |tag: u16, op: u8| Fetched {
+                tag,
+                desc: Desc {
+                    op_flags: u32::from(op),
+                    nr_sectors: 8,
+                    start_sector: u64::from(tag) * 8,
+                },
+            };
+            self.waits += 1;
+            match self.waits {
+                1 => fetched.extend([request(0, op::WRITE), request(1, op::READ)]),
+                2 => {
+                    unfetched.push(Unfetched {
+                        tag: 0,
+                        command: Command::Commit,
+                        result: -22,
+                    });
+                    fetched.push(request(2, op::WRITE));
+                }
+                _ => {}
+            }
+            Ok(skyzfs_ublk::pump::Wake::Work)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
+            self.committed.lock().expect("lock").push((tag, result));
+        }
+        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    /// A target that completes every request it is handed at its next
+    /// poll, and keeps what it was handed.
+    #[derive(Default)]
+    struct Answering {
+        handed: Vec<u64>,
+        done: Vec<skyzfs_blk::Completion>,
+    }
+
+    impl skyzfs_blk::BlockTarget for Answering {
+        fn geometry(&self) -> skyzfs_blk::Geometry {
+            skyzfs_blk::Geometry::new(8, 4, false).expect("a geometry")
+        }
+        fn submit(&mut self, request: skyzfs_blk::Request) -> Result<(), skyzfs_blk::SubmitError> {
+            self.handed.push(request.id.0);
+            let buf = match request.op {
+                skyzfs_blk::Op::Read { buf, .. } => Some(buf),
+                skyzfs_blk::Op::Write { data, .. } => Some(data),
+                _ => None,
+            };
+            self.done.push(skyzfs_blk::Completion {
+                id: request.id,
+                result: Ok(()),
+                buf,
+            });
+            Ok(())
+        }
+        fn poll(&mut self, out: &mut Vec<skyzfs_blk::Completion>) -> usize {
+            let n = self.done.len();
+            out.append(&mut self.done);
+            n
+        }
+        fn wait(&mut self, out: &mut Vec<skyzfs_blk::Completion>, _: Duration) -> usize {
+            self.poll(out)
+        }
+    }
+
+    impl skyzfs_ublk::pump::PumpTarget for Answering {
+        fn gone(&self) -> bool {
+            false
+        }
+    }
+
+    /// A commit the driver refuses ends serve with status 8, on the
+    /// path that leaves the device for the next server (M1.3ac part 3).
+    /// The queue's thread, run as serve runs it (`pumped`, with the
+    /// check for a failure at every turn), ends with the refusal, its
+    /// tag and its error number, and has not marked the volume failed:
+    /// serve's main thread takes the failure's path (its note and the
+    /// device's delete) only on that mark, and stops the device only on
+    /// a signal, so it does neither here. Nothing of the wait that
+    /// brought the refusal reaches the store, nothing is committed after
+    /// it, and the refused tag is not committed again. The end then
+    /// gives status 8 and a line that names the cause and says that the
+    /// device waits for the next server; status 7 stays the broken rule.
+    #[test]
+    fn a_refused_commit_ends_serve_with_8_and_leaves_the_device() {
+        let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queue = Refusing {
+            committed: committed.clone(),
+            ..Refusing::default()
+        };
+        let queue = Delayed::new(queue, None, None, || {});
+        let flags = Flags::default();
+        let (stopped, store) = pumped(Pump::new(queue, Answering::default()), |pump, _| {
+            answer_if_failed(pump, &flags, &|| {});
+        });
+        assert_eq!(stopped, Some(Stopped::CommitRefused { tag: 0, errno: 22 }));
+        assert_eq!(
+            *committed.lock().expect("lock"),
+            [(0, 4096), (1, 4096)],
+            "the two answers before the refusal, and none after it"
+        );
+        assert_eq!(
+            store.handed,
+            [0, 1],
+            "the write on tag 2 is the next server's"
+        );
+        assert!(
+            !flags.failed.load(Ordering::SeqCst),
+            "the volume is not failed"
+        );
+        assert!(!flags.answered.load(Ordering::SeqCst));
+
+        let refused = Stopped::CommitRefused { tag: 0, errno: 22 };
+        assert_eq!(ended(3, false, refused), Ok(Exit::CommitRefused));
+        assert_eq!(ended(3, true, refused), Ok(Exit::CommitRefused));
+        let said = commit_refused_said(3, 0, 22);
+        for words in [
+            "the kernel refused serve's answer on tag 0 of device 3",
+            "Invalid argument",
+            "nothing more is answered",
+            "the volume is not failed",
+            "waits for the next server",
+        ] {
+            assert!(said.contains(words), "{said}");
+        }
+        assert_eq!(
+            ended(3, false, Stopped::BrokenRule { tag: 0 }),
+            Ok(Exit::BrokenRule)
+        );
     }
 
     /// A target that takes requests and never answers one: a store

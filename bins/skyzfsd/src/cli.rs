@@ -226,7 +226,10 @@ the device and a client still holds it open; 7 the kernel's driver broke its rul
 (it handed over a tag the queue does not have, or one whose request
 was still out):
 serve answered nothing more, the volume is not failed, and the device
-waits for the next server, as after a kill.
+waits for the next server, as after a kill;
+8 the kernel's driver refused an answer of serve's (a commit): serve
+answered nothing more, the volume is not failed, and the device waits
+for the next server, which is handed again what was not answered.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -256,6 +259,12 @@ pub enum Exit {
     /// not failed, and the device waits for the next server, as after
     /// a kill.
     BrokenRule,
+    /// 8: `serve` ended because the kernel's driver refused one of its
+    /// answers (a commit) (M1.3ac part 3). The refused answer took no
+    /// effect, so its request is still unanswered: nothing more was
+    /// answered, the volume is not failed, and the device waits for the
+    /// next server, which the kernel hands that request again.
+    CommitRefused,
 }
 
 impl Exit {
@@ -270,6 +279,7 @@ impl Exit {
             Exit::RefusedHeld => 5,
             Exit::DeletedHeld => 6,
             Exit::BrokenRule => 7,
+            Exit::CommitRefused => 8,
         }
     }
 

@@ -40,6 +40,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::RefusedHeld, 5),
         (Exit::DeletedHeld, 6),
         (Exit::BrokenRule, 7),
+        (Exit::CommitRefused, 8),
     ];
     let table = HELP
         .split_once("Exit statuses:")
@@ -53,6 +54,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         );
     }
     assert!(HELP.contains("7 the kernel's driver broke its rule"));
+    assert!(HELP.contains("8 the kernel's driver refused an answer of serve's"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a
