@@ -1,0 +1,104 @@
+job 01 run 43573424221: machines [('cf8ffc91', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '194')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 5749; b2 5704; b3 5700; u1 5639; u2 5672; u3 5534; model-2 5581; model-3 5631; model-end 5420; model 5588
+  row 2 u1 mem none tps 5639 width 0.1% ratio 1.010 verdict at least 0.90
+  row 3 b1 mem 1G tps 5749 width 0.1% ratio 1.029 verdict at least 0.90
+  row 5 b2 mem 1G tps 5704 width 0.9% ratio 1.017 verdict at least 0.90
+  row 6 u2 mem none tps 5672 width 0.9% ratio 1.012 verdict at least 0.90
+  row 8 u3 mem none tps 5534 width 3.8% ratio 1.001 verdict at least 0.90
+  row 9 b3 mem 1G tps 5700 width 3.8% ratio 1.032 verdict at least 0.90
+job 02 run 43573430151: machines [('a5e2d0e3', 'ubuntu24/20261111.127.1; x86_64; 7.0.0-1014-aws', '2842')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 7074; b2 7097; b3 7059; u1 7199; u2 7114; u3 7101; model-2 7721; model-3 7722; model-end 7556; model 7732
+  row 2 b1 mem 1G tps 7074 width 0.1% ratio 0.916 verdict at least 0.90
+  row 3 u1 mem none tps 7199 width 0.1% ratio 0.932 verdict at least 0.90
+  row 5 u2 mem none tps 7114 width 0.0% ratio 0.921 verdict at least 0.90
+  row 6 b2 mem 1G tps 7097 width 0.0% ratio 0.919 verdict at least 0.90
+  row 8 b3 mem 1G tps 7059 width 2.2% ratio 0.924 verdict at least 0.90
+  row 9 u3 mem none tps 7101 width 2.2% ratio 0.930 verdict at least 0.90
+job 03 run 43573435679: machines [('70d7fb48', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '191')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 5455; b2 5223; b3 5212; u1 5497; u2 5214; u3 5359; model-2 5491; model-3 5722; model-end 5408; model 5358
+  row 2 u1 mem none tps 5497 width 2.5% ratio 1.013 verdict at least 0.90
+  row 3 b1 mem 1G tps 5455 width 2.5% ratio 1.006 verdict at least 0.90
+  row 5 b2 mem 1G tps 5223 width 4.1% ratio 0.932 verdict at least 0.90
+  row 6 u2 mem none tps 5214 width 4.1% ratio 0.930 verdict at least 0.90
+  row 8 u3 mem none tps 5359 width 5.6% ratio 0.963 verdict at least 0.90
+  row 9 b3 mem 1G tps 5212 width 5.6% ratio 0.937 verdict at least 0.90
+job 04 run 43573441804: machines [('6f1612ea', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '2759')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 3285; b2 3327; b3 3317; u1 3281; u2 3319; u3 3317; model-2 3389; model-3 3434; model-end 3482; model 3435
+  row 2 b1 mem 1G tps 3285 width 1.3% ratio 0.963 verdict at least 0.90
+  row 3 u1 mem none tps 3281 width 1.3% ratio 0.962 verdict at least 0.90
+  row 5 u2 mem none tps 3319 width 1.3% ratio 0.973 verdict at least 0.90
+  row 6 b2 mem 1G tps 3327 width 1.3% ratio 0.975 verdict at least 0.90
+  row 8 b3 mem 1G tps 3317 width 1.4% ratio 0.959 verdict at least 0.90
+  row 9 u3 mem none tps 3317 width 1.4% ratio 0.959 verdict at least 0.90
+job 05 run 43573448086: machines [('a765dd68', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '3226')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 3353; b2 3342; b3 3385; u1 3343; u2 3359; u3 3376; model-2 3488; model-3 3531; model-end 3547; model 3509
+  row 2 u1 mem none tps 3343 width 0.6% ratio 0.956 verdict at least 0.90
+  row 3 b1 mem 1G tps 3353 width 0.6% ratio 0.959 verdict at least 0.90
+  row 5 b2 mem 1G tps 3342 width 1.2% ratio 0.952 verdict at least 0.90
+  row 6 u2 mem none tps 3359 width 1.2% ratio 0.957 verdict at least 0.90
+  row 8 u3 mem none tps 3376 width 0.5% ratio 0.954 verdict at least 0.90
+  row 9 b3 mem 1G tps 3385 width 0.5% ratio 0.957 verdict at least 0.90
+job 06 run 43573453362: machines [('0c7eaa8c', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '207')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 4218; b2 4221; b3 4237; u1 4185; u2 4244; u3 4292; model-2 4165; model-3 4170; model-end 4207; model 4182
+  row 2 b1 mem 1G tps 4218 width 0.4% ratio 1.011 verdict at least 0.90
+  row 3 u1 mem none tps 4185 width 0.4% ratio 1.003 verdict at least 0.90
+  row 5 u2 mem none tps 4244 width 0.1% ratio 1.018 verdict at least 0.90
+  row 6 b2 mem 1G tps 4221 width 0.1% ratio 1.013 verdict at least 0.90
+  row 8 b3 mem 1G tps 4237 width 0.9% ratio 1.012 verdict at least 0.90
+  row 9 u3 mem none tps 4292 width 0.9% ratio 1.025 verdict at least 0.90
+job 07 run 43573460732: machines [('3a7c0f9e', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '196')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 2754; b2 2475; b3 2209; u1 1617; u2 1727; u3 2234; model-2 2864; model-3 3013; model-end 2071; model 2423
+  row 2 u1 mem none tps 1617 width 16.7% ratio 0.612 verdict NO VERDICT: bracket too wide: the model 
+  row 3 b1 mem 1G tps 2754 width 16.7% ratio 1.042 verdict NO VERDICT: bracket too wide: the model 
+  row 5 b2 mem 1G tps 2475 width 5.1% ratio 0.842 verdict BELOW 0.90
+  row 6 u2 mem none tps 1727 width 5.1% ratio 0.588 verdict BELOW 0.90
+  row 8 u3 mem none tps 2234 width 37.1% ratio 0.879 verdict NO VERDICT: bracket too wide: the model 
+  row 9 b3 mem 1G tps 2209 width 37.1% ratio 0.869 verdict NO VERDICT: bracket too wide: the model 
+job 08 run 43573468014: machines [('dc730b9c', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '193')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 5081; b2 5155; b3 5072; u1 5168; u2 5094; u3 5070; model-2 5057; model-3 5488; model-end 5281; model 4985
+  row 2 b1 mem 1G tps 5081 width 1.4% ratio 1.012 verdict at least 0.90
+  row 3 u1 mem none tps 5168 width 1.4% ratio 1.029 verdict at least 0.90
+  row 5 u2 mem none tps 5094 width 8.2% ratio 0.966 verdict at least 0.90
+  row 6 b2 mem 1G tps 5155 width 8.2% ratio 0.978 verdict at least 0.90
+  row 8 b3 mem 1G tps 5072 width 3.8% ratio 0.942 verdict at least 0.90
+  row 9 u3 mem none tps 5070 width 3.8% ratio 0.942 verdict at least 0.90
+job 09 run 43573474522: machines [('8ba027a7', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '197')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 5147; b2 5182; b3 5022; u1 4925; u2 5035; u3 4933; model-2 5100; model-3 5140; model-end 5246; model 5043
+  row 2 u1 mem none tps 4925 width 1.1% ratio 0.971 verdict at least 0.90
+  row 3 b1 mem 1G tps 5147 width 1.1% ratio 1.015 verdict at least 0.90
+  row 5 b2 mem 1G tps 5182 width 0.8% ratio 1.012 verdict at least 0.90
+  row 6 u2 mem none tps 5035 width 0.8% ratio 0.983 verdict at least 0.90
+  row 8 u3 mem none tps 4933 width 2.0% ratio 0.950 verdict at least 0.90
+  row 9 b3 mem 1G tps 5022 width 2.0% ratio 0.967 verdict at least 0.90
+job 10 run 43573480698: machines [('779ae924', 'ubuntu24/20261111.370.1; x86_64; 7.0.0-1017-azure', '178')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 3720; b2 3665; b3 3660; u1 3755; u2 3692; u3 3772; model-2 3889; model-3 3668; model-end 3847; model 3665
+  row 2 b1 mem 1G tps 3720 width 5.9% ratio 0.985 verdict at least 0.90
+  row 3 u1 mem none tps 3755 width 5.9% ratio 0.994 verdict at least 0.90
+  row 5 u2 mem none tps 3692 width 5.8% ratio 0.977 verdict at least 0.90
+  row 6 b2 mem 1G tps 3665 width 5.8% ratio 0.970 verdict at least 0.90
+  row 8 b3 mem 1G tps 3660 width 4.7% ratio 0.974 verdict at least 0.90
+  row 9 u3 mem none tps 3772 width 4.7% ratio 1.004 verdict at least 0.90
+job 11 run 43573486774: machines [('43ba5679', 'ubuntu24-arm64/20261111.182.1; aarch64; 7.0.0-1017-azure', '295')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 3071; b2 2955; b3 3106; u1 2810; u2 2885; u3 3067; model-2 3178; model-3 3139; model-end 3144; model 2947
+  row 2 u1 mem none tps 2810 width 7.5% ratio 0.918 verdict at least 0.90
+  row 3 b1 mem 1G tps 3071 width 7.5% ratio 1.003 verdict at least 0.90
+  row 5 b2 mem 1G tps 2955 width 1.2% ratio 0.936 verdict at least 0.90
+  row 6 u2 mem none tps 2885 width 1.2% ratio 0.913 verdict at least 0.90
+  row 8 u3 mem none tps 3067 width 0.2% ratio 0.976 verdict at least 0.90
+  row 9 b3 mem 1G tps 3106 width 0.2% ratio 0.989 verdict at least 0.90
+job 12 run 43573492629: machines [('cd2a4342', 'ubuntu24-arm64/20261111.182.1; aarch64; 7.0.0-1017-azure', '230')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 2587; b2 2687; b3 2478; u1 2759; u2 2645; u3 2708; model-2 2868; model-3 2870; model-end 2783; model 2534
+  row 2 b1 mem 1G tps 2587 width 12.3% ratio 0.958 verdict NO VERDICT: bracket too wide: the model 
+  row 3 u1 mem none tps 2759 width 12.3% ratio 1.021 verdict NO VERDICT: bracket too wide: the model 
+  row 5 u2 mem none tps 2645 width 0.1% ratio 0.922 verdict at least 0.90
+  row 6 b2 mem 1G tps 2687 width 0.1% ratio 0.937 verdict at least 0.90
+  row 8 b3 mem 1G tps 2478 width 3.1% ratio 0.877 verdict BELOW 0.90
+  row 9 u3 mem none tps 2708 width 3.1% ratio 0.958 verdict at least 0.90
+job 13 run 43573498706: machines [('c07b2199', 'ubuntu24-arm64/20261111.182.1; aarch64; 7.0.0-1017-azure', '265')]; builds ['848ab28']; serve args ['defaults']
+  tps: b1 2794; b2 2762; b3 2791; u1 2605; u2 2827; u3 2878; model-2 2963; model-3 2976; model-end 2971; model 2794
+  row 2 u1 mem none tps 2605 width 5.9% ratio 0.905 verdict at least 0.90
+  row 3 b1 mem 1G tps 2794 width 5.9% ratio 0.971 verdict at least 0.90
+  row 5 b2 mem 1G tps 2762 width 0.4% ratio 0.930 verdict at least 0.90
+  row 6 u2 mem none tps 2827 width 0.4% ratio 0.952 verdict at least 0.90
+  row 8 u3 mem none tps 2878 width 0.2% ratio 0.968 verdict at least 0.90
+  row 9 b3 mem 1G tps 2791 width 0.2% ratio 0.939 verdict at least 0.90
