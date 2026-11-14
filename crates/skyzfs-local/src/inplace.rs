@@ -1497,6 +1497,37 @@ pub fn volatile_cache_explains(
 }
 
 #[cfg(test)]
+impl<D: Dir> InPlace<D> {
+    /// For the conformance harness's failure (`harness::fail_log`): let
+    /// every job on the I/O threads end, take its result, and start
+    /// what waited for it, a flush's sync among them. Nothing is handed
+    /// out and no sync is looked at, so a sync begun here is under way
+    /// when this returns, and the completions wait for the next poll:
+    /// as if the threads had been quick and the caller had not looked
+    /// since. A write held back from the threads under the plant
+    /// ACK_BEFORE_WRITE is handed to them on each turn, as the drop
+    /// does: nothing here hands its acknowledgement out.
+    ///
+    /// # Panics
+    ///
+    /// When a job is still on the threads after a minute: a thread that
+    /// never ends its job is a defect, said here rather than met later
+    /// somewhere less telling.
+    pub(crate) fn finish_threads(&mut self) {
+        let began = std::time::Instant::now();
+        while !self.busy.is_empty() {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "{} jobs did not end on the I/O threads within a minute",
+                self.busy.len()
+            );
+            self.release_early(true);
+            self.collect(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod harness;
 mod pool;
 mod start;
