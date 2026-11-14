@@ -132,7 +132,11 @@ there, and the user decides when it merges.
   program `skyzfs-ublk-control`, its parse tests and the binding's
   kernel tests. Run clippy and the tests with each as well as plain.
   The kernel tests are ignored tests (root and the ublk driver); the
-  control rig is the workflow that runs them.
+  control rig is the workflow that runs them. A third feature,
+  `skyzfs-ublk-sys/refuse-fetch` (M1.3ah), holds the binding's path that
+  sends its own first fetches, so a test can make the driver refuse
+  one; both features above enable it, and the default daemon build
+  carries none of it.
 - **Run `rustup update stable` before the local gates.** CI installs the
   current stable toolchain, and a container's can be months older. A
   newer clippy has lints an older one does not, so "clean locally" on
