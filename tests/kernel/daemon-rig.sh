@@ -652,7 +652,20 @@ kill_test() {
             [ "${w:-0}" -gt 0 ] && break
             sleep 0.01
         done
-        kill -9 "$pid" 2>/dev/null || { KT_ERR="kill $n: kill -9 $pid failed"; break; }
+        if ! kill -9 "$pid" 2>/dev/null; then
+            # A server that ended by itself is reaped by the shell at
+            # once, so the kill fails; wait still gives its status. A 7
+            # there is the daemon's word that the driver broke its rule
+            # (M1.3ac, #77): the next take-over would hide it.
+            if [ -n "$SERVE_PID" ] && ! kill -0 "$SERVE_PID" 2>/dev/null; then wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""; fi
+            if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then
+                KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
+                KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
+            else
+                KT_ERR="kill $n: kill -9 $pid failed${SERVE_RC:+ (the server had ended by itself, with exit $SERVE_RC)}"
+            fi
+            break
+        fi
         tk=$(now_ms)
         # How long the kernel reports the device LIVE after its server
         # died: watched beside the serve that follows, which must cope
@@ -678,12 +691,13 @@ kill_test() {
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
-        # A daemon that had ended by itself with exit 7 before the kill
-        # (the kill of its unreaped process succeeds): the next serve
-        # would take the device over and the 7 be lost. Any other status
-        # is left as it was: the stand-in's serve ends with 1 when its
-        # server is killed, and a volume failed while served (3) has the
-        # next serve refuse it, which kt_refusal names.
+        # A daemon that ended by itself with exit 7 between the shell's
+        # last reaping and the kill (a race; the usual case is the
+        # failed kill above): the next serve would take the device over
+        # and the 7 be lost. Any other status is left as it was: the
+        # stand-in's serve ends with 1 when its server is killed, and a
+        # volume failed while served (3) has the next serve refuse it,
+        # which kt_refusal names.
         if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then
             KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
             KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"

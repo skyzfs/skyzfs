@@ -607,19 +607,52 @@ class KillRefusal(unittest.TestCase):
             verdict, _ = self.verdict('7', '', self.BROKEN, when)
             self.assertEqual(verdict, 'ERROR', when)
 
-    def test_the_kill_loop_looks_for_a_7_between_kills(self):
-        # The kill of a server that ended by itself succeeds (its process
-        # is not reaped yet), so the loop reads its status after the
-        # wait; a 7 there would otherwise be lost to the next take-over.
+    def loop(self, server):
+        """The rig's own kill loop, from its server_pid to the look after
+        serve_wait, for one kill of a made-up server started as `server`
+        (a bash command line) -> (KT_ERR, KT_REFUSED, SERVE_RC)."""
+        import subprocess
+        import tempfile
         rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
         with open(rig, encoding='utf-8') as f:
             text = f.read()
-        self.assertIn('[ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null\n'
-                      '        # A daemon that had ended by itself with exit 7', text)
-        self.assertIn('        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then\n'
-                      '            KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)\n'
-                      '            KT_ERR="before kill $n: ', text)
-        self.assertIn('EXIT_BUSY=5; EXIT_BROKEN_RULE=7\n', text)
+        a = text.index('        pid=$(server_pid "$impl" "$dir")\n')
+        b = text.index('        # KT_WAIT_S: after the first kill', a)
+        body = text[a:b]
+        with tempfile.TemporaryDirectory() as d:
+            for f, t in (('loop.sh', 'for n in 1; do\n' + body + 'done\n'), ('inflight', '0 1\n'), ('vol.serve.log', '')):
+                with open(os.path.join(d, f), 'w', encoding='utf-8') as fh:
+                    fh.write(t)
+            script = (f'eval "$(sed -n \'/^EXIT_FAILED=/p\' {rig!r})"; '
+                      f'for fn in now_ms server_pid serve_wait kt_refusal; do eval "$(sed -n "/^$fn() /,/^}}\\$/p; /^$fn() .*}}$/p" {rig!r})"; done; '
+                      'vol_stat() { :; }; '
+                      'D=$1; WORK=$D; name=kt; impl=x; dir=$D/vol; inflight=$D/inflight; BDEV=/dev/ublkb9; '
+                      'KT_ERR=""; KT_REFUSED=""; KT_INFLIGHT=0; '
+                      'bash -c "$2" >> "$dir.serve.log" & SERVE_PID=$!; SERVE_RC=""; sleep 0.5; '
+                      '. "$D/loop.sh"; '
+                      '[ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null; '
+                      'printf "%s\\n%s\\n%s\\n" "$KT_ERR" "$KT_REFUSED" "$SERVE_RC"')
+            out = subprocess.run(['bash', '-c', script, '_', d, server], capture_output=True, text=True,
+                                 timeout=60, check=True).stdout
+        return tuple(out.split('\n')[:3])
+
+    def test_the_kill_loop_reads_a_7_from_a_server_that_ended_before_the_kill(self):
+        # The shell reaps a server that ended by itself at once, so the
+        # kill fails; the loop reads its status with wait (review of #82).
+        err, refused, rc = self.loop('echo "skyzfsd: the kernel handed over tag 3"; exit 7')
+        self.assertEqual(rc, '7')
+        self.assertEqual(err, 'before kill 1: the server had ended by itself, with exit 7')
+        self.assertIn('before kill 1: the server ended with exit 7: the driver handed over a tag', refused)
+        self.assertIn('skyzfsd: the kernel handed over tag 3', refused)
+
+    def test_the_kill_loop_names_another_status_as_the_rigs_error(self):
+        err, refused, rc = self.loop('exit 1')
+        self.assertEqual(refused, '')
+        self.assertRegex(err, r'^kill 1: kill -9 \d+ failed \(the server had ended by itself, with exit 1\)$')
+
+    def test_the_kill_loop_kills_a_live_server(self):
+        err, refused, rc = self.loop('sleep 30')
+        self.assertEqual((err, refused, rc), ('', '', '137'))
 
     def test_for_a_control_it_stays_the_rigs_error(self):
         # A control whose kills did not all happen has shown nothing,

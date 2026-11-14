@@ -67,7 +67,7 @@ done
 skz_store_args "$T/current" --log-high=3 || true
 is "  says why" "$SKZ_STORE_WHY" "--log-high=3 is of the log store, which M1.3t removed"
 is "an option that begins like one" "$(check "$T/current" --storex 1 --readers-x 2)" "0 0"
-is "a value that looks like an option is a value" "$(check "$T/older" --store in-place --queues --store)" "1 0"
+is "a --store with no value, after the other options, is refused" "$(check "$T/older" --store in-place --queues --store)" "1 0"
 is "nothing was served by the checks" "$([ -e "$T/served" ] && cat "$T/served" || echo nothing)" nothing
 
 # The callers. Each is run as far as the check, with a current build and
