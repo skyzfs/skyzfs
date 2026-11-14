@@ -2976,6 +2976,381 @@ mod tests {
         );
     }
 
+    /// How a fake kernel command answers (M1.3ak): after a while, with
+    /// an error after a while (a command the driver refused), or never.
+    #[derive(Debug, Clone, Copy)]
+    enum Answer {
+        After(Duration),
+        FailsAfter(Duration),
+        Never,
+    }
+
+    impl Answer {
+        /// Waits as this answer does, and says whether it ends in an error.
+        fn wait(self) -> bool {
+            match self {
+                Answer::After(time) => {
+                    std::thread::sleep(time);
+                    false
+                }
+                Answer::FailsAfter(time) => {
+                    std::thread::sleep(time);
+                    true
+                }
+                // The thread waits for good, as the driver's would
+                // behind the device's mutex.
+                Answer::Never => loop {
+                    std::thread::park();
+                },
+            }
+        }
+    }
+
+    /// Bounded commands that take their time (M1.3ak): each is logged
+    /// when it is sent, then answers as set for it.
+    #[derive(Clone)]
+    struct Timed {
+        log: Log,
+        delete: Answer,
+        info: Answer,
+        holds: Answer,
+    }
+
+    impl Timed {
+        /// The command named `kind` answers after `first`, the one named
+        /// `second` never, and any other at once.
+        fn first_then_never(log: &Log, first: (&str, Answer), second: &str) -> Self {
+            let answer = |kind: &str| {
+                if kind == first.0 {
+                    first.1
+                } else if kind == second {
+                    Answer::Never
+                } else {
+                    Answer::After(Duration::ZERO)
+                }
+            };
+            Self {
+                log: log.clone(),
+                delete: answer("delete"),
+                info: answer("info"),
+                holds: answer("holds"),
+            }
+        }
+    }
+
+    impl Commands for Timed {
+        fn delete(&self, number: u32) -> io::Result<()> {
+            logged(&self.log, format!("delete {number}"));
+            if self.delete.wait() {
+                Err(io::Error::other("the driver refused the delete"))
+            } else {
+                Ok(())
+            }
+        }
+        fn info(&self, number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+            logged(&self.log, format!("info {number}"));
+            if self.info.wait() {
+                Err(io::Error::other("the driver refused GET_PARAMS"))
+            } else {
+                Ok(None)
+            }
+        }
+        fn client_holds(&self, number: u32) -> Option<bool> {
+            logged(&self.log, format!("holds {number}"));
+            if self.holds.wait() {
+                None
+            } else {
+                Some(false)
+            }
+        }
+    }
+
+    /// Sends the command named `kind` through `bounded`, and says what it
+    /// answered.
+    fn sent(bounded: &mut Bounded<'_, Logged, Timed>, kind: &str) -> String {
+        match kind {
+            "delete" => match bounded.delete(3) {
+                Ok(()) => "deleted".into(),
+                Err(e) => e.to_string(),
+            },
+            "info" => match bounded.info(3) {
+                Ok(_) => "info".into(),
+                Err(e) => e.to_string(),
+            },
+            _ => format!("holds: {:?}", bounded.client_holds(3)),
+        }
+    }
+
+    /// The give-up's commands share one limit (M1.3ak; S4 of #87's
+    /// review): the deadline is the limit after the bounded control was
+    /// made, not the limit after each command is sent. For each order of
+    /// two of the three commands (the delete, the reading of the info,
+    /// the open that asks whether a client holds the device), the first
+    /// answers after half the limit and the second never: the second
+    /// ends when the limit is up, not half a limit later, and the third
+    /// is then not sent. With a deadline per command the second would end
+    /// at one and a half limits, and the third would be sent.
+    ///
+    /// The orders run on threads of their own, at once. Each must end
+    /// before one and a half limits, which leaves a right implementation
+    /// half a limit for its threads to be woken. A deadline per command
+    /// cannot: the first command's half limit and the second's whole one
+    /// are each a sleep or a wait of at least that long, so the plant is
+    /// caught whatever the machine's load.
+    #[test]
+    fn the_give_ups_commands_share_one_limit() {
+        const KINDS: [&str; 3] = ["delete", "info", "holds"];
+        let limit = Duration::from_secs(1);
+        let mut orders = Vec::new();
+        for first in KINDS {
+            for second in KINDS.into_iter().filter(|&kind| kind != first) {
+                orders.push(std::thread::spawn(move || {
+                    let log = Log::default();
+                    let commands =
+                        Timed::first_then_never(&log, (first, Answer::After(limit / 2)), second);
+                    let mut inner = Logged {
+                        log: log.clone(),
+                        run: std::path::PathBuf::from("/nonexistent"),
+                        answers: true,
+                    };
+                    let began = Instant::now();
+                    let mut bounded = Bounded::new(&mut inner, commands, limit);
+                    let answered = sent(&mut bounded, first);
+                    let unanswered = sent(&mut bounded, second);
+                    let took = began.elapsed();
+                    let third = KINDS
+                        .into_iter()
+                        .find(|&kind| kind != first && kind != second)
+                        .expect("a third command");
+                    let unsent = sent(&mut bounded, third);
+                    (
+                        first,
+                        second,
+                        answered,
+                        unanswered,
+                        took,
+                        unsent,
+                        read(&log),
+                    )
+                }));
+            }
+        }
+        for order in orders {
+            let (first, second, answered, unanswered, took, unsent, log) =
+                order.join().expect("an order's thread");
+            let order = format!("{first} then {second}");
+            assert!(
+                took >= limit && took < limit * 3 / 2,
+                "{order}: the second command ended {took:?} after the bounded control was made, \
+                 with a limit of {limit:?}"
+            );
+            assert!(
+                !answered.contains("no answer") && !answered.contains("not sent"),
+                "{order}: {answered}"
+            );
+            match second {
+                "holds" => assert_eq!(unanswered, "holds: None", "{order}"),
+                _ => assert!(
+                    unanswered.contains("had no answer within the 1 s"),
+                    "{order}: {unanswered}"
+                ),
+            }
+            match KINDS
+                .into_iter()
+                .find(|&kind| kind != first && kind != second)
+            {
+                Some("holds") => assert_eq!(unsent, "holds: None", "{order}"),
+                _ => assert!(unsent.contains("was not sent"), "{order}: {unsent}"),
+            }
+            assert_eq!(
+                log,
+                [format!("{first} 3"), format!("{second} 3")],
+                "{order}: nothing sent after the limit, and nothing unbounded"
+            );
+        }
+    }
+
+    /// A start given up, with [`Logged`] as the lifecycle's control and
+    /// `commands` as the bounded ones, for a device 3 with its note.
+    /// `fails_at` is as in [`given_up`]. Returns the exit, the log, whether
+    /// a failure note is there, and how long it took.
+    fn given_up_with(
+        log: &Log,
+        commands: Timed,
+        fails_at: Option<u32>,
+        limit: Duration,
+    ) -> (Exit, Vec<String>, bool, Duration) {
+        let (done, outcome) = mpsc::channel();
+        let log = log.clone();
+        std::thread::spawn(move || {
+            use skyzfs_ublk::lifecycle::Records;
+            let keep = tempfile::tempdir().expect("a directory");
+            let (volume, run) = (keep.path().join("volume"), keep.path().join("run"));
+            std::fs::create_dir(&volume).expect("the volume's directory");
+            std::fs::create_dir(&run).expect("the run directory");
+            let mut records = Files::new(&volume, &run, [1; 16], Duration::ZERO).expect("records");
+            records.create_run_dirs().expect("the run directories");
+            records.write_note(3, &[9; 16]).expect("a note");
+            let mut kernel = Logged {
+                log: log.clone(),
+                run,
+                answers: true,
+            };
+            let looks = std::cell::Cell::new(0);
+            let failed = || {
+                looks.set(looks.get() + 1);
+                fails_at.is_some_and(|at| looks.get() >= at)
+            };
+            let began = Instant::now();
+            let (exit, _kept) = give_up_unanswered(
+                &mut kernel,
+                commands,
+                limit,
+                &mut records,
+                3,
+                false,
+                [1; 16],
+                failed,
+                || {
+                    logged(&log, "stopped");
+                    Some(())
+                },
+            );
+            let took = began.elapsed();
+            let failure = records.failure().ok().flatten().is_some();
+            let _ = done.send((exit, read(&log), failure, took));
+        });
+        outcome
+            .recv_timeout(limit * 20 + Duration::from_secs(5))
+            .expect("a start given up ends within its limits")
+    }
+
+    /// A start given up ends within one limit, whichever of its commands
+    /// takes its time and whichever has no answer (M1.3ak; S4 of #87's
+    /// review). Three ways through it, each with a first command that
+    /// answers after half the limit and a second that never answers:
+    /// - a failure flagged before the delete: the open that asks whether
+    ///   a client holds the device answers late, the delete never; exit
+    ///   3, the failure note written;
+    /// - at a start: the delete is refused late, the reading of the
+    ///   device's info that follows a refused delete never answers;
+    ///   exit 9;
+    /// - a failure flagged after the stop: the delete answers late, and
+    ///   the open never; exit 3. One bounded control serves the whole
+    ///   give-up, the failure's way after the stop included.
+    ///
+    /// The three run on threads of their own, at once. Each must end
+    /// before one and a half limits, as in
+    /// [`the_give_ups_commands_share_one_limit`]. A deadline per command,
+    /// or a bounded control of its own for the failure's way, takes at
+    /// least one and a half limits.
+    #[test]
+    fn a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for() {
+        let limit = Duration::from_secs(1);
+        let late = limit / 2;
+        let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ways = [
+            (
+                "a failure before the delete",
+                ("holds", Answer::After(late)),
+                "delete",
+                Some(1),
+                Exit::Failed,
+                strings(&["holds 3", "delete 3", "stopped"]),
+            ),
+            (
+                "at a start",
+                ("delete", Answer::FailsAfter(late)),
+                "info",
+                None,
+                Exit::NotStarted,
+                strings(&["delete 3", "info 3", "stopped"]),
+            ),
+            (
+                "a failure after the stop",
+                ("delete", Answer::After(late)),
+                "holds",
+                Some(2),
+                Exit::Failed,
+                strings(&["delete 3", "stopped", "holds 3"]),
+            ),
+        ];
+        let ways = ways.map(|(way, first, second, fails_at, wanted, sent_in_order)| {
+            let given_up = std::thread::spawn(move || {
+                let log = Log::default();
+                let commands = Timed::first_then_never(&log, first, second);
+                given_up_with(&log, commands, fails_at, limit)
+            });
+            (way, fails_at, wanted, sent_in_order, given_up)
+        });
+        for (way, fails_at, wanted, sent_in_order, given_up) in ways {
+            let (exit, log, failure, took) = given_up.join().expect("a way's thread");
+            assert_eq!(exit, wanted, "{way}");
+            assert_eq!(log, sent_in_order, "{way}: nothing sent after the limit");
+            assert_eq!(failure, fails_at.is_some(), "{way}: the failure note");
+            assert!(
+                took >= limit && took < limit * 3 / 2,
+                "{way}: the give-up took {took:?} with a limit of {limit:?}"
+            );
+        }
+    }
+
+    /// A delete with no answer gives 9, and the line names the delete
+    /// (M1.3ak): the give-up ends with 9, and what the lifecycle's delete
+    /// made of the bounded delete's error, said as serve says it, names
+    /// DEL_DEV_ASYNC and the limit. #87's test said the line from an
+    /// error it made itself; this one says it from the give-up's own.
+    #[test]
+    fn a_delete_with_no_answer_gives_9_and_a_line_that_names_it() {
+        use skyzfs_ublk::lifecycle::Records;
+        let limit = Duration::from_millis(200);
+
+        let log = Log::default();
+        let commands =
+            Timed::first_then_never(&log, ("info", Answer::After(Duration::ZERO)), "delete");
+        let (exit, sent_in_order, failure, _) = given_up_with(&log, commands, None, limit);
+        assert_eq!(exit, Exit::NotStarted);
+        assert_eq!(sent_in_order, ["delete 3", "stopped"]);
+        assert!(!failure);
+
+        let keep = tempfile::tempdir().expect("a directory");
+        let (volume, run) = (keep.path().join("volume"), keep.path().join("run"));
+        std::fs::create_dir(&volume).expect("the volume's directory");
+        std::fs::create_dir(&run).expect("the run directory");
+        let mut records = Files::new(&volume, &run, [1; 16], Duration::ZERO).expect("records");
+        records.create_run_dirs().expect("the run directories");
+        records.write_note(3, &[9; 16]).expect("a note");
+        let log = Log::default();
+        let mut inner = Logged {
+            log: log.clone(),
+            run,
+            answers: true,
+        };
+        let commands =
+            Timed::first_then_never(&log, ("info", Answer::After(Duration::ZERO)), "delete");
+        let mut bounded = Bounded::new(&mut inner, commands, limit);
+        let deleted = give_up_start(&mut bounded, &mut records, 3, false);
+        assert_eq!(read(&log), ["delete 3"], "nothing sent after the delete");
+        assert_eq!(
+            records.note(3).ok().flatten(),
+            None,
+            "the note is not put back"
+        );
+        assert_eq!(
+            gave_up_said(3, false, &GaveUp::NoAnswer, deleted.as_ref()),
+            format!(
+                "the start of device 3 had no answer within {} s: serve gives it up; device 3, \
+                 which this serve added and never started, is to be deleted: device 3 could not \
+                 be deleted (DEL_DEV_ASYNC of device 3 had no answer within the 200 ms that a \
+                 start given up waits for the kernel's commands: it stays with the driver, which \
+                 may still carry it out) and is left without its note, which was not put back: \
+                 deleting it by hand, or a reboot, resolves it; the volume is not failed; exit 9: \
+                 a supervisor should retry the serve once; a second 9 is for a person",
+                START_LIMIT.as_secs()
+            )
+        );
+    }
+
     /// A target that takes requests and never answers one: a store
     /// whose disk has gone.
     struct Silent(Vec<skyzfs_blk::Request>);
