@@ -186,7 +186,7 @@ use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
-use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
+use skyzfs_ublk::status::{self, Board, Pace, Status, StoreShown, ZeroesShown};
 use skyzfs_ublk::volume::StoreVolume;
 use skyzfs_ublk_sys::control::{block_device, Kernel};
 use skyzfs_ublk_sys::queue::{Device, Open};
@@ -551,20 +551,15 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 ) {
 }
 
-/// The store's state as the status file shows it. The in-place store has
-/// no log, no steps and no times of its own: the file shows zeros for
-/// those (their fields stay until the status file's next version), how
-/// write-zeroes reach the image, and the I/O threads' queue.
-fn log_shown(store: &Target) -> LogShown {
-    LogShown {
-        timing: None,
-        pump: None,
-        live: 0,
-        steps: 0,
-        stepping: false,
-        own_syncs: 0,
+/// The store's state as the status file shows it, with the pump's
+/// times: how write-zeroes reach the image, the I/O threads' queue and
+/// the count of cuts.
+fn store_shown(store: &Target, pump: skyzfs_ublk::pump::PumpTiming) -> StoreShown {
+    StoreShown {
         zeroes: zeroes_shown(store.zeroes()),
+        pump,
         io_queue: Some(store.io_queue()),
+        cuts: Some(store.cuts()),
     }
 }
 
@@ -584,11 +579,8 @@ fn post<Q: skyzfs_ublk::pump::Queue>(board: &Board, pump: &mut Pump<Delayed<Q>, 
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
     board.post(counters);
-    let now = LogShown {
-        pump: Some(pump.timing()),
-        ..log_shown(pump.target())
-    };
-    board.post_log(now, false);
+    let timing = pump.timing();
+    board.post_store(store_shown(pump.target(), timing));
 }
 
 /// Run `serve`. Prints for itself: the ready line has to be out when
@@ -809,22 +801,30 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         take_over: took_over,
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
+    // The test build's request log hears of the store's writes applied,
+    // its flushes' barriers and its cuts.
+    #[cfg(feature = "test-hooks")]
+    let served = {
+        let mut served = served;
+        if let Some(file) = &request_log {
+            served.watch(crate::record::watcher(crate::record::Lines::another(file)));
+        }
+        served
+    };
     let board = Arc::new(Board::new());
     // The store as the start left it, on the board before the status
     // thread's first write, which would otherwise show nothing of it
     // until the queue's thread has had its first turn: on an idle
     // device, the first request.
-    let first_log = LogShown {
-        pump: Some(skyzfs_ublk::pump::PumpTiming::default()),
-        ..log_shown(&served)
-    };
-    board.post_log(first_log, false);
+    board.post_store(store_shown(&served, Default::default()));
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let hold = serve.hooks.hold;
     #[cfg(feature = "test-hooks")]
     let refuse = serve.hooks.refuse;
     let locked = !serve.allow_unlocked_memory;
+    #[cfg(feature = "test-hooks")]
+    let size = shape.size;
     let body = {
         let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
         queue_body(move |queue| {
@@ -836,7 +836,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // Below the delays: the record says what the kernel
             // handed over and what it was given.
             #[cfg(feature = "test-hooks")]
-            let queue = crate::record::Recorded::new(queue, request_log, number);
+            let queue = crate::record::Recorded::new(queue, request_log, number, size);
             let queue = Delayed::new(queue, delay, hold, move || wake.wake());
             // The store goes back to the main thread with the
             // outcome: the volume's lock is held until the main
@@ -879,27 +879,26 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let stopper = stopper.clone();
             let start_ms = start_ms.clone();
             move || {
-                board.publish_with_log(Pace::new(STATUS_INTERVAL_MS), |counters, log, failures| {
-                    let status = Status {
-                        version: status::VERSION,
-                        pid: std::process::id(),
-                        queues,
-                        depth,
-                        boot,
-                        identity,
-                        written_ms: status::uptime_ms()?,
-                        counters: *counters,
-                        failures,
-                        first_write_copies: stopper.first_write_copies(),
-                        recovered_unacknowledged: recovered,
-                        log: Some(LogStatus {
-                            shown: *log,
+                board.publish_with_store(
+                    Pace::new(STATUS_INTERVAL_MS),
+                    |counters, shown, failures| {
+                        let status = Status {
+                            version: status::VERSION,
+                            pid: std::process::id(),
+                            queues,
+                            depth,
+                            boot,
+                            identity,
+                            written_ms: status::uptime_ms()?,
+                            counters: *counters,
+                            failures,
+                            first_write_copies: stopper.first_write_copies(),
                             start_ms: start_ms.load(Ordering::SeqCst),
-                            replayed_bytes: log_bytes,
-                        }),
-                    };
-                    status::write(&path, &status)
-                })
+                            shown: *shown,
+                        };
+                        status::write(&path, &status)
+                    },
+                )
             }
         })
         .map_err(|e| format!("the status thread: {e}"))?;

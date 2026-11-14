@@ -118,14 +118,11 @@ fn the_pump_serves_the_in_place_store() {
     assert_eq!(results, [(0, 4096), (1, 8192), (2, 0)]);
 
     // The pump's own times: three requests submitted and committed,
-    // none of them a read; the times of a record that is no more stay
-    // zero.
+    // none of them a read.
     let timing = pump.timing();
     assert_eq!(timing.to_submit.count, 3, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 3, "{timing:?}");
     assert_eq!(timing.read_to_commit.count, 0, "{timing:?}");
-    assert_eq!(timing.store.count, 0, "{timing:?}");
-    assert_eq!(timing.behind_store, 0, "{timing:?}");
     for spent in [timing.to_submit, timing.other_to_commit] {
         assert!(spent.max_ns <= spent.sum_ns, "{timing:?}");
     }
@@ -149,7 +146,6 @@ fn the_pump_serves_the_in_place_store() {
     assert!(returned[&4].iter().all(|b| *b == 0x41));
     assert!(returned[&5].iter().all(|b| *b == 0), "never written");
     assert_eq!(pump.counters().in_flight, 0);
-    assert_eq!(pump.counters().unstored, 0);
 
     // The power is cut after the stop: the next start finds what the
     // pump's flush covered. The write after it is lost, as the cut

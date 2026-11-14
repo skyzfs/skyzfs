@@ -19,6 +19,7 @@ skyzfs-blk = { workspace = true }
 skyzfs-local = { workspace = true }
 skyzfs-ublk = { workspace = true }
 skyzfs-ublk-sys = { workspace = true }
+skyzfs-uberblock = { workspace = true }
 thiserror = { workspace = true }
 
 # statfs, for the rule that the daemon's files are on no ZFS pool.

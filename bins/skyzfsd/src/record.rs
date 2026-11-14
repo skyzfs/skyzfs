@@ -53,6 +53,36 @@
 //!   `send` have been handed to the kernel.
 //! - `down`: that wait or flush failed; those commits may or may not
 //!   have reached the kernel.
+//! - `label`: the bytes of a write that touches either end of the
+//!   volume, written as the queue hands the write's buffer over and so
+//!   between its `recv` and the store's receiving it. The ends are the
+//!   first 512 KiB, and from 512 KiB before the volume's size rounded
+//!   down to 256 KiB to the volume's end: the four labels of a vdev on
+//!   the whole volume (`vdev_label_offset` in OpenZFS) and the 512 KiB
+//!   at each end. The result column holds every byte of the write, the
+//!   part outside the ends too, in lowercase hex, two digits a byte;
+//!   the other columns are the `recv` line's.
+//! - `applied`: the store has applied write `tag` whole: its direct
+//!   write returned whole and the store took the result, before the
+//!   store completes it and so before its `commit`. Every write that
+//!   succeeds has one; a failed one has none. A write-zeroes has none:
+//!   the store applies it when it executes it, in the order it was
+//!   received relative to a flush, so its `recv` line places it.
+//! - `barrier`: flush `tag` reached its barrier in the store: every
+//!   write received before it has ended, and nothing received after it
+//!   has begun. The op column says `flush` for the kernel's flush, and
+//!   `fua_flush` for the flush the daemon adds after an operation of
+//!   that tag that carried FUA.
+//! - `cut`: the store counted a cut at that barrier (design §5.2), after
+//!   its `barrier` line; the result column is the cut's transaction
+//!   group. The `cut` lines of an instance are its cuts in order: their
+//!   number is that instance's `cuts` in `status`.
+//!
+//! The store's three lines (`applied`, `barrier`, `cut`) are written on
+//! the queue's thread, which drives the store, through a second handle
+//! of the same file: they fall in the file in the order of the queue's
+//! own events.
+//!
 //! - `ended`: a command of the queue that the driver ended with a result
 //!   other than OK, as the queue's wait or its last flush returned it
 //!   (after that wait's or flush's `sent` or `down`, before a wait's
@@ -98,8 +128,11 @@
 //! - **A request that arrives during the queue's last flush** (at a
 //!   stop) is dropped by the queue and has no `recv` line, though the
 //!   kernel's trace shows it issued.
-//! - **The record costs** two or three `write` calls per request on the
-//!   queue's thread: a rate measured with it is not the rate without it.
+//! - **The record costs** three or four `write` calls per request on the
+//!   queue's thread, and a write at either end of the volume is written
+//!   out whole in hex (with ZFS, a label of 112 KiB and an uberblock to
+//!   each of the four labels in every transaction group): a rate
+//!   measured with it is not the rate without it.
 //!
 //! A record that cannot be written does not stop the daemon: the first
 //! error is said once on standard error, and the record ends there.
@@ -108,8 +141,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Write as _};
 use std::path::Path;
 
-use skyzfs_blk::Buf;
-use skyzfs_ublk::pump::{Command, Fetched, Queue, QueueDown, Unfetched, Wake};
+use skyzfs_blk::{Buf, RequestId};
+use skyzfs_local::inplace::{Seen, Watcher};
+use skyzfs_uberblock::{Labels, LABEL_SIZE};
+use skyzfs_ublk::pump::{tag_of, Command, Fetched, Queue, QueueDown, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
 /// Open the record at `path` for appending, creating it if need be.
@@ -161,38 +196,35 @@ fn columns(event: &str, tag: &str, desc: Option<&Desc>, result: &str) -> String 
     format!("{event}\t{tag}\t{op}\t{sector}\t{sectors}\t{result}")
 }
 
-/// A queue whose requests and answers are written down, if it was given
-/// a file: see the [module documentation](self).
-pub struct Recorded<Q: Queue> {
-    inner: Q,
+/// The lines one handle of the record's file writes.
+pub struct Lines {
     file: Option<File>,
     pid: u32,
-    /// The request each tag holds, as the kernel handed it over.
-    held: Vec<Option<Desc>>,
-    /// Commits made since the last `sent` or `down` line: the count the
-    /// next `send` names.
-    unsent: u64,
 }
 
-impl<Q: Queue> Recorded<Q> {
-    /// `inner`, with its requests and answers written to `file` if
-    /// there is one; the `start` line names `device`.
-    pub fn new(inner: Q, file: Option<File>, device: u32) -> Self {
-        let depth = inner.depth();
-        let mut recorded = Recorded {
-            inner,
+impl Lines {
+    /// Lines to `file`, if there is one.
+    pub fn new(file: Option<File>) -> Self {
+        Lines {
             file,
             pid: std::process::id(),
-            held: vec![None; usize::from(depth)],
-            unsent: 0,
-        };
-        recorded.line(&columns(
-            "start",
-            &device.to_string(),
-            None,
-            &depth.to_string(),
-        ));
-        recorded
+        }
+    }
+
+    /// Lines to another handle of `file`, for the store's events. If
+    /// one cannot be had, that is said once on standard error and the
+    /// record has no store lines.
+    pub fn another(file: &File) -> Self {
+        match file.try_clone() {
+            Ok(file) => Self::new(Some(file)),
+            Err(e) => {
+                crate::to_stderr(&format!(
+                    "skyzfsd: the request log has no lines of the store: a second handle \
+                     of its file cannot be had ({e})\n"
+                ));
+                Self::new(None)
+            }
+        }
     }
 
     fn line(&mut self, columns: &str) {
@@ -206,6 +238,107 @@ impl<Q: Queue> Recorded<Q> {
             ));
             self.file = None;
         }
+    }
+}
+
+/// The store's events as lines of the record, to `lines`: see the
+/// [module documentation](self).
+pub fn watcher(mut lines: Lines) -> Watcher {
+    Box::new(move |seen| lines.line(&store_columns(seen)))
+}
+
+/// One line of the store's events, without the time and the pid.
+fn store_columns(seen: Seen) -> String {
+    let named = |id: RequestId| {
+        let (tag, added) = tag_of(id);
+        (tag, if added { "fua_flush" } else { "flush" })
+    };
+    match seen {
+        Seen::Applied(id) => format!("applied\t{}\twrite\t-\t-\t-", tag_of(id).0),
+        Seen::Barrier(id) => {
+            let (tag, op) = named(id);
+            format!("barrier\t{tag}\t{op}\t-\t-\t-")
+        }
+        Seen::Cut(id, cut) => {
+            let (tag, op) = named(id);
+            format!("cut\t{tag}\t{op}\t-\t-\t{}", cut.group)
+        }
+    }
+}
+
+/// The ends of a volume whose writes the record writes out: see the
+/// [module documentation](self).
+#[derive(Debug, Clone, Copy)]
+struct Ends {
+    /// The first byte after the first end.
+    head: u64,
+    /// The first byte of the last end, which runs to the volume's end.
+    tail: u64,
+}
+
+impl Ends {
+    fn of(size: u64) -> Self {
+        let two_labels = 2 * LABEL_SIZE;
+        Ends {
+            head: two_labels,
+            tail: Labels::for_size(size).psize().saturating_sub(two_labels),
+        }
+    }
+
+    /// Whether `len` bytes at `offset` touch either end.
+    fn touched(self, offset: u64, len: u64) -> bool {
+        len > 0 && (offset < self.head || offset.saturating_add(len) > self.tail)
+    }
+}
+
+/// `bytes` in lowercase hex, two digits a byte.
+fn hex(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = String::with_capacity(2 * bytes.len());
+    for byte in bytes {
+        text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        text.push(char::from(DIGITS[usize::from(byte & 0xf)]));
+    }
+    text
+}
+
+/// A queue whose requests and answers are written down, if it was given
+/// a file: see the [module documentation](self).
+pub struct Recorded<Q: Queue> {
+    inner: Q,
+    lines: Lines,
+    ends: Ends,
+    /// The request each tag holds, as the kernel handed it over.
+    held: Vec<Option<Desc>>,
+    /// Commits made since the last `sent` or `down` line: the count the
+    /// next `send` names.
+    unsent: u64,
+}
+
+impl<Q: Queue> Recorded<Q> {
+    /// `inner`, with its requests and answers written to `file` if
+    /// there is one; the `start` line names `device`, a volume of
+    /// `size` bytes.
+    pub fn new(inner: Q, file: Option<File>, device: u32, size: u64) -> Self {
+        let depth = inner.depth();
+        let mut recorded = Recorded {
+            inner,
+            lines: Lines::new(file),
+            ends: Ends::of(size),
+            held: vec![None; usize::from(depth)],
+            unsent: 0,
+        };
+        recorded.line(&columns(
+            "start",
+            &device.to_string(),
+            None,
+            &depth.to_string(),
+        ));
+        recorded
+    }
+
+    fn line(&mut self, columns: &str) {
+        self.lines.line(columns);
     }
 
     /// Before a wait or a flush: the commits it hands to the kernel.
@@ -269,7 +402,18 @@ impl<Q: Queue> Queue for Recorded<Q> {
     }
 
     fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
-        self.inner.take_buf(tag, blocks)
+        let buf = self.inner.take_buf(tag, blocks)?;
+        let held = self.held.get(usize::from(tag)).copied().flatten();
+        if let Some(desc) = held.filter(|desc| desc.op() == op::WRITE) {
+            let offset = desc.start_sector.saturating_mul(512);
+            let len = u64::from(desc.nr_sectors) * 512;
+            if self.lines.file.is_some() && self.ends.touched(offset, len) {
+                let len = usize::try_from(len).unwrap_or(usize::MAX).min(buf.len());
+                let bytes = hex(&buf[..len]);
+                self.line(&columns("label", &tag.to_string(), Some(&desc), &bytes));
+            }
+        }
+        Some(buf)
     }
 
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {

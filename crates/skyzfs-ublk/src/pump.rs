@@ -349,11 +349,6 @@ pub struct Counters {
     pub refused: u64,
     /// Requests fetched and not committed yet.
     pub in_flight: u64,
-    /// Always 0 since M1.3t-b, which removed the record of what was
-    /// acknowledged: completions that waited because the position could
-    /// not be stored. Kept so that the status file keeps its field, and
-    /// what reads it reads on, until the file's next version.
-    pub unstored: u64,
     /// Commands the driver ended with its abort ([`ABORTED`]): the queue
     /// is being stopped. Each tag's last command ends so.
     pub commands_aborted: u64,
@@ -401,13 +396,6 @@ pub struct PumpTiming {
     pub read_to_taken: Spent,
     /// The same for every other request.
     pub other_to_taken: Spent,
-    /// Always zero since M1.3t-b: the storing of the acknowledged
-    /// position. Kept, as [`Counters::unstored`] is, for the status
-    /// file's fields.
-    pub store: Spent,
-    /// Always 0 since M1.3t-b: the completions committed behind those
-    /// stores.
-    pub behind_store: u64,
 }
 
 /// What the pump notes for a tag in flight.
@@ -510,6 +498,13 @@ enum Slot {
 
 /// The id of a request's flush after its operation.
 const FLUSH_ID: u64 = 1 << 32;
+
+/// The tag that a request id the pump gives its target stands for, and
+/// whether the id is the flush the pump adds after an operation that
+/// carried FUA rather than the request itself.
+pub fn tag_of(id: RequestId) -> (u16, bool) {
+    ((id.0 & (FLUSH_ID - 1)) as u16, id.0 & FLUSH_ID != 0)
+}
 
 /// The pump of one queue. See the [module documentation](self).
 pub struct Pump<Q: Queue, T: PumpTarget> {
@@ -1039,8 +1034,7 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
     /// The target completed something.
     fn completed(&mut self, completion: Completion) -> Result<(), Stopped> {
         let Completion { id, result, buf } = completion;
-        let tag = (id.0 & (FLUSH_ID - 1)) as u16;
-        let is_flush = id.0 & FLUSH_ID != 0;
+        let (tag, is_flush) = tag_of(id);
         // When the target had this completion ready. It goes with this
         // completion alone: a request that finishes without one (it
         // is refused, or needs nothing of the target) has none.
