@@ -1,0 +1,22 @@
+P1 the last refused commit of a wait is named
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_the_driver_refuses_ends_the_pump_for_a_take_over
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P4 the refusal checked after the wait's requests are taken, before submit
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_the_driver_refuses_ends_the_pump_for_a_take_over
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N1 at a stop's end the refusal comes before QueueDown
+    -p skyzfs-ublk --lib pump::: rc 0; failed: none
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N2 what a failed flush reaps is not counted
+    -p skyzfs-ublk --lib pump::: rc 0; failed: none
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N3 a failed volume's last flush is not counted
+    -p skyzfs-ublk --lib pump::: rc 0; failed: none
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N4 the kernel queue's flush hands nothing on
+    -p skyzfs-ublk-sys --features control-test-program: rc 0; failed: none
+N5 the record writes no ended line at a flush
+    -p skyzfsd --features test-hooks --lib: rc 101; failed: record::tests::a_command_the_driver_ended_otherwise_than_ok_has_its_line
+N6 the control program does not read its last flush
+    -p skyzfs-ublk-sys --features control-test-program: rc 101; failed: run::tests::a_commit_with_no_buffer_refused_at_the_last_flush_is_said
+worktree clean: True

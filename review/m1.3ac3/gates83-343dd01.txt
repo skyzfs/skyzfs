@@ -1,0 +1,41 @@
+== cargo fmt --all --check
+rc 0
+== cargo clippy -p skyzfs-ublk -p skyzfs-ublk-sys -p skyzfsd --all-targets -- -D warnings
+    Checking skyzfs-ublk v0.0.1 (/home/user/skyzfs-pr83/crates/skyzfs-ublk)
+    Checking skyzfs-ublk-sys v0.0.1 (/home/user/skyzfs-pr83/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (/home/user/skyzfs-pr83/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 2.75s
+rc 0
+== cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+    Checking skyzfsd v0.0.1 (/home/user/skyzfs-pr83/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 0.86s
+rc 0
+== cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+    Checking skyzfs-ublk v0.0.1 (/home/user/skyzfs-pr83/crates/skyzfs-ublk)
+    Checking skyzfs-ublk-sys v0.0.1 (/home/user/skyzfs-pr83/crates/skyzfs-ublk-sys)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.07s
+rc 0
+== cargo test -p skyzfs-ublk --lib
+test status::tests::a_write_asked_for_again_that_fails_is_tried_again_an_interval_later ... ok
+
+test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+rc 0
+== cargo test -p skyzfsd --features test-hooks --lib
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 63 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.17s
+
+rc 0
+== cargo test -p skyzfsd --lib
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 51 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.24s
+
+rc 0
+== cargo test -p skyzfs-ublk-sys --features control-test-program
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc 0
