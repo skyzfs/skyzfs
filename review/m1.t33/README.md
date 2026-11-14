@@ -31,3 +31,10 @@
   queue that hands a flush with start sector u64::MAX. It panics at
   370:18 as on the kernel, and passes with `saturating_mul`. The script
   restores the file it changes.
+- Next look at 39a3625 (a5796cc, then a merge of zfs-topology with
+  #81): https://github.com/skyzfs/skyzfs/pull/80#issuecomment-6874795702.
+  The blocker is settled on 26.04 and 26.04-arm (control rig
+  43576630830): `pin_refused_flush_completes_after_take_over` PASS,
+  fsync 0 after 233 and 231 ms, the take-over handed `flushes 1`; the
+  write take-over `writes 1`. ubuntu-24.04 was queued. `plants80d.py`,
+  `plants80d.txt`: A1-A6 on a5796cc's changes, all caught.
