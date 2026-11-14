@@ -491,6 +491,28 @@ impl<'q> KernelQueue<'q> {
         self.bufs.ranges()
     }
 
+    /// Not API: for the control test program only. Commit the request
+    /// on `tag` with `result` and no buffer: the driver is told the
+    /// address 0. A queue of this binding asks for neither of the
+    /// features under which a commit may name no buffer (`NEED_GET_DATA`
+    /// and user copy), so the driver refuses the commit when it is
+    /// submitted, before it changes anything (`-EINVAL`, in
+    /// `ublk_drv.c` at v6.11, v6.17 and v7.0): the request stays the
+    /// server's, unanswered, and no command waits on the tag. That is
+    /// the malformed kind of refused commit ([`Queue::wait`]). The tag's
+    /// buffer is left where it is, and no memory is named.
+    ///
+    /// An error is the library's refusal to put the commit on the ring,
+    /// before anything is sent: the request is then still the server's
+    /// to answer. For this queue's flags the library has no reason to
+    /// refuse it.
+    #[doc(hidden)]
+    pub fn commit_with_no_buffer_for_tests(&mut self, tag: u16, result: i32) -> io::Result<()> {
+        self.queue
+            .complete_io_cmd_unified(tag, BufDesc::Slice(&[]), Ok(UblkIORes::Result(result)))
+            .map_err(|e| io::Error::other(e.to_string()))
+    }
+
     /// Put a poll of the wake descriptor on the ring: it completes
     /// when the descriptor is next written. A poll names no memory.
     fn arm(&self) -> io::Result<()> {

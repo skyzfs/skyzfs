@@ -11,8 +11,8 @@
 //! skyzfs-ublk-control begin-recovery N [--retry]
 //! skyzfs-ublk-control client-holds N
 //! skyzfs-ublk-control set-params N --size BYTES
-//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC] [--delete-after-ms T]
-//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC] [--delete-after-ms T]
+//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--delete-after-ms T]
+//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--delete-after-ms T]
 //! ```
 //!
 //! # Output
@@ -48,8 +48,14 @@
 //!   where K counts the requests the server was handed before the
 //!   start's command (for a take-over: the end of the recovery) was
 //!   sent. When the server ends, a line of step `served` with its
-//!   counters. A step of the start that the driver refuses is the
-//!   answer `refused at STEP: ...` and there is no second line.
+//!   counters: `ended by REASON; handed K reads R writes W flushes F
+//!   discards D others O failed E held H first_write_copies C
+//!   commands_aborted A commands_failed X`. The last two count the
+//!   commands of the queue that the driver ended otherwise than OK:
+//!   with its abort (`UBLK_IO_RES_ABORT`, the queue being stopped),
+//!   and with any other result (a command it refused). A step of the
+//!   start that the driver refuses is the answer `refused at STEP: ...`
+//!   and there is no second line.
 //!
 //! The exit status is 0 whatever the driver answered. It is 2 for a
 //! command line this program does not understand and 1 when the
@@ -74,6 +80,28 @@
 //! covers the byte) for that long before it is answered; the others are
 //! answered meanwhile. A server that ends while it holds the request
 //! does not answer it.
+//!
+//! `--refuse-one-commit read:OFFSET`, `write:OFFSET` or `flush` commits
+//! the first such request with no buffer, which the driver refuses as
+//! malformed: it counts the request as the server's, unanswered, and no
+//! command waits on its tag any more (see
+//! `KernelQueue::commit_with_no_buffer_for_tests`). The request is not
+//! answered otherwise. The program prints a line of step
+//! `refuse-commit` when it sends the commit, `sent for a read at byte
+//! B on tag T` (or a write, or `a flush`); if the library will not put
+//! it on the ring, `not sent for ... on tag T: REASON` instead, and the
+//! request is answered as any other and the server goes on (no test
+//! step can then pass). Then one line with the driver's
+//! answer: `refused: errno E (...)`, `aborted` (the queue was being
+//! stopped), or `taken` (the tag was handed its next request, so the
+//! driver took the commit). On a refusal the server ends at once, as
+//! the daemon does on a refused commit: it answers nothing more,
+//! holds what it was handed, and leaves the device waiting for a
+//! server, as at any end of the program. Its `served` line then says
+//! `ended by the refused commit`. A take-over (`take-over`) then shows
+//! whether the kernel issues the held request again; a `delete` shows
+//! what becomes of it without one. When both options match a request,
+//! the refusal is checked first.
 //!
 //! `--delete-after-ms T` deletes the server's own device, from a second
 //! thread of this process, T ms after the device went live, while the
@@ -117,6 +145,8 @@ struct Serve {
     begin: bool,
     wait: Duration,
     hold: Option<Hold>,
+    /// The request whose commit names no buffer.
+    refuse: Option<What>,
     /// Delete the device this long after it went live.
     delete_after: Option<Duration>,
 }
@@ -141,21 +171,36 @@ fn number<T: std::str::FromStr>(what: &str, text: &str) -> Result<T, String> {
         .map_err(|_| format!("{what}: '{text}' is not a number in range"))
 }
 
+/// `read:OFFSET`, `write:OFFSET` or `flush`, split at the colons.
+fn what(parts: &[&str]) -> Option<What> {
+    match parts {
+        ["flush"] => Some(What::Flush),
+        ["read", at] => at.parse().ok().map(What::Read),
+        ["write", at] => at.parse().ok().map(What::Write),
+        _ => None,
+    }
+}
+
 fn hold(text: &str) -> Result<Hold, String> {
     let bad = || {
         format!("--hold-one-request: '{text}' is not SECONDS:read:OFFSET, SECONDS:write:OFFSET or SECONDS:flush")
     };
     let parts: Vec<&str> = text.split(':').collect();
-    let what = match parts.as_slice() {
-        [_, "flush"] => What::Flush,
-        [_, "read", at] => What::Read(at.parse().map_err(|_| bad())?),
-        [_, "write", at] => What::Write(at.parse().map_err(|_| bad())?),
-        _ => return Err(bad()),
+    let [seconds, rest @ ..] = parts.as_slice() else {
+        return Err(bad());
     };
-    let seconds: u64 = parts[0].parse().map_err(|_| bad())?;
+    let what = what(rest).ok_or_else(bad)?;
+    let seconds: u64 = seconds.parse().map_err(|_| bad())?;
     Ok(Hold {
         time: Duration::from_secs(seconds),
         what,
+    })
+}
+
+fn refuse(text: &str) -> Result<What, String> {
+    let parts: Vec<&str> = text.split(':').collect();
+    what(&parts).ok_or_else(|| {
+        format!("--refuse-one-commit: '{text}' is not read:OFFSET, write:OFFSET or flush")
     })
 }
 
@@ -169,7 +214,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
     let mut rest = rest.iter();
     let (mut size, mut depth, mut retry, mut file) = (None, DEPTH, false, None);
     let (mut begun, mut wait, mut held) = (false, Duration::ZERO, None);
-    let mut delete_after = None;
+    let (mut delete_after, mut refused) = (None, None);
     while let Some(option) = rest.next() {
         let allowed: &[&str] = match step.as_str() {
             "add" => &["--size", "--depth"],
@@ -181,12 +226,14 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                 "--recovery-begun",
                 "--recovery-wait-ms",
                 "--hold-one-request",
+                "--refuse-one-commit",
                 "--delete-after-ms",
             ],
             "take-over" => &[
                 "--file",
                 "--recovery-wait-ms",
                 "--hold-one-request",
+                "--refuse-one-commit",
                 "--delete-after-ms",
             ],
             _ => &[],
@@ -210,6 +257,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                     value()?,
                 )?))
             }
+            "--refuse-one-commit" => refused = Some(refuse(value()?)?),
             _ => held = Some(hold(value()?)?),
         }
     }
@@ -221,6 +269,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
             begin,
             wait,
             hold: held,
+            refuse: refused,
             delete_after,
         }))
     };
@@ -245,16 +294,16 @@ mod run {
     use std::fs::{File, OpenOptions};
     use std::io::{self, Write};
     use std::os::unix::fs::FileExt;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use skyzfs_blk::BLOCK_SIZE;
     use skyzfs_ublk::lifecycle::{AddError, Control, DeviceState, Shape};
-    use skyzfs_ublk::pump::{Fetched, Queue, Wake as Woken};
+    use skyzfs_ublk::pump::{Command, Fetched, Queue, Unfetched, Wake as Woken, ABORTED};
     use skyzfs_ublk::translate::{op, Desc};
     use skyzfs_ublk_sys::control::Kernel;
-    use skyzfs_ublk_sys::queue::{Device, Open};
+    use skyzfs_ublk_sys::queue::{Device, KernelQueue, Open};
     use skyzfs_ublk_sys::signals::{self, Signal};
     use skyzfs_ublk_sys::{raw, Wake, FLAGS};
 
@@ -283,6 +332,13 @@ mod run {
         others: AtomicU64,
         failed: AtomicU64,
         held: AtomicU64,
+        /// Commands of the queue that the driver ended with its abort.
+        commands_aborted: AtomicU64,
+        /// Commands it ended with any other result than OK.
+        commands_failed: AtomicU64,
+        /// Whether the server ended because the driver refused its
+        /// commit with no buffer.
+        refused: AtomicBool,
     }
 
     fn covers(desc: &Desc, byte: u64) -> bool {
@@ -290,11 +346,22 @@ mod run {
         (start..start.saturating_add(u64::from(desc.nr_sectors) * 512)).contains(&byte)
     }
 
-    fn is_held(what: What, desc: &Desc) -> bool {
+    fn matches(what: What, desc: &Desc) -> bool {
         match what {
             What::Read(byte) => desc.op() == op::READ && covers(desc, byte),
             What::Write(byte) => desc.op() == op::WRITE && covers(desc, byte),
             What::Flush => desc.op() == op::FLUSH,
+        }
+    }
+
+    /// A request, for the program's lines.
+    fn named(desc: &Desc) -> String {
+        let at = desc.start_sector.saturating_mul(512);
+        match desc.op() {
+            op::READ => format!("a read at byte {at}"),
+            op::WRITE => format!("a write at byte {at}"),
+            op::FLUSH => "a flush".into(),
+            other => format!("a request of kind {other} at byte {at}"),
         }
     }
 
@@ -341,28 +408,113 @@ mod run {
         queue.commit(f.tag, result, buf);
     }
 
+    /// What the server is told to do otherwise than answer at once.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Plan {
+        hold: Option<Hold>,
+        refuse: Option<What>,
+    }
+
+    /// A queue that can commit a request with no buffer: the malformed
+    /// commit of `--refuse-one-commit`.
+    /// An error says that nothing was sent.
+    trait NoBuffer: Queue {
+        fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()>;
+    }
+
+    impl NoBuffer for KernelQueue<'_> {
+        fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()> {
+            self.commit_with_no_buffer_for_tests(tag, result)
+        }
+    }
+
     /// The server: every request from the file, one of them late if
-    /// `hold` says so.
+    /// `plan.hold` says so, and one committed with no buffer if
+    /// `plan.refuse` says so. `say` prints a line of a step.
+    ///
+    /// It counts the commands the driver ended otherwise than OK. When
+    /// the driver refuses the commit with no buffer, the server ends at
+    /// once, as the daemon does on a refused commit: it answers nothing
+    /// more (not what the same wait handed over, not a held request)
+    /// and sends nothing more, and what it holds is the kernel's to
+    /// issue again to the next server.
     fn server(
-        mut queue: impl Queue,
+        queue: &mut impl NoBuffer,
         file: File,
-        mut hold: Option<Hold>,
+        plan: Plan,
         wake: Wake,
         counts: Arc<Counts>,
+        say: impl Fn(&str, &str),
     ) {
+        let (mut hold, mut refuse) = (plan.hold, plan.refuse);
         let mut fetched: Vec<Fetched> = Vec::new();
+        let mut unfetched: Vec<Unfetched> = Vec::new();
         let mut held: Option<(Fetched, Instant)> = None;
+        // The tag whose commit named no buffer, until the driver
+        // answers that commit.
+        let mut refusing: Option<u16> = None;
         loop {
             fetched.clear();
-            // A command the driver ended otherwise than OK is not judged
-            // here: the pump counts it, and its tests say so.
-            let Ok(woken) = queue.wait(&mut fetched, &mut Vec::new()) else {
+            unfetched.clear();
+            let waited = queue.wait(&mut fetched, &mut unfetched);
+            let mut refused = false;
+            for command in &unfetched {
+                if command.result == ABORTED {
+                    counts.commands_aborted.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    counts.commands_failed.fetch_add(1, Ordering::Relaxed);
+                }
+                if refusing == Some(command.tag) && command.command == Command::Commit {
+                    refusing = None;
+                    if command.result == ABORTED {
+                        say("refuse-commit", "aborted");
+                    } else {
+                        refused = true;
+                        let why = if command.result < 0 {
+                            errno(&io::Error::from_raw_os_error(-command.result))
+                        } else {
+                            format!("result {}", command.result)
+                        };
+                        say("refuse-commit", &format!("refused: {why}"));
+                    }
+                }
+            }
+            if refused {
+                counts.refused.store(true, Ordering::SeqCst);
+                return;
+            }
+            let Ok(woken) = waited else {
                 return;
             };
             for f in fetched.drain(..) {
                 counts.handed.fetch_add(1, Ordering::Relaxed);
+                if refusing == Some(f.tag) {
+                    // The tag was handed its next request: the driver
+                    // took the commit with no buffer.
+                    refusing = None;
+                    say("refuse-commit", "taken");
+                }
+                if refuse.is_some_and(|what| matches(what, &f.desc)) {
+                    refuse = None;
+                    match queue.commit_with_no_buffer(f.tag, -libc::EIO) {
+                        Ok(()) => {
+                            say(
+                                "refuse-commit",
+                                &format!("sent for {} on tag {}", named(&f.desc), f.tag),
+                            );
+                            refusing = Some(f.tag);
+                            continue;
+                        }
+                        // Nothing was sent: the request is answered as
+                        // any other, so that nothing waits on it.
+                        Err(e) => say(
+                            "refuse-commit",
+                            &format!("not sent for {} on tag {}: {e}", named(&f.desc), f.tag),
+                        ),
+                    }
+                }
                 match hold {
-                    Some(h) if is_held(h.what, &f.desc) => {
+                    Some(h) if matches(h.what, &f.desc) => {
                         hold = None;
                         counts.held.fetch_add(1, Ordering::Relaxed);
                         held = Some((f, Instant::now() + h.time));
@@ -372,7 +524,7 @@ mod run {
                             wake.wake();
                         });
                     }
-                    _ => answer(&mut queue, &file, f, &counts),
+                    _ => answer(queue, &file, f, &counts),
                 }
             }
             if woken == Woken::Stop {
@@ -381,7 +533,7 @@ mod run {
                 return;
             }
             if let Some((f, _)) = held.take_if(|(_, due)| Instant::now() >= *due) {
-                answer(&mut queue, &file, f, &counts);
+                answer(queue, &file, f, &counts);
             }
         }
     }
@@ -452,9 +604,15 @@ mod run {
         let wake = Wake::new().map_err(|e| format!("the wake descriptor: {e}"))?;
         let counts = Arc::new(Counts::default());
         let serving = {
-            let (hold, wake, counts) = (serve.hold, wake.clone(), counts.clone());
-            device.serve(&wake.clone(), false, move |queue| {
-                server(queue, file, hold, wake, counts)
+            let plan = Plan {
+                hold: serve.hold,
+                refuse: serve.refuse,
+            };
+            let (wake, counts) = (wake.clone(), counts.clone());
+            device.serve(&wake.clone(), false, move |mut queue| {
+                server(&mut queue, file, plan, wake, counts, |step, answer| {
+                    let _ = say(step, n, answer);
+                })
             })
         };
         let serving = match serving {
@@ -492,7 +650,11 @@ mod run {
         });
         let by = loop {
             if serving.is_finished() {
-                break "the queue ended";
+                break if counts.refused.load(Ordering::SeqCst) {
+                    "the refused commit"
+                } else {
+                    "the queue ended"
+                };
             }
             if signals::wait(Duration::from_millis(100)) == Some(Signal::Stop) {
                 break "a signal";
@@ -518,7 +680,7 @@ mod run {
             "served",
             n,
             &format!(
-                "ended by {by}; handed {} reads {} writes {} flushes {} discards {} others {} failed {} held {} first_write_copies {}",
+                "ended by {by}; handed {} reads {} writes {} flushes {} discards {} others {} failed {} held {} first_write_copies {} commands_aborted {} commands_failed {}",
                 count(&counts.handed),
                 count(&counts.reads),
                 count(&counts.writes),
@@ -527,7 +689,9 @@ mod run {
                 count(&counts.others),
                 count(&counts.failed),
                 count(&counts.held),
-                stopper.first_write_copies()
+                stopper.first_write_copies(),
+                count(&counts.commands_aborted),
+                count(&counts.commands_failed)
             ),
         )?;
         match deleted {
@@ -650,6 +814,280 @@ mod run {
         };
         say(name, n, &answer)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use std::cell::RefCell;
+        use std::collections::VecDeque;
+
+        use skyzfs_blk::Buf;
+        use skyzfs_ublk::pump::QueueDown;
+
+        use super::*;
+
+        /// One wait of a [`Scripted`] queue: what it hands over and how
+        /// it returns.
+        type Turn = (Vec<Fetched>, Vec<Unfetched>, Result<Woken, QueueDown>);
+
+        /// A queue that hands over what its script says, one wait at a
+        /// time (then the queue is down), and records what the server
+        /// committed: by tag, with the result and whether a buffer came
+        /// back, or with no buffer.
+        #[derive(Default)]
+        struct Scripted {
+            turns: VecDeque<Turn>,
+            commits: Vec<(u16, i32, bool)>,
+            no_buffer: Vec<(u16, i32)>,
+            /// The library refuses a commit with no buffer.
+            no_buffer_not_sent: bool,
+        }
+
+        impl Queue for Scripted {
+            fn depth(&self) -> u16 {
+                8
+            }
+            fn wait(
+                &mut self,
+                fetched: &mut Vec<Fetched>,
+                unfetched: &mut Vec<Unfetched>,
+            ) -> Result<Woken, QueueDown> {
+                let (f, u, woken) =
+                    self.turns
+                        .pop_front()
+                        .unwrap_or((Vec::new(), Vec::new(), Err(QueueDown)));
+                fetched.extend(f);
+                unfetched.extend(u);
+                woken
+            }
+            fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
+                Some(Buf::zeroed(blocks))
+            }
+            fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
+                self.commits.push((tag, result, buf.is_some()));
+            }
+            fn flush(&mut self) -> Result<(), QueueDown> {
+                Ok(())
+            }
+        }
+
+        impl NoBuffer for Scripted {
+            fn commit_with_no_buffer(&mut self, tag: u16, result: i32) -> io::Result<()> {
+                if self.no_buffer_not_sent {
+                    return Err(io::Error::other("refused by the library"));
+                }
+                self.no_buffer.push((tag, result));
+                Ok(())
+            }
+        }
+
+        fn read(tag: u16, at: u64) -> Fetched {
+            Fetched {
+                tag,
+                desc: Desc {
+                    op_flags: u32::from(op::READ),
+                    nr_sectors: 8,
+                    start_sector: at / 512,
+                },
+            }
+        }
+
+        fn ended(tag: u16, command: Command, result: i32) -> Unfetched {
+            Unfetched {
+                tag,
+                command,
+                result,
+            }
+        }
+
+        /// Serve `turns` with `plan`; what was committed, the lines
+        /// said, and the counts.
+        fn run(turns: Vec<Turn>, plan: Plan) -> (Scripted, Vec<String>, Arc<Counts>) {
+            run_on(
+                Scripted {
+                    turns: turns.into(),
+                    ..Scripted::default()
+                },
+                plan,
+            )
+        }
+
+        /// [`run`] on a queue made by the caller.
+        fn run_on(mut queue: Scripted, plan: Plan) -> (Scripted, Vec<String>, Arc<Counts>) {
+            let path = std::env::temp_dir().join(format!(
+                "skyzfs-ublk-control-server-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .expect("a file");
+            file.set_len(1 << 20).expect("its size");
+            let _ = std::fs::remove_file(&path);
+            let lines = RefCell::new(Vec::new());
+            let counts = Arc::new(Counts::default());
+            server(
+                &mut queue,
+                file,
+                plan,
+                Wake::new().expect("a wake"),
+                counts.clone(),
+                |step, answer| lines.borrow_mut().push(format!("{step}\t{answer}")),
+            );
+            (queue, lines.into_inner(), counts)
+        }
+
+        /// The request named is committed with no buffer and nothing
+        /// else; when the driver refuses that commit the server ends at
+        /// once: what the same wait handed over is held, not answered,
+        /// and no wait follows. The refusal and the abort of another
+        /// tag are counted apart.
+        #[test]
+        fn a_refused_commit_with_no_buffer_ends_the_server_at_once() {
+            let plan = Plan {
+                refuse: Some(What::Read(8192)),
+                ..Plan::default()
+            };
+            let turns: Vec<Turn> = vec![
+                (vec![read(1, 0), read(3, 8192)], Vec::new(), Ok(Woken::Work)),
+                (
+                    vec![read(4, 4096)],
+                    vec![
+                        ended(5, Command::Fetch, ABORTED),
+                        ended(3, Command::Commit, -libc::EINVAL),
+                    ],
+                    Ok(Woken::Work),
+                ),
+                // Never reached.
+                (vec![read(6, 0)], Vec::new(), Ok(Woken::Work)),
+            ];
+            let (queue, lines, counts) = run(turns, plan);
+            assert_eq!(queue.no_buffer, vec![(3, -libc::EIO)]);
+            assert_eq!(
+                queue.commits,
+                vec![(1, 4096, true)],
+                "only tag 1 is answered"
+            );
+            assert_eq!(queue.turns.len(), 1, "no wait after the refusal");
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-commit\tsent for a read at byte 8192 on tag 3".to_string(),
+                    format!(
+                        "refuse-commit\trefused: {}",
+                        errno(&io::Error::from_raw_os_error(libc::EINVAL))
+                    ),
+                ]
+            );
+            assert!(counts.refused.load(Ordering::SeqCst));
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.handed.load(Ordering::SeqCst), 2);
+        }
+
+        /// A commit with no buffer that the driver takes (its tag is
+        /// handed the next request) or aborts does not end the server,
+        /// and only the first request named is so committed.
+        #[test]
+        fn a_commit_with_no_buffer_that_is_taken_or_aborted_ends_nothing() {
+            let plan = Plan {
+                refuse: Some(What::Read(0)),
+                ..Plan::default()
+            };
+            let taken: Vec<Turn> = vec![
+                (vec![read(2, 0)], Vec::new(), Ok(Woken::Work)),
+                (vec![read(2, 0)], Vec::new(), Ok(Woken::Work)),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, lines, counts) = run(taken, plan);
+            assert_eq!(queue.no_buffer, vec![(2, -libc::EIO)]);
+            assert_eq!(queue.commits, vec![(2, 4096, true)]);
+            assert_eq!(
+                lines.last().map(String::as_str),
+                Some("refuse-commit\ttaken")
+            );
+            assert!(!counts.refused.load(Ordering::SeqCst));
+            let aborted: Vec<Turn> = vec![
+                (vec![read(2, 0)], Vec::new(), Ok(Woken::Work)),
+                (
+                    Vec::new(),
+                    vec![ended(2, Command::Commit, ABORTED)],
+                    Ok(Woken::Work),
+                ),
+            ];
+            let (_, lines, counts) = run(aborted, plan);
+            assert_eq!(
+                lines.last().map(String::as_str),
+                Some("refuse-commit\taborted")
+            );
+            assert!(!counts.refused.load(Ordering::SeqCst));
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// A commit with no buffer that the library will not send is
+        /// said so, and the request is answered as any other: nothing
+        /// waits on it, nothing is counted as refused, and the server
+        /// goes on.
+        #[test]
+        fn a_commit_with_no_buffer_that_is_not_sent_is_said_and_the_request_answered() {
+            let plan = Plan {
+                refuse: Some(What::Read(0)),
+                ..Plan::default()
+            };
+            let turns: Vec<Turn> = vec![
+                (vec![read(2, 0)], Vec::new(), Ok(Woken::Work)),
+                (vec![read(3, 4096)], Vec::new(), Ok(Woken::Work)),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, lines, counts) = run_on(
+                Scripted {
+                    turns: turns.into(),
+                    no_buffer_not_sent: true,
+                    ..Scripted::default()
+                },
+                plan,
+            );
+            assert!(queue.no_buffer.is_empty());
+            assert_eq!(queue.commits, vec![(2, 4096, true), (3, 4096, true)]);
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-commit\tnot sent for a read at byte 0 on tag 2: refused by the library"
+                        .to_string()
+                ]
+            );
+            assert!(!counts.refused.load(Ordering::SeqCst));
+            assert_eq!(counts.handed.load(Ordering::SeqCst), 2);
+        }
+
+        /// Every command the driver ends otherwise than OK is counted,
+        /// also in the wait that finds the queue down: aborts apart from
+        /// the rest. Without a plan nothing is committed with no buffer.
+        #[test]
+        fn the_commands_the_driver_ends_otherwise_than_ok_are_counted() {
+            let aborts = (0..8)
+                .map(|tag| ended(tag, Command::Commit, ABORTED))
+                .collect();
+            let turns: Vec<Turn> = vec![
+                (
+                    vec![read(0, 0)],
+                    vec![ended(7, Command::Fetch, -libc::EBUSY)],
+                    Ok(Woken::Work),
+                ),
+                (Vec::new(), aborts, Err(QueueDown)),
+            ];
+            let (queue, lines, counts) = run(turns, Plan::default());
+            assert!(queue.no_buffer.is_empty());
+            assert!(lines.is_empty());
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 8);
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
+            assert!(!counts.refused.load(Ordering::SeqCst));
+        }
+    }
 }
 
 fn main() -> std::process::ExitCode {
@@ -740,6 +1178,7 @@ mod tests {
             begin,
             wait: Duration::ZERO,
             hold: None,
+            refuse: None,
             delete_after: None,
         };
         assert_eq!(
@@ -806,6 +1245,47 @@ mod tests {
     }
 
     #[test]
+    fn a_server_can_be_told_to_refuse_one_commit() {
+        for (line, take_over, want) in [
+            (
+                "serve 1 --file f --refuse-one-commit read:8192",
+                false,
+                What::Read(8192),
+            ),
+            (
+                "take-over 1 --file f --refuse-one-commit write:0",
+                true,
+                What::Write(0),
+            ),
+            (
+                "serve 1 --refuse-one-commit flush --file f",
+                false,
+                What::Flush,
+            ),
+        ] {
+            let Ok((_, 1, Step::Serve(serve))) = parse(&args(line)) else {
+                panic!("{line}");
+            };
+            assert_eq!(serve.refuse, Some(want), "{line}");
+            assert_eq!(serve.take_over, take_over, "{line}");
+            assert_eq!(serve.hold, None, "{line}");
+        }
+        let Ok((_, _, Step::Serve(serve))) = parse(&args(
+            "serve 1 --file f --hold-one-request 60:read:0 --refuse-one-commit read:4096",
+        )) else {
+            panic!("with a hold");
+        };
+        assert_eq!(serve.refuse, Some(What::Read(4096)));
+        assert!(serve.hold.is_some());
+        assert_eq!(refuse("read:4096"), Ok(What::Read(4096)));
+        for bad in [
+            "", "flush:1", "5:read:0", "read", "read:x", "trim:0", "5:flush",
+        ] {
+            assert!(refuse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn a_hold_names_a_read_or_a_write_at_a_byte_or_a_flush() {
         let s = Duration::from_secs(5);
         assert_eq!(
@@ -851,6 +1331,10 @@ mod tests {
             "delete 1 --delete-after-ms 5",
             "serve 1 --file f --delete-after-ms",
             "serve 1 --file f --delete-after-ms soon",
+            "serve 1 --file f --refuse-one-commit",
+            "serve 1 --file f --refuse-one-commit 5:read:0",
+            "add 1 --refuse-one-commit flush",
+            "delete 1 --refuse-one-commit flush",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad}");
         }
