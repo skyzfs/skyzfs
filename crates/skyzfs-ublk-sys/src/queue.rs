@@ -111,9 +111,11 @@ const _: () = assert!(ABORTED == sys::UBLK_IO_RES_ABORT);
 /// of a fetch on the tag: bit 63, by which the library takes the
 /// completion for no command of its own and leaves it out of its count
 /// of commands, and bit 62, by which [`ended`] tells it from the wake
-/// descriptor's poll. The library's user data of a command
-/// never has either bit (it has 24 bits of tag and code, and 16 of
-/// target data above them).
+/// descriptor's poll. The library names bit 62 `NonAsync` and reads it
+/// only on its async path, which this queue does not use; on the path
+/// this queue uses, it reads only bit 63. The library's user data of a
+/// command never has either bit (it has 24 bits of tag and code, and
+/// 16 of target data above them).
 #[cfg(feature = "control-test-program")]
 const OWN_FETCH: u64 = (1 << 63) | (1 << 62);
 
@@ -373,6 +375,45 @@ impl Device {
             _ => Ok(()),
         }
     }
+}
+
+#[cfg(feature = "control-test-program")]
+impl Device {
+    /// Not API, and built only with the feature `control-test-program`:
+    /// [`Device::start`] from a thread other than the one that opened
+    /// the device (the control test program's `--refuse-one-fetch`,
+    /// whose start may wait in the driver while the program goes on).
+    ///
+    /// The library sends a control command through an io_uring of the
+    /// calling thread's own, and makes one only for the thread that
+    /// made the control object: the start of a device never started,
+    /// from any other thread, panics in the library ("Control ring not
+    /// initialized"). This makes the calling thread's ring first, if it
+    /// has none ([`own_control_ring`]). The end of a recovery is sent
+    /// by the binding itself, on a ring of its own, and needs none.
+    #[doc(hidden)]
+    pub fn start_from_another_thread_for_tests(&self) -> io::Result<()> {
+        own_control_ring()?;
+        self.start()
+    }
+}
+
+/// Make the calling thread's control ring, as the library makes the
+/// one of the thread that makes a control object (16 entries), if the
+/// thread has none; keep the one it has. Built only with the feature
+/// `control-test-program`.
+#[cfg(feature = "control-test-program")]
+fn own_control_ring() -> io::Result<()> {
+    libublk::ublk_init_ctrl_task_ring(|ring| {
+        if ring.is_none() {
+            let made = io_uring::IoUring::<io_uring::squeue::Entry128>::builder()
+                .build(16)
+                .map_err(UblkError::IOError)?;
+            *ring = Some(made);
+        }
+        Ok(())
+    })
+    .map_err(io_error)
 }
 
 /// Whether a device whose largest request is `largest` bytes can be
@@ -921,6 +962,31 @@ mod tests {
             ended(UblkIOCtx::build_user_data(1, 0, 0, true), -libc::EIO),
             None
         );
+    }
+
+    /// The library sends a control command through a ring of the
+    /// calling thread's own, and makes one only in the thread that made
+    /// the control object. A thread that did not has none until it
+    /// makes one (the control program's start from a thread of its own,
+    /// which panicked in the library before), and making it again keeps
+    /// the one it has.
+    #[cfg(feature = "control-test-program")]
+    #[test]
+    fn a_thread_that_did_not_open_the_device_makes_its_own_control_ring() {
+        use std::os::fd::AsRawFd;
+        let ring = || libublk::with_ctrl_ring(|ring| ring.as_raw_fd());
+        std::thread::spawn(move || {
+            assert!(
+                std::panic::catch_unwind(ring).is_err(),
+                "a new thread has no control ring of its own"
+            );
+            own_control_ring().expect("the thread's control ring is made");
+            let made = ring();
+            own_control_ring().expect("a second call keeps it");
+            assert_eq!(ring(), made, "the ring the thread had is kept");
+        })
+        .join()
+        .expect("the thread's checks hold");
     }
 
     /// A first fetch that the binding put on the ring itself (the
