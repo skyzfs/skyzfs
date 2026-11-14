@@ -1,0 +1,7 @@
+D2 workers_in reads status, not comm: rc 101; failed: run::tests::the_io_uring_workers_are_read_from_a_task_directory
+D3 workers_in always says none: rc 101; failed: run::tests::the_io_uring_workers_are_read_from_a_task_directory
+E1 the ids sorted as text: rc 101; failed: run::tests::the_io_uring_workers_are_read_from_a_task_directory
+E2 the start thread's id not said: rc 101; failed: run::tests::the_start_thread_is_named_by_its_id
+E3 the workers in the order /proc gives: rc 101; failed: run::tests::the_io_uring_workers_are_read_from_a_task_directory
+E4 workers_wait reads another directory: rc 0; failed: none
+worktree clean: True
