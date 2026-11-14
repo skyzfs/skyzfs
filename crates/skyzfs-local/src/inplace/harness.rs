@@ -316,6 +316,12 @@ impl Harness for InPlaceHarness {
     fn fail_log(&mut self, target: &mut OnSim) -> Result<(), HarnessError> {
         let settle = target.settle_at_failure;
         if settle {
+            // A guard: nothing on `finish_threads`'s path looks at a sync
+            // today (only `settle`, from a poll or a wait, ends one). If
+            // something ever did, the hold has it find the sync under
+            // way rather than end it before the faults. The release
+            // below also clears a hold of whole syncs, of which this
+            // harness sets none.
             target.disk.hold_syncs_of(HOME_NAME);
             if let Some(store) = target.store() {
                 store.finish_threads();

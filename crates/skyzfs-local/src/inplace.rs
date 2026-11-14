@@ -1398,10 +1398,21 @@ impl<D: Dir> InPlace<D> {
     /// out and no sync is looked at, so a sync begun here is under way
     /// when this returns, and the completions wait for the next poll:
     /// as if the threads had been quick and the caller had not looked
-    /// since. Bounded by a minute, for a thread that never ends its job.
+    /// since.
+    ///
+    /// # Panics
+    ///
+    /// When a job is still on the threads after a minute: a thread that
+    /// never ends its job is a defect, said here rather than met later
+    /// somewhere less telling.
     pub(crate) fn finish_threads(&mut self) {
         let began = std::time::Instant::now();
-        while !self.busy.is_empty() && began.elapsed() < Duration::from_secs(60) {
+        while !self.busy.is_empty() {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "{} jobs did not end on the I/O threads within a minute",
+                self.busy.len()
+            );
             self.collect(Duration::from_millis(10));
         }
     }
