@@ -1,0 +1,4 @@
+F0 none (the test as it is): rc 0; 27 ok; nothing fails
+F5 the verdict does not look at the sent line: rc 0; 27 ok; nothing fails
+F7 the late look not bounded (no break on an answer): rc 0; 27 ok; nothing fails
+worktree clean: True
