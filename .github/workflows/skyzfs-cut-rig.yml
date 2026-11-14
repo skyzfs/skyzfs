@@ -1,0 +1,109 @@
+name: skyzfs-cut-rig
+
+# The reference for cuts and recorded pools (M2.T1, design §5.2). Each
+# job records real pools from their creation with dm-log-writes under
+# the pool's device (tests/kernel/cut-record.sh): a life with snapshots
+# and an export and import, a rewind import, multihost=on, a change of
+# configuration, stray flushes, autotrim=on and a nearly full pool. For
+# each, the reference (tests/kernel/cut_ref.py) finds the cuts, and the
+# check (tests/kernel/cut_check.py) holds every cut against real ZFS:
+# the volume at the cut's instant opens at the cut's group, every block
+# it reaches passes its checksum in every copy, and it imports
+# read-only; the cuts of each session are the groups ZFS committed. Five
+# wrong cuts must do what `EXPECTED` in cut_check.py says. Exit 1 is a
+# verdict (a cut that is not a complete pool is a finding about the
+# design), exit 2 the rig's own error.
+#
+# Each recording's fixture for the daemon's parser (M2.1) is in the
+# artifact, under NAME/fixture (format: tests/fixtures/pools/README.md).
+#
+# Runs on a pull request that touches the rig's files (all four images),
+# on a push of them to a testing branch (ubuntu-26.04 alone), and by
+# dispatch.
+on:
+  workflow_dispatch:
+    inputs:
+      images:
+        description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
+        default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
+      recordings:
+        description: "recordings, separated by spaces (life rewind multihost config stray autotrim full); empty: all"
+        default: ""
+  pull_request:
+    paths:
+      - tests/kernel/cut*
+      - tests/kernel/test_cut*
+      - tests/kernel/logwrites.py
+      - tests/kernel/replay_check.py
+      - tests/lib/**
+      - .github/workflows/skyzfs-cut-rig.yml
+  push:
+    branches: ['skyzfs-testing*']
+    paths:
+      - tests/kernel/cut*
+      - tests/kernel/test_cut*
+      - .github/workflows/skyzfs-cut-rig.yml
+
+concurrency:
+  group: cut-rig-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: the reference (no kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 tests/kernel/test_cut_ref.py -v
+      - run: python3 tests/kernel/test_cut_check.py -v
+
+  record:
+    name: record and check, ${{ matrix.image }}
+    runs-on: ${{ matrix.image }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # A push to a testing branch is a try on one image; a pull
+        # request runs all four.
+        image: ${{ fromJSON(inputs.images || (github.event_name == 'push' && '["ubuntu-26.04"]') || '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]') }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Install ZFS
+        run: |
+          . tests/lib/net-try.sh
+          mkdir -p cut-out
+          if ! net_try sudo sh -c 'apt-get update && apt-get install -y --no-install-recommends zfsutils-linux dmsetup python3-numpy' > cut-out/setup-apt.log 2>&1; then
+            tail -n 40 cut-out/setup-apt.log
+            { echo "## Cut rig: the rig's own error, not a verdict"; echo
+              echo "Installing ZFS failed in $NET_TRIES tries: $(net_why cut-out/setup-apt.log)"; } > cut-out/summary.md
+            exit 2
+          fi
+          sudo apt-get install -y --no-install-recommends "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe zfs
+          sudo modprobe dm_log_writes
+          uname -r; sudo zfs version
+      - name: Record and check
+        env:
+          RECORDINGS: ${{ inputs.recordings || '' }}
+        run: |
+          read -r -a recs <<< "$RECORDINGS"
+          for r in "${recs[@]}"; do [[ $r =~ ^[a-z]+$ ]] || { echo "::error::not a recording: $r"; exit 64; }; done
+          sudo tests/kernel/cut-record.sh "$PWD/cut-out" /mnt/skz-cut "${recs[@]}"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX cut-out 2>/dev/null || true
+          if [ -s cut-out/summary.md ]; then cat cut-out/summary.md >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
+          python3 tests/kernel/cut_summary.py cut-out "${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY" || echo "The rig did not get as far as a summary." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: cut-rig-${{ matrix.image }}
+          path: cut-out/
+          retention-days: 90
