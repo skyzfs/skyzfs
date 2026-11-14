@@ -105,11 +105,31 @@ const COMMIT: u32 = sys::UBLK_U_IO_COMMIT_AND_FETCH_REQ & 0xff;
 // The pump's name for the driver's abort is the driver's.
 const _: () = assert!(ABORTED == sys::UBLK_IO_RES_ABORT);
 
+/// The marks of a first fetch that the binding puts on the ring itself
+/// (`Device::serve_with_fetch_refused_for_tests`, built only with the
+/// feature `control-test-program`), over the library's own user data
+/// of a fetch on the tag: bit 63, by which the library takes the
+/// completion for no command of its own and leaves it out of its count
+/// of commands, and bit 62, by which [`ended`] tells it from the wake
+/// descriptor's poll. The library's user data of a command
+/// never has either bit (it has 24 bits of tag and code, and 16 of
+/// target data above them).
+#[cfg(feature = "control-test-program")]
+const OWN_FETCH: u64 = (1 << 63) | (1 << 62);
+
 /// What a completion on the queue's ring says: `None` if it is not one
 /// of a driver's command (bit 63: the wake descriptor's poll); a
 /// request fetched on a tag when the driver ended the command with OK;
-/// otherwise the command it ended so, which fetched nothing.
+/// otherwise the command it ended so, which fetched nothing. With the
+/// feature `control-test-program`, a first fetch of the binding's own
+/// (`OWN_FETCH`) is read as the library's.
 fn ended(user_data: u64, result: i32) -> Option<Result<u16, Unfetched>> {
+    #[cfg(feature = "control-test-program")]
+    let user_data = if user_data & OWN_FETCH == OWN_FETCH {
+        user_data & !OWN_FETCH
+    } else {
+        user_data
+    };
     if user_data & (1 << 63) != 0 {
         return None;
     }
@@ -239,6 +259,73 @@ impl Device {
         R: Send + 'static,
         F: for<'q> FnOnce(KernelQueue<'q>) -> R + Send + 'static,
     {
+        self.serve_queue(wake, body, move |dev, stopper| {
+            KernelQueue::new(dev, stopper, require_locked)
+        })
+    }
+
+    /// Not API, and built only with the feature `control-test-program`:
+    /// for the control test program only (its
+    /// `--refuse-one-fetch`). [`Device::serve`], but the first fetch of
+    /// `tag` is sent with no buffer: the driver is told the address 0.
+    /// A queue of this binding asks for neither of the features under
+    /// which a fetch may name no buffer (`NEED_GET_DATA` and user
+    /// copy), so by a reading of `ublk_drv.c` the driver refuses that
+    /// fetch when it is submitted, as it refuses such a commit; what
+    /// that does to the start that follows is what the program is for.
+    /// A `tag` that is not one of the queue's is refused
+    /// (`InvalidInput`).
+    ///
+    /// The library puts every tag's first fetch on the ring in one call
+    /// and cannot leave one out or send it with no buffer. So here the
+    /// binding registers the library's buffers as the library's call
+    /// does (which tells a start that waits for them that the queue is
+    /// ready), and then puts the first fetch of each tag on the ring
+    /// itself, in tag order, with the library's command, file and
+    /// payload: each names the library's buffer of its tag, as the
+    /// library's call would, and `tag`'s names none. The driver sees
+    /// the same commands, but for that one address; only their user
+    /// data differs ([`OWN_FETCH`]), which the driver does not read.
+    ///
+    /// The library does not count these fetches among its commands. It
+    /// counts every commit, as always, and it reports the queue down
+    /// once a commit was aborted and no commit is with the driver any
+    /// more. So a queue that has made no commit is never reported down
+    /// (the caller stops it), and the aborts of fetches that were never
+    /// handed a request may come after the queue was reported down.
+    /// Neither is so in [`Device::serve`].
+    #[cfg(feature = "control-test-program")]
+    #[doc(hidden)]
+    pub fn serve_with_fetch_refused_for_tests<R, F>(
+        &self,
+        wake: &Wake,
+        require_locked: bool,
+        tag: u16,
+        body: F,
+    ) -> io::Result<Serving<R>>
+    where
+        R: Send + 'static,
+        F: for<'q> FnOnce(KernelQueue<'q>) -> R + Send + 'static,
+    {
+        if tag >= self.depth() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("tag {tag} is not one of a queue of {}", self.depth()),
+            ));
+        }
+        self.serve_queue(wake, body, move |dev, stopper| {
+            KernelQueue::with_fetch_refused(dev, stopper, require_locked, tag)
+        })
+    }
+
+    /// [`Device::serve`], with the queue made by `make` on the queue's
+    /// thread.
+    fn serve_queue<R, F, M>(&self, wake: &Wake, body: F, make: M) -> io::Result<Serving<R>>
+    where
+        R: Send + 'static,
+        F: for<'q> FnOnce(KernelQueue<'q>) -> R + Send + 'static,
+        M: for<'q> FnOnce(&'q UblkDev, Stopper) -> io::Result<KernelQueue<'q>> + Send + 'static,
+    {
         let stopper = Stopper {
             stop: Arc::new(AtomicBool::new(false)),
             copies: Arc::new(AtomicU64::new(0)),
@@ -250,7 +337,7 @@ impl Device {
             .name("skyzfsd-queue".into())
             .spawn(move || {
                 let tid = UblkCtrl::init_queue_thread();
-                match KernelQueue::new(&dev, theirs, require_locked) {
+                match make(&dev, theirs) {
                     Ok(queue) => {
                         let _ = ready.send(Ok(tid));
                         Some(body(queue))
@@ -334,6 +421,83 @@ pub fn parameters(size: u64) -> sys::ublk_params {
     }
 }
 
+#[cfg(feature = "control-test-program")]
+/// The first fetch of every tag of `queue`, put on its ring by the
+/// binding: see [`Device::serve_with_fetch_refused_for_tests`]. Each
+/// names the library's buffer of its tag in `first`, and that of
+/// `refused` names none.
+fn first_fetches<'q>(
+    queue: UblkQueue<'q>,
+    dev: &UblkDev,
+    first: &Vec<IoBuf<u8>>,
+    refused: u16,
+) -> io::Result<UblkQueue<'q>> {
+    // What the library's own call does before its fetches.
+    let queue = queue.regiser_io_bufs(Some(first));
+    let encoded = dev.dev_info.flags & u64::from(sys::UBLK_F_CMD_IOCTL_ENCODE) != 0;
+    for tag in queue.tags() {
+        let addr = first_address(first, tag, refused)?;
+        queue
+            .ublk_submit_sqe_sync(fetch(encoded, tag, addr))
+            .map_err(io_error)?;
+    }
+    Ok(queue)
+}
+
+#[cfg(feature = "control-test-program")]
+/// The address that the first fetch of `tag` names: the library's
+/// buffer of the tag in `first`, or none (0) if it is `refused`.
+fn first_address(first: &[IoBuf<u8>], tag: u16, refused: u16) -> io::Result<u64> {
+    if tag == refused {
+        return Ok(0);
+    }
+    first
+        .get(usize::from(tag))
+        .map(|buf| buf.as_ptr() as u64)
+        .ok_or_else(|| io::Error::other(format!("no buffer for tag {tag}")))
+}
+
+#[cfg(feature = "control-test-program")]
+/// The library's fetch command for `tag` of queue 0, naming the buffer
+/// at `addr` (0: none), on the device's file as the library registers
+/// it (fixed file 0), with the user data [`OWN_FETCH`] over the
+/// library's own for it. The command's code is encoded as an ioctl's if
+/// the driver says it reads codes so, as the library does.
+fn fetch(encoded: bool, tag: u16, addr: u64) -> io_uring::squeue::Entry {
+    let code = if encoded {
+        sys::UBLK_U_IO_FETCH_REQ
+    } else {
+        sys::UBLK_U_IO_FETCH_REQ & 0xff
+    };
+    opcode::UringCmd16::new(types::Fixed(0), code)
+        .cmd(io_cmd(tag, addr))
+        .build()
+        .user_data(OWN_FETCH | UblkIOCtx::build_user_data(tag, sys::UBLK_U_IO_FETCH_REQ, 0, false))
+}
+
+#[cfg(feature = "control-test-program")]
+/// The payload of a fetch of `tag` on queue 0 naming `addr`: the
+/// driver's `ublksrv_io_cmd` with the result -1, as the library fills
+/// it for a fetch, in its bytes.
+fn io_cmd(tag: u16, addr: u64) -> [u8; 16] {
+    let mut bytes = [0; 16];
+    bytes[2..4].copy_from_slice(&tag.to_ne_bytes());
+    bytes[4..8].copy_from_slice(&(-1i32).to_ne_bytes());
+    bytes[8..16].copy_from_slice(&addr.to_ne_bytes());
+    bytes
+}
+
+#[cfg(feature = "control-test-program")]
+// Where `io_cmd` puts each field: the struct's own layout.
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<sys::ublksrv_io_cmd>() == 16);
+    assert!(offset_of!(sys::ublksrv_io_cmd, q_id) == 0);
+    assert!(offset_of!(sys::ublksrv_io_cmd, tag) == 2);
+    assert!(offset_of!(sys::ublksrv_io_cmd, result) == 4);
+    assert!(offset_of!(sys::ublksrv_io_cmd, addr) == 8);
+};
+
 /// A queue's thread, running.
 pub struct Serving<R> {
     thread: JoinHandle<Option<R>>,
@@ -406,6 +570,34 @@ struct Buffers {
 }
 
 impl Buffers {
+    /// The library's first buffers of `dev`'s queue and an own buffer
+    /// for each tag, the own ones locked in memory if they can be (an
+    /// error if one cannot and `require_locked`). Made before the queue
+    /// and its commands, and from then on forgotten whatever fails.
+    fn new(dev: &UblkDev, require_locked: bool) -> io::Result<Self> {
+        let mut bufs = Buffers {
+            first: dev.alloc_queue_io_bufs(),
+            own: Vec::new(),
+        };
+        let depth = bufs.first.len();
+        bufs.own.reserve_exact(depth);
+        for _ in 0..depth {
+            let buf = Buf::with_capacity(MAX_BLOCKS);
+            match mem::lock(&buf) {
+                Ok(()) => {}
+                Err(e) if require_locked => {
+                    return Err(io::Error::new(
+                        e.kind(),
+                        format!("locking a request buffer in memory: {e}"),
+                    ))
+                }
+                Err(_) => {}
+            }
+            bufs.own.push(Some(buf));
+        }
+        Ok(bufs)
+    }
+
     /// Put `buf` in the tag's place. What was there, if anything, may
     /// be named by nothing or by the tag's last commit: it is forgotten
     /// like every buffer that was ever in a place, and not freed.
@@ -443,32 +635,33 @@ impl Drop for Buffers {
 
 impl<'q> KernelQueue<'q> {
     fn new(dev: &'q UblkDev, stopper: Stopper, require_locked: bool) -> io::Result<Self> {
-        // Made before the queue and its commands, and from here on
-        // forgotten whatever fails below.
-        let mut bufs = Buffers {
-            first: dev.alloc_queue_io_bufs(),
-            own: Vec::new(),
-        };
-        let depth = bufs.first.len();
-        bufs.own.reserve_exact(depth);
-        for _ in 0..depth {
-            let buf = Buf::with_capacity(MAX_BLOCKS);
-            match mem::lock(&buf) {
-                Ok(()) => {}
-                Err(e) if require_locked => {
-                    return Err(io::Error::new(
-                        e.kind(),
-                        format!("locking a request buffer in memory: {e}"),
-                    ))
-                }
-                Err(_) => {}
-            }
-            bufs.own.push(Some(buf));
-        }
+        let bufs = Buffers::new(dev, require_locked)?;
         let queue = UblkQueue::new(0, dev)
             .map_err(io_error)?
             .submit_fetch_commands_unified(BufDescList::Slices(Some(&bufs.first)))
             .map_err(io_error)?;
+        Self::made(queue, bufs, stopper)
+    }
+
+    /// [`KernelQueue::new`], but the first fetches are the binding's
+    /// own, and that of `refused` names no buffer: see
+    /// `Device::serve_with_fetch_refused_for_tests`.
+    #[cfg(feature = "control-test-program")]
+    fn with_fetch_refused(
+        dev: &'q UblkDev,
+        stopper: Stopper,
+        require_locked: bool,
+        refused: u16,
+    ) -> io::Result<Self> {
+        let bufs = Buffers::new(dev, require_locked)?;
+        let queue = UblkQueue::new(0, dev).map_err(io_error)?;
+        let queue = first_fetches(queue, dev, &bufs.first, refused)?;
+        Self::made(queue, bufs, stopper)
+    }
+
+    /// The queue whose fetches are on its ring, with its buffers.
+    fn made(queue: UblkQueue<'q>, bufs: Buffers, stopper: Stopper) -> io::Result<Self> {
+        let depth = bufs.first.len();
         let this = Self {
             queue,
             bufs,
@@ -728,6 +921,68 @@ mod tests {
             ended(UblkIOCtx::build_user_data(1, 0, 0, true), -libc::EIO),
             None
         );
+    }
+
+    /// A first fetch that the binding put on the ring itself (the
+    /// control program's refused fetch) is read as the library's
+    /// fetch on its tag, whatever the driver answered; the wake's poll
+    /// is still none.
+    #[cfg(feature = "control-test-program")]
+    #[test]
+    fn a_first_fetch_of_the_bindings_own_is_read_as_a_fetch() {
+        let ok = sys::UBLK_IO_RES_OK as i32;
+        let unfetched = |tag, result| {
+            Some(Err(Unfetched {
+                tag,
+                command: Command::Fetch,
+                result,
+            }))
+        };
+        for (tag, addr) in [(0, 0), (5, 0x7f00_0000_1000), (0xffff, 4096)] {
+            for encoded in [false, true] {
+                let data = fetch(encoded, tag, addr).get_user_data();
+                assert_ne!(data & (1 << 63), 0, "the library counts it not");
+                assert_eq!(ended(data, ok), Some(Ok(tag)));
+                assert_eq!(ended(data, -libc::EINVAL), unfetched(tag, -libc::EINVAL));
+                assert_eq!(ended(data, sys::UBLK_IO_RES_ABORT), unfetched(tag, ABORTED));
+            }
+        }
+        assert_eq!(ended(WAKE, ok), None);
+    }
+
+    /// The refused tag's first fetch names no buffer, and every other
+    /// tag's names the library's buffer of that tag.
+    #[cfg(feature = "control-test-program")]
+    #[test]
+    fn the_refused_tag_names_no_buffer_and_the_others_their_own() {
+        let first: Vec<IoBuf<u8>> = (0..3).map(|_| IoBuf::new(4096)).collect();
+        assert_eq!(first_address(&first, 1, 1).ok(), Some(0));
+        for tag in [0u16, 2] {
+            let theirs = first[usize::from(tag)].as_ptr() as u64;
+            assert_ne!(theirs, 0);
+            assert_eq!(first_address(&first, tag, 1).ok(), Some(theirs));
+        }
+        assert!(first_address(&first, 3, 1).is_err(), "no such tag");
+    }
+
+    /// The payload of a fetch is the driver's `ublksrv_io_cmd`, laid
+    /// out as the library lays it out (it copies the struct's bytes).
+    #[cfg(feature = "control-test-program")]
+    #[test]
+    fn a_fetch_names_its_queue_tag_and_address_as_the_driver_reads_them() {
+        let cmd = sys::ublksrv_io_cmd {
+            q_id: 0,
+            tag: 0x1234,
+            result: -1,
+            addr: 0x0011_2233_4455_6677,
+        };
+        // SAFETY: `ublksrv_io_cmd` is `repr(C)`, 16 bytes of plain
+        // integers with no padding (asserted where `io_cmd` is), and
+        // every bit pattern of 16 bytes is a valid `[u8; 16]`: this is
+        // the library's own conversion.
+        let theirs: [u8; 16] = unsafe { std::mem::transmute(cmd) };
+        assert_eq!(io_cmd(0x1234, 0x0011_2233_4455_6677), theirs);
+        assert_eq!(io_cmd(7, 0)[8..], [0; 8], "no buffer: the address 0");
     }
 
     /// A device is served only if its largest request fits the tag

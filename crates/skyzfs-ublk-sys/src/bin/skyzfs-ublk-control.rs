@@ -11,8 +11,8 @@
 //! skyzfs-ublk-control begin-recovery N [--retry]
 //! skyzfs-ublk-control client-holds N
 //! skyzfs-ublk-control set-params N --size BYTES
-//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--delete-after-ms T]
-//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--delete-after-ms T]
+//! skyzfs-ublk-control serve N --file PATH [--size BYTES] [--recovery-begun] [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--refuse-one-fetch start|recovery] [--delete-after-ms T]
+//! skyzfs-ublk-control take-over N --file PATH [--recovery-wait-ms T] [--hold-one-request SPEC] [--refuse-one-commit WHAT] [--refuse-one-fetch recovery] [--delete-after-ms T]
 //! ```
 //!
 //! # Output
@@ -55,7 +55,8 @@
 //!   with its abort (`UBLK_IO_RES_ABORT`, the queue being stopped),
 //!   and with any other result (a command it refused). A step of the
 //!   start that the driver refuses is the answer `refused at STEP: ...`
-//!   and there is no second line.
+//!   and there is no second line. With `--refuse-one-fetch` the lines
+//!   are other: see that option below.
 //!
 //! The exit status is 0 whatever the driver answered. It is 2 for a
 //! command line this program does not understand and 1 when the
@@ -103,6 +104,41 @@
 //! what becomes of it without one. When both options match a request,
 //! the refusal is checked first.
 //!
+//! `--refuse-one-fetch start` (`serve` of a device never started) or
+//! `--refuse-one-fetch recovery` (`take-over`, or `serve
+//! --recovery-begun`) sends the first fetch of tag 0 with no buffer,
+//! which the driver refuses by a reading of its source, as it refuses
+//! such a commit; the other tags' first fetches name their buffers as
+//! always (see `Device::serve_with_fetch_refused_for_tests`). The value
+//! names the command the step sends after the fetches, the start or
+//! the end of a recovery, and must be the step's: it is there so that
+//! the rig's command line says which of the two it looks at. The option
+//! goes with neither `--refuse-one-commit` nor `--delete-after-ms`.
+//! The lines of the step are then these, and no `live` line:
+//!
+//! - A line of step `refuse-fetch`, `sent on tag 0`, from the queue's
+//!   thread before its first wait, which is when the fetches reach the
+//!   driver.
+//! - Another with the driver's answer, when it comes: `refused: errno E
+//!   (...)`, `aborted` (the queue was being stopped), or `taken` (tag 0
+//!   was handed a request, so the driver took a fetch with no buffer;
+//!   the request is answered as any other). The program goes on after
+//!   each.
+//! - After `--recovery-wait-ms`, the start's command is sent as
+//!   without the option, from a thread of its own: step `start`, or
+//!   `end-recovery` for a device that waits for a server. Its line is
+//!   `returned after T ms: ok` or `returned after T ms: errno E (...)`,
+//!   with T counted from the command; or, if it has not returned 10 s
+//!   after it was sent, `no answer after 10000 ms`, and the line
+//!   `returned after ...` follows if it returns later.
+//!
+//! Whatever the start answered, and also when the queue has ended, the
+//! program then serves what the driver hands over and ends only on
+//! `SIGTERM` or `SIGINT`, with its `served` line (`ended by a signal`).
+//! A start's command that has not returned is left in the driver and
+//! ends with the program (if it can: a thread inside the driver may
+//! hold the process).
+//!
 //! `--delete-after-ms T` deletes the server's own device, from a second
 //! thread of this process, T ms after the device went live, while the
 //! server goes on serving: what a daemon does whose volume failed. It
@@ -134,6 +170,15 @@ struct Hold {
     what: What,
 }
 
+/// The command a step sends after a refused fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Then {
+    /// The start of a device never started.
+    Start,
+    /// The end of a recovery: a device that waits for a server.
+    Recovery,
+}
+
 /// How a device is served.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Serve {
@@ -147,6 +192,8 @@ struct Serve {
     hold: Option<Hold>,
     /// The request whose commit names no buffer.
     refuse: Option<What>,
+    /// Tag 0's first fetch names no buffer; the command that follows.
+    refuse_fetch: Option<Then>,
     /// Delete the device this long after it went live.
     delete_after: Option<Duration>,
 }
@@ -204,6 +251,16 @@ fn refuse(text: &str) -> Result<What, String> {
     })
 }
 
+fn then(text: &str) -> Result<Then, String> {
+    match text {
+        "start" => Ok(Then::Start),
+        "recovery" => Ok(Then::Recovery),
+        _ => Err(format!(
+            "--refuse-one-fetch: '{text}' is not start or recovery"
+        )),
+    }
+}
+
 /// The step, its name and the device's number, from the command line
 /// without the program's name.
 fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
@@ -214,7 +271,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
     let mut rest = rest.iter();
     let (mut size, mut depth, mut retry, mut file) = (None, DEPTH, false, None);
     let (mut begun, mut wait, mut held) = (false, Duration::ZERO, None);
-    let (mut delete_after, mut refused) = (None, None);
+    let (mut delete_after, mut refused, mut refused_fetch) = (None, None, None);
     while let Some(option) = rest.next() {
         let allowed: &[&str] = match step.as_str() {
             "add" => &["--size", "--depth"],
@@ -227,6 +284,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                 "--recovery-wait-ms",
                 "--hold-one-request",
                 "--refuse-one-commit",
+                "--refuse-one-fetch",
                 "--delete-after-ms",
             ],
             "take-over" => &[
@@ -234,6 +292,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                 "--recovery-wait-ms",
                 "--hold-one-request",
                 "--refuse-one-commit",
+                "--refuse-one-fetch",
                 "--delete-after-ms",
             ],
             _ => &[],
@@ -258,10 +317,24 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
                 )?))
             }
             "--refuse-one-commit" => refused = Some(refuse(value()?)?),
+            "--refuse-one-fetch" => refused_fetch = Some(then(value()?)?),
             _ => held = Some(hold(value()?)?),
         }
     }
     let serve = |take_over: bool, begin: bool| {
+        if let Some(then) = refused_fetch {
+            if (then == Then::Recovery) != take_over {
+                return Err(format!(
+                    "{step}: --refuse-one-fetch {} is not what this step sends after its fetches",
+                    if take_over { "start" } else { "recovery" }
+                ));
+            }
+            if refused.is_some() || delete_after.is_some() {
+                return Err(format!(
+                    "{step}: --refuse-one-fetch goes with neither --refuse-one-commit nor --delete-after-ms"
+                ));
+            }
+        }
         Ok(Step::Serve(Serve {
             file: file.clone().ok_or_else(|| format!("{step} needs --file"))?,
             size,
@@ -270,6 +343,7 @@ fn parse(args: &[String]) -> Result<(&'static str, u32, Step), String> {
             wait,
             hold: held,
             refuse: refused,
+            refuse_fetch: refused_fetch,
             delete_after,
         }))
     };
@@ -307,7 +381,7 @@ mod run {
     use skyzfs_ublk_sys::signals::{self, Signal};
     use skyzfs_ublk_sys::{raw, Wake, FLAGS};
 
-    use super::{Hold, Serve, Step, What};
+    use super::{Hold, Serve, Step, Then, What};
 
     /// The driver's answer, as text.
     fn errno(e: &io::Error) -> String {
@@ -434,6 +508,26 @@ mod run {
     struct Plan {
         hold: Option<Hold>,
         refuse: Option<What>,
+        /// The tag whose first fetch was sent with no buffer.
+        refuse_fetch: Option<u16>,
+    }
+
+    /// The tag whose first fetch `--refuse-one-fetch` sends with no
+    /// buffer.
+    const REFUSED_FETCH_TAG: u16 = 0;
+
+    /// How long the start's command is waited for, with
+    /// `--refuse-one-fetch`, before the program says that it has not
+    /// returned.
+    const START_LIMIT: Duration = Duration::from_secs(10);
+
+    /// A result of the driver's other than OK, as text.
+    fn refusal(result: i32) -> String {
+        if result < 0 {
+            errno(&io::Error::from_raw_os_error(-result))
+        } else {
+            format!("result {result}")
+        }
     }
 
     /// A queue that can commit a request with no buffer: the malformed
@@ -459,6 +553,10 @@ mod run {
     /// more (not what the same wait handed over, not a held request)
     /// and sends nothing more, and what it holds is the kernel's to
     /// issue again to the next server.
+    ///
+    /// With `plan.refuse_fetch` it says, before its first wait, that
+    /// the tag's first fetch was sent with no buffer, and then what the
+    /// driver answered to that fetch; it goes on whatever the answer.
     fn server(
         queue: &mut impl NoBuffer,
         file: File,
@@ -474,6 +572,12 @@ mod run {
         // The tag whose commit named no buffer, until the driver
         // answers that commit.
         let mut refusing: Option<u16> = None;
+        // The tag whose first fetch named no buffer, until the driver
+        // answers that fetch.
+        let mut refusing_fetch = plan.refuse_fetch;
+        if let Some(tag) = refusing_fetch {
+            say("refuse-fetch", &format!("sent on tag {tag}"));
+        }
         loop {
             fetched.clear();
             unfetched.clear();
@@ -491,12 +595,17 @@ mod run {
                         say("refuse-commit", "aborted");
                     } else {
                         refused = true;
-                        let why = if command.result < 0 {
-                            errno(&io::Error::from_raw_os_error(-command.result))
-                        } else {
-                            format!("result {}", command.result)
-                        };
+                        let why = refusal(command.result);
                         say("refuse-commit", &format!("refused: {why}"));
+                    }
+                }
+                if refusing_fetch == Some(command.tag) && command.command == Command::Fetch {
+                    refusing_fetch = None;
+                    if command.result == ABORTED {
+                        say("refuse-fetch", "aborted");
+                    } else {
+                        let why = refusal(command.result);
+                        say("refuse-fetch", &format!("refused: {why}"));
                     }
                 }
             }
@@ -514,6 +623,12 @@ mod run {
                     // took the commit with no buffer.
                     refusing = None;
                     say("refuse-commit", "taken");
+                }
+                if refusing_fetch == Some(f.tag) {
+                    // The tag was handed a request: the driver took the
+                    // fetch with no buffer.
+                    refusing_fetch = None;
+                    say("refuse-fetch", "taken");
                 }
                 if refuse.is_some_and(|what| matches(what, &f.desc)) {
                     refuse = None;
@@ -624,61 +739,72 @@ mod run {
         };
         let wake = Wake::new().map_err(|e| format!("the wake descriptor: {e}"))?;
         let counts = Arc::new(Counts::default());
+        let plan = Plan {
+            hold: serve.hold,
+            refuse: serve.refuse,
+            refuse_fetch: serve.refuse_fetch.map(|_| REFUSED_FETCH_TAG),
+        };
         let serving = {
-            let plan = Plan {
-                hold: serve.hold,
-                refuse: serve.refuse,
-            };
-            let (wake, counts) = (wake.clone(), counts.clone());
-            device.serve(&wake.clone(), false, move |mut queue| {
-                server(&mut queue, file, plan, wake, counts, |step, answer| {
+            let (theirs, counts) = (wake.clone(), counts.clone());
+            let body = move |mut queue: KernelQueue<'_>| {
+                server(&mut queue, file, plan, theirs, counts, |step, answer| {
                     let _ = say(step, n, answer);
                 })
-            })
+            };
+            match plan.refuse_fetch {
+                Some(tag) => device.serve_with_fetch_refused_for_tests(&wake, false, tag, body),
+                None => device.serve(&wake, false, body),
+            }
         };
         let serving = match serving {
             Ok(serving) => serving,
             Err(e) => return say(name, n, &format!("refused at queue: {}", errno(&e))),
         };
         std::thread::sleep(serve.wait);
-        let before = counts.handed.load(Ordering::Relaxed);
-        if let Err(e) = device.start() {
-            serving.stopper().stop();
-            let _ = serving.join();
-            let step = if serve.take_over {
-                "end-recovery"
-            } else {
-                "start"
-            };
-            return say(name, n, &format!("refused at {step}: {}", errno(&e)));
-        }
-        say(
-            name,
-            n,
-            &format!(
-                "live after {} ms; handed before the start: {before}; busy answers: {}",
-                from.elapsed().as_millis(),
-                kernel.busy_answers()
-            ),
-        )?;
-        let deleting = serve.delete_after.map(|after| {
-            let (done, returned) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                std::thread::sleep(after);
-                let _ = done.send(delete_own(n, after));
-            });
-            returned
-        });
-        let by = loop {
-            if serving.is_finished() {
-                break if counts.refused.load(Ordering::SeqCst) {
-                    "the refused commit"
-                } else {
-                    "the queue ended"
+        let (by, deleting) = match serve.refuse_fetch {
+            Some(then) => (start_aside(n, then, device)?, None),
+            None => {
+                let before = counts.handed.load(Ordering::Relaxed);
+                if let Err(e) = device.start() {
+                    serving.stopper().stop();
+                    let _ = serving.join();
+                    let step = if serve.take_over {
+                        "end-recovery"
+                    } else {
+                        "start"
+                    };
+                    return say(name, n, &format!("refused at {step}: {}", errno(&e)));
+                }
+                say(
+                    name,
+                    n,
+                    &format!(
+                        "live after {} ms; handed before the start: {before}; busy answers: {}",
+                        from.elapsed().as_millis(),
+                        kernel.busy_answers()
+                    ),
+                )?;
+                let deleting = serve.delete_after.map(|after| {
+                    let (done, returned) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(after);
+                        let _ = done.send(delete_own(n, after));
+                    });
+                    returned
+                });
+                let by = loop {
+                    if serving.is_finished() {
+                        break if counts.refused.load(Ordering::SeqCst) {
+                            "the refused commit"
+                        } else {
+                            "the queue ended"
+                        };
+                    }
+                    if signals::wait(Duration::from_millis(100)) == Some(Signal::Stop) {
+                        break "a signal";
+                    }
                 };
-            }
-            if signals::wait(Duration::from_millis(100)) == Some(Signal::Stop) {
-                break "a signal";
+                (by, deleting)
             }
         };
         let stopper = serving.stopper();
@@ -720,6 +846,64 @@ mod run {
             Some(Ok(late)) if !late.is_empty() => say("self-delete", n, &late),
             Some(Err(e)) => Err(e),
             _ => Ok(()),
+        }
+    }
+
+    /// `--refuse-one-fetch`: send the start's command (`then`) from a
+    /// thread of its own, say what it returned and how long it took,
+    /// or that it has not returned within [`START_LIMIT`] (and then
+    /// what it returns, if it does later), and wait for a signal,
+    /// whatever it answered. The thread is not waited for: a command
+    /// that has not returned ends with the program.
+    fn start_aside(n: u32, then: Then, device: Device) -> Result<&'static str, String> {
+        use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
+        let step = match then {
+            Then::Start => "start",
+            Then::Recovery => "end-recovery",
+        };
+        let (done, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let from = Instant::now();
+            let started = device.start();
+            let _ = done.send((started, from.elapsed()));
+        });
+        let said = |(started, took): (io::Result<()>, Duration)| {
+            let ms = took.as_millis();
+            match started {
+                Ok(()) => format!("returned after {ms} ms: ok"),
+                Err(e) => format!("returned after {ms} ms: {}", errno(&e)),
+            }
+        };
+        let gone = || format!("{step}: the command's thread ended with no answer");
+        let mut waiting = match answer.recv_timeout(START_LIMIT) {
+            Ok(started) => {
+                say(step, n, &said(started))?;
+                None
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                say(
+                    step,
+                    n,
+                    &format!("no answer after {} ms", START_LIMIT.as_millis()),
+                )?;
+                Some(answer)
+            }
+            Err(RecvTimeoutError::Disconnected) => return Err(gone()),
+        };
+        loop {
+            if let Some(late) = &waiting {
+                match late.try_recv() {
+                    Ok(started) => {
+                        say(step, n, &said(started))?;
+                        waiting = None;
+                    }
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => return Err(gone()),
+                }
+            }
+            if signals::wait(Duration::from_millis(100)) == Some(Signal::Stop) {
+                return Ok("a signal");
+            }
         }
     }
 
@@ -1049,6 +1233,96 @@ mod run {
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
         }
 
+        /// `--refuse-one-fetch`: the server says that the tag's first
+        /// fetch was sent with no buffer before its first wait. The
+        /// driver's refusal of that fetch is said with its error and
+        /// counted as a refused command, and the server goes on: it
+        /// answers the other tags and ends only when it is stopped.
+        #[test]
+        fn a_refused_first_fetch_is_said_and_the_server_goes_on() {
+            let plan = Plan {
+                refuse_fetch: Some(0),
+                ..Plan::default()
+            };
+            let turns: Vec<Turn> = vec![
+                (
+                    Vec::new(),
+                    vec![ended(0, Command::Fetch, -libc::EINVAL)],
+                    Ok(Woken::Work),
+                ),
+                (vec![read(1, 0)], Vec::new(), Ok(Woken::Work)),
+                (vec![read(2, 4096)], Vec::new(), Ok(Woken::Stop)),
+                // Never reached: the server stopped.
+                (vec![read(3, 0)], Vec::new(), Ok(Woken::Work)),
+            ];
+            let (queue, lines, counts) = run(turns, plan);
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-fetch\tsent on tag 0".to_string(),
+                    format!(
+                        "refuse-fetch\trefused: {}",
+                        errno(&io::Error::from_raw_os_error(libc::EINVAL))
+                    ),
+                ]
+            );
+            assert_eq!(queue.commits, vec![(1, 4096, true), (2, 4096, true)]);
+            assert_eq!(queue.turns.len(), 1, "the server ended at the stop");
+            assert!(queue.no_buffer.is_empty());
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 0);
+            assert!(!counts.refused.load(Ordering::SeqCst));
+        }
+
+        /// A first fetch with no buffer that the driver takes (its tag
+        /// is handed a request) is said `taken`, and the request is
+        /// answered as any other; one the driver aborts is said
+        /// `aborted`. Only the tag named is followed: another tag's
+        /// refused fetch is counted and not said, and a later command
+        /// of the tag named is not said either.
+        #[test]
+        fn a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said() {
+            let plan = Plan {
+                refuse_fetch: Some(0),
+                ..Plan::default()
+            };
+            let taken: Vec<Turn> = vec![
+                (
+                    vec![read(0, 8192)],
+                    vec![ended(5, Command::Fetch, -libc::EINVAL)],
+                    Ok(Woken::Work),
+                ),
+                (
+                    Vec::new(),
+                    vec![ended(0, Command::Commit, ABORTED)],
+                    Ok(Woken::Stop),
+                ),
+            ];
+            let (queue, lines, counts) = run(taken, plan);
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-fetch\tsent on tag 0".to_string(),
+                    "refuse-fetch\ttaken".to_string(),
+                ]
+            );
+            assert_eq!(queue.commits, vec![(0, 4096, true)]);
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
+            let aborted: Vec<Turn> = vec![(
+                Vec::new(),
+                vec![ended(0, Command::Fetch, ABORTED)],
+                Ok(Woken::Stop),
+            )];
+            let (_, lines, counts) = run(aborted, plan);
+            assert_eq!(
+                lines.last().map(String::as_str),
+                Some("refuse-fetch\taborted")
+            );
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
         /// A commit with no buffer that the library will not send is
         /// said so, and the request is answered as any other: nothing
         /// waits on it, nothing is counted as refused, and the server
@@ -1315,6 +1589,7 @@ mod tests {
             wait: Duration::ZERO,
             hold: None,
             refuse: None,
+            refuse_fetch: None,
             delete_after: None,
         };
         assert_eq!(
@@ -1418,6 +1693,76 @@ mod tests {
             "", "flush:1", "5:read:0", "read", "read:x", "trim:0", "5:flush",
         ] {
             assert!(refuse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_server_can_be_told_to_refuse_one_fetch() {
+        for (line, want, take_over, begin) in [
+            (
+                "serve 1 --file f --refuse-one-fetch start",
+                Then::Start,
+                false,
+                false,
+            ),
+            (
+                "serve 1 --file f --recovery-begun --refuse-one-fetch recovery",
+                Then::Recovery,
+                true,
+                false,
+            ),
+            (
+                "take-over 1 --refuse-one-fetch recovery --file f",
+                Then::Recovery,
+                true,
+                true,
+            ),
+        ] {
+            let Ok((_, 1, Step::Serve(serve))) = parse(&args(line)) else {
+                panic!("{line}");
+            };
+            assert_eq!(serve.refuse_fetch, Some(want), "{line}");
+            assert_eq!((serve.take_over, serve.begin), (take_over, begin), "{line}");
+            assert_eq!(serve.refuse, None, "{line}");
+        }
+        let Ok((_, _, Step::Serve(serve))) = parse(&args(
+            "take-over 1 --file f --recovery-wait-ms 500 --hold-one-request 30:read:0 --refuse-one-fetch recovery",
+        )) else {
+            panic!("with a hold and a wait");
+        };
+        assert_eq!(serve.refuse_fetch, Some(Then::Recovery));
+        assert_eq!(serve.wait, Duration::from_millis(500));
+        assert!(serve.hold.is_some());
+        assert_eq!(then("start"), Ok(Then::Start));
+        assert_eq!(then("recovery"), Ok(Then::Recovery));
+        for bad in [
+            "",
+            "Start",
+            "start:0",
+            "0",
+            "recover",
+            "end-recovery",
+            "flush",
+        ] {
+            assert!(then(bad).is_err(), "{bad}");
+        }
+        // The value names the command the step sends after the fetch,
+        // and the option goes with neither a refused commit nor a
+        // delete of the server's own device.
+        for bad in [
+            "serve 1 --file f --refuse-one-fetch recovery",
+            "serve 1 --file f --recovery-begun --refuse-one-fetch start",
+            "take-over 1 --file f --refuse-one-fetch start",
+            "serve 1 --file f --refuse-one-fetch start --refuse-one-commit flush",
+            "take-over 1 --file f --refuse-one-commit read:0 --refuse-one-fetch recovery",
+            "serve 1 --file f --refuse-one-fetch start --delete-after-ms 5",
+            "serve 1 --file f --refuse-one-fetch",
+            "serve 1 --file f --refuse-one-fetch now",
+            "add 1 --refuse-one-fetch start",
+            "info 1 --refuse-one-fetch start",
+            "begin-recovery 1 --refuse-one-fetch recovery",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
         }
     }
 
