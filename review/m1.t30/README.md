@@ -18,3 +18,15 @@ Head 1f7f434 on 36daf82. Review posted on 2026-11-14 (issue comment
 - Local: test_daemon_check.py 66 passed; test_c_evidence.sh all passed.
 - The daemon rig at the head (run 43535492589) was still running when
   the review was posted: its table is to read at the next look.
+
+## Second look, 9987c0a (2026-11-14, issue comment 6868931705)
+
+Testing took the suggested rule: serve_wait first, FAIL on an
+unanswered write or `held` > 0, ERROR only when the write could not be
+issued. That rule (mine) has a hole: in 9 of 10 runs the device was
+already deleted when the rig's write came, so "failed to open" is the
+common outcome, and a daemon that fails the volume, deletes the device
+and then hangs reads ERROR. Asked for: ERROR only with the counters
+unmoved, `held` 0 and no failure line in the serve log. Still blocking,
+one condition. gj_digests checked here (names `.hidden`, `sub`,
+`log.super`); test_daemon_check.py passes at 9987c0a.
