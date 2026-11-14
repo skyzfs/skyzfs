@@ -182,7 +182,10 @@ pub enum OpenError {
 pub enum Under {
     /// The volume's directory: where every file of the volume is made.
     Directory,
-    /// The home image.
+    /// The home image: checked for itself at every open, since it can
+    /// lie on another file system than its directory (a mount point, a
+    /// link elsewhere). A create makes it in the directory, so the
+    /// directory's check covers it there.
     Home,
 }
 
@@ -450,7 +453,9 @@ impl<D: Dir> Opened<D> {
             }
             Err(e) => return Err(io_error("opening the home image")(e)),
         };
-        if blocks {
+        // The image is checked for itself: it can lie on another file
+        // system than its directory (a mount point, a link elsewhere).
+        if blocks && !mutants.has(Mutants::HOME_ANY_BLOCKS) {
             within_unit(Under::Home, home.block_size(), unit)?;
         }
         let size = home.len().map_err(io_error("reading the home image"))?;

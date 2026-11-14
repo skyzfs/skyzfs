@@ -52,7 +52,10 @@
 //!   cut's to lose or to turn into garbage.
 //! - **The file system's block** ([`SimDisk::set_block_size`]). A file
 //!   system writes back whole blocks: where its block is larger than
-//!   the write unit, the block is what a write rewrites.
+//!   the write unit, the block is what a write rewrites. One file can
+//!   lie on a file system of its own ([`SimDisk::set_block_size_of`]),
+//!   as a file that is a mount point or a link elsewhere does: its
+//!   block is then its own, and the directory's is the disk's.
 //!
 //! - **A sync that ends later** ([`File::sync_begin`],
 //!   [`File::sync_end`]). The versions of the file's sectors that are
@@ -425,6 +428,9 @@ struct State {
     no_holes: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
+    /// Files, by name, that lie on a file system of their own, with its
+    /// block size (none: it cannot be asked).
+    block_sizes_of: BTreeMap<String, Option<u64>>,
     /// The page size the system reports.
     page_size: u64,
     /// The next deallocation fails, having zeroed any part of its range.
@@ -577,6 +583,16 @@ impl State {
             .map(|(name, _)| name.as_str())
     }
 
+    /// The block size of the file system that `inode` lies on: its own
+    /// if its name was given one ([`SimDisk::set_block_size_of`]), else
+    /// the disk's.
+    fn block_size_of(&self, inode: u64) -> Option<u64> {
+        self.name_of(inode)
+            .and_then(|name| self.block_sizes_of.get(name))
+            .copied()
+            .unwrap_or(self.block_size)
+    }
+
     /// Forget the files that nothing can reach any more: no name, no
     /// name a power cut could bring back, and no open handle. A power
     /// cut can bring back a durable name, and the name of a creation
@@ -632,6 +648,7 @@ impl SimDisk {
                 read_fault: None,
                 no_holes: false,
                 block_size: Some(SECTOR),
+                block_sizes_of: BTreeMap::new(),
                 page_size: SECTOR,
                 hole_fault: false,
                 no_writeback: false,
@@ -980,6 +997,24 @@ impl SimDisk {
     /// directory is copied to another file system.
     pub fn set_block_size(&self, bytes: Option<u64>) {
         self.lock().block_size = bytes;
+    }
+
+    /// The file called `name` lies on a file system of its own, whose
+    /// block size is `bytes` (`None`: one that cannot be asked), as a
+    /// file that is a mount point, or a link to another file system,
+    /// does. Its [`File::block_size`] answers that, and its writes and
+    /// deallocations rewrite those blocks; the directory
+    /// ([`Dir::block_size`]) and the other files keep the disk's
+    /// ([`SimDisk::set_block_size`]). It goes with the name, and holds
+    /// across a power cut as the disk's does: a property of where the
+    /// file is. [`SimDisk::same_block_size_as_the_disk`] takes it back.
+    pub fn set_block_size_of(&self, name: &str, bytes: Option<u64>) {
+        self.lock().block_sizes_of.insert(name.to_string(), bytes);
+    }
+
+    /// The file called `name` lies on the disk's file system again.
+    pub fn same_block_size_as_the_disk(&self, name: &str) {
+        self.lock().block_sizes_of.remove(name);
     }
 
     /// The page size the system reports ([`Dir::page_size`]). One
@@ -1360,12 +1395,14 @@ impl SimFile {
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-        let rng = &mut state.rng;
         // A direct write writes its own sectors and nothing around them.
         let unit = match how {
             Through::Direct => SECTOR,
-            _ => state.write_unit.max(state.block_size.unwrap_or(SECTOR)),
+            _ => state
+                .write_unit
+                .max(state.block_size_of(self.inode).unwrap_or(SECTOR)),
         };
+        let rng = &mut state.rng;
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         let range = pages_of(offset, data.len() as u64);
         if how == Through::Direct {
@@ -1777,8 +1814,10 @@ impl File for SimFile {
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
         state.count_write(self.inode);
         let failing = std::mem::take(&mut state.hole_fault);
+        let unit = state
+            .write_unit
+            .max(state.block_size_of(self.inode).unwrap_or(SECTOR));
         let rng = &mut state.rng;
-        let unit = state.write_unit.max(state.block_size.unwrap_or(SECTOR));
         let inode = state.inodes.get_mut(&self.inode).ok_or_else(gone)?;
         if !offset.is_multiple_of(SECTOR) || !len.is_multiple_of(SECTOR) || end > inode.len {
             return Err(io::Error::new(
@@ -1826,7 +1865,7 @@ impl File for SimFile {
         let state = self.disk.lock();
         self.check(&state)?;
         state
-            .block_size
+            .block_size_of(self.inode)
             .ok_or_else(|| io::Error::other("the file system does not say"))
     }
 
@@ -2665,6 +2704,48 @@ mod tests {
         }
         disk.set_block_size(None);
         assert!(Dir::block_size(&disk).is_err());
+    }
+
+    /// A file on a file system of its own: it says its own block size,
+    /// a small write to it puts its own block at risk, and the
+    /// directory and another file keep the disk's. A file system of its
+    /// own that cannot be asked is that file's error alone, and the
+    /// file goes back to the disk's when told.
+    #[test]
+    fn a_file_on_a_file_system_of_its_own_has_its_own_block() {
+        let disk = disk_with(32, 1);
+        let mut g = disk.create("g").unwrap();
+        g.write_at(0, &[1; 32 * S]).unwrap();
+        g.sync().unwrap();
+        Dir::sync(&disk).unwrap();
+        disk.set_write_unit(2 * SECTOR);
+        disk.set_block_size_of("f", Some(16 * SECTOR));
+        let mut f = disk.open("f").unwrap();
+        assert_eq!(f.block_size().unwrap(), 16 * SECTOR);
+        assert_eq!(g.block_size().unwrap(), SECTOR);
+        assert_eq!(Dir::block_size(&disk).unwrap(), SECTOR);
+        // One byte in the second block of each: f rewrites its block,
+        // g its write unit.
+        f.write_at(20 * SECTOR + 7, &[2]).unwrap();
+        g.write_at(20 * SECTOR + 7, &[2]).unwrap();
+        assert_eq!(disk.unsynced_sectors(), 16 + 2);
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let got = read(&disk, "f", 0, 32 * S);
+        let lost = |got: &[u8]| {
+            (0..32)
+                .filter(|&sector| got[sector * S..(sector + 1) * S] != [1; S])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lost(&got), (16..32).collect::<Vec<_>>());
+        assert_eq!(lost(&read(&disk, "g", 0, 32 * S)), [20, 21]);
+        // It holds across the cut, as the disk's does.
+        assert_eq!(disk.open("f").unwrap().block_size().unwrap(), 16 * SECTOR);
+        disk.set_block_size_of("f", None);
+        assert!(disk.open("f").unwrap().block_size().is_err());
+        assert_eq!(disk.open("g").unwrap().block_size().unwrap(), SECTOR);
+        assert_eq!(Dir::block_size(&disk).unwrap(), SECTOR);
+        disk.same_block_size_as_the_disk("f");
+        assert_eq!(disk.open("f").unwrap().block_size().unwrap(), SECTOR);
     }
 
     /// Write unit: with one set, a small write puts the durable sectors
