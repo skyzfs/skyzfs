@@ -91,7 +91,7 @@ The code is right. The barrier is the first line of `flush()`, which runs when t
 - `review_a_flush_behind_a_sync_under_way_has_its_barrier_when_executed` fails under P1 and P4;
 - `review_a_flush_that_joins_a_sync_has_its_barrier_and_its_cut` fails under P1, P4 and P9.
 
-Both pass at this head. The patch is on the review branch: `review/m2.1/reproducers.patch` (append to `crates/skyzfs-local/src/inplace/tests/cuts.rs`).
+Both pass at this head. The patch is on the review branch: [`review/m2.1/reproducers.patch`](https://github.com/skyzfs/skyzfs/blob/22ad5f3/review/m2.1/reproducers.patch), three tests appended to `crates/skyzfs-local/src/inplace/tests/cuts.rs`.
 
 ### Your five questions
 
