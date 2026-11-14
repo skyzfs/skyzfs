@@ -153,3 +153,6 @@ than what it replaced. Both items of finding 2 block, with finding 1.
   `look2-posted.md`. Left to the lead: the home image's own file
   system is still untested against the write unit. Not blocking: the
   call site's `volume.reaches_positions()` is untested.
+- The lead (2026-11-14): the home image's file system against the
+  write unit goes later, as its own small package after M1.3t-b, with
+  a per-file block size in the simulated disk and a plant. Not in 69.
