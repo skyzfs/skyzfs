@@ -1,0 +1,26 @@
+=== repeats of the two new tests
+     30 ok
+     30 ok
+=== plants
+S0 none [-p skynbd-api --lib]: rc 0; failed: nothing; ['ok. 13 passed']
+S0 none [-p skynbd-api --test origin_serve]: rc 0; failed: nothing; ['ok. 6 passed']
+S0 none [-p skynbd-api --test api]: rc 0; failed: nothing; ['ok. 15 passed']
+S1 no second look [-p skynbd-api --lib]: rc 101; failed: ['tests::a_repoint_that_finds_a_serve_half_done_converges_it_through_the_row']; ['FAILED. 12 passed']
+S1 no second look [-p skynbd-api --test origin_serve]: rc 101; failed: ['a_repoint_that_converges_while_a_serve_is_under_way_converges_that_serve']; ['FAILED. 5 passed']
+S1 no second look [-p skynbd-api --test api]: rc 0; failed: nothing; ['ok. 15 passed']
+S2 the second look takes no provisioner lock [-p skynbd-api --lib]: rc 101; failed: ['tests::a_repoint_that_finds_a_serve_half_done_converges_it_through_the_row']; ['FAILED. 12 passed']
+S2 the second look takes no provisioner lock [-p skynbd-api --test origin_serve]: rc 101; failed: ['a_repoint_that_converges_while_a_serve_is_under_way_converges_that_serve']; ['FAILED. 5 passed']
+S2 the second look takes no provisioner lock [-p skynbd-api --test api]: rc 0; failed: nothing; ['ok. 15 passed']
+S3 the second look does not reconcile [-p skynbd-api --lib]: rc 101; failed: ['tests::a_repoint_that_finds_a_serve_half_done_converges_it_through_the_row']; ['FAILED. 12 passed']
+S3 the second look does not reconcile [-p skynbd-api --test origin_serve]: rc 0; failed: nothing; ['ok. 6 passed']
+S3 the second look does not reconcile [-p skynbd-api --test api]: rc 0; failed: nothing; ['ok. 15 passed']
+S4 the second look lets the lock go before it reconciles [-p skynbd-api --lib]: rc 0; failed: nothing; ['ok. 13 passed']
+S4 the second look lets the lock go before it reconciles [-p skynbd-api --test origin_serve]: rc 0; failed: nothing; ['ok. 6 passed']
+S4 the second look lets the lock go before it reconciles [-p skynbd-api --test api]: rc 0; failed: nothing; ['ok. 15 passed']
+worktree: clean
+=== slow release, 600 ms
+20 pass
+restored: True
+=== slow release, 1500 ms
+10 pass
+restored: True
