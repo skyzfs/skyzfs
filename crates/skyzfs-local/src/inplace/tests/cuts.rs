@@ -43,6 +43,15 @@ fn stamped(txg: u64, root: u64, timestamp: u64) -> Buf {
     slot
 }
 
+/// The same as a multihost write makes it: a later time, and the
+/// multihost magic with sequence `seq` marked valid.
+fn multihost(txg: u64, root: u64, timestamp: u64, seq: u64) -> Buf {
+    let mut slot = stamped(txg, root, timestamp);
+    slot[176..184].copy_from_slice(&skyzfs_uberblock::MMP_MAGIC.to_le_bytes());
+    slot[192..200].copy_from_slice(&((seq << 32) | 0x02).to_le_bytes());
+    slot
+}
+
 /// The uberblock write of group `txg` and root `root` to label `label`,
 /// in the slot the group chooses.
 fn uberblock_write(label: usize, txg: u64, root: u64) -> Op {
@@ -653,4 +662,103 @@ fn a_flush_that_joins_a_sync_has_its_barrier_and_its_cut() {
     }
     assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 3);
     assert_eq!(while_syncing, (1, Some(7)), "the joined flush's cut");
+}
+
+/// A multihost pool writes the cut's own uberblock again, with a later
+/// time and a multihost sequence, into the ring's last slot. That copy
+/// ranks above the uberblock that marks the cut, but it is the cut's
+/// own state, and an import opens that state: the cut opens as itself,
+/// here with the copy applied before the cut's flush. Comparing
+/// uberblocks and not states is noticed: it calls every such cut a
+/// rewind (the lead's reading of M2.1b, point 4).
+#[test]
+fn a_multihost_copy_of_the_cuts_own_state_leaves_it_itself() {
+    let opens = |mutants: u64| {
+        let disk = created(15, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let write = |offset: u64, data: Buf| Op::Write { offset, data };
+        let mut seen = Vec::new();
+        for (txg, root, at) in [(10, 1, 100), (11, 2, 200)] {
+            for label in 0..LABELS {
+                let slot = stamped(txg, root, at);
+                step(&mut store, write(ring(label) + txg * SLOT, slot));
+            }
+            let copy = multihost(txg, root, at + 50, 3);
+            step(&mut store, write(ring(2) + (RING_SLOTS - 1) * SLOT, copy));
+            step(&mut store, Op::Flush);
+            seen.push(newest(&store));
+        }
+        seen
+    };
+    assert_eq!(opens(0), [Some((10, true)), Some((11, true))]);
+    assert_eq!(
+        opens(Mutants::ITSELF_BY_RANK),
+        [Some((10, false)), Some((11, false))],
+        "uberblocks compared and not states is not noticed"
+    );
+}
+
+/// A rewind import by `-F` begins its new history at the abandoned
+/// best group (OpenZFS 2.4.1, `spa.c` 6342 and 4713): its first
+/// uberblock has that group, another root and a later time, and an
+/// import chooses it at once. Here a stray flush comes after two of its
+/// four label writes, while the other two labels still hold the
+/// abandoned state of the same group: that cut opens as itself, and the
+/// labels after it are repeats. Taking the group alone for the order is
+/// noticed: it calls the two states of group 12 a tie, and so a rewind.
+#[test]
+fn a_rewind_by_f_opens_as_its_first_group_at_once() {
+    let opens = |mutants: u64| {
+        let disk = created(16, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let write = |label: usize, root: u64, at: u64| Op::Write {
+            offset: ring(label) + 12 * SLOT,
+            data: stamped(12, root, at),
+        };
+        let mut seen = Vec::new();
+        for label in 0..LABELS {
+            step(&mut store, write(label, 1, 100));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        // The import by -F: group 12 again, another root, later.
+        for label in 0..2 {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        for label in 2..LABELS {
+            step(&mut store, write(label, 2, 200));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        seen
+    };
+    assert_eq!(
+        opens(0),
+        [
+            (1, Some((12, true))),
+            (2, Some((12, true))),
+            (2, Some((12, true)))
+        ]
+    );
+    assert_eq!(
+        opens(Mutants::ORDER_BY_GROUP),
+        [
+            (1, Some((12, true))),
+            (2, Some((12, false))),
+            (2, Some((12, false)))
+        ],
+        "the group alone for the order is not noticed"
+    );
 }

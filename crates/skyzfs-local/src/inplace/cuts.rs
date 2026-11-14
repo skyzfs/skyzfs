@@ -59,7 +59,13 @@
 //!   greatest rank in view carries the mark's state, the rank being the
 //!   order an import chooses by (`vdev_uberblock_compare`: the group,
 //!   then the time, then the multihost sequence;
-//!   [`skyzfs_uberblock::Rank`]). Otherwise the cut opens only with a
+//!   [`skyzfs_uberblock::Rank`]). States are compared, not uberblocks: a
+//!   multihost write carries the cut's own group and root with a later
+//!   time, and ranks above the uberblock that marks the cut, yet an
+//!   import of it opens the cut's state (the lead's reading, M2.1b).
+//!   Likewise the first group of a rewind import by `-F` has the
+//!   abandoned best's group, another root and a later time, and is
+//!   chosen at once. Otherwise the cut opens only with a
 //!   rewind to its group, which a later abandoned history above it
 //!   shows: after a rewind import, the abandoned groups stay in the
 //!   rings until the new ones are written over them.
@@ -123,10 +129,15 @@
 //!   is unknown, and so is one a write covered only in part; while any
 //!   is, no cut opens as itself. Two different states that tie at the
 //!   greatest rank are taken as a rewind, though an import opens one of
-//!   them. Only this volume's labels are seen: a pool of several vdevs
-//!   opens at the greatest uberblock among all of them. And the view
-//!   says which state an import chooses, not that the state opens:
-//!   that rests on its blocks, which the rings do not show.
+//!   them. And the view says which state an import chooses, not that
+//!   the state opens: that rests on its blocks, which the rings do not
+//!   show.
+//! - **"Itself" is defined on the volume alone, on purpose.** The
+//!   product's pool has one more top-level vdev, the node's log device
+//!   (design §6.1), and ZFS writes uberblocks to its labels too; the
+//!   store sees only the volume's. A restore on another node has only
+//!   the volume and imports it without the log device, so the answer is
+//!   about an import of the volume alone.
 //! - **The view is in memory**, like the count. Each start reads it
 //!   again from the rings, so it does not depend on what an instance
 //!   before kept.
@@ -402,10 +413,19 @@ impl CutRule {
         self.newest = Some(state);
         self.cuts.count += 1;
         let by_group = self.mutants.has(Mutants::ORDER_BY_GROUP);
+        let mut itself = self.view.chosen(&state, by_group);
+        if self.mutants.has(Mutants::ITSELF_BY_RANK) {
+            // The defect: uberblocks compared, not states.
+            itself = itself
+                && self
+                    .view
+                    .uberblocks()
+                    .all(|other| other.rank <= uberblock.rank);
+        }
         let cut = Cut {
             number: self.cuts.count,
             group: state.txg,
-            itself: self.view.chosen(&state, by_group),
+            itself,
         };
         self.cuts.newest = Some(cut);
         self.watching.tell(Seen::Cut(id, cut));

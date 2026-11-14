@@ -320,6 +320,11 @@ impl Mutants {
     /// uberblock, and what was written before the store began is not
     /// seen.
     pub(crate) const RINGS_UNREAD: u64 = 1 << 38;
+    /// A cut opens as itself only if no uberblock in view ranks above
+    /// the one that marks it: uberblocks are compared, not states, so a
+    /// multihost copy of the cut's own state with a later timestamp
+    /// makes it a rewind (the lead's reading of M2.1b, point 4).
+    pub(crate) const ITSELF_BY_RANK: u64 = 1 << 39;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
