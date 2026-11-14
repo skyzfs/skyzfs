@@ -528,6 +528,43 @@ fn a_flush_is_committed_when_the_target_has_flushed() {
     caught(scenario, Mutants::FLUSH_NOT_SUBMITTED);
 }
 
+/// A flush has no place, whatever its sector fields hold. The block
+/// layer's own flush request is made with no sector, so the driver
+/// hands it over with `start_sector` u64::MAX (by a reading of the
+/// kernel's source); the control test program once panicked on such a
+/// flush (M1.3ag). Through the pump it is the target's flush and is
+/// committed with 0, as any other: the translation returns before it
+/// computes a range. A translation that computed one would refuse both
+/// (out of the device, or empty) and commit them with an error.
+/// Mutant: a flush is committed without the target's.
+#[test]
+fn a_flush_whose_sector_reads_the_highest_value_is_the_targets_flush() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 4, 4);
+        let flush = |tag, nr_sectors| Fetched {
+            tag,
+            desc: Desc {
+                op_flags: u32::from(op::FLUSH),
+                nr_sectors,
+                start_sector: u64::MAX,
+            },
+        };
+        rig.fetch(&[flush(1, 0), flush(2, u32::MAX)]);
+        rig.turn();
+        expect(
+            rig.submitted(),
+            vec![(1, "flush"), (2, "flush")],
+            "handed to the target",
+        )?;
+        rig.complete(1);
+        rig.complete(2);
+        rig.turn();
+        expect(rig.committed(), vec![(1, 0), (2, 0)], "committed")?;
+        expect(rig.pump.counters().flushes, 2, "counted")
+    }
+    caught(scenario, Mutants::FLUSH_NOT_SUBMITTED);
+}
+
 /// Forced unit access (§4.1): a write with FUA is a write followed by a
 /// flush, submitted once the write was acknowledged by the target, and
 /// the request is committed when the flush has completed, with the
