@@ -219,7 +219,8 @@ def loaded_txg(dbgmsg):
     at the group that fails goes on to older uberblocks (spa_load_best),
     and in that recovery mode zpool prints no "returned to its state" line
     (the rewind info is kept only outside it), so the kernel's own account
-    is what says which state came up (review of #94, S1)."""
+    is what says which state came up (review of #94, S1). The tryimport
+    before it names the pool the same way: the last note is the import's."""
     found = LOADED_RE.findall(dbgmsg)
     return int(found[-1]) if found else None
 

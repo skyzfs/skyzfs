@@ -116,23 +116,31 @@ class Sessions(unittest.TestCase):
 
 
 class Loaded(unittest.TestCase):
-    # from rewindf's dbgmsg in run 43645075993: a load that failed at 43,
-    # then the rewind's load at 34
-    TEXT = """1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load($import, config trusted): LOADING
-1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load($import, config untrusted): using uberblock with txg=43
-1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=43
-1794693469   ff36 spa_misc.c:417:spa_load_failed(): spa_load(skzcut, config untrusted): FAILED: unable to open rootbp in dsl_pool_init [error=5]
-1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): spa_load_retry: rewind, max txg: 42
-1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=34
-1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config trusted): LOADED
+    # Verbatim but for the thread's address, from rewindf's dbgmsg for
+    # -FX in run 43647779663: the tryimport's load (its notes name the
+    # pool too, not $import), then the import's: a load at 43 that
+    # failed, and the rewind's at 34 (which failed too, further on).
+    TEXT = """1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config trusted): LOADING
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=43
+1794695322 ff36 spa_misc.c:417:spa_load_failed(): spa_load(skzcut, config untrusted): FAILED: unable to open rootbp in dsl_pool_init [error=5]
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): UNLOADING
+1794695322 ff36 spa.c:7398:spa_import(): spa_import: importing skzcut, max_txg=-1 (RECOVERY MODE)
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config trusted): LOADING
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=43
+1794695322 ff36 spa_misc.c:417:spa_load_failed(): spa_load(skzcut, config untrusted): FAILED: unable to open rootbp in dsl_pool_init [error=5]
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): UNLOADING
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): spa_load_retry: rewind, max txg: 42
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): LOADING
+1794695322 ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=34
 """
 
     def test_the_last_load_of_the_pool_counts(self):
         self.assertEqual(cut_check.loaded_txg(self.TEXT), 34)
-        self.assertEqual(cut_check.loaded_txg(self.TEXT.split('FAILED')[0]), 43)
+        # cut before the rewind: the import's own load at 43 is the last
+        self.assertEqual(cut_check.loaded_txg(self.TEXT.split('spa_load_retry')[0]), 43)
         self.assertIsNone(cut_check.loaded_txg('nothing here'))
-        # another pool's load (the tryimport's name) is not this one's
-        self.assertIsNone(cut_check.loaded_txg(self.TEXT.splitlines()[1]))
+        # another pool's load is not this one's
+        self.assertIsNone(cut_check.loaded_txg(self.TEXT.replace('skzcut', 'other')))
 
 
 class Picks(unittest.TestCase):
