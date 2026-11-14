@@ -17,6 +17,10 @@ group. At each cut, on one image moved forward through the record:
           replay_check.every_copy_verdict);
   import  the kernel imports it read-only (zpool import -o readonly=on).
 
+For each session, a cut is complete (its flush included) before the
+create or the import returned (the mark session-K-ready): design §5.2's
+claim that a cut's group cannot err high for a publish rests on it.
+
 And for each session of the pool (cut-record.sh's marks): the groups of
 the cuts whose uberblock write falls in the session equal, in order, the
 groups the pool's `txgs` kstat says were committed in it (those up to
@@ -97,15 +101,34 @@ def committed_txgs(text):
     return out
 
 
-def sessions(records):
-    """The marks session-K-begin / session-K-end -> {K: (begin record, end record)}."""
+def marks_of(records, kind):
+    """The marks session-K-KIND -> {K: record}."""
     out = {}
     for r in records:
-        m = re.fullmatch(r'session-(\d+)-(begin|end)', r.get('mark', '') if 'mark' in r['flags'] else '')
+        m = re.fullmatch(r'session-(\d+)-' + kind, r.get('mark', '') if 'mark' in r['flags'] else '')
         if m:
-            k = int(m.group(1))
-            lo, hi = out.get(k, (None, None))
-            out[k] = (r['i'], hi) if m.group(2) == 'begin' else (lo, r['i'])
+            out[int(m.group(1))] = r['i']
+    return out
+
+
+def sessions(records):
+    """The marks session-K-begin / session-K-end -> {K: (begin record, end record)}."""
+    lo, hi = marks_of(records, 'begin'), marks_of(records, 'end')
+    return {k: (lo.get(k), hi.get(k)) for k in sorted(set(lo) | set(hi))}
+
+
+def synced_before_ready(cs, records):
+    """For each session: the cuts whose flush came between its begin mark
+    and its ready mark (the create or import returned) -> [(K, cuts, detail)]."""
+    lo, ready = marks_of(records, 'begin'), marks_of(records, 'ready')
+    out = []
+    for k in sorted(lo):
+        if k not in ready:
+            out.append((k, None, f'session {k} has no ready mark'))
+            continue
+        n = [c for c in cs if lo[k] < c['ub_record'] and c['flush_record'] < ready[k]]
+        out.append((k, len(n), f"session {k}: {len(n)} cuts complete before the command returned"
+                    + (f" (groups {n[0]['txg']}..{n[-1]['txg']})" if n else '')))
     return out
 
 
@@ -321,6 +344,16 @@ def main():
         bad = [d for _, ok, d in sv if not ok]
         put('sessions', 'PASS' if not bad else 'FAIL', '; '.join(bad) if bad else f'{len(sv)} sessions as committed')
         if bad:
+            rc = 1
+        # A writable create or import syncs a group, with its flush,
+        # before it returns (design §5.2).
+        sb = synced_before_ready(cs, ck.records)
+        if any(n is None for _, n, _ in sb):
+            raise RigError('; '.join(d for _, n, d in sb if n is None))
+        none = [d for _, n, d in sb if n == 0]
+        put('import_syncs_before_return', 'PASS' if not none else 'FAIL',
+            '; '.join(d for _, _, d in sb) if not none else '; '.join(none))
+        if none:
             rc = 1
         # The controls.
         got = {}

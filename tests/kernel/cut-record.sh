@@ -89,11 +89,20 @@ session_end() {
 # Before the create or the import, so that the groups it syncs are in the session.
 session_begin() { SESSION=$((SESSION + 1)); mark "session-$SESSION-begin"; }
 export_pool() { session_end; z 120 zpool export "$POOL"; }
-import_pool() { session_begin; z 120 zpool import -d "$DEV" -o cachefile=none "$@" "$POOL"; }
+# The mark session-K-ready when the create or import has returned: the
+# check asks whether a writable import synced a group, with its flush,
+# before it returned (design §5.2: a cut's group cannot err high for a
+# publish).
+import_pool() {
+    session_begin
+    z 120 zpool import -d "$DEV" -o cachefile=none "$@" "$POOL"
+    mark "session-$SESSION-ready"
+}
 create_pool() {
     session_begin
     z 120 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MNT" -O atime=off -O compression=off \
         "$@" "$POOL" "$DEV"
+    mark "session-$SESSION-ready"
 }
 # K: K rounds of FILES files of 1 MiB each, a snapshot and a sync.
 LOADED=0

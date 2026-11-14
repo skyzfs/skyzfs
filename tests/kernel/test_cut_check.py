@@ -77,6 +77,18 @@ class Sessions(unittest.TestCase):
         v = cut_check.session_verdicts(cs, self.records, {1: [4, 5], 2: [9, 10]})
         self.assertEqual([ok for _, ok, _ in v], [True, True])
 
+    def test_a_cut_before_the_command_returned(self):
+        records = [rec(0, mark='session-1-begin'), rec(1), rec(2), rec(3, mark='session-1-ready'), rec(4),
+                   rec(5, mark='session-1-end'), rec(6, mark='session-2-begin'), rec(7, mark='session-2-ready')]
+        c = cut(1, 4, 1)
+        c['flush_record'] = 2
+        late = cut(2, 5, 4)
+        late['flush_record'] = 4
+        v = cut_check.synced_before_ready([c, late], records)
+        self.assertEqual([(k, n) for k, n, _ in v], [(1, 1), (2, 0)])
+        c['flush_record'] = 3.5
+        self.assertEqual(cut_check.synced_before_ready([c], records)[0][1], 0)
+
     def test_no_kstat_is_the_rigs(self):
         v = cut_check.session_verdicts([], self.records, {1: [4]})
         self.assertIsNone(v[1][1])
