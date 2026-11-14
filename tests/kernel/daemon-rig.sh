@@ -2434,9 +2434,9 @@ c_evidence_end() {
             $3 == "ended" && $8 == -19 { a++ }
             $3 == "ended" && $8 != -19 { f++; if (!e) e = "tag " $4 ", " $5 ", result " $8 }
             END { printf "%d %d %s", f, a, e }' "$OUT/$tag"-c*.requests.tsv)"
-        C_CMD_LOGS=$((C_CMD_LOGS + n_logs)); C_CMD_FAILED=$((C_CMD_FAILED + f)); C_CMD_ABORTED=$((C_CMD_ABORTED + n_ab))
-        [ -n "$C_CMD_FIRST" ] || [ -z "$first" ] || C_CMD_FIRST="pass $tag: $first"
-        C_CMD_PASSES+="$tag "
+        C_CMD_LOGS=$((${C_CMD_LOGS:-0} + n_logs)); C_CMD_FAILED=$((${C_CMD_FAILED:-0} + f)); C_CMD_ABORTED=$((${C_CMD_ABORTED:-0} + n_ab))
+        [ -n "${C_CMD_FIRST:-}" ] || [ -z "$first" ] || C_CMD_FIRST="pass $tag: $first"
+        C_CMD_PASSES="${C_CMD_PASSES:-}$tag "
     fi
     # Requests that udev's own processes issued to any device during the
     # pass: its probe of each new device (its "add" event), and with a
@@ -2857,7 +2857,7 @@ check_g() {
 GJ_MIB=16
 check_g_data_journal() {
     local img=$WORK/g-journal.img mnt=$WORK/g-journal loop="" link=$WORK/vol-gj a="" bad="" rc said before after mode
-    local cache="" attr j=""
+    local cache="" attr j="" changed gone
     gj_mount() { # data mode -> 0 when mounted with it, as the mount table says
         lim 30 mount -o "data=$1" "$loop" "$mnt" >> "$OUT/gj-setup.log" 2>&1 || return 1
         mode=$(findmnt -n -o OPTIONS "$mnt" | tr ',' '\n' | sed -n 's/^data=//p')
@@ -2914,23 +2914,26 @@ check_g_data_journal() {
     fi
     # 2: the refusal. A serve here is a FAIL, and what the cache then
     # holds is the figure that says how it served.
-    before=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
+    # Each file's digest: the image must be as it was; any other file a
+    # refused start rewrote is named, not judged.
+    before=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2)
     serve_start "$SKYZFSD" "$link"; rc=$?
     said=$(grep -m 1 'no direct I/O' "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)
     if [ $rc = 0 ]; then
         a+="on data=journal: SERVED as $BDEV; "; bad+="the volume was served on data=journal; "
         cache+="on data=journal: $(gj_cache); "
         kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
-        after=$before   # the serve wrote to it: no digest to compare
     else
         a+="on data=journal: serve exit ${SERVE_RC:-none}, $([ -n "$said" ] && echo "said: $said" || echo "did NOT give the reason (its last line: $(tail -n 1 "$link.serve.log" | cut -c1-200))"); "
         { [ $rc = 1 ] && [ "$SERVE_RC" = 1 ] && [ -n "$said" ] && [[ $said == *"has not failed"* ]]; } || bad+="the refusal; "
         ! grep -q '^ready' "$link.ready" || bad+="a ready line; "
         cache+="on data=journal: refused, nothing written; "
-        after=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2 | sha256sum | cut -c1-16)
-        a+="the volume's files after it: $([ "$before" = "$after" ] && echo 'as before' || echo 'CHANGED'); "
+        after=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2)
+        changed=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^> [0-9a-f]*  //p' | tr '\n' ' ')
+        gone=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^< [0-9a-f]*  //p' | tr '\n' ' ')
+        a+="the image after it: $([[ " $changed $gone " == *" home.img "* ]] && echo 'CHANGED' || echo 'as before'); other files of the volume new or rewritten: ${changed:-none}, gone or rewritten: ${gone:-none}; "
+        [[ " $changed $gone " != *" home.img "* ]] || bad+="the image changed; "
     fi
-    [ "$before" = "$after" ] || bad+="the volume's files changed; "
     lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
     # 3: not failed: the control, after
     if ! gj_mount ordered; then

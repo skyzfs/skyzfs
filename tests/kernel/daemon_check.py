@@ -296,7 +296,8 @@ EXPECTED = {
     'pin_data_journal_refused': ('g', 'PASS', WAITING,
                                  'on ext4 mounted data=journal, whose statx reports no direct-I/O alignment for a '
                                  'journalled file, serve exits 1 with the reason ("no direct I/O") and "the volume has '
-                                 'not failed", no ready line and the volume\'s files untouched; the same file system '
+                                 'not failed", no ready line and the image untouched (other files a refused start '
+                                 'rewrote are named); the same file system '
                                  'mounted data=ordered serves the volume before and after (M1.3y, g.4)', 'WAITING'),
 }
 # Observations: recorded, not judged, but the run is incomplete without
