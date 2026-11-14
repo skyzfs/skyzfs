@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 is in progress: the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04. On 2026-11-13 the store's design changed: the write log is dropped and the volume is written in place, with direct I/O (decisions D5 and D6, §10.1). The in-place store is built and is the only store; the log store was removed on 2026-11-14 (M1.3t). M1 exits on that store, and what is left is listed in §9. |
+| Status | Draft. Decisions are recorded in §10.1. M0 is done. M1 exited on 2026-11-14 (§9): the contract and its conformance suite, the local store, the ublk transport and `skyzfsd` are built and run against the kernel on Ubuntu 24.04 and 26.04, amd64 and arm64. On 2026-11-13 the store's design changed: the write log is dropped and the volume is written in place, with direct I/O (decisions D5 and D6, §10.1). The in-place store is built and is the only store; the log store was removed on 2026-11-14 (M1.3t). M1 exited on that store; M2 is next. |
 | Date | 2026-11-12. First draft 2026-11-10 |
 | Supersedes | The dm-thin node stack of `skynbd_design.md` and `skynbd-origin-advance-design.md`, for this repository. The object formats, refs and commit protocol carry over. |
 | Evidence | `skynbd-postgres-study.md` §10 |
@@ -450,7 +450,7 @@ ZFS's defaults assume a large pool and an uncapped ARC. A pool per volume is oft
 
 ```mermaid
 flowchart LR
-  M0["M0 I/O model<br/>done"] --> M1["M1 Linux prototype<br/>ublk, local store"]
+  M0["M0 I/O model<br/>done"] --> M1["M1 Linux prototype<br/>done"]
   M1 --> M2["M2 Cuts, upload,<br/>visible snapshots"]
   M2 --> M3["M3 Restore and<br/>clone anywhere"]
   M3 --> M4["M4 Efficiency and<br/>hardening"]
@@ -480,7 +480,16 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 | **M9** Streaming intent-log backup | M | Design document. Log device served by the daemon. Ordered tail upload. Restore to any flush boundary with log replay. | A node killed at a random moment under pgbench restores with every transaction that was acknowledged more than a stated lag before the kill, checked against the client's own record. The lag bound is a number in the design document. |
 | **H** ZFS in user space on macOS, after 1.x | Not sized | Deferred by decision D4, and no longer a hedge for M6. A macOS client on FSKit, built on the macOS port once that supports FSKit, with the daemon and the `udrive_shm` code of M5 reused. | Planned once 1.x has shipped and the port's FSKit work exists to build on. |
 
-**Where M1 stands (2026-11-13).** The store changed under M1 on 2026-11-13 (decision D5), and M1 exits on the new one.
+**M1 exited on 2026-11-14**, on the in-place store with direct I/O, every criterion shown on one build (848ab28, `zfs-topology` with the log store removed), as the round was planned before it ran:
+
+- **Kill under load, a clean pool:** the daemon rig on Ubuntu 24.04, 26.04, 24.04 on arm64 and 26.04 on arm64 (run 43573413024), one run each: under `kill -9` with writes in flight at 20 of 20 kills, no application write failed, no error was counted on the vdev, the scrub was clean and every file was as the writer recorded it; the device waited for a server for 300 s; every line as the rig's table expects.
+- **The power-cut replay:** one full run per image through the daemon (run 43573410351): every record prefix, 2690 of 2690 on 26.04 and 2619 of 2619 on 26.04 on arm64, with the first and last prefix of every transaction group deep-checked and the `fsync` check; both controls caught; and the writes into a hole as §4.1 allows on both.
+- **Throughput, by the rule below:** thirteen jobs, ten amd64 and three arm64, 130 rows. The rule is met in every cell of three kinds of machine, unbounded and bounded to 1 GiB: nvme work disks 0.992 and 1.011 over sixteen rows from six jobs; sda work disks 0.962 and 0.963 over nine rows from three jobs; arm64 0.937 and 0.938 over eight rows from three jobs. With the write-time stall rule as well the medians are 1.001 and 1.012 (nvme) and 0.958 and 0.959 (sda). A fourth kind, a `dm-0` work disk, drew one job: 0.930 and 0.919, three rows each, too few to count, so the exit does not claim it.
+- Gate G1 is answered: ublk with one copy meets the model's numbers, and the zero-copy modes are not needed for M1.
+
+The round, job by job, is in the notes, M1, "The M1 exit round". What no run on the CI runners shows (below) still holds, and what a device flush costs on real flash is measured with M2's hardware or before it (§10).
+
+**How M1 got there (2026-11-13 and 2026-11-14).** The store changed under M1 on 2026-11-13 (decision D5), and M1 exited on the new one.
 
 **What was shown on the first store, the one with a write log.**
 
@@ -494,12 +503,12 @@ Sizes are relative: S is weeks, M is one to two months, L is a quarter, for a sm
 - in the same bracket it was faster than the log store in all four jobs, by 3 to 12%, with less than half the daemon's CPU. In the replay rig's workload it wrote 181 MiB to the disk where the log store wrote 430;
 - it passed the full power-cut replay on both images, 594 and 596 prefixes, in the kernel's order of writeback and not the daemon's.
 
-**What is left for M1 to exit.**
+**What was left for M1 to exit on 2026-11-13, all done on 2026-11-14.**
 
 - The in-place store becomes the only store: the contract's suite judges the volatile-cache disk, the daemon's failure path covers a start that meets a failed disk, the rigs drive it, and the log store is removed (M1.3s, M1.T20, M1.3t). Done on 2026-11-14.
 - The exit criteria hold on arm64 as well as on amd64 (goal 8): the rigs pass there, and the throughput rule is judged there by the same rule, arm64 runners being one more kind of machine (M1.T21).
 - The power-cut replay is shown again on the merged daemon. So far it was shown once per image from the experiment's branch.
-- The throughput rule is met on the merged daemon for each kind of machine. On the experiment's builds the in-place store meets it in three of the four cells (medians of 1.000 and 0.967 on fast-sync machines, 0.986 unbounded on slow-sync ones, four to seven rows from four jobs each) and misses it in one: bounded to 1 GiB on slow-sync machines, 0.873 over four rows from four jobs, where the log store was lower still (M1.T18, M1.T19). The limit bounds the page cache of the volume's file, which ZFS's own cache duplicates: under it the kernel evicts the image's pages and the daemon reads them back from the disk, about one page for every two transactions (M1.T22). Serving the reads from other threads did not help (M1.T22b). Direct I/O did, on an experiment build: on slow-sync machines, with eight I/O threads, 0.935 and 0.936 under the limit in a job where the buffered store ran at 0.834, and 0.997 and 1.004 without it against 0.948 and 0.983; with one thread it was above the buffered store in four of five comparisons. That is four counting jobs, one row a figure. On fast-sync machines one thread ran 1.4 to 6.2 points under the buffered store, still at 0.94 or above, in three jobs and four rows. Direct I/O is decided (D6) and built (M1.3y). On the merged daemon with eight threads (M1.T29, two rounds, twenty jobs): fast-sync amd64 0.952 unbounded and 0.954 to 0.956 bounded; arm64 0.978 and 0.968; slow-sync amd64 0.963 unbounded over three rows and, bounded, 1.013 over ten rows in the second round after 0.877 over three in the first, on machines whose model rows themselves drift by more than the rule allows in a third of the brackets. One machine of a kind not seen before (a `dm-0` work disk) ran at 0.909 bounded, three rows. The exit round is run after the log store's removal.
+- The throughput rule is met on the merged daemon for each kind of machine. On the experiment's builds the in-place store meets it in three of the four cells (medians of 1.000 and 0.967 on fast-sync machines, 0.986 unbounded on slow-sync ones, four to seven rows from four jobs each) and misses it in one: bounded to 1 GiB on slow-sync machines, 0.873 over four rows from four jobs, where the log store was lower still (M1.T18, M1.T19). The limit bounds the page cache of the volume's file, which ZFS's own cache duplicates: under it the kernel evicts the image's pages and the daemon reads them back from the disk, about one page for every two transactions (M1.T22). Serving the reads from other threads did not help (M1.T22b). Direct I/O did, on an experiment build: on slow-sync machines, with eight I/O threads, 0.935 and 0.936 under the limit in a job where the buffered store ran at 0.834, and 0.997 and 1.004 without it against 0.948 and 0.983; with one thread it was above the buffered store in four of five comparisons. That is four counting jobs, one row a figure. On fast-sync machines one thread ran 1.4 to 6.2 points under the buffered store, still at 0.94 or above, in three jobs and four rows. Direct I/O is decided (D6) and built (M1.3y). On the merged daemon with eight threads (M1.T29, two rounds, twenty jobs): fast-sync amd64 0.952 unbounded and 0.954 to 0.956 bounded; arm64 0.978 and 0.968; slow-sync amd64 0.963 unbounded over three rows and, bounded, 1.013 over ten rows in the second round after 0.877 over three in the first, on machines whose model rows themselves drift by more than the rule allows in a third of the brackets. One machine of a kind not seen before (a `dm-0` work disk) ran at 0.909 bounded, three rows. The exit round, after the log store's removal, met the rule (above).
 
 **What no run on the CI runners shows.** Their work disk is mounted without barriers, so no sync there costs a device flush. With barriers on, a flush took 0.1 ms on a runner with an nvme work disk and never reached the device on one whose disk declares no write cache (M1.T16). "Fast-sync" and "slow-sync" name how fast a runner writes back, not how fast a device makes data durable. What a flush costs on real flash is still to be measured (§10).
 
@@ -509,7 +518,7 @@ Decision gates:
 
 | Gate | After | Question |
 |---|---|---|
-| G1 | M1 | Does ublk with one copy meet the model's numbers? If not, adopt the zero-copy modes before M2. **Measured 2026-11-12: the criterion is not met on slow-sync machines (above), and the copy is not the cause (notes, M1); the zero-copy modes are not adopted for it.** |
+| G1 | M1 | Does ublk with one copy meet the model's numbers? If not, adopt the zero-copy modes before M2. **Measured 2026-11-12: the criterion was not met on slow-sync machines, and the copy was not the cause (notes, M1). Answered 2026-11-14: yes, on the in-place store with direct I/O, in the M1 exit round (above); the zero-copy modes are not adopted for M1.** |
 | G2 | M3 | Is cold restore good enough for the server case? If not, the read cache gets a milestone of its own before M4. |
 | G3 | M5 | Carry patches on the two ports, or switch M6 and M7 to a generic block device? Decided by the measured size and rebase cost of the frontend. |
 | G5 | M6 and M7 in alpha | Is the frontend stable enough to offer to the port maintainers (decision D3)? |
