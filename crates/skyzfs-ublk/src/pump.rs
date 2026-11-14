@@ -26,62 +26,34 @@
 //! - **FUA.** The flush is submitted once the operation was
 //!   acknowledged by the target, and the request is committed when the
 //!   flush has completed. If the operation fails there is no flush.
-//! - **What was acknowledged (design §4.2).** Before a batch of
-//!   completions is committed, the position of the newest acknowledged
-//!   record is stored ([`Positions`]), once for the batch, and only if
-//!   it is beyond what this pump stored last. If it cannot be stored,
-//!   nothing of the batch is committed, reads in it included: the
-//!   requests stay held, [`Counters::unstored`] says how many, and the
-//!   store is tried again at the next turn. The pump has no timer of
-//!   its own. The retry rides on the queue waking: for a request, for
-//!   the target, or, with no traffic at all, for the idle time-out of
-//!   the queue's own wait. In `libublk` 0.4.8 that is 20 seconds
-//!   (`UBLK_QUEUE_IDLE_SECS` in its `io.rs`), and the kernel spike saw
-//!   it: two wakes in 45 idle seconds, 20 s apart. So the longest wait
-//!   for a retry with no traffic is 20 seconds.
 //! - **An orderly stop** completes what it accepted: once the queue
 //!   says stop, nothing more is accepted, what is in the target is
 //!   waited for and committed, and the pump ends. Requests that were
 //!   fetched and not yet submitted are left uncommitted, for the kernel
 //!   to issue again to the next instance.
-//! - **A stop does not call itself orderly while completions wait.**
-//!   If the position cannot be stored when the target has drained, the
-//!   stopping pump tries again, up to a stated number of times
-//!   ([`Pump::stop_tries`]), with [`Queue::pause`] before each try. It
-//!   does not go back to the queue's wait for that, so the retry of a
-//!   stop does not ride the idle time-out: it is paced by the pause
-//!   alone. If the position is stored, the completions are committed
-//!   and the stop is [`Stopped::Orderly`]. If it never is, the pump
-//!   ends with [`Stopped::Unstored`] and commits nothing: the requests
-//!   stay with the kernel, which issues them again to the next
-//!   instance.
 //! - **For M3, not built:** a stopping pump whose target has not
 //!   drained goes back to the queue's wait until it has. That is right
 //!   while the store completes everything it accepted. Once a request
 //!   can be held for as long as object storage is away, a stop must
-//!   leave held requests to the next instance after a stated time, as
-//!   it does for unstored completions now.
+//!   leave held requests to the next instance after a stated time.
 //! - **A failed volume holds no request** ([`Pump::fail`]). When the
 //!   pump is told that the volume failed, it commits the plain I/O
 //!   error for every request it holds, wherever it is: fetched and not
-//!   submitted, in the target, behind its flush, or completed and
-//!   waiting for a position that could not be stored. From then on it
-//!   hands the target nothing, takes nothing from it, stores no
-//!   position, and answers every request that still arrives with the
+//!   submitted, in the target, behind its flush, or completed and not
+//!   yet committed. From then on it hands the target nothing, takes
+//!   nothing from it, and answers every request that still arrives with the
 //!   same error, until the queue goes or a stop is asked
 //!   ([`Stopped::Failed`]). The reason: the daemon deletes a failed
 //!   volume's device, and the driver's delete of a device that is
 //!   served waits for every request its server holds. A store whose
-//!   disk has gone may take minutes over a request or never answer, and
-//!   the record of what was acknowledged is on the same disk.
+//!   disk has gone may take minutes over a request or never answer.
 //!
 //!   An I/O error is always a permitted answer: it promises nothing. A
-//!   write answered so may be in the log and may be applied by the next
-//!   open; a client that was told "failed" cannot rest on either. The
-//!   one thing that must not happen is the reverse, a success for
-//!   something that is not kept, and no success is committed after the
-//!   failure, not even for a completion that had succeeded and only
-//!   waited for its position.
+//!   write answered so may be on the disk or not; a client that was
+//!   told "failed" cannot rest on either. The one thing that must not
+//!   happen is the reverse, a success for something that is not kept,
+//!   and no success is committed after the failure, not even for a
+//!   completion that had succeeded and only waited for its commit.
 //!
 //!   What the target completes later is never taken from it. Its
 //!   buffers (the data of the reads and writes it held) stay with the
@@ -99,7 +71,6 @@
 //!   the daemon.
 
 use std::collections::VecDeque;
-use std::io;
 use std::time::{Duration, Instant};
 
 use skyzfs_local::store::Spent;
@@ -223,11 +194,6 @@ pub trait Queue {
     /// again; for a read that succeeded it holds the data to deliver.
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>);
 
-    /// Wait a short, stated time: between the tries of a stopping pump
-    /// to store the acknowledged position. Not the queue's wait: it
-    /// fetches nothing and returns after its time whatever happens.
-    fn pause(&mut self);
-
     /// Hand the driver every commit made so far, without waiting for
     /// anything. A queue may keep a commit until its next
     /// [`Queue::wait`]; the pump calls this once when it ends for a
@@ -239,13 +205,7 @@ pub trait Queue {
 }
 
 /// What the pump needs of a target beyond the contract.
-pub trait Positions: BlockTarget {
-    /// The log position at which the newest record starts among the
-    /// mutations whose completions [`BlockTarget::poll`] or
-    /// [`BlockTarget::wait`] have returned so far. `None` before the
-    /// first.
-    fn acknowledged(&self) -> Option<u64>;
-
+pub trait PumpTarget: BlockTarget {
     /// Whether the target can no longer complete anything: the thread
     /// that executes its requests has ended.
     fn gone(&self) -> bool;
@@ -259,14 +219,6 @@ pub trait Positions: BlockTarget {
     }
 }
 
-/// Where the position of the newest acknowledged record is kept (design
-/// §4.2, "what was acknowledged").
-pub trait AckRecord {
-    /// Store `position` unless a higher one is stored already. An error
-    /// means it is not stored.
-    fn advance(&mut self, position: u64) -> io::Result<()>;
-}
-
 /// Why the pump ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stopped {
@@ -274,13 +226,6 @@ pub enum Stopped {
     /// completed and committed, and the commits were handed to the
     /// driver ([`Queue::flush`]).
     Orderly,
-    /// A stop was asked, the target has drained, and the acknowledged
-    /// position could not be stored in the stated number of tries.
-    /// `left` completions were not committed.
-    Unstored {
-        /// How many completions are left for the next instance.
-        left: u64,
-    },
     /// The queue went away, or handed over a tag it does not have or
     /// one whose request is still out. Completions that waited are not
     /// committed: there is no queue to commit them to, or none that
@@ -322,8 +267,10 @@ pub struct Counters {
     pub refused: u64,
     /// Requests fetched and not committed yet.
     pub in_flight: u64,
-    /// Completions that are waiting because the acknowledged position
-    /// could not be stored.
+    /// Always 0 since M1.3t-b, which removed the record of what was
+    /// acknowledged: completions that waited because the position could
+    /// not be stored. Kept so that the status file keeps its field, and
+    /// what reads it reads on, until the file's next version.
     pub unstored: u64,
     /// Commands the driver ended with its abort ([`ABORTED`]): the queue
     /// is being stopped. Each tag's last command ends so.
@@ -340,9 +287,8 @@ pub struct Counters {
 /// Where a request's time goes in the pump, before the target has it
 /// and after the target is done with it. Measurement only. One read
 /// of the monotonic clock per turn that fetched something, per
-/// request submitted, per request finished and per batch committed,
-/// and two around a position that is stored; the times are kept by
-/// tag, in a table as long as the queue is deep.
+/// request submitted, per request finished and per batch committed;
+/// the times are kept by tag, in a table as long as the queue is deep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PumpTiming {
     /// From the queue's wait returning with a request to the target
@@ -356,8 +302,7 @@ pub struct PumpTiming {
     /// the target says so (the store does: the end of its call), else
     /// when the pump took the completion or refused the request. So it
     /// holds the time until the pump's thread came to take the
-    /// completion, and the storing of the acknowledged position if a
-    /// mutation completed in the same batch: a commit waits for that.
+    /// completion.
     pub read_to_commit: Spent,
     /// The same for every other request.
     pub other_to_commit: Spent,
@@ -367,18 +312,19 @@ pub struct PumpTiming {
     /// pump's. Counted at the commit, so the count is that of
     /// `read_to_commit`, and the rest of that time is what the commit
     /// waited for after the pump had the completion: the other
-    /// completions of the batch and the storing of the position. Zero
+    /// completions of the batch. Zero
     /// for a request the target never had, and where the target does
     /// not say when a completion was ready. A write that is followed
     /// by a flush of the pump's own counts the flush's completion.
     pub read_to_taken: Spent,
     /// The same for every other request.
     pub other_to_taken: Spent,
-    /// The storing of the acknowledged position, when it had moved:
-    /// how often, how long together, the longest. A store that failed
-    /// is counted too.
+    /// Always zero since M1.3t-b: the storing of the acknowledged
+    /// position. Kept, as [`Counters::unstored`] is, for the status
+    /// file's fields.
     pub store: Spent,
-    /// The completions that were committed behind those stores.
+    /// Always 0 since M1.3t-b: the completions committed behind those
+    /// stores.
     pub behind_store: u64,
 }
 
@@ -411,17 +357,10 @@ impl Mutants {
     /// A refused request is submitted all the same, as a discard of the
     /// first block.
     pub(crate) const REFUSED_REACHES_TARGET: u32 = 1 << 3;
-    /// The acknowledged position is stored after the completions are
-    /// committed.
-    pub(crate) const STORE_AFTER_COMMIT: u32 = 1 << 4;
-    /// Completions are committed although the position was not stored.
-    pub(crate) const COMMIT_UNSTORED: u32 = 1 << 5;
     /// More than the target's depth is submitted.
     pub(crate) const UNBOUNDED: u32 = 1 << 6;
     /// A stop ends the pump at once.
     pub(crate) const STOP_AT_ONCE: u32 = 1 << 7;
-    /// A stop is orderly although completions wait for the position.
-    pub(crate) const ORDERLY_UNSTORED: u32 = 1 << 8;
     /// Requests are submitted newest first.
     pub(crate) const NEWEST_FIRST: u32 = 1 << 9;
     /// A target that is gone is not noticed.
@@ -447,9 +386,6 @@ impl Mutants {
     /// then serves on: it submits to the target and takes its
     /// completions.
     pub(crate) const FAILED_SERVES: u32 = 1 << 18;
-    /// At the failure, a completion that waited for its position is
-    /// committed with its own result.
-    pub(crate) const FAILED_UNSTORED_AS_IS: u32 = 1 << 19;
     /// At the failure, a write that waits for its flush to be
     /// submitted is not answered.
     pub(crate) const FAILED_SKIPS_FLUSH_WAITERS: u32 = 1 << 20;
@@ -485,10 +421,9 @@ enum Slot {
 const FLUSH_ID: u64 = 1 << 32;
 
 /// The pump of one queue. See the [module documentation](self).
-pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
+pub struct Pump<Q: Queue, T: PumpTarget> {
     queue: Q,
     target: T,
-    ack: A,
     translator: Translator,
     slots: Vec<Slot>,
     /// Fetched and not yet submitted, oldest first.
@@ -499,14 +434,11 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     finished: Vec<(u16, i32, Option<Buf>)>,
     /// Requests in the target now.
     in_target: usize,
-    /// The position this pump stored last.
-    stored: Option<u64>,
     stopping: bool,
     /// The volume failed: see [`Pump::fail`].
     failed: bool,
     /// Requests answered with the plain I/O error because of that.
     failed_answers: u64,
-    stop_tries: u32,
     counters: Counters,
     timing: PumpTiming,
     /// By tag.
@@ -514,10 +446,9 @@ pub struct Pump<Q: Queue, T: Positions, A: AckRecord> {
     mutants: Mutants,
 }
 
-impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
-    /// A pump between `queue` and `target`, which stores what it
-    /// acknowledges in `ack`.
-    pub fn new(queue: Q, target: T, ack: A) -> Self {
+impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
+    /// A pump between `queue` and `target`.
+    pub fn new(queue: Q, target: T) -> Self {
         let translator = Translator::new(&target.geometry());
         let slots = (0..queue.depth()).map(|_| Slot::Idle).collect();
         let now = Instant::now();
@@ -531,35 +462,20 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         Self {
             queue,
             target,
-            ack,
             translator,
             slots,
             backlog: VecDeque::new(),
             wants_flush: VecDeque::new(),
             finished: Vec::new(),
             in_target: 0,
-            stored: None,
             stopping: false,
             failed: false,
             failed_answers: 0,
-            stop_tries: Self::STOP_TRIES,
             counters: Counters::default(),
             timing: PumpTiming::default(),
             stamps,
             mutants: Mutants::default(),
         }
-    }
-
-    /// How often a stopping pump tries again to store the position,
-    /// unless told otherwise: with a pause of 100 ms, two seconds.
-    pub const STOP_TRIES: u32 = 20;
-
-    /// Set how often a stopping pump tries again to store the
-    /// acknowledged position before it gives up, with
-    /// [`Queue::pause`] before each try.
-    pub fn stop_tries(mut self, tries: u32) -> Self {
-        self.stop_tries = tries;
-        self
     }
 
     #[cfg(test)]
@@ -590,15 +506,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
 
     /// End the pump and give its target back: for a caller that must
     /// keep the target alive (the store holds the volume's lock) beyond
-    /// the thread the pump ran on. The queue and the record are
-    /// dropped.
+    /// the thread the pump ran on. The queue is dropped.
     pub fn into_target(self) -> T {
         self.target
-    }
-
-    /// The record of what was acknowledged.
-    pub fn ack(&mut self) -> &mut A {
-        &mut self.ack
     }
 
     /// The volume failed: answer every request the pump holds with the
@@ -618,13 +528,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         self.failed = true;
         let before = self.failed_answers;
         let error = -crate::translate::EIO;
-        // What is finished and waits for its position first: the pump
-        // has these buffers and gives them back.
-        let as_is = self.mutants.has(Mutants::FAILED_UNSTORED_AS_IS);
-        for (tag, result, buf) in std::mem::take(&mut self.finished) {
-            let result = if as_is { result } else { error };
+        // What is finished and not yet committed first: the pump has
+        // these buffers and gives them back.
+        for (tag, _, buf) in std::mem::take(&mut self.finished) {
             self.slots[usize::from(tag)] = Slot::Idle;
-            self.queue.commit(tag, result, buf);
+            self.queue.commit(tag, error, buf);
             self.failed_answers += 1;
         }
         let skips = self.mutants.has(Mutants::FAILED_SKIPS_FLUSH_WAITERS);
@@ -649,7 +557,6 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         self.wants_flush.clear();
         self.in_target = 0;
         self.counters.in_flight = 0;
-        self.counters.unstored = 0;
         self.failed_answers - before
     }
 
@@ -777,19 +684,6 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if !(self.stopping && drained) {
             return None;
         }
-        if self.mutants.has(Mutants::ORDERLY_UNSTORED) {
-            return Some(Stopped::Orderly);
-        }
-        // The target has drained. Completions that wait for the
-        // position are tried again here, paced by the pause and not by
-        // the queue's wait.
-        for _ in 0..self.stop_tries {
-            if self.finished.is_empty() {
-                break;
-            }
-            self.queue.pause();
-            self.commit_finished();
-        }
         // The last commits of a stop have no wait behind them that
         // would send them: the queue hands them over now. A stop whose
         // commits could not be handed over completed nothing in the
@@ -797,13 +691,7 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
         if !self.mutants.has(Mutants::STOP_UNSENT) && self.queue.flush().is_err() {
             return Some(Stopped::QueueDown);
         }
-        if self.finished.is_empty() {
-            Some(Stopped::Orderly)
-        } else {
-            Some(Stopped::Unstored {
-                left: self.finished.len() as u64,
-            })
-        }
+        Some(Stopped::Orderly)
     }
 
     /// Take what the queue handed over at a wait: each tag must be one
@@ -1073,18 +961,11 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             .push((tag, self.translator.result(plan, outcome), buf));
     }
 
-    /// Store the acknowledged position, then commit what is finished.
-    /// If the position cannot be stored, nothing is committed.
+    /// Commit what is finished.
     fn commit_finished(&mut self) {
         if self.finished.is_empty() {
             return;
         }
-        let after = self.mutants.has(Mutants::STORE_AFTER_COMMIT);
-        if !after && self.store_position().is_err() && !self.mutants.has(Mutants::COMMIT_UNSTORED) {
-            self.counters.unstored = self.finished.len() as u64;
-            return;
-        }
-        self.counters.unstored = 0;
         let now = Instant::now();
         for (tag, result, buf) in self.finished.drain(..) {
             self.slots[usize::from(tag)] = Slot::Idle;
@@ -1100,39 +981,14 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             }
             self.queue.commit(tag, result, buf);
         }
-        if after {
-            let _ = self.store_position();
-        }
-    }
-
-    fn store_position(&mut self) -> io::Result<()> {
-        let Some(position) = self.target.acknowledged() else {
-            return Ok(());
-        };
-        if self.stored.is_some_and(|stored| position <= stored) {
-            return Ok(());
-        }
-        let began = Instant::now();
-        let advanced = self.ack.advance(position);
-        self.timing.store.add(began.elapsed());
-        advanced?;
-        self.timing.behind_store += self.finished.len() as u64;
-        self.stored = Some(position);
-        Ok(())
     }
 }
 
-/// The in-place store has no log, so no position: the pump commits
-/// without storing one, and the record of what was acknowledged is not
-/// written (inert since M1.3t; the plumbing goes in M1.3t-b). What the
-/// kernel issues again after a lost process is applied again, which
-/// rule R9 allows. It has no thread of its own that could end, and it
-/// keeps no time of when a completion was ready.
-impl<D: skyzfs_local::io::Dir> Positions for skyzfs_local::inplace::InPlace<D> {
-    fn acknowledged(&self) -> Option<u64> {
-        None
-    }
-
+/// The in-place store: what the kernel issues again after a lost
+/// process is applied again, which rule R9 allows. It has no thread of
+/// its own that could end, and it keeps no time of when a completion
+/// was ready.
+impl<D: skyzfs_local::io::Dir> PumpTarget for skyzfs_local::inplace::InPlace<D> {
     fn gone(&self) -> bool {
         false
     }

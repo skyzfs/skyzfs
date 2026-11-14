@@ -99,9 +99,9 @@
 //! included. That too is a sector the cut could take, and the same
 //! holds of it: nothing is promised.
 //!
-//! The store has no log, so it reports no position of what was
-//! acknowledged, and the daemon stores none (`skyzfsd`'s `Target`). At
-//! a start after a lost process nothing can show that the home image
+//! The store has no log, so it has no position of what was
+//! acknowledged, and the daemon keeps no record of one (since M1.3t-b).
+//! At a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
 //! the direct write having reached the device for that (point 1).
 //!

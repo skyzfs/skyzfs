@@ -10,9 +10,6 @@
 //!   is given.
 //! - [`pump`]: moves requests between one queue and one block target,
 //!   generic over both. Tested with a fake queue.
-//! - [`ack`]: the record, outside the store, of the position of the
-//!   newest acknowledged log record, which every start compares with
-//!   what it recovered.
 //! - [`lifecycle`]: the order of steps at every start: the store is
 //!   opened first, then a device is taken over or added. Generic over
 //!   the kernel's control interface, the store and the records, and
@@ -33,7 +30,6 @@
 #![warn(missing_docs)]
 
 #[cfg(unix)]
-pub mod ack;
 pub mod features;
 pub mod lifecycle;
 pub mod pump;

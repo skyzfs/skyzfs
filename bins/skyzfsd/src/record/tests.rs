@@ -64,7 +64,6 @@ impl Queue for Scripted {
             Ok(())
         }
     }
-    fn pause(&mut self) {}
 }
 
 fn fetched(tag: u16, code: u8, start_sector: u64, nr_sectors: u32) -> Fetched {

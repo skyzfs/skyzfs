@@ -15,22 +15,13 @@
 //!   log store; a home image that does not fit it; a file system or a
 //!   page larger than the volume's write unit; a call that failed. The
 //!   daemon stops, deletes nothing, and the volume has not failed.
-//!
-//! Since M1.3t nothing here gives [`OpenError::Short`] or
-//! [`OpenError::SyncFailed`]: they were the log store's (a log shorter
-//! than what was acknowledged, a recovery whose sync failed). The
-//! lifecycle keeps reading them until M1.3t-b. The in-place store has
-//! no log to hold to a position of what was acknowledged
-//! ([`Volume::reaches_positions`] is false): the lifecycle then gives it
-//! none and does not read its record, so an unreadable record no longer
-//! fails the volume (`Reason::PositionUnreadable`, code 5).
 
 use std::path::{Path, PathBuf};
 
 use skyzfs_local::fs::{CacheCountCall, FsDir, FsLock};
 use skyzfs_local::inplace::{self, OpenOptions, Opened};
 
-use crate::lifecycle::{LockError, MustReach, OpenError, Volume};
+use crate::lifecycle::{LockError, OpenError, Volume};
 
 /// A volume in a directory on a real file system.
 #[derive(Debug, Clone)]
@@ -96,12 +87,9 @@ impl Volume for StoreVolume {
         }
     }
 
-    /// The position to reach is ignored: see the
-    /// [module documentation](self).
     fn open(
         &mut self,
         lock: FsLock,
-        _must_reach: Option<MustReach>,
         acknowledge_failure: bool,
     ) -> Result<(Opened<FsDir>, u64), (OpenError, FsLock)> {
         let dir = match FsDir::new(&self.dir) {
@@ -120,12 +108,6 @@ impl Volume for StoreVolume {
             }
             Err((error, lock)) => Err((classify(&error), lock)),
         }
-    }
-
-    /// The in-place store holds to no position: the lifecycle does not
-    /// read the record of what was acknowledged for it.
-    fn reaches_positions(&self) -> bool {
-        false
     }
 }
 
