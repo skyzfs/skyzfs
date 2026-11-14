@@ -80,9 +80,15 @@ EXPECTED = {
     'later': {r: 'caught' for r in ('life', 'rewind', 'multihost', 'config', 'stray', 'autotrim', 'full')},
     'txg-alone': {'life': 'same', 'rewind': 'caught', 'multihost': 'same', 'config': 'same', 'stray': 'same',
                   'autotrim': 'same', 'full': 'same'},
-    'count-repeats': {'life': 'same', 'rewind': 'same', 'multihost': 'caught', 'config': 'same', 'stray': 'caught',
-                      'autotrim': 'same', 'full': 'same'},
+    # A stray flush lands between two copies of an uberblock only by
+    # chance (none did in run 43631961753): either outcome, never missed.
+    'count-repeats': {'life': 'same', 'rewind': 'same', 'multihost': 'caught', 'config': 'same',
+                      'stray': ('same', 'caught'), 'autotrim': 'same', 'full': 'same'},
 }
+
+
+def as_expected(verdict, want):
+    return verdict in want if isinstance(want, tuple) else verdict == want
 UB_TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
 UB_TS_RE = re.compile(r'^\s*timestamp = (\d+)', re.M)
 
@@ -92,11 +98,14 @@ class RigError(Exception):
 
 
 def committed_txgs(text):
-    """The `txgs` kstat -> the groups in state C, in order."""
+    """The `txgs` kstat -> the groups in state C that wrote to the pool
+    (nwritten above 0), in order. ZFS 2.4 commits groups that wrote
+    nothing and writes no uberblock for them (run 43631961753: in every
+    session the cuts were exactly the committed groups that wrote)."""
     out = []
     for line in text.splitlines():
         f = line.split()
-        if len(f) >= 3 and f[0].isdigit() and f[2] == 'C':
+        if len(f) >= 6 and f[0].isdigit() and f[2] == 'C' and f[5].isdigit() and int(f[5]) > 0:
             out.append(int(f[0]))
     return out
 
@@ -148,7 +157,10 @@ def session_verdicts(cs, records, kstats):
         if not want:
             out.append((k, None, f'session {k}: no committed group in its kstat'))
             continue
-        got = [c['txg'] for c in cs if lo < c['ub_record'] < hi and c['txg'] <= max(want) and c['n'] not in skip]
+        # The kstat begins after the create's or import's first group
+        # and was read before the export's.
+        got = [c['txg'] for c in cs if lo < c['ub_record'] < hi and min(want) <= c['txg'] <= max(want)
+               and c['n'] not in skip]
         if got == want:
             out.append((k, True, f'session {k}: {len(got)} cuts, groups {want[0]}..{want[-1]} as committed'))
         else:
@@ -185,6 +197,19 @@ def pick_later(records, cut, bps):
         if (cut_ref.is_write(r) or ('discard' in r['flags'] and r['bytes'])) and overlaps(r, bps):
             return r['i']
     return None
+
+
+def later_candidates(cs, mid):
+    """The cuts tried for the control `later`, in order: the middle one,
+    then a quarter, an eighth and a sixteenth of the way, then the first."""
+    out = [mid]
+    for k in (4, 8, 16):
+        c = cs[len(cs) // k]
+        if c not in out:
+            out.append(c)
+    if cs and cs[0] not in out:
+        out.append(cs[0])
+    return out
 
 
 class Check:
@@ -268,7 +293,15 @@ class Check:
         if stale and g[0] > cut['txg']:
             low = f"stale: the pool opens at group {g[0]}, {g[0] - cut['txg']} above the cut's; "
         elif g != (cut['txg'], cut['timestamp']):
-            return 'group', f"zdb selects group {g[0]} (timestamp {g[1]}), the cut is {cut['txg']} ({cut['timestamp']})", []
+            why = f"zdb selects group {g[0]} (timestamp {g[1]}), the cut is {cut['txg']} ({cut['timestamp']})"
+            if kernel:
+                # What the volume then is: the state zdb selected, every
+                # copy, and the kernel's import with no rewind option.
+                failed, detail, counts, _ = self.copies()
+                ok, said = self.kimport()
+                why += (f"; the pool at group {g[0]}: every copy {'FAILS: ' + detail if failed else 'passes'}"
+                        f" ({counts.get('copies', 0)} copies), read-only import {'ok' if ok else 'FAILS: ' + said}")
+            return 'group', why, []
         failed, detail, counts, bps = self.copies()
         if failed:
             return 'copies', detail, []
@@ -379,20 +412,35 @@ def main():
             r = ck.records[v]
             got['withheld'] = (control_verdict(failed), f"cut {mid['n']} without record {v} ({r['bytes']} bytes at "
                                f"{r['offset']}): {failed or 'passed'}: {detail}")
-        v = pick_later(ck.records, mid, bps)
-        if v is None:
-            got['later'] = ('not built', 'nothing after the instant overlaps a block the cut reaches')
+        # A later write over a block a cut reaches comes only once ZFS
+        # reuses its space: the middle cut first, then earlier ones.
+        later, tried = None, []
+        for c in later_candidates(fresh, mid):
+            cb = bps if c is mid else None
+            if cb is None:
+                ck.advance(c['prefix'])
+                failed, _, _, cb = ck.copies()
+                if failed:
+                    continue
+            tried.append(c['n'])
+            v = pick_later(ck.records, c, cb)
+            if v is not None:
+                later = (c, v)
+                break
+        if later is None:
+            got['later'] = ('not built', f"nothing after the instant overlaps a block that cuts {tried} reach")
         else:
-            sched = list(range(mid['prefix'])) + [v]
+            c, v = later
+            sched = list(range(c['prefix'])) + [v]
             ck.at = None
             ck.advance(0)
             ck.advance(len(sched), sched)
             ck.at = None
-            failed, detail, _ = ck.judge(mid, kernel=False)
+            failed, detail, _ = ck.judge(c, kernel=False)
             r = ck.records[v]
-            got['later'] = (control_verdict(failed), f"cut {mid['n']} with record {v} ({'+'.join(r['flags']) or 'write'}, "
-                            f"{r['bytes']} bytes at {r['offset']}, {v - mid['prefix']} records after the instant): "
-                            f"{failed or 'passed'}: {detail}")
+            got['later'] = (control_verdict(failed), f"cut {c['n']} (group {c['txg']}) with record {v} "
+                            f"({'+'.join(r['flags']) or 'write'}, {r['bytes']} bytes at {r['offset']}, "
+                            f"{v - c['prefix']} records after the instant): {failed or 'passed'}: {detail}")
         for rule in ('txg-alone', 'count-repeats'):
             rcs, _ = cut_ref.cuts(ck.records, cut_ref.scan(ck.records, ck.read, dev), rule)
             same = [(c['txg'], c['prefix']) for c in rcs] == [(c['txg'], c['prefix']) for c in cs]
@@ -405,7 +453,8 @@ def main():
                          + ('; '.join(rbad) if rbad else 'every session as committed'))
         for ctl, (verdict, detail) in got.items():
             want = EXPECTED[ctl].get(name)
-            ok = verdict == want
+            ok = as_expected(verdict, want)
+            want = ' or '.join(want) if isinstance(want, tuple) else want
             put(f'ctl_{ctl}', verdict.upper().replace(' ', '_'), f"{detail} (expected: {want}{'' if ok else '; DIFFERS'})")
             if not ok:
                 rc = max(rc, 1)

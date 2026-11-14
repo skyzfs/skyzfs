@@ -1,0 +1,16 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43631961753
+records	INFO	1964, of which 32 uberblock writes mark, of 128
+cut_23	FAIL	group 39 at record 1415: group: zdb selects group 51 (timestamp 1794684397), the cut is 39 (1794684397)
+cut_24	FAIL	group 41 at record 1460: group: zdb selects group 51 (timestamp 1794684397), the cut is 41 (1794684397)
+cut_25	FAIL	group 43 at record 1557: group: zdb selects group 51 (timestamp 1794684397), the cut is 43 (1794684397)
+cut_26	FAIL	group 44 at record 1597: group: zdb selects group 51 (timestamp 1794684397), the cut is 44 (1794684397)
+cut_27	FAIL	group 47 at record 1708: group: zdb selects group 51 (timestamp 1794684397), the cut is 47 (1794684397)
+cut_28	FAIL	group 48 at record 1745: group: zdb selects group 51 (timestamp 1794684397), the cut is 48 (1794684397)
+cuts	FAIL	26 of 32 cuts: the group, every copy, the read-only import
+obs_stale_cuts	0	no cut carries the state of an older cut
+sessions	FAIL	session 1: the cuts give 20 groups, the kstat 36 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]; session 2: the cuts give 8 groups, the kstat 16 committed; first difference at 1: cuts [39, 41, 43, 44], committed [39, 40, 41, 42]
+ctl_early	CAUGHT	cut 17 (group 33) at record 1107 and not 1112: group: zdb selects group 30 (timestamp 1794684397), the cut is 33 (1794684397) (expected: caught)
+ctl_withheld	CAUGHT	cut 17 without record 1106 (4096 bytes at 39215104): copies: 1 of 687 copies do not pass their block's checksum; the first is copy 1 of 3 at byte 39215104: objset 0 object 273 level 0 offset 0x0 DVA[0]=<0:52aa000:1000> DVA[1]=<0:2166000:1000> DVA[2]=<0:605b000:1000> [L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique triple size=20000L/1000P birth=33L/33P fill=1 cksum=0000008e7c580d4b:0001f0e4e3c378 (expected: caught)
+ctl_later	NOT_BUILT	nothing after the instant overlaps a block the cut reaches (expected: caught; DIFFERS)
+ctl_txg-alone	CAUGHT	31 cuts against 32: session 1: the cuts give 20 groups, the kstat 36 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]; session 2: the cuts give 7 groups, the kstat 16 committed; first difference at 1: cuts [39, 41, 43, 44], committed [39, 40, 41, 42] (expected: caught)
+ctl_count-repeats	SAME	32 cuts, as the design rule (expected: same)

@@ -12,9 +12,10 @@ import cut_check  # noqa: E402
 
 KSTAT = """18 0 0x01 4 448 1234 5678
 txg      birth            state ndirty       nread        nwritten     reads    writes   otime        qtime        wtime        stime
-4        1000             C     0            0            0            0        0        100          10           10           10
-5        2000             C     0            0            0            0        0        100          10           10           10
-6        3000             S     0            0            0            0        0        100          10           0            0
+3        500              C     0            0            0            0        0        100          10           10           10
+4        1000             C     0            0            4096         0        1        100          10           10           10
+5        2000             C     0            0            8192         0        2        100          10           10           10
+6        3000             S     0            0            4096         0        1        100          10           0            0
 """
 
 
@@ -34,7 +35,7 @@ def cut(n, txg, ub_record, prefix=None):
 
 
 class Kstat(unittest.TestCase):
-    def test_committed_groups_only(self):
+    def test_committed_groups_that_wrote_only(self):
         self.assertEqual(cut_check.committed_txgs(KSTAT), [4, 5])
 
 
@@ -116,7 +117,19 @@ class Picks(unittest.TestCase):
         self.assertIsNone(cut_check.pick_later(records[:3], cut(1, 5, 0, 2), self.BPS))
 
 
+class Later(unittest.TestCase):
+    def test_the_middle_first_then_earlier(self):
+        cs = [cut(n, n, n) for n in range(1, 33)]
+        self.assertEqual([c['n'] for c in cut_check.later_candidates(cs, cs[16])], [17, 9, 5, 3, 1])
+        self.assertEqual([c['n'] for c in cut_check.later_candidates(cs[:2], cs[1])], [2, 1])
+
+
 class Expected(unittest.TestCase):
+    def test_a_set_takes_either(self):
+        self.assertTrue(cut_check.as_expected('same', ('same', 'caught')))
+        self.assertFalse(cut_check.as_expected('missed', ('same', 'caught')))
+        self.assertTrue(cut_check.as_expected('caught', 'caught'))
+
     def test_every_control_has_every_recording(self):
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cut-record.sh')) as f:
             line = next(ln for ln in f if ln.startswith('ALL='))
@@ -124,7 +137,8 @@ class Expected(unittest.TestCase):
         self.assertEqual(len(recs), 7)
         for ctl, table in cut_check.EXPECTED.items():
             self.assertEqual(set(table), recs, ctl)
-            self.assertTrue(set(table.values()) <= {'caught', 'same', 'not built', 'missed'}, ctl)
+            for v in table.values():
+                self.assertTrue(set(v if isinstance(v, tuple) else (v,)) <= {'caught', 'same', 'not built', 'missed'}, ctl)
 
 
 if __name__ == '__main__':

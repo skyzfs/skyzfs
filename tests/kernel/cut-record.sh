@@ -21,8 +21,9 @@
 #              with a snapshot destroyed, export
 #   rewind     create, load, export, an import rewound a few groups
 #              (zpool import -T), load, export
-#   multihost  multihost=on (a host id is made when there is none),
-#              load for 20 s, so that MMP writes uberblocks of its own
+#   multihost  multihost=on (the host id is 5eed1234 for every
+#              recording), load for 20 s, so that MMP writes uberblocks
+#              of its own
 #   config     a change of the pool's configuration: a comment, a new
 #              guid (reguid), a mirror attached and detached
 #   stray      flushes that ZFS did not ask for, every few milliseconds
@@ -138,6 +139,13 @@ timeout 60 zpool export -f "$POOL" 2>/dev/null || true
 dmsetup remove "$LW" 2>/dev/null || true
 # Enough history for a session's groups to be all in the kstat.
 echo 2000 > /sys/module/zfs/parameters/zfs_txg_history
+# One host id, in /etc/hostid and in the loaded module, before any pool:
+# a multihost pool records it, and the check's zdb and import must find
+# the same one or refuse the pool as another host's (run 43631961753:
+# "pool is imported on host '<unknown>' (hostid=0)").
+zgenhostid -f 5eed1234
+echo 0x5eed1234 > /sys/module/spl/parameters/spl_hostid
+[ "$(hostid)" = 5eed1234 ] || { echo "the host id is $(hostid), not 5eed1234" >&2; exit 64; }
 
 begin() {
     NAME=$1; RDIR=$OUT/$1; SESSION=0; LOADED=0
@@ -189,7 +197,6 @@ rec_rewind() {
     export_pool
 }
 rec_multihost() {
-    [ -s /etc/hostid ] || zgenhostid
     create_pool -o multihost=on
     local t0=$SECONDS
     while [ $((SECONDS - t0)) -lt 20 ]; do load 1; sleep 1; done
