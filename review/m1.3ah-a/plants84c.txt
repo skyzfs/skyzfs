@@ -1,0 +1,12 @@
+C7 the start thread's id never sent: rc 0; failed: none
+C8 waits_in reads stat, not syscall: rc 101; failed: run::tests::a_threads_wait_is_named_by_its_system_call
+C9 after taken the tag is still watched: rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said
+D1 every iou- thread taken for a worker: rc 101; failed: run::tests::the_io_uring_workers_are_named_with_their_wait
+D2 workers_wait reads status, not comm: rc 0; failed: none
+D3 workers_wait always says none: rc 0; failed: none
+D4 the last flush does not read the refused fetch: rc 0; failed: none
+D5 a refused fetch ends the server: rc 101; failed: run::tests::a_refused_first_fetch_is_said_and_the_server_goes_on
+D6 the last flush does not read the refused commit: rc 101; failed: run::tests::a_commit_with_no_buffer_refused_at_the_last_flush_is_said
+D7 a wait does not read the refused commit: rc 101; failed: run::tests::a_commit_with_no_buffer_that_is_taken_or_aborted_ends_nothing, run::tests::a_refused_commit_with_no_buffer_ends_the_server_at_once, run::tests::a_refused_flush_handed_over_again_is_answered
+D8 a wait does not read the refused fetch: rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said, run::tests::a_refused_first_fetch_is_said_and_the_server_goes_on
+worktree clean: True
