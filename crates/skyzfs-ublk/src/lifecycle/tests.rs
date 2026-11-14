@@ -2035,13 +2035,18 @@ fn a_detach_and_a_start_never_act_on_one_volume_at_once() {
     );
 }
 
-/// A second start between any two steps of a start that fails on the
-/// store's marker while a record of this boot names a device. The fake
-/// gives the marker to one open only, so that a second start whose
-/// open comes later serves: a delete of the first that is not under
-/// the lock is then seen to take its device from it. (Until M1.3t-b
-/// this was the log store's failed recovery sync, which did not
-/// repeat.)
+/// A second start between any two steps of a start that fails at its
+/// open while a record of this boot names a device. The failure is one
+/// the next open does not repeat: the fake gives `MarkedFailed` to one
+/// open only, so that a second start whose open comes later serves,
+/// and a delete of the first that is not under the lock is then seen
+/// to take its device from it. That stands for no failure a store
+/// gives since M1.3t-b: the log store's failed recovery sync was one,
+/// and the store's real marker lasts until an acknowledgement. With a
+/// lasting marker the second start never serves, and the defect
+/// (`UNLOCK_BEFORE_FAILED`) harms nobody and is not noticed (review of
+/// #74). The rule is kept as a guard, for a failure that may pass
+/// should one come back.
 fn a_daemon_starts_during_a_failing_start(mutants: u32) -> Result<(), String> {
     for at in 0..=8 {
         let mut world = World::new().attached(4, DeviceState::Waiting, EARLIER);
@@ -2811,11 +2816,13 @@ fn refused_once_given_up(mut between: World, mutants: u32, at: usize) -> Result<
     Ok(())
 }
 
-/// A start that finds the store's marker while a record of this boot
-/// names a device, killed after each number of steps: a marker that
-/// stays, and one that the fake gives to the first open only. (Until
-/// M1.3t-b these were a log shorter than what was acknowledged and a
-/// failed recovery sync.)
+/// A start that fails at its open while a record of this boot names a
+/// device, killed after each number of steps: with the store's marker,
+/// which lasts, and with a failure the next open does not repeat (the
+/// fake gives `MarkedFailed` to the first open only). The second stands
+/// for no failure a store gives since M1.3t-b; it was the log store's
+/// failed recovery sync, and the first a log shorter than what was
+/// acknowledged.
 fn a_failing_start_killed_anywhere(mutants: u32) -> Result<(), String> {
     for lasting in [false, true] {
         let world = || {
