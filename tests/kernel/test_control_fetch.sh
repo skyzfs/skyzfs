@@ -24,7 +24,7 @@ hasnt() { # name got part
 
 # The rig's functions, as the rig has them. A one-line function is cut
 # at its own line.
-for f in say info wait_state free_for_add nodes_of rf_blk rf_line refused_fetch rf_delete; do
+for f in say info wait_state free_for_add nodes_of rf_blk rf_line rf_words rf_pin refused_fetch rf_delete; do
     eval "$(sed -n "/^$f() .*}\$/{p;q}; /^$f() {/,/^}\$/p" "$RIG")"
     declare -F "$f" > /dev/null || { echo "FAIL the rig has no function $f"; exit 2; }
 done
@@ -60,9 +60,10 @@ trap '[ "$SCENARIO" != aborted ] || printf "refuse-fetch\t%s\taborted\n" "$n"; p
 if [ -z "$what" ]; then
     state live; : > "$T/started.$n"; printf '%s\t%s\tlive after 3 ms; handed before the start: 0\n' "$step" "$n"
 else
-    printf 'refuse-fetch\t%s\tsent on tag 0\n' "$n"
+    if [ "$SCENARIO" = unsent ]; then printf 'refuse-fetch\t%s\tsent on tag 3\n' "$n"; else printf 'refuse-fetch\t%s\tsent on tag 0\n' "$n"; fi
     case $SCENARIO in
         aborted|taken) ;;
+        unsent) printf 'refuse-fetch\t%s\trefused: errno 22 (Invalid argument)\n' "$n" ;;
         *) printf 'refuse-fetch\t%s\trefused: errno 22 (Invalid argument)\n' "$n" ;;
     esac
     case $SCENARIO in
@@ -162,5 +163,22 @@ hasnt "  no signal is named" "$RF_SAID" "ended by SIGTERM"
 
 watch ignores_term 79 serve --refuse-one-fetch start
 has "a program that SIGTERM does not end is killed" "$RF_SAID" "the program ended by kill -9 (SIGTERM did not end it in 10 s)"
+
+# pin_refused_fetch_sent_and_refused, from the two steps' words.
+pin_of() { : > "$R"; rf_pin "$1" "$2" > /dev/null; awk -F'\t' '$1 == "pin_refused_fetch_sent_and_refused" { print $2 }' "$R"; }
+watch start_hangs 81 serve --refuse-one-fetch start; a="$RF_VERDICT: $(rf_words)"
+watch start_ok 82 take-over --refuse-one-fetch recovery; b="$RF_VERDICT: $(rf_words)"
+got=$(pin_of "$a" "$b")
+is "the pin: both refused" "${got%%:*}" PASS
+has "  with the words" "$got" "at the start: 'sent on tag 0', then 'refused: errno 22 (Invalid argument)'"
+watch start_ok 83 serve; c="$RF_VERDICT: $(rf_words)"
+got=$(pin_of "$a" "$c")
+is "the pin: a program that sent no bad fetch at the take-over" "${got%%:*}" FAIL
+has "  says what it said" "$got" "at the take-over: '', then ''"
+watch unsent 84 serve --refuse-one-fetch start; d="$RF_VERDICT: $(rf_words)"
+is "the pin: a refusal of a fetch sent on another tag is not one" "$(pin_of "$d" "$b" | cut -d: -f1)" FAIL
+watch taken 85 serve --refuse-one-fetch start; e="$RF_VERDICT: $(rf_words)"
+is "the pin: a driver that took the fetch" "$(pin_of "$e" "$b" | cut -d: -f1)" FAIL
+is "the pin: a step that did not run is the rig's error" "$(pin_of "$a" "not run" | cut -d: -f1)" ERROR
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

@@ -970,12 +970,25 @@ rf_delete() {
     fi
 }
 
+# pin_refused_fetch_sent_and_refused: both steps' words, "sent on tag 0"
+# and "refused: errno ...", or what each said instead.
+RF_PIN_START="not run"; RF_PIN_TAKE="not run"
+rf_words() { printf "'%s', then '%s'" "$(rf_line refuse-fetch 1)" "$(rf_line refuse-fetch 2)"; }
+# rf_pin START TAKE: each "VERDICT: words" or "not run"
+rf_pin() {
+    case "$1/$2" in
+        PASS:*/PASS:*) pin refused_fetch_sent_and_refused PASS "at the start: ${1#*: }; at the take-over: ${2#*: }" ;;
+        "not run"*|*/"not run") pin refused_fetch_sent_and_refused ERROR "a step did not run: at the start: $1; at the take-over: $2" ;;
+        *) pin refused_fetch_sent_and_refused FAIL "wanted 'sent on tag 0', then 'refused: errno ...' at both; at the start: ${1#*: }; at the take-over: ${2#*: }" ;;
+    esac
+}
 step "a first fetch the driver refuses, at a start"
 truncate -s "$SIZE" "$WORK/refused_fetch_start.img"
 say add "$RF_START" --depth 8
 if [ "$ANSWER" = added ] || [[ $ANSWER == added\ * ]]; then
     refused_fetch refused_fetch_start "$RF_START" serve --refuse-one-fetch start
     rf_delete "$RF_START"
+    RF_PIN_START="$RF_VERDICT: $(rf_words)"
     obs refused_fetch_at_a_start "($RF_VERDICT) $RF_SAID"
 else
     obs refused_fetch_at_a_start "not run: the add under $RF_START answered ${ANSWER:-nothing}"
@@ -994,12 +1007,14 @@ else
     if wait_state "$RF_TAKE" waiting 5; then
         refused_fetch refused_fetch_take "$RF_TAKE" take-over --refuse-one-fetch recovery
         rf_delete "$RF_TAKE"
+        RF_PIN_TAKE="$RF_VERDICT: $(rf_words)"
         obs refused_fetch_at_a_take_over "($RF_VERDICT) $RF_SAID"
     else
         obs refused_fetch_at_a_take_over "not run: after its first server's SIGTERM the device read $STATE, not waiting"
     fi
 fi
 lim 20 "$CTL" delete "$RF_TAKE" > /dev/null 2>&1
+rf_pin "$RF_PIN_START" "$RF_PIN_TAKE"
 
 # The control: the same watch of a plain serve. The program says
 # nothing of a fetch, so the step must say FAIL, or its PASS above

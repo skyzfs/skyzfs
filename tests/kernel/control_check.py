@@ -214,6 +214,11 @@ EXPECTED = {
     'ctl_refused_commit_without_a_refusal': (
         'FAIL', RIG, 'control', 'control: the refused-commit step on a server that refuses nothing (the reader is '
         'answered and the server goes on): the step must not pass'),
+    'pin_refused_fetch_sent_and_refused': (
+        'PASS', RIG, 'M1.3ah: a refused fetch; rows: never started, and waiting, a server ends a recovery',
+        'at a start and at a take-over, the test program sent tag 0\'s first fetch with no buffer ("sent on tag 0", '
+        'the binding\'s own doing) and the driver refused it with an errno (M1.T36): a binding that stopped sending '
+        'it, or a driver that took it, turns this red where the two observations alone would stay green'),
     'ctl_refused_fetch_without_a_refusal': (
         'FAIL', RIG, 'control', 'control: the refused-fetch watch on a plain serve, whose program says nothing of a '
         'fetch (M1.T36): the watch must not read a refused fetch'),
