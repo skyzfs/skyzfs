@@ -1496,8 +1496,11 @@ fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
 /// a commit the driver refuses there ends the pump with it as well: the
 /// stop left a request unanswered and is not orderly (reading 4 of
 /// M1.3ac part 3). What else the flush brings (an abort, a refused
-/// fetch) is counted, and the stop is orderly. Mutant: what the flush
-/// hands on is not looked at.
+/// fetch) is counted, and the stop is orderly. A flush that fails ends
+/// the stop as the queue gone, even with a refused commit among what it
+/// brought (reading 3), and a pump whose volume failed ends as failed
+/// (reading 2); both count what their flush brought. Mutant: what the
+/// flush hands on is not looked at.
 #[test]
 fn a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it() {
     fn scenario(mutants: u32) -> Outcome {
@@ -1536,7 +1539,49 @@ fn a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it() {
             let c = rig.pump.counters();
             expect((c.commands_aborted, c.commands_failed), (1, 1), "counted")?;
         }
-        Ok(())
+
+        // The flush that sends tag 1's commit fails, and brings its
+        // refusal: the queue is gone, and that ends the stop.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(1, 1)]);
+        rig.pump.queue().script.push_back(Step::Stop(Vec::new()));
+        expect(rig.pump.turn(), None, "draining")?;
+        rig.complete(1);
+        rig.pump.queue().flush_unfetched = vec![unfetched(1, Command::Commit, -22)];
+        rig.pump.queue().flush_fails = true;
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::QueueDown),
+            "a stop whose flush failed",
+        )?;
+        let c = rig.pump.counters();
+        expect(
+            (c.commands_failed, c.last_command_failure),
+            (1, -22),
+            "counted at a flush that failed",
+        )?;
+
+        // A pump whose volume failed answers what its stop brings with
+        // the I/O error; its flush brings a refused commit, which is
+        // counted, and the pump ends as failed.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.pump.fail();
+        rig.pump.queue().flush_unfetched = vec![unfetched(1, Command::Commit, -22)];
+        rig.pump
+            .queue()
+            .script
+            .push_back(Step::Stop(vec![write(1, 1)]));
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::Failed),
+            "a failed volume's stop",
+        )?;
+        let c = rig.pump.counters();
+        expect(
+            (c.commands_failed, c.last_command_failure),
+            (1, -22),
+            "counted at a failed volume's flush",
+        )
     }
     caught(scenario, Mutants::FLUSH_UNREAD);
 }
