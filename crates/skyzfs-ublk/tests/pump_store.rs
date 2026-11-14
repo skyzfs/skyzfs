@@ -65,7 +65,7 @@ impl Queue for ScriptQueue {
         }
     }
 
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, _unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         Ok(())
     }
 }

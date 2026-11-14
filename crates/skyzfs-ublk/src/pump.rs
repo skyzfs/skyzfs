@@ -69,6 +69,27 @@
 //!   one the lost target had applied is simply applied again. Failing
 //!   the requests instead would put errors on a pool for a defect of
 //!   the daemon.
+//! - **A commit the driver refuses** ends the pump for a take-over
+//!   ([`Stopped::CommitRefused`], M1.3ac part 3). The refused commit
+//!   took no effect: the request it answered, if any, is still the
+//!   server's in the driver's eyes, and the kernel hands it to the next
+//!   server, which is handed exactly that request again and completes
+//!   it (the control rig, on a read, a write and a flush). So nothing
+//!   more is answered on the queue, nothing of the wait that brought
+//!   the refusal is taken, and the volume is not failed: the refusal
+//!   says nothing against the store. The last commits of a stop go to
+//!   the driver at the queue's flush, which hands their refusals on as
+//!   a wait does: a stop with one is not orderly. A refused fetch and any other
+//!   command refused are counted and change nothing else. A pump whose
+//!   volume failed only counts a refused commit too: the device is
+//!   being deleted, and the delete answers the refused request with an
+//!   error at once.
+//! - **Open: a refused fetch** (M1.3ah). A fetch is sent once per tag,
+//!   at the queue's start. Whether the driver then serves the queue
+//!   with that tag missing, or the device's start and the end of a
+//!   recovery wait for every tag's fetch (a reading of `ublk_drv`, not
+//!   checked), so that the start never ends, is not known. A kernel
+//!   step comes first (M1.T36), and what the daemon does then.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -148,8 +169,8 @@ pub trait Queue {
     /// A command that the driver ended with a result other than OK
     /// fetched nothing: it is appended to `unfetched`, whether the wait
     /// then returns `Ok` or `Err`. The pump counts them
-    /// ([`Counters::commands_aborted`], [`Counters::commands_failed`])
-    /// and does nothing else about them. An abort is the queue being
+    /// ([`Counters::commands_aborted`], [`Counters::commands_failed`]),
+    /// and ends on a refused commit (below). An abort is the queue being
     /// stopped. Any other result is a command that took no effect: one
     /// the driver refused when it was submitted, or one io_uring could
     /// not hand to the driver at all (a bad descriptor or address). A
@@ -170,8 +191,9 @@ pub trait Queue {
     /// A count of 0 does not show that no commit was sent twice: a
     /// second commit that arrives after the tag's next request was
     /// handed over is taken, and answers that request with the stale
-    /// result. What the daemon should do about a refusal is not decided
-    /// here (M1.3ac); the count and the request log show it.
+    /// result. A refused commit ends the pump
+    /// ([`Stopped::CommitRefused`]); a refused fetch or other command is
+    /// only counted.
     fn wait(
         &mut self,
         fetched: &mut Vec<Fetched>,
@@ -201,7 +223,14 @@ pub trait Queue {
     /// A request whose commit never reached the driver is issued again
     /// to the next instance: safe, but not what an orderly stop says
     /// it did. `Err` if they could not be handed over.
-    fn flush(&mut self) -> Result<(), QueueDown>;
+    ///
+    /// Each command that the driver ended otherwise than OK among what
+    /// the flush reaps is added to `unfetched`, as at a wait: a commit
+    /// the driver refused when the flush sent it is one, and the pump
+    /// ends with it ([`Stopped::CommitRefused`]) and not as an orderly
+    /// stop. A request handed over in the flush is not: it is the next
+    /// server's.
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown>;
 }
 
 /// What the pump needs of a target beyond the contract.
@@ -240,6 +269,29 @@ pub enum Stopped {
     BrokenRule {
         /// The tag handed over against the rule.
         tag: u16,
+    },
+    /// The driver refused a commit: the first of the wait that brought
+    /// the refusal, if it brought several (M1.3ac part 3), also while the
+    /// pump drains for a stop, and also among the last commits of a
+    /// stop, which the queue's flush sends and whose refusals it hands
+    /// on: that stop is not orderly, and an orderly end would say that
+    /// nothing was left unanswered. The commit
+    /// took no effect, so the request it answered, if any, is still the
+    /// server's in the driver's eyes and goes to the next server.
+    /// Nothing of that wait was taken, nothing more is answered on this
+    /// queue and the refused tag is not committed again: completions
+    /// that waited are not committed. The volume is not failed, and the
+    /// device is left for the next server as after a kill. In the turn
+    /// of a pump whose volume failed ([`Pump::fail`]) a refused commit
+    /// is only counted, and a wait that ends with the queue down ends
+    /// the pump with [`Stopped::QueueDown`], whatever it brought.
+    CommitRefused {
+        /// The tag of the refused commit.
+        tag: u16,
+        /// The driver's result negated: the error number it refused the
+        /// commit with (`EINVAL`, 22, on every release the daemon runs
+        /// on, whatever the cause).
+        errno: i32,
     },
     /// The target can complete nothing more. Nothing was committed
     /// after that was seen, not even completions that waited.
@@ -405,6 +457,12 @@ impl Mutants {
     /// the backlog until the tag's first request is committed gets
     /// past it.
     pub(crate) const GUARD_AT_SUBMIT: u32 = 1 << 21;
+    /// A commit the driver refused is only counted and the pump goes
+    /// on, as before M1.3ac part 3.
+    pub(crate) const COMMIT_REFUSAL_IGNORED: u32 = 1 << 22;
+    /// What the last flush of a stop hands on is not looked at: a
+    /// commit the driver refused there is neither counted nor seen.
+    pub(crate) const FLUSH_UNREAD: u32 = 1 << 23;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -587,6 +645,22 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         self.failed_answers
     }
 
+    /// The pump's end for the first commit of `unfetched` that the
+    /// driver refused, if one is there ([`Stopped::CommitRefused`]). An
+    /// abort is the queue being stopped, not a refusal.
+    fn refused_commit(&self, unfetched: &[Unfetched]) -> Option<Stopped> {
+        if self.mutants.has(Mutants::COMMIT_REFUSAL_IGNORED) {
+            return None;
+        }
+        unfetched
+            .iter()
+            .find(|command| command.command == Command::Commit && command.result != ABORTED)
+            .map(|command| Stopped::CommitRefused {
+                tag: command.tag,
+                errno: command.result.saturating_neg(),
+            })
+    }
+
     /// Count the commands the driver ended otherwise than OK.
     fn count_unfetched(&mut self, unfetched: &[Unfetched]) {
         for command in unfetched {
@@ -600,7 +674,12 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
     }
 
     /// A turn of a pump whose volume failed: what arrives is answered
-    /// with the plain I/O error, and the target is not touched.
+    /// with the plain I/O error, and the target is not touched. A
+    /// refused commit is only counted here, and does not end the pump
+    /// as it does in [`Pump::turn`]: the device is being deleted, the
+    /// delete answers the refused request with an error at once (the
+    /// control rig), and what else arrives is still answered so that
+    /// the delete waits for nothing.
     fn failed_turn(&mut self) -> Option<Stopped> {
         let mut fetched = Vec::new();
         let mut unfetched = Vec::new();
@@ -622,7 +701,9 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         }
         if woken == Wake::Stop {
             // No wait follows that would send the commits.
-            let _ = self.queue.flush();
+            let mut unfetched = Vec::new();
+            let _ = self.queue.flush(&mut unfetched);
+            self.count_unfetched(&unfetched);
             return Some(Stopped::Failed);
         }
         None
@@ -647,10 +728,16 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         let mut unfetched = Vec::new();
         let waited = self.queue.wait(&mut fetched, &mut unfetched);
         self.count_unfetched(&unfetched);
-        match waited {
-            Err(QueueDown) => return Some(Stopped::QueueDown),
-            Ok(Wake::Stop) => self.stopping = true,
-            Ok(Wake::Work) => {}
+        if waited == Err(QueueDown) {
+            return Some(Stopped::QueueDown);
+        }
+        // Before anything of this wait is taken: what it handed over is
+        // the next server's.
+        if let Some(refused) = self.refused_commit(&unfetched) {
+            return Some(refused);
+        }
+        if waited == Ok(Wake::Stop) {
+            self.stopping = true;
         }
         if self.stopping && self.mutants.has(Mutants::STOP_AT_ONCE) {
             return Some(Stopped::Orderly);
@@ -703,8 +790,23 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         // would send them: the queue hands them over now. A stop whose
         // commits could not be handed over completed nothing in the
         // kernel's eyes and is not orderly.
-        if !self.mutants.has(Mutants::STOP_UNSENT) && self.queue.flush().is_err() {
+        if self.mutants.has(Mutants::STOP_UNSENT) {
+            return Some(Stopped::Orderly);
+        }
+        let mut unfetched = Vec::new();
+        let flushed = self.queue.flush(&mut unfetched);
+        if self.mutants.has(Mutants::FLUSH_UNREAD) {
+            unfetched.clear();
+        }
+        self.count_unfetched(&unfetched);
+        if flushed.is_err() {
             return Some(Stopped::QueueDown);
+        }
+        // A commit the driver refused when the flush sent it left its
+        // request unanswered: the stop is not orderly, as for a refusal
+        // that a wait brings.
+        if let Some(refused) = self.refused_commit(&unfetched) {
+            return Some(refused);
         }
         Some(Stopped::Orderly)
     }

@@ -478,29 +478,7 @@ mod run {
             fetched.clear();
             unfetched.clear();
             let waited = queue.wait(&mut fetched, &mut unfetched);
-            let mut refused = false;
-            for command in &unfetched {
-                if command.result == ABORTED {
-                    counts.commands_aborted.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    counts.commands_failed.fetch_add(1, Ordering::Relaxed);
-                }
-                if refusing == Some(command.tag) && command.command == Command::Commit {
-                    refusing = None;
-                    if command.result == ABORTED {
-                        say("refuse-commit", "aborted");
-                    } else {
-                        refused = true;
-                        let why = if command.result < 0 {
-                            errno(&io::Error::from_raw_os_error(-command.result))
-                        } else {
-                            format!("result {}", command.result)
-                        };
-                        say("refuse-commit", &format!("refused: {why}"));
-                    }
-                }
-            }
-            if refused {
+            if note_ended(&unfetched, &mut refusing, &counts, &say) {
                 counts.refused.store(true, Ordering::SeqCst);
                 return;
             }
@@ -549,14 +527,55 @@ mod run {
                 }
             }
             if woken == Woken::Stop {
-                // The answers above have no wait behind them.
-                let _ = queue.flush();
+                // The answers above have no wait behind them. What the
+                // driver ends otherwise than OK in the flush is counted
+                // and said as at a wait: the commit with no buffer may
+                // go to the driver here.
+                unfetched.clear();
+                let _ = queue.flush(&mut unfetched);
+                if note_ended(&unfetched, &mut refusing, &counts, &say) {
+                    counts.refused.store(true, Ordering::SeqCst);
+                }
                 return;
             }
             if let Some((f, _)) = held.take_if(|(_, due)| Instant::now() >= *due) {
                 answer(queue, &file, f, &counts);
             }
         }
+    }
+
+    /// Count the commands the driver ended otherwise than OK, and say
+    /// its answer to the commit with no buffer (on the tag `refusing`)
+    /// if that is among them. `true` if the driver refused that commit.
+    fn note_ended(
+        unfetched: &[Unfetched],
+        refusing: &mut Option<u16>,
+        counts: &Counts,
+        say: &impl Fn(&str, &str),
+    ) -> bool {
+        let mut refused = false;
+        for command in unfetched {
+            if command.result == ABORTED {
+                counts.commands_aborted.fetch_add(1, Ordering::Relaxed);
+            } else {
+                counts.commands_failed.fetch_add(1, Ordering::Relaxed);
+            }
+            if *refusing == Some(command.tag) && command.command == Command::Commit {
+                *refusing = None;
+                if command.result == ABORTED {
+                    say("refuse-commit", "aborted");
+                } else {
+                    refused = true;
+                    let why = if command.result < 0 {
+                        errno(&io::Error::from_raw_os_error(-command.result))
+                    } else {
+                        format!("result {}", command.result)
+                    };
+                    say("refuse-commit", &format!("refused: {why}"));
+                }
+            }
+        }
+        refused
     }
 
     /// The file a device is served from, and its size.
@@ -861,6 +880,8 @@ mod run {
             no_buffer: Vec<(u16, i32)>,
             /// The library refuses a commit with no buffer.
             no_buffer_not_sent: bool,
+            /// What the driver ends otherwise than OK at the flush.
+            flush_ends: Vec<Unfetched>,
         }
 
         impl Queue for Scripted {
@@ -886,7 +907,8 @@ mod run {
             fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
                 self.commits.push((tag, result, buf.is_some()));
             }
-            fn flush(&mut self) -> Result<(), QueueDown> {
+            fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
+                unfetched.append(&mut self.flush_ends);
                 Ok(())
             }
         }
@@ -1047,6 +1069,41 @@ mod run {
             assert!(!counts.refused.load(Ordering::SeqCst));
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// A commit with no buffer that goes to the driver in the last
+        /// flush of a stop has the driver's answer said and counted as
+        /// at a wait, and the server ends by the refused commit.
+        #[test]
+        fn a_commit_with_no_buffer_refused_at_the_last_flush_is_said() {
+            let plan = Plan {
+                refuse: Some(What::Read(0)),
+                ..Plan::default()
+            };
+            let queue = Scripted {
+                turns: vec![(vec![read(2, 0), read(3, 4096)], Vec::new(), Ok(Woken::Stop))].into(),
+                flush_ends: vec![
+                    ended(2, Command::Commit, -libc::EINVAL),
+                    ended(5, Command::Fetch, ABORTED),
+                ],
+                ..Scripted::default()
+            };
+            let (queue, lines, counts) = run_on(queue, plan);
+            assert_eq!(queue.no_buffer, vec![(2, -libc::EIO)]);
+            assert_eq!(queue.commits, vec![(3, 4096, true)]);
+            assert_eq!(
+                lines,
+                vec![
+                    "refuse-commit\tsent for a read at byte 0 on tag 2".to_string(),
+                    format!(
+                        "refuse-commit\trefused: {}",
+                        errno(&io::Error::from_raw_os_error(libc::EINVAL))
+                    ),
+                ]
+            );
+            assert!(counts.refused.load(Ordering::SeqCst));
+            assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
+            assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
         }
 
         /// A commit with no buffer that the library will not send is
