@@ -274,5 +274,47 @@ class WriteFixture(Fixture):
         self.assertEqual(ub_rows[1][:7], ['3', '1', str(slot_at(1, 10)), 'le', '10', '0', 'repeat'])
 
 
+class Fixtures(unittest.TestCase):
+    """The recorded pools in tests/fixtures/pools: the reference, read back from the fixture's own
+    requests, gives the fixture's uberblocks and cuts, and the check's files agree with them."""
+    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'fixtures', 'pools')
+
+    def dirs(self):
+        out = sorted(d for d in os.listdir(self.ROOT) if os.path.isdir(os.path.join(self.ROOT, d)))
+        self.assertTrue(out)
+        return out
+
+    def test_every_fixture_gives_its_own_cuts(self):
+        for name in self.dirs():
+            d = os.path.join(self.ROOT, name)
+            with self.subTest(name):
+                records, read, dev = cut_ref.read_fixture(d)
+                cs, taken = cut_ref.cuts(records, cut_ref.scan(records, read, dev))
+                want = cut_ref.read_tsv(os.path.join(d, 'cuts.tsv'))
+                got = [[str(c['n']), str(c['txg']), str(c['prefix']), str(c['ub_record']), str(c['flush_record']),
+                        cut_ref.rootbp_hex(c['rootbp'])] for c in cs]
+                self.assertEqual(got, want)
+                ubs = cut_ref.read_tsv(os.path.join(d, 'uberblocks.tsv'))
+                self.assertEqual([[str(u['record']), str(u['label']), str(u['slot']), u['order'], str(u['txg']),
+                                   str(int(u['mmp'])), u['taken'], cut_ref.rootbp_hex(u['rootbp'])] for u in taken], ubs)
+
+    def test_opens_names_every_cut_and_the_check_passed_them(self):
+        for name in self.dirs():
+            d = os.path.join(self.ROOT, name)
+            with self.subTest(name):
+                cuts = cut_ref.read_tsv(os.path.join(d, 'cuts.tsv'))
+                opens = cut_ref.read_tsv(os.path.join(d, 'opens.tsv'))
+                self.assertEqual([o[:3] for o in opens], [c[:3] for c in cuts])
+                # every cut whole at its own group; where it opens as itself zdb chose it
+                for n, txg, _, zdb_txg, ring_txg, itself, whole in opens:
+                    self.assertEqual(whole, '1', f'cut {n}')
+                    self.assertEqual(zdb_txg, ring_txg, f'cut {n}')
+                    if itself == '1':
+                        self.assertEqual(zdb_txg, txg, f'cut {n}')
+                check = dict((ln[0], ln[1]) for ln in cut_ref.read_tsv(os.path.join(d, 'check.tsv')))
+                self.assertEqual(check.get('cuts'), 'PASS')
+                self.assertNotIn('FAIL', check.values())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -49,7 +49,8 @@ record  label  slot  order  txg  mmp  taken  rootbp
 `slot` is the slot's byte offset on the device, `order` `le` or `be`,
 `mmp` 1 when ub_mmp_magic is set. `taken` is what the rule made of it:
 `marks` (a new uberblock), `repeat` (its group and root block pointer
-equal the previous uberblock's), `group 0`. `rootbp` is the root block
+equal those of the pending mark or of the newest cut, design §5.2: a
+repeat makes no cut and changes no mark), `group 0`. `rootbp` is the root block
 pointer's sixteen words, each as 16 hex digits, in the writer's byte
 order read as numbers.
 
@@ -90,26 +91,47 @@ The check's lines for the recording (`tests/kernel/cut_check.py`), from
 the run named in its first line. A line `cut_N FAIL` names a cut whose
 volume did not open at its group; `cuts` counts those that passed.
 
+## Other files
+
+- `rewind-txg` (rewind): the group `zpool import -T` rewound to.
+- `rewind-sync.txt` (rewindsync): the group rewound to, the abandoned
+  history's newest, and the syncs until a group past it wrote.
+- `rewind-f.txt` (rewindf): the copies of the root block that were
+  zeroed, what `zpool import` listed, and what `-F` and then `-FX` said.
+- `mmp.txt` (multihost): MMP's timings for the recording.
+
+`tests/kernel/test_cut_ref.py` (class `Fixtures`) reads every directory
+here back with `cut_ref.read_fixture` and holds the reference's cuts and
+uberblocks to `cuts.tsv` and `uberblocks.tsv`, and `opens.tsv` and
+`check.tsv` to the check having passed every cut.
+
 ## The recordings here
 
 All from one job on ubuntu-26.04 (amd64, kernel 7.0.0-1019-azure, ZFS
-2.4.1), run 43631961753, a pool of 512 MiB with ashift 12 on the whole
-device. No write in them carries FUA.
+2.4.1), run 43647779663 at 3a2859b, a pool of 512 MiB with ashift 12 on
+the whole device. No write in them carries FUA. Every cut in every one
+was whole at its own group: every copy of every block it reaches passed
+its checksum, and the pool imported at it.
 
-| directory | what the pool did | cuts | the check |
+| directory | what the pool did | cuts | opens as itself |
 |---|---|---|---|
-| `life` | create, four rounds of files with a snapshot and a sync, export, import, three more rounds, a snapshot destroyed, export | 27 | every cut opened at its group, every copy passed, read-only import |
-| `rewind` | create, eight rounds, export, `zpool import -T` at group 37 (`rewind-txg`), three rounds, export | 32 | cuts 1 to 22 and 29 to 32 passed. Cuts 23 to 28, the new history's groups 39 to 48 after the rewind, open at the abandoned history's group 51, whose uberblocks are still in the labels; the new history's cut 29 (group 51 again, another root block pointer) is the first that opens as itself |
-| `config` | create, two rounds, `zpool set comment`, `zpool reguid`, a round, a mirror attached (waited for) and detached, two rounds, export | 26 | every cut passed |
-| `stray` | create, six rounds while another process flushes the device every 2 ms, export | 17 | every cut passed |
-| `autotrim` | autotrim=on with a trim batch of 4 groups, rounds, files and snapshots destroyed, a manual trim, export | 41 | every cut passed |
+| `life` | create, four rounds of files with a snapshot and a sync, export, import, three more rounds, a snapshot destroyed, export | 26 | all |
+| `slog` | the product's layout: a log device beside the data device (not recorded); create, export, import, load with synchronous writes, export | 29 | all; zdb needed the log device's copy beside the data device for some calls (`obs_zdb_with_log_device_copy` in `check.tsv`) |
+| `rewind` | create, eight rounds, export, `zpool import -T` at group 37, three rounds, export | 32 | all but cuts 23 to 28 (the new history's groups 39 to 48), which open at the abandoned history's group 51, whole |
+| `rewindsync` | as `rewind`, then a small write and a `zpool sync` at a time until a group past 51 wrote (4 syncs, 77 ms) | 32 | all but cuts 23 to 27 (groups 39 to 49), which open at the abandoned group 51, whole here; in run 43638676548 that state was not whole (13 to 16 of 783 copies failed) |
+| `rewindf` | create, rounds, export, the three copies of the newest group's (43) root block zeroed, `zpool import -F` (refused: the export rewrote the labels' config in group 43), then `-FX`, which wrote group 43 again with another root block pointer (cut 19), rounds, export | 29 | all |
+| `multihost` | multihost=on, MMP at 100 ms, rounds for 20 s, export | 93 | all but cuts 10 and 27, stale (the states of cuts 8 and 25, rewritten by MMP after a newer cut), which open at the next group |
+| `config` | create, two rounds, `zpool set comment`, `zpool reguid`, a round, a mirror attached (waited for) and detached, two rounds, export | 26 | all |
+| `stray` | create, six rounds while another process flushes the device every 2 ms, the back labels' writes held 20 ms | 17 | all |
+| `autotrim` | autotrim=on with a trim batch of 4 groups, rounds, files and snapshots destroyed, a manual trim, export | 40 | all |
 
-Not here yet: `multihost` (its check could not import the pool: the
-rig's host id, to be fixed) and `full` (13 000 records; in the
-artifact). Later runs add the other three images.
+Not here: `full` (13 500 records, 219 cuts, all whole; in the run's
+artifact). The pull request of M2.T1 runs the rig on the other three
+images too.
 
-The session check of these runs compared the cuts with every group the
-`txgs` kstat calls committed. ZFS 2.4 commits groups that wrote nothing
-(`nwritten` 0) and writes no uberblock for them, so that comparison
-failed everywhere; the cuts equal the committed groups that wrote, in
-every session (see the pull request of M2.T1).
+The check's lines in `check.tsv` are those of that run. Three of its
+controls read DIFFERS there against the table of that commit and not
+against the table now: `later` was caught in `life`, `config` and
+`rewindsync` (a write a few hundred records after an early cut), which
+the table now allows, and `txg-alone` in `multihost` dropped only the
+two stale cuts, which the check now counts as the same list.

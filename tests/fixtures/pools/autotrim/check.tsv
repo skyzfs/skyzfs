@@ -1,10 +1,12 @@
-# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43631961753
-records	INFO	2046, of which 41 uberblock writes mark, of 164
-cuts	PASS	41 of 41 cuts: the group, every copy, the read-only import
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1913, of which 40 uberblock writes mark, of 160
+cuts	PASS	40 of 40 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	40 of 40 cuts open as themselves (expected: all)
 obs_stale_cuts	0	no cut carries the state of an older cut
-sessions	FAIL	session 1: the cuts give 39 groups, the kstat 100 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]
-ctl_early	CAUGHT	cut 21 (group 53) at record 1169 and not 1174: group: zdb selects group 50 (timestamp 1794686793), the cut is 53 (1794686793) (expected: caught)
-ctl_withheld	CAUGHT	cut 21 without record 1168 (8192 bytes at 272818176): copies: 2 of 341 copies do not pass their block's checksum; the first is copy 1 of 3 at byte 272822272: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:4cdf000:1000> DVA[1]=<0:1002f000:1000> DVA[2]=<0:12024000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=53L/53P fill=59 cksum=00000002869f9dfa:000009b (expected: caught)
-ctl_later	CAUGHT	cut 21 with record 1212 (discard, 249856 bytes at 84127744, 38 records after the instant): copies: 1 of 341 copies do not pass their block's checksum; the first is copy 0 of 3 at byte 84344832: objset 0 object 385 level 0 offset 0x0 DVA[0]=<0:4c70000:1000> DVA[1]=<0:c014000:1000> DVA[2]=<0:e00a000:1000> [L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique triple size=20000L/1000P birth=25L/25P fill=1 cksum=00000090c41f9369:0001efcd3f4688 (expected: caught)
-ctl_txg-alone	SAME	41 cuts, as the design rule (expected: same)
-ctl_count-repeats	SAME	41 cuts, as the design rule (expected: same)
+sessions	PASS	1 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_early	CAUGHT	cut 21 (group 56) at record 1114 and not 1119: opens: zdb selects group 53 (timestamp 1794696017), the rings' best is 56 (1794696017); the cut is 56 (expected: caught)
+ctl_withheld	CAUGHT	cut 21 without record 1113 (16384 bytes at 273108992): copies: 4 of 348 copies do not pass their block's checksum, in 4 blocks, of which 0 have no copy that passes; the first is copy 0 of 3 at byte 273121280: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:10078000:1000> DVA[1]=<0:a024000:1000> DVA[2]=<0:14024000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=56L/56P fill=60 cksum=00000002e7e3734e:00000b2 (expected: caught)
+ctl_later	CAUGHT	cut 21 (group 56) with record 1798 (write, 12288 bytes at 306401280, 679 records after the instant): copies: 1 of 348 copies do not pass their block's checksum, in 1 blocks, of which 0 have no copy that passes; the first is copy 2 of 3 at byte 306401280: objset 0 object 268 level 0 offset 0x0 DVA[0]=<0:10035000:1000> DVA[1]=<0:80a6000:1000> DVA[2]=<0:12035000:1000> [L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique triple size=20000L/1000P birth=29L/29P fill=1 cksum=000000824b91a4a2:0001e25c1473 (expected: caught)
+ctl_txg-alone	SAME	40 cuts, as the design rule (expected: same)
+ctl_count-repeats	SAME	40 cuts, as the design rule (expected: same)

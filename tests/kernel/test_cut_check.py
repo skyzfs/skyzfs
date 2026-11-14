@@ -152,6 +152,17 @@ class Dropped(unittest.TestCase):
         self.assertIn('none', d[0])
 
 
+class RuleSame(unittest.TestCase):
+    def test_equal_lists_and_lists_but_for_stale_cuts(self):
+        cs = [cut(1, 11, 10), cut(2, 12, 20), cut(3, 11, 30), cut(4, 13, 40)]
+        self.assertIn('as the design rule', cut_check.rule_same(cs, list(cs), {}))
+        dropped = [cs[0], cs[1], cs[3]]
+        self.assertIsNone(cut_check.rule_same(cs, dropped, {}))
+        self.assertIn('but for its 1 stale cuts', cut_check.rule_same(cs, dropped, {3: 1}))
+        # a fresh cut dropped is not the same, stale cuts or not
+        self.assertIsNone(cut_check.rule_same(cs, [cs[0], cs[3]], {3: 1}))
+
+
 class Expected(unittest.TestCase):
     def test_a_set_takes_either(self):
         self.assertTrue(cut_check.as_expected('same', ('same', 'caught')))

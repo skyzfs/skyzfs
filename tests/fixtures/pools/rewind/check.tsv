@@ -1,16 +1,12 @@
-# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43631961753
-records	INFO	1964, of which 32 uberblock writes mark, of 128
-cut_23	FAIL	group 39 at record 1415: group: zdb selects group 51 (timestamp 1794684397), the cut is 39 (1794684397)
-cut_24	FAIL	group 41 at record 1460: group: zdb selects group 51 (timestamp 1794684397), the cut is 41 (1794684397)
-cut_25	FAIL	group 43 at record 1557: group: zdb selects group 51 (timestamp 1794684397), the cut is 43 (1794684397)
-cut_26	FAIL	group 44 at record 1597: group: zdb selects group 51 (timestamp 1794684397), the cut is 44 (1794684397)
-cut_27	FAIL	group 47 at record 1708: group: zdb selects group 51 (timestamp 1794684397), the cut is 47 (1794684397)
-cut_28	FAIL	group 48 at record 1745: group: zdb selects group 51 (timestamp 1794684397), the cut is 48 (1794684397)
-cuts	FAIL	26 of 32 cuts: the group, every copy, the read-only import
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1665, of which 32 uberblock writes mark, of 128
+cuts	PASS	32 of 32 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	NOT_ALL	26 of 32 cuts open as themselves; the others: cut 23 (group 39): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 560 blocks, 780 copies; cut 24 (group 41): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 560 blocks, 780 copies; cut 25 (group 43): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 626 blocks, 866 copies; cut 26 (group 44): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 627 blocks, 869 copies; cut 27 (group 47): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 694 blocks, 958 copies; cut 28 (group 48): does not open as itself: the pool opens at group 51, and that state is whole: 558 blocks, 774 copies; at its own group (zdb -t, import -T): 696 blocks, 964 copies (expected: not all)
 obs_stale_cuts	0	no cut carries the state of an older cut
-sessions	FAIL	session 1: the cuts give 20 groups, the kstat 36 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]; session 2: the cuts give 8 groups, the kstat 16 committed; first difference at 1: cuts [39, 41, 43, 44], committed [39, 40, 41, 42]
-ctl_early	CAUGHT	cut 17 (group 33) at record 1107 and not 1112: group: zdb selects group 30 (timestamp 1794684397), the cut is 33 (1794684397) (expected: caught)
-ctl_withheld	CAUGHT	cut 17 without record 1106 (4096 bytes at 39215104): copies: 1 of 687 copies do not pass their block's checksum; the first is copy 1 of 3 at byte 39215104: objset 0 object 273 level 0 offset 0x0 DVA[0]=<0:52aa000:1000> DVA[1]=<0:2166000:1000> DVA[2]=<0:605b000:1000> [L0 SPA space map] fletcher4 lz4 unencrypted LE contiguous unique triple size=20000L/1000P birth=33L/33P fill=1 cksum=0000008e7c580d4b:0001f0e4e3c378 (expected: caught)
-ctl_later	NOT_BUILT	nothing after the instant overlaps a block the cut reaches (expected: caught; DIFFERS)
-ctl_txg-alone	CAUGHT	31 cuts against 32: session 1: the cuts give 20 groups, the kstat 36 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]; session 2: the cuts give 7 groups, the kstat 16 committed; first difference at 1: cuts [39, 41, 43, 44], committed [39, 40, 41, 42] (expected: caught)
+sessions	PASS	2 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 39..41)
+ctl_early	CAUGHT	cut 14 (group 26) at record 770 and not 775: opens: zdb selects group 25 (timestamp 1794695136), the rings' best is 26 (1794695136); the cut is 26 (expected: caught)
+ctl_withheld	CAUGHT	cut 14 without record 769 (8192 bytes at 111181824): copies: 2 of 510 copies do not pass their block's checksum, in 2 blocks, of which 0 have no copy that passes; the first is copy 0 of 3 at byte 111185920: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:6609000:1000> DVA[1]=<0:211c000:1000> DVA[2]=<0:8018000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=26L/26P fill=64 cksum=0000000301afd771:00000b8c2 (expected: caught)
+ctl_later	NOT_BUILT	nothing after the instant overlaps a block that cuts [14, 7, 4, 2, 1] reach (expected: not built)
+ctl_txg-alone	CAUGHT	31 cuts against 32: session 2: the cuts give 7 groups, the kstat 8 committed; first difference at 6: cuts [47, 48, 52], committed [47, 48, 51, 52]; at cut 29's instant (record 1542) the volume opens as cut 29 (group 51), and the rule's newest cut is group 48 at record 1474 (expected: caught)
 ctl_count-repeats	SAME	32 cuts, as the design rule (expected: same)

@@ -344,6 +344,51 @@ def write_fixture(dirname, idx, read, about=''):
     return cs, taken
 
 
+def read_fixture(dirname):
+    """A fixture's requests.tsv.gz -> (records, a reader of a label write's data, dev_bytes), as the
+    record the fixture was written from would give them to scan and cuts. Only the label writes
+    carry their data: what the reference reads."""
+    records, data, dev = [], {}, None
+    with gzip.open(os.path.join(dirname, 'requests.tsv.gz'), 'rt') as f:
+        for line in f:
+            line = line.rstrip('\n')
+            if line.startswith('# dev_bytes '):
+                dev = int(line.split()[2])
+            if not line or line.startswith('#'):
+                continue
+            i, op, offset, nbytes, payload = line.split('\t')
+            r = {'i': int(i), 'offset': int(offset), 'bytes': int(nbytes)}
+            if op == 'mark':
+                r['flags'], r['mark'] = ['mark'], payload
+            elif op == 'discard':
+                r['flags'] = ['discard']
+            elif op == 'none':
+                r['flags'] = []
+            else:
+                parts = op.split('+')
+                if parts[0] == 'write':
+                    r['pos'] = 0
+                    parts = parts[1:]
+                r['flags'] = parts
+                if payload != '-':
+                    data[r['i']] = bytes.fromhex(payload)
+            records.append(r)
+    if dev is None:
+        raise ValueError(f'{dirname}: no dev_bytes line')
+
+    def read(rec):
+        if rec['i'] not in data:
+            raise ValueError(f"record {rec['i']}: the fixture has no data for it")
+        return data[rec['i']]
+    return records, read, dev
+
+
+def read_tsv(path):
+    """A fixture's tsv file -> its lines that are not comments, split."""
+    with open(path) as f:
+        return [ln.rstrip('\n').split('\t') for ln in f if ln.strip() and not ln.startswith('#')]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     sub = ap.add_subparsers(dest='cmd', required=True)

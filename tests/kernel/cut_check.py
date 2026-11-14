@@ -90,10 +90,12 @@ EXPECTED = {
     # A later write over a block a cut reaches comes only when ZFS reuses
     # space a cut reached: in the nearly full pool and with autotrim's
     # discards; never in the short recordings on a mostly empty pool
-    # (runs 43631961753 and 43637989615, every candidate cut); in slog
-    # once, a write 123 records after cut 7's instant (run 43645075993).
-    'later': dict({r: 'not built' for r in RECS}, autotrim='caught', full='caught',
-                  multihost=('not built', 'caught'), rewindf=('not built', 'caught'), slog=('not built', 'caught')),
+    # (runs 43631961753 and 43637989615, every candidate cut). Where the
+    # candidates reach back to the first cuts, ZFS rewrites some of their
+    # blocks a few hundred records on (run 43647779663: life, config,
+    # rewindsync, slog, multihost, rewindf), so in a short recording it
+    # is built or not by where ZFS allocates. Never missed.
+    'later': dict({r: ('not built', 'caught') for r in RECS}, autotrim='caught', full='caught'),
     # A rewind import with -T writes the new history under groups the
     # abandoned one used (run 43631961753). In rewindf -F is refused (the
     # export rewrote the labels' config in the failed group) and -FX
@@ -227,6 +229,23 @@ def pick_later(records, cut, bps):
     for r in records[cut['prefix']:]:
         if (cut_ref.is_write(r) or ('discard' in r['flags'] and r['bytes'])) and overlaps(r, bps):
             return r['i']
+    return None
+
+
+def rule_same(cs, rcs, stale):
+    """-> what the line says when a rule's cuts are the design's, else None.
+
+    A stale cut (the state of an older one, which the pool does not open
+    at) is all a rule can drop with nothing to see: the pool opens at the
+    same state with it or without it (multihost, run 43647779663:
+    txg-alone dropped cuts 10 and 27). It is left out here as in the
+    session check."""
+    key = [(c['txg'], c['prefix']) for c in rcs]
+    if key == [(c['txg'], c['prefix']) for c in cs]:
+        return f'{len(rcs)} cuts, as the design rule'
+    fresh = [(c['txg'], c['prefix']) for c in cs if c['n'] not in stale]
+    if key == fresh:
+        return f'{len(rcs)} cuts, as the design rule but for its {len(cs) - len(fresh)} stale cuts, which it does not count'
     return None
 
 
@@ -615,9 +634,9 @@ def main():
                             f"{v - c['prefix']} records after the instant): {failed or 'passed'}: {detail}")
         for rule in ('txg-alone', 'count-repeats'):
             rcs, _ = cut_ref.cuts(ck.records, cut_ref.scan(ck.records, ck.read, dev), rule)
-            same = [(c['txg'], c['prefix']) for c in rcs] == [(c['txg'], c['prefix']) for c in cs]
+            same = rule_same(cs, rcs, stale)
             if same:
-                got[rule] = ('same', f'{len(rcs)} cuts, as the design rule')
+                got[rule] = ('same', same)
                 continue
             rsv = session_verdicts(rcs, ck.records, kstats)
             rbad = [d for _, ok, d in rsv if not ok] + dropped_states(cs, rcs, op)[:3]

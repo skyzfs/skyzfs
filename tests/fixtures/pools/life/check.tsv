@@ -1,10 +1,12 @@
-# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43631961753
-records	INFO	1563, of which 27 uberblock writes mark, of 108
-cuts	PASS	27 of 27 cuts: the group, every copy, the read-only import
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	1279, of which 26 uberblock writes mark, of 104
+cuts	PASS	26 of 26 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	26 of 26 cuts open as themselves (expected: all)
 obs_stale_cuts	0	no cut carries the state of an older cut
-sessions	FAIL	session 1: the cuts give 13 groups, the kstat 20 committed; first difference at 0: cuts [4, 5, 6], committed [5, 6, 7]; session 2: the cuts give 10 groups, the kstat 20 committed; first difference at 1: cuts [37, 39, 41, 42], committed [37, 38, 39, 40]
-ctl_early	CAUGHT	cut 14 (group 26) at record 842 and not 847: group: zdb selects group 22 (timestamp 1794684333), the cut is 26 (1794684333) (expected: caught)
-ctl_withheld	CAUGHT	cut 14 without record 841 (4096 bytes at 38891520): copies: 1 of 428 copies do not pass their block's checksum; the first is copy 1 of 3 at byte 38891520: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:6371000:1000> DVA[1]=<0:2117000:1000> DVA[2]=<0:8020000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=26L/26P fill=61 cksum=00000002ae1db6e1:00000a4af (expected: caught)
-ctl_later	NOT_BUILT	nothing after the instant overlaps a block the cut reaches (expected: caught; DIFFERS)
-ctl_txg-alone	SAME	27 cuts, as the design rule (expected: same)
-ctl_count-repeats	SAME	27 cuts, as the design rule (expected: same)
+sessions	PASS	2 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5); session 2: 2 cuts complete before the command returned (groups 37..39)
+ctl_early	CAUGHT	cut 14 (group 35) at record 734 and not 739: opens: zdb selects group 26 (timestamp 1794694992), the rings' best is 35 (1794694992); the cut is 35 (expected: caught)
+ctl_withheld	CAUGHT	cut 14 without record 730 (12288 bytes at 38805504): copies: 3 of 423 copies do not pass their block's checksum, in 3 blocks, of which 0 have no copy that passes; the first is copy 1 of 3 at byte 38813696: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:4005000:1000> DVA[1]=<0:2104000:1000> DVA[2]=<0:8005000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=35L/35P fill=59 cksum=0000000390e99c1b:00000db26 (expected: caught)
+ctl_later	CAUGHT	cut 4 (group 7) with record 704 (write, 4096 bytes at 71303168, 503 records after the instant): copies: 1 of 108 copies do not pass their block's checksum, in 1 blocks, of which 0 have no copy that passes; the first is copy 1 of 2 at byte 71303168: objset 54 object 36 level 0 offset 0x0 DVA[0]=<0:1000:1000> DVA[1]=<0:4000000:1000> [L0 SA attr layouts] fletcher4 lz4 unencrypted LE contiguous unique double size=4000L/1000P birth=4L/4P fill=1 cksum=00000012bee63896:000049acf0e5e561:0090eee128bb96d7:be45653f (expected: not built; DIFFERS)
+ctl_txg-alone	SAME	26 cuts, as the design rule (expected: same)
+ctl_count-repeats	SAME	26 cuts, as the design rule (expected: same)
