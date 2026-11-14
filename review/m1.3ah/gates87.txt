@@ -1,0 +1,79 @@
+== cargo fmt --all --check
+rc 0
+== cargo clippy -p skyzfs-ublk -p skyzfs-ublk-sys -p skyzfsd --all-targets -- -D warnings
+    Checking skyzfs-blk v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-blk)
+    Checking skyzfs-local v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-local)
+    Checking skyzfs-ublk v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-ublk)
+    Checking skyzfs-ublk-sys v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (/home/user/skyzfs-pr87/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 15.89s
+rc 0
+== cargo clippy -p skyzfsd --features test-hooks --all-targets -- -D warnings
+    Checking skyzfs-ublk-sys v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-ublk-sys)
+    Checking skyzfsd v0.0.1 (/home/user/skyzfs-pr87/bins/skyzfsd)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.04s
+rc 0
+== cargo clippy -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+    Checking skyzfs-local v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-local)
+    Checking skyzfs-ublk v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-ublk)
+    Checking skyzfs-ublk-sys v0.0.1 (/home/user/skyzfs-pr87/crates/skyzfs-ublk-sys)
+    Finished `dev` profile [optimized + debuginfo] target(s) in 1.73s
+rc 0
+== cargo test -p skyzfs-ublk --lib
+test status::tests::a_write_asked_for_again_that_fails_is_tried_again_an_interval_later ... ok
+
+test result: ok. 144 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+rc 0
+== cargo test -p skyzfs-ublk --tests
+test the_pump_serves_the_in_place_store ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc 0
+== cargo test -p skyzfsd --features test-hooks --lib
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.38s
+
+rc 0
+== cargo test -p skyzfsd --lib
+test commands::tests::detach_exits_and_speaks_as_the_rig_expects_for_each_thing_it_finds ... ok
+
+test result: ok. 54 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.28s
+
+rc 0
+== cargo test -p skyzfsd --features test-hooks --tests
+test an_error_of_a_command_with_its_output_closed_keeps_its_status ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc 0
+== cargo test -p skyzfs-ublk-sys --features control-test-program
+test the_control_test_program_deletes_its_own_device_while_it_serves ... ignored, needs root and the ublk driver
+test the_driver_can_reissue ... ignored, needs root and the ublk driver
+test watch::tests::mapped_in_rounds_to_the_page_it_is_given ... ok
+
+test result: ok. 1 passed; 0 failed; 11 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfs_ublk_sys
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc 0
+== cargo test -p skyzfs-ublk-sys
+test data_of_4k_and_1m_is_whole_in_one_life_and_across_a_take_over ... ignored, needs root and the ublk driver
+test the_driver_can_reissue ... ignored, needs root and the ublk driver
+test watch::tests::mapped_in_rounds_to_the_page_it_is_given ... ok
+
+test result: ok. 1 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests skyzfs_ublk_sys
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+rc 0
