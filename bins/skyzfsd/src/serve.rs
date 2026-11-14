@@ -3104,7 +3104,9 @@ mod tests {
         let mut orders = Vec::new();
         for first in KINDS {
             for second in KINDS.into_iter().filter(|&kind| kind != first) {
-                orders.push(std::thread::spawn(move || {
+                let (done, order) = mpsc::channel();
+                orders.push(order);
+                std::thread::spawn(move || {
                     let log = Log::default();
                     let commands =
                         Timed::first_then_never(&log, (first, Answer::After(limit / 2)), second);
@@ -3123,7 +3125,7 @@ mod tests {
                         .find(|&kind| kind != first && kind != second)
                         .expect("a third command");
                     let unsent = sent(&mut bounded, third);
-                    (
+                    let _ = done.send((
                         first,
                         second,
                         answered,
@@ -3131,13 +3133,17 @@ mod tests {
                         took,
                         unsent,
                         read(&log),
-                    )
-                }));
+                    ));
+                });
             }
         }
+        // Waited for with a limit, so that a command waited for with none
+        // fails the test rather than hangs it.
+        let given = Instant::now() + limit * 20 + Duration::from_secs(5);
         for order in orders {
-            let (first, second, answered, unanswered, took, unsent, log) =
-                order.join().expect("an order's thread");
+            let (first, second, answered, unanswered, took, unsent, log) = order
+                .recv_timeout(given.saturating_duration_since(Instant::now()))
+                .expect("each order ends within its limits");
             let order = format!("{first} then {second}");
             assert!(
                 took >= limit && took < limit * 3 / 2,
@@ -3172,12 +3178,15 @@ mod tests {
 
     /// A start given up, with [`Logged`] as the lifecycle's control and
     /// `commands` as the bounded ones, for a device 3 with its note.
-    /// `fails_at` is as in [`given_up`]. Returns the exit, the log, whether
-    /// a failure note is there, and how long it took.
+    /// `took_over` and `fails_at` are as in [`given_up`]; the stop takes
+    /// `stop_takes`. Returns the exit, the log, whether a failure note is
+    /// there, and how long it took.
     fn given_up_with(
         log: &Log,
         commands: Timed,
+        took_over: bool,
         fails_at: Option<u32>,
+        stop_takes: Duration,
         limit: Duration,
     ) -> (Exit, Vec<String>, bool, Duration) {
         let (done, outcome) = mpsc::channel();
@@ -3208,10 +3217,11 @@ mod tests {
                 limit,
                 &mut records,
                 3,
-                false,
+                took_over,
                 [1; 16],
                 failed,
                 || {
+                    std::thread::sleep(stop_takes);
                     logged(&log, "stopped");
                     Some(())
                 },
@@ -3227,8 +3237,10 @@ mod tests {
 
     /// A start given up ends within one limit, whichever of its commands
     /// takes its time and whichever has no answer (M1.3ak; S4 of #87's
-    /// review). Three ways through it, each with a first command that
-    /// answers after half the limit and a second that never answers:
+    /// review). Five ways through it, between them every pair of
+    /// commands the give-up can send one after the other. In each, the
+    /// commands before the last take half the limit between them, and the
+    /// last never answers:
     /// - a failure flagged before the delete: the open that asks whether
     ///   a client holds the device answers late, the delete never; exit
     ///   3, the failure note written;
@@ -3237,53 +3249,101 @@ mod tests {
     ///   exit 9;
     /// - a failure flagged after the stop: the delete answers late, and
     ///   the open never; exit 3. One bounded control serves the whole
-    ///   give-up, the failure's way after the stop included.
+    ///   give-up, the failure's way after the stop included;
+    /// - a refused delete, then a failure flagged after the stop: the
+    ///   info that follows the refusal answers late (the device is gone),
+    ///   and the open never; exit 3;
+    /// - a failure flagged after a take-over's stop, which takes half the
+    ///   limit and comes before any command: the open never answers;
+    ///   exit 3. The limit runs from when the give-up began, not from its
+    ///   first command.
     ///
-    /// The three run on threads of their own, at once. Each must end
+    /// The five run on threads of their own, at once. Each must end
     /// before one and a half limits, as in
-    /// [`the_give_ups_commands_share_one_limit`]. A deadline per command,
-    /// or a bounded control of its own for the failure's way, takes at
-    /// least one and a half limits.
+    /// [`the_give_ups_commands_share_one_limit`]. Each of these takes at
+    /// least one and a half limits: a deadline per command, a bounded
+    /// control of its own for the failure's way, or a deadline counted
+    /// from the first command sent.
     #[test]
     fn a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for() {
+        use Answer::{After, FailsAfter, Never};
         let limit = Duration::from_secs(1);
-        let late = limit / 2;
+        let (late, now) = (limit / 2, Duration::ZERO);
         let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // (way, (delete, info, open), took over, the look that fails, the
+        // stop's time, exit, the commands sent and the stop, in order)
         let ways = [
             (
                 "a failure before the delete",
-                ("holds", Answer::After(late)),
-                "delete",
+                (Never, After(now), After(late)),
+                false,
                 Some(1),
+                now,
                 Exit::Failed,
                 strings(&["holds 3", "delete 3", "stopped"]),
             ),
             (
                 "at a start",
-                ("delete", Answer::FailsAfter(late)),
-                "info",
+                (FailsAfter(late), Never, After(now)),
+                false,
                 None,
+                now,
                 Exit::NotStarted,
                 strings(&["delete 3", "info 3", "stopped"]),
             ),
             (
                 "a failure after the stop",
-                ("delete", Answer::After(late)),
-                "holds",
+                (After(late), After(now), Never),
+                false,
                 Some(2),
+                now,
                 Exit::Failed,
                 strings(&["delete 3", "stopped", "holds 3"]),
             ),
+            (
+                "a refused delete, then a failure after the stop",
+                (FailsAfter(now), After(late), Never),
+                false,
+                Some(2),
+                now,
+                Exit::Failed,
+                strings(&["delete 3", "info 3", "stopped", "holds 3"]),
+            ),
+            (
+                "a failure after a take-over's stop",
+                (After(now), After(now), Never),
+                true,
+                Some(2),
+                late,
+                Exit::Failed,
+                strings(&["stopped", "holds 3"]),
+            ),
         ];
-        let ways = ways.map(|(way, first, second, fails_at, wanted, sent_in_order)| {
-            let given_up = std::thread::spawn(move || {
-                let log = Log::default();
-                let commands = Timed::first_then_never(&log, first, second);
-                given_up_with(&log, commands, fails_at, limit)
-            });
-            (way, fails_at, wanted, sent_in_order, given_up)
-        });
+        let ways = ways.map(
+            |(
+                way,
+                (delete, info, holds),
+                took_over,
+                fails_at,
+                stop_takes,
+                wanted,
+                sent_in_order,
+            )| {
+                let given_up = std::thread::spawn(move || {
+                    let log = Log::default();
+                    let commands = Timed {
+                        log: log.clone(),
+                        delete,
+                        info,
+                        holds,
+                    };
+                    given_up_with(&log, commands, took_over, fails_at, stop_takes, limit)
+                });
+                (way, fails_at, wanted, sent_in_order, given_up)
+            },
+        );
         for (way, fails_at, wanted, sent_in_order, given_up) in ways {
+            // given_up_with waits for the give-up with a limit.
             let (exit, log, failure, took) = given_up.join().expect("a way's thread");
             assert_eq!(exit, wanted, "{way}");
             assert_eq!(log, sent_in_order, "{way}: nothing sent after the limit");
@@ -3308,7 +3368,8 @@ mod tests {
         let log = Log::default();
         let commands =
             Timed::first_then_never(&log, ("info", Answer::After(Duration::ZERO)), "delete");
-        let (exit, sent_in_order, failure, _) = given_up_with(&log, commands, None, limit);
+        let (exit, sent_in_order, failure, _) =
+            given_up_with(&log, commands, false, None, Duration::ZERO, limit);
         assert_eq!(exit, Exit::NotStarted);
         assert_eq!(sent_in_order, ["delete 3", "stopped"]);
         assert!(!failure);
