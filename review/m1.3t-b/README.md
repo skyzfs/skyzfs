@@ -32,3 +32,12 @@ control program implements `Queue::pause` (skyzfs-ublk-control.rs:868),
 which this pull request removes from the trait. Textual merge clean;
 ci.yml lint/test/unit-arm64 fail with E0407 (run 43556985568). Fix: merge
 the base, drop the method. 952c695's doc commit answers point 2.
+
+## Third look at 94bf7d9 (posted: issuecomment-6872694073): can merge
+
+94bf7d9 = plain merge of a7853c9 and 952c695 less `fn pause`. Merged locally
+onto zfs-topology 7616196 (#75 in): fmt, clippy (plain, hooks, control
+program) and the tests of skyzfs-local/ublk/skyzfsd (hooks) and
+skyzfs-ublk-sys (control program) pass (gates-merge-7616196.txt). Daemon
+rig 43559717545 rebuilt and judged: exit 0 on three images, tables
+identical to 75c32a7's (rig-94bf7d9/).
