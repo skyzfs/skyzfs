@@ -39,7 +39,8 @@
 #              oflag=sync, 4 KiB at a time, into the intent log), export
 #   multihost  multihost=on (the host id is 5eed1234 for every
 #              recording), load for 20 s, so that MMP writes uberblocks
-#              of its own
+#              of its own; MMP at a 100 ms interval with no failure
+#              intervals and one import interval (see below)
 #   config     a change of the pool's configuration: a comment, a new
 #              guid (reguid), a mirror attached and detached
 #   stray      flushes that ZFS did not ask for, every 2 ms while the
@@ -64,6 +65,22 @@
 # runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
 # when a check gave a verdict against a cut, 2 for the rig's own error.
+#
+# A pool with multihost=on that was not exported, which is what every
+# cut of it before the export is (and what a restore or a node B meets
+# whenever the pool's own node did not export it), cannot be imported
+# from a read-only device in ZFS 2.4, not even with readonly=on: the
+# import first waits out the activity check (failure intervals x
+# interval x 2, 20 s at the defaults; 1 s at the least) and then makes
+# a claim, writing uberblocks with a random MMP sequence and reading
+# them back over 10 intervals (spa_activity_check_claim; only the
+# tryimport, an extreme rewind and zdb are spared). On a read-only
+# device the claim fails, and zpool says "pool is imported on host
+# '<unknown>' (hostid=0)", which is not about a host id at all (run
+# 43638676548: 88 of 92 imports refused). So the check imports such a
+# pool from a writable copy of the cut, and the recording shortens
+# MMP's timings so that an import takes about 2 s and not 30 s. A
+# restore of such a pool must expect the claim's writes and that wait.
 #
 # Needs root, ZFS with zdb, dm-log-writes. For a throwaway machine: it
 # creates a pool named skzcut.
