@@ -85,36 +85,7 @@ impl Control for Kernel {
     }
 
     fn info(&mut self, number: u32) -> io::Result<Option<DeviceInfo>> {
-        let info = match raw::info(number) {
-            Ok(info) => info,
-            Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let state = match u32::from(info.state) {
-            sys::UBLK_S_DEV_LIVE => DeviceState::Live,
-            sys::UBLK_S_DEV_QUIESCED => DeviceState::Waiting,
-            sys::UBLK_S_DEV_DEAD => DeviceState::Dead,
-            other => {
-                return Err(io::Error::other(format!(
-                    "device {number} is in state {other}, which this daemon does not know"
-                )))
-            }
-        };
-        // Gone between the two commands: there is no device.
-        let params = match raw::params(number) {
-            Ok(params) => params,
-            Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        Ok(Some(DeviceInfo {
-            state,
-            shape: Shape {
-                size: params.basic.dev_sectors << 9,
-                queues: info.nr_hw_queues,
-                depth: info.queue_depth,
-                flags: info.flags & FLAGS,
-            },
-        }))
+        info(number)
     }
 
     fn add(&mut self, number: u32, shape: &Shape) -> Result<(), AddError> {
@@ -159,13 +130,55 @@ impl Control for Kernel {
     }
 
     fn client_holds(&mut self, number: u32) -> Option<bool> {
-        let opened = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_EXCL | libc::O_NONBLOCK)
-            .open(block_device(number));
-        match opened {
-            Err(e) if e.raw_os_error() == Some(libc::EBUSY) => Some(true),
-            _ => None,
+        client_holds(number)
+    }
+}
+
+/// [`Control::info`] of [`Kernel`], as a function of the device's
+/// number alone, so that a caller can send it from a thread of its own.
+pub fn info(number: u32) -> io::Result<Option<DeviceInfo>> {
+    let info = match raw::info(number) {
+        Ok(info) => info,
+        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let state = match u32::from(info.state) {
+        sys::UBLK_S_DEV_LIVE => DeviceState::Live,
+        sys::UBLK_S_DEV_QUIESCED => DeviceState::Waiting,
+        sys::UBLK_S_DEV_DEAD => DeviceState::Dead,
+        other => {
+            return Err(io::Error::other(format!(
+                "device {number} is in state {other}, which this daemon does not know"
+            )))
         }
+    };
+    // Gone between the two commands: there is no device.
+    let params = match raw::params(number) {
+        Ok(params) => params,
+        Err(e) if e.raw_os_error() == Some(libc::ENODEV) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(Some(DeviceInfo {
+        state,
+        shape: Shape {
+            size: params.basic.dev_sectors << 9,
+            queues: info.nr_hw_queues,
+            depth: info.queue_depth,
+            flags: info.flags & FLAGS,
+        },
+    }))
+}
+
+/// [`Control::client_holds`] of [`Kernel`], as a function of the
+/// device's number alone, so that a caller can send it from a thread of
+/// its own.
+pub fn client_holds(number: u32) -> Option<bool> {
+    let opened = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_EXCL | libc::O_NONBLOCK)
+        .open(block_device(number));
+    match opened {
+        Err(e) if e.raw_os_error() == Some(libc::EBUSY) => Some(true),
+        _ => None,
     }
 }

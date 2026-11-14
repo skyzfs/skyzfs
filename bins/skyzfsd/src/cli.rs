@@ -106,7 +106,8 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
   skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
                  [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
                  [--commit-delay-ms N] [--request-log PATH]
-                 [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]";
+                 [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]
+                 [--refuse-one-fetch start|recovery]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -230,7 +231,12 @@ serve answered nothing more, the volume is not failed, and the device
 waits for the next server, as after a kill;
 8 the kernel's driver refused an answer of serve's (a commit): serve
 answered nothing more, the volume is not failed, and the device waits
-for the next server, which is handed again what was not answered.
+for the next server, which is handed again what was not answered;
+9 serve gave the device's start up: the kernel refused a first fetch
+of the queue, or the start had no answer within 30 s; the volume is not
+failed; a device this serve added is deleted, and one it took over is
+left waiting for the next server, as after a kill. A supervisor should
+retry the serve once; a second 9 is for a person.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -266,6 +272,14 @@ pub enum Exit {
     /// answered, the volume is not failed, and the device waits for the
     /// next server, which the kernel hands that request again.
     CommitRefused,
+    /// 9: `serve` gave the device's start up (M1.3ah): the kernel's
+    /// driver refused a first fetch of the queue, and the start waits
+    /// for every tag's fetch with no limit, or the start had no answer
+    /// within its limit. The volume is not failed. A device this serve
+    /// added is deleted; one it took over is left waiting for the next
+    /// server, as after a kill. Retry the serve once; a second 9 is for
+    /// a person.
+    NotStarted,
 }
 
 impl Exit {
@@ -281,6 +295,7 @@ impl Exit {
             Exit::DeletedHeld => 6,
             Exit::BrokenRule => 7,
             Exit::CommitRefused => 8,
+            Exit::NotStarted => 9,
         }
     }
 
@@ -377,6 +392,31 @@ pub struct Hooks {
     /// The request whose commit is sent with no buffer, for the driver
     /// to refuse: the first of its kind ([`crate::refuse`]).
     pub refuse: Option<Held>,
+    /// The start at which tag 0's first fetch is sent with no buffer,
+    /// for the driver to refuse.
+    pub refuse_fetch: Option<FetchRefusal>,
+}
+
+/// `--refuse-one-fetch`: at which start tag 0's first fetch is sent with
+/// no buffer. Whether a serve adds its device or takes it over is known
+/// only once the lifecycle has found the device: a serve whose start is
+/// the other kind refuses no fetch and says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchRefusal {
+    /// At the start of a device this serve added (START_DEV).
+    Start,
+    /// At a take-over (END_USER_RECOVERY).
+    Recovery,
+}
+
+impl FetchRefusal {
+    /// The option's value.
+    pub fn name(self) -> &'static str {
+        match self {
+            FetchRefusal::Start => "start",
+            FetchRefusal::Recovery => "recovery",
+        }
+    }
 }
 
 /// One request to hold for a while.
@@ -487,6 +527,7 @@ const SERVE: &[Opt] = &[
     opt("--commit-delay-ms", true, true),
     opt("--request-log", true, true),
     opt("--refuse-one-commit", true, true),
+    opt("--refuse-one-fetch", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -611,6 +652,18 @@ fn refuse(text: &str) -> Result<Held, UsageError> {
     }
 }
 
+/// `--refuse-one-fetch`: `start` or `recovery`.
+fn refuse_fetch(text: &str) -> Result<FetchRefusal, UsageError> {
+    match text {
+        "start" => Ok(FetchRefusal::Start),
+        "recovery" => Ok(FetchRefusal::Recovery),
+        _ => Err(UsageError::Value(
+            "--refuse-one-fetch".into(),
+            "expected start or recovery",
+        )),
+    }
+}
+
 fn run_dir(given: &Given) -> PathBuf {
     given
         .get("--run-dir")
@@ -684,6 +737,10 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                     request_log: given.get("--request-log").map(PathBuf::from),
                     refuse: given.get("--refuse-one-commit").map(refuse).transpose()?,
+                    refuse_fetch: given
+                        .get("--refuse-one-fetch")
+                        .map(refuse_fetch)
+                        .transpose()?,
                 },
             }))
         }

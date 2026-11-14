@@ -107,7 +107,7 @@ const _: () = assert!(ABORTED == sys::UBLK_IO_RES_ABORT);
 
 /// The marks of a first fetch that the binding puts on the ring itself
 /// (`Device::serve_with_fetch_refused_for_tests`, built only with the
-/// feature `control-test-program`), over the library's own user data
+/// feature `refuse-fetch`), over the library's own user data
 /// of a fetch on the tag: bit 63, by which the library takes the
 /// completion for no command of its own and leaves it out of its count
 /// of commands, and bit 62, by which [`ended`] tells it from the wake
@@ -116,17 +116,17 @@ const _: () = assert!(ABORTED == sys::UBLK_IO_RES_ABORT);
 /// this queue uses, it reads only bit 63. The library's user data of a
 /// command never has either bit (it has 24 bits of tag and code, and
 /// 16 of target data above them).
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 const OWN_FETCH: u64 = (1 << 63) | (1 << 62);
 
 /// What a completion on the queue's ring says: `None` if it is not one
 /// of a driver's command (bit 63: the wake descriptor's poll); a
 /// request fetched on a tag when the driver ended the command with OK;
 /// otherwise the command it ended so, which fetched nothing. With the
-/// feature `control-test-program`, a first fetch of the binding's own
+/// feature `refuse-fetch`, a first fetch of the binding's own
 /// (`OWN_FETCH`) is read as the library's.
 fn ended(user_data: u64, result: i32) -> Option<Result<u16, Unfetched>> {
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     let user_data = if user_data & OWN_FETCH == OWN_FETCH {
         user_data & !OWN_FETCH
     } else {
@@ -266,15 +266,16 @@ impl Device {
         })
     }
 
-    /// Not API, and built only with the feature `control-test-program`:
-    /// for the control test program only (its
-    /// `--refuse-one-fetch`). [`Device::serve`], but the first fetch of
+    /// Not API, and built only with the feature `refuse-fetch`: for the
+    /// control test program's `--refuse-one-fetch` and the daemon's
+    /// (test build). [`Device::serve`], but the first fetch of
     /// `tag` is sent with no buffer: the driver is told the address 0.
     /// A queue of this binding asks for neither of the features under
     /// which a fetch may name no buffer (`NEED_GET_DATA` and user
     /// copy), so by a reading of `ublk_drv.c` the driver refuses that
     /// fetch when it is submitted, as it refuses such a commit; what
-    /// that does to the start that follows is what the program is for.
+    /// that does to the start that follows: the start waits for that
+    /// fetch with no limit (testing's M1.T36).
     /// A `tag` that is not one of the queue's is refused
     /// (`InvalidInput`).
     ///
@@ -296,7 +297,7 @@ impl Device {
     /// (the caller stops it), and the aborts of fetches that were never
     /// handed a request may come after the queue was reported down.
     /// Neither is so in [`Device::serve`].
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     #[doc(hidden)]
     pub fn serve_with_fetch_refused_for_tests<R, F>(
         &self,
@@ -362,6 +363,15 @@ impl Device {
     /// Start the device: a device that was never started gets its
     /// parameters and is started; a device that is taken over has its
     /// recovery ended. From here on the kernel issues requests.
+    ///
+    /// From any thread (M1.3ah: the daemon gives its start a thread of
+    /// its own, so that it can give the start up). The library sends
+    /// the start through an io_uring of the calling thread's own, and
+    /// makes one only for the thread that made the control object: from
+    /// any other thread the start panicked in the library ("Control ring
+    /// not initialized"). So the calling thread's ring is made first, if
+    /// it has none ([`own_control_ring`]). The end of a recovery is sent
+    /// by the binding itself, on a ring of its own, and needs none.
     pub fn start(&self) -> io::Result<()> {
         if self.take_over {
             // What the library's start does before its command: wait
@@ -370,6 +380,7 @@ impl Device {
             self.dev.wait_for_buffer_registration(1).map_err(io_error)?;
             return crate::raw::end_recovery(self.number);
         }
+        own_control_ring()?;
         match self.control.start_dev(&self.dev).map_err(io_error)? {
             refused if refused < 0 => Err(io::Error::from_raw_os_error(-refused)),
             _ => Ok(()),
@@ -377,32 +388,9 @@ impl Device {
     }
 }
 
-#[cfg(feature = "control-test-program")]
-impl Device {
-    /// Not API, and built only with the feature `control-test-program`:
-    /// [`Device::start`] from a thread other than the one that opened
-    /// the device (the control test program's `--refuse-one-fetch`,
-    /// whose start may wait in the driver while the program goes on).
-    ///
-    /// The library sends a control command through an io_uring of the
-    /// calling thread's own, and makes one only for the thread that
-    /// made the control object: the start of a device never started,
-    /// from any other thread, panics in the library ("Control ring not
-    /// initialized"). This makes the calling thread's ring first, if it
-    /// has none ([`own_control_ring`]). The end of a recovery is sent
-    /// by the binding itself, on a ring of its own, and needs none.
-    #[doc(hidden)]
-    pub fn start_from_another_thread_for_tests(&self) -> io::Result<()> {
-        own_control_ring()?;
-        self.start()
-    }
-}
-
 /// Make the calling thread's control ring, as the library makes the
 /// one of the thread that makes a control object (16 entries), if the
-/// thread has none; keep the one it has. Built only with the feature
-/// `control-test-program`.
-#[cfg(feature = "control-test-program")]
+/// thread has none; keep the one it has.
 fn own_control_ring() -> io::Result<()> {
     libublk::ublk_init_ctrl_task_ring(|ring| {
         if ring.is_none() {
@@ -462,7 +450,7 @@ pub fn parameters(size: u64) -> sys::ublk_params {
     }
 }
 
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 /// The first fetch of every tag of `queue`, put on its ring by the
 /// binding: see [`Device::serve_with_fetch_refused_for_tests`]. Each
 /// names the library's buffer of its tag in `first`, and that of
@@ -485,7 +473,7 @@ fn first_fetches<'q>(
     Ok(queue)
 }
 
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 /// The address that the first fetch of `tag` names: the library's
 /// buffer of the tag in `first`, or none (0) if it is `refused`.
 fn first_address(first: &[IoBuf<u8>], tag: u16, refused: u16) -> io::Result<u64> {
@@ -498,7 +486,7 @@ fn first_address(first: &[IoBuf<u8>], tag: u16, refused: u16) -> io::Result<u64>
         .ok_or_else(|| io::Error::other(format!("no buffer for tag {tag}")))
 }
 
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 /// The library's fetch command for `tag` of queue 0, naming the buffer
 /// at `addr` (0: none), on the device's file as the library registers
 /// it (fixed file 0), with the user data [`OWN_FETCH`] over the
@@ -516,7 +504,7 @@ fn fetch(encoded: bool, tag: u16, addr: u64) -> io_uring::squeue::Entry {
         .user_data(OWN_FETCH | UblkIOCtx::build_user_data(tag, sys::UBLK_U_IO_FETCH_REQ, 0, false))
 }
 
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 /// The payload of a fetch of `tag` on queue 0 naming `addr`: the
 /// driver's `ublksrv_io_cmd` with the result -1, as the library fills
 /// it for a fetch, in its bytes.
@@ -528,7 +516,7 @@ fn io_cmd(tag: u16, addr: u64) -> [u8; 16] {
     bytes
 }
 
-#[cfg(feature = "control-test-program")]
+#[cfg(feature = "refuse-fetch")]
 // Where `io_cmd` puts each field: the struct's own layout.
 const _: () = {
     use std::mem::{offset_of, size_of};
@@ -687,7 +675,7 @@ impl<'q> KernelQueue<'q> {
     /// [`KernelQueue::new`], but the first fetches are the binding's
     /// own, and that of `refused` names no buffer: see
     /// `Device::serve_with_fetch_refused_for_tests`.
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     fn with_fetch_refused(
         dev: &'q UblkDev,
         stopper: Stopper,
@@ -980,10 +968,9 @@ mod tests {
     /// The library sends a control command through a ring of the
     /// calling thread's own, and makes one only in the thread that made
     /// the control object. A thread that did not has none until it
-    /// makes one (the control program's start from a thread of its own,
-    /// which panicked in the library before), and making it again keeps
-    /// the one it has.
-    #[cfg(feature = "control-test-program")]
+    /// makes one (a start from a thread of its own, the daemon's since
+    /// M1.3ah, which panicked in the library before), and making it
+    /// again keeps the one it has.
     #[test]
     fn a_thread_that_did_not_open_the_device_makes_its_own_control_ring() {
         use std::os::fd::AsRawFd;
@@ -1002,11 +989,40 @@ mod tests {
         .expect("the thread's checks hold");
     }
 
+    /// A thread that has a control ring, made as the library makes the
+    /// one of the thread that makes a control object, keeps it: the
+    /// start makes none in its place. (A ring of 8 entries, so that a
+    /// ring made in its place, of 16, would show.)
+    #[test]
+    fn a_thread_with_a_control_ring_keeps_it() {
+        use std::os::fd::AsRawFd;
+        std::thread::spawn(|| {
+            libublk::ublk_init_ctrl_task_ring(|ring| {
+                *ring = Some(
+                    io_uring::IoUring::<io_uring::squeue::Entry128>::builder()
+                        .build(8)
+                        .map_err(UblkError::IOError)?,
+                );
+                Ok(())
+            })
+            .expect("a ring of 8 entries");
+            let had =
+                libublk::with_ctrl_ring(|ring| (ring.as_raw_fd(), ring.params().sq_entries()));
+            own_control_ring().expect("the start's ring");
+            let has =
+                libublk::with_ctrl_ring(|ring| (ring.as_raw_fd(), ring.params().sq_entries()));
+            assert_eq!(has, had, "the thread's ring is kept");
+            assert_eq!(has.1, 8, "the ring of 8 entries");
+        })
+        .join()
+        .expect("the thread's checks hold");
+    }
+
     /// A first fetch that the binding put on the ring itself (the
     /// control program's refused fetch) is read as the library's
     /// fetch on its tag, whatever the driver answered; the wake's poll
     /// is still none.
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     #[test]
     fn a_first_fetch_of_the_bindings_own_is_read_as_a_fetch() {
         let ok = sys::UBLK_IO_RES_OK as i32;
@@ -1031,7 +1047,7 @@ mod tests {
 
     /// The refused tag's first fetch names no buffer, and every other
     /// tag's names the library's buffer of that tag.
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     #[test]
     fn the_refused_tag_names_no_buffer_and_the_others_their_own() {
         let first: Vec<IoBuf<u8>> = (0..3).map(|_| IoBuf::new(4096)).collect();
@@ -1046,7 +1062,7 @@ mod tests {
 
     /// The payload of a fetch is the driver's `ublksrv_io_cmd`, laid
     /// out as the library lays it out (it copies the struct's bytes).
-    #[cfg(feature = "control-test-program")]
+    #[cfg(feature = "refuse-fetch")]
     #[test]
     fn a_fetch_names_its_queue_tag_and_address_as_the_driver_reads_them() {
         let cmd = sys::ublksrv_io_cmd {
