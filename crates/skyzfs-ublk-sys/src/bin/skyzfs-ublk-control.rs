@@ -130,10 +130,11 @@
 //!   `end-recovery` for a device that waits for a server. Its line is
 //!   `returned after T ms: ok` or `returned after T ms: errno E (...)`,
 //!   with T counted from the command; or, if it has not returned 10 s
-//!   after it was sent, `no answer after 10000 ms; its thread waits in
-//!   CALL (wchan W); io_uring workers: WORKERS`, and the line `returned
-//!   after ...` follows if it returns later. CALL is the system call the
-//!   command's thread is in, from `/proc`. The command goes to the
+//!   after it was sent, `no answer after 10000 ms; its thread T waits
+//!   in CALL (wchan W); io_uring workers: WORKERS`, and the line
+//!   `returned after ...` follows if it returns later. T is the
+//!   command's thread's id, and CALL the system call it is in, from
+//!   `/proc`. The command goes to the
 //!   driver on an io_uring, so `io_uring_enter` is a wait for the
 //!   kernel's answer to it; `futex` is the wait before it, the library's
 //!   or the binding's, for the queue's buffers to be registered. Another
@@ -141,9 +142,13 @@
 //!   `/proc` said nothing. W is the thread's wait channel, as the kernel
 //!   names it. WORKERS lists the process's io_uring workers, the kernel's
 //!   threads that run a command the ring could not complete at once, as
-//!   `iou-wrk-T (wchan W)`, separated by `, `: where the driver's own
-//!   wait would be. It is `none` if there is none, and `unknown` if
-//!   `/proc` could not be listed.
+//!   `iou-wrk-T (wchan W)`, separated by `, `, in the order of their own
+//!   ids: where the driver's own wait would be. A worker is named after
+//!   the thread whose command it runs, so the command's worker is
+//!   `iou-wrk-` and the T above. A worker of another thread may be
+//!   there too (one that waits for work reads `io_wq_worker`). It is
+//!   `none` if there is none, and `unknown` if `/proc` could not be
+//!   listed.
 //!
 //! Whatever the start answered, and also when the queue has ended, the
 //! program then serves what the driver hands over and ends only on
@@ -940,9 +945,9 @@ mod run {
                     step,
                     n,
                     &format!(
-                        "no answer after {} ms; its thread waits in {}; io_uring workers: {}",
+                        "no answer after {} ms; {}; io_uring workers: {}",
                         START_LIMIT.as_millis(),
-                        tid.map_or_else(|| "unknown".into(), waits_in),
+                        start_thread_said(tid),
                         workers_wait()
                     ),
                 )?;
@@ -971,6 +976,16 @@ mod run {
     fn own_tid() -> Option<u32> {
         let link = std::fs::read_link("/proc/thread-self").ok()?;
         link.file_name()?.to_str()?.parse().ok()
+    }
+
+    /// The start's thread, by its id, and where it waits: see
+    /// [`waits_in`]. Its io_uring worker, if it has one, is named
+    /// `iou-wrk-` and that id. `unknown` if the id never came.
+    fn start_thread_said(tid: Option<u32>) -> String {
+        match tid {
+            Some(tid) => format!("its thread {tid} waits in {}", waits_in(tid)),
+            None => "its thread waits in unknown".into(),
+        }
     }
 
     /// Where thread `tid` of this process waits, as the kernel says:
@@ -1003,15 +1018,30 @@ mod run {
     /// Where this process's io_uring workers wait: the kernel's threads
     /// that run a command the ring could not complete at once, which is
     /// where the driver's own wait for a control command would be. See
-    /// [`workers_named`]; `unknown` if `/proc` cannot be listed.
+    /// [`workers_in`].
     fn workers_wait() -> String {
-        let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+        workers_in(std::path::Path::new("/proc/self/task"))
+    }
+
+    /// The io_uring workers among the threads of task directory `dir`,
+    /// laid out as `/proc/self/task` (a directory per thread, named by
+    /// its id, with its `comm` and `wchan`), in the order of their ids.
+    /// See [`workers_named`]. `unknown` if `dir` cannot be listed.
+    fn workers_in(dir: &std::path::Path) -> String {
+        let Ok(tasks) = std::fs::read_dir(dir) else {
             return "unknown".into();
         };
-        let found: Vec<(String, String)> = tasks
+        let mut tids: Vec<u32> = tasks
             .flatten()
-            .filter_map(|task| task.file_name().to_str()?.parse::<u32>().ok())
-            .map(|tid| (task_file(tid, "comm"), task_file(tid, "wchan")))
+            .filter_map(|task| task.file_name().to_str()?.parse().ok())
+            .collect();
+        tids.sort_unstable();
+        let read = |tid: u32, what: &str| {
+            std::fs::read_to_string(dir.join(tid.to_string()).join(what)).unwrap_or_default()
+        };
+        let found: Vec<(String, String)> = tids
+            .into_iter()
+            .map(|tid| (read(tid, "comm"), read(tid, "wchan")))
             .collect();
         workers_named(&found)
     }
@@ -1495,6 +1525,60 @@ mod run {
             assert_eq!(workers_named(&[task("main\n", "0")]), "none");
             assert_eq!(workers_named(&[]), "none");
             assert!(!workers_wait().is_empty());
+        }
+
+        /// The workers are read from a task directory laid out as
+        /// `/proc/self/task`: a directory per thread, named by its id,
+        /// with its `comm` and `wchan`. The workers are said in the
+        /// order of their ids, as numbers. Anything that is not a
+        /// thread's directory is passed over. A directory that cannot be
+        /// listed is `unknown`.
+        #[test]
+        fn the_io_uring_workers_are_read_from_a_task_directory() {
+            let dir = std::env::temp_dir()
+                .join(format!("skyzfs-ublk-control-tasks-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            let thread = |tid: u32, comm: &str, wchan: Option<&str>| {
+                let at = dir.join(tid.to_string());
+                std::fs::create_dir_all(&at).expect("a thread's directory");
+                std::fs::write(at.join("comm"), comm).expect("comm");
+                std::fs::write(at.join("status"), format!("Name:\t{comm}State:\tS\n"))
+                    .expect("status");
+                if let Some(wchan) = wchan {
+                    std::fs::write(at.join("wchan"), wchan).expect("wchan");
+                }
+            };
+            thread(813, "iou-wrk-812\n", None);
+            thread(812, "skyzfs-ublk-con\n", Some("do_sigtimedwait"));
+            thread(9, "iou-wrk-1\n", Some("io_wq_worker"));
+            thread(814, "iou-wrk-812\n", Some("ublk_ctrl_start_dev"));
+            std::fs::create_dir_all(dir.join("not-a-thread")).expect("a stray directory");
+            let said = workers_in(&dir);
+            let _ = std::fs::remove_dir_all(&dir);
+            assert_eq!(
+                said,
+                "iou-wrk-1 (wchan io_wq_worker), iou-wrk-812 (wchan unknown), \
+                 iou-wrk-812 (wchan ublk_ctrl_start_dev)"
+            );
+            assert_eq!(workers_in(&dir), "unknown", "a directory that is gone");
+        }
+
+        /// The line names the start's thread by its id, so that a
+        /// reader can match it with its io_uring worker, which is named
+        /// `iou-wrk-` and that id. A thread whose id never came waits in
+        /// `unknown`.
+        #[test]
+        fn the_start_thread_is_named_by_its_id() {
+            let tid = own_tid().expect("this thread's id");
+            let said = start_thread_said(Some(tid));
+            assert!(
+                said.starts_with(&format!(
+                    "its thread {tid} waits in syscall {} (wchan ",
+                    libc::SYS_read
+                )),
+                "{said}"
+            );
+            assert_eq!(start_thread_said(None), "its thread waits in unknown");
         }
 
         /// Where the start's thread waits is read from its `syscall`
