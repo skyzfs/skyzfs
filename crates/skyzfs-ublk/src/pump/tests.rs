@@ -1,9 +1,9 @@
 //! The pump's rules, each with the defect that shows the test would
-//! notice. The queue, the target and the record of what was
-//! acknowledged are fakes that write what happens to them into one
-//! list, so that a test can ask in which order things happened.
+//! notice. The queue and the target are fakes that write what happens
+//! to them into one list, so that a test can ask in which order things
+//! happened.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
@@ -22,8 +22,6 @@ enum Event {
     Submitted(u64, &'static str),
     /// The test let the target complete a request.
     Completed(u64),
-    /// A position was stored.
-    Stored(u64),
     /// The queue was given a result for a tag.
     Committed(u16, i32),
     /// The queue handed the driver the commits it held: at a wait or
@@ -52,10 +50,6 @@ struct FakeQueue {
     /// The buffers committed back, by tag.
     returned: HashMap<u16, Buf>,
     taken: u32,
-    /// Pauses so far.
-    pauses: u32,
-    /// The record can be written again after this many pauses.
-    heals: Option<(u32, Rc<Cell<bool>>)>,
     /// The queue cannot hand its commits over at a flush.
     flush_fails: bool,
     /// The tag the queue has no buffer for.
@@ -118,23 +112,13 @@ impl Queue for FakeQueue {
         }
         Ok(())
     }
-
-    fn pause(&mut self) {
-        self.pauses += 1;
-        if let Some((after, fails)) = &self.heals {
-            if self.pauses >= *after {
-                fails.set(false);
-            }
-        }
-    }
 }
 
 struct FakeTarget {
     geometry: Geometry,
     events: Events,
     pending: Vec<Request>,
-    ready: Vec<(Completion, Option<u64>)>,
-    acknowledged: Option<u64>,
+    ready: Vec<Completion>,
     gone: bool,
     /// Its worker ends in the moment of the next submit.
     goes_at_submit: bool,
@@ -149,9 +133,8 @@ struct FakeTarget {
 }
 
 impl FakeTarget {
-    /// Let the request `id` complete. `position` is where its record
-    /// starts, for a mutation that succeeded.
-    fn complete(&mut self, id: u64, result: Result<(), BlkError>, position: Option<u64>) {
+    /// Let the request `id` complete.
+    fn complete(&mut self, id: u64, result: Result<(), BlkError>) {
         let at = self
             .pending
             .iter()
@@ -173,7 +156,7 @@ impl FakeTarget {
             result,
             buf,
         };
-        self.ready.push((completion, position));
+        self.ready.push(completion);
     }
 
     fn holds(&self, id: u64) -> bool {
@@ -212,12 +195,7 @@ impl BlockTarget for FakeTarget {
         if self.goes_at_poll && n > 0 {
             self.gone = true;
         }
-        for (completion, position) in self.ready.drain(..) {
-            if let Some(position) = position {
-                self.acknowledged = self.acknowledged.max(Some(position));
-            }
-            out.push(completion);
-        }
+        out.append(&mut self.ready);
         n
     }
 
@@ -226,11 +204,7 @@ impl BlockTarget for FakeTarget {
     }
 }
 
-impl Positions for FakeTarget {
-    fn acknowledged(&self) -> Option<u64> {
-        self.acknowledged
-    }
-
+impl PumpTarget for FakeTarget {
     fn gone(&self) -> bool {
         self.gone
     }
@@ -240,29 +214,9 @@ impl Positions for FakeTarget {
     }
 }
 
-struct FakeAck {
-    events: Events,
-    fail: Rc<Cell<bool>>,
-    /// How long a store takes.
-    slow: Rc<Cell<std::time::Duration>>,
-}
-
-impl AckRecord for FakeAck {
-    fn advance(&mut self, position: u64) -> io::Result<()> {
-        if self.fail.get() {
-            return Err(io::Error::other("the record cannot be written"));
-        }
-        std::thread::sleep(self.slow.get());
-        self.events.borrow_mut().push(Event::Stored(position));
-        Ok(())
-    }
-}
-
 struct Rig {
-    pump: Pump<FakeQueue, FakeTarget, FakeAck>,
+    pump: Pump<FakeQueue, FakeTarget>,
     events: Events,
-    ack_fails: Rc<Cell<bool>>,
-    ack_slow: Rc<Cell<std::time::Duration>>,
 }
 
 impl Rig {
@@ -270,15 +224,12 @@ impl Rig {
     /// that takes `target_depth` requests.
     fn new(mutants: u32, queue_depth: u16, target_depth: u32) -> Self {
         let events: Events = Rc::default();
-        let ack_fails = Rc::new(Cell::new(false));
         let queue = FakeQueue {
             depth: queue_depth,
             script: VecDeque::new(),
             events: events.clone(),
             returned: HashMap::new(),
             taken: 0,
-            pauses: 0,
-            heals: None,
             flush_fails: false,
             no_buf: None,
         };
@@ -287,24 +238,15 @@ impl Rig {
             events: events.clone(),
             pending: Vec::new(),
             ready: Vec::new(),
-            acknowledged: None,
             gone: false,
             goes_at_submit: false,
             goes_at_poll: false,
             most: 0,
             stamps: HashMap::new(),
         };
-        let ack_slow = Rc::new(Cell::new(std::time::Duration::ZERO));
-        let ack = FakeAck {
-            events: events.clone(),
-            fail: ack_fails.clone(),
-            slow: ack_slow.clone(),
-        };
         Rig {
-            pump: Pump::new(queue, target, ack).with_mutants(mutants),
+            pump: Pump::new(queue, target).with_mutants(mutants),
             events,
-            ack_fails,
-            ack_slow,
         }
     }
 
@@ -323,8 +265,8 @@ impl Rig {
         self.pump.turn()
     }
 
-    fn complete(&mut self, id: u64, position: Option<u64>) {
-        self.pump.target().complete(id, Ok(()), position);
+    fn complete(&mut self, id: u64) {
+        self.pump.target().complete(id, Ok(()));
     }
 
     fn events(&self) -> Vec<Event> {
@@ -426,7 +368,7 @@ fn an_operation_acknowledged_before_another_was_fetched_precedes_it() {
             vec![],
             "committed while the target holds it",
         )?;
-        rig.complete(0, Some(64));
+        rig.complete(0);
         rig.turn();
         expect(rig.committed(), vec![(0, BLOCK)], "committed")?;
         // The kernel issues the next request only now.
@@ -448,14 +390,14 @@ fn requests_are_submitted_in_the_order_fetched() {
         rig.fetch(&[write(5, 4)]);
         for id in [3, 1, 2, 0, 5] {
             if rig.pump.target().holds(id) {
-                rig.complete(id, Some(id * 100));
+                rig.complete(id);
             }
             rig.turn();
             rig.turn();
         }
         for id in [0, 5] {
             if rig.pump.target().holds(id) {
-                rig.complete(id, Some(1000));
+                rig.complete(id);
                 rig.turn();
             }
         }
@@ -482,7 +424,7 @@ fn the_target_is_never_handed_more_than_its_depth() {
         // A request that waits holds no buffer.
         expect(rig.pump.queue().taken, 2, "buffers taken")?;
         for id in 0..6 {
-            rig.complete(id, Some(id * 100 + 100));
+            rig.complete(id);
             if let Some(stopped) = rig.turn() {
                 return Err(format!("the pump ended: {stopped:?}"));
             }
@@ -515,7 +457,7 @@ fn a_request_the_target_holds_is_neither_completed_nor_lost() {
         }
         expect(rig.committed(), vec![], "committed while held")?;
         expect(rig.pump.counters().in_flight, 2, "in flight")?;
-        rig.complete(2, None);
+        rig.complete(2);
         rig.turn();
         expect(rig.committed(), vec![(2, 3 * BLOCK)], "the read")?;
         let data = rig.pump.queue().returned.remove(&2);
@@ -524,7 +466,7 @@ fn a_request_the_target_holds_is_neither_completed_nor_lost() {
             Some((3 * 4096, true)),
             "the read's data",
         )?;
-        rig.complete(1, None);
+        rig.complete(1);
         rig.turn();
         expect(rig.committed(), vec![(2, 3 * BLOCK), (1, 0)], "the flush")
     }
@@ -578,7 +520,7 @@ fn a_flush_is_committed_when_the_target_has_flushed() {
             vec![],
             "committed before the target flushed",
         )?;
-        rig.complete(3, None);
+        rig.complete(3);
         rig.turn();
         expect(rig.committed(), vec![(3, 0)], "committed")?;
         expect(rig.pump.counters().flushes, 1, "counted")
@@ -598,7 +540,7 @@ fn a_write_with_fua_is_acknowledged_when_its_flush_is() {
         let mut rig = Rig::new(mutants, 4, 4);
         rig.fetch(&[request(1, op::WRITE, flag::FUA, 7, 2)]);
         expect(rig.submitted(), vec![(1, "write")], "at first")?;
-        rig.complete(1, Some(300));
+        rig.complete(1);
         rig.turn();
         expect(rig.committed(), vec![], "committed before the flush")?;
         let flush = 1 | FLUSH_ID;
@@ -608,7 +550,7 @@ fn a_write_with_fua_is_acknowledged_when_its_flush_is() {
             "the flush after the write was acknowledged",
         )?;
         rig.before(&Event::Completed(1), &Event::Submitted(flush, "flush"))?;
-        rig.complete(flush, None);
+        rig.complete(flush);
         rig.turn();
         expect(rig.committed(), vec![(1, 2 * BLOCK)], "committed")?;
         expect(
@@ -624,7 +566,7 @@ fn a_write_with_fua_is_acknowledged_when_its_flush_is() {
         )?;
         // The write fails: no flush.
         rig.fetch(&[request(2, op::WRITE_ZEROES, flag::FUA, 0, 1)]);
-        rig.pump.target().complete(2, Err(BlkError::Failed), None);
+        rig.pump.target().complete(2, Err(BlkError::Failed));
         rig.turn();
         expect(
             rig.submitted().len(),
@@ -633,11 +575,11 @@ fn a_write_with_fua_is_acknowledged_when_its_flush_is() {
         )?;
         // The flush fails: the request fails.
         rig.fetch(&[request(3, op::DISCARD, flag::FUA, 0, 1)]);
-        rig.complete(3, Some(400));
+        rig.complete(3);
         rig.turn();
         rig.pump
             .target()
-            .complete(3 | FLUSH_ID, Err(BlkError::Failed), None);
+            .complete(3 | FLUSH_ID, Err(BlkError::Failed));
         rig.turn();
         expect(
             rig.committed(),
@@ -671,10 +613,10 @@ fn an_orderly_stop_completes_what_was_accepted() {
             None,
             "the stop, with requests in the target",
         )?;
-        rig.complete(0, Some(100));
-        rig.complete(1, Some(200));
+        rig.complete(0);
+        rig.complete(1);
         expect(rig.turn(), None, "the flush is still to come")?;
-        rig.complete(1 | FLUSH_ID, None);
+        rig.complete(1 | FLUSH_ID);
         expect(rig.turn(), Some(Stopped::Orderly), "drained")?;
         expect(
             rig.committed(),
@@ -700,8 +642,8 @@ fn a_request_the_queue_has_no_buffer_for_fails_and_does_not_reach_the_target() {
             rig.fetch(&[write(0, 0), unbuffered, write(2, 2)]);
             let ids: Vec<u64> = rig.submitted().into_iter().map(|(id, _)| id).collect();
             expect(ids, vec![0, 2], "only the requests with a buffer")?;
-            rig.complete(0, Some(100));
-            rig.complete(2, Some(200));
+            rig.complete(0);
+            rig.complete(2);
             rig.turn();
             let mut committed = rig.committed();
             committed.sort();
@@ -732,8 +674,8 @@ fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
             None,
             "the stop, with requests in the target",
         )?;
-        rig.complete(0, Some(100));
-        rig.complete(1, Some(200));
+        rig.complete(0);
+        rig.complete(1);
         expect(rig.turn(), Some(Stopped::Orderly), "drained")?;
         let events = rig.events.borrow().clone();
         let last_commit = events
@@ -752,7 +694,7 @@ fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
         rig.fetch(&[write(0, 0)]);
         rig.pump.queue().script.push_back(Step::Stop(vec![]));
         expect(rig.pump.turn(), None, "the stop")?;
-        rig.complete(0, Some(100));
+        rig.complete(0);
         expect(
             rig.turn(),
             Some(Stopped::QueueDown),
@@ -762,183 +704,37 @@ fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
     caught(scenario, Mutants::STOP_UNSENT);
 }
 
-/// A stop while the position cannot be stored, and then can: the pump
-/// tries again by itself, paced by the queue's pause and with no
-/// further wait on the queue, stores the position, commits everything
-/// and only then is the stop orderly. Mutant: the stop is called
-/// orderly with completions waiting.
+/// The pump's own times. A write and a read complete together and lie
+/// ready 20 ms before the pump takes them: that is each one's time to
+/// the taking, and its time to the commit holds it. Nothing is stored
+/// before a commit any more, so the times of the store that was there
+/// until M1.3t-b stay zero. (Until then this test held a store of 30 ms
+/// between the taking and the commit.)
 #[test]
-fn a_stop_tries_again_to_store_the_position_and_is_orderly_only_when_all_is_committed() {
-    fn scenario(mutants: u32) -> Outcome {
-        let mut rig = Rig::new(mutants, 8, 8);
-        rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
-        rig.ack_fails.set(true);
-        rig.pump.queue().heals = Some((3, rig.ack_fails.clone()));
-        rig.complete(0, Some(4096));
-        rig.complete(1, None);
-        rig.pump.queue().script.push_back(Step::Stop(vec![]));
-        // One turn: the script holds nothing more, so a pump that went
-        // back to the queue's wait would not get there.
-        expect(rig.pump.turn(), Some(Stopped::Orderly), "the stop")?;
-        expect(rig.pump.queue().pauses, 3, "a pause before each try")?;
-        rig.before(&Event::Stored(4096), &Event::Committed(0, BLOCK))?;
-        expect(rig.committed().len(), 2, "everything is committed")?;
-        expect(rig.pump.counters().unstored, 0, "none waiting")?;
-        expect(rig.pump.counters().in_flight, 0, "none in flight")
-    }
-    caught(scenario, Mutants::ORDERLY_UNSTORED);
-}
-
-/// A stop while the position can never be stored ends, after the
-/// stated number of tries, with a result of its own. Nothing is
-/// committed, so nothing is lost: the kernel has every request still
-/// and issues it again to the next instance.
-#[test]
-fn a_stop_that_can_never_store_the_position_ends_and_commits_nothing() {
-    let mut rig = Rig::new(0, 8, 8);
-    rig.pump.stop_tries = 7;
-    rig.fetch(&[write(0, 0), write(1, 1), request(2, op::READ, 0, 0, 1)]);
-    rig.ack_fails.set(true);
-    rig.complete(0, Some(4096));
-    rig.complete(1, Some(8192));
-    rig.complete(2, None);
-    rig.pump.queue().script.push_back(Step::Stop(vec![]));
-    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 3 }));
-    assert_eq!(rig.pump.queue().pauses, 7, "the stated number of tries");
-    assert!(rig.committed().is_empty(), "nothing is committed");
-    assert!(
-        !rig.events().iter().any(|e| matches!(e, Event::Stored(_))),
-        "nothing is stored"
-    );
-    assert_eq!(rig.pump.counters().unstored, 3);
-    assert_eq!(rig.pump.counters().in_flight, 3, "left for a reissue");
-
-    // The default: twenty tries.
-    let mut rig = Rig::new(0, 8, 8);
-    rig.fetch(&[write(0, 0)]);
-    rig.ack_fails.set(true);
-    rig.complete(0, Some(4096));
-    rig.pump.queue().script.push_back(Step::Stop(vec![]));
-    assert_eq!(rig.pump.turn(), Some(Stopped::Unstored { left: 1 }));
-    assert_eq!(rig.pump.queue().pauses, 20);
-}
-
-/// The other endings leave completions that waited uncommitted.
-#[test]
-fn every_ending_but_the_orderly_one_commits_nothing_that_waited() {
-    for ending in [Stopped::QueueDown, Stopped::TargetGone] {
-        let mut rig = Rig::new(0, 8, 8);
-        rig.fetch(&[write(0, 0), write(1, 1)]);
-        rig.ack_fails.set(true);
-        rig.complete(0, Some(4096));
-        assert_eq!(rig.turn(), None);
-        assert_eq!(rig.pump.counters().unstored, 1);
-        // The record would take the position now: it is not asked.
-        rig.ack_fails.set(false);
-        match ending {
-            Stopped::QueueDown => rig.pump.queue().script.push_back(Step::Down),
-            _ => rig.pump.target().gone = true,
-        }
-        assert_eq!(rig.pump.turn(), Some(ending));
-        assert!(rig.committed().is_empty(), "{ending:?}");
-    }
-}
-
-/// What was acknowledged (§4.2): the position of the newest
-/// acknowledged record is stored before the completions it covers are
-/// committed, once for a batch; a batch that acknowledges no mutation
-/// stores nothing; and the stored position never moves back. Mutant:
-/// the position is stored after the completions are committed.
-#[test]
-fn the_acknowledged_position_is_stored_before_the_completions_are_committed() {
-    fn scenario(mutants: u32) -> Outcome {
-        let mut rig = Rig::new(mutants, 8, 8);
-        rig.fetch(&[write(0, 0), write(1, 1), request(2, op::READ, 0, 0, 1)]);
-        rig.complete(0, Some(4096));
-        rig.complete(1, Some(8192));
-        rig.turn();
-        rig.before(&Event::Stored(8192), &Event::Committed(0, BLOCK))?;
-        rig.before(&Event::Stored(8192), &Event::Committed(1, BLOCK))?;
-        let stored = |rig: &Rig| -> Vec<u64> {
-            rig.events()
-                .into_iter()
-                .filter_map(|e| match e {
-                    Event::Stored(p) => Some(p),
-                    _ => None,
-                })
-                .collect()
-        };
-        expect(stored(&rig), vec![8192], "one store for the batch")?;
-        // A read alone: nothing new to store.
-        rig.complete(2, None);
-        rig.turn();
-        expect(stored(&rig), vec![8192], "after a read")?;
-        expect(rig.committed().len(), 3, "the read is committed")?;
-        // A discard whose record lies further on.
-        rig.fetch(&[request(3, op::DISCARD, 0, 0, 1)]);
-        rig.complete(3, Some(12288));
-        rig.turn();
-        rig.before(&Event::Stored(12288), &Event::Committed(3, 0))?;
-        // A target that reported a lower position would not move it back.
-        rig.pump.target().acknowledged = Some(100);
-        rig.fetch(&[write(4, 0)]);
-        rig.complete(4, None);
-        rig.turn();
-        expect(stored(&rig), vec![8192, 12288], "never back")
-    }
-    caught(scenario, Mutants::STORE_AFTER_COMMIT);
-}
-
-/// The pump's own times. A read that completes in a batch with a
-/// write is committed behind the storing of the write's position: with
-/// a record that takes 30 ms to store, the read's time from finished
-/// to committed holds those 30 ms, the store is counted once with its
-/// time, and both completions are counted behind it. A read alone
-/// waits for no store. The two things a commit waits for are apart:
-/// the completions lie ready 20 ms before the pump takes them, which
-/// is the time to the taking, and the store is in the rest.
-#[test]
-fn a_read_committed_with_a_write_waits_for_the_position_to_be_stored() {
-    const SLOW: std::time::Duration = std::time::Duration::from_millis(30);
+fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
     const LAY: std::time::Duration = std::time::Duration::from_millis(20);
-    let ns = SLOW.as_nanos() as u64;
     let lay = LAY.as_nanos() as u64;
     let mut rig = Rig::new(0, 8, 8);
-    rig.ack_slow.set(SLOW);
     rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
-    rig.complete(0, Some(4096));
-    rig.complete(1, None);
+    rig.complete(0);
+    rig.complete(1);
     std::thread::sleep(LAY);
     rig.turn();
     assert_eq!(rig.committed().len(), 2);
     let timing = rig.pump.timing();
     assert_eq!(timing.to_submit.count, 2, "{timing:?}");
-    assert_eq!(timing.store.count, 1, "{timing:?}");
-    assert!(timing.store.sum_ns >= ns, "{timing:?}");
-    assert_eq!(timing.behind_store, 2, "{timing:?}");
+    assert_eq!(timing.store.count, 0, "{timing:?}");
+    assert_eq!(timing.behind_store, 0, "{timing:?}");
     assert_eq!(timing.read_to_commit.count, 1, "{timing:?}");
-    assert!(timing.read_to_commit.sum_ns >= ns, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 1, "{timing:?}");
-    assert!(timing.other_to_commit.sum_ns >= ns, "{timing:?}");
-    // Ready to taken, and what the commit waited for after that.
     for (taken, commit) in [
         (timing.read_to_taken, timing.read_to_commit),
         (timing.other_to_taken, timing.other_to_commit),
     ] {
         assert_eq!(taken.count, 1, "{timing:?}");
         assert!(taken.sum_ns >= lay, "{timing:?}");
-        assert!(commit.sum_ns >= taken.sum_ns + ns, "{timing:?}");
+        assert!(commit.sum_ns >= taken.sum_ns, "{timing:?}");
     }
-    // A read alone: no store, and its commit does not wait for one.
-    rig.fetch(&[request(2, op::READ, 0, 0, 1)]);
-    rig.complete(2, None);
-    rig.turn();
-    let after = rig.pump.timing();
-    assert_eq!(after.store, timing.store, "{after:?}");
-    assert_eq!(after.behind_store, 2, "{after:?}");
-    assert_eq!(after.read_to_commit.count, 2, "{after:?}");
-    assert_eq!(after.read_to_commit.max_ns, timing.read_to_commit.max_ns);
-    assert_eq!(after.read_to_taken.count, 2, "{after:?}");
 }
 
 /// A completion's ready time goes with that completion alone. A write
@@ -951,7 +747,7 @@ fn a_read_committed_with_a_write_waits_for_the_position_to_be_stored() {
 fn a_request_finished_without_a_completion_has_no_other_requests_ready_time() {
     let mut rig = Rig::new(0, 8, 8);
     rig.fetch(&[request(1, op::WRITE, flag::FUA, 1, 1)]);
-    rig.complete(1, Some(4096));
+    rig.complete(1);
     rig.turn();
     assert_eq!(rig.committed().len(), 0, "the write waits for its flush");
     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -969,35 +765,6 @@ fn a_request_finished_without_a_completion_has_no_other_requests_ready_time() {
     assert!(timing.read_to_commit.sum_ns <= within, "{timing:?}");
 }
 
-/// What was acknowledged (§4.2): if the position cannot be stored, the
-/// completions are not committed. The requests are held, and committed
-/// once the store succeeds at a later turn. Mutant: they are committed
-/// although the position was not stored.
-#[test]
-fn a_position_that_cannot_be_stored_holds_the_completions() {
-    fn scenario(mutants: u32) -> Outcome {
-        let mut rig = Rig::new(mutants, 8, 8);
-        rig.ack_fails.set(true);
-        rig.fetch(&[write(0, 0), request(1, op::READ, 0, 0, 1)]);
-        rig.complete(0, Some(4096));
-        rig.complete(1, None);
-        for _ in 0..5 {
-            if let Some(stopped) = rig.turn() {
-                return Err(format!("the pump ended: {stopped:?}"));
-            }
-        }
-        expect(rig.committed(), vec![], "committed although not stored")?;
-        expect(rig.pump.counters().unstored, 2, "counted as waiting")?;
-        expect(rig.pump.counters().in_flight, 2, "still in flight")?;
-        rig.ack_fails.set(false);
-        rig.turn();
-        rig.before(&Event::Stored(4096), &Event::Committed(0, BLOCK))?;
-        expect(rig.committed().len(), 2, "committed once stored")?;
-        expect(rig.pump.counters().unstored, 0, "none waiting")
-    }
-    caught(scenario, Mutants::COMMIT_UNSTORED);
-}
-
 /// A target that is gone ends the pump, and nothing is committed after
 /// that, not even what it had completed: the kernel issues the requests
 /// again to the next instance. Mutant: the pump does not notice.
@@ -1006,7 +773,7 @@ fn a_target_that_is_gone_ends_the_pump_and_commits_nothing() {
     fn scenario(mutants: u32) -> Outcome {
         let mut rig = Rig::new(mutants, 8, 8);
         rig.fetch(&[write(0, 0), write(1, 1)]);
-        rig.complete(0, Some(4096));
+        rig.complete(0);
         rig.pump.target().gone = true;
         expect(rig.turn(), Some(Stopped::TargetGone), "the turn")?;
         expect(
@@ -1083,7 +850,7 @@ fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
             result: Ok(()),
             buf: None,
         };
-        rig.pump.target().ready.push((nobodys, None));
+        rig.pump.target().ready.push(nobodys);
         expect(rig.turn(), Some(Stopped::TargetFault), "a stray completion")?;
         expect(rig.committed(), vec![], "nothing is committed")
     }
@@ -1131,9 +898,9 @@ fn a_write_carries_the_queues_buffer_there_and_back() {
         panic!("not a write");
     };
     assert!(data.iter().all(|b| *b == 0x45));
-    rig.complete(5, Some(64));
-    rig.pump.target().complete(6, Err(BlkError::ReadOnly), None);
-    rig.complete(7, Some(128));
+    rig.complete(5);
+    rig.pump.target().complete(6, Err(BlkError::ReadOnly));
+    rig.complete(7);
     rig.turn();
     assert_eq!(rig.committed(), [(5, 4 * BLOCK), (6, -EIO), (7, 0)]);
     let returned = &rig.pump.queue().returned;
@@ -1146,54 +913,38 @@ fn a_write_carries_the_queues_buffer_there_and_back() {
     );
 }
 
-/// A pump with five requests held in five of the six ways a request
+/// A pump with four requests held in four of the five ways a request
 /// can be held: tag 0 a write in the target, tag 1 a write with FUA
-/// whose flush is in the target, tag 2 a write the target completed
-/// and whose position could not be stored, tag 3 a read in the target,
-/// tag 4 a flush that waits for room. The target answers none of what
-/// it still has. The sixth way, a write with FUA whose flush is not
-/// submitted yet, lasts beyond a turn only when the pump ends in it:
+/// whose flush is in the target, tag 3 a read in the target, tag 4 a
+/// flush that waits for room. The target answers none of what it still
+/// has. The fifth way, a write with FUA whose flush is not submitted
+/// yet, lasts beyond a turn only when the pump ends in it:
 /// `a_failed_volume_answers_a_write_whose_flush_was_never_submitted`.
+/// (Until M1.3t-b there was a sixth, a completion that waited for its
+/// position to be stored, here tag 2.)
 fn held_in_every_way(mutants: u32) -> Result<Rig, String> {
     let mut rig = Rig::new(mutants, 8, 3);
     rig.fetch(&[
         write(0, 0),
         request(1, op::WRITE, flag::FUA, 1, 1),
-        write(2, 2),
         request(3, op::READ, 0, 3, 1),
         request(4, op::FLUSH, 0, 0, 0),
     ]);
-    rig.complete(1, Some(10));
-    rig.turn();
-    rig.ack_fails.set(true);
-    rig.complete(2, Some(20));
+    rig.complete(1);
     rig.turn();
     expect(rig.committed(), vec![], "committed before the failure")?;
-    let counters = rig.pump.counters();
-    expect(
-        (counters.in_flight, counters.unstored),
-        (5, 1),
-        "held before the failure",
-    )?;
+    expect(rig.pump.counters().in_flight, 4, "held before the failure")?;
     expect(
         rig.submitted(),
         vec![
             (0, "write"),
             (1, "write"),
-            (2, "write"),
-            (1 | FLUSH_ID, "flush"),
             (3, "read"),
+            (1 | FLUSH_ID, "flush"),
         ],
         "in the target before the failure",
     )?;
     Ok(rig)
-}
-
-fn stored(rig: &Rig) -> usize {
-    rig.events()
-        .iter()
-        .filter(|e| matches!(e, Event::Stored(_)))
-        .count()
 }
 
 /// The sixth way a request is held: a write with FUA that the target
@@ -1209,7 +960,7 @@ fn a_failed_volume_answers_a_write_whose_flush_was_never_submitted() {
     fn scenario(mutants: u32) -> Outcome {
         let mut rig = Rig::new(mutants, 8, 3);
         rig.fetch(&[request(1, op::WRITE, flag::FUA, 1, 1), write(0, 0)]);
-        rig.complete(1, Some(10));
+        rig.complete(1);
         rig.pump.target().goes_at_poll = true;
         expect(rig.turn(), Some(Stopped::TargetGone), "the turn")?;
         expect(
@@ -1236,86 +987,72 @@ fn a_failed_volume_answers_a_write_whose_flush_was_never_submitted() {
 /// A failed volume holds no request (M1.3d): when the pump is told
 /// that the volume failed, every request it holds is committed with
 /// the plain I/O error, once, wherever it was: in the target and never
-/// answered, behind its flush, completed and waiting for a position
-/// that could not be stored, or not yet submitted. No position is
-/// stored for it, and the target is not waited for: it answers nothing
-/// in this test, ever. Mutants: the failure answers nothing; a
-/// completion that waited for its position is committed with its own
-/// result, which says "written" for a position nobody stored.
+/// answered, behind its flush, or not yet submitted. The target is not
+/// waited for: it answers nothing in this test, ever. Mutant: the
+/// failure answers nothing.
 #[test]
 fn a_failed_volume_answers_every_request_it_holds() {
     fn scenario(mutants: u32) -> Outcome {
         let mut rig = held_in_every_way(mutants)?;
-        expect(rig.pump.fail(), 5, "answered at the failure")?;
+        expect(rig.pump.fail(), 4, "answered at the failure")?;
         let mut committed = rig.committed();
         committed.sort_unstable();
         expect(
             committed,
-            (0..5).map(|tag| (tag, -EIO)).collect(),
+            [0, 1, 3, 4].into_iter().map(|tag| (tag, -EIO)).collect(),
             "committed at the failure",
         )?;
-        let counters = rig.pump.counters();
-        expect(
-            (counters.in_flight, counters.unstored),
-            (0, 0),
-            "held after the failure",
-        )?;
+        expect(rig.pump.counters().in_flight, 0, "held after the failure")?;
         // The buffers the pump had go back to the queue with the
         // commit; those in the target stay there.
-        let mut back: Vec<u16> = rig.pump.queue().returned.keys().copied().collect();
-        back.sort_unstable();
-        expect(back, vec![1, 2], "buffers given back")?;
-        // The record heals, and the target still answers nothing:
-        // nothing more happens, and the pump does not end.
-        rig.ack_fails.set(false);
+        let back: Vec<u16> = rig.pump.queue().returned.keys().copied().collect();
+        expect(back, vec![1], "buffers given back")?;
+        // The target still answers nothing: nothing more happens, and
+        // the pump does not end.
         for _ in 0..100 {
             if let Some(stopped) = rig.turn() {
                 return Err(format!("the pump ended: {stopped:?}"));
             }
         }
-        expect(rig.committed().len(), 5, "commits in all")?;
-        expect(stored(&rig), 0, "positions stored")?;
+        expect(rig.committed().len(), 4, "commits in all")?;
         expect(rig.pump.fail(), 0, "a second failure")?;
-        expect(rig.pump.failed_answers(), 5, "answered because it failed")?;
-        expect(rig.committed().len(), 5, "commits after a second failure")
+        expect(rig.pump.failed_answers(), 4, "answered because it failed")?;
+        expect(rig.committed().len(), 4, "commits after a second failure")
     }
     caught(scenario, Mutants::FAILED_HOLDS);
-    caught(scenario, Mutants::FAILED_UNSTORED_AS_IS);
 }
 
 /// After the failure the target is handed nothing more and nothing is
 /// taken from it: a new request is answered with the plain I/O error
 /// at once, also on a tag that was held at the failure, and what the
 /// target completes late is not committed (its tag has been answered
-/// and may be another request's by now) and stores no position.
+/// and may be another request's by now).
 /// Mutant: the pump answers what it held and then serves on.
 #[test]
 fn a_failed_volume_hands_the_target_nothing_and_takes_nothing_from_it() {
     fn scenario(mutants: u32) -> Outcome {
         let mut rig = held_in_every_way(mutants)?;
         rig.pump.fail();
-        rig.ack_fails.set(false);
         let before = rig.submitted().len();
         if let Some(stopped) = rig.fetch(&[write(0, 7), request(5, op::FLUSH, 0, 0, 0)]) {
             return Err(format!("the pump ended: {stopped:?}"));
         }
         expect(
-            rig.committed()[5..].to_vec(),
+            rig.committed()[4..].to_vec(),
             vec![(0, -EIO), (5, -EIO)],
             "new requests after the failure",
         )?;
         expect(rig.submitted().len(), before, "handed to the target")?;
         // The write that held tag 0 at the failure completes now.
-        rig.complete(0, Some(30));
-        rig.complete(3, None);
+        rig.complete(0);
+        rig.complete(3);
         for _ in 0..10 {
             if let Some(stopped) = rig.turn() {
                 return Err(format!("the pump ended: {stopped:?}"));
             }
         }
-        expect(rig.committed().len(), 7, "commits after a late completion")?;
-        expect(stored(&rig), 0, "positions stored")?;
-        expect(rig.pump.failed_answers(), 7, "answered because it failed")?;
+        expect(rig.committed().len(), 6, "commits after a late completion")?;
+        expect(rig.pump.failed_answers(), 6, "answered because it failed")?;
         // A target whose worker has ended is no reason to end either:
         // the failed pump does not look at it.
         rig.pump.target().gone = true;

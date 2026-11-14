@@ -50,10 +50,10 @@
 //! device number, which is unique on the machine. Everything that
 //! belongs to a volume is under `<run dir>/v-<dev>-<ino>/`
 //! ([`volume_run_dir`]): the device and inode numbers of the volume's
-//! directory, in hex. There is the record of what was acknowledged
-//! ([`ACKNOWLEDGED`]). An inode number can be used again within a boot
-//! once a volume is removed, which is why that record carries the
-//! store's identity as well.
+//! directory, in hex: the failure note. (Before M1.3t-b the record of
+//! what was acknowledged was there too, `acknowledged`; a daemon now
+//! neither reads nor writes it, and one left by an older daemon is
+//! left as it is.)
 //!
 //! # The failure note
 //!
@@ -121,15 +121,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::ack;
-use crate::lifecycle::{Attachment, Failure, Held, MustReach, Reason, Records, Shape};
+use crate::lifecycle::{Attachment, Failure, Held, Reason, Records, Shape};
 
 /// The attachment record's name in the volume's directory.
 pub const ATTACHMENT: &str = "attachment";
-/// The name, in the volume's directory under the run directory, of the
-/// record of what was acknowledged.
-pub const ACKNOWLEDGED: &str = "acknowledged";
-
 /// The failure note's name in the volume's directory under the run
 /// directory.
 pub const FAILED: &str = "failed";
@@ -303,9 +298,9 @@ impl Mutants {
     pub(crate) const TORN_IS_NONE: u32 = 1 << 1;
     /// A note is taken for any device's.
     pub(crate) const ANY_NUMBER: u32 = 1 << 2;
-    /// What was acknowledged is kept at the top of the run directory,
-    /// one file for every volume.
-    pub(crate) const ACK_AT_TOP: u32 = 1 << 3;
+    /// The failure note is kept at the top of the run directory, one
+    /// file for every volume.
+    pub(crate) const FAILURE_AT_TOP: u32 = 1 << 3;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -453,15 +448,10 @@ impl Files {
 
     /// Where the failure note is.
     pub fn failure_path(&self) -> PathBuf {
-        self.volume_run_dir.join(FAILED)
-    }
-
-    /// Where the record of what was acknowledged is.
-    pub fn acknowledged_path(&self) -> PathBuf {
-        if self.mutants.has(Mutants::ACK_AT_TOP) {
-            return self.run_dir.join(ACKNOWLEDGED);
+        if self.mutants.has(Mutants::FAILURE_AT_TOP) {
+            return self.run_dir.join(FAILED);
         }
-        self.volume_run_dir.join(ACKNOWLEDGED)
+        self.volume_run_dir.join(FAILED)
     }
 }
 
@@ -512,28 +502,6 @@ impl Records for Files {
 
     fn remove_note(&mut self, number: u32) -> io::Result<()> {
         match fs::remove_file(note_path(&self.run_dir, number)) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-            _ => Ok(()),
-        }
-    }
-
-    fn acknowledged(&mut self) -> io::Result<Option<MustReach>> {
-        // A record of another boot says nothing: no client holds a
-        // device across a reboot. The store it was recorded for is
-        // compared inside the store's open, which alone knows its own
-        // identity.
-        let stored = ack::read(&self.acknowledged_path())?;
-        Ok(stored.filter(|s| s.boot == self.boot).and_then(|s| {
-            s.position.map(|position| MustReach {
-                identity: s.identity,
-                position,
-            })
-        }))
-    }
-
-    fn remove_acknowledged(&mut self) -> io::Result<()> {
-        // No file is an empty record: the next daemon makes a new one.
-        match fs::remove_file(self.acknowledged_path()) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
         }

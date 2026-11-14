@@ -15,9 +15,10 @@
 //!   promises (the volatile-cache disk, rule R10 of the block contract)
 //!   is in its documentation;
 //! - [`store`]: what the store shares with its owner;
-//! - [`mod@format`] and [`writeback`]: what is left of the log store's
-//!   types for the daemon's status file and its record of what was
-//!   acknowledged.
+//! - [`writeback`]: what is left of the log store's types, for the
+//!   daemon's status file. (The log's position, `format::Lsn`, which
+//!   the daemon's record of what was acknowledged named, went with that
+//!   record in M1.3t-b.)
 //!
 //! Until M1.3t a write log and a store on it were here as well: the
 //! log store, which the in-place store was entered from. It is gone,
@@ -54,7 +55,6 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod format;
 pub mod fs;
 pub mod inplace;
 pub mod io;

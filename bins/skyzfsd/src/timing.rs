@@ -6,7 +6,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use skyzfs_ublk::lifecycle::{
-    AddError, Control, DeviceInfo, DeviceState, LockError, MustReach, OpenError, Shape, Volume,
+    AddError, Control, DeviceInfo, DeviceState, LockError, OpenError, Shape, Volume,
 };
 
 /// A volume whose lock and open are timed.
@@ -16,8 +16,10 @@ pub struct TimedVolume<V> {
     /// From the start until the lock was held: the tries and the
     /// pauses between them.
     pub lock: Duration,
-    /// From the lock until the open began: the failure note and the
-    /// acknowledged position are read in that time.
+    /// From the lock until the open began: the failure note is read in
+    /// that time. (The acknowledged position was read there too until
+    /// M1.3t-b removed its record; the start's line keeps the word
+    /// `position` for this step, since the rigs read that line.)
     pub position: Duration,
     /// The open: the store's recovery.
     pub recovery: Duration,
@@ -53,20 +55,15 @@ impl<V: Volume> Volume for TimedVolume<V> {
     fn open(
         &mut self,
         lock: V::Lock,
-        must_reach: Option<MustReach>,
         acknowledge_failure: bool,
     ) -> Result<(V::Open, u64), (OpenError, V::Lock)> {
         let began = Instant::now();
         if let Some(locked) = self.locked {
             self.position = began - locked;
         }
-        let opened = self.inner.open(lock, must_reach, acknowledge_failure);
+        let opened = self.inner.open(lock, acknowledge_failure);
         self.recovery += began.elapsed();
         opened
-    }
-
-    fn reaches_positions(&self) -> bool {
-        self.inner.reaches_positions()
     }
 }
 
@@ -139,42 +136,6 @@ impl<C: Control> Control for TimedControl<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A volume that says it reaches positions, and does nothing else.
-    struct Positions;
-
-    impl Volume for Positions {
-        type Lock = ();
-        type Open = ();
-        fn lock(&mut self) -> Result<(), LockError> {
-            Ok(())
-        }
-        fn open(
-            &mut self,
-            _lock: (),
-            _must_reach: Option<MustReach>,
-            _acknowledge_failure: bool,
-        ) -> Result<((), u64), (OpenError, ())> {
-            Ok(((), 0))
-        }
-        fn reaches_positions(&self) -> bool {
-            true
-        }
-    }
-
-    /// The timed volume says what the volume it wraps says about
-    /// positions. The daemon serves the in-place store through it; a
-    /// wrapper that said `true` would have the lifecycle read, and fail
-    /// the volume on, a record of positions the store does not use
-    /// (code 5).
-    #[test]
-    fn the_timed_volume_says_whether_its_volume_reaches_positions() {
-        use skyzfs_local::inplace::OpenOptions;
-        use skyzfs_ublk::volume::StoreVolume;
-        let in_place = StoreVolume::new(std::path::Path::new("unused"), OpenOptions::default());
-        assert!(!TimedVolume::new(in_place).reaches_positions());
-        assert!(TimedVolume::new(Positions).reaches_positions());
-    }
 
     struct Scripted(Vec<DeviceState>);
 

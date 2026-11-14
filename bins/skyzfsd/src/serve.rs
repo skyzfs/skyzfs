@@ -25,7 +25,6 @@
 //! | What happened | Exit status |
 //! |---|---|
 //! | a stop was asked and everything accepted was completed | 0 |
-//! | a stop was asked and the acknowledged position could not be stored | 1 |
 //! | the volume failed while it was served, or at its start | 3 |
 //! | the queue went away, or the target did | 1 |
 //!
@@ -48,11 +47,9 @@
 //! live until it is deleted: a client gets errors, not a wait. Not
 //! covered, and marked here because the design does not say: a store
 //! call that hangs and never fails sets no failure, and nothing here
-//! bounds it; and a queue's thread that is itself stuck (in a write of
-//! the record of what was acknowledged that began before the failure
-//! was known; once it is known that record refuses, `UnlessFailed`)
-//! answers nothing, so the delete may then wait in the driver, and the
-//! daemon with it.
+//! bounds it; and a queue's thread that is itself stuck answers
+//! nothing, so the delete may then wait in the driver, and the daemon
+//! with it.
 //!
 //! A start that settles a failure of unknown holding deletes the
 //! failed volume's device and then looks for up to 5 s whether it goes
@@ -84,8 +81,7 @@ use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{InPlace, OpenOptions, StartError};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
-use skyzfs_ublk::ack::{AckFile, SharedAck};
-use skyzfs_ublk::lifecycle::{self, Reason, Stop, Volume, Wanted};
+use skyzfs_ublk::lifecycle::{self, Reason, Stop, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
@@ -97,7 +93,7 @@ use skyzfs_ublk_sys::{Wake, FLAGS};
 
 use crate::cli::{Exit, Serve};
 use crate::commands::{GONE_RETRIES, LOCK_PAUSE, LOCK_RETRIES};
-use crate::delay::{Delayed, LateAck};
+use crate::delay::Delayed;
 use crate::timing::{TimedControl, TimedVolume};
 
 /// The store that serves the volume: the in-place store, on the
@@ -306,14 +302,13 @@ fn boot(serve: &Serve) -> io::Result<[u8; 16]> {
 /// target up (a panic is no reason to trust what it did, but the
 /// target is moved, not used), and the main thread gets the store and
 /// reports the panic.
-pub fn pumped<Q, T, A>(
-    mut pump: Pump<Q, T, A>,
-    mut each: impl FnMut(&mut Pump<Q, T, A>, bool),
+pub fn pumped<Q, T>(
+    mut pump: Pump<Q, T>,
+    mut each: impl FnMut(&mut Pump<Q, T>, bool),
 ) -> (Option<Stopped>, T)
 where
     Q: skyzfs_ublk::pump::Queue,
-    T: skyzfs_ublk::pump::Positions,
-    A: skyzfs_ublk::pump::AckRecord,
+    T: skyzfs_ublk::pump::PumpTarget,
 {
     let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let stopped = loop {
@@ -337,14 +332,10 @@ where
 /// once. The call after that wait says so in `flags.answered`, for the
 /// main thread, which deletes the device: the driver's delete of a
 /// served device waits for every request its server holds.
-fn answer_if_failed<Q, T, A>(
-    pump: &mut Pump<Delayed<Q, A>, T, LateAck<A>>,
-    flags: &Flags,
-    wake: &dyn Fn(),
-) where
+fn answer_if_failed<Q, T>(pump: &mut Pump<Delayed<Q>, T>, flags: &Flags, wake: &dyn Fn())
+where
     Q: skyzfs_ublk::pump::Queue,
-    T: skyzfs_ublk::pump::Positions,
-    A: skyzfs_ublk::pump::AckRecord + Clone,
+    T: skyzfs_ublk::pump::PumpTarget,
 {
     if !flags.failed.load(Ordering::SeqCst) {
         return;
@@ -363,35 +354,6 @@ fn answer_if_failed<Q, T, A>(
     flags.answers.store(kept + held, Ordering::SeqCst);
     wake();
 }
-
-/// The record of what was acknowledged, which stores nothing once the
-/// volume has failed. The turn in which the store fails can still have
-/// completions to commit; storing their position is a write and a sync
-/// in the run directory, and on a node whose disks are failing that is
-/// one more place for the queue's thread to hang with requests held. A
-/// refusal costs nothing: the completions stay back as for any
-/// position that could not be stored, and the call that follows the
-/// turn answers them with the I/O error ([`answer_if_failed`]). An
-/// error promises nothing, so nothing acknowledged goes unrecorded.
-/// This narrows the case of a stuck queue's thread and does not close
-/// it: a store that hangs before the failure is known hangs as before.
-#[derive(Clone)]
-struct UnlessFailed<A> {
-    record: A,
-    flags: Arc<Flags>,
-}
-
-impl<A: skyzfs_ublk::pump::AckRecord> skyzfs_ublk::pump::AckRecord for UnlessFailed<A> {
-    fn advance(&mut self, position: u64) -> io::Result<()> {
-        if self.flags.failed.load(Ordering::SeqCst) {
-            return Err(io::Error::other("the volume has failed"));
-        }
-        self.record.advance(position)
-    }
-}
-
-/// The daemon's record of what was acknowledged.
-type Ack = UnlessFailed<SharedAck>;
 
 /// What the main thread and the queue's thread share.
 #[derive(Default)]
@@ -447,7 +409,7 @@ pub fn appended(counters: &skyzfs_ublk::pump::Counters) -> u64 {
 /// are refused by the command line.
 #[cfg(feature = "test-hooks")]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    pump: &mut Pump<Q, Target, LateAck<Ack>>,
+    pump: &mut Pump<Q, Target>,
     flags: &Flags,
     fail_after: &mut Option<u64>,
 ) {
@@ -462,7 +424,7 @@ fn faults<Q: skyzfs_ublk::pump::Queue>(
 
 #[cfg(not(feature = "test-hooks"))]
 fn faults<Q: skyzfs_ublk::pump::Queue>(
-    _pump: &mut Pump<Q, Target, LateAck<Ack>>,
+    _pump: &mut Pump<Q, Target>,
     _flags: &Flags,
     _fail_after: &mut Option<u64>,
 ) {
@@ -497,10 +459,7 @@ fn zeroes_shown(zeroes: Zeroes) -> ZeroesShown {
 /// Put the pump's counters up for the status file. A result the test
 /// build keeps back is a request the kernel still waits for: it counts
 /// as in flight.
-fn post<Q: skyzfs_ublk::pump::Queue>(
-    board: &Board,
-    pump: &mut Pump<Delayed<Q, Ack>, Target, LateAck<Ack>>,
-) {
+fn post<Q: skyzfs_ublk::pump::Queue>(board: &Board, pump: &mut Pump<Delayed<Q>, Target>) {
     let mut counters = pump.counters();
     counters.in_flight += pump.queue().waiting() as u64;
     board.post(counters);
@@ -566,26 +525,6 @@ pub fn serve(serve: &Serve) -> Exit {
     }
 }
 
-/// The record of what was acknowledged, for the pump. A volume that
-/// holds to no position (the in-place store) has nothing to keep in
-/// it, and the lifecycle did not read it: it is not read here either,
-/// and a new, empty record takes its place, whatever is there, so that
-/// a damaged one neither stops the start nor needs removing by hand. A
-/// volume that holds to one keeps the record of this store and this
-/// boot ([`AckFile::open`]). M1.3t-b removes the record from the pump.
-fn open_ack(
-    path: &Path,
-    reaches_positions: bool,
-    identity: [u8; 16],
-    boot: [u8; 16],
-) -> io::Result<AckFile> {
-    if reaches_positions {
-        AckFile::open(path, identity, boot)
-    } else {
-        AckFile::reset(path, identity, boot)
-    }
-}
-
 fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
     // The test build's record of the requests (`--request-log`): opened
@@ -608,9 +547,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     } else {
         // The run directory was judged before by where it would be
         // made; here it is made and judged again as what it is, before
-        // the store is opened or a device is touched. The status file,
-        // the failure note and the record of what was acknowledged are
-        // all in this one directory. The volume's own directory needs
+        // the store is opened or a device is touched. The status file
+        // and the failure note are both in this one directory. The volume's own directory needs
         // no second look: its check resolved the directory itself and
         // refused a path that did not resolve.
         let cwd = std::env::current_dir().map_err(|e| format!("the current directory: {e}"))?;
@@ -693,13 +631,6 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let (log_bytes, log_records) = (0u64, 0u64);
     let took_over = ready.took_over;
     let to_device = began.elapsed();
-    let ack = open_ack(
-        &records.acknowledged_path(),
-        volume.reaches_positions(),
-        identity,
-        boot,
-    )
-    .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
     let waker = Waker::new({
         let wake = wake.clone();
         move || wake.wake()
@@ -775,19 +706,15 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
                 let again = wake.clone();
-                let ack = UnlessFailed {
-                    record: SharedAck::new(ack),
-                    flags: flags.clone(),
-                };
                 // Next to the kernel, below the delays: the record says
                 // what the kernel handed over and what it was given.
                 #[cfg(feature = "test-hooks")]
                 let queue = crate::record::Recorded::new(queue, request_log, number);
-                let (queue, ack) = Delayed::new(queue, ack, delay, hold, move || wake.wake());
+                let queue = Delayed::new(queue, delay, hold, move || wake.wake());
                 // The store goes back to the main thread with the
                 // outcome: the volume's lock is held until the main
                 // thread lets go of it.
-                pumped(Pump::new(queue, served, ack), |pump, ended| {
+                pumped(Pump::new(queue, served), |pump, ended| {
                     answer_if_failed(pump, &flags, &|| again.wake());
                     post(&board, pump);
                     if !ended {
@@ -1053,10 +980,6 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     }
     match stopped? {
         Stopped::Orderly if why == Why::Stop => Ok(Exit::Done),
-        Stopped::Unstored { left } => Err(format!(
-            "stopped, and the acknowledged position could not be stored: {left} completed \
-             requests were not answered and are issued again to the next instance"
-        )),
         other => Err(format!("the queue of device {number} ended: {other:?}")),
     }
 }
@@ -1090,46 +1013,6 @@ fn not_served(why: &skyzfs_ublk::features::Unsupported) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A damaged record of what was acknowledged does not stop the
-    /// start of a volume that holds to no position: it is replaced by
-    /// an empty one, unread. For a volume that holds to one it is read,
-    /// and a damaged one is an error, as the lifecycle's own read is.
-    #[test]
-    fn a_damaged_record_of_what_was_acknowledged_does_not_stop_an_in_place_start() {
-        let dir = std::env::temp_dir().join(format!(
-            "skyzfsd-serve-ack-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("acknowledged");
-        let (identity, boot) = ([1u8; 16], [2u8; 16]);
-        std::fs::write(&path, b"not a record").unwrap();
-        assert!(open_ack(&path, true, identity, boot).is_err());
-        let ack = open_ack(&path, false, identity, boot).unwrap();
-        assert_eq!(ack.position(), None);
-        let stored = skyzfs_ublk::ack::read(&path).unwrap().unwrap();
-        assert_eq!((stored.identity, stored.boot), (identity, boot));
-        assert_eq!(stored.position, None);
-        // A record of this store and this boot, with a position, is
-        // not kept for it either.
-        drop(ack);
-        std::fs::remove_file(&path).unwrap();
-        let mut kept = AckFile::open(&path, identity, boot).unwrap();
-        kept.advance(7).unwrap();
-        drop(kept);
-        assert_eq!(
-            open_ack(&path, true, identity, boot).unwrap().position(),
-            Some(7)
-        );
-        assert_eq!(
-            open_ack(&path, false, identity, boot).unwrap().position(),
-            None
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
 
     /// A start refused for the kernel says what was not done and that a
     /// waiting device of the volume is left as it is. The option is said
@@ -1443,16 +1326,7 @@ mod tests {
             Some(skyzfs_blk::Buf::zeroed(blocks))
         }
         fn commit(&mut self, _tag: u16, _result: i32, _buf: Option<skyzfs_blk::Buf>) {}
-        fn pause(&mut self) {}
         fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
-            Ok(())
-        }
-    }
-
-    struct NoRecord;
-
-    impl skyzfs_ublk::pump::AckRecord for NoRecord {
-        fn advance(&mut self, _position: u64) -> io::Result<()> {
             Ok(())
         }
     }
@@ -1487,14 +1361,11 @@ mod tests {
             let thread = std::thread::spawn({
                 let turns = turns.clone();
                 move || {
-                    pumped(
-                        Pump::new(Ending { panics }, served, NoRecord),
-                        |_, ended| {
-                            if ended {
-                                turns.fetch_add(1, Ordering::SeqCst);
-                            }
-                        },
-                    )
+                    pumped(Pump::new(Ending { panics }, served), |_, ended| {
+                        if ended {
+                            turns.fetch_add(1, Ordering::SeqCst);
+                        }
+                    })
                 }
             });
             let (stopped, store) = thread.join().expect("the panic is caught on the thread");
@@ -1549,7 +1420,6 @@ mod tests {
         fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
             self.committed.lock().expect("lock").push((tag, result));
         }
-        fn pause(&mut self) {}
         fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
@@ -1575,58 +1445,10 @@ mod tests {
         }
     }
 
-    impl skyzfs_ublk::pump::Positions for Silent {
-        fn acknowledged(&self) -> Option<u64> {
-            None
-        }
+    impl skyzfs_ublk::pump::PumpTarget for Silent {
         fn gone(&self) -> bool {
             false
         }
-    }
-
-    #[derive(Clone)]
-    struct Unused;
-
-    impl skyzfs_ublk::pump::AckRecord for Unused {
-        fn advance(&mut self, _position: u64) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// A failed volume holds no request (M1.3d), on the queue's thread
-    /// as `serve` runs it: with three requests in a store that never
-    /// answers, nothing is committed while the volume has not failed;
-    /// the turn after the store said so, all three are committed with
-    /// the I/O error and the queue is woken; and the call after the
-    /// next wait, which is what sends them, tells the main thread that
-    /// they are answered, and how many.
-    /// Once the volume has failed, the record of what was
-    /// acknowledged stores nothing and is not asked: the turn that
-    /// sees the failure does not go on to write a position, and what
-    /// waited for it is answered with the error afterwards.
-    #[test]
-    fn the_record_of_what_was_acknowledged_refuses_once_the_volume_failed() {
-        use skyzfs_ublk::pump::AckRecord;
-        #[derive(Clone, Default)]
-        struct Counted(Arc<AtomicU64>);
-        impl AckRecord for Counted {
-            fn advance(&mut self, _: u64) -> io::Result<()> {
-                self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            }
-        }
-        let asked = Arc::new(AtomicU64::new(0));
-        let flags = Arc::new(Flags::default());
-        let mut record = UnlessFailed {
-            record: Counted(asked.clone()),
-            flags: flags.clone(),
-        };
-        assert!(record.advance(10).is_ok());
-        assert_eq!(asked.load(Ordering::SeqCst), 1);
-        flags.failed.store(true, Ordering::SeqCst);
-        assert!(record.advance(20).is_err());
-        assert!(record.clone().advance(30).is_err());
-        assert_eq!(asked.load(Ordering::SeqCst), 1, "the record was asked");
     }
 
     /// The failure line gives a count of answered requests only when
@@ -1649,6 +1471,13 @@ mod tests {
         assert_eq!(answers_said(false, false, 7), "the delete has returned");
     }
 
+    /// A failed volume holds no request (M1.3d), on the queue's thread
+    /// as `serve` runs it: with three requests in a store that never
+    /// answers, nothing is committed while the volume has not failed;
+    /// the turn after the store said so, all three are committed with
+    /// the I/O error and the queue is woken; and the call after the
+    /// next wait, which is what sends them, tells the main thread that
+    /// they are answered, and how many.
     #[test]
     fn the_queues_thread_answers_what_a_silent_store_holds_once_the_volume_failed() {
         let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1656,8 +1485,8 @@ mod tests {
             committed: committed.clone(),
             ..Three::default()
         };
-        let (queue, ack) = Delayed::new(queue, Unused, None, None, || {});
-        let mut pump = Pump::new(queue, Silent(Vec::new()), ack);
+        let queue = Delayed::new(queue, None, None, || {});
+        let mut pump = Pump::new(queue, Silent(Vec::new()));
         let flags = Flags::default();
         let woken = std::cell::Cell::new(0);
         let wake = || woken.set(woken.get() + 1);

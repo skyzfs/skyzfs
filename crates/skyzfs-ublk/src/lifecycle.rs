@@ -1,6 +1,9 @@
 //! The order of steps at every start of the daemon (design §4.2,
-//! "attachment across restarts" and "what was acknowledged"), generic
-//! over what it acts on, so that the order is tested with fakes.
+//! "attachment across restarts"), generic over what it acts on, so that
+//! the order is tested with fakes. (Design §4.2's "what was
+//! acknowledged" was a step here too, the record of the position the
+//! log store's log had to reach, until M1.3t-b removed it: the in-place
+//! store has no log to hold to a position.)
 //!
 //! [`Control`] names the steps the daemon needs of the ublk control
 //! device as this module needs them. It was written before the binding
@@ -23,19 +26,17 @@
 //!    - Locked: tried again a few times ([`Records::pause`] between),
 //!      since a lock can outlive a killed daemon for a moment; then the
 //!      daemon refuses and touches nothing.
-//! 3. The record of what was acknowledged is read, **under the lock**:
-//!    read before it, the position could be older than what an
-//!    instance that was still serving went on to acknowledge. A record
-//!    that cannot be read is the worst case: the volume counts as
-//!    failed while a client held it. Then **the store is opened**
-//!    ([`Volume::open`]) with the position it must reach, before any
-//!    step that touches a device: it recovers and makes the recovery
-//!    durable. The store is never opened without the stored position.
-//!    - The log is shorter than what was acknowledged, or the
-//!      recovery's own sync failed, or the volume is marked failed: the
-//!      volume has failed. A device of this volume that waits for a
-//!      server is deleted, still under the lock, and the daemon
-//!      refuses.
+//! 3. The failure note is read, **under the lock** (below). Then **the
+//!    store is opened** ([`Volume::open`]), before any step that
+//!    touches a device.
+//!    - The volume is marked failed: the volume has failed. Where a
+//!      record of this boot names a device, a device of this volume
+//!      that waits for a server is deleted, still under the lock, and
+//!      the daemon refuses; where none does, see "the log's marker and
+//!      no note of this boot" below. (Until M1.3t a log shorter than
+//!      what was acknowledged and a recovery whose own sync failed
+//!      failed it too, and until M1.3t-b a record of what was
+//!      acknowledged that could not be read.)
 //!    - Any other error: the daemon stops and leaves every device
 //!      alone.
 //! 4. The attachment record in the volume's directory says which device
@@ -74,29 +75,29 @@
 //! the volume's device at the failure; when that cannot be told, it
 //! says that one did.
 //!
-//! - **It is read under the lock, before the acknowledged position and
-//!   before the store is opened.** A note of another boot counts as
-//!   none. A note that cannot be read counts as "failed while held".
+//! - **It is read under the lock, before the store is opened.** A note
+//!   of another boot counts as none. A note that cannot be read counts as "failed while held".
 //! - **Failed while held: not served again in this boot**, whatever
 //!   `--acknowledge-failure` says. The store is not opened. A device of
 //!   this volume that still waits (the daemon died before it deleted
 //!   it) is deleted now.
 //! - **Failed, and no client held it:** without the acknowledgement
 //!   the start refuses and touches nothing the decision rests on: the
-//!   note, the stored position and the marker stay. A waiting device
+//!   note and the marker stay. A waiting device
 //!   of this volume is deleted all the same and the refusal says so
 //!   (since M1.3d; one rule for every finder: whoever holds the lock
 //!   and finds the failed volume's device waiting deletes it). With
 //!   the acknowledgement, a waiting device
 //!   of this volume is deleted and never taken over, the store is
-//!   opened **without** a position to reach (the acknowledgement is
-//!   the operator saying that what was acknowledged to nobody may be
-//!   gone), then the stored position is emptied, then the note is
-//!   removed. A kill anywhere in that leaves the note, and the next
-//!   start asks again.
+//!   opened as acknowledged (which takes its marker away: the
+//!   acknowledgement is the operator saying that what was acknowledged
+//!   to nobody may be gone), then the note is removed. A kill anywhere
+//!   in that leaves the note, and the next start asks again.
 //! - **A failure found by a start** (the store's own failure marker is
-//!   found; until M1.3t also a log that was short, a recovery that
-//!   failed the log, a record that could not be read): the failure note is written **first**, then the device's
+//!   found; until M1.3t also a log that was short or a recovery that
+//!   failed the log, and until M1.3t-b a record of what was
+//!   acknowledged that could not be read): the failure note is written
+//!   **first**, then the device's
 //!   note is removed, then the device is deleted. If the failure note
 //!   cannot be written the device is deleted all the same, and the
 //!   reason says so. Whether a client held the device is decided by
@@ -268,9 +269,8 @@ pub enum Reason {
     RecoveryFailed,
     /// A start found the log marked as failed.
     Marked,
-    /// A start could not read the record of what was acknowledged. Not
-    /// given for the in-place store since M1.3t, which holds to no
-    /// position ([`Volume::reaches_positions`]) (code 5).
+    /// A start could not read the record of what was acknowledged. No
+    /// longer given since M1.3t-b removed the record (code 5).
     PositionUnreadable,
     /// A start could not read the note for the volume's device.
     DeviceNoteUnreadable,
@@ -412,16 +412,6 @@ pub struct Attachment {
     pub shape: Shape,
 }
 
-/// The position the store's log must reach, and the store it was
-/// recorded for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MustReach {
-    /// The store's identity.
-    pub identity: [u8; 16],
-    /// The position.
-    pub position: u64,
-}
-
 /// The daemon's records: in the volume's directory and in the run
 /// directory.
 pub trait Records {
@@ -441,12 +431,6 @@ pub trait Records {
     fn remove_attachment(&mut self) -> io::Result<()>;
     /// Remove the note for a device, if there is one.
     fn remove_note(&mut self, number: u32) -> io::Result<()>;
-    /// What was acknowledged in this boot, if anything was recorded.
-    /// An error if the record is there and cannot be read.
-    fn acknowledged(&mut self) -> io::Result<Option<MustReach>>;
-    /// Empty the record of what was acknowledged: after a failure of a
-    /// volume that no client held was acknowledged.
-    fn remove_acknowledged(&mut self) -> io::Result<()>;
     /// The failure note of this boot, if there is one. A note of
     /// another boot counts as none. An error if a note is there and
     /// cannot be read.
@@ -471,10 +455,6 @@ pub enum LockError {
 /// Why the store could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenError {
-    /// Its log ends at or before what was acknowledged.
-    Short,
-    /// The recovery's own sync failed.
-    SyncFailed,
     /// It is marked as failed.
     MarkedFailed,
     /// Anything else: it may pass.
@@ -490,30 +470,15 @@ pub trait Volume {
     /// Take the volume's lock, without waiting and without a recovery:
     /// nothing is read or written.
     fn lock(&mut self) -> Result<Self::Lock, LockError>;
-    /// Open the store under `lock`: recover, make the recovery
-    /// durable. The log must reach `must_reach`. With
-    /// `acknowledge_failure` a store that is marked as failed is
-    /// opened all the same. Returns the store, which takes the lock
-    /// over, and its size. If the open fails the lock comes back with
-    /// the error, still held.
+    /// Open the store under `lock`. With `acknowledge_failure` a store
+    /// that is marked as failed is opened all the same. Returns the
+    /// store, which takes the lock over, and its size. If the open
+    /// fails the lock comes back with the error, still held.
     fn open(
         &mut self,
         lock: Self::Lock,
-        must_reach: Option<MustReach>,
         acknowledge_failure: bool,
     ) -> Result<(Self::Open, u64), (OpenError, Self::Lock)>;
-    /// Whether the open holds the volume to a position of what was
-    /// acknowledged (`must_reach`). The log store's did. The in-place
-    /// store has no log and does not (since M1.3t): then the lifecycle
-    /// does not read the record of what was acknowledged at all, so that
-    /// a record it cannot read does not fail a volume that would not use
-    /// it ([`Reason::PositionUnreadable`]). Goes with the rest of the
-    /// position plumbing in M1.3t-b.
-    ///
-    /// It has no default, so that a volume that wraps another (the
-    /// daemon's timing wrapper) must say it and cannot fall back to
-    /// reading the record for a store that reaches no position.
-    fn reaches_positions(&self) -> bool;
 }
 
 /// The daemon may serve: the store is open and a device is its.
@@ -546,10 +511,9 @@ pub enum Stop {
     /// Another instance holds the volume's lock, or its device is live
     /// under another server. Nothing was changed. Exit status 5.
     Held,
-    /// The volume has failed: its log is short, its recovery's sync
-    /// failed, it is marked, or the record of what was acknowledged
-    /// cannot be read. A waiting device of the volume was deleted.
-    /// Exit status 4.
+    /// The volume has failed: a failure note says so, or the store is
+    /// marked. A waiting device of the volume was deleted. Exit status
+    /// 4.
     Failed(String),
     /// Something else went wrong. No device was deleted. Exit status 1.
     Error(String),
@@ -607,10 +571,6 @@ impl Mutants {
     /// A device that is taken over is served with this instance's
     /// options in place of its own values.
     pub(crate) const OWN_OPTIONS: u32 = 1 << 7;
-    /// The store is opened without the position it must reach.
-    pub(crate) const NO_MUST_REACH: u32 = 1 << 8;
-    /// An error of the recovery's sync is treated as one that may pass.
-    pub(crate) const SYNC_ERROR_MAY_PASS: u32 = 1 << 9;
     /// A kernel that lacks what the daemon needs is served (or
     /// detached) all the same.
     pub(crate) const NO_FEATURE_CHECK: u32 = 1 << 10;
@@ -623,8 +583,6 @@ impl Mutants {
     pub(crate) const DELETE_BEFORE_NOTE: u32 = 1 << 13;
     /// A detach acts without the volume's lock.
     pub(crate) const DETACH_WITHOUT_LOCK: u32 = 1 << 14;
-    /// The acknowledged position is read before the lock is taken.
-    pub(crate) const POSITION_BEFORE_LOCK: u32 = 1 << 15;
     /// A start that fails lets go of the lock before it deletes.
     pub(crate) const UNLOCK_BEFORE_FAILED: u32 = 1 << 16;
     /// A failed volume deletes by a record of another boot.
@@ -635,8 +593,6 @@ impl Mutants {
     pub(crate) const FAILURE_NOTE_AFTER_DELETE: u32 = 1 << 19;
     /// A failure while a client held the device is acknowledged.
     pub(crate) const HELD_ACKNOWLEDGED: u32 = 1 << 20;
-    /// The stored position is kept across an acknowledgement.
-    pub(crate) const POSITION_KEPT: u32 = 1 << 21;
     /// The failure note is read after the store is opened.
     pub(crate) const NOTE_READ_AFTER_OPEN: u32 = 1 << 22;
     /// A failure of which it was not known whether a client held the
@@ -780,9 +736,9 @@ fn lock<R: Records, V: Volume>(
     }
 }
 
-/// Steps 2 and 3: the lock, the failure note, the record of what was
-/// acknowledged, then the store. Returns the store, its size, and the
-/// failure that was acknowledged, if one was.
+/// Steps 2 and 3: the lock, the failure note, then the store. Returns
+/// the store, its size, and the failure that was acknowledged, if one
+/// was.
 fn open<C: Control, R: Records, V: Volume>(
     control: &mut C,
     records: &mut R,
@@ -790,57 +746,21 @@ fn open<C: Control, R: Records, V: Volume>(
     wanted: &Wanted,
     mutants: Mutants,
 ) -> Result<(V::Open, u64, Option<Reason>), Stop> {
-    let reads_position = volume.reaches_positions();
-    let early = (reads_position && mutants.has(Mutants::POSITION_BEFORE_LOCK))
-        .then(|| records.acknowledged());
     let mut held = lock(records, volume, wanted.lock_retries)?;
 
-    // The failure note: under the lock, before the position and before
-    // anything is recovered.
+    // The failure note: under the lock, before the store is opened.
     let late = mutants.has(Mutants::NOTE_READ_AFTER_OPEN);
     let mut acknowledging = None;
     if !late {
         acknowledging = noted_failure(control, records, wanted, mutants)?;
     }
 
-    let mut early = early;
     let (store, size) = loop {
-        // An acknowledgement opens without a position to reach: what
-        // was acknowledged to nobody may be gone.
-        // A volume that holds to no position is not given one, and the
-        // record is not read.
-        let forgets =
-            !reads_position || (acknowledging.is_some() && !mutants.has(Mutants::POSITION_KEPT));
-        let must_reach = if forgets {
-            None
-        } else {
-            match early.take().unwrap_or_else(|| records.acknowledged()) {
-                Ok(must_reach) => must_reach,
-                Err(_) => {
-                    let held = (!mutants.has(Mutants::UNLOCK_BEFORE_FAILED)).then_some(held);
-                    let stop = failed(
-                        control,
-                        records,
-                        wanted,
-                        mutants,
-                        Reason::PositionUnreadable,
-                    );
-                    drop(held);
-                    return Err(stop);
-                }
-            }
-        };
-        let must_reach = must_reach.filter(|_| !mutants.has(Mutants::NO_MUST_REACH));
-        let (reason, lock) = match volume.open(held, must_reach, acknowledging.is_some()) {
+        let (reason, lock) = match volume.open(held, acknowledging.is_some()) {
             Ok(opened) => break opened,
             Err((OpenError::Other(e), _)) => {
                 return Err(Stop::Error(format!("opening the store: {e}")))
             }
-            Err((OpenError::SyncFailed, _)) if mutants.has(Mutants::SYNC_ERROR_MAY_PASS) => {
-                return Err(Stop::Error("opening the store: a sync failed".into()))
-            }
-            Err((OpenError::SyncFailed, lock)) => (Reason::RecoveryFailed, lock),
-            Err((OpenError::Short, lock)) => (Reason::Short, lock),
             Err((OpenError::MarkedFailed, lock)) => (Reason::Marked, lock),
         };
         // The log's own marker, and no failure note of this boot: if
@@ -869,13 +789,6 @@ fn open<C: Control, R: Records, V: Volume>(
         acknowledging = noted_failure(control, records, wanted, mutants)?;
     }
     if acknowledging.is_some() {
-        // The position first, then the note: a kill in between leaves
-        // the note, and the next start asks again.
-        if !mutants.has(Mutants::POSITION_KEPT) {
-            records
-                .remove_acknowledged()
-                .map_err(error("emptying the record of what was acknowledged"))?;
-        }
         records
             .remove_failure()
             .map_err(error("removing the failure note"))?;
@@ -931,7 +844,7 @@ fn noted_failure<C: Control, R: Records>(
     }
     if !acknowledges {
         // Refused, and nothing the decision rests on is touched: the
-        // note, the acknowledged position and the marker stay, so the
+        // note and the marker stay, so the
         // next start without the flag refuses again and one with it
         // serves afresh. The volume's waiting device goes all the
         // same, by the one rule for every finder: whoever holds the
@@ -1816,8 +1729,8 @@ pub enum Detached {
 }
 
 /// Give up the volume's device: delete it if it is this volume's and
-/// no server serves it. It never stops a daemon. It opens no store,
-/// recovers nothing and does not touch what was acknowledged.
+/// no server serves it. It never stops a daemon. It opens no store
+/// and recovers nothing.
 ///
 /// **It holds the volume's lock from its first look to its last step**
 /// ([`Volume::lock`], tried again `lock_retries` times), and answers

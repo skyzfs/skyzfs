@@ -865,7 +865,6 @@ mod run {
             fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
                 self.commits.push((tag, result, buf.is_some()));
             }
-            fn pause(&mut self) {}
             fn flush(&mut self) -> Result<(), QueueDown> {
                 Ok(())
             }

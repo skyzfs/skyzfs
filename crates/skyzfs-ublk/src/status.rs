@@ -67,7 +67,7 @@
 //! | 88 | 8 | write-zeroes committed |
 //! | 96 | 8 | requests refused by the translation |
 //! | 104 | 8 | `held`: requests fetched and not committed yet |
-//! | 112 | 8 | `unstored`: completions waiting because the acknowledged position could not be stored |
+//! | 112 | 8 | `unstored`: completions waiting because the acknowledged position could not be stored. Always 0 since M1.3t-b, which removed that record; the field stays for what reads it |
 //! | 120 | 8 | writes of this file that failed |
 //! | 128 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
 //! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
@@ -88,8 +88,8 @@
 //! | 1336 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
 //! | 1360 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the store's completion being ready to the commit; the longest |
 //! | 1384 | 24 | the same for every other request |
-//! | 1408 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest |
-//! | 1432 | 8 | the completions that were committed behind those stores |
+//! | 1408 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest. Always 0 since M1.3t-b, as `unstored` |
+//! | 1432 | 8 | the completions that were committed behind those stores. Always 0 since M1.3t-b |
 //! | 1440 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
 //! | 1456 | 16 | the same for every other request |
 //! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |

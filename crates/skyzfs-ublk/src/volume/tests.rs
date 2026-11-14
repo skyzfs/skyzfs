@@ -26,12 +26,7 @@ fn the_lock_is_a_step_of_its_own_and_the_open_takes_it_over() {
     let lock = volume.lock().expect("free");
     assert_eq!(other.lock().err(), Some(LockError::Locked));
 
-    // A position to reach is ignored: the in-place store has no log.
-    let anywhere = MustReach {
-        identity: [9; 16],
-        position: u64::MAX,
-    };
-    let (opened, size) = match volume.open(lock, Some(anywhere), false) {
+    let (opened, size) = match volume.open(lock, false) {
         Ok(opened) => opened,
         Err((e, _)) => panic!("{e:?}"),
     };
@@ -58,7 +53,7 @@ fn a_directory_that_is_not_a_volume_is_an_error_that_deletes_nothing() {
     let mut volume = StoreVolume::new(keep.path(), OpenOptions::default());
     let lock = volume.lock().expect("free");
     assert!(matches!(
-        volume.open(lock, None, false),
+        volume.open(lock, false),
         Err((OpenError::Other(_), _))
     ));
 }
@@ -73,7 +68,7 @@ fn a_marked_volume_is_refused_until_acknowledged() {
     std::fs::write(dir.join(MARKER_NAME), b"").unwrap();
     let mut volume = StoreVolume::new(&dir, OpenOptions::default());
     let lock = volume.lock().expect("free");
-    let lock = match volume.open(lock, None, false) {
+    let lock = match volume.open(lock, false) {
         Err((OpenError::MarkedFailed, lock)) => lock,
         other => panic!("{:?}", other.map(|(_, size)| size).map_err(|(e, _)| e)),
     };
@@ -88,7 +83,7 @@ fn a_marked_volume_is_refused_until_acknowledged() {
         Some(LockError::Locked)
     );
     let (opened, _) = volume
-        .open(lock, None, true)
+        .open(lock, true)
         .map_err(|(e, _)| e)
         .expect("acknowledged");
     assert!(opened.acknowledged());

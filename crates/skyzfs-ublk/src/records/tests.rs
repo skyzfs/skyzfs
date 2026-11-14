@@ -1,5 +1,4 @@
 use super::*;
-use crate::ack::AckFile;
 
 const BOOT: [u8; 16] = [7; 16];
 
@@ -74,7 +73,6 @@ fn what_is_written_is_read_and_what_is_absent_is_none() {
     let mut files = files(&dirs, 0);
     assert_eq!(files.attachment().expect("read"), None);
     assert_eq!(files.note(3).expect("read"), None);
-    assert_eq!(files.acknowledged().expect("read"), None);
 
     files.write_attachment(&attachment(3)).expect("write");
     files.write_note(3, &[0xA5; 16]).expect("write");
@@ -199,36 +197,6 @@ fn a_record_is_replaced_whole_and_never_written_in_place() {
 }
 
 #[test]
-fn what_was_acknowledged_counts_only_in_the_boot_it_was_recorded_in() {
-    let dirs = dirs();
-    let mut here = files(&dirs, 0);
-    let path = here.acknowledged_path();
-
-    // An empty record: nothing to reach.
-    let mut ack = AckFile::open(&path, [3; 16], BOOT).expect("open");
-    assert_eq!(here.acknowledged().expect("read"), None);
-
-    ack.advance(4096).expect("advance");
-    assert_eq!(
-        here.acknowledged().expect("read"),
-        Some(MustReach {
-            identity: [3; 16],
-            position: 4096,
-        })
-    );
-
-    // Another boot: no client holds a device across a reboot.
-    let mut later =
-        Files::new(&dirs.volume, &dirs.run, [8; 16], Duration::ZERO).expect("the volume");
-    assert_eq!(later.acknowledged().expect("read"), None);
-
-    // Not a whole record: an error, which the lifecycle takes as a
-    // volume that failed while held.
-    fs::write(&path, b"SKYZACK1").expect("write");
-    assert!(here.acknowledged().is_err());
-}
-
-#[test]
 fn the_boot_id_is_the_kernels_uuid() {
     assert_eq!(
         parse_boot_id("00010203-0405-0607-0809-0a0b0c0d0e0f\n"),
@@ -254,7 +222,7 @@ fn nonces_differ() {
     assert_ne!(files.nonce().expect("nonce"), files.nonce().expect("nonce"));
 }
 
-/// Two volumes, one run directory: each sees only its own position.
+/// Two volumes, one run directory: each sees only its own failure note.
 fn two_volumes(mutants: u32) -> Result<(), String> {
     let dirs = dirs();
     let other = dirs.volume.with_file_name("other");
@@ -265,15 +233,19 @@ fn two_volumes(mutants: u32) -> Result<(), String> {
         .with(mutants);
     second.create_run_dirs().expect("run directories");
 
-    let mut ack = AckFile::open(&first.acknowledged_path(), [1; 16], BOOT).expect("open");
-    ack.advance(100).expect("advance");
-    let mut ack = AckFile::open(&second.acknowledged_path(), [2; 16], BOOT).expect("open");
-    ack.advance(200).expect("advance");
+    let (one, two) = (
+        failure(true, Reason::ImageFailed),
+        failure(false, Reason::RecoveryFailed),
+    );
+    first.write_failure(&one).expect("write");
+    second.write_failure(&two).expect("write");
 
-    for (files, identity, position) in [(&mut first, [1; 16], 100), (&mut second, [2; 16], 200)] {
-        let read = files.acknowledged().map_err(|e| e.to_string())?;
-        if read != Some(MustReach { identity, position }) {
-            return Err(format!("the volume at {position} was given {read:?}"));
+    for (files, written) in [(&mut first, one), (&mut second, two)] {
+        let read = files.failure().map_err(|e| e.to_string())?;
+        if read != Some(written) {
+            return Err(format!(
+                "the volume that wrote {written:?} was given {read:?}"
+            ));
         }
     }
     Ok(())
@@ -282,17 +254,17 @@ fn two_volumes(mutants: u32) -> Result<(), String> {
 #[test]
 fn what_belongs_to_a_volume_in_a_shared_run_directory_is_under_the_volumes_own_name() {
     assert_eq!(two_volumes(0), Ok(()));
-    assert!(two_volumes(Mutants::ACK_AT_TOP).is_err());
+    assert!(two_volumes(Mutants::FAILURE_AT_TOP).is_err());
 
     use std::os::unix::fs::MetadataExt;
     let dirs = dirs();
     let files = files(&dirs, 0);
     let meta = fs::metadata(&dirs.volume).expect("there");
     assert_eq!(
-        files.acknowledged_path(),
+        files.failure_path(),
         dirs.run
             .join(format!("v-{:x}-{:x}", meta.dev(), meta.ino()))
-            .join("acknowledged")
+            .join("failed")
     );
     // The notes of devices are not per volume: a number is one device
     // on the machine.
@@ -420,19 +392,4 @@ fn the_failure_note_counts_in_its_boot_and_a_torn_one_is_an_error() {
     fs::write(here.failure_path(), &whole).expect("write");
     here.remove_failure().expect("remove");
     assert_eq!(here.failure().expect("read"), None);
-}
-
-#[test]
-fn emptying_what_was_acknowledged_leaves_no_position() {
-    let dirs = dirs();
-    let mut files = files(&dirs, 0);
-    files.remove_acknowledged().expect("nothing to remove");
-    let mut ack = AckFile::open(&files.acknowledged_path(), [3; 16], BOOT).expect("open");
-    ack.advance(4096).expect("advance");
-    assert!(files.acknowledged().expect("read").is_some());
-    files.remove_acknowledged().expect("remove");
-    assert_eq!(files.acknowledged().expect("read"), None);
-    // The next daemon makes a new, empty record.
-    let ack = AckFile::open(&files.acknowledged_path(), [3; 16], BOOT).expect("open");
-    assert_eq!(ack.position(), None);
 }
