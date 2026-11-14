@@ -44,6 +44,7 @@ The study also produced three rules that this design adopts: the log device must
 6. **Vendor independence.** Any S3-compatible store first, then other object APIs, then more than one target at once.
 7. **Stock ZFS on Linux.** No patched kernel module where the distribution already ships one.
 8. **Two architectures.** amd64 and arm64 (aarch64) are both supported, and a milestone's exit criteria hold on both (added 2026-11-13, at the owner's request).
+9. **Volumes larger than the local store.** A volume may be far larger than the flash of the machine that mounts it: object storage holds the volume, and the local store is a cache of a size the user sets. It degrades by degrees: with the working set on local flash it performs as a local volume does, and a read that misses pays a fetch from object storage and nothing else does (added 2026-11-14, at the owner's request; §5.1, the `cache` policy).
 
 ### 2.2 Non-goals for this document
 
@@ -272,6 +273,17 @@ Two policies cover the two kinds of machine.
 | `cache` | The working set. Clean, uploaded blocks may be evicted. | Servers, and any node that has just restored a volume. |
 
 A restore always starts in `cache` and can be promoted to `complete` by hydrating in the background.
+
+**Where this stands.** Through M2 the store is `complete` in effect: the home image is a sparse file of the volume's size, nothing is evicted and nothing is fetched, so a volume has to fit the local file system, and one that outgrows it fails when the file system fills (§10). The `cache` policy is goal 9 and is M3's: it needs M2 first, because a block can be evicted only once a committed cut holds it in object storage, and it needs M3's lazy fetch to bring it back.
+
+**What the `cache` policy has to settle**, in M3's plan and before its first package:
+
+- **A bound the user sets**, for each volume: the most local flash its store may use, the copies of §5.2 and the store's own state included. With no bound given the policy is `complete`.
+- **What may be evicted.** A block that a committed cut holds and that has not changed since that cut's instant. Never a block of a cut still held, and never a changed block: until its cut is committed the local copy is the only one.
+- **Three regimes, said to the user as they are.** While the working set fits, reads and writes are local and the volume performs as in M1. When reads leave the working set, a miss costs a fetch (with read-ahead around it) and everything else is unaffected. When changed blocks alone fill the bound, because the workload writes faster than the uplink carries or the uplink is gone, there is nothing left to evict and writes wait for the upload: this is the one place where the store holds writes, since they have nowhere else to go (D7 is about the copies and stays as it is).
+- **Without object storage** a read that misses waits, and nothing fails (M3's exit criterion).
+- **What ZFS does to a cache.** A scrub reads every block and would pull the whole volume through it; ZFS's own cache sits above the device, so the store's cache is of blocks on flash and not a second cache in memory; pool metadata is read at every import. What is pinned, and what a scrub means for a volume held this way, are part of that plan.
+- **State that scales with the cache, not the volume.** What the daemon keeps in locked memory for each block (the maps of §5.2, and a mark of which blocks are local) is 130 MiB for a TiB of volume as M2.2 builds it. That is fine while the volume fits local flash and is not for a volume of a hundred TiB behind a cache of one. The state's format is versioned for that reason, and M2.2 says how its layout extends.
 
 ### 5.2 Cuts and snapshot visibility
 
