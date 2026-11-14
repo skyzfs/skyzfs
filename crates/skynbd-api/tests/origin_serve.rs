@@ -644,3 +644,101 @@ async fn a_release_takes_down_what_a_repoint_of_its_serving_swaps_after_it() {
         "the release finished while a repoint of its serving waited to swap"
     );
 }
+
+/// A repoint that converges while the volume's serving is being replaced
+/// on this server converges the new serving (M1.3aj, the review's
+/// section 5 on #90). The test holds the swap lock. A release reaches
+/// its `retire` and waits for the lock, still holding the provisioner's
+/// lock; the POST finds the volume still served (the teardown removes the
+/// handle after its `retire`), commits, and waits for the swap lock too;
+/// a serve then waits for the provisioner's lock. Once the swap lock is
+/// let go, the release ends the old serving's term before the POST
+/// converges through it, so the POST finds no live serving while the new
+/// one is half started. It looks once more under the provisioner's lock,
+/// finds the new serving and converges through it: 200, `snap/g1`. Without
+/// that look it answered 409 "no origin export is served here", though
+/// the new serving served the row.
+///
+/// Each step gets 300 ms to reach its lock. Were the release slower, the
+/// POST would converge through the old serving first and answer 200 all
+/// the same. Were the serve slower to reach the provisioner's lock than the
+/// POST's second look, a right implementation would answer 409 here.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repoint_that_converges_while_a_serve_is_under_way_converges_that_serve() {
+    let r = rig();
+    establish(&r).await;
+    publish_g1(&r).await;
+    let vid = skynbd_api::provision::volume_id("lin");
+    let step = std::time::Duration::from_millis(300);
+    let limit = std::time::Duration::from_secs(5);
+
+    let lock = r.registry.swap_lock("lin/origin").await;
+    let release = tokio::spawn({
+        let router = r.router.clone();
+        async move { call(&router, "POST", "/v1/volumes/lin/release", None).await }
+    });
+    tokio::time::sleep(step).await;
+
+    let post = tokio::spawn({
+        let router = r.router.clone();
+        async move {
+            call_body(
+                &router,
+                "POST",
+                "/v1/volumes/lin/origin",
+                Some(serde_json::json!({"ref": "snap/g1"})),
+            )
+            .await
+        }
+    });
+    let deadline = std::time::Instant::now() + limit;
+    while r
+        .refs()
+        .meta_get(vid, skynbd_nbd::origin::ORIGIN_META_KEY)
+        .await
+        .unwrap()
+        .as_deref()
+        != Some(&b"snap/g1"[..])
+    {
+        assert!(std::time::Instant::now() < deadline, "the POST commits");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(step).await;
+
+    let serve = tokio::spawn({
+        let router = r.router.clone();
+        async move { call(&router, "POST", "/v1/volumes/lin/serve", None).await }
+    });
+    tokio::time::sleep(step).await;
+    drop(lock);
+
+    let (status, answer) = tokio::time::timeout(limit, post)
+        .await
+        .expect("the POST answers")
+        .expect("joined");
+    assert_eq!(
+        tokio::time::timeout(limit, release)
+            .await
+            .expect("the release ends")
+            .expect("joined"),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        tokio::time::timeout(limit, serve)
+            .await
+            .expect("the serve ends")
+            .expect("joined"),
+        StatusCode::OK
+    );
+    assert_eq!(
+        served(&r).await,
+        "snap/g1",
+        "the new serving serves the row"
+    );
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a repoint answered that no export is served while a serve of its volume was under way: {answer}"
+    );
+    assert_eq!(answer["served"], "snap/g1", "{answer}");
+}

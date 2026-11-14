@@ -231,6 +231,20 @@ pub struct Provisioner {
     /// The live volume table, shared with [`crate::ApiState`].
     pub volumes: Arc<RwLock<HashMap<String, VolumeHandle>>>,
     inner: Mutex<Inner>,
+    /// A unit test's hold on the next serve (M1.3aj).
+    #[cfg(test)]
+    pub(crate) serve_hold: std::sync::Mutex<Option<ServeHold>>,
+}
+
+/// Where a unit test holds a serve: after it has converged the origin
+/// export and spawned its tasks, before its handle is in the volume
+/// table (M1.3aj, the ordering (b) of the review's section 5 on #90).
+#[cfg(test)]
+pub(crate) struct ServeHold {
+    /// Sent when the serve gets there.
+    pub(crate) reached: tokio::sync::oneshot::Sender<()>,
+    /// Awaited before it goes on.
+    pub(crate) go: tokio::sync::oneshot::Receiver<()>,
 }
 
 impl Provisioner {
@@ -249,6 +263,8 @@ impl Provisioner {
             engine_tuning: EngineConfig::default(),
             volumes: Arc::new(RwLock::new(HashMap::new())),
             inner: Mutex::new(Inner::default()),
+            #[cfg(test)]
+            serve_hold: std::sync::Mutex::new(None),
         }
     }
 
@@ -911,6 +927,18 @@ impl Provisioner {
             }));
         }
 
+        #[cfg(test)]
+        {
+            let hold = self
+                .serve_hold
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(hold) = hold {
+                let _ = hold.reached.send(());
+                let _ = hold.go.await;
+            }
+        }
         let handle = VolumeHandle {
             vol_id: vid,
             size,
@@ -1090,6 +1118,41 @@ impl Provisioner {
         let spec: VolumeSpec = serde_json::from_slice(&row)
             .map_err(|e| ProvisionError::Catalog(format!("unreadable catalog row: {e}")))?;
         self.serve(&mut inner, &spec, true, holder).await
+    }
+
+    /// Converge `<name>/origin` through the volume's serving as it stands
+    /// under the provisioner's lock (M1.3aj; the review's section 5 on
+    /// #90). For a `set_origin` that committed and then found no live
+    /// serving: a serve or a teardown of the volume may have been half
+    /// done when it looked, a serve whose own convergence read the row
+    /// before that commit among them. Under the lock neither is: a serving
+    /// found here stays live through its convergence, and when none is
+    /// found, any later serve reads the row after the caller's commit.
+    /// Returns that serving's handle, or `None` when the volume is not
+    /// served here. The order of the locks is the serve path's: this
+    /// lock, then the export's swap lock.
+    pub async fn converge_origin(&self, name: &str) -> Result<Option<VolumeHandle>, EngineError> {
+        let inner = self.inner.lock().await;
+        if !inner.serving.contains_key(name) {
+            return Ok(None);
+        }
+        let Some(h) = self.volumes.read().await.get(name).cloned() else {
+            return Ok(None);
+        };
+        skynbd_nbd::origin::reconcile(
+            &self.registry,
+            &VolumeBinding {
+                vol_id: h.vol_id,
+                vol_name: name.to_string(),
+                store: Arc::clone(&h.store),
+                refs: Arc::clone(&h.refs),
+                cfg: h.cfg.clone(),
+                term: h.term.clone(),
+            },
+        )
+        .await?;
+        drop(inner);
+        Ok(Some(h))
     }
 
     /// Stop serving: abort tasks, drop exports, remove the handle.
