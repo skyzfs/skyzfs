@@ -85,7 +85,7 @@ use skyzfs_local::inplace::{InPlace, OpenOptions, StartError};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
 use skyzfs_ublk::ack::{AckFile, SharedAck};
-use skyzfs_ublk::lifecycle::{self, Reason, Stop, Wanted};
+use skyzfs_ublk::lifecycle::{self, Reason, Stop, Volume, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
@@ -566,6 +566,26 @@ pub fn serve(serve: &Serve) -> Exit {
     }
 }
 
+/// The record of what was acknowledged, for the pump. A volume that
+/// holds to no position (the in-place store) has nothing to keep in
+/// it, and the lifecycle did not read it: it is not read here either,
+/// and a new, empty record takes its place, whatever is there, so that
+/// a damaged one neither stops the start nor needs removing by hand. A
+/// volume that holds to one keeps the record of this store and this
+/// boot ([`AckFile::open`]). M1.3t-b removes the record from the pump.
+fn open_ack(
+    path: &Path,
+    reaches_positions: bool,
+    identity: [u8; 16],
+    boot: [u8; 16],
+) -> io::Result<AckFile> {
+    if reaches_positions {
+        AckFile::open(path, identity, boot)
+    } else {
+        AckFile::reset(path, identity, boot)
+    }
+}
+
 fn run(serve: &Serve) -> Result<Exit, String> {
     let boot = boot(serve).map_err(|e| format!("reading the boot id: {e}"))?;
     // The test build's record of the requests (`--request-log`): opened
@@ -673,8 +693,13 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let (log_bytes, log_records) = (0u64, 0u64);
     let took_over = ready.took_over;
     let to_device = began.elapsed();
-    let ack = AckFile::open(&records.acknowledged_path(), identity, boot)
-        .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
+    let ack = open_ack(
+        &records.acknowledged_path(),
+        volume.reaches_positions(),
+        identity,
+        boot,
+    )
+    .map_err(|e| format!("the record of what was acknowledged: {e}"))?;
     let waker = Waker::new({
         let wake = wake.clone();
         move || wake.wake()
@@ -1065,6 +1090,46 @@ fn not_served(why: &skyzfs_ublk::features::Unsupported) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A damaged record of what was acknowledged does not stop the
+    /// start of a volume that holds to no position: it is replaced by
+    /// an empty one, unread. For a volume that holds to one it is read,
+    /// and a damaged one is an error, as the lifecycle's own read is.
+    #[test]
+    fn a_damaged_record_of_what_was_acknowledged_does_not_stop_an_in_place_start() {
+        let dir = std::env::temp_dir().join(format!(
+            "skyzfsd-serve-ack-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("acknowledged");
+        let (identity, boot) = ([1u8; 16], [2u8; 16]);
+        std::fs::write(&path, b"not a record").unwrap();
+        assert!(open_ack(&path, true, identity, boot).is_err());
+        let ack = open_ack(&path, false, identity, boot).unwrap();
+        assert_eq!(ack.position(), None);
+        let stored = skyzfs_ublk::ack::read(&path).unwrap().unwrap();
+        assert_eq!((stored.identity, stored.boot), (identity, boot));
+        assert_eq!(stored.position, None);
+        // A record of this store and this boot, with a position, is
+        // not kept for it either.
+        drop(ack);
+        std::fs::remove_file(&path).unwrap();
+        let mut kept = AckFile::open(&path, identity, boot).unwrap();
+        kept.advance(7).unwrap();
+        drop(kept);
+        assert_eq!(
+            open_ack(&path, true, identity, boot).unwrap().position(),
+            Some(7)
+        );
+        assert_eq!(
+            open_ack(&path, false, identity, boot).unwrap().position(),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A start refused for the kernel says what was not done and that a
     /// waiting device of the volume is left as it is. The option is said
