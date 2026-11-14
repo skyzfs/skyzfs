@@ -68,6 +68,7 @@ else
         start_ok|aborted|taken|ignores_term) sleep 0.3; state live; : > "$T/started.$n"; printf '%s\t%s\treturned after 3 ms: ok\n' "$c" "$n" ;;
         start_errno) sleep 0.3; printf '%s\t%s\treturned after 2 ms: errno 22 (Invalid argument)\n' "$c" "$n" ;;
         start_hangs) sleep 1; printf '%s\t%s\tno answer after 10000 ms\n' "$c" "$n" ;;
+        panics) sleep 0.3; printf 'thread panicked\nskyzfs-ublk-control: start: the command'"'"'s thread ended with no answer\n' >&2; exit 101 ;;
         start_late) sleep 1; printf '%s\t%s\tno answer after 10000 ms\n' "$c" "$n"; sleep 1.5; state live; : > "$T/started.$n"; printf '%s\t%s\treturned after 12500 ms: ok\n' "$c" "$n" ;;
     esac
 fi
@@ -144,6 +145,12 @@ rf_blk() { :; }
 watch start_hangs 78 serve --refuse-one-fetch start
 has "a read that does not return is given up" "$RF_SAID" "NO ANSWER in 15 s (the reader is left behind)"
 rf_blk() { [ -e "$T/started.${1#/dev/ublkb}" ]; }
+
+watch panics 80 serve --refuse-one-fetch start
+is "a program that ends by itself after the refusal" "$RF_VERDICT" PASS
+has "  is not said to have ended by a signal" "$RF_SAID" "the program ended by itself, with exit 101, before the rig signalled it"
+has "  and its last words are kept" "$RF_SAID" "start: the command's thread ended with no answer"
+hasnt "  no signal is named" "$RF_SAID" "ended by SIGTERM"
 
 watch ignores_term 79 serve --refuse-one-fetch start
 has "a program that SIGTERM does not end is killed" "$RF_SAID" "the program ended by kill -9 (SIGTERM did not end it in 10 s)"
