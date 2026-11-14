@@ -1,0 +1,4 @@
+F1b finish_threads ends the sync it began, with no hold: notices-the-defects alone passed 0 of 6 (failing: ['the defect 0x4']); conformance tests pass (111 s)
+F2 fail_log holds no sync around finish_threads: notices-the-defects alone passed 6 of 6; conformance tests pass (159 s)
+F3 no seed settles: notices-the-defects alone passed 0 of 6 (failing: ['the defect 0x4']); conformance tests pass (107 s)
+worktree after: clean
