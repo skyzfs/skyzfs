@@ -52,6 +52,7 @@ KTEST=${RIG_KERNEL_TESTS:-}
 OWN=40; OWN2=41; OWN3=42; OWN4=43      # and 46 to 49: the idle and the fresh device of each delete under a held request
 # A commit the driver refuses, of a read, a write and a flush: then a take-over, or a delete; and the control.
 RC_READ=44; RC_READ_DEL=45; RC_WRITE=51; RC_WRITE_DEL=52; RC_FLUSH=53; RC_FLUSH_DEL=54; RC_CTL=50
+RF_START=55; RF_TAKE=56; RF_CTL=57      # a first fetch the driver refuses (M1.T36)
 S_LIVE=60; S_WAITING=61; S_NEVER=62; S_DELETED=63; S_CTL=64; S_FREE=65
 SIZE=$((64 << 20))
 HOLD_A=$((32 << 20))         # the byte whose read is held across a kill
@@ -251,7 +252,7 @@ cleanup() {
     local n
     [ -z "${H_PID:-}" ] || kill -9 "$H_PID" 2>/dev/null
     pkill -9 -f "$CTL serve" 2>/dev/null; pkill -9 -f "$CTL take-over" 2>/dev/null
-    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
+    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $RF_START $RF_TAKE $RF_CTL $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
     command -v ublk > /dev/null && lim 60 ublk del -a --async 2>/dev/null
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -860,6 +861,175 @@ ctl refused_commit_without_a_refusal "$RC_VERDICT" "$RC_WHY"
 lim 20 "$CTL" delete "$RC_CTL" > /dev/null 2>&1
 rc_client 30
 
+# ============================================ a first fetch the driver refuses
+# M1.T36, observed and not judged. When a server starts, its queue sends
+# the driver one FETCH per tag, naming the buffer where that tag's
+# requests arrive; START_DEV, and END_USER_RECOVERY at a take-over, wait
+# (by the coding session's reading of ublk_drv.c, not yet seen on a
+# kernel) until every tag's fetch has arrived. The test program's
+# `--refuse-one-fetch start|recovery` (M1.3ah-a, #84) sends tag 0's
+# first fetch with no buffer, which the driver should refuse, and then
+# the start's command as usual, with its result and time, or `no answer
+# after 10000 ms`. What the driver does is recorded, every wait under a
+# limit: the fetch's answer, whether and when the start's command
+# returned, the device's state, a read of its first block, the server's
+# end on SIGTERM (or the kernel stacks of a process that does not end),
+# and a delete with the number afterwards. M1.3ah's choice of what the
+# daemon is to do with a refused fetch rests on it.
+#
+# refused_fetch NAME N STEP [OPTIONS]: run the test program's STEP
+# (serve, or take-over of a device left waiting) on device N, already
+# added, with OPTIONS, and watch it -> RF_VERDICT: PASS when the program
+# said it sent tag 0's fetch with no buffer and the driver refused it,
+# FAIL otherwise (only the control is judged by it); RF_SAID: what was
+# seen, in order.
+rf_blk() { [ -b "$1" ]; }     # a block device (a test makes one up)
+rf_line() { awk -F'\t' -v s="$1" -v k="$2" '$1 == s { if (++n == k) { print $3; exit } }' "$RF_OUT"; }
+refused_fetch() {
+    local name=$1 n=$2 st=$3 pid t0 sent said start later rd state ended stacks; shift 3
+    local img=$WORK/$name.img
+    RF_OUT=$WORK/$name.out; : > "$RF_OUT"; RF_VERDICT=FAIL
+    t0=$(now_ms)
+    "$CTL" "$st" "$n" --file "$img" "$@" > "$RF_OUT" 2> "$WORK/$name.err" &
+    pid=$!
+    # The start's line comes at its command's return, or at the
+    # program's own limit of 10 s; a plain serve says `live after`.
+    for _ in $(seq 1 200); do
+        grep -qE $'^(start|end-recovery|serve|take-over)\t' "$RF_OUT" && break
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    sent=$(rf_line refuse-fetch 1); said=$(rf_line refuse-fetch 2)
+    start=$(awk -F'\t' '$1 == "start" || $1 == "end-recovery" || $1 == "serve" || $1 == "take-over" { print $1 ": " $3; exit }' "$RF_OUT")
+    RF_SAID="the program said: '${sent:-nothing}', then '${said:-nothing}'; its start: '${start:-nothing}' (seen $(( $(now_ms) - t0 )) ms after the step began)"
+    # A start that has not returned is given 10 s more to.
+    if [[ $start == *"no answer after"* ]]; then
+        for _ in $(seq 1 100); do
+            later=$(awk -F'\t' '($1 == "start" || $1 == "end-recovery") && $3 ~ /^returned/ { print $3; exit }' "$RF_OUT")
+            [ -n "$later" ] && break; sleep 0.1
+        done
+        RF_SAID+="; 10 s later: ${later:-STILL NO ANSWER}"
+    fi
+    info "$n"; state=$STATE
+    if rf_blk "/dev/ublkb$n"; then
+        t0=$(now_ms)
+        lim 15 "$DD" if="/dev/ublkb$n" of=/dev/null bs=4k count=1 iflag=direct status=none 2> "$WORK/$name.rd.err"
+        case $? in
+            0) rd="exit 0 after $(( $(now_ms) - t0 )) ms" ;;
+            124) rd="NO ANSWER in 15 s (the reader is left behind)" ;;
+            *) rd="failed after $(( $(now_ms) - t0 )) ms: $(head -n 1 "$WORK/$name.rd.err" | cut -c1-120)" ;;
+        esac
+    else
+        rd="not tried: /dev/ublkb$n is not a block device ($(nodes_of "$n"))"
+    fi
+    RF_SAID+="; the device then read $state; a read of its first block through /dev/ublkb$n: $rd"
+    # The end: SIGTERM, then a kill -9; a process in the driver's wait
+    # may end with neither, and is left behind with its stacks written down.
+    # A program that has ended by itself is not signalled; the shell may
+    # have reaped it already, and wait still gives its status.
+    ended=""
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null
+        ended="itself, with exit $?, before the rig signalled it (its last words on stderr: '$(grep -v '^ *$' "$WORK/$name.err" | tail -n 2 | tr '\n' ' ' | cut -c1-240)')"
+    else
+        kill -TERM "$pid" 2>/dev/null
+        for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || { ended=SIGTERM; break; }; sleep 0.1; done
+    fi
+    if [ -z "$ended" ]; then
+        kill -9 "$pid" 2>/dev/null
+        for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || { ended="kill -9 (SIGTERM did not end it in 10 s)"; break; }; sleep 0.1; done
+    fi
+    if [ -n "$ended" ]; then
+        wait "$pid" 2>/dev/null
+        RF_SAID+="; the program ended by $ended, its last line: '$(awk -F'\t' '$1 == "served" { print $3 }' "$RF_OUT" | tail -n 1 | cut -c1-400)'"
+    else
+        stacks=$(for t in /proc/"$pid"/task/*; do printf '%s: %s; ' "${t##*/}" "$(lim 5 cat "$t/stack" 2>/dev/null | awk '{ print $2 }' | head -n 4 | tr '\n' ' ')"; done)
+        RF_SAID+="; THE PROGRAM DID NOT END in 10 s after kill -9 and is left behind; its threads' kernel stacks: $stacks"
+    fi
+    later=$(awk -F'\t' '($1 == "start" || $1 == "end-recovery") { print $3 }' "$RF_OUT" | tail -n 1)
+    [ -z "$later" ] || [ "$later" = "${start#*: }" ] || RF_SAID+="; the start's last line: '$later'"
+    # What the program said of the fetch can come late: `taken` when a
+    # request reaches tag 0 (the read above, on a driver that took the
+    # fetch), `aborted` at the stop. It is read again at the end, and the
+    # verdict below rests on the last word.
+    later=$(rf_line refuse-fetch 2)
+    if [ "$later" != "$said" ]; then RF_SAID+="; by the program's end it said of the fetch: '${later:-nothing}'"; said=$later; fi
+    cat "$RF_OUT" >> "$OUT/steps.log"; cat "$WORK/$name.err" >> "$OUT/control.err"
+    info "$n"; RF_SAID+="; the device then read $STATE"
+    if [ "$sent" = "sent on tag 0" ] && [[ $said == refused:* ]]; then RF_VERDICT=PASS; fi
+}
+# rf_delete N -> RF_SAID gets what a delete answered and whether the number came free
+rf_delete() {
+    local t0 v
+    t0=$(now_ms); say delete "$1"; v=$ANSWER
+    RF_SAID+="; a delete answered: ${v:-nothing, exit $SAY_RC} after $(( $(now_ms) - t0 )) ms by the rig's clock"
+    if wait_state "$1" nothing 10; then
+        if free_for_add "$1" 5; then RF_SAID+="; the number was free: $FREE_SAID"; else RF_SAID+="; THE NUMBER WAS NOT FREE: $FREE_SAID"; fi
+    else
+        RF_SAID+="; the device still read $STATE 10 s after the delete"
+    fi
+}
+
+# pin_refused_fetch_sent_and_refused: both steps' words, "sent on tag 0"
+# and "refused: errno ...", or what each said instead.
+RF_PIN_START="not run"; RF_PIN_TAKE="not run"
+rf_words() { printf "'%s', then '%s'" "$(rf_line refuse-fetch 1)" "$(rf_line refuse-fetch 2)"; }
+# rf_pin START TAKE: each "VERDICT: words" or "not run"
+rf_pin() {
+    case "$1/$2" in
+        PASS:*/PASS:*) pin refused_fetch_sent_and_refused PASS "at the start: ${1#*: }; at the take-over: ${2#*: }" ;;
+        "not run"*|*/"not run") pin refused_fetch_sent_and_refused ERROR "a step did not run: at the start: $1; at the take-over: $2" ;;
+        *) pin refused_fetch_sent_and_refused FAIL "wanted 'sent on tag 0', then 'refused: errno ...' at both; at the start: ${1#*: }; at the take-over: ${2#*: }" ;;
+    esac
+}
+step "a first fetch the driver refuses, at a start"
+truncate -s "$SIZE" "$WORK/refused_fetch_start.img"
+say add "$RF_START" --depth 8
+if [ "$ANSWER" = added ] || [[ $ANSWER == added\ * ]]; then
+    refused_fetch refused_fetch_start "$RF_START" serve --refuse-one-fetch start
+    rf_delete "$RF_START"
+    RF_PIN_START="$RF_VERDICT: $(rf_words)"
+    obs refused_fetch_at_a_start "($RF_VERDICT) $RF_SAID"
+else
+    obs refused_fetch_at_a_start "not run: the add under $RF_START answered ${ANSWER:-nothing}"
+fi
+
+step "a first fetch the driver refuses, at a take-over"
+truncate -s "$SIZE" "$WORK/refused_fetch_take.img"
+say add "$RF_TAKE" --depth 8
+if [ "$ANSWER" != added ] && [[ $ANSWER != added\ * ]]; then
+    obs refused_fetch_at_a_take_over "not run: the add under $RF_TAKE answered ${ANSWER:-nothing}"
+elif ! serve_bg refused_fetch_take-1 serve "$RF_TAKE" --file "$WORK/refused_fetch_take.img"; then
+    kill -9 "$SRV_PID" 2>/dev/null
+    obs refused_fetch_at_a_take_over "not run: the first serve of $RF_TAKE did not go live: ${SRV_LINE:-no answer}"
+else
+    kill -TERM "$SRV_PID"; srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
+    if wait_state "$RF_TAKE" waiting 5; then
+        refused_fetch refused_fetch_take "$RF_TAKE" take-over --refuse-one-fetch recovery
+        rf_delete "$RF_TAKE"
+        RF_PIN_TAKE="$RF_VERDICT: $(rf_words)"
+        obs refused_fetch_at_a_take_over "($RF_VERDICT) $RF_SAID"
+    else
+        obs refused_fetch_at_a_take_over "not run: after its first server's SIGTERM the device read $STATE, not waiting"
+    fi
+fi
+lim 20 "$CTL" delete "$RF_TAKE" > /dev/null 2>&1
+rf_pin "$RF_PIN_START" "$RF_PIN_TAKE"
+
+# The control: the same watch of a plain serve. The program says
+# nothing of a fetch, so the step must say FAIL, or its PASS above
+# shows nothing.
+step "control: the refused-fetch watch on a serve that refuses nothing"
+truncate -s "$SIZE" "$WORK/refused_fetch_control.img"
+say add "$RF_CTL" --depth 8
+if [ "$ANSWER" = added ] || [[ $ANSWER == added\ * ]]; then
+    refused_fetch refused_fetch_control "$RF_CTL" serve
+    ctl refused_fetch_without_a_refusal "$RF_VERDICT" "$RF_SAID"
+else
+    ctl refused_fetch_without_a_refusal ERROR "the add under $RF_CTL answered ${ANSWER:-nothing}"
+fi
+lim 20 "$CTL" delete "$RF_CTL" > /dev/null 2>&1
+
 step "own: a delete of a waiting device nobody holds"
 truncate -s "$SIZE" "$WORK/own2.img"
 say add "$OWN2" --depth 8
@@ -969,9 +1139,9 @@ fi
 # ============================================== the library's directory
 step "nothing of the binding under /run/ublksrvd"
 SEEN=$OUT/ublksrvd-seen.log; : > "$SEEN"
-for n in $OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
+for n in $OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $RF_START $RF_TAKE $RF_CTL $S_NEVER $S_FREE; do ublksrvd_look "$n" "$T0" "$SEEN"; done
 n=$(grep -c '^entry ' "$SEEN")
-pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
+pin_is no_file_under_run_ublksrvd "$n entries under /run/ublksrvd for the numbers the binding added, served, took over and deleted ($OWN $OWN2 $OWN3 $OWN4 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $RF_START $RF_TAKE $RF_CTL $S_NEVER $S_FREE), newer than the start of the rig: $(grep '^entry ' "$SEEN" | cut -d' ' -f2- | tr '\n' ' ')" [ "$n" = 0 ]
 rec ublksrv_run_dir "$(find /run/ublksrvd -mindepth 1 -maxdepth 1 2>/dev/null | sort | head -n 20 | tr '\n' ' ')"
 
 step "done"

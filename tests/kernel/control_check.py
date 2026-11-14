@@ -214,6 +214,14 @@ EXPECTED = {
     'ctl_refused_commit_without_a_refusal': (
         'FAIL', RIG, 'control', 'control: the refused-commit step on a server that refuses nothing (the reader is '
         'answered and the server goes on): the step must not pass'),
+    'pin_refused_fetch_sent_and_refused': (
+        'PASS', RIG, 'M1.3ah: a refused fetch; rows: never started, and waiting, a server ends a recovery',
+        'at a start and at a take-over, the test program sent tag 0\'s first fetch with no buffer ("sent on tag 0", '
+        'the binding\'s own doing) and the driver refused it with an errno (M1.T36): a binding that stopped sending '
+        'it, or a driver that took it, turns this red where the two observations alone would stay green'),
+    'ctl_refused_fetch_without_a_refusal': (
+        'FAIL', RIG, 'control', 'control: the refused-fetch watch on a plain serve, whose program says nothing of a '
+        'fetch (M1.T36): the watch must not read a refused fetch'),
     'ctl_add_on_free_number_is_taken': (
         'FAIL', RIG, 'control', 'control: the check that an add answers "taken", made on a free number'),
     'ctl_stranger_deleted_between_looks': (
@@ -272,6 +280,12 @@ OBSERVED = {
     'obs_refused_flush_then_delete': 'after the server ended by a refused commit of a flush, a delete instead of '
                                      'a take-over: what the delete answered and when, what the flush client got '
                                      'and whether the number was then free',
+    'obs_refused_fetch_at_a_start': 'tag 0\'s first fetch sent with no buffer before START_DEV (M1.T36): the '
+                                    'driver\'s answer to the fetch, whether and when START_DEV returned, the '
+                                    'device\'s state, a read of its first block, how the server ended, and a delete '
+                                    'with the number afterwards. Observed, not judged: M1.3ah chooses from it',
+    'obs_refused_fetch_at_a_take_over': 'the same at a take-over of a device left waiting, before '
+                                        'END_USER_RECOVERY (M1.T36)',
     'obs_delete_while_the_server_holds_a_request_then_dies': 'the same with a hold of 60 s, and the server killed 5 s '
                                                              'after the delete was sent: whether the delete then '
                                                              'returns, and what the reader gets',

@@ -32,7 +32,7 @@ use skyzfs_blk::Buf;
 use skyzfs_ublk::pump::{Fetched, Queue, QueueDown, Unfetched, Wake};
 use skyzfs_ublk_sys::queue::KernelQueue;
 
-use crate::cli::Held;
+use crate::cli::{FetchRefusal, Held};
 use crate::delay::is_held;
 
 /// A queue that can commit a request with no buffer.
@@ -117,6 +117,46 @@ impl<Q: NoBuffer> Queue for Refusing<Q> {
     }
 }
 
+/// `serve --refuse-one-fetch` (M1.3ah): the tag whose first fetch is
+/// sent with no buffer, for the driver to refuse, and the line that
+/// says what the hook does. Tag 0, as the control test program's: at a
+/// start of the kind the hook names (`start` for a device this serve
+/// adds, `recovery` for one it takes over). Whether a serve adds its
+/// device or takes it over is known only once the lifecycle has found
+/// the device, after the command line was read: a serve of the other
+/// kind refuses no fetch and says so. `(None, None)` with no hook.
+pub fn fetch_to_refuse(
+    hook: Option<FetchRefusal>,
+    took_over: bool,
+    number: u32,
+) -> (Option<u16>, Option<String>) {
+    let Some(hook) = hook else {
+        return (None, None);
+    };
+    let named = match hook {
+        FetchRefusal::Start => !took_over,
+        FetchRefusal::Recovery => took_over,
+    };
+    if named {
+        let said = format!(
+            "--refuse-one-fetch {}: tag 0's first fetch on queue 0 of device {number} is sent \
+             with no buffer",
+            hook.name()
+        );
+        return (Some(0), Some(said));
+    }
+    let serve = if took_over {
+        format!("takes device {number} over")
+    } else {
+        format!("adds device {number}")
+    };
+    let said = format!(
+        "--refuse-one-fetch {}: this serve {serve}: no fetch is refused",
+        hook.name()
+    );
+    (None, Some(said))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -124,6 +164,41 @@ mod tests {
     use skyzfs_ublk::translate::{op, Desc};
 
     use super::*;
+
+    /// `--refuse-one-fetch` names the kind of start whose fetch it
+    /// refuses: a serve of that kind refuses tag 0's first fetch and
+    /// says so; a serve of the other kind refuses none and says that,
+    /// so that the rig sees why nothing was refused; with no hook,
+    /// nothing is said.
+    #[test]
+    fn the_fetch_refused_is_tag_0_at_the_start_named() {
+        use crate::cli::FetchRefusal;
+        let (tag, said) = fetch_to_refuse(Some(FetchRefusal::Start), false, 3);
+        assert_eq!(tag, Some(0));
+        let said = said.expect("a line");
+        assert!(
+            said.contains("tag 0's first fetch on queue 0 of device 3 is sent with no buffer"),
+            "{said}"
+        );
+        assert_eq!(
+            fetch_to_refuse(Some(FetchRefusal::Recovery), true, 3).0,
+            Some(0)
+        );
+        let (tag, said) = fetch_to_refuse(Some(FetchRefusal::Start), true, 3);
+        assert_eq!(tag, None);
+        let said = said.expect("a line");
+        assert!(
+            said.contains("--refuse-one-fetch start: this serve takes device 3 over"),
+            "{said}"
+        );
+        assert!(said.contains("no fetch is refused"), "{said}");
+        let (tag, said) = fetch_to_refuse(Some(FetchRefusal::Recovery), false, 3);
+        assert_eq!(tag, None);
+        assert!(said
+            .expect("a line")
+            .contains("--refuse-one-fetch recovery: this serve adds device 3"));
+        assert_eq!(fetch_to_refuse(None, false, 3), (None, None));
+    }
 
     /// A queue that hands over what its script says and notes its
     /// commits, with a buffer or with none.

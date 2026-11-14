@@ -27,6 +27,7 @@ on:
       - tests/kernel/control-holder.py
       - tests/kernel/control_check.py
       - tests/kernel/test_control_refused.sh
+      - tests/kernel/test_control_fetch.sh
       - tests/kernel/build-ublksrv.sh
       - tests/kernel/ublksrvd-look.sh
       - tests/lib/**
@@ -49,6 +50,7 @@ on:
       - tests/kernel/control_check.py
       - tests/kernel/test_control_check.py
       - tests/kernel/test_control_refused.sh
+      - tests/kernel/test_control_fetch.sh
       - tests/kernel/build-ublksrv.sh
       - tests/kernel/ublksrvd-look.sh
       - tests/kernel/test_net_try.sh
@@ -75,6 +77,7 @@ jobs:
       - uses: actions/checkout@v6
       - run: python3 tests/kernel/test_control_check.py -v
       - run: bash tests/kernel/test_control_refused.sh
+      - run: bash tests/kernel/test_control_fetch.sh
       - run: bash tests/kernel/test_net_try.sh
 
   rig:
