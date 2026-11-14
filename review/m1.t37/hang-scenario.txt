@@ -1,0 +1,5 @@
+FAIL   HANG at a start: the verdict: got '2', want '1'
+FAIL   HANG at a take-over: the verdict: got '2', want '1'
+2 failed
+
+[exited with code 0]

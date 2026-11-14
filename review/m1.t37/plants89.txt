@@ -1,0 +1,41 @@
+P0 none
+  [tests/kernel/test_daemon_fetch.sh] rc 0; ['all passed']; no FAIL line
+  [tests/kernel/test_daemon_check.py] rc 0; ['Ran 90 tests in 8.035s', 'OK']; no FAIL line
+P1 start: no check that the number is free
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a device that is not deleted fails: got '0', want '1'"]
+P2 start: no check of the volume's status
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a volume that reads failed fails: got '0', want '1'"]
+P3 start: no check of 'is deleted'
+  [tests/kernel/test_daemon_fetch.sh] rc 2; []; ['FAIL the rig has no function rf9_start']
+P4 start: no check of the next serve's read and stop
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a next serve that does not start fails: got '0', want '1'"]
+P5 start: no check of the tail
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a line without what a supervisor should do fails: got '0', want '1'"]
+P6 start: no check of exit 9
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a start given up with 0 fails: got '0', want '1'"]
+P7 take: no check that the I/O was still held
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a server that answers the held I/O before it gives up fails: got '0', want '1'"]
+P8 take: no check of QUIESCED
+  [tests/kernel/test_daemon_fetch.sh] rc 2; []; ['FAIL the rig has no function rf9_take']
+P9 take: no check of the held I/O's exit
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['6 failed']; ["FAIL at a take-over: PASS: got '2', want '0'", "FAIL   a server that answers the held I/O before it gives up fails: got '2', want '1'", "FAIL   a next serve that does not take over fails: got '2', want '1'", "FAIL   held I/O that fails after the take-over fails: got '2', want '1'", "FAIL   vdev errors fail: got '2', want '1'", "FAIL the daemon: pin_refused_fetch_at_a_take_over_gives_up_9: got 'ERROR', want 'PASS'"]
+P10 take: no check of vdev errors
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   vdev errors fail: got '0', want '1'"]
+P11 take: no check of 'left waiting'
+  [tests/kernel/test_daemon_fetch.sh] rc 2; []; ['FAIL the rig has no function rf9_take']
+P12 take: no check of the volume's status
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a volume that reads failed fails: got '0', want '1'"]
+P13 cleanup: no serve for a QUIESCED device
+  [tests/kernel/test_daemon_fetch.sh] rc 0; ['all passed']; no FAIL line
+P14 the kill loop does not read a 9 (both places)
+  [tests/kernel/test_daemon_check.py] rc 1; ['Ran 90 tests in 8.039s', 'FAILED (failures=1)']; ['FAIL: test_the_kill_loop_reads_a_9_from_a_server_that_ended_before_the_kill (__main__.KillRefusal.test_the_kill_loop_reads_a_9_from_a_server_that_ende']
+P15 kt_refusal has no case for 9
+  [tests/kernel/test_daemon_check.py] rc 1; ['Ran 90 tests in 8.780s', 'FAILED (failures=3)']; ['FAIL: test_a_9_before_the_kill_fails_the_pin (__main__.KillRefusal.test_a_9_before_the_kill_fails_the_pin)', 'FAIL: test_a_planted_9_fails_the_pin_and_says_what_serve_gave_up (__main__.KillRefusal.test_a_planted_9_fails_the_pin_and_says_what_serve_gave_up)', 'FAIL: test_the_kill_loop_reads_a_9_from_a_server_that_ended_before_the_kill (__main__.KillRefusal.test_the_kill_loop_reads_a_9_from_a_server_that_ende']
+P3 start: no check of 'is deleted'
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   the take-over's words at a start fail: got '0', want '1'"]
+P8 take: no check of QUIESCED
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   a take-over that deletes the device fails: got '0', want '1'"]
+P9 take: no check of the held I/O's exit
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   held I/O that fails after the take-over fails: got '0', want '1'"]
+P11 take: no check of 'left waiting'
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed']; ["FAIL   the start's words at a take-over fail: got '0', want '1'"]
