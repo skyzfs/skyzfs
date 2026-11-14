@@ -25,6 +25,16 @@ waiting for the report: at the high mark, before an explicit
 checkpoint, a change of the hold, room in a full log, and the end), and
 the helper's syncs have keys of their own (`time_helper_*`).
 
+Since status version 11 (M2.1, the in-place store alone) the daemon
+prints no `time_*` key: the store's worker, reader, steps, syncs and
+writeback were the log store's. What it keeps is the pump's times,
+under the keys `pump_*` (`PUMP_KEYS` in crates/skyzfs-ublk/src/status.rs)
+with the meaning `time_pump_*` had. `delta` reads them as those, so a
+version 11 row gives the stages of a request's life the pump sees and
+n/a for the rest, and a row that names an older build of the daemon
+(`TB_SKYZFSD_REF`) still gives all its tables. The pump's store of
+what was acknowledged was the log store's too, and is n/a from 11.
+
 A reading is a dict of the status's lines, key -> text.
 """
 
@@ -66,6 +76,24 @@ def version_of(reading):
     return int(v) if v is not None and v.isdigit() else None
 
 
+# The pump's times as status version 11 names them, and the name the
+# versions before it gave the same time (`time_` + the key).
+PUMP_KEYS = ('pump_submit_count', 'pump_submit_ns', 'pump_submit_max_ns',
+             'pump_commit_read_count', 'pump_commit_read_ns', 'pump_commit_read_max_ns',
+             'pump_commit_other_count', 'pump_commit_other_ns', 'pump_commit_other_max_ns',
+             'pump_taken_read_ns', 'pump_taken_read_max_ns', 'pump_taken_other_ns', 'pump_taken_other_max_ns')
+
+
+def times_of(reading):
+    """The reading's time keys under the names before version 11: its `time_*` keys, and its `pump_*`
+    keys as `time_pump_*` where it has no `time_pump_*` of the same name."""
+    times = {k: v for k, v in reading.items() if k.startswith('time_')}
+    for k in PUMP_KEYS:
+        if k in reading:
+            times.setdefault('time_' + k, reading[k])
+    return times
+
+
 def as_of_version(times, version):
     """The time keys a file of `version` has: without those later versions added. None: all of them."""
     if version is None:
@@ -96,8 +124,9 @@ def delta(before, after, before_at_ns=None, after_at_ns=None):
     """-> {'ok', 'why', 'delta', 'end', 'before', 'after', 'window_ns'}.
 
     `delta` has the difference of every time_* key that is a sum or a
-    count, `end` the end reading's value of the others. A reading
-    without time_* keys (a status older than version 5, or one that
+    count (a version 11 reading's pump_* keys among them, as
+    time_pump_*), `end` the end reading's value of the others. A reading
+    without such keys (a status older than version 5, or one that
     could not be read) gives ok False and says why; so does a pid that
     changed or a value that went down, since the sums are since the
     daemon started.
@@ -105,15 +134,15 @@ def delta(before, after, before_at_ns=None, after_at_ns=None):
     # What the reading has is decided by the version its file says it
     # had, where `status` says it; else by which keys are there.
     vb, va = version_of(before), version_of(after)
-    tb = as_of_version({k: v for k, v in before.items() if k.startswith('time_')}, vb)
-    ta = as_of_version({k: v for k, v in after.items() if k.startswith('time_')}, va)
+    tb = as_of_version(times_of(before), vb)
+    ta = as_of_version(times_of(after), va)
     out = {'ok': False, 'why': '', 'delta': {}, 'end': {}, 'before': tb, 'after': ta, 'window_ns': None,
            'version': va}
     if before_at_ns is not None and after_at_ns is not None:
         out['window_ns'] = after_at_ns - before_at_ns
     if not tb or not ta:
         which = ' and '.join(n for n, t in (('before the window', tb), ('after it', ta)) if not t)
-        out['why'] = (f'the status read {which} has no time_* keys: the reading failed, '
+        out['why'] = (f'the status read {which} has no time_* or pump_* keys: the reading failed, '
                       'or the status is older than version 5')
         return out
     why = []
@@ -175,6 +204,11 @@ def life(d, kind):
          None if commit is None or taken is None else _per(commit - taken, nc)),
     ]
     return stages, n
+
+
+def has_store_times(d):
+    """Whether a delta has times of the store and not only the pump's (status before version 11)."""
+    return any(not k.startswith('time_pump_') for k in d)
 
 
 def has_reader(d):
@@ -286,6 +320,33 @@ def render(rows):
         for r in usable:
             w = r['time'].get('window_ns')
             out.append(f"| {r['workload']} | {r['label']} | {_f(None if w is None else w / 1e9, '.1f')} | {_f(r.get('duration_s'), '.0f')} |")
+    if usable:
+        out += ['', "The pump's times, mean µs each over the window, and the longest since the daemon started serving, "
+                'ms: from the queue\'s wait returning with a request to the store having it (submitted, every kind), '
+                'and from the request being finished to its commit (committed), of which the first part is from its '
+                'completion being ready to the pump taking it (taken); reads apart from every other kind:', '',
+                '| workload | daemon row | submitted | µs each | longest, ms | reads committed | µs each | of it taken | '
+                'longest, ms | others committed | µs each | of it taken | longest, ms |', '|---|---|' + '---|' * 11]
+        for r in usable:
+            d, e = r['time']['delta'], r['time']['end']
+            ms = lambda v: _f(v / 1e6, '.3f') if isinstance(v, int) else 'n/a'
+            cells = []
+            for what, taken in (('submit', None), ('commit_read', 'taken_read'), ('commit_other', 'taken_other')):
+                n = d.get(f'time_pump_{what}_count')
+                cells += [_f(n, 'd') if n is not None else 'n/a', _f(_per(d.get(f'time_pump_{what}_ns'), n))]
+                if taken:
+                    cells.append(_f(_per(d.get(f'time_pump_{taken}_ns'), n)))
+                cells.append(ms(e.get(f'time_pump_{what}_max_ns')))
+            out.append(f"| {r['workload']} | {r['label']} | " + ' | '.join(cells) + ' |')
+        # The store's times were the log store's: a daemon of status
+        # version 11 or later has none, and its rows are in the table
+        # above alone.
+        pump_only = [r for r in usable if not has_store_times(r['time']['delta'])]
+        if pump_only:
+            out += ['', 'No times of the store (status version 11 and later: the in-place store has none; they were '
+                    "the log store's), so in the pump's table alone: "
+                    + ', '.join(f"{r['workload']} {r['label']}" for r in pump_only) + '.']
+        usable = [r for r in usable if has_store_times(r['time']['delta'])]
     for kind in ('read', 'write', 'flush'):
         heads = None
         for r in usable:
