@@ -260,7 +260,8 @@ there, and the user decides when it merges.
   the daemon refuses after a `kill -9` is a FAIL of the kill test's
   pins, not an error of the rig (M1.T31), and so is a daemon that
   ends with status 7, a request handed over twice by the driver
-  (M1.3ac, M1.T34); a refused start may change
+  (M1.3ac, M1.T34) (status 8, a commit the driver refused, is to be
+  read the same way from M1.T35); a refused start may change
   only the status file. Check f was removed with the log store. The summary
   says for each line whether it rests on the kernel, on the server, or
   only shows that the check works. Exit 2 is an error of the rig and
