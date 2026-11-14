@@ -50,3 +50,11 @@ and log.super changed. commands_failed 0 in a, b, e; c: 122 logs, 2944
 aborts, nothing else. Stand-ins: WAITING on the nine new lines.
 f79e794 (Codex: the digest read the image through the cache before the
 data=journal serve; `cachestat.py --drop` evicts it): right.
+
+## f79e794: ready to merge from the review's side (issue comment 6870038000)
+
+The daemon rig at f79e794 (run 43541739704): on 24.04, 26.04 and
+26.04-arm the same table as 0d150d9 (47 PASS, 13 NA, 1 WAITING, five
+controls FAIL, no pin ERROR or FAIL); `obs_g_data_journal_cache` reads
+"before the serve: cache 0" after the drop. The 24.04 stand-in as
+before; the 26.04 stand-in was still running when this was written.
