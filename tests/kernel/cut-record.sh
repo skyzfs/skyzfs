@@ -69,18 +69,20 @@
 # A pool with multihost=on that was not exported, which is what every
 # cut of it before the export is (and what a restore or a node B meets
 # whenever the pool's own node did not export it), cannot be imported
-# from a read-only device in ZFS 2.4, not even with readonly=on: the
-# import first waits out the activity check (failure intervals x
-# interval x 2, 20 s at the defaults; 1 s at the least) and then makes
-# a claim, writing uberblocks with a random MMP sequence and reading
-# them back over 10 intervals (spa_activity_check_claim; only the
-# tryimport, an extreme rewind and zdb are spared). On a read-only
-# device the claim fails, and zpool says "pool is imported on host
-# '<unknown>' (hostid=0)", which is not about a host id at all (run
-# 43638676548: 88 of 92 imports refused). So the check imports such a
-# pool from a writable copy of the cut, and the recording shortens
-# MMP's timings so that an import takes about 2 s and not 30 s. A
-# restore of such a pool must expect the claim's writes and that wait.
+# read-only in ZFS 2.4.1, on any device. The import first waits out the
+# activity check (failure intervals x interval x 2, 20 s at the
+# defaults; 1 s at the least) and then makes a claim: it writes
+# uberblocks with a random MMP sequence to every writable leaf and reads
+# them back over 10 intervals (spa_activity_check_claim,
+# mmp_claim_uberblock; only the tryimport, an extreme rewind and zdb are
+# spared). A readonly=on import opens no leaf for writing, so the claim
+# has no good write, and zpool says "pool is imported on host
+# '<unknown>' (hostid=0)", which is not about a host id at all (runs
+# 43638676548 and 43645075993, the second from a writable device). So
+# the check imports such a pool writable, from a copy of the cut, and
+# the recording shortens MMP's timings so that an import takes about 2 s
+# and not 30 s. A restore of such a pool must import it writable, and
+# expect the claim's writes and that wait.
 #
 # Needs root, ZFS with zdb, dm-log-writes. For a throwaway machine: it
 # creates a pool named skzcut.
