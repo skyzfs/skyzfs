@@ -131,14 +131,19 @@
 //!   `returned after T ms: ok` or `returned after T ms: errno E (...)`,
 //!   with T counted from the command; or, if it has not returned 10 s
 //!   after it was sent, `no answer after 10000 ms; its thread waits in
-//!   CALL (wchan W)`, and the line `returned after ...` follows if it
-//!   returns later. CALL is the system call the command's thread is in,
-//!   from `/proc`. The command goes to the driver on an io_uring, so
-//!   `io_uring_enter` is a wait for the kernel's answer to it; `futex`
-//!   is the wait before it, the library's or the binding's, for the
-//!   queue's buffers to be registered. Another call is `syscall N`, a
-//!   thread in none `running`, and `unknown` if `/proc` said nothing. W
-//!   is the thread's wait channel, as the kernel names it.
+//!   CALL (wchan W); io_uring workers: WORKERS`, and the line `returned
+//!   after ...` follows if it returns later. CALL is the system call the
+//!   command's thread is in, from `/proc`. The command goes to the
+//!   driver on an io_uring, so `io_uring_enter` is a wait for the
+//!   kernel's answer to it; `futex` is the wait before it, the library's
+//!   or the binding's, for the queue's buffers to be registered. Another
+//!   call is `syscall N`, a thread in none `running`, and `unknown` if
+//!   `/proc` said nothing. W is the thread's wait channel, as the kernel
+//!   names it. WORKERS lists the process's io_uring workers, the kernel's
+//!   threads that run a command the ring could not complete at once, as
+//!   `iou-wrk-T (wchan W)`, separated by `, `: where the driver's own
+//!   wait would be. It is `none` if there is none, and `unknown` if
+//!   `/proc` could not be listed.
 //!
 //! Whatever the start answered, and also when the queue has ended, the
 //! program then serves what the driver hands over and ends only on
@@ -901,9 +906,10 @@ mod run {
                     step,
                     n,
                     &format!(
-                        "no answer after {} ms; its thread waits in {}",
+                        "no answer after {} ms; its thread waits in {}; io_uring workers: {}",
                         START_LIMIT.as_millis(),
-                        tid.map_or_else(|| "unknown".into(), waits_in)
+                        tid.map_or_else(|| "unknown".into(), waits_in),
+                        workers_wait()
                     ),
                 )?;
                 Some(answer)
@@ -939,15 +945,57 @@ mod run {
     /// `io_uring_enter`; the wait before the command for the queue's
     /// buffers is in `futex`.
     fn waits_in(tid: u32) -> String {
-        let read = |what: &str| {
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/{what}")).unwrap_or_default()
-        };
-        let wchan = read("wchan");
-        let wchan = match wchan.trim() {
+        format!(
+            "{} (wchan {})",
+            syscall_name(&task_file(tid, "syscall")),
+            wchan_said(&task_file(tid, "wchan"))
+        )
+    }
+
+    /// File `what` of thread `tid` of this process, or nothing.
+    fn task_file(tid: u32, what: &str) -> String {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/{what}")).unwrap_or_default()
+    }
+
+    /// A thread's wait channel as its `wchan` file gives it, `unknown`
+    /// if the file said nothing.
+    fn wchan_said(text: &str) -> &str {
+        match text.trim() {
             "" => "unknown",
             known => known,
+        }
+    }
+
+    /// Where this process's io_uring workers wait: the kernel's threads
+    /// that run a command the ring could not complete at once, which is
+    /// where the driver's own wait for a control command would be. See
+    /// [`workers_named`]; `unknown` if `/proc` cannot be listed.
+    fn workers_wait() -> String {
+        let Ok(tasks) = std::fs::read_dir("/proc/self/task") else {
+            return "unknown".into();
         };
-        format!("{} (wchan {wchan})", syscall_name(&read("syscall")))
+        let found: Vec<(String, String)> = tasks
+            .flatten()
+            .filter_map(|task| task.file_name().to_str()?.parse::<u32>().ok())
+            .map(|tid| (task_file(tid, "comm"), task_file(tid, "wchan")))
+            .collect();
+        workers_named(&found)
+    }
+
+    /// Of threads given as their `comm` and `wchan` files, the io_uring
+    /// workers (`iou-wrk-*`), each with its wait channel, in the order
+    /// given; `none` if there is none.
+    fn workers_named(tasks: &[(String, String)]) -> String {
+        let named: Vec<String> = tasks
+            .iter()
+            .filter(|(comm, _)| comm.trim().starts_with("iou-wrk-"))
+            .map(|(comm, wchan)| format!("{} (wchan {})", comm.trim(), wchan_said(wchan)))
+            .collect();
+        if named.is_empty() {
+            "none".into()
+        } else {
+            named.join(", ")
+        }
     }
 
     /// The system call of a thread's `syscall` file: its first field,
@@ -1389,6 +1437,27 @@ mod run {
             );
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// The process's io_uring workers are its threads named
+        /// `iou-wrk-*`, each said with its wait channel, in the order
+        /// `/proc` lists them; other threads are left out, and with
+        /// none the answer is `none`.
+        #[test]
+        fn the_io_uring_workers_are_named_with_their_wait() {
+            let task = |comm: &str, wchan: &str| (comm.to_string(), wchan.to_string());
+            assert_eq!(
+                workers_named(&[
+                    task("skyzfs-ublk-con\n", "do_sigtimedwait"),
+                    task("iou-wrk-812\n", "ublk_ctrl_start_dev"),
+                    task("iou-sqp-812\n", "io_sq_thread"),
+                    task("iou-wrk-813\n", ""),
+                ]),
+                "iou-wrk-812 (wchan ublk_ctrl_start_dev), iou-wrk-813 (wchan unknown)"
+            );
+            assert_eq!(workers_named(&[task("main\n", "0")]), "none");
+            assert_eq!(workers_named(&[]), "none");
+            assert!(!workers_wait().is_empty());
         }
 
         /// Where the start's thread waits is read from its `syscall`
