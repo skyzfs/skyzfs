@@ -1,0 +1,100 @@
+name	verdict	as-expected or differs
+pin_block_size	PASS	as-expected
+pin_max_request	PASS	as-expected
+pin_write_cache	PASS	as-expected
+pin_discard	PASS	as-expected
+pin_write_zeroes	PASS	as-expected
+pin_discard_carried_out	PASS	as-expected
+pin_write_zeroes_carried_out	PASS	as-expected
+pin_volume_on_larger_blocks	PASS	as-expected
+pin_no_fua	PASS	as-expected
+pin_label_at_byte_0	PASS	as-expected
+pin_flush_counted	PASS	as-expected
+pin_commands_failed_zero_a	PASS	as-expected
+pin_overlapping_writes_apply_whole	PASS	as-expected
+ctl_torn_overlapping_writes	FAIL	as-expected
+pin_c_commands_failed_zero	PASS	as-expected
+pin_c_max_request	PASS	as-expected
+pin_c_kill_with_requests_in_flight	PASS	as-expected
+pin_c_kill_with_applied_unacknowledged	NA	as-expected
+pin_c_delay_cases	PASS	as-expected
+pin_failed_volume_while_a_request_is_held	WAITING	as-expected
+pin_kill_under_load	PASS	as-expected
+pin_second_serve_refused	PASS	as-expected
+pin_orderly_stop_keeps_device	PASS	as-expected
+pin_detach_refused_while_served	PASS	as-expected
+pin_detach_frees_number	PASS	as-expected
+pin_serve_on_zfs_refused	PASS	as-expected
+pin_orderly_stop_under_load	PASS	as-expected
+pin_detach_of_held_says_6	PASS	as-expected
+pin_commands_failed_zero_b	PASS	as-expected
+pin_no_ublksrvd_entry_from_daemon	PASS	as-expected
+ctl_kill_without_reissue	FAIL	as-expected
+pin_kill_under_load_applied_unacknowledged	PASS	as-expected
+pin_device_waits_for_a_server	PASS	as-expected
+ctl_delay_before_apply	NA	as-expected
+pin_suspends_on_io_errors	PASS	as-expected
+ctl_volume_that_does_not_fail	FAIL	as-expected
+pin_suspends_on_deleted_device	PASS	as-expected
+pin_failed_exit_status	PASS	as-expected
+pin_failed_held_volume_refused	PASS	as-expected
+pin_clear_resumes_on_returned_device	PASS	as-expected
+pin_failure_note_under_run	PASS	as-expected
+pin_failed_unheld_volume_serves_when_acknowledged	PASS	as-expected
+pin_held_request_completes	PASS	as-expected
+pin_commands_failed_zero_e	PASS	as-expected
+ctl_hold_too_short	FAIL	as-expected
+pin_start_serves_what_the_disk_holds	PASS	as-expected
+ctl_g_old_content_after_good_sync	FAIL	as-expected
+pin_failed_start_fails_volume	PASS	as-expected
+pin_failed_start_suspends_pool	PASS	as-expected
+pin_failed_start_volume_refused	PASS	as-expected
+pin_sync_failure_fails_volume	PASS	as-expected
+pin_sync_failure_suspends_pool	PASS	as-expected
+pin_sync_failed_volume_refused	PASS	as-expected
+pin_failure_reason_is_the_images	PASS	as-expected
+pin_data_journal_refused	PASS	as-expected
+case_parameters_are_as_the_contract_fixes_them	WEAKER	as-expected
+case_fresh_device_reads_as_its_base	WEAKER	as-expected
+case_rejects_misaligned	NOT_EXERCISED	as-expected
+case_rejects_out_of_bounds	WEAKER	as-expected
+case_rejects_empty_and_oversize	WEAKER	as-expected
+case_read_your_writes	WEAKER	as-expected
+case_write_zeroes_hides_the_base	NOT_EXERCISED	as-expected
+case_discard_leaves_old_zeros_or_base	WEAKER	as-expected
+case_discard_never_hits_later_writes	WEAKER	as-expected
+case_flushed_operations_survive_power_cut	NOT_EXERCISED	as-expected
+case_flush_covers_what_was_acknowledged_before_it	NOT_EXERCISED	as-expected
+case_flush_covers_an_earlier_instance	NOT_EXERCISED	as-expected
+case_power_cut_at_every_point_leaves_what_a_volatile_cache_disk_may	NOT_EXERCISED	as-expected
+case_recovered_state_is_durable	NOT_EXERCISED	as-expected
+case_first_request_after_power_cut_may_be_a_write	NOT_EXERCISED	as-expected
+case_queue_depth_requests_complete_in_any_order	PASS	as-expected
+case_overlapping_operations_in_flight_apply_whole	WEAKER	as-expected
+case_kill_keeps_acknowledged_operations	WEAKER	as-expected
+case_reissue_after_kill_is_idempotent	WEAKER	as-expected
+case_failed_volume_fails_every_request	WEAKER	as-expected
+case_reopened_failed_volume_holds_what_was_flushed	NOT_EXERCISED	as-expected
+case_restart_after_the_log_failed_recovers_nothing	NOT_EXERCISED	as-expected
+case_read_only_target_refuses_mutations	NOT_EXERCISED	as-expected
+case_prop_invalid_requests_are_rejected_without_effect	NOT_EXERCISED	as-expected
+case_prop_concurrent_programs_match_model	WEAKER	as-expected
+case_prop_failures_match_model	WEAKER	as-expected
+obs_c_evidence	observation	not judged
+obs_g_failed_sync	observation	not judged
+obs_g_new_descriptor_after_failed_sync	observation	not judged
+obs_g_reads_while_failing	observation	not judged
+obs_g_data_journal_cache	observation	not judged
+obs_g_chattr_journal	observation	not judged
+b_dead_server_live_ms	observation	not judged
+obs_device_back_without_clear	observation	not judged
+obs_returned_device_with_older_content	observation	not judged
+obs_scrub_in_progress_at_failure	observation	not judged
+obs_a_unordered_overlapping_writes	observation	not judged
+obs_b_takeover_ms	observation	not judged
+obs_b_takeover_starts	observation	not judged
+obs_c_checked_reads	observation	not judged
+obs_a_overlap_checked_reads	observation	not judged
+obs_b_device_waits_for_a_server	observation	not judged
+obs_c_delay_kills	observation	not judged
+obs_e_kernel_log	observation	not judged

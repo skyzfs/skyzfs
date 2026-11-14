@@ -47,3 +47,14 @@ one line, which no test holds either. Not asked for.
 
 ci.yml `lint` red at 11aa321 (job 132331920595): shellcheck SC2329 on
 test_copy_limit.sh:164-166, the directive names SC2317 only. Told testing.
+
+## Second look posted (issuecomment-6872298388)
+
+Can merge once ci.yml is green on ff93a91 (the SC2329 directive, nothing
+else). Daemon rig at 11aa321 (run 43556886617), tables rebuilt from each
+job's results.tsv and judged by this head's daemon_check.py: exit 0 on all
+five. Daemon (24.04, 26.04, 26.04-arm): 47 PASS, 5 FAIL (controls), 2 NA,
+1 WAITING; cases 1/13/12. Stand-in (24.04, 26.04): 30 PASS, 5 FAIL, 20
+WAITING; cases 1/15/10. Each daemon table = 75c32a7's less the 11 NA lines
+and obs_c_low_steps. rig-11aa321/ has the tables; table_nostore.py is
+table.py for a judge without store_of.
