@@ -10,15 +10,17 @@ Each round does what two starts in a row do with nothing between them:
 and counts the rounds in which pages are left after the two drops. The
 count is mincore's, over the first 64 blocks.
 
-    readahead.py FILE ROUNDS [PAUSE_US]
+    readahead.py FILE ROUNDS [PAUSE_US] [alone]
 
 PAUSE_US waits between the read and the drops (what the log store's
-open used to put there).
+open used to put there). With `alone` the read is made as d173019
+makes the look: POSIX_FADV_RANDOM before it, POSIX_FADV_NORMAL after.
 """
 import ctypes, mmap, os, sys, time
 
 path, rounds = sys.argv[1], int(sys.argv[2])
 pause = int(sys.argv[3]) / 1e6 if len(sys.argv) > 3 else 0.0
+alone = len(sys.argv) > 4 and sys.argv[4] == 'alone'
 B = 4096
 N = 64
 libc = ctypes.CDLL(None, use_errno=True)
@@ -49,7 +51,11 @@ left_first = left_second = 0
 worst = 0
 for _ in range(rounds):
     drop(); drop()
+    if alone:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_RANDOM)
     os.pread(fd, B, 0)
+    if alone:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_NORMAL)
     if pause:
         time.sleep(pause)
     drop(); a = cached()
@@ -60,5 +66,5 @@ for _ in range(rounds):
     left_second += b > 0
     worst = max(worst, b)
     time.sleep(0.002)
-print(f'{rounds} rounds, pause {pause * 1e6:.0f} us: pages left after the first drop in {left_first}, '
+print(f'{rounds} rounds, pause {pause * 1e6:.0f} us{", the read alone" if alone else ""}: pages left after the first drop in {left_first}, '
       f'after the second in {left_second} (most left: {worst})')

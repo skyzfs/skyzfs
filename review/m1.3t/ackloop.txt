@@ -1,0 +1,5 @@
+alone: passed 0 of 12, failed 12
+one-cpu: passed 5 of 12, failed 7
+whole-suite: passed 12 of 12, failed 0
+      7 the defect 0x2000000 is not noticed by kill_keeps_acknowledged_operations: ["flush_covers_an_earlier_instance", "reissue_after_kill_is_idempotent", "prop_failures_match_model"]
+     12 the defect 0x4 is not noticed by reopened_failed_volume_holds_what_was_flushed: ["failed_volume_fails_every_request"]
