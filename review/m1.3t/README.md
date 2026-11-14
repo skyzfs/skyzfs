@@ -126,3 +126,16 @@ are those of the log (checkpoints, the log's bound, `unstored`,
 The lead reads "held nowhere" strictly, as the review did: a port that
 lets the planted breach of the deleted test pass every test holds less
 than what it replaced. Both items of finding 2 block, with finding 1.
+
+## Second look, heads a7c20ab and 75c32a7
+
+- `plants69-a7c20ab.txt` (`plants69.py`, P24 added): S1, S2, S4, P7b
+  and P24 each fail the test that coding named. At ffde7bf, S1, S2, S4
+  and P7b failed nothing.
+- `ackloop-a7c20ab.txt`: `the_suite_notices_the_defects`, unplanted,
+  8 of 8 alone, 8 of 8 on one CPU, 8 of 8 in the whole library suite
+  (at 45b67f2: 7 of 12 failed on one CPU).
+- The daemon rig at a7c20ab (run 43545635826): 26.04 and 26.04-arm
+  each 66 judged lines (47 PASS, 13 NA, 1 WAITING, the five controls
+  FAIL), line for line as pull request 72's 26.04 table at 0d150d9.
+  24.04 cancelled by the push of 75c32a7.

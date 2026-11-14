@@ -75,6 +75,9 @@ PLANTS = {
     'P23 the write unit of a new volume is the page, whatever the block': [(VOL,
         "    let unit = block.max(system_write_unit());",
         "    let unit = system_write_unit().max(block.min(1));")],
+    'P24 a volume file that names another block size is taken': [(VOL,
+        "        if u64::from(self.block_size) != skyzfs_blk::BLOCK_SIZE {\n",
+        "        if u64::from(self.block_size) != skyzfs_blk::BLOCK_SIZE && self.block_size == 0 {\n")],
     'S1 an I/O thread wakes the owner for its first result only': [
         (POOL, "    let mut after_job = false;\n", "    let mut after_job = false;\n    let mut woke = false;\n"),
         (POOL,

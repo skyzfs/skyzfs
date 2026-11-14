@@ -1,0 +1,6 @@
+P7b an open refused for a home image of another size writes the failure marker: FAILS: inplace::tests::the_open_refuses_a_volume_that_does_not_hold_together (365 passed, 90 s)
+P24 a volume file that names another block size is taken: FAILS: volume::tests::a_damaged_or_unknown_file_is_refused_by_reason (145 passed, 52 s)
+S1 an I/O thread wakes the owner for its first result only: FAILS: inplace::tests::ported::the_waker_is_called_for_what_the_threads_make_ready (365 passed, 108 s)
+S2 a block of twice the write unit is let through: FAILS: inplace::tests::ported::create_and_open_hold_the_system_to_the_write_unit (145 passed, 53 s)
+S4 the observer is told at every failure, not once: FAILS: inplace::tests::ported::the_failure_is_told_before_the_marker (145 passed, 51 s)
+worktree after: clean
