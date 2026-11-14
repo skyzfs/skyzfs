@@ -367,3 +367,144 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
         );
     }
 }
+
+/// ZFS issues a group's four label writes at once, and a stray flush
+/// can be received between two of them being applied (design §5.2, "a
+/// stray flush between the uberblock copies"). The flush takes the mark
+/// when it is received; a label write applied before that flush's
+/// barrier is a repeat of the state the flush carries, so the next flush
+/// makes no second cut. Here label 1's write is held on a thread while
+/// the flush is received. A repeat not compared with the carried state
+/// is noticed: the same state is cut twice (the review of M2.1, and
+/// Codex's).
+#[test]
+fn a_label_write_applied_while_a_flush_carries_its_state_is_a_repeat() {
+    let counts = |mutants: u64| {
+        let disk = created(12, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        assert!(run(&mut store, 1, uberblock_write(0, 5, 50)).result.is_ok());
+        disk.hold_direct_io(1);
+        let _release = Releases(&disk);
+        let request = |id, op| Request {
+            id: RequestId(id),
+            op,
+        };
+        store.submit(request(2, uberblock_write(1, 5, 50))).unwrap();
+        until_held(&disk);
+        store.submit(request(3, Op::Flush)).unwrap();
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        let mut store = release_and_drain(&disk, store, &mut done);
+        assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 2);
+        let at_the_stray_flush = counted(&store);
+        assert!(run(&mut store, 4, Op::Flush).result.is_ok());
+        (at_the_stray_flush, counted(&store))
+    };
+    assert_eq!(counts(0), ((1, Some(5)), (1, Some(5))));
+    assert_eq!(
+        counts(Mutants::REPEAT_WHILE_CARRIED),
+        ((1, Some(5)), (2, Some(5))),
+        "a repeat of the state a flush carries is not noticed"
+    );
+}
+
+/// A flush that carries a cut and waits for a sync under way has its
+/// barrier when it is executed, before a write received after it is
+/// applied, and not when its own sync begins or ends. The home image's
+/// syncs are held, so the sync of the flush before is under way when
+/// the uberblock write is applied and the flush that carries its cut is
+/// received. From the review of M2.1: it notices a barrier told at the
+/// flush's own sync, at its beginning or at its end.
+#[test]
+fn a_flush_behind_a_sync_under_way_has_its_barrier_when_executed() {
+    let disk = created(13, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    store.watch(Box::new({
+        let heard = heard.clone();
+        move |seen| heard.lock().expect("lock").push(seen)
+    }));
+    disk.hold_syncs_of(crate::store::HOME_NAME);
+    let submit = |store: &mut InPlace<SimDisk>, id: u64, op: Op| {
+        store
+            .submit(Request {
+                id: RequestId(id),
+                op,
+            })
+            .unwrap()
+    };
+    let mut done = Vec::new();
+    submit(&mut store, 1, other_write());
+    assert!(until_done(&mut store, &mut done, 1));
+    submit(&mut store, 2, Op::Flush);
+    assert!(store.syncing());
+    submit(&mut store, 3, uberblock_write(0, 5, 50));
+    assert!(until_done(&mut store, &mut done, 3));
+    submit(&mut store, 4, Op::Flush);
+    submit(
+        &mut store,
+        5,
+        Op::Write {
+            offset: 40 * KIB,
+            data: Buf::filled(1, 0x55),
+        },
+    );
+    assert!(until_done(&mut store, &mut done, 5));
+    disk.release_syncs();
+    while store.in_flight() > 0 {
+        store.wait(&mut done, Duration::from_millis(10));
+    }
+    assert!(done.iter().all(|c| c.result.is_ok()));
+    let id = RequestId;
+    let cut = Cut {
+        number: 1,
+        group: 5,
+    };
+    assert_eq!(
+        *heard.lock().expect("lock"),
+        [
+            Seen::Applied(id(1)),
+            Seen::Barrier(id(2)),
+            Seen::Applied(id(3)),
+            Seen::Barrier(id(4)),
+            Seen::Cut(id(4), cut),
+            Seen::Applied(id(5)),
+        ]
+    );
+}
+
+/// A flush that carries a cut and joins a sync under way has its
+/// barrier and its cut. A stray flush received while the uberblock
+/// write was on a thread begins a sync once the write is applied; the
+/// flush after it, received after the write was applied, carries the
+/// cut and joins that sync. From the review of M2.1: it notices a
+/// barrier told at the flush's own sync, and a joined flush that has
+/// none.
+#[test]
+fn a_flush_that_joins_a_sync_has_its_barrier_and_its_cut() {
+    let disk = created(14, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    disk.hold_direct_io(1);
+    let _release = Releases(&disk);
+    let request = |id, op| Request {
+        id: RequestId(id),
+        op,
+    };
+    store.submit(request(1, uberblock_write(0, 7, 70))).unwrap();
+    until_held(&disk);
+    store.submit(request(2, Op::Flush)).unwrap();
+    disk.hold_syncs_of(crate::store::HOME_NAME);
+    let mut done = Vec::new();
+    disk.release_direct_io();
+    assert!(until_done(&mut store, &mut done, 1));
+    assert!(store.syncing(), "the stray flush began a sync");
+    store.submit(request(3, Op::Flush)).unwrap();
+    assert_eq!(store.counts().joined, 1, "the flush joined it");
+    let while_syncing = counted(&store);
+    disk.release_syncs();
+    while store.in_flight() > 0 {
+        store.wait(&mut done, Duration::from_millis(10));
+    }
+    assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 3);
+    assert_eq!(while_syncing, (1, Some(7)), "the joined flush's cut");
+}

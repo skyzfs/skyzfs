@@ -65,7 +65,9 @@
 //! - `applied`: the store has applied write `tag` whole: its direct
 //!   write returned whole and the store took the result, before the
 //!   store completes it and so before its `commit`. Every write that
-//!   succeeds has one; a failed one has none.
+//!   succeeds has one; a failed one has none. A write-zeroes has none:
+//!   the store applies it when it executes it, in the order it was
+//!   received relative to a flush, so its `recv` line places it.
 //! - `barrier`: flush `tag` reached its barrier in the store: every
 //!   write received before it has ended, and nothing received after it
 //!   has begun. The op column says `flush` for the kernel's flush, and

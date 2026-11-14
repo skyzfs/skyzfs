@@ -307,6 +307,11 @@ impl Mutants {
     /// when nothing on the threads holds the request back itself: the
     /// half of a flush's barrier that M1 left untested (design §5.2).
     pub(crate) const PASSES_WAITING_FLUSH: u64 = 1 << 35;
+    /// A repeat is not compared with the state a flush carries to its
+    /// barrier: another label's copy of the same uberblock, applied
+    /// between that flush's receipt and its barrier, marks it again, and
+    /// the next flush cuts the same state twice (the review of M2.1).
+    pub(crate) const REPEAT_WHILE_CARRIED: u64 = 1 << 36;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
