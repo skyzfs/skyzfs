@@ -74,6 +74,11 @@ pub(crate) struct InPlaceHarness {
     /// 16 KiB or 64 KiB on some arm64 kernels. Passed in, not read
     /// from the host, so that every size runs everywhere.
     pub(crate) page: u64,
+    /// Whether the store holds cuts: each start then has a cut state of
+    /// its own, with a bound of sixteen blocks, so that writes are
+    /// copied for a held cut and cuts are abandoned at the bound
+    /// beneath the suite's cases.
+    pub(crate) held_cuts: bool,
 }
 
 impl InPlaceHarness {
@@ -83,6 +88,8 @@ impl InPlaceHarness {
             read_only,
             acknowledge_failure,
             io: self.io,
+            cut_region: self.held_cuts.then(|| super::state::MemRegion::new(0)),
+            cut_bound: self.held_cuts.then_some(16 * skyzfs_blk::BLOCK_SIZE),
             ..OpenOptions::default()
         }
     }

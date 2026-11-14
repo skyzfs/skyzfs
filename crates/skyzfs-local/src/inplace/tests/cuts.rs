@@ -873,3 +873,233 @@ fn bytes_zfs_would_pass_over_make_no_cut() {
         );
     }
 }
+
+// ---- Held cuts (M2.2): the cut state through the store ----
+
+/// The tests' volume, in blocks.
+const VOLUME_BLOCKS: u64 = (1 << 20) / BLOCK;
+/// A bound of 64 blocks, which keeps the tests' region small.
+const TEST_BOUND: u64 = 64 * BLOCK;
+/// The I/O on the caller's thread: a death at a store of the region
+/// falls at the same point of a request every time.
+const ON_CALLER: IoMode = OTHER_IO[1];
+
+/// A region for the cut state of the tests' volume.
+fn region() -> state::MemRegion {
+    state::MemRegion::new(state::words_for(
+        VOLUME_BLOCKS,
+        state::records_for(TEST_BOUND),
+    ))
+}
+
+/// Start on `disk` with the cut state in `region`.
+fn start_on(
+    disk: &SimDisk,
+    mutants: u64,
+    region: &state::MemRegion,
+    io: IoMode,
+) -> InPlace<SimDisk> {
+    let options = OpenOptions {
+        io,
+        cut_region: Some(region.clone()),
+        cut_bound: Some(TEST_BOUND),
+        ..OpenOptions::default()
+    };
+    Opened::open(disk.clone(), lock(disk).expect("the lock"), options)
+        .map_err(|(e, _)| e)
+        .expect("opens")
+        .start_with(None, Mutants(mutants))
+        .expect("the in-place store")
+}
+
+/// Group `txg`'s uberblock to the four labels, then the flush after it,
+/// with ids from `id`.
+fn group(store: &mut InPlace<SimDisk>, id: u64, txg: u64, root: u64) {
+    for label in 0..LABELS {
+        let done = run(store, id + label as u64, uberblock_write(label, txg, root));
+        assert!(done.result.is_ok());
+    }
+    assert!(run(store, id + LABELS as u64, Op::Flush).result.is_ok());
+}
+
+/// Block `block` of held cut `number` as the cut holds it: from its own
+/// map, or else from the held cuts before it, the oldest of which holds
+/// the whole volume in these tests.
+fn cut_block(store: &mut InPlace<SimDisk>, number: u64, block: u64) -> Vec<u8> {
+    let held = store.held_cuts();
+    let mut buf = Buf::filled(1, 0xEE);
+    for cut in held.iter().rev().filter(|c| c.number <= number) {
+        if store.read_cut(cut.number, block, &mut buf).expect("reads") {
+            return buf.to_vec();
+        }
+    }
+    panic!("block {block} of cut {number} is in no held cut's map");
+}
+
+/// The group of the uberblock that held cut `number` holds in label 0's
+/// slot for group `txg`; 0 where the slot holds none.
+fn group_in_cut(store: &mut InPlace<SimDisk>, number: u64, txg: u64) -> u64 {
+    let offset = ring(0) + (txg % RING_SLOTS) * SLOT;
+    let slot = cut_block(store, number, offset / BLOCK);
+    let word = |at: usize| u64::from_le_bytes(slot[at..at + 8].try_into().expect("8 bytes"));
+    if word(0) == MAGIC {
+        word(16)
+    } else {
+        0
+    }
+}
+
+/// A held cut reads as the volume was at its instant after a write has
+/// changed a block of it, with every I/O the store has: the store copied
+/// the block before the write began. Releasing the cut lets its copies
+/// go. A copy made after the overwrite is noticed.
+#[test]
+fn a_held_cut_reads_as_the_volume_at_its_instant_after_an_overwrite() {
+    let read_back = |mutants: u64, io: IoMode| -> Vec<u8> {
+        let disk = created(30, 0);
+        let region = region();
+        let mut store = start_on(&disk, mutants, &region, io);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        let held: Vec<(u64, u64, CutPhase)> = store
+            .held_cuts()
+            .iter()
+            .map(|c| (c.number, c.state.txg, c.phase))
+            .collect();
+        assert_eq!(held, [(1, 7, CutPhase::Uploading)], "{io:?}");
+        write(&mut store, 5, 0x66).unwrap();
+        assert_eq!(read(&mut store, 5).unwrap(), vec![0x66; BLOCK_USIZE]);
+        assert_eq!(cut_block(&mut store, 1, 3), vec![0x33; BLOCK_USIZE]);
+        assert_eq!(group_in_cut(&mut store, 1, 7), 7, "{io:?}");
+        let five = cut_block(&mut store, 1, 5);
+        assert!(store.cut_figures().copied > 0);
+        assert!(store.release_cut(1));
+        assert!(store.held_cuts().is_empty());
+        assert_eq!(store.cut_figures().copied, 0);
+        five
+    };
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        assert_eq!(read_back(0, io), vec![0x55; BLOCK_USIZE], "{io:?}");
+    }
+    assert_ne!(
+        read_back(Mutants::COPY_AFTER_OVERWRITE, ON_CALLER),
+        vec![0x55; BLOCK_USIZE],
+        "a copy made after the overwrite is not noticed"
+    );
+}
+
+/// What a death while group 8's uberblock write was under way left:
+/// whether the run died, and the held cuts' (number, group, the group of
+/// the uberblock the cut holds for it) after the next instance has had
+/// everything the kernel issues again.
+type AfterDeath = (bool, Vec<(u64, u64, u64)>);
+
+/// Group 7 is cut and being uploaded. Group 8's uberblock write to label
+/// 0 is received, applied and completed, and the daemon is lost at store
+/// `death` of the cut state's region. The next instance gets a flush
+/// first (a stray one, which the lost daemon never had: the kernel hands
+/// a next instance what was in flight in any order), then the write
+/// again unless its completion had gone to the transport, then ZFS's
+/// flush after it.
+fn lost_in_a_mark(mutants: u64, death: u64) -> AfterDeath {
+    state::tests::quiet_deaths();
+    let disk = created(31, 0);
+    let region = region();
+    let mut store = start_on(&disk, mutants, &region, ON_CALLER);
+    group(&mut store, 100, 7, 70);
+    let id = RequestId(200);
+    let mut done = Vec::new();
+    region.die_at(death);
+    let lived = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        store
+            .submit(Request {
+                id,
+                op: uberblock_write(0, 8, 80),
+            })
+            .unwrap();
+        while done.is_empty() {
+            store.wait(&mut done, WAIT);
+        }
+    }));
+    region.revive();
+    let died = match lived {
+        Ok(()) => false,
+        Err(payload) if payload.downcast_ref::<state::Lost>().is_some() => true,
+        Err(payload) => std::panic::resume_unwind(payload),
+    };
+    let handed = done.iter().any(|c| c.id == id);
+    if died {
+        drop(store);
+        disk.kill();
+        store = start_on(&disk, mutants, &region, ON_CALLER);
+    }
+    assert!(run(&mut store, 201, Op::Flush).result.is_ok());
+    if !handed {
+        let again = run(&mut store, 202, uberblock_write(0, 8, 80));
+        assert!(again.result.is_ok());
+    }
+    assert!(run(&mut store, 203, Op::Flush).result.is_ok());
+    let held = store.held_cuts();
+    let groups = held
+        .iter()
+        .map(|c| {
+            (
+                c.number,
+                c.state.txg,
+                group_in_cut(&mut store, c.number, c.state.txg),
+            )
+        })
+        .collect();
+    (died, groups)
+}
+
+/// The deaths at every store of a group's uberblock write, under
+/// `mutants`: the first wrong outcome, if any. Each held cut must hold
+/// the uberblock of its group (a mark recorded before the write is
+/// whole cuts a group the cut does not hold), and group 8 must be cut
+/// (a mark recorded after the completion went to the transport is lost
+/// with the daemon, and the kernel does not issue the write again).
+fn marks_survive_a_death(mutants: u64) -> Result<u64, String> {
+    let mut death = 0;
+    loop {
+        let (died, groups) = lost_in_a_mark(mutants, death);
+        if let Some((number, txg, held)) = groups.iter().find(|(_, txg, held)| txg != held) {
+            return Err(format!(
+                "death at store {death}: cut {number} of group {txg} holds group {held}"
+            ));
+        }
+        if groups.last().map(|g| g.1) != Some(8) {
+            return Err(format!(
+                "death at store {death}: group 8 was not cut, held {groups:?}"
+            ));
+        }
+        if !died {
+            return Ok(death);
+        }
+        death += 1;
+    }
+}
+
+/// The mark is in the cut state once the uberblock write is whole and
+/// before its completion goes to the transport (design §5.2): a death
+/// at any store of the region while the write is under way leaves a
+/// next instance that cuts the group once, holding its uberblock. A mark
+/// recorded at receipt, and one recorded after the completion, are each
+/// noticed.
+#[test]
+fn a_death_at_any_store_of_a_mark_leaves_the_group_cut_whole() {
+    let stores = marks_survive_a_death(0).expect("every death");
+    assert!(stores > 4, "{stores} stores");
+    for (name, mutant) in [
+        ("a mark recorded at receipt", Mutants::MARK_BEFORE_WHOLE),
+        (
+            "a mark recorded after the completion",
+            Mutants::MARK_AFTER_COMPLETION,
+        ),
+    ] {
+        assert!(
+            marks_survive_a_death(mutant).is_err(),
+            "{name}: not noticed"
+        );
+    }
+}
