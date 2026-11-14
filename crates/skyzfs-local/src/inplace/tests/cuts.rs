@@ -323,3 +323,47 @@ fn writes_without_an_uberblock_make_no_cut() {
     assert!(run(&mut store, 5, Op::Flush).result.is_ok());
     assert_eq!(counted(&store), (0, None));
 }
+
+/// A watcher hears each write applied, each flush's barrier, and each
+/// cut after its flush's barrier, by request, with every I/O the store
+/// has: a write that reaches no ring is applied too, and a flush with
+/// no mark before it has a barrier and no cut.
+#[test]
+fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let disk = created(7, 0);
+        let mut store = start_io(&disk, 0, false, io).unwrap();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        store.watch(Box::new({
+            let heard = heard.clone();
+            move |seen| heard.lock().expect("lock").push(seen)
+        }));
+        let ops = [
+            other_write(),
+            uberblock_write(0, 5, 50),
+            Op::Flush,
+            uberblock_write(1, 5, 50),
+            Op::Flush,
+        ];
+        for (id, op) in ops.into_iter().enumerate() {
+            assert!(run(&mut store, id as u64 + 1, op).result.is_ok(), "{io:?}");
+        }
+        let id = RequestId;
+        let cut = Cut {
+            number: 1,
+            group: 5,
+        };
+        assert_eq!(
+            *heard.lock().expect("lock"),
+            [
+                Seen::Applied(id(1)),
+                Seen::Applied(id(2)),
+                Seen::Barrier(id(3)),
+                Seen::Cut(id(3), cut),
+                Seen::Applied(id(4)),
+                Seen::Barrier(id(5)),
+            ],
+            "{io:?}"
+        );
+    }
+}

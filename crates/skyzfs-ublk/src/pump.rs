@@ -499,6 +499,13 @@ enum Slot {
 /// The id of a request's flush after its operation.
 const FLUSH_ID: u64 = 1 << 32;
 
+/// The tag that a request id the pump gives its target stands for, and
+/// whether the id is the flush the pump adds after an operation that
+/// carried FUA rather than the request itself.
+pub fn tag_of(id: RequestId) -> (u16, bool) {
+    ((id.0 & (FLUSH_ID - 1)) as u16, id.0 & FLUSH_ID != 0)
+}
+
 /// The pump of one queue. See the [module documentation](self).
 pub struct Pump<Q: Queue, T: PumpTarget> {
     queue: Q,
@@ -1027,8 +1034,7 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
     /// The target completed something.
     fn completed(&mut self, completion: Completion) -> Result<(), Stopped> {
         let Completion { id, result, buf } = completion;
-        let tag = (id.0 & (FLUSH_ID - 1)) as u16;
-        let is_flush = id.0 & FLUSH_ID != 0;
+        let (tag, is_flush) = tag_of(id);
         // When the target had this completion ready. It goes with this
         // completion alone: a request that finishes without one (it
         // is refused, or needs nothing of the target) has none.

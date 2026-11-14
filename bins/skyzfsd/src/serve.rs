@@ -801,6 +801,16 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         take_over: took_over,
     })
     .map_err(|e| format!("opening device {number}: {e}"))?;
+    // The test build's request log hears of the store's writes applied,
+    // its flushes' barriers and its cuts.
+    #[cfg(feature = "test-hooks")]
+    let served = {
+        let mut served = served;
+        if let Some(file) = &request_log {
+            served.watch(crate::record::watcher(crate::record::Lines::another(file)));
+        }
+        served
+    };
     let board = Arc::new(Board::new());
     // The store as the start left it, on the board before the status
     // thread's first write, which would otherwise show nothing of it
@@ -813,6 +823,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     #[cfg(feature = "test-hooks")]
     let refuse = serve.hooks.refuse;
     let locked = !serve.allow_unlocked_memory;
+    #[cfg(feature = "test-hooks")]
+    let size = shape.size;
     let body = {
         let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
         queue_body(move |queue| {
@@ -824,7 +836,7 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // Below the delays: the record says what the kernel
             // handed over and what it was given.
             #[cfg(feature = "test-hooks")]
-            let queue = crate::record::Recorded::new(queue, request_log, number);
+            let queue = crate::record::Recorded::new(queue, request_log, number, size);
             let queue = Delayed::new(queue, delay, hold, move || wake.wake());
             // The store goes back to the main thread with the
             // outcome: the volume's lock is held until the main

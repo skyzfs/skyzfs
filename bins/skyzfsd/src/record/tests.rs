@@ -2,6 +2,9 @@ use std::collections::VecDeque;
 
 use super::*;
 
+/// The volume's size in the tests: 1 GiB.
+const SIZE: u64 = 1 << 30;
+
 /// A queue that notes its commits and answers its waits from a script.
 #[derive(Default)]
 struct Scripted {
@@ -51,8 +54,10 @@ impl Queue for Scripted {
             None => Ok(Wake::Work),
         }
     }
-    fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<Buf> {
-        Some(Buf::zeroed(blocks))
+    fn take_buf(&mut self, tag: u16, blocks: usize) -> Option<Buf> {
+        let mut buf = Buf::zeroed(blocks);
+        fill(&mut buf, tag);
+        Some(buf)
     }
     fn commit(&mut self, tag: u16, result: i32, _buf: Option<Buf>) {
         self.committed.push((tag, result));
@@ -66,6 +71,13 @@ impl Queue for Scripted {
         } else {
             Ok(())
         }
+    }
+}
+
+/// What the scripted queue's buffer for `tag` holds.
+fn fill(buf: &mut [u8], tag: u16) {
+    for (i, byte) in buf.iter_mut().enumerate() {
+        *byte = (i as u8).wrapping_mul(7) ^ (tag as u8);
     }
 }
 
@@ -113,7 +125,7 @@ fn the_record_has_each_request_and_its_answer() {
         fetched(2, op::FLUSH, 0, 0),
     ]));
     inner.waits.push_back(Ok(vec![fetched(0, op::READ, 8, 16)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7, SIZE);
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got.len(), 3);
@@ -163,7 +175,7 @@ fn the_send_line_is_written_before_the_commits_go() {
         ..Scripted::default()
     };
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(0, 4096, None);
@@ -192,7 +204,7 @@ fn the_times_are_monotonic() {
     inner
         .waits
         .push_back(Ok(vec![fetched(3, op::DISCARD, 0, 8)]));
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
     let before = mono_ns();
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
@@ -239,7 +251,7 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
     let mut inner = Scripted::default();
     inner.waits.push_back(Err(QueueDown));
     inner.flush_fails = true;
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 1);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 1, SIZE);
     queue.commit(2, -5, None);
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Err(QueueDown));
@@ -270,13 +282,13 @@ fn a_second_instance_appends_to_the_same_record() {
     let path = dir.path().join("requests.tsv");
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(0, op::WRITE, 0, 8)]));
-    let mut first = Recorded::new(inner, Some(open(&path).expect("open")), 0);
+    let mut first = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
     let mut got = Vec::new();
     let _ = first.wait(&mut got, &mut Vec::new());
     drop(first);
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(3, op::WRITE, 0, 8)]));
-    let mut second = Recorded::new(inner, Some(open(&path).expect("open")), 0);
+    let mut second = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
     got.clear();
     let _ = second.wait(&mut got, &mut Vec::new());
     second.commit(3, 4096, None);
@@ -302,7 +314,7 @@ fn a_second_instance_appends_to_the_same_record() {
 fn without_a_file_every_call_passes_through() {
     let mut inner = Scripted::default();
     inner.waits.push_back(Ok(vec![fetched(1, op::READ, 0, 8)]));
-    let mut queue = Recorded::new(inner, None, 0);
+    let mut queue = Recorded::new(inner, None, 0, SIZE);
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     assert_eq!(got, [fetched(1, op::READ, 0, 8)]);
@@ -355,7 +367,7 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
             result: 1,
         },
     ]);
-    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7);
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 7, SIZE);
     queue.commit(1, 4096, None);
     let mut got = Vec::new();
     let mut ended = Vec::new();
@@ -400,6 +412,129 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
             format!("{p}\tsend\t-\t-\t-\t-\t1"),
             format!("{p}\tsent\t-\t-\t-\t-\t1"),
             format!("{p}\tended\t2\tcommit\t-\t-\t-22"),
+        ]
+    );
+}
+
+/// A write that touches either end of the volume has a `label` line
+/// with all its bytes in hex, as the queue hands its buffer over: the
+/// first 512 KiB, and the last 512 KiB of the labels' span to the
+/// volume's end. A write between them, a write that ends where the
+/// last end begins, and a read at an end have none.
+#[test]
+fn a_write_at_either_end_of_the_volume_has_its_bytes() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    // 512 KiB in sectors, and where the last end begins.
+    let end = 1024;
+    let tail = SIZE / 512 - end;
+    let mut inner = Scripted::default();
+    inner.waits.push_back(Ok(vec![
+        fetched(0, op::WRITE, 0, 8),
+        fetched(1, op::WRITE, end, 8),
+        fetched(2, op::WRITE, end - 8, 16),
+        fetched(3, op::READ, 0, 8),
+    ]));
+    inner.waits.push_back(Ok(vec![
+        fetched(0, op::WRITE, tail, 8),
+        fetched(1, op::WRITE, tail - 8, 8),
+    ]));
+    let mut queue = Recorded::new(inner, Some(open(&path).expect("open")), 0, SIZE);
+    let mut got = Vec::new();
+    let _ = queue.wait(&mut got, &mut Vec::new());
+    for (tag, blocks) in [(0, 1), (1, 1), (2, 2), (3, 1)] {
+        assert!(queue.take_buf(tag, blocks).is_some());
+    }
+    got.clear();
+    let _ = queue.wait(&mut got, &mut Vec::new());
+    for tag in [0, 1] {
+        assert!(queue.take_buf(tag, 1).is_some());
+    }
+    let bytes = |tag: u16, len: usize| {
+        let mut buf = vec![0u8; len];
+        fill(&mut buf, tag);
+        hex(&buf)
+    };
+    let p = pid();
+    let labels: Vec<String> = lines(&path)
+        .into_iter()
+        .filter(|line| line.contains("\tlabel\t"))
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            format!("{p}\tlabel\t0\twrite\t0\t8\t{}", bytes(0, 4096)),
+            format!("{p}\tlabel\t2\twrite\t1016\t16\t{}", bytes(2, 8192)),
+            format!("{p}\tlabel\t0\twrite\t{tail}\t8\t{}", bytes(0, 4096)),
+        ]
+    );
+    assert_eq!(&hex(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+}
+
+/// The ends follow the labels: on a volume whose size is not a multiple
+/// of 256 KiB the labels end before the volume does, and the last end
+/// runs from 512 KiB before the labels' end to the volume's end, which
+/// holds the last 512 KiB of the volume too.
+#[test]
+fn the_last_end_runs_from_the_labels_to_the_volumes_end() {
+    let size = SIZE + (100 << 10);
+    let ends = Ends::of(size);
+    assert!(ends.touched(SIZE - (512 << 10), 4096));
+    assert!(!ends.touched(SIZE - (512 << 10) - 4096, 4096));
+    assert!(ends.touched(size - 4096, 4096));
+    assert!(ends.touched(size - (512 << 10), 4096));
+    assert!(ends.touched(0, 1));
+    assert!(!ends.touched(512 << 10, 4096));
+    assert!(!ends.touched(0, 0));
+}
+
+/// The store's lines go to the same file through a second handle, in
+/// the order of the queue's own: `applied` for a write, `barrier` for a
+/// flush (`fua_flush` for the flush the pump adds after an operation
+/// with FUA, whose id carries the pump's flag), and `cut` with the
+/// cut's group after its `barrier`.
+#[test]
+fn the_stores_lines_name_the_tag_and_fall_among_the_queues() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let mut inner = Scripted::default();
+    inner.waits.push_back(Ok(vec![
+        fetched(0, op::WRITE, 4096, 8),
+        fetched(1, op::FLUSH, 0, 0),
+    ]));
+    let file = open(&path).expect("open");
+    let mut watcher = watcher(Lines::another(&file));
+    let mut queue = Recorded::new(inner, Some(file), 0, SIZE);
+    let mut got = Vec::new();
+    let _ = queue.wait(&mut got, &mut Vec::new());
+    watcher(Seen::Applied(RequestId(0)));
+    queue.commit(0, 4096, None);
+    watcher(Seen::Barrier(RequestId(1)));
+    let cut = skyzfs_local::inplace::Cut {
+        number: 1,
+        group: 77,
+    };
+    watcher(Seen::Cut(RequestId(1), cut));
+    queue.commit(1, 0, None);
+    // The flush the pump adds after an operation of tag 3 with FUA.
+    let added = RequestId(3 | 1 << 32);
+    assert_eq!(tag_of(added), (3, true));
+    watcher(Seen::Barrier(added));
+    watcher(Seen::Cut(added, cut));
+    let p = pid();
+    assert_eq!(
+        lines(&path),
+        [
+            format!("{p}\tstart\t0\t-\t-\t-\t4"),
+            format!("{p}\trecv\t0\twrite\t4096\t8\t-"),
+            format!("{p}\trecv\t1\tflush\t0\t0\t-"),
+            format!("{p}\tapplied\t0\twrite\t-\t-\t-"),
+            format!("{p}\tcommit\t0\twrite\t4096\t8\t4096"),
+            format!("{p}\tbarrier\t1\tflush\t-\t-\t-"),
+            format!("{p}\tcut\t1\tflush\t-\t-\t77"),
+            format!("{p}\tcommit\t1\tflush\t0\t0\t0"),
+            format!("{p}\tbarrier\t3\tfua_flush\t-\t-\t-"),
+            format!("{p}\tcut\t3\tfua_flush\t-\t-\t77"),
         ]
     );
 }

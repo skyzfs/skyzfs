@@ -646,6 +646,91 @@ fn an_overlapping_request_waits_for_the_one_on_the_threads() {
     }
 }
 
+/// Nothing received after a flush that waits begins before it: the
+/// half of a flush's barrier that M1 left untested (design §5.2, "The
+/// instant is a flush's barrier"), on which a cut's instant rests. A
+/// write held on the threads, a flush behind it, then a write and a
+/// read of other blocks, which nothing on the threads holds back
+/// themselves. With the first write held, neither begins: both wait
+/// behind the flush, and the second write is applied only after the
+/// flush's barrier. The mutant that lets a request pass a waiting flush
+/// is noticed: the read completes while the first write is still held.
+#[test]
+fn nothing_received_after_a_waiting_flush_begins_before_it() {
+    for mutant in [0, Mutants::PASSES_WAITING_FLUSH] {
+        let disk = created(3, 0);
+        let mut store = start_io(&disk, mutant, false, IoMode::default()).unwrap();
+        let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        store.watch(Box::new({
+            let heard = heard.clone();
+            move |seen| heard.lock().expect("lock").push(seen)
+        }));
+        disk.hold_direct_io(1);
+        let _release = Releases(&disk);
+        let submit = |store: &mut InPlace<SimDisk>, id, op| {
+            store
+                .submit(Request {
+                    id: RequestId(id),
+                    op,
+                })
+                .unwrap();
+        };
+        submit(
+            &mut store,
+            1,
+            Op::Write {
+                offset: BLOCK,
+                data: Buf::filled(1, 0x11),
+            },
+        );
+        until_held(&disk);
+        submit(&mut store, 2, Op::Flush);
+        submit(
+            &mut store,
+            3,
+            Op::Write {
+                offset: 3 * BLOCK,
+                data: Buf::filled(1, 0x33),
+            },
+        );
+        submit(
+            &mut store,
+            4,
+            Op::Read {
+                offset: 4 * BLOCK,
+                buf: Buf::filled(1, 0),
+            },
+        );
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        // With the first write still held: the three wait; with the
+        // defect the two behind the flush run on the threads, and the
+        // read ends when a thread gets to it.
+        let (read_done, waiting) = if mutant == 0 {
+            (done.iter().any(|c| c.id.0 == 4), store.io_queue().waiting)
+        } else {
+            (until_done(&mut store, &mut done, 4), 0)
+        };
+        let _store = release_and_drain(&disk, store, &mut done);
+        assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 4);
+        if mutant == 0 {
+            assert!(!read_done, "a request passed the waiting flush");
+            assert_eq!(waiting, 3, "the flush and the two behind it wait");
+            assert_eq!(
+                *heard.lock().expect("lock"),
+                [
+                    Seen::Applied(RequestId(1)),
+                    Seen::Barrier(RequestId(2)),
+                    Seen::Applied(RequestId(3)),
+                ],
+                "the second write is applied after the flush's barrier"
+            );
+        } else {
+            assert!(read_done, "the defect is not noticed");
+        }
+    }
+}
+
 /// A write waits for an overlapping read on the threads: a read held on
 /// the threads, then a write of the same block. The write waits (one
 /// request waiting), so the read sees the block as it was before the

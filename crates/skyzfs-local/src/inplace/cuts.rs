@@ -42,23 +42,43 @@
 //! Each rule has a defect among [`Mutants`] and a test that fails with
 //! it (`tests/cuts.rs`).
 //!
+//! A test build can watch the rule's moments ([`Seen`],
+//! [`InPlace::watch`](super::InPlace::watch)): every write applied,
+//! every flush's barrier, and every cut counted, each as it happens on
+//! the thread that drives the store. The daemon's request log writes
+//! them down (`skyzfsd serve --request-log`).
+//!
 //! # Limits of this package
 //!
 //! - **The count is in memory.** It starts at 0 with each store, so a
 //!   take-over counts from 0 again, and an uberblock write the kernel
 //!   hands the next instance again counts as new. The mapped state of
 //!   M2.2 is to keep the count and the mark.
-//! - **A cut's group can err low, never high.** Two uberblocks applied
-//!   with no flush between them that are not repeats leave the later
-//!   one's mark. A stale write the repeat does not catch (a multihost
-//!   copy two groups behind, or the first after a start, with no newest
-//!   cut in memory) makes a cut whose group is lower than the one the
-//!   volume holds: the volume is still a complete pool, and the group
-//!   only delays a publish. It cannot err high: a cut's group is that of
-//!   an uberblock the store applied before the cut's flush was received,
-//!   so at the cut's instant that uberblock is in the volume, and ZFS
-//!   does not write an uberblock of a group before every block of that
-//!   group is acknowledged (§5.2's first reason).
+//! - **A cut's group can err low.** Two uberblocks applied with no flush
+//!   between them that are not repeats leave the later one's mark. A
+//!   stale write the repeat does not catch (a multihost copy two groups
+//!   behind, or the first after a start, with no newest cut in memory)
+//!   makes a cut whose group is lower than the one the volume holds: the
+//!   volume is still a complete pool, and the group only delays a
+//!   publish.
+//! - **It can err high in one case: a cut made during an import** (the
+//!   review's read of the amended §5.2, in the implementation notes
+//!   under M2, "The read of these rules"). A mark left from before the
+//!   import, an uberblock applied with no flush received after it, is
+//!   taken by the first flush the import sends, before the import's own
+//!   first uberblock. After a rewind import, writes of the import may by
+//!   then have overwritten blocks that group needs, and the volume at
+//!   the cut's instant is not a pool at it. The cut is counted before
+//!   the import returns, and so before an agent can read the count that
+//!   it publishes after; that a writable import syncs a group before it
+//!   returns is the review's reading of OpenZFS, which the recorded
+//!   pools of M2.T1 are to confirm. In this package the mark is in
+//!   memory, so it outlives an import only where one daemon served the
+//!   pool before the import and through it. Outside an import a cut's
+//!   group is that of an uberblock the store applied before the cut's
+//!   flush was received, so at the cut's instant that uberblock is in
+//!   the volume with every block of its group (§5.2's first reason), and
+//!   nothing it reaches has been overwritten (its second).
 
 use std::collections::BTreeMap;
 
@@ -85,6 +105,47 @@ pub struct Cuts {
     pub newest: Option<Cut>,
 }
 
+/// A moment of the rule, as a watcher is told of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// Write `id` has been applied whole: its direct write returned
+    /// whole and the store took the result. Every write, whether or not
+    /// it carries an uberblock. A write that fails has none.
+    Applied(RequestId),
+    /// Flush `id` has reached its barrier: every write received before
+    /// it has ended, and nothing received after it has begun.
+    Barrier(RequestId),
+    /// A cut was counted at flush `id`'s barrier, told after that
+    /// flush's [`Seen::Barrier`].
+    Cut(RequestId, Cut),
+}
+
+/// What is told of the rule's moments, on the thread that drives the
+/// store. It must not block for long: the store waits for it.
+pub type Watcher = Box<dyn FnMut(Seen) + Send>;
+
+/// The watcher, if there is one.
+#[derive(Default)]
+struct Watching(Option<Watcher>);
+
+impl Watching {
+    fn tell(&mut self, seen: Seen) {
+        if let Some(watcher) = &mut self.0 {
+            watcher(seen);
+        }
+    }
+}
+
+impl std::fmt::Debug for Watching {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Watching(Some)"
+        } else {
+            "Watching(None)"
+        })
+    }
+}
+
 /// The rule's state: see the [module documentation](self).
 #[derive(Debug)]
 pub(crate) struct CutRule {
@@ -105,6 +166,7 @@ pub(crate) struct CutRule {
     /// counted at its barrier.
     carrying: BTreeMap<RequestId, State>,
     cuts: Cuts,
+    watching: Watching,
 }
 
 impl CutRule {
@@ -120,7 +182,14 @@ impl CutRule {
             previous: None,
             carrying: BTreeMap::new(),
             cuts: Cuts::default(),
+            watching: Watching::default(),
         }
+    }
+
+    /// Tell `watcher` of the rule's moments from now on.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub(crate) fn watch(&mut self, watcher: Watcher) {
+        self.watching = Watching(Some(watcher));
     }
 
     /// The count, and the newest cut.
@@ -153,7 +222,7 @@ impl CutRule {
                 if self.mutants.has(Mutants::CUT_AT_RECEIPT) {
                     // The defect: counted as the flush is received, not
                     // at its barrier.
-                    return self.count(state);
+                    return self.count(id, state);
                 }
                 self.carrying.insert(id, state);
             }
@@ -163,6 +232,7 @@ impl CutRule {
 
     /// Write `id` has been applied whole.
     pub(crate) fn applied(&mut self, id: RequestId) {
+        self.watching.tell(Seen::Applied(id));
         if let Some(found) = self.written.remove(&id) {
             self.apply(found);
         }
@@ -170,8 +240,9 @@ impl CutRule {
 
     /// Flush `id` has reached its barrier.
     pub(crate) fn barrier(&mut self, id: RequestId) {
+        self.watching.tell(Seen::Barrier(id));
         if let Some(state) = self.carrying.remove(&id) {
-            self.count(state);
+            self.count(id, state);
         }
     }
 
@@ -211,12 +282,14 @@ impl CutRule {
         !is_repeat(self.mark.as_ref(), self.newest.as_ref(), state)
     }
 
-    fn count(&mut self, state: State) {
+    fn count(&mut self, id: RequestId, state: State) {
         self.newest = Some(state);
         self.cuts.count += 1;
-        self.cuts.newest = Some(Cut {
+        let cut = Cut {
             number: self.cuts.count,
             group: state.txg,
-        });
+        };
+        self.cuts.newest = Some(cut);
+        self.watching.tell(Seen::Cut(id, cut));
     }
 }

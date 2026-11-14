@@ -4259,6 +4259,7 @@ dependencies = [
  "rustix 1.1.4",
  "skyzfs-blk",
  "skyzfs-local",
+ "skyzfs-uberblock",
  "skyzfs-ublk",
  "skyzfs-ublk-sys",
  "tempfile",

@@ -195,7 +195,7 @@ use crate::store::{FailureObserver, Zeroes};
 use cuts::CutRule;
 use pool::{Done, Job, Pool};
 
-pub use cuts::{Cut, Cuts};
+pub use cuts::{Cut, Cuts, Seen, Watcher};
 
 pub use start::{
     create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
@@ -303,6 +303,10 @@ impl Mutants {
     /// copy of the group before, applied after the group's own
     /// uberblocks, moves the mark back (design §5.2).
     pub(crate) const STALE_MOVES_MARK: u64 = 1 << 34;
+    /// A request received after a flush that waits begins before it
+    /// when nothing on the threads holds the request back itself: the
+    /// half of a flush's barrier that M1 left untested (design §5.2).
+    pub(crate) const PASSES_WAITING_FLUSH: u64 = 1 << 35;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -964,6 +968,14 @@ impl<D: Dir> InPlace<D> {
         self.ids.len()
     }
 
+    /// Tell `watcher` of every write applied, every flush's barrier and
+    /// every cut counted, from now on ([`Seen`]): for the daemon's
+    /// request log.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub fn watch(&mut self, watcher: Watcher) {
+        self.cuts.watch(watcher);
+    }
+
     /// The count of cuts, and the newest cut (design §5.2; `cuts.rs`).
     pub fn cuts(&self) -> Cuts {
         self.cuts.cuts()
@@ -1319,7 +1331,12 @@ impl<D: Dir> InPlace<D> {
     /// or behind a request on the threads it must not run beside.
     fn accept(&mut self, request: Request) {
         self.cuts.received(request.id, &request.op);
-        if !self.deferred.is_empty() || self.must_wait(&request.op) {
+        let mut behind = !self.deferred.is_empty();
+        if self.mutants.has(Mutants::PASSES_WAITING_FLUSH) {
+            // The defect: only flushes wait ahead, and they are passed.
+            behind &= !self.deferred.iter().all(|r| matches!(r.op, Op::Flush));
+        }
+        if behind || self.must_wait(&request.op) {
             self.deferred.push_back(request);
             self.queue.waited += 1;
             self.queue.waiting_max = self.queue.waiting_max.max(self.deferred.len() as u64);
