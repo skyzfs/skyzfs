@@ -93,6 +93,15 @@ whole workspace was not built here: the disk allowance ran out on the
 skynbd crates, which this pull request does not change but for one
 unused dependency of skynbd-tree.
 
+### Posted, head ffde7bf
+
+The review is `review-posted.md`, posted on the pull request on
+2026-11-14 (issue comment 6868735458). d173019 (the look reads alone)
+and ffde7bf (Codex's two findings) judged right. The plants of the
+blocking findings ran again at ffde7bf: `plants69-ffde7bf.txt` (S1, S2,
+S4 and P7b: nothing fails). Digests sent to coding and the lead. Next
+look: the answers, and the rigs' tables at the head.
+
 ### Lessons
 
 - A table parsed from a description: check the column count of every

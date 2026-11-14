@@ -1,0 +1,5 @@
+P7b an open refused for a home image of another size writes the failure marker: NOTHING FAILS (366 passed, 112 s)
+S1 an I/O thread wakes the owner for its first result only: NOTHING FAILS (366 passed, 102 s)
+S2 a block of twice the write unit is let through: NOTHING FAILS (146 passed, 60 s)
+S4 the observer is told at every failure, not once: NOTHING FAILS (146 passed, 60 s)
+worktree after: clean

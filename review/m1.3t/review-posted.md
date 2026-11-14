@@ -2,7 +2,7 @@
 
 **It cannot merge yet.** Two findings block (1 and 2 below), both on what the ports of the log store's tests hold. The red CI of 45b67f2 is answered by d173019, and Codex's two findings by ffde7bf; I judge both fixes right. The removal is clean, the volume file and the start do what the description says, and the table of deleted tests is honest. What blocks is a few lines of tests.
 
-I formed this from the diff `3b98588...45b67f2` before the description, then judged the table. d173019 and ffde7bf came while I wrote; I ran the plants of the two blocking findings again at ffde7bf, with the same result. The local gates are clean at 45b67f2 on the skyzfs packages (fmt; clippy plain and with each feature; 540 + 65 + 15 tests). Plants and scripts are on `skyzfs-review` under `review/m1.3t/`.
+I formed this from the diff `3b98588...45b67f2` before the description, then judged the table. d173019 and ffde7bf came while I wrote; I ran the plants of findings 1, 2 and 5 again at ffde7bf, with the same result (each: nothing fails). The local gates are clean at 45b67f2 on the skyzfs packages (fmt; clippy plain and with each feature; 540 + 65 + 15 tests). Plants and scripts are on `skyzfs-review` under `review/m1.3t/`.
 
 ### The red CI of 45b67f2, and d173019
 
@@ -21,7 +21,7 @@ Both held against 45b67f2 when I read them, and both fixes are right.
 
 ### Blocking
 
-**1. A property of the table is held nowhere: the waker is called for every completion.** The row `the_served_store_acknowledges_what_its_owner_has_taken` (pump/lifecycle) says "the waker called once per completion made ready", and the deleted test counted three calls for three completions. The port, `the_waker_is_called_for_what_the_threads_make_ready`, asks for one wake after one write and one after a thread's death. Plant: each I/O thread wakes the owner for its first result only (`pool.rs`). Nothing fails in `skyzfs-local`, `skyzfs-ublk` or `skyzfsd` with its hooks (362 tests). It matters because the pump only polls and relies on being woken (`InPlace::wait`'s own comment): a completion nobody woke it for waits for the next request from the kernel, which at a depth of one never comes. The rigs should show it; no test does. By the owner's ruling this blocks.
+**1. A property of the table is held nowhere: the waker is called for every completion.** The row `the_served_store_acknowledges_what_its_owner_has_taken` (pump/lifecycle) says "the waker called once per completion made ready", and the deleted test counted three calls for three completions. The port, `the_waker_is_called_for_what_the_threads_make_ready`, asks for one wake after one write and one after a thread's death. Plant: each I/O thread wakes the owner for its first result only (`pool.rs`). Nothing fails in `skyzfs-local`, `skyzfs-ublk` or `skyzfsd` with its hooks (366 tests at ffde7bf). It matters because the pump only polls and relies on being woken (`InPlace::wait`'s own comment): a completion nobody woke it for waits for the next request from the kernel, which at a depth of one never comes. The rigs should show it; no test does. By the owner's ruling this blocks.
 
 **2. Two ports hold less than the tests they stand in for.** In both, the breach planted passes every test of `skyzfs-local`, which is how I read "held nowhere"; the lead may read it less strictly. Each is a few lines in the port that is there.
 
