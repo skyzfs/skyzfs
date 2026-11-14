@@ -54,8 +54,9 @@
 //!   system writes back whole blocks: where its block is larger than
 //!   the write unit, the block is what a write rewrites. One file can
 //!   lie on a file system of its own ([`SimDisk::set_block_size_of`]),
-//!   as a file that is a mount point or a link elsewhere does: its
-//!   block is then its own, and the directory's is the disk's.
+//!   as a file reached through a link elsewhere does: its block is then
+//!   its own, and the directory's is the disk's. That goes with the
+//!   file and not with its name.
 //!
 //! - **A sync that ends later** ([`File::sync_begin`],
 //!   [`File::sync_end`]). The versions of the file's sectors that are
@@ -428,9 +429,9 @@ struct State {
     no_holes: bool,
     /// The file system's block size, or none if it cannot be asked.
     block_size: Option<u64>,
-    /// Files, by name, that lie on a file system of their own, with its
-    /// block size (none: it cannot be asked).
-    block_sizes_of: BTreeMap<String, Option<u64>>,
+    /// Files, by inode, that lie on a file system of their own, with
+    /// its block size (none: it cannot be asked).
+    block_sizes_of: BTreeMap<u64, Option<u64>>,
     /// The page size the system reports.
     page_size: u64,
     /// The next deallocation fails, having zeroed any part of its range.
@@ -584,11 +585,11 @@ impl State {
     }
 
     /// The block size of the file system that `inode` lies on: its own
-    /// if its name was given one ([`SimDisk::set_block_size_of`]), else
-    /// the disk's.
+    /// if it was given one ([`SimDisk::set_block_size_of`]), else the
+    /// disk's.
     fn block_size_of(&self, inode: u64) -> Option<u64> {
-        self.name_of(inode)
-            .and_then(|name| self.block_sizes_of.get(name))
+        self.block_sizes_of
+            .get(&inode)
             .copied()
             .unwrap_or(self.block_size)
     }
@@ -608,6 +609,9 @@ impl State {
                     .iter()
                     .any(|op| matches!(op, NameOp::Create(_, created) if created == inode))
         });
+        let inodes = &self.inodes;
+        self.block_sizes_of
+            .retain(|inode, _| inodes.contains_key(inode));
     }
 
     /// The process is gone, and its handles with it.
@@ -999,22 +1003,36 @@ impl SimDisk {
         self.lock().block_size = bytes;
     }
 
-    /// The file called `name` lies on a file system of its own, whose
-    /// block size is `bytes` (`None`: one that cannot be asked), as a
-    /// file that is a mount point, or a link to another file system,
-    /// does. Its [`File::block_size`] answers that, and its writes and
+    /// The file called `name` now lies on a file system of its own,
+    /// whose block size is `bytes` (`None`: one that cannot be asked),
+    /// as a file reached through a link to another file system does.
+    /// Its [`File::block_size`] answers that, and its writes and
     /// deallocations rewrite those blocks; the directory
     /// ([`Dir::block_size`]) and the other files keep the disk's
-    /// ([`SimDisk::set_block_size`]). It goes with the name, and holds
-    /// across a power cut as the disk's does: a property of where the
-    /// file is. [`SimDisk::same_block_size_as_the_disk`] takes it back.
-    pub fn set_block_size_of(&self, name: &str, bytes: Option<u64>) {
-        self.lock().block_sizes_of.insert(name.to_string(), bytes);
+    /// ([`SimDisk::set_block_size`]).
+    ///
+    /// It goes with the file and not with the name, as a file's data
+    /// stays where it is: under another name after a rename the file
+    /// keeps it, and a file renamed onto the name (as a store's create
+    /// renames a new file onto the name it will be found by) lies on
+    /// the disk's file system, as a rename onto a link replaces the
+    /// link. It holds across a power cut, as the disk's does.
+    /// [`SimDisk::same_block_size_as_the_disk`] takes it back. An error
+    /// `NotFound` if no file has that name.
+    pub fn set_block_size_of(&self, name: &str, bytes: Option<u64>) -> io::Result<()> {
+        let mut state = self.lock();
+        let inode = *state.names.get(name).ok_or(io::ErrorKind::NotFound)?;
+        state.block_sizes_of.insert(inode, bytes);
+        Ok(())
     }
 
-    /// The file called `name` lies on the disk's file system again.
-    pub fn same_block_size_as_the_disk(&self, name: &str) {
-        self.lock().block_sizes_of.remove(name);
+    /// The file called `name` lies on the disk's file system again. An
+    /// error `NotFound` if no file has that name.
+    pub fn same_block_size_as_the_disk(&self, name: &str) -> io::Result<()> {
+        let mut state = self.lock();
+        let inode = *state.names.get(name).ok_or(io::ErrorKind::NotFound)?;
+        state.block_sizes_of.remove(&inode);
+        Ok(())
     }
 
     /// The page size the system reports ([`Dir::page_size`]). One
@@ -2719,7 +2737,7 @@ mod tests {
         g.sync().unwrap();
         Dir::sync(&disk).unwrap();
         disk.set_write_unit(2 * SECTOR);
-        disk.set_block_size_of("f", Some(16 * SECTOR));
+        disk.set_block_size_of("f", Some(16 * SECTOR)).unwrap();
         let mut f = disk.open("f").unwrap();
         assert_eq!(f.block_size().unwrap(), 16 * SECTOR);
         assert_eq!(g.block_size().unwrap(), SECTOR);
@@ -2740,12 +2758,62 @@ mod tests {
         assert_eq!(lost(&read(&disk, "g", 0, 32 * S)), [20, 21]);
         // It holds across the cut, as the disk's does.
         assert_eq!(disk.open("f").unwrap().block_size().unwrap(), 16 * SECTOR);
-        disk.set_block_size_of("f", None);
+        disk.set_block_size_of("f", None).unwrap();
         assert!(disk.open("f").unwrap().block_size().is_err());
         assert_eq!(disk.open("g").unwrap().block_size().unwrap(), SECTOR);
         assert_eq!(Dir::block_size(&disk).unwrap(), SECTOR);
-        disk.same_block_size_as_the_disk("f");
+        disk.same_block_size_as_the_disk("f").unwrap();
         assert_eq!(disk.open("f").unwrap().block_size().unwrap(), SECTOR);
+        let unknown = disk.set_block_size_of("nobody", Some(16 * SECTOR));
+        assert_eq!(unknown.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    /// A hole in a file on a file system of its own rewrites that
+    /// file's block, as a write does, while a hole of the same size in
+    /// a file on the disk's rewrites only the write unit.
+    #[test]
+    fn a_hole_in_a_file_of_its_own_rewrites_its_own_block() {
+        let disk = disk_with(32, 7);
+        let mut g = disk.create("g").unwrap();
+        g.write_at(0, &[7; 32 * S]).unwrap();
+        g.sync().unwrap();
+        Dir::sync(&disk).unwrap();
+        disk.set_write_unit(2 * SECTOR);
+        disk.set_block_size_of("f", Some(16 * SECTOR)).unwrap();
+        let mut f = disk.open("f").unwrap();
+        // Sectors 18 and 19: one whole write unit inside the second
+        // block of f.
+        f.deallocate(18 * SECTOR, 2 * SECTOR).unwrap();
+        g.deallocate(18 * SECTOR, 2 * SECTOR).unwrap();
+        disk.power_cut(BySector(|_: Option<&str>, _| Fate::Garbage));
+        let lost = |name: &str| {
+            let got = read(&disk, name, 0, 32 * S);
+            (0..32)
+                .filter(|&sector| got[sector * S..(sector + 1) * S] != [7; S])
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(lost("f"), (16..32).collect::<Vec<_>>());
+        assert_eq!(lost("g"), [18, 19]);
+    }
+
+    /// The file system of its own goes with the file and not with its
+    /// name: renamed, the file keeps it; a file renamed onto the name
+    /// has the disk's, as a rename onto a link replaces the link; and a
+    /// name brought back by a power cut brings back its file's.
+    #[test]
+    fn a_file_keeps_its_own_file_system_under_another_name() {
+        let disk = disk_with(4, 1);
+        disk.set_block_size_of("f", Some(16 * SECTOR)).unwrap();
+        disk.rename("f", "h").unwrap();
+        assert_eq!(disk.open("h").unwrap().block_size().unwrap(), 16 * SECTOR);
+        let g = disk.create("g").unwrap();
+        drop(g);
+        disk.rename("g", "h").unwrap();
+        assert_eq!(disk.open("h").unwrap().block_size().unwrap(), SECTOR);
+        // Neither rename was synced: a cut that loses them brings back
+        // f, on its own file system still.
+        disk.power_cut(LoseAll);
+        assert_eq!(disk.open("f").unwrap().block_size().unwrap(), 16 * SECTOR);
     }
 
     /// Write unit: with one set, a small write puts the durable sectors

@@ -1695,7 +1695,8 @@ fn an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks() {
     };
     for block in [Some(2 * unit), Some(1 << 20), None] {
         let disk = created(42, 0);
-        disk.set_block_size_of(HOME_NAME, block);
+        disk.set_block_size_of(HOME_NAME, block)
+            .expect("the home image");
         assert_eq!(Dir::block_size(&disk).unwrap(), unit, "the directory's fit");
         let (names, stats) = (disk.list().unwrap(), disk.stats());
         let refused = open(&disk, 0);
@@ -1731,7 +1732,8 @@ fn an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks() {
                 "{block:?}: the defect {plant:#x} is not noticed"
             );
         }
-        disk.same_block_size_as_the_disk(HOME_NAME);
+        disk.same_block_size_as_the_disk(HOME_NAME)
+            .expect("the home image");
         assert!(start(&disk, 0, false).is_ok(), "{block:?}: not again");
     }
 }
