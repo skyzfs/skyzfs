@@ -2865,6 +2865,14 @@ GJ_MIB=16
 # line, allowed or not.
 GJ_MAY_CHANGE='^status$'
 GJ_ALLOWED_UNTIL_M13T='^log\.(super|[0-9]+)$'
+# dir -> "DIGEST  NAME" for every entry under it, dotfiles and
+# directories too (a directory's digest is "dir"), sorted by name
+gj_digests() {
+    (cd "$1" && find . -mindepth 1 -printf '%P\n' | sort | while IFS= read -r f; do
+        if [ -f "$f" ] && [ ! -L "$f" ]; then printf '%s  %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "$f"
+        else printf '%s  %s\n' "$(stat -c %F "$f" | tr ' ' '_')" "$f"; fi
+    done)
+}
 # new-or-rewritten gone-or-rewritten -> what is wrong ("" when nothing)
 gj_files_judged() {
     local f out=""
@@ -2940,7 +2948,7 @@ check_g_data_journal() {
     # holds is the figure that says how it served.
     # Each file's digest: the image must be as it was; any other file a
     # refused start rewrote is named, not judged.
-    before=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2)
+    before=$(gj_digests "$mnt/vol")
     serve_start "$SKYZFSD" "$link"; rc=$?
     said=$(grep -m 1 'no direct I/O' "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)
     if [ $rc = 0 ]; then
@@ -2952,9 +2960,9 @@ check_g_data_journal() {
         { [ $rc = 1 ] && [ "$SERVE_RC" = 1 ] && [ -n "$said" ] && [[ $said == *"has not failed"* ]]; } || bad+="the refusal; "
         ! grep -q '^ready' "$link.ready" || bad+="a ready line; "
         cache+="on data=journal: refused, nothing written; "
-        after=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2)
-        changed=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^> [0-9a-f]*  //p' | tr '\n' ' ')
-        gone=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^< [0-9a-f]*  //p' | tr '\n' ' ')
+        after=$(gj_digests "$mnt/vol")
+        changed=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^> [^ ]*  //p' | tr '\n' ' ')
+        gone=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^< [^ ]*  //p' | tr '\n' ' ')
         a+="files of the volume new or rewritten: ${changed:-none}; gone or rewritten: ${gone:-none}; "
         bad+=$(gj_files_judged "$changed" "$gone")
     fi
@@ -3006,7 +3014,7 @@ check_g_reason() {
     # where it must (the start served, or the serve did not fail), or the
     # part did not run, and then its own pins are ERROR already.
     if [ "${G1_PREMISE:-}" = missed ]; then
-        pin failure_reason_is_the_images ERROR "g.1's premise did not happen (no write or flush reached the daemon), so there is no failure of g.1 to give a reason for; ${said:-nothing read}"
+        pin failure_reason_is_the_images ERROR "g.1's premise did not happen (the rig's write could not be issued), so there is no failure of g.1 to give a reason for; ${said:-nothing read}"
     elif [ -n "$miss" ]; then
         pin failure_reason_is_the_images FAIL "no failure line of the daemon's at:$miss; ${said:-nothing read}"
     elif [ "$bad" = 0 ]; then
@@ -3151,7 +3159,7 @@ check_g_failed_start() {
 # how many failed to ZFS and whether the reader saw one before the
 # volume failed.
 check_g_sync_fails_while_serving() {
-    local name=g1 dir mark rc n at seen before watch rw w0 w1 f0 f1
+    local name=g1 dir mark rc n at seen before watch rw w0 w1 f0 f1 wrc held
     dir=$(g_dir g1)
     step "g: the disk fails while the volume is served"
     if ! FS_DIR=$dir fail_setup "$name" "$SKYZFSD"; then
@@ -3186,30 +3194,42 @@ check_g_sync_fails_while_serving() {
     # reads before it wrote again (43521074465), and the daemon, whose
     # failed reads fail their requests alone (§5.1), had nothing to fail
     # on: a run without this write tests nothing of a failed sync.
-    lim 30 "$DD" if=/dev/urandom of="$BDEV" bs=64K count=1 seek=$((G_BOOT / 65536)) oflag=direct,dsync conv=nocreat status=none 2> "$OUT/g1-rig-write.err"; rc=$?
-    rw="the rig's own write of 64 KiB at byte $G_BOOT after the switch, O_DIRECT and O_DSYNC: exit $rc$([ "$rc" = 0 ] || echo ", $(tail -n 1 "$OUT/g1-rig-write.err" | cut -c1-120)")"
+    lim 30 "$DD" if=/dev/urandom of="$BDEV" bs=64K count=1 seek=$((G_BOOT / 65536)) oflag=direct,dsync conv=nocreat status=none 2> "$OUT/g1-rig-write.err"; wrc=$?
+    rw="the rig's own write of 64 KiB at byte $G_BOOT after the switch, O_DIRECT and O_DSYNC: exit $wrc$([ "$wrc" = 124 ] && echo " (not answered in 30 s)")$([ "$wrc" = 0 ] || [ "$wrc" = 124 ] || echo ", $(tail -n 1 "$OUT/g1-rig-write.err" | cut -c1-120)")"
     if FS_READS=observed fail_wait "$name" 300 "$mark"; then pin sync_failure_suspends_pool PASS "$FS_WHY"; else pin sync_failure_suspends_pool FAIL "$FS_WHY"; fi
     # And at the suspension: from the status file, which a failed
     # instance leaves behind.
     w1=$(vol_stat "$SKYZFSD" "$dir" writes); f1=$(vol_stat "$SKYZFSD" "$dir" flushes)
     rw+="; the daemon's writes ${w0:-?} then ${w1:-?}, flushes ${f0:-?} then ${f1:-?}, from the switch to the suspension"
+    # The serve first: a daemon that exits failed with its line passes,
+    # whatever the counters say (they count finished requests, and the
+    # status file is written on an interval). Only one still serving is
+    # judged by what it was handed: the rig's write not answered, or a
+    # request held, is a request held on a failed disk; a write answered
+    # while the volume did not fail is a volume that should have; and
+    # only a write that could not be issued at all leaves g.1 without its
+    # premise, the rig's error.
     G1_PREMISE=""
-    if [[ "$w0$w1$f0$f1" =~ ^[0-9]+$ ]] && { [ "$w1" -gt "$w0" ] || [ "$f1" -gt "$f0" ]; }; then G1_PREMISE=1; fi
-    if [ -z "$G1_PREMISE" ] && kill -0 "$SERVE_PID" 2>/dev/null; then
-        # Still serving, and nothing that could fail was handed to it.
-        pin sync_failure_fails_volume ERROR "no write or flush reached the daemon after the disk failed, so there was nothing to fail the volume on: the premise of g.1 did not happen; $rw"
-        G1_PREMISE=missed
-    elif serve_wait 60; then
+    if serve_wait 60; then
         n=$(grep -m 1 -o 'the volume failed while it was served[^;]*' "$dir.serve.log")
         if [ "$SERVE_RC" = "$EXIT_FAILED" ] && [ -n "$n" ]; then
-            pin sync_failure_fails_volume PASS "serve exited $SERVE_RC: $n; $rw"
+            pin sync_failure_fails_volume PASS "serve exited $SERVE_RC: $n (a write or a sync of the image failed: the rig's own write may be the one); $rw"
         else
             pin sync_failure_fails_volume FAIL "serve exited $SERVE_RC, wanted $EXIT_FAILED with \"the volume failed while it was served\": ${n:-no line of a failure in its log}; $rw"
         fi
     else
-        pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended; $rw"
+        held=$(vol_stat "$SKYZFSD" "$dir" held)
+        rw+="; status held '${held:-not said}' 60 s after the pool's wait ended"
+        if [ "$wrc" = 124 ] || [[ ${held:-0} =~ ^[1-9][0-9]*$ ]]; then
+            pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended, with a request held on the failed disk; $rw"
+        elif [ "$wrc" != 0 ] && grep -q 'failed to open' "$OUT/g1-rig-write.err" 2>/dev/null; then
+            pin sync_failure_fails_volume ERROR "serve was still running 60 s after the pool's wait ended, but the rig's own write could not be issued (the device would not open), so nothing that could fail is known to have reached the daemon: the premise of g.1 did not happen; $rw"
+            G1_PREMISE=missed
+        else
+            pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended, though the rig's write was answered; $rw"
+        fi
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     fi
-    if [ "$G1_PREMISE" = missed ]; then kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; fi
     # The watcher looks until the serve has ended: the daemon's line may
     # come after the pool suspended on its own reads.
     kill "$watch" 2>/dev/null; wait "$watch" 2>/dev/null
@@ -3227,7 +3247,7 @@ check_g_sync_fails_while_serving() {
     else
         lim 60 "$SKYZFSD" serve "${SERVE_ARGS[@]}" --dir "$dir" --run-dir "$RUN_DIR" > /dev/null 2> "$OUT/g1-again.err"; rc=$?
         if [ "$G1_PREMISE" = missed ]; then
-            pin sync_failed_volume_refused ERROR "g.1's premise did not happen (no write or flush reached the daemon), so the volume did not fail: serve exited $rc"
+            pin sync_failed_volume_refused ERROR "g.1's premise did not happen (the rig's write could not be issued), so the volume did not fail: serve exited $rc"
         else
             pin_is sync_failed_volume_refused "with the disk back, serve exited $rc, wanted $EXIT_REFUSED_FAILED: $(tail -n 1 "$OUT/g1-again.err" | cut -c1-300)" [ "$rc" = "$EXIT_REFUSED_FAILED" ]
         fi

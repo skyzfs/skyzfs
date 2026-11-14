@@ -641,6 +641,32 @@ class DataJournalFiles(unittest.TestCase):
         self.assertEqual(self.judged('lock x.tmp ', 'lock '), 'lock rewritten; x.tmp rewritten; ')
 
 
+class G1Premise(unittest.TestCase):
+    """g.1 (M1.T30, review of #72): a daemon that holds a request after the disk failed is a FAIL, not a rig error."""
+
+    def body(self):
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        return text[text.index('\ncheck_g_sync_fails_while_serving() {'):text.index('\ncase $CHECKS in *" a "*)')]
+
+    def test_the_serve_is_waited_for_before_any_error(self):
+        body = self.body()
+        error = body.index('pin sync_failure_fails_volume ERROR')
+        self.assertLess(body.index('if serve_wait 60; then'), error)
+        self.assertEqual(body.count('pin sync_failure_fails_volume ERROR'), 1)
+
+    def test_only_a_write_that_could_not_be_issued_is_an_error(self):
+        body = self.body()
+        branch = body[body.index('elif [ "$wrc" != 0 ] && grep -q \'failed to open\''):]
+        self.assertTrue(branch.split('\n')[1].lstrip().startswith('pin sync_failure_fails_volume ERROR'))
+        # A write not answered, or a request held, is judged before it, and FAILs.
+        held = body.index('[ "$wrc" = 124 ] || [[ ${held:-0}')
+        self.assertLess(held, body.index('pin sync_failure_fails_volume ERROR'))
+        self.assertIn('FAIL "serve was still running 60 s after the pool\'s wait ended, with a request held',
+                      body[held:held + 400])
+
+
 class Main(unittest.TestCase):
     def test_exit_statuses(self):
         import contextlib

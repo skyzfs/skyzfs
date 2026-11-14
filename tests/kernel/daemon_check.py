@@ -280,7 +280,10 @@ EXPECTED = {
                                         'while the client holds the device (§4.1)', 'WAITING'),
     'pin_sync_failure_fails_volume': ('g', 'PASS', WAITING,
                                       'the disk under the home image fails while the volume is served and written: '
-                                      'serve exits with status 3 and says the volume failed while it was served (§4.1)',
+                                      'serve exits with status 3 and says the volume failed while it was served (§4.1), '
+                                      'on a failed write or sync of the image (the rig writes to the device itself right '
+                                      'after the disk fails). Still serving with a request held, or with the rig\'s write '
+                                      'answered, is a FAIL; only a rig write that could not be issued is a rig error',
                                       'WAITING'),
     'pin_sync_failure_suspends_pool': ('g', 'PASS', WAITING,
                                        'the pool then suspends, with no write failed to an application (§4.1); a '
