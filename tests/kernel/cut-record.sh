@@ -35,8 +35,10 @@
 #              of its own
 #   config     a change of the pool's configuration: a comment, a new
 #              guid (reguid), a mirror attached and detached
-#   stray      flushes that ZFS did not ask for, every few milliseconds
-#              while the pool is loaded (fsync of the block device)
+#   stray      flushes that ZFS did not ask for, every 2 ms while the
+#              pool is loaded (fsync of the block device), with the back
+#              labels' writes held 20 ms (dm-delay) so that flushes fall
+#              between a group's uberblock writes
 #   autotrim   autotrim=on with a trim batch of 4 groups, files deleted,
 #              then a manual trim
 #   full       a pool filled to ENOSPC, then rewritten in place, so that
@@ -135,17 +137,19 @@ cleanup() {
     [ -z "$STRAY" ] || { kill "$STRAY" 2>/dev/null; wait "$STRAY" 2>/dev/null; }
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     dmsetup remove "$LW" 2>/dev/null
+    [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
     for l in "$VLOOP" "$LLOOP" "$MLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
     exit "$rc"
 }
 trap cleanup EXIT
 
-for m in dm_log_writes zfs; do modprobe "$m" 2>/dev/null || true; done
+for m in dm_log_writes dm_delay zfs; do modprobe "$m" 2>/dev/null || true; done
 [ -r /proc/spl/kstat/zfs/arcstats ] || { echo "the zfs kernel module is not loaded" >&2; exit 64; }
 dmsetup targets | grep -q '^log-writes' || { echo "no dm-log-writes target in this kernel" >&2; exit 64; }
 command -v zdb > /dev/null || { echo "no zdb" >&2; exit 64; }
 timeout 60 zpool export -f "$POOL" 2>/dev/null || true
 dmsetup remove "$LW" 2>/dev/null || true
+dmsetup remove skz-cut-lower 2>/dev/null || true
 # Enough history for a session's groups to be all in the kstat.
 echo 2000 > /sys/module/zfs/parameters/zfs_txg_history
 # One host id, in /etc/hostid and in the loaded module, before any pool:
@@ -156,18 +160,32 @@ zgenhostid -f 5eed1234
 echo 0x5eed1234 > /sys/module/spl/parameters/spl_hostid
 [ "$(hostid)" = 5eed1234 ] || { echo "the host id is $(hostid), not 5eed1234" >&2; exit 64; }
 
+# NAME [delay-end]: with delay-end, the device's last 512 KiB (labels L2
+# and L3) sits behind dm-delay, writes held 20 ms: a group's uberblock
+# writes to the back labels then complete after those to the front, and
+# a flush can fall between them, which exercises the repeat rule (M2.1's
+# fixture test found that none did without it).
+LOWER=skz-cut-lower; LOWER_UP=""
 begin() {
+    local sectors=$((VDEV_MB << 11)) under
     NAME=$1; RDIR=$OUT/$1; SESSION=0; LOADED=0
     rm -rf "${RDIR:?}"; mkdir -p "$RDIR"
     : > "$WORK/vdev.img"; truncate -s "${VDEV_MB}M" "$WORK/vdev.img"
     : > "$WORK/log.img"; truncate -s "${LOG_MB}M" "$WORK/log.img"
     VLOOP=$(losetup --find --show "$WORK/vdev.img")
     LLOOP=$(losetup --find --show "$WORK/log.img")
-    dmsetup create "$LW" --table "0 $((VDEV_MB << 11)) log-writes $VLOOP $LLOOP"
+    under=$VLOOP
+    if [ "${2:-}" = delay-end ]; then
+        printf '0 %s linear %s 0\n%s 1024 delay %s %s 0 %s %s 20\n' "$((sectors - 1024))" "$VLOOP" \
+            "$((sectors - 1024))" "$VLOOP" "$((sectors - 1024))" "$VLOOP" "$((sectors - 1024))" | dmsetup create "$LOWER"
+        LOWER_UP=1; under=/dev/mapper/$LOWER
+    fi
+    dmsetup create "$LW" --table "0 $sectors log-writes $under $LLOOP"
     log "$NAME: recording on $DEV ($VDEV_MB MiB)"
 }
 end() {
     dmsetup remove "$LW"
+    [ -z "$LOWER_UP" ] || { dmsetup remove "$LOWER"; LOWER_UP=""; }
     losetup -d "$VLOOP"; VLOOP=""
     losetup -d "$LLOOP"; LLOOP=""
     : > "$WORK/base.img"; truncate -s "${VDEV_MB}M" "$WORK/base.img"
@@ -330,7 +348,7 @@ WORST=0
 : > "$OUT/recordings.tsv"
 zfs version > "$OUT/zfs-version.txt" 2>&1 || true
 for r in $RECS; do
-    begin "$r"
+    if [ "$r" = stray ]; then begin "$r" delay-end; else begin "$r"; fi
     "rec_$r"
     end
 done

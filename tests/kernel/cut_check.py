@@ -83,9 +83,10 @@ EXPECTED = {
     # abandoned one used (run 43631961753); -F is thought to count on
     # from the failed group, which the recording shows.
     'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindsync='caught', rewindf=('same', 'caught')),
-    # A stray flush lands between two copies of an uberblock only by
-    # chance (none did in run 43631961753): either outcome, never missed.
-    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray=('same', 'caught')),
+    # In `stray` the back labels' writes are held 20 ms, so the flusher
+    # falls between a group's uberblock copies (none did without it, run
+    # 43631961753).
+    'count-repeats': dict({r: 'same' for r in RECS}, multihost='caught', stray='caught'),
 }
 # Whether every cut opens as itself: not after a rewind import with -T,
 # until the new history's groups pass the abandoned ones (run
