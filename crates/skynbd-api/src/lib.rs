@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use skynbd_engine::prepared::{PreparedSession, RangeOp};
 use skynbd_engine::{EngineConfig, EngineError};
-use skynbd_nbd::{DynEngine, ExportRegistry, VolumeBinding};
+use skynbd_nbd::{DynEngine, ExportRegistry, ServeTerm, VolumeBinding};
 use skynbd_refs::RefStore;
 use skynbd_store::ObjectStore;
 use skynbd_types::SnapId;
@@ -49,6 +49,10 @@ pub struct VolumeHandle {
     pub lease_holder: Option<String>,
     /// Active prepared sessions (lazily reopened after restart, §9A.6).
     pub prepared: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<DynPrepared>>>>>,
+    /// The serving this handle belongs to (M1.3aj): ended by the
+    /// release that tears it down. The origin export is converged
+    /// through it only while it lasts.
+    pub term: ServeTerm,
 }
 
 pub mod auth;
@@ -1001,6 +1005,13 @@ async fn get_origin(
 /// `<vol>/origin` serve the new generation from their next request
 /// (Invariant A — no reload, no reconnect). Idempotent; an empty body
 /// initializes the pointer instead of naming a target.
+///
+/// A release can end the volume's serving while the request is under
+/// way (M1.3aj). The swap then goes through the serving that is
+/// current when the request converges ([`converge_origin`]), a serving
+/// started since included; when none is, the row and its pin have still
+/// moved, no export is served, and the answer is a 409 that says so,
+/// never a swap that did not happen.
 async fn set_origin(
     State(state): State<Arc<ApiState>>,
     Path(vol): Path<String>,
@@ -1048,13 +1059,6 @@ async fn set_origin(
                 )
             })?,
     };
-    let binding = VolumeBinding {
-        vol_id: h.vol_id,
-        vol_name: vol.clone(),
-        store: Arc::clone(&h.store),
-        refs: Arc::clone(&h.refs),
-        cfg: h.cfg.clone(),
-    };
     // Invariant E: the pointer moves only forward, and the compare and
     // the write are one atomic step (`MetaCas` on the row this attempt
     // read). A conflict means a concurrent writer moved the row — re-read
@@ -1085,8 +1089,10 @@ async fn set_origin(
                         format!("origin pointer on {vol:?} names no resolvable generation"),
                     )
                 })?;
-            skynbd_nbd::origin::reconcile(&state.registry, &binding).await?;
-            let served = origin_served(&state, &vol, &h).await;
+            let Some(current) = converge_origin(&state, &vol).await? else {
+                return Err(released_while_repointing(&vol, &resolved.ref_name));
+            };
+            let served = origin_served(&state, &vol, &current).await;
             return Ok(Json(origin_info(&vol, resolved, served)));
         }
         let mut ops = vec![
@@ -1120,8 +1126,10 @@ async fn set_origin(
                 // before this commit, or a concurrent repoint whose
                 // swap would land after this one, then cannot leave
                 // the export on an older generation than the row names.
-                skynbd_nbd::origin::reconcile(&state.registry, &binding).await?;
-                let served = origin_served(&state, &vol, &h).await;
+                let Some(current) = converge_origin(&state, &vol).await? else {
+                    return Err(released_while_repointing(&vol, &target.ref_name));
+                };
+                let served = origin_served(&state, &vol, &current).await;
                 return Ok(Json(origin_info(
                     &vol,
                     skynbd_nbd::origin::ResolvedOrigin {
@@ -1138,6 +1146,67 @@ async fn set_origin(
         StatusCode::CONFLICT,
         format!("origin pointer on {vol:?} is contended; retry"),
     ))
+}
+
+/// Converge `<vol>/origin` on the row after a `set_origin` wrote or read
+/// it (M1.3ai, M1.3aj), through the serving of the volume that is
+/// current now, not the one whose handle the request began with. A
+/// release may have ended that serving since; and a serving that began
+/// after it read the row at its serve, before this request's commit, so
+/// its export follows the row only if converged here. Returns the
+/// handle of the serving converged, or `None` when no serving of the
+/// volume is left on this server: the next serve converges on the row.
+///
+/// The first look takes no lock of the provisioner's. When it finds no
+/// live serving, a serve or a teardown of the volume may have been half
+/// done on this server, a serve that read the row before this request's
+/// commit among them (the review's section 5 on #90). So it looks once
+/// more, under the provisioner's lock, where neither is
+/// ([`provision::Provisioner::converge_origin`]).
+async fn converge_origin(
+    state: &ApiState,
+    vol: &str,
+) -> std::result::Result<Option<VolumeHandle>, ApiError> {
+    let current = state.volumes.read().await.get(vol).cloned();
+    if let Some(h) = current {
+        skynbd_nbd::origin::reconcile(&state.registry, &origin_binding(vol, &h)).await?;
+        // Read after the convergence: a serving that ended before it
+        // converged nothing, and one that ended during it has its export
+        // taken down by the release's `retire`.
+        if !h.term.ended() {
+            return Ok(Some(h));
+        }
+    }
+    match &state.provisioner {
+        Some(prov) => Ok(prov.converge_origin(vol).await?),
+        None => Ok(None),
+    }
+}
+
+fn origin_binding(vol: &str, h: &VolumeHandle) -> VolumeBinding {
+    VolumeBinding {
+        vol_id: h.vol_id,
+        vol_name: vol.to_string(),
+        store: Arc::clone(&h.store),
+        refs: Arc::clone(&h.refs),
+        cfg: h.cfg.clone(),
+        term: h.term.clone(),
+    }
+}
+
+/// The answer of a `set_origin` whose volume no serving on this server
+/// holds any more (M1.3aj). A 409, as for any request that the
+/// volume's state on this server refuses: the row (and its pin) moved,
+/// but no export serves it here.
+fn released_while_repointing(vol: &str, row: &str) -> ApiError {
+    ApiError::msg(
+        StatusCode::CONFLICT,
+        format!(
+            "volume {vol:?} was released while its origin was being repointed: the pointer \
+             row names {row:?} and its origin pin moved with it, but no origin export is \
+             served here; the next serve of the volume serves what the row names"
+        ),
+    )
 }
 
 /// DELETE /v1/volumes/{vol}/snapshot-requests/{name} — agent completed
@@ -2191,4 +2260,228 @@ async fn unpin_snapshot(
         }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use skynbd_refs::{MemoryRefStore, RefOp, TxnOutcome};
+    use skynbd_store::MemoryStore;
+    use tower::ServiceExt;
+
+    async fn call(
+        router: &Router,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> StatusCode {
+        let req = match body {
+            Some(v) => Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(v.to_string()))
+                .expect("a request"),
+            None => Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .expect("a request"),
+        };
+        router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("an answer")
+            .status()
+    }
+
+    async fn served(registry: &ExportRegistry) -> Option<skynbd_types::CommitHash> {
+        let export = registry.get("lin/origin").await?;
+        let commit = export.engine.read().await.head_commit_hash();
+        Some(commit)
+    }
+
+    /// A repoint that commits while a serve of its volume is half done,
+    /// and whose convergence finds no serving, converges that serve
+    /// through the row (M1.3aj; ordering (b) of the review's section 5 on
+    /// #90). The serve is held after it has converged the origin export
+    /// and spawned its tasks, before its handle is in the volume table.
+    /// Its own convergence and its sync task's first full sync have both
+    /// read the row (g0). The row then moves to g1, its pin with it, as
+    /// `set_origin` commits; meta and pin writes wake no sync task. The
+    /// convergence that follows the commit finds no handle. Answering
+    /// there would leave the export on g0, whose pin has moved
+    /// (Invariant D). It looks again under the provisioner's lock, which
+    /// the serve holds, and converges the serving it finds there once
+    /// the serve is done: the export serves g1.
+    ///
+    /// The test gives the sync task's first full sync 200 ms to read the
+    /// row after its snapshot exports appear, and the convergence 300 ms
+    /// while the serve is held. If the full sync read after the commit,
+    /// it would converge the export itself, and a second look that does
+    /// not converge could pass; a right one cannot fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_repoint_that_finds_a_serve_half_done_converges_it_through_the_row() {
+        let store: Arc<dyn ObjectStore> = Arc::new(MemoryStore::new());
+        let refs: Arc<dyn RefStore> = Arc::new(MemoryRefStore::new());
+        let registry = Arc::new(ExportRegistry::new());
+        let prov = Arc::new(provision::Provisioner::new(
+            store,
+            Arc::clone(&refs),
+            Arc::clone(&registry),
+            0,
+        ));
+        let state = Arc::new(ApiState {
+            volumes: Arc::clone(&prov.volumes),
+            registry: Arc::clone(&registry),
+            auth: ApiAuth::Disabled,
+            enroll: None,
+            provisioner: Some(Arc::clone(&prov)),
+            snap_requests: Default::default(),
+        });
+        let router = router(Arc::clone(&state));
+        let vid = provision::volume_id("lin");
+
+        assert_eq!(
+            call(
+                &router,
+                "POST",
+                "/v1/volumes",
+                Some(serde_json::json!({"name": "lin", "size": 128 * 1024}))
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        for (generation, fill) in [("g0", 0xA0u8), ("g1", 0xB1u8)] {
+            let head = prov.volumes.read().await["lin"].engine.clone();
+            head.write()
+                .await
+                .write(0, &[fill; 4096])
+                .expect("a write to the head");
+            assert_eq!(
+                call(
+                    &router,
+                    "POST",
+                    "/v1/volumes/lin/snapshots",
+                    Some(serde_json::json!({"name": generation}))
+                )
+                .await,
+                StatusCode::CREATED
+            );
+            if generation == "g0" {
+                // The pointer starts on g0: an initializing POST adopts
+                // the newest generation there is.
+                assert_eq!(
+                    call(
+                        &router,
+                        "POST",
+                        "/v1/volumes/lin/origin",
+                        Some(serde_json::json!({}))
+                    )
+                    .await,
+                    StatusCode::OK
+                );
+            }
+        }
+        let g0 = refs
+            .get(vid, "snap/g0")
+            .await
+            .expect("refs")
+            .expect("g0")
+            .commit;
+        let g1 = refs
+            .get(vid, "snap/g1")
+            .await
+            .expect("refs")
+            .expect("g1")
+            .commit;
+        assert_ne!(g0, g1);
+        assert_eq!(
+            call(&router, "POST", "/v1/volumes/lin/release", None).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(served(&registry).await, None);
+
+        let (reached, was_reached) = tokio::sync::oneshot::channel();
+        let (go, gone) = tokio::sync::oneshot::channel();
+        *prov.serve_hold.lock().expect("the hold") =
+            Some(provision::ServeHold { reached, go: gone });
+        let serve = tokio::spawn({
+            let prov = Arc::clone(&prov);
+            async move { prov.serve_cataloged("lin").await.map(|_| ()) }
+        });
+        was_reached.await.expect("the serve reaches its hold");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while registry.get("lin/snap/g1").await.is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the sync task's full sync runs"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        drop(registry.swap_lock("lin/origin").await);
+        assert_eq!(
+            served(&registry).await,
+            Some(g0),
+            "the serve converged on the row as it was"
+        );
+
+        let holder = skynbd_nbd::origin::ORIGIN_PIN_HOLDER.to_string();
+        let commit = refs
+            .transact(
+                vid,
+                vec![
+                    RefOp::Pin {
+                        name: "snap/g1".into(),
+                        holder: holder.clone(),
+                    },
+                    RefOp::MetaCas {
+                        key: skynbd_nbd::origin::ORIGIN_META_KEY.into(),
+                        expected: Some(b"snap/g0".to_vec()),
+                        value: b"snap/g1".to_vec(),
+                    },
+                    RefOp::Unpin {
+                        name: "snap/g0".into(),
+                        holder,
+                    },
+                ],
+            )
+            .await
+            .expect("the commit");
+        assert_eq!(commit, TxnOutcome::Committed);
+
+        let mut converging = tokio::spawn({
+            let state = Arc::clone(&state);
+            async move {
+                converge_origin(&state, "lin")
+                    .await
+                    .map(|h| h.is_some())
+                    .map_err(|e| e.0)
+            }
+        });
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut converging).await;
+        let waited = early.is_err();
+        let _ = go.send(());
+        serve.await.expect("joined").expect("the serve");
+        let found = match early {
+            Ok(done) => done.expect("joined"),
+            Err(_) => converging.await.expect("joined"),
+        };
+        assert_eq!(
+            served(&registry).await,
+            Some(g1),
+            "the export stayed on a generation the row no longer names"
+        );
+        assert_eq!(found, Ok(true), "the convergence found no serving");
+        assert!(
+            waited,
+            "the convergence ended while a serve of its volume was half done"
+        );
+    }
 }

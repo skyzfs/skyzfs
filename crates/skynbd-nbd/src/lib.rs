@@ -23,5 +23,5 @@ pub mod tls;
 
 pub use acl::{AclRule, ConnAccess};
 pub use server::{DynEngine, Export, ExportRegistry, Server, MAX_IN_FLIGHT_LIMIT};
-pub use sync::{spawn_registry_sync, VolumeBinding};
+pub use sync::{spawn_registry_sync, ServeTerm, VolumeBinding};
 pub use tls::TlsContext;
