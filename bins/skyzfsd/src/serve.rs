@@ -27,7 +27,7 @@
 //! | a stop was asked and everything accepted was completed | 0 |
 //! | the volume failed while it was served, or at its start | 3 |
 //! | the queue went away, or the target did | 1 |
-//! | the kernel's driver broke its rule: it handed over a tag whose request was still out ([`Stopped::BrokenRule`]) | 7 |
+//! | the kernel's driver broke its rule: it handed over a tag the queue does not have, or one whose request was still out ([`Stopped::BrokenRule`]) | 7 |
 //!
 //! After a broken rule nothing more is answered on the queue, since an
 //! answer could complete the wrong request. The breach is the
@@ -1008,9 +1008,10 @@ fn ended(number: u32, asked_to_stop: bool, stopped: Stopped) -> Result<Exit, Str
 /// What serve says when the kernel's driver broke its rule.
 fn broken_rule_said(number: u32, tag: u16) -> String {
     format!(
-        "the kernel handed over tag {tag} of device {number} while its request was still out, \
-         against the driver's rule: nothing more is answered on this queue, the volume is not \
-         failed, and device {number} waits for the next server, as after a kill"
+        "the kernel handed over tag {tag} of device {number}, which the queue does not have or \
+         whose request was still out, against the driver's rule: nothing more is answered on \
+         this queue, the volume is not failed, and device {number} waits for the next server, \
+         as after a kill"
     )
 }
 
@@ -1537,7 +1538,7 @@ mod tests {
         let said = broken_rule_said(3, 0);
         for words in [
             "the kernel handed over tag 0 of device 3",
-            "still out",
+            "which the queue does not have or whose request was still out",
             "nothing more is answered",
             "waits for the next server",
         ] {
