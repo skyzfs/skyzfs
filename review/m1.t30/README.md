@@ -30,3 +30,11 @@ and then hangs reads ERROR. Asked for: ERROR only with the counters
 unmoved, `held` 0 and no failure line in the serve log. Still blocking,
 one condition. gj_digests checked here (names `.hidden`, `sub`,
 `log.super`); test_daemon_check.py passes at 9987c0a.
+
+## 0d150d9
+
+The ERROR branch now needs the device not opening, the counters as at
+the switch, `held` 0 and no failure line in the serve log; anything
+else still serving FAILs. Settled by reading; test_daemon_check.py 68
+OK, `bash -n` clean. To do: the daemon rig's tables at 0d150d9, then
+the verdict on the pull request.
