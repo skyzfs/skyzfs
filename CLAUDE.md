@@ -185,12 +185,13 @@ there, and the user decides when it merges.
   rig catches means changing that table on purpose. A newer push to a
   pull request cancels the older run. The dispatch input `discard`
   chooses whether a discarded range is zeroed or left as it was.
-  The daemon jobs name the store: on a pull request `--store in-place`,
-  by dispatch what the input `serve_args` says, and with no `--store`
-  there the in-place store too (M1.3t-a): the rigs and the benchmark
-  name the store themselves and never rest on the daemon's default.
-  The log store was removed in M1.3t: `serve_args: --store log`
-  is refused at the start.
+  The daemon has one store, the in-place store (the log store was
+  removed in M1.3t), and since M1.T31 no rig and not the benchmark
+  names a store; `--store log` in `serve_args` is refused before a
+  serve. A build from before M1.3t (a `daemon_ref` or
+  `TB_SKYZFSD_REF`) defaults to the log store, so when its help offers
+  `[--store` it is served with `--store in-place`, and the summary
+  says so.
   Since M1.T14 the workflow also has the jobs "through skyzfsd", one
   per image (`tests/kernel/replay_daemon.py`): the cut is below the
   daemon, on the disk under its files, and each prefix is checked
@@ -232,19 +233,17 @@ there, and the user decides when it merges.
   which is what shows that the rig still catches what it caught. A push
   of the workflow file on a testing branch runs the stand-in. By
   dispatch the input `server` chooses `daemon` (the default), `stand-in`
-  or `both`, `checks` the checks (for example `c` alone), and `store`
-  the daemon's store, which is `in-place` only (the log store can no
-  longer be driven here). With the in-place store the lines about a log
-  (checkpoints, the log's bound, the take-over time's growth) read NA,
-  and the expected table names them; the judge
-  `tests/kernel/daemon_check.py` fails on an NA that is not in it. The job
+  or `both`, `checks` the checks (for example `c` alone). Two lines
+  measure the reference server's count of writes applied and not
+  acknowledged and read NA on the daemon
+  (`NOT_ON_THE_DAEMON` in `tests/kernel/daemon_check.py`); the judge
+  fails on any other NA. The log store's lines were removed in M1.T31. The job
   `which server` says in its summary what was chosen, and artifacts are
   named `daemon-rig-<image>-<server>`. **The jobs build the pull
   request merged with its base as the base was when the pull request
   was last pushed**: after another pull request has merged, the daemon
   they drove is not the one on `zfs-topology`, and the rig is dispatched
-  there after the merge. The pins of the log store's checkpoints read NA since
-  the log store was removed (M1.3t). A green run is not a verdict on a
+  there after the merge. A green run is not a verdict on a
   failure with a request held: that one pin is WAITING, and the
   summary says so. Check g (M1.T23) puts the volume's
   directory on a device-mapper device that the rig switches to the
@@ -253,13 +252,13 @@ there, and the user decides when it merges.
   only the cache held, and what the daemon and the pool do when the
   disk fails at a start or while serving. Its negative control is a
   daemon from before the cache drop, by dispatch: `daemon_ref` with
-  cd0e763's full id and `checks: g` (run 43420754305), where four
-  lines must differ, the daemon's failure reason among them
+  cd0e763's full id and `checks: g`, where five
+  lines must differ (runs 43541748747 and 43555427037), the daemon's failure reason among them
   (`pin_failure_reason_is_the_images`, M1.T26: the reason the daemon
-  gives for a failed image is read in four places). Check f (what a pool does after a
-  refused start; the input `f_courses` names the courses) runs by
-  dispatch only, one course per job, and judges nothing but its
-  control. The summary
+  gives for a failed image is read in four places). A start that
+  the daemon refuses after a `kill -9` is a FAIL of the kill test's
+  pins, not an error of the rig (M1.T31); a refused start may change
+  only the status file. Check f was removed with the log store. The summary
   says for each line whether it rests on the kernel, on the server, or
   only shows that the check works. Exit 2 is an error of the rig and
   not a verdict on the server. Read the summary's table and not the
