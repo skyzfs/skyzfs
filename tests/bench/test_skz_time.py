@@ -169,7 +169,8 @@ class Eleventh(unittest.TestCase):
             self.assertEqual(times, status_keys(), 'the source lists time_* keys other than the frozen ones')
             self.assertEqual(pump, [])
         else:
-            self.assertEqual(pump, list(st.PUMP_KEYS), "the source's pump keys are not the module's")
+            # version 11's thirteen, or version 12's nine (no taken time)
+            self.assertIn(pump, (list(st.PUMP_KEYS), list(st.PUMP_KEYS_V12)), "the source's pump keys are not the module's")
 
     def test_the_pump_keys_are_the_time_pump_keys_of_before(self):
         self.assertEqual(len(st.PUMP_KEYS), 13)
@@ -191,6 +192,25 @@ class Eleventh(unittest.TestCase):
     def test_the_time_pump_key_of_a_reading_wins(self):
         r = dict(reading(1), pump_submit_count='999999')
         self.assertEqual(st.times_of(r)['time_pump_submit_count'], reading(1)['time_pump_submit_count'])
+
+    def test_version_12_has_no_taken_time(self):
+        self.assertEqual(len(st.PUMP_KEYS_V12), 9)
+        self.assertFalse(any('taken' in k for k in st.PUMP_KEYS_V12))
+        b = {k: v for k, v in eleventh(1).items() if not k.startswith('pump_taken_')}
+        a = {k: v for k, v in eleventh(3).items() if not k.startswith('pump_taken_')}
+        b['status_version'] = a['status_version'] = '12'
+        a['cut_opens'] = 'itself'
+        t = st.delta(b, a)
+        self.assertTrue(t['ok'], t['why'])
+        self.assertEqual(len(t['delta']) + len(t['end']), 9)
+        text = '\n'.join(st.render([{'label': 'skyzfsd', 'workload': 'tpcb', 'tps': 1.0, 'time': t, 'duration_s': 60}]))
+        rows = [[c.strip() for c in ln.strip('|').split('|')] for ln in text.splitlines() if ln.startswith('| tpcb | skyzfsd |')]
+        cells = next(r for r in rows if len(r) == 13)  # the pump's table
+        self.assertEqual((cells[7], cells[11]), ('n/a', 'n/a'))
+        self.assertNotIn('n/a', cells[2:7] + cells[8:11] + cells[12:])
+        # without a taken time, all of the commit time is taken to committed
+        stages, _ = st.life({'time_read_count': 10, 'time_pump_commit_read_count': 4, 'time_pump_commit_read_ns': 8000}, 'read')
+        self.assertEqual([v for _, v in stages][3:], [None, 2.0])
 
     def test_a_reading_without_either_says_so(self):
         t = st.delta({'pid': '1', 'status_version': '11'}, eleventh(3))
