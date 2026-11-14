@@ -369,13 +369,15 @@ mod run {
     ///
     /// Only a request with a place (a read, a write, a discard, a write
     /// of zeros) has its byte computed. A flush has none, whatever its
-    /// sector field holds. The control rig saw a flush handed over with
-    /// a `start_sector` whose byte does not fit in 64 bits; by a reading
-    /// of the kernel's source, not checked on a kernel, the block
-    /// layer's own flush request is made with no sector (`blk_rq_init`
-    /// sets it to -1), so the field reads u64::MAX. A place whose byte
-    /// does not fit in 64 bits is answered with an I/O error, as the
-    /// daemon answers a request outside its device.
+    /// sector field holds. The driver hands a flush over with
+    /// `start_sector` u64::MAX and no sectors: the block layer's own
+    /// flush request is made with sector -1 (`blk_rq_init`). The
+    /// daemon's request log shows it on every one of the 330 flushes of
+    /// the direct-write split probe's run 43455086383 (Ubuntu 26.04,
+    /// kernel 7.0, amd64), and the control rig's panic on all three of
+    /// its images shows a field whose byte does not fit in 64 bits. A
+    /// place whose byte does not fit in 64 bits is answered with an I/O
+    /// error, as the daemon answers a request outside its device.
     fn answer(queue: &mut impl Queue, file: &File, f: Fetched, counts: &Counts) {
         let at = || {
             f.desc
@@ -1119,11 +1121,11 @@ mod run {
         }
 
         /// A flush has no place, whatever its sector field holds (the
-        /// block layer's own flush request reads u64::MAX there, by a
-        /// reading of the kernel's source: see `answer`). It is answered
-        /// as any flush, with a sync of the file and the result 0, and
-        /// the server goes on. The control rig's take-over of a refused
-        /// flush is handed such a flush again.
+        /// driver hands a flush over with u64::MAX there: see
+        /// `answer`). It is answered as any flush, with a sync of the
+        /// file and the result 0, and the server goes on. The control
+        /// rig's take-over of a refused flush is handed such a flush
+        /// again.
         #[test]
         fn a_flush_is_answered_whatever_its_sector_reads() {
             let turns: Vec<Turn> = vec![
@@ -1151,7 +1153,7 @@ mod run {
 
         /// The flush of the control rig's course: refused with no
         /// buffer by the first server, handed over again to the next
-        /// one with no sector, and answered by it.
+        /// one with `start_sector` u64::MAX, and answered by it.
         #[test]
         fn a_refused_flush_handed_over_again_is_answered() {
             let plan = Plan {
