@@ -3,7 +3,8 @@
 **Status**: study, not a decision record. It informs the origin-advance
 design's §7.1 read cache (`skynbd-origin-advance-design.md`) and the
 per-StorageClass cache work it recommends; nothing here changes the
-shipped stack by itself. Companion benchmark:
+shipped stack by itself. §10 explores a different stack (ZFS on a
+userspace block backend) with the same benchmark. Companion benchmark:
 `tests/bench/topology-bench.sh` and `.github/workflows/topology-bench.yml`.
 
 ---
@@ -553,3 +554,793 @@ pool blocks), against a 10 ms-per-bio origin. tpcb, two runs:
   daemon serves 8 MiB segments and may cache them.
 - Once the workflow file is on the default branch, `workflow_dispatch`
   works and the push trigger it carries for development can go.
+
+## 10. ZFS on a userspace block backend (exploration)
+
+A different shape for the same problem: replace the dm-thin and
+dm-cache layers with ZFS, on one vdev that is a ublk device served by
+a node-local daemon with a local write log and the object store behind
+it. Snapshots become cuts of the backend's write log at a transaction
+group boundary, with no filesystem freeze. Nothing here is built; this
+section records what the topology benchmark says about the I/O.
+
+### 10.1 What the rows model
+
+The vdev is a transient dm-snapshot whose chunk is one ZFS sector
+(4 KiB at ashift 12) over a read-only, delayed image of an exported
+pool holding the same pgbench database. Written blocks are local,
+never-written blocks cost the origin round trip, and no write reads
+first: dm-snapshot skips the origin copy when a bio covers a whole
+chunk, and at chunk = sector every ZFS write does. PGDATA and `pg_wal`
+are two datasets of the one pool.
+
+| name | configuration |
+|---|---|
+| zfs | recordsize 8k (WAL dataset 128k), lz4, `full_page_writes=off`, `wal_recycle=off`, `wal_init_zero=off` |
+| zfs-plain | zfs with compression off and `full_page_writes=on`: the control for what pgbench's very compressible rows and the missing full-page images contribute |
+| zfs-l2arc | zfs plus an L2ARC device of 25% of the database, the counterpart of baseline's dm-cache |
+| zfs-slog | zfs plus a separate 1 GiB log device on local flash, so ZIL blocks never reach the vdev: the ZFS-native form of the two-volume split |
+| zfs-slog-l2arc | zfs-slog plus an L2ARC of twice the ARC cap (1536 MiB), with the WAL dataset excluded (`secondarycache=none`): the ZFS-native flash read cache |
+| zfs-slog-rcache | zfs-slog plus a dm-cache (writethrough, smq, 25% of the database: baseline's cache) on the origin path under the vdev, standing in for a backend that keeps what it fetched |
+
+The ARC is not charged to postgres's cgroup, so it is capped at the
+memory limit minus `shared_buffers` (768 MiB here), which is what the
+page cache gets in the other rows. A snapshot of both datasets at the
+start of each measured window makes `written@` at the end report the
+live bytes born in the window. The pool is 8 GiB in §10.2 to §10.6 and
+32 GiB from §10.7 on, for the reason given there.
+
+What the model leaves out, and which way it leans:
+
+- **No backend read cache or read-ahead.** A block that is read is
+  never local afterwards unless the ARC holds it. A real backend would
+  keep what it fetched and fetch more than one 8 KiB record at a time.
+  This is pessimistic for ZFS on a cold origin.
+- **No backend log commit.** A flush on the transient store is the
+  data device's flush alone; dm-thin pays a metadata commit. Slightly
+  optimistic for ZFS.
+- **4 KiB bios.** dm-snapshot splits every I/O at the chunk. Some CPU
+  cost the real device would not have.
+
+### 10.2 Results
+
+ubuntu-26.04 runner, kernel 7.0, ZFS 2.4.1, PostgreSQL as packaged.
+Scale 100, 1 GB memory cap, 8 clients, 30 s warm-up and 120 s
+measured, tpcb then select on the same stack. One run per cell, one
+runner VM per row.
+
+tpcb, 10 ms origin:
+
+| topology | tps | lat ms | origin read MB | flash MB/ktxn | vs nocache |
+|---|---|---|---|---|---|
+| nocache | 373 | 21.4 | 2100 | 65.2 | 1.00 |
+| baseline | 370 | 21.6 | 2285 | 86.6 | 1.33 |
+| twovol | 3590 | 2.2 | 1997 | 29.7 | 0.46 |
+| twovol-origin | 400 | 20.0 | 2313 | 78.3 | 1.20 |
+| twovol-hydrated | 2618 | 3.1 | 1893 | 32.6 | 0.50 |
+| bcache | 371 | 21.6 | 2096 | 81.0 | 1.24 |
+| opencas | 349 | 22.9 | 2045 | 78.3 | 1.20 |
+| zfs | 583 | 13.7 | 340 | 18.7 | 0.29 |
+| zfs-plain | 396 | 20.2 | 1023 | 54.1 | 0.83 |
+| zfs-l2arc | 546 | 14.6 | 327 | 171.1 | 2.63 |
+
+tpcb, local origin (`TB_ORIGIN_DELAY_MS=0`), the everything-local
+bound:
+
+| topology | tps | lat ms | flash MB/ktxn | vs nocache |
+|---|---|---|---|---|
+| nocache | 3384 | 2.4 | 22.0 | 1.00 |
+| baseline | 3159 | 2.5 | 26.7 | 1.21 |
+| twovol | 5576 | 1.4 | 22.3 | 1.01 |
+| zfs | 3454 | 2.3 | 11.5 | 0.52 |
+| zfs-plain | 2551 | 3.1 | 49.2 | 2.23 |
+
+select-only:
+
+| topology | tps, 10 ms origin | tps, local origin |
+|---|---|---|
+| nocache | 10732 | 20098 |
+| baseline | 11820 | 19015 |
+| twovol | 20290 | 20400 |
+| zfs | 2666 | 26345 |
+| zfs-plain | 1397 | 17136 |
+| zfs-l2arc | 2742 | – |
+
+What reached the ZFS vdev, per thousand tpcb transactions:
+
+| origin | topology | vdev write MB | first-touch LBA MB | live at window end MB | ZIL MB |
+|---|---|---|---|---|---|
+| 10 ms | zfs | 18.7 | 19.1 | 5.9 | 14.6 |
+| 10 ms | zfs-plain | 54.1 | 53.1 | 19.2 | 12.8 |
+| local | zfs | 11.5 | 9.3 | 2.2 | 8.7 |
+| local | zfs-plain | 49.2 | 8.7 | 6.3 | 10.1 |
+
+`first-touch` is growth of the COW store: bytes written to LBAs never
+written since the stage. `live at window end` is `written@` against
+the window-start snapshot.
+
+### 10.3 What the runs show
+
+- **On a cold origin ZFS is bound by PostgreSQL's own page reads.**
+  The zfs row took about one ARC miss per transaction, each one origin
+  round trip, and nothing in the model makes a read block local. It
+  beat the single-volume stacks by about 1.5x and lost to twovol by
+  about 6x.
+- **The thin stacks win the cold case by hydrating, as a side effect
+  of their amplification.** Every first write to a chunk copies 64 KiB
+  from the origin, so they read about 2 GB — the whole database —
+  within the window and then run on flash. Their select run inherits
+  that from the tpcb run before it. ZFS writes only the 8 KiB it was
+  given, which is why it read 340 MB.
+- **With everything local, ZFS matches single-volume ext4 in
+  throughput and halves the flash writes** (3454 against 3384 tps,
+  11.5 against 22.0 MB per thousand transactions), and leads on
+  select-only. twovol is still 1.6x faster on tpcb, on a different
+  machine; §10.7 repeats that comparison on one machine and the gap
+  does not survive it.
+- **The saving is compression and the absent full-page images, not
+  the layout.** zfs-plain writes 2.2x what nocache does with a local
+  origin and is 25% slower. Real schemas compress less than pgbench's.
+- **Most of what reaches the vdev is dead within the window.** For
+  zfs, 2.2 to 5.9 MB per thousand transactions was still live against
+  11.5 to 18.7 written. ZIL blocks are three quarters of the writes.
+  An uploader that sends one cut per window and knows what was freed
+  carries a fifth to a third of the vdev traffic; one that does not
+  carries nearly all of it, because on a cold origin almost every
+  write landed on a never-written LBA. The ZIL does not stay inside
+  its reserved metaslab at this pool size (8 GB).
+- **L2ARC at 25% of the database is churn.** It wrote 10 GB to a
+  381 MiB device during tpcb and 20 GB during select, and served about
+  1% of ARC misses. The device is smaller than the ARC that feeds it,
+  so it wraps every few seconds: the same failure as bcache and Open
+  CAS in §6. A flash read cache for this shape belongs in the backend,
+  below the vdev.
+- **Pool import over the 10 ms origin took about 0.7 s.**
+
+### 10.4 Snapshots during the window, and the separate log device
+
+`TB_SNAP_MODES` takes a snapshot every 60 s while pgbench runs and
+keeps the last two. The modes run as phases on one stack, so a row's
+phases share a machine. For the thin stacks `freeze` is the agent's
+capture bracket (fsfreeze, suspend, `create_snap`, resume, thaw) and
+`suspend` is the same without the freeze; twovol snapshots both
+volumes in one bracket. The ZFS stacks run `zfs snapshot` of both
+datasets. tpcb, local origin, 300 s per phase, two runs with the thin
+phases in opposite order (suspend first in run A, freeze first in
+run B):
+
+| topology | mode | tps A / B | vs none A / B | bracket ms, mean | stalled seconds A / B | max latency ms A / B | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|
+| nocache | none | 4892 / 4628 | – | – | 0 / 0 | 188 / 65 | 19.5 |
+| nocache | suspend | 3496 / 3825 | 0.71 / 0.83 | 37 / 45 | 9 / 8 | 6306 / 4788 | 26.9 / 26.4 |
+| nocache | freeze | 3895 / 3820 | 0.80 / 0.83 | 288 / 493 | 3 / 2 | 2280 / 2961 | 26.2 / 26.3 |
+| twovol | none | 4265 / 3728 | – | – | 7 / 2 | 2055 / 2052 | 22.4 / 22.6 |
+| twovol | suspend | 3268 / 3046 | 0.77 / 0.82 | 62 / 62 | 14 / 7 | 5702 / 5868 | 30.5 / 31.2 |
+| twovol | freeze | 3593 / 2662 | 0.84 / 0.71 | 339 / 502 | 7 / 1 | 3307 / 3026 | 29.8 / 32.1 |
+| zfs | none | 1669 / 2948 | – | – | 0 / 1 | 193 / 2629 | 10.4 / 11.1 |
+| zfs | zfs snapshot | 1741 / 3660 | 1.04 / 1.24 | 247 / 475 | 1 / 1 | 2023 / 1860 | 9.3 / 10.9 |
+| zfs-slog | none | 3664 / 3768 | – | – | 0 / 0 | 703 / 626 | 11.5 |
+| zfs-slog | zfs snapshot | 3717 / 3785 | 1.01 / 1.00 | 338 / 336 | 0 / 0 | 427 / 504 | 11.0 / 11.1 |
+
+A stalled second is a whole second in which no transaction completed.
+The bracket is what the mechanism holds: freeze to thaw, suspend to
+resume, or the `zfs snapshot` call, which blocks only its caller.
+
+- **A thin snapshot every minute costs 17 to 29% of throughput and
+  about 35% more flash writes, with or without the freeze.** The cost
+  is dm-thin's: after each snapshot the first write to every chunk
+  copies 64 KiB to break sharing.
+- **Dropping the freeze made the stalls worse, not better.** The
+  bracket fell from 0.3–0.5 s to about 50 ms, but the suspend-only
+  phases had 7 to 14 stalled seconds against 1 to 7 with the freeze,
+  and a worst transaction of 4.8 to 6.3 s against 2.3 to 3.3 s — in
+  all four comparisons, in either phase order. The likely reason is
+  that the freeze flushes the dirty backlog before the snapshot, while
+  without it that backlog is written afterwards, when every chunk has
+  to be copied first. The `sync` mode below tests that.
+- **`zfs snapshot` cost nothing measurable**: throughput and flash
+  writes are unchanged. With the log device there was no stalled
+  second in any phase and the worst transaction stayed under 0.7 s.
+- **The log device moves the ZIL off the vdev without reducing total
+  flash writes.** With a local origin the vdev takes 5.1 MB per
+  thousand transactions against 10.4 to 11.1 without it, and the log
+  device takes 6.3; with the 10 ms origin, 8.0 against 18.9. Live
+  bytes at the end of a 300 s window were 0.9.
+- **zfs-slog was also faster and steadier than zfs** (3664 to 3785
+  tps over four phases on two machines, against 1669 to 3660). Part of
+  that is the model: a flush on the vdev is an fsync of a sparse file
+  that is still growing, and the log device is a small file that stops
+  growing after one pass. The size of the real effect is unmeasured.
+- On the 10 ms origin zfs-slog matches zfs (720 against 725 tps): both
+  are bound by page reads, as in §10.3.
+
+**Sync, then suspend.** A third thin mode runs syncfs on the
+filesystem and then takes the suspend-only snapshot: the flush a
+freeze does, with writers running. Two more runs, nocache and twovol,
+phases in opposite order (C: none, sync, suspend, freeze; D: none,
+freeze, suspend, sync):
+
+| topology | mode | tps vs none C / D | pause ms, mean | sync before it, ms | stalled seconds C / D | max latency ms C / D |
+|---|---|---|---|---|---|---|
+| nocache | sync | 0.75 / 0.83 | 66 / 48 | 180–1300 | 2 / 1 | 3820 / 2152 |
+| nocache | suspend | 0.54 / 0.81 | 50 / 47 | – | 10 / 10 | 4246 / 5102 |
+| nocache | freeze | 0.62 / 0.81 | 1037 / 304 | – | 3 / 2 | 2734 / 2766 |
+| twovol | sync | 0.69 / 0.67 | 55 / 49 | 300–980 | 2 / 6 | 3072 / 3752 |
+| twovol | suspend | 0.78 / 0.68 | 51 / 46 | – | 11 / 9 | 4205 / 5258 |
+| twovol | freeze | 0.83 / 0.65 | 574 / 277 | – | 4 / 9 | 2794 / 3899 |
+
+The `none` phases had 0 stalled seconds for nocache and 0 and 3 for
+twovol.
+
+- **The flush is what the freeze contributes.** Syncing first brings
+  the suspend-only snapshot from about 10 stalled seconds to 1 or 2 on
+  nocache, level with the freeze, while writers are paused for about
+  50 ms and not for the 0.3 to 1 s the freeze holds. twovol follows
+  the same order in run C and is too noisy to rank in run D.
+- **So a freeze-free capture is viable if it syncs first**, and the
+  agent's existing suspend-only path is the wrong one to promote as it
+  stands.
+- **It does not remove the cost of a thin snapshot.** Every thin mode
+  still loses 17 to 46% of throughput, writes about 40% more to flash,
+  and has a worst transaction of 2 to 5 s.
+
+### 10.5 A read cache under the vdev
+
+§10.3's cold result is a statement about the model's missing read
+cache. zfs-slog-rcache puts baseline's dm-cache on the origin path,
+below the dm-snapshot. The origin is immutable, so that cache sees
+only reads of blocks ZFS has never written: no write is doubled,
+nothing in it can go stale, and blocks already on local flash do not
+compete for it. It is where a backend's cache of fetched objects
+would sit. smq promotes on repeat reads only, where a backend would
+keep every block it paid a round trip for, so this is a floor.
+
+Same settings as §10.2 unless stated; one run per cell.
+
+| origin, window | workload | baseline | twovol | zfs-slog | zfs-slog-rcache |
+|---|---|---|---|---|---|
+| 10 ms, 120 s | tpcb tps | 377 | 3159 | 366 | 1327 |
+| 10 ms, 120 s | select tps | 14695 | 20148 | 1706 | 11056 |
+| 10 ms, 300 s | tpcb tps | 1520 | 2563 | 1369 | 2328 |
+| 10 ms, 300 s | select tps | 19460 | 18807 | 15804 | 31103 |
+| 10 ms, 300 s | tpcb flash MB/ktxn | 34.6 | 26.8 | 16.7 | 14.7 |
+| 3 ms, 300 s | tpcb tps | 2956 | 5546 | 3017 | 3085 |
+| 3 ms, 300 s | select tps | 19612 | 20856 | 27769 | 28158 |
+| 3 ms, 300 s | tpcb flash MB/ktxn | 25.7 | 21.5 | 12.6 | 13.0 |
+
+- **At 10 ms the cache closes most of the gap.** tpcb goes from 1369
+  to 2328 over 300 s, within 10% of twovol at about half the flash
+  writes, and select-only becomes the fastest row measured. In the
+  first 120 s the gain is larger (3.6x on tpcb, 6.5x on select) and
+  twovol is still 2.4x ahead on tpcb.
+- **At 3 ms the cache makes no measurable difference over 300 s.**
+  zfs-slog without it matches baseline on tpcb, leads every thin row
+  on select, and writes about half as much to flash. twovol is 1.8x
+  faster on tpcb.
+- **Every stack hydrates given time.** baseline went from 377 tps in
+  a 120 s window to 1520 in 300 s on the same 10 ms origin, and
+  zfs-slog from 366 to 1369. The 120 s rows in §10.2 measure the
+  first two minutes after a stage.
+- **L2ARC works once it is larger than the ARC.** At 200% of the
+  database (10 ms, 300 s) it served 2.3 million reads on select-only
+  for 23291 tps. It did not help tpcb (1226 tps) and wrote 2.7 GB to
+  flash doing so, 24.3 MB per thousand transactions against 16.7 for
+  zfs-slog. It is fed only from what the ARC evicts, so it warms
+  behind the workload.
+- zfs-slog's own 10 ms, 120 s tpcb figure was 720 in the earlier run
+  and 366 here. Read single cells accordingly.
+
+### 10.6 ZFS-native read caching: L2ARC and recordsize
+
+dm-cache in §10.5 stands in for a cache the backend would own. The
+ZFS-native options are an L2ARC that is large enough, and a larger
+recordsize so that a miss brings in more than one page. ZFS has no
+other read-ahead for random reads: file prefetch follows sequential
+streams only. 300 s windows, tpcb then select, one run per cell; the
+L2ARC feed ran at module defaults (ZFS 2.4.1, which has no
+`l2arc_dwpd_limit`).
+
+Throughput, tps:
+
+| origin | recordsize | workload | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|---|
+| 10 ms | 8k | tpcb | 1413 | 1425 | 2307 |
+| 10 ms | 8k | select | 16578 | 23593 | 23080 |
+| 10 ms | 16k | tpcb | 2516 | 2470 | 4105 |
+| 10 ms | 16k | select | 31359 | 30355 | 36696 |
+| 3 ms | 8k | tpcb | 3341 | 4047 | 3446 |
+| 3 ms | 8k | select | 24158 | 52893 | 24046 |
+| 3 ms | 16k | tpcb | 5172 | 3455 | 3894 |
+| 3 ms | 16k | select | 73086 | 30910 | 43009 |
+
+twovol, which is ext4 and has no recordsize, ran beside the 8k rows:
+3163 tps on tpcb and 18820 on select at 10 ms, 3428 and 18818 at 3 ms.
+
+Flash writes on tpcb, MB per thousand transactions:
+
+| origin | recordsize | zfs-slog | zfs-slog-l2arc | zfs-slog-rcache |
+|---|---|---|---|---|
+| 10 ms | 8k | 16.6 | 24.0 | 15.4 |
+| 10 ms | 16k | 12.5 | 17.1 | 11.1 |
+| 3 ms | 8k | 12.4 | 17.6 | 12.6 |
+| 3 ms | 16k | 9.9 | 15.0 | 10.8 |
+
+twovol wrote 25.2 at 10 ms and 22.9 at 3 ms.
+
+- **An L2ARC of twice the ARC helps reads and not tpcb.** At 10 ms
+  and 8k it served 2.2 million reads on select-only and matched the
+  cache under the vdev (23593 against 23080), but tpcb did not move
+  (1425 against 1413) where the cache under the vdev gave 1.6x. In
+  the first 120 s after a stage the order is the same: on select 7903
+  for L2ARC, 11925 for the cache under the vdev and 1721 with
+  neither; on tpcb 717, 1291 and 468.
+- **It costs flash.** Feeding it added 40 to 50% to tpcb's flash
+  writes in every pairing.
+- **16k records were the larger gain, and most of it is compression,
+  not read-ahead.** At ashift 12 an 8 KiB record can shrink only to
+  4 KiB, a 16 KiB one to 4, 8 or 12. pgbench's rows compress about
+  4x, so the PGDATA dataset fell from 879 MiB to 444 MiB and fit
+  inside the 768 MiB ARC: the ARC hit rate went from 88% to 98–100%
+  and origin reads on select-only to zero. tpcb rose 1.5 to 1.8x and
+  flash writes fell, because a rewritten record is also smaller. On
+  less compressible data the dataset will not halve; the read-ahead
+  share of the gain is not separated out here.
+- **With 16k records the L2ARC had nothing to do** (the data was in
+  RAM) and was pure cost: 3.5 to 4.3 GB written, a handful of hits.
+- **16k records plus the cache under the vdev was the fastest tpcb
+  row at 10 ms** (4105), above twovol on a different machine, at less
+  than half twovol's flash writes.
+- **At 3 ms the cache under the vdev makes no measurable difference
+  at either recordsize**, as in §10.5.
+- **Machines differ by more than 2x.** The 3 ms, 16k select cells ran
+  the same in-memory workload (ARC hit rate 100%, both caches idle)
+  and measured 73086, 30910 and 43009. Differences smaller than that
+  between rows in CPU-bound cells are not evidence of anything.
+
+**The L2ARC feed knobs** (`TB_ZFS_PARAMS`), zfs-slog-l2arc at 10 ms
+with 8k records:
+
+| setting | tpcb tps | tpcb flash MB/ktxn | L2ARC written in tpcb | select tps | ARC misses served by L2ARC, select |
+|---|---|---|---|---|---|
+| defaults | 1628 | 23.6 | 3.5 GB | 30432 | 96% |
+| `l2arc_mfuonly=1` | 1675 | 19.0 | 1.3 GB | 31211 | 94% |
+| `l2arc_mfuonly=2` | 1443 | 19.4 | 1.3 GB | 23170 | 95% |
+| `l2arc_write_max` 4 MiB/s | 1605 | 23.1 | 3.5 GB | 45037 | 97% |
+| `l2arc_noprefetch=0 l2arc_headroom=0`, three runs | 408, 906, 1387 | 29.2, 26.1, 24.2 | 1.3, 2.3, 3.2 GB | 8630, 20088, 23189 | 91%, 96%, 96% |
+
+- **`l2arc_mfuonly` is the one worth setting.** Caching only
+  repeatedly used blocks cut what tpcb wrote to the L2ARC by about
+  60% and its flash overhead from about +40% to about +15% over
+  zfs-slog's 16.6, and kept the select-only benefit.
+- **No setting moves tpcb.** Its misses are first reads of a block,
+  and an L2ARC holds only what the ARC has already seen.
+- **Lowering `l2arc_write_max` did nothing**: the feed never reached
+  the cap.
+- **`l2arc_noprefetch=0 l2arc_headroom=0` bought nothing** and two of
+  its three runs were well below the default's tpcb. Whether that is
+  the setting or the machines is not settled; there is no reason to
+  use it.
+
+### 10.7 Everything local: twovol against zfs-slog on one machine
+
+Every table above gives each topology its own runner VM, and two
+runners differ by more than 2x (§10.6). When the working set fits
+local flash and no read goes to the origin, the stacks differ by less
+than the machines do, so "twovol is 1.6x faster" in §10.3 could not be
+told apart from the machine. The workflow's `sequence` input runs
+several configurations one after another on one runner. Below: tpcb,
+undelayed origin, 8 clients and 180 s unless stated, one run per cell.
+A letter is one runner; where a sequence starts and ends with twovol,
+both results are given and ratios are against their mean.
+
+**Two sequences of eight configurations**, in opposite order:
+
+| configuration | A tps | A vs twovol | B tps | B vs twovol |
+|---|---|---|---|---|
+| twovol | 5546 | 1.00 | 3589 | 1.00 |
+| twovol, `full_page_writes=off` | 5110 | 0.92 | 3492 | 0.97 |
+| zfs-slog 8k | 4771 | 0.86 | 3674 | 1.02 |
+| zfs-slog 16k | 5110 | 0.92 | 3744 | 1.04 |
+| zfs-slog 8k, ARC 3 GiB | 5467 | 0.99 | 3885 | 1.08 |
+| twovol, `synchronous_commit=off` | 7337 | 1.32 | 4286 | 1.19 |
+| zfs-slog 8k, `synchronous_commit=off` | 7722 | 1.39 | 4940 | 1.38 |
+| zfs-slog 8k, `sync=disabled` | 7188 | 1.30 | 4714 | 1.31 |
+
+PostgreSQL's own I/O timers and the CPU on the plain rows:
+
+| | A twovol | A zfs-slog 8k | A zfs-slog 16k | B twovol | B zfs-slog 8k | B zfs-slog 16k |
+|---|---|---|---|---|---|---|
+| WAL syncs per second | 2239 | 2008 | 1982 | 1675 | 1754 | 1696 |
+| transactions per WAL sync | 2.48 | 2.38 | 2.58 | 2.14 | 2.09 | 2.21 |
+| one WAL sync, µs | 335 | 310 | 299 | 504 | 464 | 434 |
+| relation reads, ms per transaction | 0.207 | 0.185 | 0.035 | 0.268 | 0.234 | 0.066 |
+| CPU, ms per transaction | 0.41 | 0.49 | 0.44 | 0.80 | 0.88 | 0.83 |
+| CPU user / system / iowait / idle, % | 24/33/23/20 | 21/38/20/21 | 22/34/21/23 | 35/37/16/12 | 37/44/5/14 | 37/41/6/16 |
+| flash MB/ktxn | 21.4 | 10.8 | 9.8 | 23.0 | 11.8 | 10.9 |
+| seconds with no transaction | 2 | 11 | 4 | 0 | 0 | 0 |
+| slowest transaction, ms | 2051 | 1964 | 3087 | 1100 | 107 | 665 |
+
+- **Neither stack wins on both machines.** zfs-slog ran at 0.86 to
+  0.99 of twovol on A and at 1.02 to 1.08 on B. Most of the gap in the
+  earlier tables was the machine: A and B differ by 1.5x on the same
+  configuration.
+- **The wait for the commit is the largest cost on both, and without
+  it ZFS is ahead** (7722 against 7337, 4940 against 4286). Its data
+  path is not the slower one.
+- **Under load a WAL sync costs the same on both**: about 0.3 ms on A
+  and 0.45 to 0.5 ms on B, shared by 2.1 to 2.6 transactions.
+- **ZFS spends more CPU and waits less on the device**: 4 to 20% more
+  CPU per transaction, nearly all of it system time, and a lower
+  iowait share. B is the machine with less CPU to spare, and ZFS still
+  led there.
+- **Reads cost the same at 8k.** The ARC is capped to what the page
+  cache gets, and relation reads take the same time per transaction.
+  16k records or a 3 GiB ARC cut them four- to fivefold, for 2 to 15%
+  more throughput.
+- **Full-page writes are not what holds twovol back.** Turning them
+  off, as the ZFS rows have them, cut its flash writes by a third and
+  did not make it faster.
+
+**Two limits on dirty data.** On A every ZFS run had whole seconds
+with no transaction, and its slowest transaction took exactly as long
+as its longest transaction-group sync. Two kstat counters say why, and
+three more sequences test each cause by removing it:
+
+| machine | configuration | tps | vs twovol | space-check waits | ARC dirty waits | seconds with no transaction | slowest transaction ms | longest txg sync ms |
+|---|---|---|---|---|---|---|---|---|
+| A | zfs-slog 8k | 4771 | 0.86 | 172 | 0 | 11 | 1964 | 1959 |
+| A | zfs-slog 16k | 5110 | 0.92 | 274 | 0 | 4 | 3087 | 3084 |
+| B | zfs-slog 8k | 3674 | 1.02 | 0 | 0 | 0 | 107 | 863 |
+| B | zfs-slog 16k | 3744 | 1.04 | 195 | 0 | 0 | 665 | 662 |
+| C | twovol, first / last | 5411 / 5408 | 1.00 | – | – | 4 / 3 | 2053 / 2054 | – |
+| C | zfs-slog 16k | 5107 | 0.94 | 255 | 0 | 7 | 4232 | 4225 |
+| C | zfs-slog 16k, 32 GiB pool | 5745 | 1.06 | 0 | 119 | 1 | 1777 | 1775 |
+| C | zfs-slog 8k, 32 GiB pool | 5289 | 0.98 | 0 | 0 | 0 | 666 | 2416 |
+| D | twovol, first / last | 5287 / 5203 | 1.00 | – | – | 2 / 3 | 2051 / 2052 | – |
+| D | zfs-slog 16k | 5334 | 1.02 | 285 | 0 | 1 | 1170 | 1168 |
+| D | zfs-slog 16k, `spa_asize_inflation=6` | 5402 | 1.03 | 0 | 105 | 3 | 1354 | 1353 |
+| D | zfs-slog 8k, `spa_asize_inflation=6` | 5291 | 1.01 | 0 | 0 | 0 | 806 | 2292 |
+| E | twovol, first / last | 5838 / 5862 | 1.00 | – | – | 3 / 1 | 2281 / 2006 | – |
+| E | zfs-slog 16k | 5306 | 0.91 | 304 | 0 | 3 | 1369 | 1365 |
+| E | zfs-slog 16k, `spa_asize_inflation=6` | 5617 | 0.96 | 0 | 111 | 8 | 1573 | 1570 |
+| E | zfs-slog 8k, `spa_asize_inflation=6` | 5801 | 0.99 | 0 | 0 | 0 | 250 | 2256 |
+
+Rows without a pool size ran the 8 GiB pool of every earlier table.
+`space-check waits` is the `dmu_tx_quota` kstat and `ARC dirty waits`
+is `dmu_tx_dirty_throttle`.
+
+- **The pool was too small for its dirty data.** ZFS charges dirty
+  data against the pool's free space at `spa_asize_inflation` = 24
+  times its size: the worst case of triple-parity RAID-Z, three copies
+  and ditto blocks, whatever the pool is made of
+  (`dmu_objset_willuse_space`). When used space plus that estimate
+  passes the pool's size, `dsl_dir_tempreserve_space` turns the
+  transaction away and `dmu_tx_wait` makes the writer wait for a
+  transaction group to sync. An 8 GiB pool with 1 to 2 GiB used has
+  room for roughly 240 to 280 MiB of dirty data, and tpcb at 5000 tps
+  dirties 230 to 270 MiB per group. A 32 GiB pool or an inflation of 6
+  brought the waits to zero and throughput up by 12% on C, 1% on D and
+  6% on E; the size of the loss follows how long that machine's syncs
+  take.
+- **The ARC cap is the second limit.** Dirty data may not exceed half
+  the ARC (`arc_tempreserve_space`; the 50% is not a tunable), which
+  is 384 MiB under the 768 MiB cap, and the penalty is the same wait.
+  16k records dirty 317 MiB per group, which is the point where ZFS
+  starts a sync on a 16 GiB machine (20% of `zfs_dirty_data_max`,
+  itself 10% of RAM), and the group being synced plus the one filling
+  pass 384 MiB. 8k records dirty 245 to 270 MiB per group and stayed
+  under it at 8 clients.
+- **The write throttle never ran.** ZFS's graduated delay starts at
+  60% of `zfs_dirty_data_max`, about 1 GiB here. Both limits above sit
+  far below that, so writers went from no delay to waiting out a whole
+  sync, 1 to 4 s on these runners. The delay counters read 0 in every
+  run.
+- **With neither limit in play zfs-slog is level with twovol**: 0.98,
+  1.01 and 0.99 at 8k on C, D and E, with no second without a
+  transaction and a slowest transaction of 250 to 806 ms. twovol's
+  slowest is about 2050 ms on four of the five machines, cause unknown
+  (§10.9).
+- **The earlier ZFS rows all ran the 8 GiB pool.** At a 10 ms origin
+  the space check does not fire, because throughput is too low to
+  dirty that much (0 waits in all six ZFS rows of a default run). The
+  local-origin and 3 ms cells above about 3500 tps in §10.2 to §10.6
+  are understated by up to the 12% measured here.
+
+**Capping dirty data.** `zfs_dirty_data_max` at 192 MiB, a quarter of
+the ARC cap, keeps dirty data below both limits. Machine H, 16k unless
+stated. H slowed down during the sequence (twovol 3209 tps first and
+1924 last), so its throughput is not comparable between rows and is
+left out:
+
+| configuration | waits, both kinds | txgs in 180 s | seconds with no transaction | slowest 1 s, tps | slowest transaction ms | vdev MB/ktxn | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|
+| 32 GiB pool | 30 | 36 | 3 | 0 | 1889 | 5.2 | 11.3 |
+| 32 GiB pool, 192 MiB cap | 0 | 312 | 0 | 284 | 605 | 8.9 | 14.4 |
+| 8 GiB pool, 192 MiB cap | 0 | 380 | 0 | 289 | 676 | 8.8 | 14.3 |
+| 8k, 32 GiB pool, 192 MiB cap | 0 | 270 | 0 | 78 | 502 | 12.3 | 18.2 |
+
+- **The cap removes the waits, on the small pool too.**
+- **It costs flash writes.** ZFS starts a sync at 20% of the cap, so
+  transaction groups come every half second and not every 5 s, and
+  each one rewrites its metadata and every page touched since the
+  last. The vdev took 70% more and total flash 27% more at 16k. The
+  8k row wrote 18.2 MB/ktxn against 10.6 to 10.9 for 8k without a cap
+  on C to E, and twovol writes 21 to 23.
+
+**The commit path alone.** pg_test_fsync on the WAL filesystem before
+each run, one 8 kB write and fdatasync with nothing else running, µs:
+
+| machine | twovol | zfs-slog, sparse log file | zfs-slog, log written through | same with `zil_nocacheflush=1` |
+|---|---|---|---|---|
+| A | 157, 507, 887 | 333–577 | – | – |
+| B | 235–289 | 374–393 | – | – |
+| C | 172, 213 | 322–377 | – | – |
+| D | 157, 164 | 321–376 | 210 | – |
+| E | 148, 150 | 291–347 | 184 | – |
+| F | 323, 323, 470 | 435 | 258, 310, 486 | 209 |
+| G | 217–225 | 408 | 281–287 | 194 |
+| I | 228–269 | – | 231–240 | – |
+| J | 170, 555, 597 | – | 227, 230, 494 | – |
+
+Each figure is one 2 s test, and a stall of the runner's disk inside
+it shows: A, F and J each have figures two to five times their others.
+
+- **Most of ZFS's slower lone commit was the rig.** The log device was
+  a sparse file. A ZIL block lands on blocks the host filesystem has
+  not allocated yet, so the flush behind it commits that filesystem's
+  journal. twovol's WAL does not pay this, because PostgreSQL
+  zero-fills a WAL segment before it syncs into it, and a flash
+  partition has no such cost. On the machines with steady figures a
+  lone ZFS commit took 1.3 to 2.4 times twovol's with the sparse file
+  (B to E, G) and between the same and 1.3 times with the image
+  written through once (D, E, G, I).
+- **About a third of a ZFS commit is the device flush** (310 to 209 µs
+  on F, 284 to 194 on G), and one client gains 30 to 35% without it
+  in the table below.
+- **Under 8 clients the sparse file made no difference** (5457 against
+  5402 tps on D, 5622 against 5617 on E): group commit shares the
+  flush.
+
+One client, tpcb, 120 s, 16k records:
+
+| machine | twovol tps | zfs-slog, sparse log | zfs-slog, log written through | same with `zil_nocacheflush=1` | WAL sync µs: twovol / written through / no flush |
+|---|---|---|---|---|---|
+| F | 706 | 586 | 633 | 857 | 707 / 867 / 492 |
+| G | 891 | 965 | 966 | 1256 | 433 / 474 / 283 |
+
+**1, 8 and 32 clients, with ZFS sized for the node.** zfs-slog with
+16k records, a 32 GiB pool, the log device written through and the
+192 MiB dirty cap, against twovol, 180 s per cell (I ran its 32-client
+cells first, J its one-client cells first):
+
+| machine | clients | twovol tps | zfs-slog tps | zfs-slog vs twovol | p99 ms, twovol / zfs-slog | slowest transaction ms | slowest 1 s, tps | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|---|
+| I | 1 | 963 | 997 | 1.04 | 2.2 / 2.2 | 52 / 40 | 285 / 822 | 42.5 / 22.6 |
+| I | 8 | 3564 | 3843 | 1.08 | 5.8 / 7.1 | 1109 / 37 | 140 / 2954 | 23.1 / 14.1 |
+| I | 32 | 3955 | 4708 | 1.19 | 40.2 / 28.1 | 1737 / 66 | 0 / 3871 | 20.3 / 11.0 |
+| J | 1 | 456 | 655 | 1.43 | 32.8 / 13.0 | 636 / 532 | 6 / 61 | 60.7 / 22.5 |
+| J | 8 | 2415 | 2760 | 1.14 | 48.1 / 20.8 | 2021 / 390 | 0 / 660 | 25.3 / 14.3 |
+| J | 32 | 4298 | 3501 | 0.81 | 80.1 / 96.6 | 2056 / 692 | 0 / 629 | 20.2 / 10.8 |
+
+- **At 1 and 8 clients zfs-slog was ahead on both machines**, at 40
+  to 60% of twovol's flash writes.
+- **At 32 clients the two machines disagree** (1.19 and 0.81). J has
+  the slower disk — a WAL sync took 1.2 to 1.6 ms there at 32 clients
+  against 0.9 to 1.1 ms on I — and ran its 32-client ZFS cell last,
+  with no twovol cell after it to show drift; H lost 40% over one
+  sequence. Without the cap, on F and G over 120 s, zfs-slog ran at
+  0.71 and 0.92 of twovol at 32 clients with 27 and 207 ARC dirty
+  waits. Four more machines follow below.
+- **No zfs-slog cell had a second without a transaction**, and its
+  slowest transaction was 37 to 692 ms. twovol's slowest second at 8
+  and 32 clients was 0 to 140 tps and its slowest transaction 1.1 to
+  2.1 s.
+- **The cap's price shows at 8 clients**: 14.1 and 14.3 MB/ktxn,
+  against 9.5 to 10.9 for the uncapped 16k rows above.
+
+**Is the comparison fair?** Both kinds of stack sit on loop devices
+over sparse files in one directory of the runner's disk, attached by
+the same helper, which asks for direct I/O. Nothing is an LVM volume
+and nothing was preallocated, except the ZFS log device in the later
+runs above. twovol's thin pool is one such file of 7 GiB holding the
+pool metadata and both thin volumes, and its dm-cache is a second
+file. Three things could still tilt it, checked on machines K to N:
+
+- **Direct I/O took effect everywhere.** Each result now records every
+  loop's mode. In four sequences and two runs of all thirteen
+  topologies no loop was buffered, so no image was also in the host's
+  page cache.
+- **Sparse files are not what helps ZFS.** dm-thin overwrites in place
+  once a chunk is provisioned and ZFS keeps moving to fresh blocks, so
+  the two pay the host filesystem's allocation unevenly.
+  `TB_PREALLOC=1` writes every local-flash image through before use.
+  8 clients, zfs-slog with 16k records, an 8 GiB pool and the dirty
+  cap:
+
+  | | K sparse | K written through | L sparse | L written through |
+  |---|---|---|---|---|
+  | twovol tps | 3505 | 3588, 3482 | 5968 | 6011, 5739 |
+  | zfs-slog tps | 3734 | 4029 | 6488 | 6473 |
+
+  twovol moves by -4 to +2% and zfs-slog by 0 to +8%.
+- **Memory was uneven, in twovol's favour.** At the end of a window,
+  MiB:
+
+  | | twovol | zfs-slog |
+  |---|---|---|
+  | postgres's cgroup, capped at 1024 | 1007: 258 shared buffers, about 733 page cache | 261: shared buffers |
+  | ARC, capped at 768 | – | 550–616 at 16k, 778–788 at 8k |
+  | page cache outside any cap | about 1020 | none |
+
+  The extra gigabyte was twovol's WAL. The script moved `pg_wal` onto
+  the WAL volume before PostgreSQL started; a page is charged to the
+  cgroup that first touched it, and PostgreSQL then recycled those
+  segments for the whole run. Only twovol was staged that way. Every
+  twovol figure in this document up to this point includes it. The
+  script now drops the page cache before PostgreSQL starts.
+
+**On equal backing and equal memory.** Images written through, cold
+page cache, zfs-slog with an 8 GiB pool and the 192 MiB dirty cap,
+180 s per cell; M ran its 8-client cells first and N its 32-client
+cells first:
+
+| machine | clients | twovol tps | zfs-slog 16k tps | vs twovol | zfs-slog 8k tps | vs twovol | slowest transaction ms, twovol / zfs-slog 16k | seconds with no transaction, twovol / zfs-slog | flash MB/ktxn, twovol / 16k / 8k |
+|---|---|---|---|---|---|---|---|---|---|
+| M | 1 | 723 | 762 | 1.05 | – | – | 402 / 475 | 0 / 0 | 50.0 / 22.3 / – |
+| M | 8 | 3706, 3480 | 3038 | 0.85 | 3414 | 0.95 | 1296, 1778 / 645 | 0, 1 / 0 | 23.6 / 14.1 / 17.7 |
+| M | 32 | 3529 | 4253 | 1.20 | – | – | 2093 / 577 | 3 / 0 | 21.0 / 10.9 / – |
+| N | 1 | 1041 | 1209 | 1.16 | – | – | 387 / 399 | 0 / 0 | 41.7 / 22.4 / – |
+| N | 8 | 3749, 4005 | 3680 | 0.95 | 4311 | 1.11 | 1751, 2050 / 566 | 0, 2 / 0 | 23.1 / 13.8 / 17.2 |
+| N | 32 | 4795 | 4944 | 1.03 | – | – | 2045 / 555 | 5 / 0 | 19.9 / 10.7 / – |
+
+On K and L, written through but before the memory fix, zfs-slog 16k
+ran at 1.14 and 1.10 of twovol at 8 clients and 1.16 and 1.32 at 32,
+and 8k at 0.99 and 1.04 at 8.
+
+- **The memory fix made no difference these runs can show.** twovol
+  did not lose ground on M and N, and the spread between machines is
+  larger than any effect. That fits: WAL is not read back, so its page
+  cache is worth little.
+- **At 8 clients neither stack leads.** Over every 8-client cell where
+  neither dirty-data limit was in play — fifteen cells on nine
+  machines (C to E and I to N), 8k and 16k — zfs-slog ran at 0.85 to
+  1.14 of twovol, median 1.04. 16k with the cap gave 1.06 to 1.14 on I
+  to L and 0.85 and 0.95 on M and N.
+- **At 1 and 32 clients zfs-slog is usually ahead**: on five of six
+  machines at 1 client (0.90 on F, 1.04 to 1.43 on G, I, J, M and N),
+  and on five of six at 32 (1.03 to 1.32, and 0.81 on J).
+- **The tails and the flash writes do not depend on the machine.** No
+  capped zfs-slog cell on any machine had a second without a
+  transaction, and its slowest transaction stayed under 0.7 s. At 8
+  and 32 clients twovol's slowest was 1.1 to 2.1 s in every cell on I
+  to N but one, with up to 7 seconds without a transaction. zfs-slog
+  wrote 37 to 75% of twovol's flash bytes, least with 16k records.
+
+**With a snapshot every minute, on the same footing.** §10.4 took its
+snapshots on different machines, with the 8 GiB pool and twovol's
+uncharged WAL cache. Here: 8 clients, images written through, cold
+page cache, 300 s per phase, four snapshots per phase with the last
+two kept. A stack's phases run on that one stack, `none` first. O ran
+twovol first and P ran it last:
+
+| machine | stack | snapshots | tps | vs its own `none` | p99 ms | p99.9 ms | slowest transaction ms | seconds with no transaction | flash MB/ktxn |
+|---|---|---|---|---|---|---|---|---|---|
+| O | twovol | none | 3341 | – | 13.1 | 41.8 | 1242 | 0 | 23.0 |
+| O | twovol | sync, then suspend | 2809 | 0.84 | 11.0 | 45.6 | 2070 | 1 | 31.5 |
+| O | twovol | freeze | 2782 | 0.83 | 13.7 | 46.9 | 1499 | 1 | 32.5 |
+| O | zfs-slog 16k, cap | none | 3627 | – | 9.0 | 25.6 | 40 | 0 | 13.8 |
+| O | zfs-slog 16k, cap | `zfs snapshot` | 3554 | 0.98 | 9.1 | 25.9 | 47 | 0 | 13.0 |
+| O | zfs-slog 8k, cap | none | 3334 | – | 11.3 | 29.0 | 67 | 0 | 17.4 |
+| O | zfs-slog 8k, cap | `zfs snapshot` | 3526 | 1.06 | 9.2 | 25.0 | 60 | 0 | 15.5 |
+| O | zfs-slog 8k, no cap, 32 GiB pool | none | 3582 | – | 7.2 | 21.8 | 113 | 0 | 11.6 |
+| O | zfs-slog 8k, no cap, 32 GiB pool | `zfs snapshot` | 3584 | 1.00 | 6.8 | 29.2 | 139 | 0 | 11.0 |
+| P | twovol | none | 5376 | – | 8.2 | 39.0 | 2072 | 8 | 21.2 |
+| P | twovol | sync, then suspend | 4094 | 0.76 | 11.4 | 46.4 | 4130 | 6 | 28.2 |
+| P | twovol | freeze | 4157 | 0.77 | 10.5 | 45.6 | 3613 | 2 | 28.0 |
+| P | zfs-slog 16k, cap | none | 6608 | – | 7.1 | 15.4 | 160 | 0 | 12.4 |
+| P | zfs-slog 16k, cap | `zfs snapshot` | 6643 | 1.01 | 7.5 | 16.4 | 87 | 0 | 12.2 |
+| P | zfs-slog 8k, cap | none | 5696 | – | 7.8 | 17.7 | 356 | 0 | 15.6 |
+| P | zfs-slog 8k, cap | `zfs snapshot` | 5785 | 1.02 | 8.2 | 17.6 | 163 | 0 | 15.0 |
+| P | zfs-slog 8k, no cap, 32 GiB pool | none | 5599 | – | 7.7 | 15.4 | 859 | 0 | 10.3 |
+| P | zfs-slog 8k, no cap, 32 GiB pool | `zfs snapshot` | 5639 | 1.01 | 8.3 | 17.9 | 1218 | 0 | 10.1 |
+
+The capped rows ran a 16 GiB pool, written through; the row without a
+cap ran the default 32 GiB pool on a sparse store.
+
+- **With snapshots zfs-slog is the faster stack on both machines**:
+  1.26 to 1.28 times twovol's better snapshot mode on O and 1.36 to
+  1.60 times on P. A thin snapshot every minute cost twovol 16 to 24%
+  of its throughput and 32 to 41% more flash writes. `zfs snapshot`
+  cost nothing: 0.98 to 1.06 of the same stack without snapshots, and
+  flash writes unchanged.
+- **The latency lead is modest at p99 and large beyond it.** With
+  snapshots, zfs-slog's p99 was 6.8 to 9.2 ms against twovol's 10.5 to
+  13.7 ms, its p99.9 16 to 29 ms against 46 to 47 ms, and its slowest
+  transaction 47 to 163 ms with the cap against 1.5 to 4.1 s.
+- **Without the cap the far tail is longer** (139 and 1218 ms) and the
+  flash writes lower (10 to 11 MB/ktxn against 12 to 16). No row hit
+  either dirty-data limit.
+- **Syncing before a suspend did no better than the freeze here**
+  (0.84 against 0.83, 0.76 against 0.77), which is what §10.4 found
+  for throughput; its gain there was in the length of the pause.
+
+The benchmark's defaults now follow all of this: the ZFS pool is
+32 GiB, the log device is written through before use, and every run
+starts with a cold page cache. The dirty cap is left to
+`TB_ZFS_PARAMS`, because the right value is a trade between stalls and
+flash writes that these runs sample at one point only, and
+`TB_PREALLOC` is left off because it made little difference and
+writes tens of GiB per run.
+
+### 10.8 What this means for the design
+
+1. The backend's read side decides cold performance: what it keeps of
+   what it fetched, and how much it fetches around a miss. ZFS's write
+   path is not the limit. A plain repeat-read cache under the vdev
+   already brings tpcb within 10% of twovol at a 10 ms origin, and at
+   3 ms the stack does not need one (§10.5). ZFS's own L2ARC covers
+   read-mostly work but not tpcb, and costs flash writes (§10.6).
+2. The uploader needs to know what ZFS freed. Without that it uploads
+   three to five times the live data.
+3. ZIL traffic is the largest single component at the vdev. A separate
+   log device on local flash keeps it out of the backend (§10.4), at
+   the price of cuts that hold the last synced transaction group and
+   not the fsynced tail. The log device has to be allocated storage:
+   on a sparse file a lone commit took up to 2.4 times as long
+   (§10.7).
+4. With the working set on local flash, twovol and zfs-slog are level
+   in throughput once both run on one machine, on equal backing and
+   memory, with ZFS's pool and dirty data sized for each other
+   (§10.7). At 8 clients zfs-slog ran at 0.85 to 1.14 of twovol over
+   fifteen cells on nine machines, median 1.04; it was ahead on five
+   of six machines at 1 client and on five of six at 32. With a dirty
+   cap it wrote 37 to 75% of twovol's flash bytes and had no second
+   without a transaction, where twovol had up to 7. A snapshot every
+   minute costs the thin stacks 16 to 46% of their throughput and
+   costs zfs-slog nothing (§10.4, §10.7): with snapshots, on one
+   machine, zfs-slog ran 1.26 to 1.60 times twovol's throughput, at a
+   p99 of 6.8 to 9.2 ms against 10.5 to 13.7 ms and, with the dirty
+   cap, a slowest transaction under 0.2 s against 1.5 to 4.1 s. ZFS's
+   case rests on those and on a much simpler node stack.
+5. The dm-thin capture can drop the freeze if it syncs first (§10.4):
+   the pause falls to about 50 ms with no more stalls than the freeze.
+   The per-snapshot cost stays, because it is the copy-on-write after
+   the snapshot, which the freeze does not cause.
+6. A pool per volume means small pools, and ZFS's dirty-data defaults
+   assume a large pool and an uncapped ARC. Writers wait out a whole
+   sync when 24 times the dirty data exceeds the pool's free space, or
+   when dirty data exceeds half the ARC. The limit meant to slow them
+   first, `zfs_dirty_data_max`, defaults to 10% of RAM whatever the
+   pool or the ARC cap (§10.7). It is one value for the whole module,
+   so the node has to set it for its smallest pool and its ARC, and
+   can lower `spa_asize_inflation`, which a single-device pool does
+   not need at 24. Smaller transaction groups cost flash writes: 27%
+   more at 16k with a 192 MiB cap.
+
+### 10.9 Not yet measured
+
+- A backend read cache that keeps every fetched block and reads
+  ahead; §10.5 measures only a repeat-read cache.
+- `logbias=throughput` on the WAL dataset.
+- recordsize 16k on data that does not compress 4x, and with the ARC
+  smaller than the compressed database, to separate read-ahead from
+  compression.
+- Why some zfs-slog tpcb cells at 10 ms run several times slower than
+  others with a p99 of 140 to 200 ms (366 and 468 tps in 120 s
+  windows against 720; 408 against 1387 in §10.6).
+- Why twovol stalls for whole seconds with no snapshots at all (2 and
+  7 stalled seconds in §10.4's `none` phases), and why its slowest
+  transaction is about 2050 ms on most runners (§10.7).
+- A dirty-data cap between 192 MiB and the default, and one at half
+  the ARC cap, to find where the waits end and what each costs in
+  flash writes; and the 8k-record row at 1 and 32 clients.
+- Why 16k records with the cap ran at 0.85 and 0.95 of twovol at 8
+  clients on two machines and at 1.06 to 1.14 on four others.
+- §10.2 to §10.6 again with the 32 GiB pool, for the local-origin and
+  3 ms cells that the space check held back.
+- Snapshots during the window on the 10 ms origin.
+- A database several times larger than RAM, where sparse updates
+  rewrite a 128 KiB indirect block per 8 KiB page.
+- Repetitions. Every cell in §10.2, §10.5 and §10.6 is one run,
+  §10.4 has two per table, §10.7 has one run per cell on each of its
+  machines, and §6.2 documents how far two runner VMs can differ.
