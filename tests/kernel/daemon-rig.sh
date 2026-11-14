@@ -2068,7 +2068,7 @@ check_e_fetch() {
 RF9_TAIL="exit 9: a supervisor should retry the serve once; a second 9 is for a person"
 # name -> RCT_WHY; 0 PASS, 1 FAIL, 2 the rig's error
 rf9_start() {
-    local name=$1 dir=$WORK/vol-$1 t0 rc said n free st back stop
+    local name=$1 dir=$WORK/vol-$1 t0 rc said n hn free st back stop
     RCT_WHY=""
     vol_create "$SKYZFSD" "$dir" > /dev/null 2>> "$OUT/$name-create.err" || { RCT_WHY="create failed: $(tail -n 1 "$OUT/$name-create.err")"; return 2; }
     t0=$(now_ms)
@@ -2079,14 +2079,19 @@ rf9_start() {
         return 1
     fi
     if [ "$rc" != 1 ]; then
-        RCT_WHY="serve neither ended nor became ready: ${SERVE_RC:-}"
-        [ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null
-        vol_detach "$SKYZFSD" "$dir"; return 2
+        # #87 gives a refused first fetch up at once. A serve that hangs
+        # here is what a kernel whose delete does not answer a START_DEV
+        # that waits would show: a verdict, not the rig's error.
+        RCT_WHY="serve --refuse-one-fetch start neither gave the start up nor became ready (${SERVE_RC:-}), and #87 gives a refused first fetch up at once; its log's last line: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-300)"
+        if [ -n "$SERVE_PID" ]; then kill -9 "$SERVE_PID" 2>/dev/null; serve_wait 30 || RCT_WHY+="; it did not end in 30 s after SIGKILL"; fi
+        vol_detach "$SKYZFSD" "$dir"; return 1
     fi
     said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-600)
     RCT_WHY="serve ended with exit $SERVE_RC after $(( $(now_ms) - t0 )) ms, saying: $said"
     rc=$SERVE_RC
     n=$(sed -n 's/.* of device \([0-9][0-9]*\)[ (,:].*/\1/p' <<< "$said" | head -n 1)
+    hn=$(rf9_hook_device start "$dir.serve.log")
+    RCT_WHY+="; the hook's own line, before the start, named device ${hn:-none}"
     free=""
     if [ -n "$n" ]; then
         for _ in $(seq 1 20); do ublk_number_free "$n" && { free=yes; break; }; sleep 0.25; done
@@ -2109,19 +2114,31 @@ rf9_start() {
     fi
     vol_detach "$SKYZFSD" "$dir"
     [ "$rc" = "$EXIT_START_GIVEN_UP" ] && [[ $said == *"the kernel refused the first fetch of tag 0"* ]] \
+        && [ -n "$n" ] && [ "${hn:-}" = "$n" ] \
         && [[ $said == *"which this serve added and never started, is deleted"* ]] && [[ $said == *"the volume is not failed; $RF9_TAIL" ]] \
         && [ -n "$free" ] && [ "${st:-}" != failed ] && [ "$back" = 0 ] && [ "$stop" = 0 ]
 }
+# hook log: the number of the device whose first fetch the hook's own
+# line says it sends with no buffer (`--refuse-one-fetch HOOK: tag 0's
+# first fetch on queue 0 of device N is sent with no buffer`), the last
+# such line of the log; nothing when there is none. The daemon writes it
+# once it has found the device, before it starts it or takes it over, so
+# the number the line of 9 names is checked against the device the hook
+# was set on.
+rf9_hook_device() {
+    sed -n "s/.*--refuse-one-fetch $1: tag 0's first fetch on queue 0 of device \([0-9][0-9]*\) is sent with no buffer.*/\1/p" "$2" 2>/dev/null | tail -n 1
+}
 # The end of a take-over course that went wrong: a server for the device
 # first (a pool on a device with none cannot be exported), then
-# kill_cleanup.
+# kill_cleanup. It reads rf9_take's locals (bdev, dir, name, writer) by
+# bash's dynamic scope.
 rf9_cleanup() {
     if [ -z "$SERVE_PID" ] && [ "$(ublk_state "$bdev")" = QUIESCED ]; then serve_start "$SKYZFSD" "$dir" > /dev/null 2>&1; fi
     [ -z "${writer:-}" ] || job_end "$writer" 60
     kill_cleanup "$name"
 }
 rf9_take() {
-    local name=$1 dir=$WORK/vol-$1 pool=skzd-$1 slog t0 rc said st n vst held pst perr wrc took writer="" bdev
+    local name=$1 dir=$WORK/vol-$1 pool=skzd-$1 slog t0 rc said st n hn vst held pst perr wrc took writer="" bdev
     RCT_WHY=""
     vol_up "$SKYZFSD" "$dir" || { RCT_WHY="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
     bdev=$BDEV; n=${BDEV#/dev/ublkb}
@@ -2147,13 +2164,18 @@ rf9_take() {
         rf9_cleanup; return 1
     fi
     if [ "$rc" != 1 ]; then
-        RCT_WHY="the take-over neither ended nor became ready: ${SERVE_RC:-}"
-        [ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null
-        SERVE_PID=""; rf9_cleanup; return 2
+        # As at a start: a take-over that hangs here is what a kernel
+        # whose process end does not answer an END_USER_RECOVERY that
+        # waits would show. The killed serve is waited for, so that the
+        # cleanup's serve does not race it for the device.
+        RCT_WHY="the take-over with --refuse-one-fetch recovery neither gave up nor became ready (${SERVE_RC:-}), and #87 gives a refused first fetch up at once; its log's last line: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-300)"
+        if [ -n "$SERVE_PID" ]; then kill -9 "$SERVE_PID" 2>/dev/null; serve_wait 30 || RCT_WHY+="; it did not end in 30 s after SIGKILL"; fi
+        rf9_cleanup; return 1
     fi
     said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-600)
     rc=$SERVE_RC
-    RCT_WHY="SIGKILL, then the pool's write and sync held; the take-over ended with exit $rc after $(( $(now_ms) - t0 )) ms, saying: $said"
+    hn=$(rf9_hook_device recovery "$dir.serve.log")
+    RCT_WHY="SIGKILL, then the pool's write and sync held; the take-over ended with exit $rc after $(( $(now_ms) - t0 )) ms, saying: $said; the hook's own line, before the take-over, named device ${hn:-none}"
     t0=$(now_ms); st=""
     while [ $(( $(now_ms) - t0 )) -lt 20000 ]; do st=$(ublk_state "$bdev"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
     vst=$(vol_stat "$SKYZFSD" "$dir" state)
@@ -2171,7 +2193,7 @@ rf9_take() {
     fi
     rf9_cleanup
     [ "$rc" = "$EXIT_START_GIVEN_UP" ] && [[ $said == *"the kernel refused the first fetch of tag 0"* ]] \
-        && [[ $said == *"device $n is left waiting for the next server"* ]] && [[ $said == *"the volume is not failed; $RF9_TAIL" ]] \
+        && [ "${hn:-}" = "$n" ] && [[ $said == *"device $n is left waiting for the next server"* ]] && [[ $said == *"the volume is not failed; $RF9_TAIL" ]] \
         && [ "$st" = QUIESCED ] && [ "${vst:-}" != failed ] && [ "$held" = "still held" ] \
         && [ "$wrc" = 0 ] && [ "$pst" = ONLINE ] && [[ $perr == "vdev errors 0 "* ]]
 }

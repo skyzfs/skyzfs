@@ -26,7 +26,7 @@ has() { # name got part
 }
 
 eval "$(sed -n '/^EXIT_FAILED=/p; /^RF9_TAIL=/p; /^RF_PINS=/p' "$RIG")"
-for f in rec pin now_ms serve_wait job_end rc_pin kill_cleanup check_e_fetch rf9_start rf9_cleanup rf9_take; do
+for f in rec pin now_ms serve_wait job_end rc_pin kill_cleanup check_e_fetch rf9_start rf9_hook_device rf9_cleanup rf9_take; do
     eval "$(sed -n "/^$f() .*}\$/{p;q}; /^$f() {/,/^}\$/p" "$RIG")"
     declare -F "$f" > /dev/null || { echo "FAIL the rig has no function $f"; exit 2; }
 done
@@ -54,6 +54,13 @@ was=$(cat "$T/state" 2>/dev/null || echo none)
 [ "$was" = live ] && ! alive && was=quiesced
 kind=start; [ "$was" = quiesced ] && kind=recovery
 if [ -n "$refuse" ] && [ "$refuse" = "$kind" ] && [ "$SCEN" != ready ]; then
+    # The hook's own line, once the device is found (refuse.rs); a daemon
+    # that gives up without it, or names another device in it.
+    hookdev=9; [ "$SCEN" != hookother ] || hookdev=7
+    [ "$SCEN" = nohook ] || echo "skyzfsd: --refuse-one-fetch $kind: tag 0's first fetch on queue 0 of device $hookdev is sent with no buffer" >&2
+    # A serve that neither gives up nor becomes ready: what a kernel whose
+    # delete or process end does not answer the wait would show.
+    if [ "$SCEN" = hang ]; then while [ ! -e "$T/stop" ]; do sleep 0.05; done; exit 0; fi
     line=$LINE_START; [ "$kind" = recovery ] && line=$LINE_TAKE
     # The other kind's words.
     [ "$SCEN" != startwords ] || line=$LINE_TAKE
@@ -74,6 +81,10 @@ if [ -n "$refuse" ] && [ "$refuse" = "$kind" ] && [ "$SCEN" != ready ]; then
 fi
 [ "$SCEN" = takeoverfails ] && [ "$was" = quiesced ] && [ -z "$refuse" ] && { echo "skyzfsd: cannot take device 9 over" >&2; exit 1; }
 [ "$SCEN" = nextfails ] && [ -e "$T/gaveup" ] && [ -z "$refuse" ] && { echo "skyzfsd: cannot serve" >&2; exit 1; }
+# The next take-over fails once; the cleanup's serve then takes it over.
+if [ "$SCEN" = nextonce ] && [ -e "$T/gaveup" ] && [ -z "$refuse" ] && [ ! -e "$T/failedonce" ]; then
+    : > "$T/failedonce"; echo "skyzfsd: cannot take device 9 over" >&2; exit 1
+fi
 echo $$ > "$T/srvpid"; echo live > "$T/state"
 echo "skyzfsd: serving device 9 ($([ "$kind" = recovery ] && echo 'taken over' || echo added)) after 50 ms: start 5 ms" >&2
 : > "$T/ready.$$"
@@ -121,7 +132,7 @@ serve_start() {
         if ! kill -0 "$SERVE_PID" 2>/dev/null; then wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""; return 1; fi
         sleep 0.05
     done
-    SERVE_RC=none; return 2
+    SERVE_RC="none: neither ready nor gone after 5 s"; return 2
 }
 server_pid() { echo "$SERVE_PID"; }
 vol_stat() {
@@ -146,7 +157,7 @@ step() { :; }
 
 run() { # scenario function name -> RV, RCT_WHY
     SCEN=$1; export SCEN
-    rm -f "$T/state" "$T/srvpid" "$T"/ready.* "$T/gaveup"
+    rm -f "$T/state" "$T/srvpid" "$T"/ready.* "$T/gaveup" "$T/failedonce"
     rm -rf "${WORK:?}/vol-$3" "${WORK:?}/vol-$3".*
     "$2" "$3" > /dev/null 2>&1; RV=$?
 }
@@ -170,6 +181,15 @@ run notail rf9_start s-notail
 is "  a line without what a supervisor should do fails" "$RV" 1
 run startwords rf9_start s-words
 is "  the take-over's words at a start fail" "$RV" 1
+has "  the hook's line" "$RCT_WHY" "the hook's own line, before the start, named device 9"
+run nohook rf9_start s-nohook
+is "  a 9 with no line of the hook fails" "$RV" 1
+run hookother rf9_start s-hookother
+is "  a hook's line that names another device fails" "$RV" 1
+has "  says so" "$RCT_WHY" "named device 7"
+run hang rf9_start s-hang
+is "  a serve that neither gives up nor becomes ready fails, not the rig's error" "$RV" 1
+has "  says so" "$RCT_WHY" "neither gave the start up nor became ready (none: neither ready nor gone"
 run nextfails rf9_start s-next
 is "  a next serve that does not start fails" "$RV" 1
 has "  says so" "$RCT_WHY" "the next serve did not become ready"
@@ -183,6 +203,20 @@ has "  the device waits, the I/O held" "$RCT_WHY" "the device then read QUIESCED
 has "  the next serve takes it over" "$RCT_WHY" "the next serve: skyzfsd: serving device 9 (taken over)"
 has "  and the held I/O completes" "$RCT_WHY" "the held write and sync then exited 0"
 has "  the pool" "$RCT_WHY" "the pool ONLINE, vdev errors 0"
+has "  the hook's line" "$RCT_WHY" "the hook's own line, before the take-over, named device 9"
+run nohook rf9_take t-nohook
+is "  a 9 with no line of the hook fails" "$RV" 1
+run hookother rf9_take t-hookother
+is "  a hook's line that names another device fails" "$RV" 1
+run hang rf9_take t-hang
+is "  a take-over that neither gives up nor becomes ready fails, not the rig's error" "$RV" 1
+has "  says so" "$RCT_WHY" "neither gave up nor became ready (none: neither ready nor gone"
+read -r wrc _ < "$WORK/t-hang.wrc" 2>/dev/null || wrc="no status"
+is "  and the cleanup's serve ends the held I/O" "$wrc" 0
+run nextonce rf9_take t-once
+is "  a next take-over that fails, fails" "$RV" 1
+read -r wrc _ < "$WORK/t-once.wrc" 2>/dev/null || wrc="no status"
+is "  and the cleanup's serve takes the device over and ends the held I/O" "$wrc" 0
 run exit0 rf9_take t-exit0
 is "  a take-over given up with 0 fails" "$RV" 1
 run ready rf9_take t-ready
