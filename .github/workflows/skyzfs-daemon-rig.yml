@@ -113,6 +113,7 @@ jobs:
       - run: bash tests/kernel/test_c_evidence.sh
       - run: bash tests/kernel/test_blktrace.sh
       - run: bash tests/kernel/test_daemon_refused.sh
+      - run: bash tests/kernel/test_daemon_fetch.sh
 
   # Which servers this run drives; see the head of this file.
   plan:
