@@ -113,10 +113,10 @@ req() {
     while [ ! -e "$T/done.$id" ]; do [ ! -e "$T/deleted" ] || exit 5; sleep 0.05; done
     cat "$T/done.$id"
 }
-a=$(req "$kind")
+a=$(req "$kind") || exit 5
 [ "$a" = lost ] || dd "${args[@]}" || exit 1
 [ "$a" != err ] || exit 1
-[ -z "$fsync" ] || req flush > /dev/null
+[ -z "$fsync" ] || req flush > /dev/null || exit 5
 exit 0
 DDEOF
 chmod +x "$DD"
