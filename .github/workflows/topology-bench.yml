@@ -33,6 +33,7 @@ on:
     paths:
       - tests/bench/topology-bench.sh
       - tests/lib/gnu-dd.sh
+      - tests/lib/skz-store.sh
       - .github/workflows/topology-bench.yml
   workflow_dispatch:
     inputs:
@@ -421,10 +422,14 @@ jobs:
             fi
             if [ "$rc" != 0 ]; then
               echo "::error::sequence $i ($label) failed with $rc"
+              # 64: the row's settings were refused before anything ran
+              # (a --store the build does not take, M1.T34): no verdict.
+              why=""
+              [ "$rc" != 64 ] || why=" (its settings were refused before anything ran, so it has no verdict; the reason is the last line of its group in the job's log)"
               if [ "$i" -lt "${#entries[@]}" ]; then
-                echo "Sequence $i ($label) failed with $rc; the rows after it ran, each marked \"after failed row\"." >> "$GITHUB_STEP_SUMMARY"
+                echo "Sequence $i ($label) failed with $rc$why; the rows after it ran, each marked \"after failed row\"." >> "$GITHUB_STEP_SUMMARY"
               else
-                echo "Sequence $i ($label) failed with $rc; it was the last row." >> "$GITHUB_STEP_SUMMARY"
+                echo "Sequence $i ($label) failed with $rc$why; it was the last row." >> "$GITHUB_STEP_SUMMARY"
               fi
               failed="$failed $i"
             fi

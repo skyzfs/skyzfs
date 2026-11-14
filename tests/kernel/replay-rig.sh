@@ -118,23 +118,6 @@ LOWER_MB=$((VOLUME_MB * 3))
 FILL_MB=${RIG_FILL_MB:-160}
 for v in "$VOLUME_MB" "$FILL_MB"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a number: $v" >&2; exit 64; }; done
 read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
-# The daemon has one store since M1.3t, and the rig names none. A build
-# from before it (input daemon_ref) is given `--store in-place` by the
-# workflow, and that alone is taken. The log store's options would end
-# the first start with a usage error that reads as a verdict: they are
-# the caller's mistake, said before the run.
-for i in "${!SERVE_ARGS[@]}"; do
-    o=${SERVE_ARGS[$i]}
-    case $o in
-        --store=in-place) continue ;;
-        --store) [ "${SERVE_ARGS[$((i + 1))]:-}" != in-place ] || continue ;;
-    esac
-    case ${o%%=*} in
-        --store|--log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
-            echo "RIG_SERVE_ARGS: $o is of the log store, which M1.3t removed" >&2
-            exit 64 ;;
-    esac
-done
 LOWER_MNT=$WORK/lower-mnt
 VOL=$LOWER_MNT/vol
 REC_RUN=/run/skz-replay-rec
@@ -158,6 +141,17 @@ rig_error() {
     echo "$*" >&2
     exit 2
 }
+# The daemon has one store since M1.3t, and the rig names none. A build
+# from before M1.3t-d (input daemon_ref) is given `--store in-place` by
+# the workflow, and that alone is taken. A --store for a current build,
+# or the log store's options, would end the first start with a usage
+# error that reads as a verdict: they are the caller's mistake, the
+# rig's own error before anything is served (M1.T34).
+# shellcheck source=tests/lib/skz-store.sh
+. "$HERE/../lib/skz-store.sh"
+if [ -n "$SKYZFSD" ] && ! skz_store_args "$SKYZFSD" "${SERVE_ARGS[@]}"; then
+    rig_error "RIG_SERVE_ARGS (${RIG_SERVE_ARGS:-}): $SKZ_STORE_WHY"
+fi
 # The daemon failed at something it is judged on (its start, its stop,
 # its detach, the pool's writes through it) before the check: a verdict
 # against the daemon (exit 1), as the same events are in the check.

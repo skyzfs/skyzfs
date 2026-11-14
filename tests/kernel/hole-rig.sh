@@ -60,13 +60,16 @@ read -r -a SERVE_ARGS <<< "${RIG_SERVE_ARGS:-}"
 # The courses are of the daemon's store, which writes a block's data
 # into the home image (the log store, removed by M1.3t, would have
 # written it into its log first). Only `--store in-place` is taken, for
-# a build from before M1.3t.
-for ((i = 0; i < ${#SERVE_ARGS[@]}; i++)); do
-    case ${SERVE_ARGS[i]} in
-        --store) i=$((i + 1)); [ "${SERVE_ARGS[i]:-}" = in-place ] || { echo "RIG_SERVE_ARGS: --store ${SERVE_ARGS[i]:-}: the courses are of the store that writes in place" >&2; exit 64; } ;;
-        --store=*) [ "${SERVE_ARGS[i]}" = --store=in-place ] || { echo "RIG_SERVE_ARGS: ${SERVE_ARGS[i]}: the courses are of the store that writes in place" >&2; exit 64; } ;;
-    esac
-done
+# a build from before M1.3t-d, which has the option; for a current
+# build any --store is a usage error at the first serve, so it is the
+# rig's own error here, before anything is served (M1.T34).
+# shellcheck source=tests/lib/skz-store.sh
+. "$HERE/../lib/skz-store.sh"
+if ! skz_store_args "$SKYZFSD" "${SERVE_ARGS[@]}"; then
+    printf '## Write into a hole: the rig'"'"'s own error, not a verdict\n\nRIG_SERVE_ARGS (%s): %s\n' "${RIG_SERVE_ARGS:-}" "$SKZ_STORE_WHY" > "$OUT/hole-summary.md"
+    echo "RIG_SERVE_ARGS (${RIG_SERVE_ARGS:-}): $SKZ_STORE_WHY" >&2
+    exit 2
+fi
 read -r -a FSES <<< "${RIG_HOLE_FS:-ext4 xfs}"
 read -r -a KINDS <<< "${RIG_HOLE_KINDS:-sparse fallocate zero-fill}"
 VOLUME_MB=${RIG_HOLE_VOLUME_MB:-256}
