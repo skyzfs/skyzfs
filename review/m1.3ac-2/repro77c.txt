@@ -1,0 +1,4 @@
+R  the reproducer, unplanted: rc 0; build errors []; failed []; ['test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.00s']
+R+P2 the failed turn leaves the slot Waiting after its commit: rc 101; build errors []; failed ['pump::tests::review_a_tag_answered_after_the_failure_is_taken_again']; ['test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.08s']
+R+P4 fail() leaves a waiting slot Waiting: rc 101; build errors []; failed ['pump::tests::review_a_tag_answered_after_the_failure_is_taken_again']; ['test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 138 filtered out; finished in 0.08s']
+clean

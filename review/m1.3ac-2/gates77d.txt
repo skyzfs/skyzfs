@@ -1,0 +1,34 @@
+6ff9b08 M1.3ac part 2: a tag answered after the failure is taken again (review)
+fmt rc 0
+clippy plain rc 0
+clippy hooks rc 0
+test result: ok. 140 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+ublk tests rc 0
+test result: ok. 59 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.12s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+skyzfsd hooks tests rc 0
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.19s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+skyzfsd plain tests rc 0
+=== plants
+P1 take_over lets an unknown tag through: rc 101; build errors []; failed ['pump::tests::a_tag_answered_after_the_failure_is_taken_again', 'pump::tests::a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken']; ['test result: FAILED. 25 passed; 2 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+P2 the failed turn leaves the slot Waiting after its commit: rc 101; build errors []; failed ['pump::tests::a_tag_answered_after_the_failure_is_taken_again']; ['test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+P3 fail() commits a waiting request from its slot as well as from the backlog: rc 101; build errors []; failed ['pump::tests::a_failed_pump_ends_with_the_queue_or_at_a_stop', 'pump::tests::a_failed_volume_answers_every_request_it_holds', 'pump::tests::a_failed_volume_hands_the_target_nothing_and_takes_nothing_from_it', 'pump::tests::a_tag_answered_after_the_failure_is_taken_again']; ['test result: FAILED. 23 passed; 4 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+P4 fail() leaves a waiting slot Waiting: rc 101; build errors []; failed ['pump::tests::a_tag_answered_after_the_failure_is_taken_again']; ['test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+P5 the turn does not take over (the failed turn still does): rc 101; build errors []; failed ['pump::tests::a_tag_handed_over_again_while_its_request_is_out_is_not_taken', 'pump::tests::a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault', 'pump::tests::a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken']; ['test result: FAILED. 24 passed; 3 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.07s']
+P6 commit_finished leaves the slot Finished: rc 101; build errors []; failed ['pump::tests::a_tag_handed_over_again_while_its_request_is_out_is_not_taken']; ['test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.07s']
+P7 the fake queue records no broken rule: rc 101; build errors []; failed ['pump::tests::a_tag_handed_over_again_while_its_request_is_out_is_not_taken']; ['test result: FAILED. 26 passed; 1 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+P8 the failed turn commits before it takes over: rc 101; build errors []; failed ['pump::tests::a_tag_answered_after_the_failure_is_taken_again', 'pump::tests::a_tag_handed_over_again_while_its_request_is_out_is_not_taken']; ['test result: FAILED. 25 passed; 2 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.09s']
+Q1 a tag the queue does not have ends the pump with QueueDown again: rc 101; build errors []; failed ['pump::tests::a_tag_answered_after_the_failure_is_taken_again', 'pump::tests::a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken']; ['test result: FAILED. 25 passed; 2 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+Q2 a tag still out ends the pump with QueueDown again: rc 101; build errors []; failed ['pump::tests::a_tag_handed_over_again_while_its_request_is_out_is_not_taken', 'pump::tests::a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault']; ['test result: FAILED. 25 passed; 2 failed; 0 ignored; 0 measured; 113 filtered out; finished in 0.08s']
+Q3 serve ends a broken rule as an error (status 1): rc 101; build errors []; failed ['serve::tests::a_driver_that_breaks_its_rule_ends_serve_with_7_and_leaves_the_device']; ['test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.13s']
+Q4 serve says nothing of the device waiting: rc 101; build errors []; failed ['serve::tests::a_driver_that_breaks_its_rule_ends_serve_with_7_and_leaves_the_device']; ['test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.12s']
+Q5 the help has no row for 7: rc 101; build errors []; failed ['cli::tests::the_exit_statuses_are_the_agreed_numbers']; ['test result: FAILED. 58 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.14s']
+clean
