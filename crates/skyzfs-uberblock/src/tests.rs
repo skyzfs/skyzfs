@@ -6,8 +6,6 @@ use super::*;
 
 const KIB: u64 = 1 << 10;
 const MIB: u64 = 1 << 20;
-/// `MMP_MAGIC`, written after the fields this crate reads.
-const MMP_MAGIC: u64 = 0xa11c_ea11;
 
 /// A slot of `size` bytes as `vdev_uberblock_sync` writes it, in
 /// `order`: the uberblock at its start (group `txg`, a root block
@@ -32,8 +30,8 @@ fn slot(order: ByteOrder, txg: u64, root: u64, size: u64) -> Vec<u8> {
     for (n, word) in root_of(root).into_iter().enumerate() {
         put(&mut s, ROOT_AT + 8 * n, word);
     }
-    put(&mut s, READ_LEN, 5000);
-    put(&mut s, READ_LEN + 8, MMP_MAGIC);
+    put(&mut s, ROOT_AT + ROOT_WORDS * 8, 5000);
+    put(&mut s, MMP_MAGIC_AT, MMP_MAGIC);
     for k in 0..5 {
         put(&mut s, size as usize - 40 + 8 * k, MAGIC);
     }
@@ -121,6 +119,11 @@ fn an_uberblock_write_is_found_in_each_ring_in_either_byte_order() {
                             label: ring.label,
                             order,
                             state: state(77 + n, n),
+                            rank: Rank {
+                                txg: 77 + n,
+                                timestamp: 1_763_000_000 + 77 + n,
+                                seq: 0,
+                            },
                         }],
                         "slot {n} of {size} bytes in label {} ({order:?})",
                         ring.label
@@ -272,7 +275,7 @@ fn a_repeat_is_the_same_group_and_root_as_the_mark_or_the_newest_cut() {
     // fields changed, in the ring's last slot.
     let mut copy = slot(ByteOrder::Little, 40, 7, 4 * KIB);
     copy[32..40].copy_from_slice(&1_999_999_999u64.to_le_bytes());
-    copy[READ_LEN + 16..READ_LEN + 24].copy_from_slice(&123u64.to_le_bytes());
+    copy[MMP_CONFIG_AT..MMP_CONFIG_AT + 8].copy_from_slice(&123u64.to_le_bytes());
     let mmp = labels.uberblocks_in(ring.end() - 4 * KIB, &copy)[0];
     assert!(is_repeat(Some(&synced.state), None, &mmp.state));
     assert!(is_repeat(None, Some(&synced.state), &mmp.state));
@@ -292,4 +295,123 @@ fn a_repeat_is_the_same_group_and_root_as_the_mark_or_the_newest_cut() {
     assert!(!is_repeat(Some(&state(40, 7)), None, &state(41, 7)));
     assert!(!is_repeat(None, Some(&state(39, 6)), &state(38, 6)));
     assert!(!is_repeat(None, None, &state(40, 7)));
+}
+
+/// A slot like [`slot`] with its timestamp and its multihost config set.
+fn slot_at(txg: u64, root: u64, timestamp: u64, config: u64) -> Vec<u8> {
+    let mut s = slot(ByteOrder::Little, txg, root, 4 * KIB);
+    s[TIMESTAMP_AT..TIMESTAMP_AT + 8].copy_from_slice(&timestamp.to_le_bytes());
+    s[MMP_CONFIG_AT..MMP_CONFIG_AT + 8].copy_from_slice(&config.to_le_bytes());
+    s
+}
+
+/// ZFS's order among uberblocks (`vdev_uberblock_compare`): the group,
+/// then the timestamp, then the multihost sequence, which counts only
+/// with `MMP_MAGIC` and the sequence's valid bit, in either byte order.
+#[test]
+fn the_rank_is_the_group_then_the_timestamp_then_the_multihost_sequence() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let rank = |s: &[u8]| labels.uberblocks_in(ring.start, s)[0].rank;
+    let seq = |n: u64| (n << 32) | MMP_SEQ_VALID_BIT;
+    assert_eq!(
+        rank(&slot_at(9, 1, 100, seq(7))),
+        Rank {
+            txg: 9,
+            timestamp: 100,
+            seq: 7
+        }
+    );
+    // Without the valid bit, or without the magic, the sequence is 0.
+    assert_eq!(rank(&slot_at(9, 1, 100, 7 << 32)).seq, 0);
+    let mut no_magic = slot_at(9, 1, 100, seq(7));
+    no_magic[MMP_MAGIC_AT..MMP_MAGIC_AT + 8].copy_from_slice(&0u64.to_le_bytes());
+    assert_eq!(rank(&no_magic).seq, 0);
+    // Big endian reads the same.
+    let mut big = slot(ByteOrder::Big, 9, 1, 4 * KIB);
+    big[TIMESTAMP_AT..TIMESTAMP_AT + 8].copy_from_slice(&100u64.to_be_bytes());
+    big[MMP_CONFIG_AT..MMP_CONFIG_AT + 8].copy_from_slice(&seq(7).to_be_bytes());
+    assert_eq!(rank(&big), rank(&slot_at(9, 1, 100, seq(7))));
+    // The order: a group outranks any timestamp, a timestamp any
+    // sequence.
+    assert!(rank(&slot_at(10, 1, 1, 0)) > rank(&slot_at(9, 1, 999, seq(9))));
+    assert!(rank(&slot_at(9, 1, 101, 0)) > rank(&slot_at(9, 1, 100, seq(9))));
+    assert!(rank(&slot_at(9, 1, 100, seq(2))) > rank(&slot_at(9, 1, 100, seq(1))));
+}
+
+/// The view chooses as an import does: of a volume whose rings are not
+/// known, nothing; then the state whose uberblock is greatest. After a
+/// rewind the abandoned history's higher group is chosen over the new
+/// history's, until the new history writes that group again with a
+/// later timestamp. A multihost copy of the same state with a later
+/// timestamp opens that state. Two states equal by the order: neither.
+/// The group alone for the order, the defect, chooses neither of the
+/// two states written under one group.
+#[test]
+fn the_view_chooses_the_state_an_import_opens() {
+    let labels = Labels::for_size(64 * MIB);
+    let rings: Vec<Ring> = labels.rings().collect();
+    let mut view = View::unknown(labels);
+    assert!(!view.is_known());
+    assert!(!view.chosen(&state(0, 0), false));
+    for ring in &rings {
+        view.saw(ring.start, &vec![0; RING_SIZE as usize]);
+    }
+    assert!(view.is_known());
+    assert_eq!(view.uberblocks().count(), 0);
+    let put = |view: &mut View, slot: u64, s: &[u8]| {
+        for ring in &rings {
+            view.saw(ring.start + slot * 4 * KIB, s);
+        }
+    };
+    // The abandoned history: 51 at slot 19.
+    put(&mut view, 19, &slot_at(51, 51, 1000, 0));
+    assert!(view.chosen(&state(51, 51), false));
+    // A rewind to 37; the new history writes 39 at slot 7: 51 is still
+    // chosen.
+    put(&mut view, 7, &slot_at(39, 390, 2000, 0));
+    assert!(!view.chosen(&state(39, 390), false));
+    assert!(view.chosen(&state(51, 51), false));
+    // The new history's own 51, later: chosen. By the group alone,
+    // neither 51 is.
+    put(&mut view, 3, &slot_at(51, 510, 3000, 0));
+    assert!(view.chosen(&state(51, 510), false));
+    assert!(!view.chosen(&state(51, 51), false));
+    assert!(!view.chosen(&state(51, 510), true), "the defect");
+    // A multihost copy of the same state, later: the same state opens.
+    put(&mut view, 31, &slot_at(51, 510, 3005, (4 << 32) | 2));
+    assert!(view.chosen(&state(51, 510), false));
+    // Another state equal by the order: neither is chosen.
+    let rings0 = rings[0];
+    view.saw(
+        rings0.start + 5 * 4 * KIB,
+        &slot_at(51, 777, 3005, (4 << 32) | 2),
+    );
+    assert!(!view.chosen(&state(51, 510), false));
+    assert!(!view.chosen(&state(51, 777), false));
+    // Zeroed, it is gone.
+    view.zeroed(rings0.start + 5 * 4 * KIB, 4 * KIB);
+    assert!(view.chosen(&state(51, 510), false));
+}
+
+/// A position covered only in part is not known: what it holds then is
+/// not known. Covered whole again, it is.
+#[test]
+fn a_position_covered_in_part_is_not_known() {
+    let labels = Labels::for_size(64 * MIB);
+    let ring = labels.rings().next().expect("label 0");
+    let mut view = View::empty(labels);
+    view.saw(ring.start, &slot_at(9, 1, 100, 0));
+    assert!(view.chosen(&state(9, 1), false));
+    // Bytes 16 to 32 of the slot: its group.
+    view.saw(ring.start + 16, &[0; 16]);
+    assert!(!view.is_known());
+    assert!(!view.chosen(&state(9, 1), false));
+    // Bytes after the fields read leave the position as it is.
+    view.saw(ring.start, &slot_at(9, 1, 100, 0));
+    view.saw(ring.start + READ_LEN as u64, &[0; 64]);
+    assert!(view.is_known() && view.chosen(&state(9, 1), false));
+    // Zeros over part of it: not known.
+    view.zeroed(ring.start + 8, 8);
+    assert!(!view.is_known());
 }

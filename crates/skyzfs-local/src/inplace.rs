@@ -307,6 +307,14 @@ impl Mutants {
     /// when nothing on the threads holds the request back itself: the
     /// half of a flush's barrier that M1 left untested (design §5.2).
     pub(crate) const PASSES_WAITING_FLUSH: u64 = 1 << 35;
+    /// Whether a cut opens as itself is judged by the group alone, not
+    /// by ZFS's order (the group, then the timestamp, then the
+    /// multihost sequence).
+    pub(crate) const ORDER_BY_GROUP: u64 = 1 << 36;
+    /// The start does not read the rings: they are taken to hold no
+    /// uberblock, and what was written before the store began is not
+    /// seen.
+    pub(crate) const RINGS_UNREAD: u64 = 1 << 37;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
@@ -771,8 +779,35 @@ impl<D: Dir> InPlace<D> {
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
         store.empty_cache().map_err(StartError::CacheKept)?;
+        store.read_rings();
         store.set_up_io().map_err(StartError::Io)?;
         Ok(store)
+    }
+
+    /// Read the four labels' uberblock rings, so that the count of cuts
+    /// knows what an import would choose among before the first request
+    /// (design §5.2, "Whether a cut opens as itself"; `cuts.rs`). It is
+    /// the store's one read of the volume's content on its own account:
+    /// four reads of 128 KiB, 512 KiB in all, on the caller's thread
+    /// before the I/O threads start. They come after the cache is
+    /// emptied and checked, so they read the disk, and by direct I/O
+    /// where the store's I/O is direct, so they leave nothing in the
+    /// cache. On a volume that holds no pool they read holes. A ring
+    /// that cannot be read stays unknown, and then no cut opens as
+    /// itself until every position of that ring has been written again;
+    /// the start goes on, as a failed read fails nothing else.
+    fn read_rings(&mut self) {
+        for (offset, len) in self.cuts.rings() {
+            let mut buf = Buf::zeroed((len / skyzfs_blk::BLOCK_SIZE) as usize);
+            let read = if self.io.direct {
+                self.home.read_direct_at(offset, &mut buf)
+            } else {
+                self.home.read_at(offset, &mut buf)
+            };
+            if read.is_ok() {
+                self.cuts.read_at_start(offset, &buf);
+            }
+        }
     }
 
     /// Check what direct I/O asks, and start the threads.
@@ -1099,6 +1134,9 @@ impl<D: Dir> InPlace<D> {
             Op::WriteZeroes { offset, len } => {
                 let zeroed = self.zero(offset, len);
                 let result = self.mutated(zeroed);
+                if result.is_ok() {
+                    self.cuts.zeroed(id);
+                }
                 self.complete(id, result, None);
             }
             // Rule R6 lets a discarded block keep its content. The

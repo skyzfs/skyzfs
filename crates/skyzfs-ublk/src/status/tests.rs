@@ -57,6 +57,7 @@ fn sample() -> Status {
                 newest: Some(Cut {
                     number: 29,
                     group: 30,
+                    itself: true,
                 }),
             }),
         },
@@ -68,8 +69,8 @@ fn sample() -> Status {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 336);
-    assert_eq!(&bytes[..8], b"SKYZST11");
+    assert_eq!(bytes.len(), 344);
+    assert_eq!(&bytes[..8], b"SKYZST12");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
     assert_eq!(bytes[14..16], 0x2122u16.to_le_bytes());
@@ -101,6 +102,7 @@ fn the_file_has_the_documented_layout() {
         (304, 27),
         (320, 29),
         (328, 30),
+        (336, 1),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
@@ -119,6 +121,7 @@ fn before_the_first_cut_the_file_has_no_group() {
     let bytes = encode(&status);
     assert_eq!(u64_at(&bytes, 320), 0);
     assert_eq!(u64_at(&bytes, 328), 0);
+    assert_eq!(u64_at(&bytes, 336), 0);
     assert_eq!(decode(&bytes), Some(status));
 }
 
@@ -271,7 +274,8 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
 fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let versions: [(&[u8; 8], usize); 4] = [
+    let versions: [(&[u8; 8], usize); 5] = [
+        (b"SKYZST12", 344),
         (b"SKYZST11", 336),
         (b"SKYZST10", 2032),
         (b"SKYZSTA9", 2008),
@@ -333,6 +337,21 @@ fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
     );
     assert_eq!(value(&lines, "cuts"), Some("29"));
     assert_eq!(value(&lines, "cut_group"), Some("30"));
+    assert_eq!(value(&lines, "cut_opens"), Some("itself"));
+    if let Some(Cuts {
+        newest: Some(cut), ..
+    }) = status.shown.cuts.as_mut()
+    {
+        cut.itself = false;
+    }
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&status),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cut_opens"), Some("rewind"));
     status.shown.cuts = Some(Cuts::default());
     let lines = report(
         Some(&located(DeviceState::Live, Whose::Ours)),
@@ -343,6 +362,41 @@ fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
     );
     assert_eq!(value(&lines, "cuts"), Some("0"));
     assert_eq!(value(&lines, "cut_group"), None);
+    assert_eq!(value(&lines, "cut_opens"), None);
+}
+
+/// A file of the eleventh version (336 bytes, `SKYZST11`) is still
+/// read: everything at its place, with the count and the newest cut's
+/// group, and nothing of whether that cut opens as itself, which
+/// `status` does not print for it.
+#[test]
+fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let path = dir.path().join(STATUS);
+    let mut eleventh = encode(&sample())[..336].to_vec();
+    eleventh[..8].copy_from_slice(b"SKYZST11");
+    fs::write(&path, &eleventh).expect("write");
+    let read = read(&path).expect("read").expect("a status");
+    let mut expected = sample();
+    expected.version = 11;
+    if let Some(Cuts {
+        newest: Some(cut), ..
+    }) = expected.shown.cuts.as_mut()
+    {
+        cut.itself = false;
+    }
+    assert_eq!(read, expected);
+    let lines = report(
+        Some(&located(DeviceState::Live, Whose::Ours)),
+        Some(&read),
+        Noted::Nothing,
+        &[7; 16],
+        5,
+    );
+    assert_eq!(value(&lines, "cuts"), Some("29"));
+    assert_eq!(value(&lines, "cut_group"), Some("30"));
+    assert_eq!(value(&lines, "cut_opens"), None);
+    assert!(!has_log_store_keys(&lines));
 }
 
 /// How write-zeroes are applied is shown only where the file says it: a
@@ -440,6 +494,7 @@ fn a_change_of_the_store_alone_is_written() {
             newest: Some(Cut {
                 number: 1,
                 group: 9,
+                itself: false,
             }),
         }),
         ..StoreShown::default()
@@ -725,7 +780,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
     let keys: Vec<&str> = lines.iter().map(|(k, _)| *k).collect();
     // The pump's times are between the cuts and the I/O threads, in the
     // order of `PUMP_KEYS`; the other keys are in this order.
-    let at = keys.iter().position(|k| *k == "cut_group").unwrap() + 1;
+    let at = keys.iter().position(|k| *k == "cut_opens").unwrap() + 1;
     assert_eq!(keys[at..at + PUMP_FIELDS], PUMP_KEYS);
     let keys: Vec<&str> = keys
         .into_iter()
@@ -756,6 +811,7 @@ fn the_report_has_the_keys_the_rig_reads_and_says_whose_the_counters_are() {
             "zeroes_applied",
             "cuts",
             "cut_group",
+            "cut_opens",
             "io_threads",
             "io_in_flight",
             "io_waiting",
@@ -1173,16 +1229,19 @@ fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
     let mut eleventh = encode(&sample()).to_vec();
+    // The twelfth whole; the eleventh is its first 336 bytes.
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
         ("10", b"SKYZST10"),
         ("11", b"SKYZST11"),
+        ("12", b"SKYZST12"),
     ] {
         let mut bytes = match version {
             "8" => tenth_file()[..1960].to_vec(),
             "9" => tenth_file()[..2008].to_vec(),
             "10" => tenth_file(),
+            "11" => eleventh[..336].to_vec(),
             _ => std::mem::take(&mut eleventh),
         };
         bytes[..8].copy_from_slice(magic);
@@ -1198,7 +1257,7 @@ fn status_prints_the_version_of_the_file_it_read() {
         assert_eq!(value(&lines, "status_version"), Some(version));
         assert_eq!(read.version.to_string(), version);
     }
-    assert_eq!(VERSION, 11);
+    assert_eq!(VERSION, 12);
 }
 
 /// A post wakes the publishing thread only when it waits for a change.

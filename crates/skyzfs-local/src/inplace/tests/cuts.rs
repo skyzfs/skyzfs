@@ -36,6 +36,13 @@ fn uberblock(txg: u64, root: u64) -> Buf {
     slot
 }
 
+/// The same with the uberblock's time set to `timestamp`.
+fn stamped(txg: u64, root: u64, timestamp: u64) -> Buf {
+    let mut slot = uberblock(txg, root);
+    slot[32..40].copy_from_slice(&timestamp.to_le_bytes());
+    slot
+}
+
 /// The uberblock write of group `txg` and root `root` to label `label`,
 /// in the slot the group chooses.
 fn uberblock_write(label: usize, txg: u64, root: u64) -> Op {
@@ -54,6 +61,11 @@ fn other_write() -> Op {
         offset: 32 * KIB,
         data: Buf::filled(1, 0x77),
     }
+}
+
+/// The newest cut's group, and whether it opens as itself.
+fn newest(store: &InPlace<SimDisk>) -> Option<(u64, bool)> {
+    store.cuts().newest.map(|cut| (cut.group, cut.itself))
 }
 
 /// The count and the newest cut's group.
@@ -352,6 +364,7 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
         let cut = Cut {
             number: 1,
             group: 5,
+            itself: true,
         };
         assert_eq!(
             *heard.lock().expect("lock"),
@@ -366,4 +379,136 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
             "{io:?}"
         );
     }
+}
+
+/// A store begun on a volume that already holds a pool reads its rings
+/// before the first request (design §5.2, "Whether a cut opens as
+/// itself"), with every I/O the store has. The first attachment writes
+/// group 10 to the four labels. The next is a rewind import to group 8,
+/// whose cut does not open as itself: group 10 is still in every ring,
+/// and an import opens that. The import's own group 10, written over
+/// the old one's slot in every label, does. A start that does not read
+/// the rings is noticed: it takes group 8 to open as itself.
+#[test]
+fn a_store_begun_on_a_pool_reads_its_rings_first() {
+    let opens = |mutants: u64, io: IoMode| {
+        let disk = created(12, 0);
+        let mut id = 0;
+        let mut group = |store: &mut InPlace<SimDisk>, txg: u64, root: u64| {
+            for label in 0..LABELS {
+                id += 1;
+                assert!(run(store, id, uberblock_write(label, txg, root))
+                    .result
+                    .is_ok());
+            }
+            id += 1;
+            assert!(run(store, id, Op::Flush).result.is_ok());
+            newest(store)
+        };
+        let mut store = start_io(&disk, mutants, false, io).unwrap();
+        let mut seen = vec![group(&mut store, 10, 1)];
+        drop(store);
+        let mut store = start_io(&disk, mutants, false, io).unwrap();
+        seen.push(newest(&store));
+        seen.push(group(&mut store, 8, 2));
+        seen.push(group(&mut store, 10, 3));
+        seen
+    };
+    let wanted = [Some((10, true)), None, Some((8, false)), Some((10, true))];
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        assert_eq!(opens(0, io), wanted, "{io:?}");
+    }
+    assert_eq!(
+        opens(Mutants::RINGS_UNREAD, IoMode::default()),
+        [Some((10, true)), None, Some((8, true)), Some((10, true))],
+        "a start that does not read the rings is not noticed"
+    );
+}
+
+/// Among uberblocks of one group an import takes the later time, then
+/// the greater multihost sequence (`vdev_uberblock_compare`). Here a
+/// multihost pool's copy of group 10 is left in label 2's multihost slot
+/// when a rewind import writes another group 10, later: an import opens
+/// the later one, so its cut opens as itself, while group 9 before it
+/// does not. Taking the group alone for the order is noticed: it calls
+/// the two states of group 10 a tie, and so a rewind.
+#[test]
+fn a_group_written_twice_opens_as_its_later_state() {
+    let opens = |mutants: u64| {
+        let disk = created(13, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut seen = Vec::new();
+        let mut step = |store: &mut InPlace<SimDisk>, writes: &[(usize, u64)], slot: Buf| {
+            for &(label, at) in writes {
+                id += 1;
+                let write = Op::Write {
+                    offset: ring(label) + at * SLOT,
+                    data: slot.clone(),
+                };
+                assert!(run(store, id, write).result.is_ok());
+            }
+            id += 1;
+            assert!(run(store, id, Op::Flush).result.is_ok());
+            seen.push(newest(store));
+        };
+        let every = |at: u64| (0..LABELS).map(|label| (label, at)).collect::<Vec<_>>();
+        step(&mut store, &every(10), stamped(10, 1, 100));
+        // The multihost write of the same state, later.
+        step(&mut store, &[(2, RING_SLOTS - 1)], stamped(10, 1, 150));
+        // The rewind import's groups.
+        step(&mut store, &every(9), stamped(9, 2, 200));
+        step(&mut store, &every(10), stamped(10, 3, 300));
+        seen
+    };
+    assert_eq!(
+        opens(0),
+        [
+            Some((10, true)),
+            Some((10, true)),
+            Some((9, false)),
+            Some((10, true))
+        ]
+    );
+    assert_eq!(
+        opens(Mutants::ORDER_BY_GROUP),
+        [
+            Some((10, true)),
+            Some((10, true)),
+            Some((9, false)),
+            Some((10, false))
+        ],
+        "the group alone for the order is not noticed"
+    );
+}
+
+/// What a write-zeroes leaves in a ring is known: zeros, which hold no
+/// uberblock. Once group 10 is zeroed out of every ring, the cut of
+/// group 8 opens as itself; before, it would not.
+#[test]
+fn a_ring_zeroed_holds_no_uberblock() {
+    let disk = created(14, 0);
+    let mut store = start(&disk, 0, false).unwrap();
+    let mut id = 0;
+    let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+        id += 1;
+        assert!(run(store, id, op).result.is_ok());
+    };
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 10, 1));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((10, true)));
+    for label in 0..LABELS {
+        let zeroes = Op::WriteZeroes {
+            offset: ring(label) + 10 * SLOT,
+            len: SLOT,
+        };
+        step(&mut store, zeroes);
+    }
+    for label in 0..LABELS {
+        step(&mut store, uberblock_write(label, 8, 2));
+    }
+    step(&mut store, Op::Flush);
+    assert_eq!(newest(&store), Some((8, true)));
 }

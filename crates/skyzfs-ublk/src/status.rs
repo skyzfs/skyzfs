@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 336
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 344
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,26 +18,30 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's eleventh version (M2.1). It has none of the
-//! fields that only the log store filled, which the tenth still
-//! carried as zeros after the log store was removed (M1.3t): the
-//! log's length, its checkpoint steps and syncs, what a start
-//! replayed and recovered beyond what was acknowledged, the store's
-//! worker's and reader's times, the hint that started writeback early,
-//! the syncs by kind, and the record of the acknowledged position. It
-//! adds the count of cuts and the newest cut's group (design §5.2).
+//! This is the file's twelfth version (M2.1b). It adds whether the
+//! newest cut opens as itself (design §5.2), after the eleventh's
+//! fields (M2.1), which it keeps at their places. The eleventh dropped
+//! the fields that only the log store filled, which the tenth still
+//! carried as zeros after the log store was removed (M1.3t): the log's
+//! length, its checkpoint steps and syncs, what a start replayed and
+//! recovered beyond what was acknowledged, the store's worker's and
+//! reader's times, the hint that started writeback early, the syncs by
+//! kind, and the record of the acknowledged position; and it added the
+//! count of cuts and the newest cut's group.
 //!
-//! The tenth (`SKYZST10`, 2032 bytes), the ninth (`SKYZSTA9`, 2008
-//! bytes) and the eighth (`SKYZSTA8`, 1960 bytes) are still read: what
-//! this version keeps lies at the same places in all three, the ninth
-//! has nothing of the commands the driver ended otherwise than OK (from
-//! offset 2008 of the tenth), and the eighth nothing of the I/O
-//! threads' queue (from offset 1960). None of them has cuts. A file of
-//! an older version, from a daemon before M1.3m, is read as no status.
+//! The eleventh (`SKYZST11`, 336 bytes) is still read, without whether
+//! the newest cut opens as itself. So are the tenth (`SKYZST10`, 2032
+//! bytes), the ninth (`SKYZSTA9`, 2008 bytes) and the eighth
+//! (`SKYZSTA8`, 1960 bytes): what this version keeps lies at the same
+//! places in all three, the ninth has nothing of the commands the
+//! driver ended otherwise than OK (from offset 2008 of the tenth), and
+//! the eighth nothing of the I/O threads' queue (from offset 1960).
+//! None of them has cuts. A file of an older version, from a daemon
+//! before M1.3m, is read as no status.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST11` |
+//! | 0 | 8 | magic `SKYZST12` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -63,6 +67,7 @@
 //! | 312 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
 //! | 320 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start: each daemon counts from 0 |
 //! | 328 | 8 | `cut_group`: the newest cut's transaction group; 0 before the first cut |
+//! | 336 | 8 | `cut_opens`: whether the newest cut opens as itself (design §5.2): 1 if an import of the volume at its instant, with no rewind, opens its uberblock's pool state; 2 if it opens only with a rewind to its group; 0 before the first cut |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -114,10 +119,15 @@ use skyzfs_local::store::Spent;
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST11";
+const MAGIC: &[u8; 8] = b"SKYZST12";
 /// The version this crate writes.
-pub const VERSION: u32 = 11;
-const LEN: usize = 336;
+pub const VERSION: u32 = 12;
+const LEN: usize = 344;
+
+/// The eleventh version: the twelfth without whether the newest cut
+/// opens as itself (offset 336).
+const ELEVENTH_MAGIC: &[u8; 8] = b"SKYZST11";
+const ELEVENTH_LEN: usize = 336;
 
 /// The tenth version, the last with the log store's fields. A file of
 /// it is still read, without them and without cuts.
@@ -338,6 +348,7 @@ fn encode(status: &Status) -> [u8; LEN] {
         u64::from(u32::from_le_bytes(c.last_command_failure.to_le_bytes())),
         cuts.count,
         cuts.newest.map_or(0, |cut| cut.group),
+        cuts.newest.map_or(0, |cut| if cut.itself { 1 } else { 2 }),
     ];
     let pump = pump_fields(&shown.pump);
     for (i, field) in fields.iter().chain(&pump).chain(&after).enumerate() {
@@ -387,6 +398,8 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
 fn decode(bytes: &[u8]) -> Option<Status> {
     let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
     let version = if is(LEN, MAGIC) {
+        12
+    } else if is(ELEVENTH_LEN, ELEVENTH_MAGIC) {
         11
     } else if is(TENTH_LEN, TENTH_MAGIC) {
         10
@@ -415,7 +428,7 @@ fn decode(bytes: &[u8]) -> Option<Status> {
     let field = |at: usize| u64_at(bytes, at);
     let failure_at =
         |at: usize| i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
-    let (failures, first_write_copies, start_ms, shown) = if version == 11 {
+    let (failures, first_write_copies, start_ms, shown) = if version >= 11 {
         let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| field(144 + 8 * i));
         counters.commands_aborted = field(296);
         counters.commands_failed = field(304);
@@ -423,9 +436,13 @@ fn decode(bytes: &[u8]) -> Option<Status> {
         let count = field(320);
         let cuts = Cuts {
             count,
+            // The eleventh version does not say whether the newest cut
+            // opens as itself: read as not, and `status` prints nothing
+            // of it for that version.
             newest: (count > 0).then(|| Cut {
                 number: count,
                 group: field(328),
+                itself: version >= 12 && field(336) == 1,
             }),
         };
         let shown = StoreShown {
@@ -922,7 +939,11 @@ pub enum Noted {
 ///
 /// `cuts` is the count of cuts the serving daemon's store has made
 /// (design §5.2) and `cut_group` the newest one's transaction group,
-/// from a file of the eleventh version. The count is the daemon's own:
+/// from a file of the eleventh version or later. `cut_opens`, from the
+/// twelfth, says whether that cut opens as itself: `itself` if an import
+/// of the volume at its instant, with no rewind, opens its pool state,
+/// `rewind` if it opens only with a rewind to its group (after a rewind
+/// import, until the pool's groups pass the abandoned ones). The count is the daemon's own:
 /// it starts at 0 with each daemon. A pool made on a partition of the
 /// volume, not on the whole device, makes no cuts: its uberblocks are
 /// not where the store looks for them.
@@ -1029,11 +1050,16 @@ pub fn report(
             lines.push(("zeroes_applied", said.to_string()));
         }
         // The count of cuts and the newest cut's group, from a file
-        // that holds them; `cut_group` once there is a cut.
+        // that holds them; `cut_group` once there is a cut, and
+        // `cut_opens` with it from a file that says it.
         if let Some(cuts) = shown.cuts {
             lines.push(("cuts", cuts.count.to_string()));
             if let Some(newest) = cuts.newest {
                 lines.push(("cut_group", newest.group.to_string()));
+                if s.version >= 12 {
+                    let opens = if newest.itself { "itself" } else { "rewind" };
+                    lines.push(("cut_opens", opens.to_string()));
+                }
             }
         }
         for (key, value) in PUMP_KEYS.iter().zip(pump_fields(&shown.pump)) {

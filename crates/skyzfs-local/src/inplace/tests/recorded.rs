@@ -9,9 +9,12 @@
 //! itself): every uberblock in those writes, and the cuts by design
 //! §5.2. Here the same record goes through this crate's parser and
 //! through the store's rule, one request at a time, and both must agree
-//! with the reference in full.
+//! with the reference in full. Each cut must also say whether it opens
+//! as itself exactly where the fixture's check (`check.tsv`, from
+//! `zdb -e -u` at each cut's instant) found the volume opening at the
+//! cut's own group (work package M2.1b).
 //!
-//! What the recordings do not show: none of the rule's defects changes
+//! What the recordings do not show: none of the count's defects changes
 //! what these five pools make (`life`, `rewind`, `config`, `stray`,
 //! `autotrim`; probed on 2026-11-14). No flush in them falls between
 //! one group's uberblock writes, so a repeat never follows a cut and
@@ -21,6 +24,9 @@
 //! group alone makes the same cuts. The store's own tests are what
 //! notice those defects (`tests/cuts.rs`). The `multihost` recording,
 //! not in yet, is the one whose stale writes are repeats after a cut.
+//! Of the two defects of whether a cut opens as itself, the recordings
+//! notice the rings not read at a start, and not the group alone for
+//! the order (see the last test).
 //!
 //! The order the store is given is the record's: a write is received
 //! and applied before the next record, a flush is received and reaches
@@ -52,6 +58,8 @@ struct Record {
     bytes: u64,
     /// The write's bytes, for a write that touches a label.
     data: Option<Vec<u8>>,
+    /// A mark's text.
+    text: String,
 }
 
 /// A recorded pool.
@@ -99,6 +107,7 @@ fn pool(dir: &Path) -> Pool {
                 text.parse()
                     .unwrap_or_else(|_| panic!("{name}: not a number: {text}"))
             };
+            let text = data.clone();
             let data = (data != "-" && op.starts_with("write")).then(|| unhex(data));
             Record {
                 i: number(i),
@@ -106,6 +115,7 @@ fn pool(dir: &Path) -> Pool {
                 offset: number(offset),
                 bytes: number(bytes),
                 data,
+                text,
             }
         })
         .collect();
@@ -214,20 +224,53 @@ fn the_parser_finds_every_uberblock_the_reference_finds() {
     }
 }
 
-/// What the store's rule makes of a recorded pool, in the columns of
-/// `cuts.tsv` it can say: the cut's number, its group, the record of
-/// the flush whose barrier it is, and the records before that instant.
-fn counted(pool: &Pool) -> Vec<[u64; 4]> {
-    let cuts = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut rule = CutRule::new(pool.dev_bytes, Mutants(0));
-    rule.watch(Box::new({
-        let cuts = cuts.clone();
-        move |seen| {
-            if let Seen::Cut(id, cut) = seen {
-                cuts.lock().expect("lock").push((id, cut));
-            }
+/// A cut as the replay counts it: its number in the whole record, its
+/// group, the record of the flush whose barrier it is, the records
+/// before that instant, and whether it opens as itself.
+type Counted = (u64, u64, u64, u64, bool);
+
+/// What the store's rule makes of a recorded pool with `mutants`. The
+/// rule begins as a store begins on the volume the record starts from,
+/// which is zeros: it reads the rings, as the record has left them so
+/// far. With `restart`, a store begins again at each session's start
+/// (the record's mark `session-N-begin`), as a daemon started for that
+/// attachment would, and its count is carried on in the numbers.
+fn replay(pool: &Pool, mutants: u64, restart: bool) -> Vec<Counted> {
+    let labels = Labels::for_size(pool.dev_bytes);
+    let rings: Vec<_> = labels.rings().collect();
+    // The rings as the record has left them so far.
+    let mut image: Vec<Vec<u8>> = rings
+        .iter()
+        .map(|_| vec![0; skyzfs_uberblock::RING_SIZE as usize])
+        .collect();
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let begin = |image: &[Vec<u8>]| {
+        let mut rule = CutRule::new(pool.dev_bytes, Mutants(mutants));
+        for (ring, bytes) in rings.iter().zip(image) {
+            rule.read_at_start(ring.start, bytes);
         }
-    }));
+        rule.watch(Box::new({
+            let heard = heard.clone();
+            move |seen| {
+                if let Seen::Cut(id, cut) = seen {
+                    heard.lock().expect("lock").push((id, cut));
+                }
+            }
+        }));
+        rule
+    };
+    let mut rule = begin(&image);
+    let mut counted: Vec<Counted> = Vec::new();
+    let mut take = |heard: &std::sync::Mutex<Vec<(RequestId, Cut)>>| {
+        let before = counted.len() as u64;
+        for (id, cut) in heard.lock().expect("lock").drain(..) {
+            let (record, after) = (id.0 / 3, id.0 % 3);
+            // A flush before its write's data, or alone: the record is
+            // not in the cut. The flush after a write with FUA: it is.
+            let prefix = if after == 2 { record + 1 } else { record };
+            counted.push((before + cut.number, cut.group, record, prefix, cut.itself));
+        }
+    };
     // A record's write is request 3i, a flush before it 3i+1, a flush
     // after it 3i+2; the records before an instant follow from which.
     let flush = |rule: &mut CutRule, id: u64| {
@@ -246,8 +289,21 @@ fn counted(pool: &Pool) -> Vec<[u64; 4]> {
                 }
                 let blocks = usize::try_from(record.bytes).expect("a size") / BLOCK as usize;
                 let data = match &record.data {
-                    Some(bytes) => Buf::from_blocks(bytes)
-                        .unwrap_or_else(|| panic!("{}: record {i} is not whole blocks", pool.name)),
+                    Some(bytes) => {
+                        for (ring, kept) in rings.iter().zip(image.iter_mut()) {
+                            let from = record.offset.max(ring.start);
+                            let to = (record.offset + record.bytes).min(ring.end());
+                            if from < to {
+                                let (a, b) =
+                                    ((from - ring.start) as usize, (to - ring.start) as usize);
+                                let c = (from - record.offset) as usize;
+                                kept[a..b].copy_from_slice(&bytes[c..c + (b - a)]);
+                            }
+                        }
+                        Buf::from_blocks(bytes).unwrap_or_else(|| {
+                            panic!("{}: record {i} is not whole blocks", pool.name)
+                        })
+                    }
                     None => Buf::zeroed(blocks),
                 };
                 let id = RequestId(3 * i);
@@ -276,50 +332,106 @@ fn counted(pool: &Pool) -> Vec<[u64; 4]> {
                 );
                 rule.ended(id);
             }
-            "mark" => {}
+            "mark" => {
+                let session =
+                    record.text.starts_with("session-") && record.text.ends_with("-begin");
+                if restart && session {
+                    take(&heard);
+                    rule = begin(&image);
+                }
+            }
             other => panic!(
                 "{}: record {i}: an op this test does not know: {other}",
                 pool.name
             ),
         }
     }
-    let cuts = cuts.lock().expect("lock").clone();
-    cuts.into_iter()
-        .map(|(id, cut)| {
-            let (record, after) = (id.0 / 3, id.0 % 3);
-            // A flush before its write's data, or alone: the record is
-            // not in the cut. The flush after a write with FUA: it is.
-            let prefix = if after == 2 { record + 1 } else { record };
-            [cut.number, cut.group, record, prefix]
+    take(&heard);
+    counted
+}
+
+/// The reference's cuts of a recorded pool, with whether each opens as
+/// itself: those whose volume `zdb -e -u` opened at another group (the
+/// check's `cut_N FAIL ... zdb selects group G`) do not, and every
+/// other one does, since the check passed it at its own group. A cut
+/// that failed the check for another reason is not one this test can
+/// judge.
+fn reference(pool: &Pool) -> Vec<Counted> {
+    let text = std::fs::read_to_string(pool.dir.join("cuts.tsv")).expect("cuts");
+    assert_eq!(
+        text.lines().next(),
+        Some(FORMAT),
+        "{}: the format",
+        pool.name
+    );
+    let check = std::fs::read_to_string(pool.dir.join("check.tsv")).expect("check");
+    let elsewhere: Vec<u64> = rows(&check)
+        .into_iter()
+        .filter(|c| c[0].starts_with("cut_") && c.get(1).is_some_and(|v| v == "FAIL"))
+        .map(|c| {
+            assert!(
+                c.get(2)
+                    .is_some_and(|why| why.contains("zdb selects group")),
+                "{}: a cut failed the check for another reason: {c:?}",
+                pool.name
+            );
+            c[0]["cut_".len()..].parse().expect("a cut's number")
         })
-        .collect()
+        .collect();
+    // n txg prefix ub_record flush_record rootbp.
+    let wanted: Vec<Counted> = rows(&text)
+        .into_iter()
+        .map(|c| {
+            let n = |at: usize| c[at].parse::<u64>().expect("a number");
+            (n(0), n(1), n(4), n(2), !elsewhere.contains(&n(0)))
+        })
+        .collect();
+    assert!(!wanted.is_empty(), "{}: no cut", pool.name);
+    wanted
 }
 
 /// The store's rule makes the reference's cuts from each recorded pool:
 /// the same count, and each cut with the same group at the barrier of
-/// the same flush. The rewind's cuts 23 to 28 are the reference's cuts
-/// by §5.2 although their volumes open at the abandoned history's group
-/// (its `check.tsv`); this test holds the rule to the reference as it
-/// is, and what a cut after a rewind is remains the lead's decision.
+/// the same flush. Each says it opens as itself exactly where the
+/// check opened the volume at the cut's own group: in the rewind, cuts
+/// 23 to 28 (the new history's groups 39 to 48, whose volumes open at
+/// the abandoned history's 51) do not, and the new history's own 51,
+/// cut 29, does (design §5.2, "Whether a cut opens as itself").
 #[test]
 fn the_rule_makes_the_reference_cuts_of_every_recorded_pool() {
     for pool in pools() {
-        let text = std::fs::read_to_string(pool.dir.join("cuts.tsv")).expect("cuts");
-        assert_eq!(
-            text.lines().next(),
-            Some(FORMAT),
-            "{}: the format",
-            pool.name
-        );
-        // n txg prefix ub_record flush_record rootbp.
-        let wanted: Vec<[u64; 4]> = rows(&text)
-            .into_iter()
-            .map(|c| {
-                let n = |at: usize| c[at].parse::<u64>().expect("a number");
-                [n(0), n(1), n(4), n(2)]
-            })
-            .collect();
-        assert!(!wanted.is_empty(), "{}: no cut", pool.name);
-        assert_eq!(counted(&pool), wanted, "{}", pool.name);
+        assert_eq!(replay(&pool, 0, false), reference(&pool), "{}", pool.name);
     }
+}
+
+/// The same with a store begun again at each session's start, as a
+/// daemon started for that attachment would be: it reads the rings, and
+/// so sees the abandoned history's uberblocks that were written before
+/// it began. A start that does not read them (the defect) is noticed:
+/// it takes the rewind's cuts 23 to 28 to open as themselves.
+///
+/// The other defect of the order, the group alone, does not show in
+/// these recordings, and the store's own test is what notices it
+/// (`tests/cuts.rs`, `a_group_written_twice_opens_as_its_later_state`).
+/// Two states of one group meet in view only after a rewind, and the
+/// slot an uberblock goes to is its group modulo the ring's slots: the
+/// new history's 51 is written over the abandoned 51 in every label
+/// before the flush that cuts it. A multihost pool keeps the ring's last
+/// slot for its own writes, where an abandoned state can outlive that;
+/// the `multihost` recording, not in yet, is the one that could show it.
+#[test]
+fn a_store_begun_at_each_session_says_which_cuts_open_as_themselves() {
+    let pools = pools();
+    for pool in &pools {
+        assert_eq!(replay(pool, 0, true), reference(pool), "{}", pool.name);
+    }
+    let unread: Vec<Vec<Counted>> = pools
+        .iter()
+        .map(|pool| replay(pool, Mutants::RINGS_UNREAD, true))
+        .collect();
+    let right: Vec<Vec<Counted>> = pools.iter().map(reference).collect();
+    assert_ne!(
+        unread, right,
+        "a start that does not read the rings is not noticed"
+    );
 }

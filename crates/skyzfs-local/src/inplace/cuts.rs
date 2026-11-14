@@ -38,9 +38,29 @@
 //!   count of cuts goes up by one and the cut takes its number, with
 //!   the mark's group beside it. A flush that never reaches its barrier
 //!   (the volume failed first) counts no cut.
+//! - **Each cut says whether it opens as itself** (work package M2.1b;
+//!   design §5.2, "Whether a cut opens as itself"): whether an import
+//!   of the volume as it is at the cut's instant, with no rewind, would
+//!   open the state of the uberblock that marks it. The rule keeps the
+//!   four rings in view, each whole KiB a position
+//!   ([`skyzfs_uberblock::View`]): the store's start reads them before
+//!   the first request (`InPlace::read_rings`, 4 × 128 KiB), and every
+//!   write and write-zeroes the store applies to them after changes the
+//!   view as it changed the volume. A discard changes nothing, as the
+//!   store keeps a discarded block's content. At the cut, the answer is
+//!   yes when every position is known and every uberblock of the
+//!   greatest rank in view carries the mark's state, the rank being the
+//!   order an import chooses by (`vdev_uberblock_compare`: the group,
+//!   then the time, then the multihost sequence;
+//!   [`skyzfs_uberblock::Rank`]). Otherwise the cut opens only with a
+//!   rewind to its group, which a later abandoned history above it
+//!   shows: after a rewind import, the abandoned groups stay in the
+//!   rings until the new ones are written over them.
 //!
 //! Each rule has a defect among [`Mutants`] and a test that fails with
-//! it (`tests/cuts.rs`).
+//! it (`tests/cuts.rs`). The recorded pools of M2.T1 hold the parser,
+//! the count and the answer against a reference
+//! (`tests/recorded.rs`).
 //!
 //! A test build can watch the rule's moments ([`Seen`],
 //! [`InPlace::watch`](super::InPlace::watch)): every write applied,
@@ -79,11 +99,27 @@
 //!   flush was received, so at the cut's instant that uberblock is in
 //!   the volume with every block of its group (§5.2's first reason), and
 //!   nothing it reaches has been overwritten (its second).
+//! - **Whether a cut opens as itself errs only toward "no"** (the
+//!   conservative readings of M2.1b, where the design is silent). The
+//!   view holds every slot with the magic and a group above zero and
+//!   checks no checksum, while an import passes over a slot whose
+//!   checksum fails: such a slot above the cut makes it a rewind that
+//!   would have opened as itself. A position the start could not read
+//!   is unknown, and so is one a write covered only in part; while any
+//!   is, no cut opens as itself. Two different states that tie at the
+//!   greatest rank are taken as a rewind, though an import opens one of
+//!   them. Only this volume's labels are seen: a pool of several vdevs
+//!   opens at the greatest uberblock among all of them. And the view
+//!   says which state an import chooses, not that the state opens:
+//!   that rests on its blocks, which the rings do not show.
+//! - **The view is in memory**, like the count. Each start reads it
+//!   again from the rings, so it does not depend on what an instance
+//!   before kept.
 
 use std::collections::BTreeMap;
 
 use skyzfs_blk::{Op, RequestId};
-use skyzfs_uberblock::{is_repeat, Labels, State, Uberblock};
+use skyzfs_uberblock::{is_repeat, Labels, State, Uberblock, View, RING_SIZE};
 
 use super::Mutants;
 
@@ -94,6 +130,11 @@ pub struct Cut {
     pub number: u64,
     /// The transaction group of the uberblock whose mark it took.
     pub group: u64,
+    /// Whether it opens as itself (design §5.2): whether an import of
+    /// the volume as it is at the cut's instant, with no rewind, would
+    /// open the pool state of the uberblock that marks it. One that does
+    /// not opens only with a rewind to its group.
+    pub itself: bool,
 }
 
 /// The store's count of cuts since it began, and the newest cut.
@@ -146,16 +187,30 @@ impl std::fmt::Debug for Watching {
     }
 }
 
+/// What a write or a write-zeroes that reaches a ring changes there,
+/// from its receipt until it is applied or ends.
+#[derive(Debug)]
+struct Change {
+    offset: u64,
+    len: u64,
+    /// The uberblocks it carries; none for a write-zeroes.
+    found: Vec<Uberblock>,
+}
+
 /// The rule's state: see the [module documentation](self).
 #[derive(Debug)]
 pub(crate) struct CutRule {
     labels: Labels,
     mutants: Mutants,
-    /// The uberblocks in writes received and not yet ended, by request.
-    written: BTreeMap<RequestId, Vec<Uberblock>>,
+    /// What the writes and write-zeroes received and not yet ended
+    /// change in the rings, by request.
+    changes: BTreeMap<RequestId, Change>,
+    /// The uberblocks in the rings, as the start read them and the
+    /// writes applied since changed them.
+    view: View,
     /// The mark: the latest uberblock applied that was not a repeat,
     /// with no flush received since.
-    mark: Option<State>,
+    mark: Option<Uberblock>,
     /// The newest cut's uberblock, which a repeat may equal.
     newest: Option<State>,
     /// The uberblock applied last, a repeat included: only for the
@@ -164,19 +219,28 @@ pub(crate) struct CutRule {
     previous: Option<State>,
     /// Flushes received after a mark, by request: each carries a cut,
     /// counted at its barrier.
-    carrying: BTreeMap<RequestId, State>,
+    carrying: BTreeMap<RequestId, Uberblock>,
     cuts: Cuts,
     watching: Watching,
 }
 
 impl CutRule {
     /// The rule for a volume of `size` bytes, whose vdev is the whole
-    /// volume.
+    /// volume. What its rings hold is not known until the start has
+    /// read them ([`CutRule::read_at_start`]).
     pub(crate) fn new(size: u64, mutants: Mutants) -> Self {
+        let labels = Labels::for_size(size);
+        let view = if mutants.has(Mutants::RINGS_UNREAD) {
+            // The defect: the rings are taken to hold nothing.
+            View::empty(labels)
+        } else {
+            View::unknown(labels)
+        };
         Self {
-            labels: Labels::for_size(size),
+            labels,
             mutants,
-            written: BTreeMap::new(),
+            changes: BTreeMap::new(),
+            view,
             mark: None,
             newest: None,
             previous: None,
@@ -197,70 +261,100 @@ impl CutRule {
         self.cuts
     }
 
+    /// Where the rings lie, and how long each is: what the start reads.
+    pub(crate) fn rings(&self) -> Vec<(u64, u64)> {
+        self.labels
+            .rings()
+            .map(|ring| (ring.start, RING_SIZE))
+            .collect()
+    }
+
+    /// The start read `data` at `offset`: a ring as the volume holds it
+    /// before the first request.
+    pub(crate) fn read_at_start(&mut self, offset: u64, data: &[u8]) {
+        if !self.mutants.has(Mutants::RINGS_UNREAD) {
+            self.view.saw(offset, data);
+        }
+    }
+
     /// The store has received request `id`, in the order it receives
     /// them.
     pub(crate) fn received(&mut self, id: RequestId, op: &Op) {
-        match op {
+        let (offset, len, found) = match op {
             Op::Write { offset, data } => {
                 if !self.labels.reaches_a_ring(*offset, data.len() as u64) {
                     return;
                 }
                 let found = self.labels.uberblocks_in(*offset, data);
-                if found.is_empty() {
+                (*offset, data.len() as u64, found)
+            }
+            Op::WriteZeroes { offset, len } => {
+                if !self.labels.reaches_a_ring(*offset, *len) {
                     return;
                 }
-                if self.mutants.has(Mutants::MARK_AT_RECEIPT) {
-                    // The defect: marked as received, not as applied.
-                    return self.apply(found);
-                }
-                self.written.insert(id, found);
+                (*offset, *len, Vec::new())
             }
             Op::Flush => {
-                let Some(state) = self.mark.take() else {
+                let Some(uberblock) = self.mark.take() else {
                     return;
                 };
                 if self.mutants.has(Mutants::CUT_AT_RECEIPT) {
                     // The defect: counted as the flush is received, not
                     // at its barrier.
-                    return self.count(id, state);
+                    return self.count(id, uberblock);
                 }
-                self.carrying.insert(id, state);
+                self.carrying.insert(id, uberblock);
+                return;
             }
-            _ => {}
+            _ => return,
+        };
+        let change = Change { offset, len, found };
+        if self.mutants.has(Mutants::MARK_AT_RECEIPT) {
+            // The defect: marked as received, not as applied.
+            return self.apply(change);
         }
+        self.changes.insert(id, change);
     }
 
     /// Write `id` has been applied whole.
     pub(crate) fn applied(&mut self, id: RequestId) {
         self.watching.tell(Seen::Applied(id));
-        if let Some(found) = self.written.remove(&id) {
-            self.apply(found);
+        if let Some(change) = self.changes.remove(&id) {
+            self.apply(change);
+        }
+    }
+
+    /// Write-zeroes `id` has been applied whole.
+    pub(crate) fn zeroed(&mut self, id: RequestId) {
+        if let Some(change) = self.changes.remove(&id) {
+            self.apply(change);
         }
     }
 
     /// Flush `id` has reached its barrier.
     pub(crate) fn barrier(&mut self, id: RequestId) {
         self.watching.tell(Seen::Barrier(id));
-        if let Some(state) = self.carrying.remove(&id) {
-            self.count(id, state);
+        if let Some(uberblock) = self.carrying.remove(&id) {
+            self.count(id, uberblock);
         }
     }
 
     /// Request `id` has ended, however: what it carried and did not use
     /// is forgotten.
     pub(crate) fn ended(&mut self, id: RequestId) {
-        self.written.remove(&id);
+        self.changes.remove(&id);
         self.carrying.remove(&id);
     }
 
-    fn apply(&mut self, found: Vec<Uberblock>) {
-        for uberblock in found {
+    fn apply(&mut self, change: Change) {
+        self.view.changed(change.offset, change.len, &change.found);
+        for uberblock in change.found {
             if !uberblock.counts() && !self.mutants.has(Mutants::GROUP_ZERO_COUNTED) {
                 continue;
             }
             let state = uberblock.state;
             if self.marks(&state) {
-                self.mark = Some(state);
+                self.mark = Some(uberblock);
             }
             self.previous = Some(state);
         }
@@ -275,19 +369,23 @@ impl CutRule {
         if self.mutants.has(Mutants::STALE_MOVES_MARK) {
             return !is_repeat(self.previous.as_ref(), None, state);
         }
+        let mark = self.mark.map(|uberblock| uberblock.state);
         if self.mutants.has(Mutants::REPEAT_BY_GROUP) {
             let same = |other: Option<State>| other.is_some_and(|o| o.txg == state.txg);
-            return !(same(self.mark) || same(self.newest));
+            return !(same(mark) || same(self.newest));
         }
-        !is_repeat(self.mark.as_ref(), self.newest.as_ref(), state)
+        !is_repeat(mark.as_ref(), self.newest.as_ref(), state)
     }
 
-    fn count(&mut self, id: RequestId, state: State) {
+    fn count(&mut self, id: RequestId, uberblock: Uberblock) {
+        let state = uberblock.state;
         self.newest = Some(state);
         self.cuts.count += 1;
+        let by_group = self.mutants.has(Mutants::ORDER_BY_GROUP);
         let cut = Cut {
             number: self.cuts.count,
             group: state.txg,
+            itself: self.view.chosen(&state, by_group),
         };
         self.cuts.newest = Some(cut);
         self.watching.tell(Seen::Cut(id, cut));
