@@ -326,6 +326,10 @@ impl Mutants {
     /// multihost copy of the cut's own state with a later timestamp
     /// makes it a rewind (the lead's reading of M2.1b, point 4).
     pub(crate) const ITSELF_BY_RANK: u64 = 1 << 39;
+    /// An uberblock's label checksum is not checked: bytes in a ring that
+    /// carry the magic and a group but that ZFS would pass over mark, and
+    /// are held in the view (work package M2.1c).
+    pub(crate) const CHECKSUM_UNCHECKED: u64 = 1 << 40;
 
     pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0

@@ -8,8 +8,19 @@
 //!   slot of one of the four labels of a vdev on the whole volume, the
 //!   uberblock magic and a group above zero
 //!   ([`skyzfs_uberblock::Labels::uberblocks_in`],
-//!   [`skyzfs_uberblock::Uberblock::counts`]). The store looks for one
-//!   when it receives a write, and only in a write that reaches a ring.
+//!   [`skyzfs_uberblock::Uberblock::counts`]), in a slot whose label
+//!   checksum holds ([`skyzfs_uberblock::Uberblock::verified`], work
+//!   package M2.1c): what ZFS takes for an uberblock. Without the
+//!   checksum, bytes in a ring that carry the magic and a high group but
+//!   that ZFS would pass over would mark, the cut after them would take
+//!   their group, which errs high, and in the view they would be the
+//!   greatest and the cut's own state, so the cut would say it opens as
+//!   itself: a publish could take that group. The store looks for one
+//!   when it receives a write, and only in a write that reaches a ring;
+//!   the cost is one SHA-256 of each slot size tried, 1 to 8 KiB, for
+//!   each uberblock found. A valid uberblock that something other than
+//!   ZFS writes, such as a label restored with `dd`, is beyond the
+//!   check: it marks as ZFS's own does.
 //! - **It marks once the store has applied it**: when its direct write
 //!   has returned whole and the store has taken that result, which is
 //!   before the store's completion is handed out and so before the
@@ -299,8 +310,19 @@ impl CutRule {
     /// before the first request.
     pub(crate) fn read_at_start(&mut self, offset: u64, data: &[u8]) {
         if !self.mutants.has(Mutants::RINGS_UNREAD) {
-            self.view.saw(offset, data);
+            let found = self.found(offset, data);
+            self.view.changed(offset, data.len() as u64, &found);
         }
+    }
+
+    /// The uberblocks ZFS would take for one in `data` at `offset`: those
+    /// whose label checksum holds ([`Uberblock::verified`]).
+    fn found(&self, offset: u64, data: &[u8]) -> Vec<Uberblock> {
+        let mut found = self.labels.uberblocks_in(offset, data);
+        if !self.mutants.has(Mutants::CHECKSUM_UNCHECKED) {
+            found.retain(Uberblock::verified);
+        }
+        found
     }
 
     /// The store has received request `id`, in the order it receives
@@ -311,7 +333,7 @@ impl CutRule {
                 if !self.labels.reaches_a_ring(*offset, data.len() as u64) {
                     return;
                 }
-                let found = self.labels.uberblocks_in(*offset, data);
+                let found = self.found(*offset, data);
                 (*offset, data.len() as u64, found)
             }
             Op::WriteZeroes { offset, len } => {

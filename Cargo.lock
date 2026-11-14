@@ -4230,6 +4230,9 @@ dependencies = [
 [[package]]
 name = "skyzfs-uberblock"
 version = "0.0.1"
+dependencies = [
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "skyzfs-ublk"

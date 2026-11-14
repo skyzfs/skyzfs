@@ -224,6 +224,34 @@ fn the_parser_finds_every_uberblock_the_reference_finds() {
     }
 }
 
+/// Every uberblock ZFS wrote into the recorded pools carries a label
+/// checksum that holds, at the slot's own size (work package M2.1c):
+/// the checksum as this crate computes it is ZFS's. None of them is of
+/// group 0 (`vdev_label_init`'s, whose ring is written as one I/O).
+#[test]
+fn every_recorded_uberblock_is_verified_by_its_label_checksum() {
+    for pool in pools() {
+        let labels = Labels::for_size(pool.dev_bytes);
+        let mut found = 0;
+        for record in &pool.records {
+            let Some(data) = &record.data else { continue };
+            for ub in labels.uberblocks_in(record.offset, data) {
+                assert!(
+                    ub.counts() && ub.verified(),
+                    "{}: record {}, label {}, slot at {}: {:?}",
+                    pool.name,
+                    record.i,
+                    ub.label,
+                    ub.at,
+                    ub.slot
+                );
+                found += 1;
+            }
+        }
+        assert!(found > 0, "{}: no uberblock", pool.name);
+    }
+}
+
 /// A cut as the replay counts it: its number in the whole record, its
 /// group, the record of the flush whose barrier it is, the records
 /// before that instant, and whether it opens as itself.

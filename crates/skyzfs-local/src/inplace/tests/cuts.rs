@@ -4,9 +4,10 @@
 //! The volume is the tests' 1 MiB: four labels and nothing between
 //! them, the rings at 128, 384, 640 and 896 KiB. Uberblocks are written
 //! as a pool with `ashift` 12 writes them, one 4 KiB slot each, the slot
-//! chosen by the group.
+//! chosen by the group, with the label checksum for the slot's place
+//! ([`slot_write`]).
 
-use skyzfs_uberblock::{Labels, MAGIC};
+use skyzfs_uberblock::{seal, ByteOrder, Labels, MAGIC};
 
 use super::*;
 
@@ -55,10 +56,17 @@ fn multihost(txg: u64, root: u64, timestamp: u64, seq: u64) -> Buf {
 /// The uberblock write of group `txg` and root `root` to label `label`,
 /// in the slot the group chooses.
 fn uberblock_write(label: usize, txg: u64, root: u64) -> Op {
-    Op::Write {
-        offset: ring(label) + (txg % (RING_SLOTS)) * SLOT,
-        data: uberblock(txg, root),
-    }
+    slot_write(
+        ring(label) + (txg % (RING_SLOTS)) * SLOT,
+        uberblock(txg, root),
+    )
+}
+
+/// The write of `data`, one slot, at `offset`, with its label checksum
+/// as ZFS's write of a slot puts it there.
+fn slot_write(offset: u64, mut data: Buf) -> Op {
+    seal(&mut data, offset, ByteOrder::Little);
+    Op::Write { offset, data }
 }
 
 /// A ring's 4 KiB slots.
@@ -186,9 +194,8 @@ fn a_stale_multihost_write_does_not_move_the_mark_back() {
     let counts = |mutants: u64| {
         let disk = created(11, 0);
         let mut store = start(&disk, mutants, false).unwrap();
-        let mmp = |label: usize, txg: u64, root: u64| Op::Write {
-            offset: ring(label) + (RING_SLOTS - 1) * SLOT,
-            data: uberblock(txg, root),
+        let mmp = |label: usize, txg: u64, root: u64| {
+            slot_write(ring(label) + (RING_SLOTS - 1) * SLOT, uberblock(txg, root))
         };
         let mut seen = Vec::new();
         let mut id = 0;
@@ -451,10 +458,7 @@ fn a_group_written_twice_opens_as_its_later_state() {
         let mut step = |store: &mut InPlace<SimDisk>, writes: &[(usize, u64)], slot: Buf| {
             for &(label, at) in writes {
                 id += 1;
-                let write = Op::Write {
-                    offset: ring(label) + at * SLOT,
-                    data: slot.clone(),
-                };
+                let write = slot_write(ring(label) + at * SLOT, slot.clone());
                 assert!(run(store, id, write).result.is_ok());
             }
             id += 1;
@@ -681,7 +685,7 @@ fn a_multihost_copy_of_the_cuts_own_state_leaves_it_itself() {
             id += 1;
             assert!(run(store, id, op).result.is_ok());
         };
-        let write = |offset: u64, data: Buf| Op::Write { offset, data };
+        let write = slot_write;
         let mut seen = Vec::new();
         for (txg, root, at) in [(10, 1, 100), (11, 2, 200)] {
             for label in 0..LABELS {
@@ -721,9 +725,8 @@ fn a_rewind_by_f_opens_as_its_first_group_at_once() {
             id += 1;
             assert!(run(store, id, op).result.is_ok());
         };
-        let write = |label: usize, root: u64, at: u64| Op::Write {
-            offset: ring(label) + 12 * SLOT,
-            data: stamped(12, root, at),
+        let write = |label: usize, root: u64, at: u64| {
+            slot_write(ring(label) + 12 * SLOT, stamped(12, root, at))
         };
         let mut seen = Vec::new();
         for label in 0..LABELS {
@@ -779,9 +782,8 @@ fn another_state_under_the_carried_group_marks() {
     let counts = |mutants: u64| {
         let disk = created(18, 0);
         let mut store = start(&disk, mutants, false).unwrap();
-        let write = |label: usize, root: u64, at: u64| Op::Write {
-            offset: ring(label) + 12 * SLOT,
-            data: stamped(12, root, at),
+        let write = |label: usize, root: u64, at: u64| {
+            slot_write(ring(label) + 12 * SLOT, stamped(12, root, at))
         };
         assert!(run(&mut store, 1, write(0, 1, 100)).result.is_ok());
         disk.hold_direct_io(1);
@@ -807,4 +809,67 @@ fn another_state_under_the_carried_group_marks() {
         ((1, Some((12, false))), (1, Some((12, false)))),
         "a carried state compared by its group alone is not noticed"
     );
+}
+
+/// Bytes in a ring that carry the magic and a high group, but whose
+/// label checksum does not hold, are not an uberblock: ZFS passes over
+/// them, and so does the store (work package M2.1c). Here they are
+/// written into label 1's slot of group 99 after group 11's labels and
+/// before the flush that cuts group 11, once with no checksum and once
+/// with the checksum of another place (a slot copied there). The cut is
+/// group 11's, and it opens as itself. With the checksum not checked
+/// (the defect) the bytes mark: the cut takes group 99, a group that
+/// errs high, and says it opens as itself, as they are the greatest in
+/// view and its own state; a publish could take it.
+#[test]
+fn bytes_zfs_would_pass_over_make_no_cut() {
+    let opens = |mutants: u64, forged: &dyn Fn(u64) -> Buf| {
+        let disk = created(17, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let mut id = 0;
+        let mut step = |store: &mut InPlace<SimDisk>, op: Op| {
+            id += 1;
+            assert!(run(store, id, op).result.is_ok());
+        };
+        let mut seen = Vec::new();
+        for label in 0..LABELS {
+            step(&mut store, uberblock_write(label, 10, 1));
+        }
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        for label in 0..LABELS {
+            step(&mut store, uberblock_write(label, 11, 2));
+        }
+        let at = ring(1) + (99 % RING_SLOTS) * SLOT;
+        step(
+            &mut store,
+            Op::Write {
+                offset: at,
+                data: forged(at),
+            },
+        );
+        step(&mut store, Op::Flush);
+        seen.push((store.cuts().count, newest(&store)));
+        seen
+    };
+    let unsealed = |_: u64| uberblock(99, 9);
+    let elsewhere = |at: u64| {
+        let mut data = uberblock(99, 9);
+        seal(&mut data, at - SLOT, ByteOrder::Little);
+        data
+    };
+    let forgeries: [(&str, &dyn Fn(u64) -> Buf); 2] =
+        [("no checksum", &unsealed), ("another place's", &elsewhere)];
+    for (name, forged) in forgeries {
+        assert_eq!(
+            opens(0, forged),
+            [(1, Some((10, true))), (2, Some((11, true)))],
+            "{name}"
+        );
+        assert_eq!(
+            opens(Mutants::CHECKSUM_UNCHECKED, forged),
+            [(1, Some((10, true))), (2, Some((99, true)))],
+            "{name}: a checksum not checked is not noticed"
+        );
+    }
 }
