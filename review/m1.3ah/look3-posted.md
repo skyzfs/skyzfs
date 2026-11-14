@@ -1,0 +1,72 @@
+## Next look at M1.3ah: 8387402
+
+**Nothing blocks.** `Bounded` is right, both your readings hold on master's source, and leaving the note off is right. It can merge once CI is green on 8387402, the daemon rig above all ([43601204957](https://github.com/skyzfs/skyzfs/actions/runs/43601204957), running when I wrote this).
+
+I read the commit before your addendum. At 8387402 with rustc 1.100.0, these pass:
+- `cargo fmt --all --check`;
+- clippy `-D warnings` on `skyzfsd` and `skyzfs-ublk-sys`, plain, with `test-hooks` and with `control-test-program`;
+- `skyzfsd`'s lib tests: 56 plain, 69 with `test-hooks`;
+- `skyzfs-ublk-sys` with `control-test-program`.
+
+### 1. `Bounded`: right
+
+- **The deadline.** One deadline, set when the give-up begins, covers every command sent through it.
+- **Each command** goes from a thread of its own, and is waited for until the deadline and no longer. One with no answer is left with the driver. After the deadline nothing is sent.
+- **Every command of the give-up goes through it,** including the failure's way inside it: the open in `note_failure`, the delete, and `info` after a delete that failed. The other control calls go to `inner`, and the give-up makes none.
+- **The other branches stay unbounded, and by the driver they do not need it.**
+  - The refused-fetch branch's delete meets a START_DEV that waits for its fetch, which holds no mutex.
+  - The failure-during-the-start branch's delete comes while the failed pump answers every request with an error. So a scan's read ends, and START_DEV lets go.
+- **The bound** is 30 s plus 2 s plus 10 s, 42 s, as the doc says. The stop's 2 s fall inside the 10 s when it comes after the delete, so the whole is at most 42 s.
+
+### 2. Your points (4) and (5)
+
+**(4) Your two readings hold on master's source.**
+- `ublk_ctrl_get_params` takes `ub->mutex` around its copy. `ublk_ctrl_get_dev_info` takes no lock, so only the second half of `info` would wait.
+- `ublk_partition_scan_work` runs `bdev_disk_changed` under `disk->open_mutex`. An open of the whole disk takes that mutex, and `O_NONBLOCK` does not make it a try. So the exclusive open waits for a scan.
+  - On master that scan is the deferred work. It can be running after a START_DEV that answered late, so the open could wait there too.
+
+**(5) The note not put back after a delete with no answer: right.**
+- The delete may still be carried out by the driver. A note put back would then sit on a number that may be freed and reused, which is what the lifecycle's rule guards against.
+- Without the note, a later start reads the dead device as "already deleted and still held". With a delete still pending, that is the closer reading.
+- The line sends a person to a delete by hand or a reboot.
+
+**The process's end.** The doc leaves it to the kernel; my reading, medium confidence, from io_uring as I remember it:
+- An exiting task waits for its own requests in `io_uring_cancel_generic`. A command held by an io-wq worker that waits in an uninterruptible `mutex_lock` cannot be cancelled.
+- So in that case the process likely does not finish exiting until the driver lets go. The line is written, but a supervisor does not see the 9 until then.
+- The start's own command is in the same place, as the doc says ("the start's, or one with no answer"). Not sending the delete would therefore not free the exit either.
+- So the bound buys the line and the note, which is what can be had from user space. No change asked.
+
+### 3. Planted changes
+
+One at a time, each with `serve::tests`, then restored.
+
+| plant | result |
+|---|---|
+| S1: commands sent after the deadline | `a_delete_with_no_answer_does_not_hold_a_start_given_up` fails |
+| S2: the delete not bounded | both give-up tests fail |
+| S3: the client's hold not bounded | both fail |
+| S4: each command waited for the whole limit, not until the shared deadline | **nothing fails** |
+| S5: a new deadline for each command | `a_delete_with_no_answer_...` fails |
+| S6: `give_up_unanswered` without `Bounded` | both fail |
+| S7: a delete with no answer read as done | `a_delete_with_no_answer_...` fails |
+
+**S4 is a small gap.** It needs a first command that answers slowly and a second that never answers. With S4 the second then waits a whole limit of its own, and the give-up takes up to twice the limit.
+- The tests' only unanswered command is the first one, the delete, so they cannot see it.
+- A case where the open answers after half the limit and the delete then never answers, with the whole under the limit plus a margin, would hold it.
+- Not needed for the merge.
+
+### CI on 8387402, when I wrote this
+
+- **Green:**
+  - the control rig on all three images and its table job;
+  - ci.yml's lint, chart-lint and s3-backends;
+  - e2e-tier-a and the k3s UDS smoke;
+  - the daemon rig's table job.
+- **Running:**
+  - the daemon rig on the daemon and the stand-in;
+  - the replay rig's daemon jobs;
+  - ci.yml's test and unit-arm64;
+  - coverage and the k3s install smoke.
+
+---
+_Generated by [Claude Code](https://claude.ai/code)_
