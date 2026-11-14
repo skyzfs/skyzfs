@@ -10,7 +10,13 @@ repository.workspace = true
 # Builds `skyzfs-ublk-control`, the control test program the kernel rig
 # drives, and the kernel test of it. Not in an ordinary build: the
 # program adds, serves and deletes whatever device number it is given.
-control-test-program = []
+control-test-program = ["refuse-fetch"]
+# The binding's own first fetches, one of them sent with no buffer for
+# the driver to refuse (`Device::serve_with_fetch_refused_for_tests`):
+# for the control test program and for the daemon's test build
+# (`skyzfsd/test-hooks`, `serve --refuse-one-fetch`). Not in an ordinary
+# build.
+refuse-fetch = []
 
 [[bin]]
 name = "skyzfs-ublk-control"

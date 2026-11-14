@@ -263,10 +263,20 @@ fn a_device_added_by_the_binding_is_started_and_outlives_its_server() {
             .serve(&wake, false, |queue| zeros(queue))
             .map_err(|e| format!("serve: {e}"))?;
         let stopper = serving.stopper();
-        if let Err(e) = device.start() {
+        // From a thread other than the one that opened the device, as
+        // the daemon starts one since M1.3ah: the library's control
+        // ring is the opening thread's, and the start makes its own.
+        let started = std::thread::scope(|scope| scope.spawn(|| device.start()).join());
+        let started = match started {
+            Ok(started) => started,
+            Err(_) => Err(std::io::Error::other("the start's thread panicked")),
+        };
+        if let Err(e) = started {
             stopper.stop();
             let _ = serving.join();
-            return Err(format!("start through the no-flag object: {e}"));
+            return Err(format!(
+                "start through the no-flag object, from a thread of its own: {e}"
+            ));
         }
         let live = until(&mut kernel, n, "live", |i| {
             i.is_some_and(|i| i.state == DeviceState::Live)
