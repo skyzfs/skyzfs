@@ -1,0 +1,6 @@
+S1 a write to a file on its own file system rewrites the disk's block: FAILS: sim::tests::a_file_on_a_file_system_of_its_own_has_its_own_block (FAILED. 136 passed; 1 failed; 0 ignored; 0 meas)
+S2 a deallocation in such a file rewrites the disk's block: nothing fails (ok. 137 passed; 0 failed; 0 ignored; 0 measured)
+S3 the file says the disk's block size: FAILS: inplace::tests::an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks, sim::tests::a_file_on_a_file_system_of_its_own_has_its_own_block (FAILED. 135 passed; 2 failed; 0 ignored; 0 meas)
+P1 the home image is checked with the directory's block size: FAILS: inplace::tests::an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks (FAILED. 136 passed; 1 failed; 0 ignored; 0 meas)
+P2 the home image's refusal names the directory: FAILS: inplace::tests::an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks (FAILED. 136 passed; 1 failed; 0 ignored; 0 meas)
+worktree after: clean
