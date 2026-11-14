@@ -19,3 +19,10 @@ Head 8063ef7 on 3d8716a. Review posted on 2026-11-14 (issue comment
   three lines differ (the premise pull request 72 is for).
 - Lesson: a background plant script edits the worktree; read the
   committed code with `git show`, not the worktree, while it runs.
+
+## Second look, head 7ed676a
+
+Posted on 2026-11-14 (issue comment 6870573013): can merge.
+`look2-posted.md`. `finish_threads` panics after its minute (in a
+`#[cfg(test)]` impl), and the merge of 81247f2 (pull request 72) brings
+no Rust file. The test alone at the head: 4 of 4, clippy clean.

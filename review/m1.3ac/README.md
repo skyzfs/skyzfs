@@ -18,3 +18,10 @@ Head a3e15ad on 36daf82. Review posted on the pull request on
   860, 1031). Told to coding and the lead for the second part.
 - The red daemon-rig job on 24.04 (132234150172) differed only in
   g.1's three lines: the premise that pull request 72 is for.
+
+## Second look, head 4883c98
+
+Posted on 2026-11-14 (issue comment 6870567715): can merge.
+`look2-posted.md`. e556428 returns the library's result from
+`commit_with_no_buffer_for_tests`, and the program prints `not sent`
+and answers the request; the merge of 81247f2 brings no Rust file.
