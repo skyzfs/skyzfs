@@ -2039,7 +2039,7 @@ rc_cleanup() {
 }
 # name read|write|flush [hold] -> RCT_WHY; 0 PASS, 1 FAIL, 2 the rig's error
 rc_course() {
-    local name=$1 kind=$2 hold=${3:-} dir=$WORK/vol-$1 pat=$WORK/$1.pat got=$WORK/$1.got client="" t0 rc said st i held crc took waited back home stop
+    local name=$1 kind=$2 hold=${3:-} dir=$WORK/vol-$1 pat=$WORK/$1.pat got=$WORK/$1.got client="" t0 rc said st held crc took waited back home stop
     local -a hook cmd
     RCT_WHY=""
     head -c 4096 /dev/urandom > "$pat"
@@ -2050,16 +2050,19 @@ rc_course() {
         RCT_WHY="not created or served with ${hook[*]} (serve rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-200))"
         rc_cleanup; return 2
     fi
+    # For a read and a flush, the block is written first, by a dd of its
+    # own: a write is not refused. A flush refused before then (the
+    # client's must be the first) leaves that write waiting, and it fails
+    # at its limit: the rig's error, not a course on someone else's flush.
+    if [ "$kind" != write ] && ! lim 30 "$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc status=none 2>> "$OUT/$name-dd.err"; then
+        RCT_WHY="the write before the $kind failed: $(tail -n 1 "$OUT/$name-dd.err")"; rc_cleanup; return 2
+    fi
     case $kind in
-        read)
-            # What the read must return, written first: a write is not refused.
-            if ! lim 30 "$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc status=none 2>> "$OUT/$name-dd.err"; then
-                RCT_WHY="the write before the read failed: $(tail -n 1 "$OUT/$name-dd.err")"; rc_cleanup; return 2
-            fi
-            cmd=("$DD" if="$BDEV" of="$got" bs=4096 count=1 skip=$((RC_AT / 4096)) iflag=direct status=none) ;;
+        read) cmd=("$DD" if="$BDEV" of="$got" bs=4096 count=1 skip=$((RC_AT / 4096)) iflag=direct status=none) ;;
         flush)
+            # The flush alone: an fsync of the device, nothing written.
             # shellcheck disable=SC2054  # dd's conv= is a list with commas
-            cmd=("$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc,fsync status=none) ;;
+            cmd=("$DD" if=/dev/null of="$BDEV" conv=notrunc,fsync status=none) ;;
         *) cmd=("$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc status=none) ;;
     esac
     rm -f "$WORK/$name.rc"
@@ -2067,7 +2070,8 @@ rc_course() {
     client=$!
     t0=$(now_ms)
     if [ -n "$hold" ]; then
-        for i in $(seq 1 120); do
+        # 30 s in all, whatever each look takes.
+        while [ $(( $(now_ms) - t0 )) -lt 30000 ]; do
             held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
         done
         if [ "${held:-0}" -lt 1 ]; then RCT_WHY="status never said the write was held"; rc_cleanup; return 2; fi
@@ -2083,8 +2087,9 @@ rc_course() {
     rc=$SERVE_RC
     said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-300)
     RCT_WHY+="serve ended with exit $rc after $(( $(now_ms) - t0 )) ms, saying: $said"
-    # The driver moves the device to QUIESCED in a work item.
-    for i in $(seq 1 80); do st=$(ublk_state "$BDEV"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
+    # The driver moves the device to QUIESCED in a work item: 20 s in all.
+    t0=$(now_ms); st=""
+    while [ $(( $(now_ms) - t0 )) -lt 20000 ]; do st=$(ublk_state "$BDEV"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
     sleep 2
     if [ -e "$WORK/$name.rc" ]; then waited="had ended ($(cat "$WORK/$name.rc")) before the take-over"; else waited="still waited 2 s after"; fi
     RCT_WHY+="; the device then read $(look_word "$st"); the client $waited"

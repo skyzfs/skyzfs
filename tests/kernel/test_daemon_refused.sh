@@ -63,7 +63,9 @@ on_term() {
         ended_8
     fi
     [ "$SCEN" = homeless ] || cp --sparse=always "$T/img" "$dir/home.img" 2>/dev/null
-    echo quiesced > "$T/state"; exit 0
+    echo quiesced > "$T/state"
+    [ "$SCEN" != stop1 ] || exit 1
+    exit 0
 }
 trap on_term TERM
 while :; do
@@ -79,7 +81,9 @@ while :; do
             [ "$SCEN" != answers ] || echo done > "$T/done.$id"
             ended_8
         fi
-        if [ -z "$refuse" ] && { [ "$SCEN/$k" = lost/write ] || [ "$SCEN/$k" = lostread/read ]; }; then echo lost > "$T/done.$id"; else echo done > "$T/done.$id"; fi
+        if [ -z "$refuse" ] && { [ "$SCEN/$k" = lost/write ] || [ "$SCEN/$k" = lostread/read ]; }; then echo lost > "$T/done.$id"
+        elif [ -z "$refuse" ] && [ "$SCEN/$k" = clienterr/write ]; then echo err > "$T/done.$id"
+        else echo done > "$T/done.$id"; fi
     done
     sleep 0.05
 done
@@ -101,14 +105,18 @@ for a in "$@"; do
     esac
 done
 [ -n "$kind" ] || exec dd "$@"
+# A request's answer: done; lost (answered, not carried out); err
+# (carried out, and answered with an error).
 req() {
     local id=$$.$RANDOM
     echo "$1" > "$T/req.$id.tmp"; mv "$T/req.$id.tmp" "$T/req.$id"
     while [ ! -e "$T/done.$id" ]; do [ ! -e "$T/deleted" ] || exit 5; sleep 0.05; done
-    [ "$(cat "$T/done.$id")" != lost ]
+    cat "$T/done.$id"
 }
-if req "$kind"; then dd "${args[@]}" || exit 1; fi
-[ -z "$fsync" ] || req flush || true
+a=$(req "$kind")
+[ "$a" = lost ] || dd "${args[@]}" || exit 1
+[ "$a" != err ] || exit 1
+[ -z "$fsync" ] || req flush > /dev/null
 exit 0
 DDEOF
 chmod +x "$DD"
@@ -170,6 +178,12 @@ has "  the client read something else" "$RCT_WHY" "the client read SOMETHING ELS
 course_of exit3 t-exit3 write
 is "the line with another exit status fails" "$RC_V" 1
 has "  says which" "$RCT_WHY" "serve ended with exit 3"
+course_of clienterr t-clienterr write
+is "a take-over that carries the write out and answers an error fails" "$RC_V" 1
+has "  says what the client got" "$RCT_WHY" "after the take-over the client exited 1"
+course_of stop1 t-stop1 write
+is "a last stop that does not end 0 fails" "$RC_V" 1
+has "  says so" "$RCT_WHY" "the next stop: exit 1"
 course_of homeless t-home write
 is "a write not in the home image fails" "$RC_V" 1
 has "  says so" "$RCT_WHY" "the home image's block: DIFFERENT"
