@@ -93,7 +93,7 @@ Coding packages are numbered M1.n, testing packages M1.Tn. Each reached `zfs-top
 | M1.T30 | skyzfs/skyzfs#72 | The daemon rig pins `commands_failed` at zero, the refusal of ext4 with `data=journal`, and fixes check g's first premise | What the start refuses, and a sync that fails (M1.T30) |
 | M1.3ad | skyzfs/skyzfs#70 | A test of the in-place store's failure path noticed one planted defect only when a sync happened to be under way; it now holds one | Direct I/O as built (M1.3y) |
 | M1.3t | skyzfs/skyzfs#69 | The log store removed; a versioned `volume` file makes a directory a volume; a log store's directory is refused, not converted | The criterion: without the write log |
-| M1.3ac (part 1) | skyzfs/skyzfs#71 | The control rig's test that a stopped queue aborts its commands (to be merged) | Direct I/O as built (M1.3y) |
+| M1.3ac (part 1) | skyzfs/skyzfs#71 | The control rig's test that a stopped queue aborts its commands; merged as a7853c9 after the arm64 daemon job was rerun past the stuck-ZFS hang (run 43545561531) | Direct I/O as built (M1.3y) |
 | M1.T29 | none (measurement only) | The thread count and the throughput rule on the merged direct I/O daemon, two rounds; the full power-cut replay | The thread count on the merged daemon (M1.T29, first round) |
 | M1.3x | skyzfs/skyzfs#55 | The failure note's reason for the in-place store: code 7, "a write or sync of the volume's image failed" | The ublk transport: a failed volume gives up its attachment |
 | M1.3w | skyzfs/skyzfs#52 | Two tests of the log store's times took their own total before the look they compare it with | The local store |
