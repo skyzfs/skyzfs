@@ -36,7 +36,9 @@
 #      through tests/kernel/blkcheck-helper.sh. RIG_C_CASES and
 #      RIG_C_ROUNDS (default 16 and 4) are the suite's sizes.
 #   d  a failed volume: what ZFS does, and what the server refuses after
-#   e  one request held RIG_HOLD_S seconds (default 300)
+#   e  one request held RIG_HOLD_S seconds (default 300); a commit the
+#      driver refuses, of a read, a write and a flush, and of a write
+#      held when the server is stopped (the daemon's test hooks)
 #   g  a disk that fails under the daemon's home image
 # RIG_SERVE_ARGS: options added to every serve. The daemon has one
 #   store since M1.3t, and the rig names none: a build from before it
@@ -86,6 +88,7 @@ RUN_DIR=$WORK/run            # the server's --run-dir, so that a test can empty 
 VOL_BYTES=$((8 << 30))
 SLOG_MB=512
 HOLD_AT=$((3 << 30))         # the byte whose first read is held in check e
+RC_AT=$((HOLD_AT + (256 << 20)))  # the byte of check e's refused commits, which nothing else touches
 
 # ------------------------------------------------------------ recording
 rec() { # key value. Tabs and newlines in the value are flattened.
@@ -148,7 +151,7 @@ course() { # name: 0 if the course may run; 1 when ZFS is stuck, and the course 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
 # functions and in skyzfsd-ref.sh.
-EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5; EXIT_BROKEN_RULE=7
+EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5; EXIT_BROKEN_RULE=7; EXIT_COMMIT_REFUSED=8
 SERVE_PID=""; BDEV=""; SERVE_RC=""
 vol_create() { lim 60 "$1" create --dir "$2" --size "$VOL_BYTES"; }
 vol_up() { # impl dir [serve arguments]: create a volume and serve it
@@ -656,9 +659,10 @@ kill_test() {
             # A server that ended by itself is reaped by the shell at
             # once, so the kill fails; wait still gives its status. A 7
             # there is the daemon's word that the driver broke its rule
-            # (M1.3ac, #77): the next take-over would hide it.
+            # (M1.3ac, #77), an 8 that the driver refused one of its
+            # commits (#83): the next take-over would hide either.
             if [ -n "$SERVE_PID" ] && ! kill -0 "$SERVE_PID" 2>/dev/null; then wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""; fi
-            if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then
+            if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ]; then
                 KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
                 KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
             else
@@ -691,14 +695,14 @@ kill_test() {
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
-        # A daemon that ended by itself with exit 7 between the shell's
-        # last reaping and the kill (a race; the usual case is the
-        # failed kill above): the next serve would take the device over
-        # and the 7 be lost. Any other status is left as it was: the
+        # A daemon that ended by itself with exit 7 or 8 between the
+        # shell's last reaping and the kill (a race; the usual case is
+        # the failed kill above): the next serve would take the device
+        # over and the status be lost. Any other status is left as it was: the
         # stand-in's serve ends with 1 when its server is killed, and a
         # volume failed while served (3) has the next serve refuse it,
         # which kt_refusal names.
-        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then
+        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ]; then
             KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
             KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
             wait "$watcher"
@@ -829,6 +833,8 @@ kt_refusal() {
     case $2 in
         "$EXIT_BROKEN_RULE")
             printf "%s ended with exit %s: the driver handed over a tag whose request was still out, by the daemon's word; the device waits for a server, and the next serve should take it over: %s" "$who" "$2" "$said" ;;
+        "$EXIT_COMMIT_REFUSED")
+            printf "%s ended with exit %s: the driver refused one of its answers (a commit), by the daemon's word; the device waits for a server, and the next serve should be handed that request again: %s" "$who" "$2" "$said" ;;
         "$EXIT_FAILED"|"$EXIT_REFUSED_FAILED"|"$EXIT_BUSY")
             printf '%s refused the volume with exit %s: %s' "$who" "$2" "$said" ;;
     esac
@@ -1990,6 +1996,117 @@ check_e() {
     step "e, control: a request held 5 s is not one held $HOLD_S s"
     hold_test e0 5 "$HOLD_S"; v=$?
     case $v in 0) ctl hold_too_short PASS "$HT_WHY" ;; 1) ctl hold_too_short FAIL "$HT_WHY" ;; *) ctl hold_too_short ERROR "$HT_ERR" ;; esac
+    check_e_refused
+}
+
+# e, a refused commit (M1.T35). A test-hooks build of the daemon sends
+# one answer with no buffer when told `serve --refuse-one-commit`, and
+# the driver refuses that commit (#83). serve must end with 8 and its
+# line; the device must wait for a server and the client's request with
+# it; and the next serve, with no hook, must be handed the request again
+# and complete it: a write reads back through the device and from the
+# home image, a read returns what was written before it, a flush lets
+# the client's fsync return. The stand-in has no hooks: WAITING.
+# A stop (M1.T35, review of #83): one write is held and its commit is
+# refused, and the server is stopped during the hold. The stop sends
+# the held write's commit at its last flush, and the refusal must still
+# be seen: exit 8, not 0, since the stop was then not orderly. A build
+# whose stop drops what that flush reaps (before 343dd01) ends 0 there:
+# the negative control, by dispatch (daemon_ref 3c496d5, checks e).
+RC_PINS="refused_read_commit_taken_over refused_write_commit_taken_over refused_flush_commit_taken_over refused_commit_at_a_stop_ends_8"
+check_e_refused() {
+    local k p
+    if [ "$IMPL" = reference ]; then
+        for p in $RC_PINS; do pin "$p" WAITING "the stand-in has no test hooks: it cannot have the driver refuse a commit"; done
+        return
+    fi
+    for k in read write flush; do
+        course "e, a refused commit of a $k" || continue
+        step "e: the commit of a $k refused by the driver, then a take-over"
+        rc_course "e-rc-$k" "$k"; rc_pin "refused_${k}_commit_taken_over" $?
+    done
+    course "e, a refused commit at a stop" || return
+    step "e: a held write whose commit is refused, SIGTERM during the hold"
+    rc_course e-rc-stop write hold; rc_pin refused_commit_at_a_stop_ends_8 $?
+}
+rc_pin() { case $2 in 0) pin "$1" PASS "$RCT_WHY" ;; 1) pin "$1" FAIL "$RCT_WHY" ;; *) pin "$1" ERROR "$RCT_WHY" ;; esac; }
+# The end of a course that went wrong: the server stopped, the device
+# deleted (which ends a client that waits on it), the client gone.
+rc_cleanup() {
+    if [ -n "$SERVE_PID" ]; then kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null; fi
+    vol_detach "$SKYZFSD" "$dir"
+    [ -z "${client:-}" ] || job_end "$client" 30
+}
+# name read|write|flush [hold] -> RCT_WHY; 0 PASS, 1 FAIL, 2 the rig's error
+rc_course() {
+    local name=$1 kind=$2 hold=${3:-} dir=$WORK/vol-$1 pat=$WORK/$1.pat got=$WORK/$1.got client="" t0 rc said st i held crc took waited back home stop
+    local -a hook cmd
+    RCT_WHY=""
+    head -c 4096 /dev/urandom > "$pat"
+    : > "$got"
+    if [ "$kind" = flush ]; then hook=(--refuse-one-commit flush); else hook=(--refuse-one-commit "$kind:$RC_AT"); fi
+    [ -z "$hold" ] || hook+=(--hold-one-request "$HOLD_S:write:$RC_AT")
+    if ! vol_up "$SKYZFSD" "$dir" "${hook[@]}"; then
+        RCT_WHY="not created or served with ${hook[*]} (serve rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-200))"
+        rc_cleanup; return 2
+    fi
+    case $kind in
+        read)
+            # What the read must return, written first: a write is not refused.
+            if ! lim 30 "$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc status=none 2>> "$OUT/$name-dd.err"; then
+                RCT_WHY="the write before the read failed: $(tail -n 1 "$OUT/$name-dd.err")"; rc_cleanup; return 2
+            fi
+            cmd=("$DD" if="$BDEV" of="$got" bs=4096 count=1 skip=$((RC_AT / 4096)) iflag=direct status=none) ;;
+        flush)
+            # shellcheck disable=SC2054  # dd's conv= is a list with commas
+            cmd=("$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc,fsync status=none) ;;
+        *) cmd=("$DD" if="$pat" of="$BDEV" bs=4096 count=1 seek=$((RC_AT / 4096)) oflag=direct conv=notrunc status=none) ;;
+    esac
+    rm -f "$WORK/$name.rc"
+    ( t0=$(now_ms); lim 240 "${cmd[@]}" 2>> "$OUT/$name-dd.err"; echo "$? $(( $(now_ms) - t0 ))" > "$WORK/$name.rc" ) &
+    client=$!
+    t0=$(now_ms)
+    if [ -n "$hold" ]; then
+        for i in $(seq 1 120); do
+            held=$(vol_stat "$SKYZFSD" "$dir" held); [ "${held:-0}" -ge 1 ] && break; sleep 0.25
+        done
+        if [ "${held:-0}" -lt 1 ]; then RCT_WHY="status never said the write was held"; rc_cleanup; return 2; fi
+        kill -TERM "$SERVE_PID" 2>/dev/null
+        RCT_WHY="SIGTERM while the write was held; "
+        t0=$(now_ms)
+    fi
+    # serve ends by itself at the refusal (or at the stop): within 60 s.
+    if ! serve_wait 60; then
+        RCT_WHY+="serve did not end in 60 s; the device read $(look_word "$(ublk_state "$BDEV")"); the client had $([ -e "$WORK/$name.rc" ] && echo "ended ($(cat "$WORK/$name.rc"))" || echo "not ended")"
+        rc_cleanup; return 1
+    fi
+    rc=$SERVE_RC
+    said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-300)
+    RCT_WHY+="serve ended with exit $rc after $(( $(now_ms) - t0 )) ms, saying: $said"
+    # The driver moves the device to QUIESCED in a work item.
+    for i in $(seq 1 80); do st=$(ublk_state "$BDEV"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
+    sleep 2
+    if [ -e "$WORK/$name.rc" ]; then waited="had ended ($(cat "$WORK/$name.rc")) before the take-over"; else waited="still waited 2 s after"; fi
+    RCT_WHY+="; the device then read $(look_word "$st"); the client $waited"
+    if ! serve_start "$SKYZFSD" "$dir"; then
+        RCT_WHY+="; the take-over did not become ready (rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-200))"
+        rc_cleanup; return 1
+    fi
+    if job_end "$client" 120; then read -r crc took < "$WORK/$name.rc" 2>/dev/null || crc="no status"; else crc="NO END in 120 s after the take-over"; took=0; fi
+    client=""
+    RCT_WHY+="; after the take-over the client exited $crc ($(( ${took:-0} / 1000 )) s in all)"
+    lim 30 "$DD" if="$BDEV" of="$WORK/$name.back" bs=4096 count=1 skip=$((RC_AT / 4096)) iflag=direct status=none 2>> "$OUT/$name-dd.err"
+    if cmp -s "$pat" "$WORK/$name.back"; then back=same; else back=DIFFERENT; fi
+    [ "$kind" != read ] || { cmp -s "$pat" "$got" && back+=", and the client read it" || back+=", and the client read SOMETHING ELSE"; }
+    kill -TERM "$SERVE_PID" 2>/dev/null
+    if serve_wait 30; then stop=$SERVE_RC; else stop="none in 30 s"; kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; fi
+    lim 30 "$DD" if="$dir/home.img" of="$WORK/$name.home" bs=4096 count=1 skip=$((RC_AT / 4096)) status=none 2>> "$OUT/$name-dd.err"
+    if cmp -s "$pat" "$WORK/$name.home"; then home=same; else home=DIFFERENT; fi
+    RCT_WHY+="; the block read back through the device: $back; the next stop: exit $stop; the home image's block: $home"
+    vol_detach "$SKYZFSD" "$dir"
+    case $back in same|"same, and the client read it") ;; *) return 1 ;; esac
+    [ "$rc" = "$EXIT_COMMIT_REFUSED" ] && [[ $said == *"refused serve's answer"* ]] && [ "$st" = QUIESCED ] \
+        && [ "$waited" = "still waited 2 s after" ] && [ "$crc" = 0 ] && [ "$stop" = 0 ] && [ "$home" = same ]
 }
 
 # ------------------------------------------------------------ check g

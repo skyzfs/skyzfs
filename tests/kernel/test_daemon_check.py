@@ -27,6 +27,10 @@ def cases(impl='reference'):
     return out
 
 
+RC = ('pin_refused_read_commit_taken_over', 'pin_refused_write_commit_taken_over',
+      'pin_refused_flush_commit_taken_over', 'pin_refused_commit_at_a_stop_ends_8')
+
+
 def as_expected(impl='reference'):
     r = {name: f'{(rest[3:] or [rest[0]])[0]}: seen' for name, (_, *rest) in dc.EXPECTED.items()}
     r.update({name: 'seen' for name in dc.OBSERVED})
@@ -41,6 +45,9 @@ def as_expected(impl='reference'):
         r['pin_orderly_stop_under_load'] = 'PASS: seen'
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
         r['pin_volume_on_larger_blocks'] = 'PASS: seen'
+        # The refused commits (M1.T35): the daemon's test hooks.
+        for name in RC:
+            r[name] = 'PASS: seen'
         # The commands the driver ended (M1.3aa): counted by the daemon only.
         for name in ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
                      'pin_c_commands_failed_zero'):
@@ -138,6 +145,8 @@ class Cases(unittest.TestCase):
             r[name] = 'NA: no record'
         for name in G:
             r[name] = f'{dc.EXPECTED[name][1]}: seen'
+        for name in RC:
+            r[name] = 'PASS: exit 8, taken over'
         _, differs, errors = dc.judge(r, self.C, impl='daemon')
         self.assertEqual(len(differs), 1)
         self.assertEqual(errors, [])
@@ -557,6 +566,9 @@ class KillRefusal(unittest.TestCase):
 
     BROKEN = ('skyzfsd: the kernel handed over tag 3 of device 7, which the queue does not have or whose '
               'request was still out, against the driver\'s rule')
+    REFUSED = ('skyzfsd: the kernel refused serve\'s answer on tag 0 of device 7 (Invalid argument (os error 22)): '
+               'nothing more is answered on this queue, the volume is not failed, and device 7 waits for the next '
+               'server, which is handed again what was not answered')
 
     def verdict(self, serve_rc, kind, log_line='skyzfsd: the volume is marked as failed', when=''):
         import subprocess
@@ -607,6 +619,25 @@ class KillRefusal(unittest.TestCase):
             verdict, _ = self.verdict('7', '', self.BROKEN, when)
             self.assertEqual(verdict, 'ERROR', when)
 
+    def test_a_planted_8_fails_the_pin_and_says_what_the_driver_did(self):
+        # M1.3ac part 3 (#83): the daemon ends with 8 when the driver
+        # refused one of its commits; read as 7 is (M1.T35).
+        verdict, why = self.verdict('8', 'pin', self.REFUSED)
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn('kill 3: the next serve ended with exit 8: the driver refused one of its answers (a commit)', why)
+        self.assertIn('the next serve should be handed that request again', why)
+        self.assertIn(self.REFUSED, why)
+
+    def test_an_8_before_the_kill_fails_the_pin(self):
+        verdict, why = self.verdict('8', 'pin', self.REFUSED, 'before')
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn('before kill 3: the server ended with exit 8: the driver refused one of its answers', why)
+
+    def test_an_8_in_a_control_stays_the_rigs_error(self):
+        for when in ('', 'before'):
+            verdict, _ = self.verdict('8', '', self.REFUSED, when)
+            self.assertEqual(verdict, 'ERROR', when)
+
     def loop(self, server):
         """The rig's own kill loop, from its server_pid to the look after
         serve_wait, for one kill of a made-up server started as `server`
@@ -647,6 +678,13 @@ class KillRefusal(unittest.TestCase):
         self.assertIn('before kill 1: the server ended with exit 7: the driver handed over a tag', refused)
         self.assertIn('skyzfsd: the kernel handed over tag 3', refused)
 
+    def test_the_kill_loop_reads_an_8_from_a_server_that_ended_before_the_kill(self):
+        err, refused, rc = self.loop('echo "skyzfsd: the kernel refused serve\'s answer on tag 0"; exit 8')
+        self.assertEqual(rc, '8')
+        self.assertEqual(err, 'before kill 1: the server had ended by itself, with exit 8')
+        self.assertIn('before kill 1: the server ended with exit 8: the driver refused one of its answers', refused)
+        self.assertIn("skyzfsd: the kernel refused serve's answer on tag 0", refused)
+
     def test_the_kill_loop_names_another_status_as_the_rigs_error(self):
         err, refused, rc = self.loop('exit 1')
         self.assertEqual(refused, '')
@@ -679,6 +717,38 @@ class KillRefusal(unittest.TestCase):
         import re
         self.assertEqual(len(re.findall(r'^    kill_verdict pin\b', text, re.M)), 3)
         self.assertIn('SKZ_REF_REISSUE=0 kill_test "$REF" b0 5\n    kill_verdict; ', text)
+
+
+class RefusedCommit(unittest.TestCase):
+    """Check e's refused commits (M1.T35): PASS on the daemon, WAITING on the stand-in, a 0 at the stop differs."""
+
+    def test_the_stand_in_waits(self):
+        r = as_expected('reference')
+        for name in RC:
+            self.assertEqual(r[name].split(':')[0], 'WAITING', name)
+        self.assertEqual(dc.judge(r, ALL)[1:], ([], []))
+
+    def test_a_pass_on_the_stand_in_is_the_rigs_error_and_waiting_on_the_daemon_too(self):
+        r = as_expected('reference')
+        r['pin_refused_commit_at_a_stop_ends_8'] = 'PASS: seen'
+        _, differs, errors = dc.judge(r, ALL)
+        self.assertEqual(len(differs) + len(errors), 1)
+        r = as_expected('daemon')
+        r['pin_refused_write_commit_taken_over'] = 'WAITING: the stand-in has no test hooks'
+        self.assertEqual(len(dc.judge(r, ALL, 'daemon')[2]), 1)
+
+    def test_a_stop_that_ends_0_differs(self):
+        # The negative control's build (before 343dd01).
+        r = as_expected('daemon')
+        r['pin_refused_commit_at_a_stop_ends_8'] = 'FAIL: SIGTERM while the write was held; serve ended with exit 0'
+        _, differs, errors = dc.judge(r, ALL, 'daemon')
+        self.assertEqual(errors, [])
+        self.assertEqual(len(differs), 1)
+        self.assertIn('pin_refused_commit_at_a_stop_ends_8: expected PASS, got FAIL', differs[0])
+
+    def test_they_are_check_e(self):
+        for name in RC:
+            self.assertEqual(dc.EXPECTED[name][0], 'e', name)
 
 
 class ZfsStuck(unittest.TestCase):
