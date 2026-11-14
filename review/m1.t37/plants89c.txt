@@ -1,0 +1,17 @@
+Q0 none
+  [tests/kernel/test_daemon_fetch.sh] rc 0; ['all passed', '53 ok']; no FAIL line
+  [tests/kernel/test_daemon_check.py] rc 0; ['Ran 90 tests in 8.463s', 'OK']; no FAIL line
+Q1 start: a hang is the rig's error again
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed', '52 ok']; ["FAIL   a serve that neither gives up nor becomes ready fails, not the rig's error: got '2', want '1'"]
+Q2 take-over: a hang is the rig's error again
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed', '52 ok']; ["FAIL   a take-over that neither gives up nor becomes ready fails, not the rig's error: got '2', want '1'"]
+Q3 start: the hook's device not checked
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['2 failed', '51 ok']; ["FAIL   a 9 with no line of the hook fails: got '0', want '1'", "FAIL   a hook's line that names another device fails: got '0', want '1'"]
+Q4 take-over: the hook's device not checked
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['2 failed', '51 ok']; ["FAIL   a 9 with no line of the hook fails: got '0', want '1'", "FAIL   a hook's line that names another device fails: got '0', want '1'"]
+Q5 the cleanup's serve removed
+  [tests/kernel/test_daemon_fetch.sh] rc 1; ['1 failed', '52 ok']; ["FAIL   and the cleanup's serve takes the device over and ends the held I/O: got 'no status', want '0'"]
+Q6 take-over hang: the killed serve not waited for
+  [tests/kernel/test_daemon_fetch.sh] rc 0; ['all passed', '53 ok']; no FAIL line
+
+[exited with code 0]

@@ -1,0 +1,8 @@
+0
+18:ok     a serve that neither gives up nor becomes ready fails, not the rig's error
+32:ok     a take-over that neither gives up nor becomes ready fails, not the rig's error
+35:FAIL   and the cleanup's serve ends the held I/O: got 'no status', want '0'
+38:FAIL   and the cleanup's serve takes the device over and ends the held I/O: got 'no status', want '0'
+56:2 failed
+
+[exited with code 0]
