@@ -551,7 +551,12 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
                 continue;
             }
             let buf = match std::mem::replace(&mut self.slots[tag], Slot::Idle) {
-                // A waiting request is answered from the backlog below.
+                // A waiting request is in the backlog and is answered
+                // from there below. One that `submit_what_fits` took from
+                // the backlog and the target refused is in neither: the
+                // pump ended then (`TargetGone`, `TargetFault`), and the
+                // request stays with the driver, uncommitted, as it did
+                // before its slot could be `Waiting`.
                 Slot::Idle | Slot::Waiting | Slot::Finished => continue,
                 // The buffer is in the target and stays there.
                 Slot::Running(_) => None,

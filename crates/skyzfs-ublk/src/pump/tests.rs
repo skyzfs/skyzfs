@@ -999,6 +999,47 @@ fn a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken() {
     assert!(rig.committed().is_empty());
 }
 
+/// After the failure, a tag answered with the plain I/O error is
+/// handed over again, as the driver may once its commit is in: it is
+/// answered again, and the pump goes on. Tag 1 waits in the backlog at
+/// the failure (answered by `fail`); tag 2 arrives after it (answered
+/// by the failed turn). Each must leave its slot idle, or its next
+/// hand-over reads as a broken rule. A tag the queue does not have
+/// ends the failed turn too, with nothing of that wait answered. (From
+/// the review of #77, its test and its suggestion.)
+#[test]
+fn a_tag_answered_after_the_failure_is_taken_again() {
+    let eio = -crate::translate::EIO;
+    let mut rig = Rig::new(0, 8, 1);
+    assert_eq!(rig.fetch(&[write(0, 0)]), None);
+    assert_eq!(rig.fetch(&[write(1, 1)]), None, "tag 1 waits");
+    assert_eq!(
+        rig.pump.fail(),
+        2,
+        "tag 0 in the target, tag 1 in the backlog"
+    );
+    assert_eq!(rig.fetch(&[write(2, 2)]), None, "tag 2 after the failure");
+    assert_eq!(
+        rig.fetch(&[write(1, 3), write(2, 4)]),
+        None,
+        "tags 1 and 2 again"
+    );
+    let after: Vec<_> = rig
+        .committed()
+        .into_iter()
+        .filter(|&(tag, _)| tag != 0)
+        .collect();
+    assert_eq!(after, vec![(1, eio), (2, eio), (1, eio), (2, eio)]);
+
+    let before = rig.committed().len();
+    assert_eq!(
+        rig.fetch(&[write(3, 5), write(8, 6)]),
+        Some(Stopped::BrokenRule { tag: 8 }),
+        "a tag at the queue's depth, after the failure"
+    );
+    assert_eq!(rig.committed().len(), before, "nothing of that wait");
+}
+
 /// When the queue goes away the pump ends and says so.
 #[test]
 fn a_queue_that_is_down_ends_the_pump() {
