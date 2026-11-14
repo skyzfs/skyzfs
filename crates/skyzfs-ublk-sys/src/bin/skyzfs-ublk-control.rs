@@ -923,7 +923,7 @@ mod run {
         std::thread::spawn(move || {
             let _ = named.send(own_tid());
             let from = Instant::now();
-            let started = device.start_from_another_thread_for_tests();
+            let started = device.start();
             let _ = done.send((started, from.elapsed()));
         });
         let said = |(started, took): (io::Result<()>, Duration)| {

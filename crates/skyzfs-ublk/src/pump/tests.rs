@@ -1339,21 +1339,22 @@ fn unfetched(tag: u16, command: Command, result: i32) -> Unfetched {
 
 /// Commands the driver ended with a result other than OK fetched
 /// nothing, and the pump counts them: aborts apart from the others,
-/// and the result of the last of those. An abort, a refused fetch and
-/// another command refused change nothing else: no commit, no request,
-/// no change to what is in flight. (Until M1.3aa the queue dropped
-/// them, and nothing showed them. A refused commit ends the pump since
-/// M1.3ac part 3: see
-/// `a_commit_the_driver_refuses_ends_the_pump_for_a_take_over`.)
+/// and the result of the last of those. An abort and a command other
+/// than a commit or a fetch refused change nothing else: no commit, no
+/// request, no change to what is in flight. (Until M1.3aa the queue
+/// dropped them, and nothing showed them. A refused commit ends the
+/// pump since M1.3ac part 3, and a refused fetch since M1.3ah: see
+/// `a_commit_the_driver_refuses_ends_the_pump_for_a_take_over` and
+/// `a_fetch_the_driver_refuses_ends_the_pump`.)
 #[test]
 fn commands_the_driver_ended_otherwise_than_ok_are_counted() {
     let mut rig = Rig::new(0, 4, 4);
     assert_eq!(rig.fetch(&[request(2, op::READ, 0, 0, 1)]), None);
     let before = rig.committed();
     rig.pump.queue().script.push_back(Step::Unfetched(vec![
-        unfetched(1, Command::Fetch, -22),
+        unfetched(1, Command::Other(0x21), -22),
         unfetched(3, Command::Fetch, ABORTED),
-        unfetched(0, Command::Fetch, -16),
+        unfetched(0, Command::Other(0x22), -16),
         unfetched(3, Command::Other(0x23), 1),
         unfetched(0, Command::Commit, ABORTED),
     ]));
@@ -1492,11 +1493,92 @@ fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
     caught(scenario, Mutants::COMMIT_REFUSAL_IGNORED);
 }
 
+/// A fetch the driver refuses ends the pump, with the tag and the error
+/// number (M1.3ah). A fetch is sent once per tag, at the queue's start,
+/// and the device's start (or the end of its recovery) waits for every
+/// tag's fetch with no limit (testing's M1.T36): a queue with a fetch
+/// refused never serves, and serve ends with 9. Nothing of the wait
+/// that brought the refusal is taken: a request handed over with it
+/// stays the kernel's. Of a wait that brings refusals of both kinds,
+/// the first is named. A refused fetch ends the pump also while it
+/// drains for a stop and at the stop's last flush; a pump whose volume
+/// failed only counts it, as it does a refused commit. Mutant: the
+/// refusal of a fetch is only counted, as before M1.3ah.
+#[test]
+fn a_fetch_the_driver_refuses_ends_the_pump() {
+    fn scenario(mutants: u32) -> Outcome {
+        // At the queue's first wait, with a request on another tag.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.pump.queue().script.push_back(Step::FetchAndUnfetched(
+            vec![write(1, 1)],
+            vec![
+                unfetched(2, Command::Fetch, ABORTED),
+                unfetched(0, Command::Fetch, -22),
+                unfetched(0, Command::Commit, -16),
+            ],
+        ));
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::FetchRefused { tag: 0, errno: 22 }),
+            "how the pump ended",
+        )?;
+        expect(rig.submitted(), Vec::new(), "submitted")?;
+        expect(rig.committed(), Vec::new(), "committed")?;
+        let c = rig.pump.counters();
+        expect((c.commands_aborted, c.commands_failed), (1, 2), "counted")?;
+        expect(c.in_flight, 0, "in flight")?;
+
+        // While it drains for a stop.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(1, 1)]);
+        rig.pump.queue().script.push_back(Step::Stop(Vec::new()));
+        expect(rig.pump.turn(), None, "draining")?;
+        rig.pump
+            .queue()
+            .script
+            .push_back(Step::Unfetched(vec![unfetched(3, Command::Fetch, -22)]));
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::FetchRefused { tag: 3, errno: 22 }),
+            "how a stop ended",
+        )?;
+
+        // At the stop's last flush.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(1, 1)]);
+        rig.pump.queue().script.push_back(Step::Stop(Vec::new()));
+        expect(rig.pump.turn(), None, "draining")?;
+        rig.complete(1);
+        rig.pump.queue().flush_unfetched = vec![unfetched(2, Command::Fetch, -22)];
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::FetchRefused { tag: 2, errno: 22 }),
+            "how the stop's flush ended",
+        )?;
+
+        // A pump whose volume failed only counts it.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.pump.fail();
+        rig.pump
+            .queue()
+            .script
+            .push_back(Step::Unfetched(vec![unfetched(0, Command::Fetch, -22)]));
+        expect(rig.pump.turn(), None, "a failed volume's pump")?;
+        let c = rig.pump.counters();
+        expect(
+            (c.commands_failed, c.last_command_failure),
+            (1, -22),
+            "counted by a failed volume's pump",
+        )
+    }
+    caught(scenario, Mutants::FETCH_REFUSAL_IGNORED);
+}
+
 /// The last commits of a stop go to the driver at the pump's flush, and
 /// a commit the driver refuses there ends the pump with it as well: the
 /// stop left a request unanswered and is not orderly (reading 4 of
-/// M1.3ac part 3). What else the flush brings (an abort, a refused
-/// fetch) is counted, and the stop is orderly. A flush that fails ends
+/// M1.3ac part 3). What else the flush brings (an abort, another
+/// command refused) is counted, and the stop is orderly. A flush that fails ends
 /// the stop as the queue gone, even with a refused commit among what it
 /// brought (reading 3), and a pump whose volume failed ends as failed
 /// (reading 2); both count what their flush brought. Mutant: what the
@@ -1515,7 +1597,7 @@ fn a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it() {
             (
                 vec![
                     unfetched(2, Command::Fetch, ABORTED),
-                    unfetched(3, Command::Fetch, -5),
+                    unfetched(3, Command::Other(0x23), -5),
                 ],
                 Stopped::Orderly,
             ),
