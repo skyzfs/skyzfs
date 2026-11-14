@@ -101,13 +101,26 @@ fn the_stores_errors_are_sorted_into_their_kinds() {
     assert_eq!(classify(&E::MarkedFailed), OpenError::MarkedFailed);
     // A volume this daemon does not serve here: a refusal with its
     // reason, and no failure of the volume.
-    let blocks = E::Blocks {
-        what: skyzfs_local::inplace::Under::Directory,
+    let blocks = |what| E::Blocks {
+        what,
         block: 16384,
         unit: 4096,
     };
+    use skyzfs_local::inplace::Under;
     for (refused, says) in [
-        (blocks, "blocks of 16384 bytes"),
+        (blocks(Under::Directory), "blocks of 16384 bytes"),
+        // The home image on a file system of its own (M1.3ae).
+        (
+            blocks(Under::Home),
+            "home image (home.img) is on a file system with blocks of 16384 bytes",
+        ),
+        (
+            E::BlocksUnknown {
+                what: Under::Home,
+                kind: std::io::ErrorKind::Unsupported,
+            },
+            "the file system under the volume's home image (home.img) could not be read",
+        ),
         (E::Volume(VolumeError::Legacy), "log store"),
         (E::Volume(VolumeError::Missing), "no volume file"),
         (
