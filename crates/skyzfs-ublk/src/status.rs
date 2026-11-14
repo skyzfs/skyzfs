@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 344
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 312
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -20,7 +20,14 @@
 //!
 //! This is the file's twelfth version (M2.1b). It adds whether the
 //! newest cut opens as itself (design §5.2), after the eleventh's
-//! fields (M2.1), which it keeps at their places. The eleventh dropped
+//! fields (M2.1). It drops the eleventh's four fields of the pump's
+//! time from a completion being ready in the store to the pump taking
+//! it (the eleventh's offset 216, 32 bytes, printed as
+//! `pump_taken_*`): only the log store said when a completion was
+//! ready, and since it was removed they were 0. The in-place store
+//! completes a request on the pump's own thread
+//! ([`PumpTiming::read_to_commit`]). So the eleventh's fields after the
+//! pump's times lie 32 bytes earlier here. The eleventh dropped
 //! the fields that only the log store filled, which the tenth still
 //! carried as zeros after the log store was removed (M1.3t): the log's
 //! length, its checkpoint steps and syncs, what a start replayed and
@@ -30,14 +37,17 @@
 //! count of cuts and the newest cut's group.
 //!
 //! The eleventh (`SKYZST11`, 336 bytes) is still read, without whether
-//! the newest cut opens as itself. So are the tenth (`SKYZST10`, 2032
-//! bytes), the ninth (`SKYZSTA9`, 2008 bytes) and the eighth
-//! (`SKYZSTA8`, 1960 bytes): what this version keeps lies at the same
-//! places in all three, the ninth has nothing of the commands the
-//! driver ended otherwise than OK (from offset 2008 of the tenth), and
-//! the eighth nothing of the I/O threads' queue (from offset 1960).
-//! None of them has cuts. A file of an older version, from a daemon
-//! before M1.3m, is read as no status.
+//! the newest cut opens as itself: up to the pump's times its fields
+//! lie at this version's places, its four fields of the time to the
+//! taking are not read, and its later fields lie 32 bytes later than
+//! here. So are the tenth (`SKYZST10`, 2032 bytes), the ninth
+//! (`SKYZSTA9`, 2008 bytes) and the eighth (`SKYZSTA8`, 1960 bytes):
+//! what this version keeps lies at the same places in all three, the
+//! ninth has nothing of the commands the driver ended otherwise than OK
+//! (from offset 2008 of the tenth), and the eighth nothing of the I/O
+//! threads' queue (from offset 1960). None of them has cuts, and their
+//! time to the taking is not read either. A file of an older version,
+//! from a daemon before M1.3m, is read as no status.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
@@ -60,14 +70,13 @@
 //! | 128 | 8 | `start_ms`: how long this daemon's start took until the device served |
 //! | 136 | 8 | `zeroes_applied`: how write-zeroes reach the home image. 0: none since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate (both only in a test build's I/O through the kernel's cache); 4: zeros are written by direct I/O. Any other value (3 was the log store's) is read as "not said" |
 //! | 144 | 72 | the pump, before the store has a request: how many requests it submitted, their summed time from the queue's wait returning with the request to the store having it, the longest; the same after the store is done, from the request being finished to its commit, for reads and then for every other request |
-//! | 216 | 32 | of that time after the store, the first part, from the store's completion being ready to the pump taking it: for reads the summed time and the longest, then the same for every other request. As many as the commits above |
-//! | 248 | 48 | the store's I/O threads: how many (0 for a test build that does the I/O on the caller's thread); reads and writes on them now; requests waiting now for a thread, in their order, because one on the threads overlaps them or a flush is behind a write still there, and everything received after the first of them; the requests that waited so since the store began (only grows); the most reads and writes on the threads at once; the most requests waiting at once |
-//! | 296 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
-//! | 304 | 8 | `commands_failed`: the queues' commands that ended with any other result than OK: a commit or a fetch the driver refused, or one io_uring could not hand to it. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
-//! | 312 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
-//! | 320 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start: each daemon counts from 0 |
-//! | 328 | 8 | `cut_group`: the newest cut's transaction group; 0 before the first cut |
-//! | 336 | 8 | `cut_opens`: whether the newest cut opens as itself (design §5.2): 1 if an import of the volume at its instant, with no rewind, opens its uberblock's pool state; 2 if it opens only with a rewind to its group; 0 before the first cut |
+//! | 216 | 48 | the store's I/O threads: how many (0 for a test build that does the I/O on the caller's thread); reads and writes on them now; requests waiting now for a thread, in their order, because one on the threads overlaps them or a flush is behind a write still there, and everything received after the first of them; the requests that waited so since the store began (only grows); the most reads and writes on the threads at once; the most requests waiting at once |
+//! | 264 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
+//! | 272 | 8 | `commands_failed`: the queues' commands that ended with any other result than OK: a commit or a fetch the driver refused, or one io_uring could not hand to it. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
+//! | 280 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
+//! | 288 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start: each daemon counts from 0 |
+//! | 296 | 8 | `cut_group`: the newest cut's transaction group; 0 before the first cut |
+//! | 304 | 8 | `cut_opens`: whether the newest cut opens as itself (design §5.2): 1 if an import of the volume at its instant, with no rewind, opens its uberblock's pool state; 2 if it opens only with a rewind to its group; 0 before the first cut |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -122,12 +131,17 @@ pub const STATUS: &str = "status";
 const MAGIC: &[u8; 8] = b"SKYZST12";
 /// The version this crate writes.
 pub const VERSION: u32 = 12;
-const LEN: usize = 344;
+const LEN: usize = 312;
 
 /// The eleventh version: the twelfth without whether the newest cut
-/// opens as itself (offset 336).
+/// opens as itself, and with four fields of the pump's time to the
+/// taking after its other times (offset 216, 32 bytes), so that the
+/// fields after them lie [`ELEVENTH_SHIFT`] bytes later.
 const ELEVENTH_MAGIC: &[u8; 8] = b"SKYZST11";
 const ELEVENTH_LEN: usize = 336;
+/// How much later than here the eleventh version's fields after the
+/// pump's times lie.
+const ELEVENTH_SHIFT: usize = 32;
 
 /// The tenth version, the last with the log store's fields. A file of
 /// it is still read, without them and without cuts.
@@ -265,7 +279,11 @@ impl ZeroesShown {
 /// the in-place store too, among the log store's `time_*` keys, which
 /// that store left at zero. Version 11 drops the log store's keys and
 /// prints the pump's as `pump_*`: the benchmark reads them under the
-/// new names on a version 11 file (M2.T0b).
+/// new names on a version 11 file (M2.T0b). Version 12 drops the four
+/// `pump_taken_*` keys, whatever version the file is: they were 0 since
+/// the log store was removed. A reader of version 11 that took the
+/// difference of `pump_commit_*` and `pump_taken_*` gets the same
+/// number from `pump_commit_*` alone.
 pub const PUMP_KEYS: [&str; PUMP_FIELDS] = [
     "pump_submit_count",
     "pump_submit_ns",
@@ -276,14 +294,10 @@ pub const PUMP_KEYS: [&str; PUMP_FIELDS] = [
     "pump_commit_other_count",
     "pump_commit_other_ns",
     "pump_commit_other_max_ns",
-    "pump_taken_read_ns",
-    "pump_taken_read_max_ns",
-    "pump_taken_other_ns",
-    "pump_taken_other_max_ns",
 ];
 
 /// The number of 8-byte fields the pump's times take.
-const PUMP_FIELDS: usize = 13;
+const PUMP_FIELDS: usize = 9;
 
 /// The pump's times in the file's order: see the table at the top.
 fn pump_fields(pump: &PumpTiming) -> [u64; PUMP_FIELDS] {
@@ -295,10 +309,6 @@ fn pump_fields(pump: &PumpTiming) -> [u64; PUMP_FIELDS] {
     };
     for spent in [pump.to_submit, pump.read_to_commit, pump.other_to_commit] {
         put(spent.count);
-        put(spent.sum_ns);
-        put(spent.max_ns);
-    }
-    for spent in [pump.read_to_taken, pump.other_to_taken] {
         put(spent.sum_ns);
         put(spent.max_ns);
     }
@@ -366,10 +376,9 @@ mod tenth {
     pub(super) const FIRST_WRITE_COPIES: usize = 128;
     pub(super) const START_MS: usize = 168;
     pub(super) const ZEROES: usize = 192;
-    /// The pump's times before the store: three times three fields.
+    /// The pump's times: three times three fields. The time to the
+    /// taking, at 1440, is not read.
     pub(super) const PUMP: usize = 1336;
-    /// The first part of the times after the store.
-    pub(super) const TAKEN: usize = 1440;
     pub(super) const IO_QUEUE: usize = 1960;
     pub(super) const COMMANDS: usize = 2008;
 }
@@ -381,19 +390,10 @@ fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
         sum_ns: fields[at + 1],
         max_ns: fields[at + 2],
     };
-    let (read_to_commit, other_to_commit) = (spent(3), spent(6));
-    // The file has no count for these: each is counted with a commit.
-    let taken = |at: usize, count: u64| Spent {
-        count,
-        sum_ns: fields[at],
-        max_ns: fields[at + 1],
-    };
     PumpTiming {
         to_submit: spent(0),
-        read_to_commit,
-        other_to_commit,
-        read_to_taken: taken(9, read_to_commit.count),
-        other_to_taken: taken(11, other_to_commit.count),
+        read_to_commit: spent(3),
+        other_to_commit: spent(6),
     }
 }
 
@@ -432,10 +432,18 @@ fn decode(bytes: &[u8]) -> Option<Status> {
         |at: usize| i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
     let (failures, first_write_copies, start_ms, shown) = if version >= 11 {
         let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| field(144 + 8 * i));
-        counters.commands_aborted = field(296);
-        counters.commands_failed = field(304);
-        counters.last_command_failure = failure_at(312);
-        let count = field(320);
+        // After the pump's times: the eleventh's fields lie later.
+        let after = |at: usize| {
+            if version == 11 {
+                at + ELEVENTH_SHIFT
+            } else {
+                at
+            }
+        };
+        counters.commands_aborted = field(after(264));
+        counters.commands_failed = field(after(272));
+        counters.last_command_failure = failure_at(after(280));
+        let count = field(after(288));
         let cuts = Cuts {
             count,
             // The eleventh version does not say whether the newest cut
@@ -443,25 +451,19 @@ fn decode(bytes: &[u8]) -> Option<Status> {
             // of it for that version.
             newest: (count > 0).then(|| Cut {
                 number: count,
-                group: field(328),
-                itself: version >= 12 && field(336) == 1,
+                group: field(after(296)),
+                itself: version >= 12 && field(304) == 1,
             }),
         };
         let shown = StoreShown {
             zeroes: ZeroesShown::of(field(136)),
             pump: pump_of(&pump),
-            io_queue: Some(io_queue_at(bytes, 248)),
+            io_queue: Some(io_queue_at(bytes, after(216))),
             cuts: Some(cuts),
         };
         (field(112), field(120), field(128), shown)
     } else {
-        let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| {
-            if i < 9 {
-                field(tenth::PUMP + 8 * i)
-            } else {
-                field(tenth::TAKEN + 8 * (i - 9))
-            }
-        });
+        let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| field(tenth::PUMP + 8 * i));
         if version == 10 {
             counters.commands_aborted = field(tenth::COMMANDS);
             counters.commands_failed = field(tenth::COMMANDS + 8);

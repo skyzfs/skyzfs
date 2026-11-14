@@ -11,7 +11,7 @@ fn counters(reads: u64, held: u64) -> Counters {
     }
 }
 
-/// The pump's times whose fields in the file are 100 to 112, in the
+/// The pump's times whose fields in the file are 100 to 108, in the
 /// file's order.
 fn sample_pump() -> PumpTiming {
     pump_of(&std::array::from_fn(|i| 100 + i as u64))
@@ -69,7 +69,7 @@ fn sample() -> Status {
 #[test]
 fn the_file_has_the_documented_layout() {
     let bytes = encode(&sample());
-    assert_eq!(bytes.len(), 344);
+    assert_eq!(bytes.len(), 312);
     assert_eq!(&bytes[..8], b"SKYZST12");
     assert_eq!(bytes[8..12], 0x0102_0304u32.to_le_bytes());
     assert_eq!(bytes[12..14], 0x1112u16.to_le_bytes());
@@ -90,25 +90,25 @@ fn the_file_has_the_documented_layout() {
         (128, 16),
         (136, 4),
     ];
-    fields.extend((0..13).map(|i| (144 + 8 * i, 100 + i as u64)));
+    fields.extend((0..9).map(|i| (144 + 8 * i, 100 + i as u64)));
     fields.extend([
-        (248, 20),
-        (256, 21),
-        (264, 22),
-        (272, 23),
-        (280, 24),
-        (288, 25),
-        (296, 26),
-        (304, 27),
-        (320, 29),
-        (328, 30),
-        (336, 1),
+        (216, 20),
+        (224, 21),
+        (232, 22),
+        (240, 23),
+        (248, 24),
+        (256, 25),
+        (264, 26),
+        (272, 27),
+        (288, 29),
+        (296, 30),
+        (304, 1),
     ]);
     for (at, value) in fields {
         assert_eq!(u64_at(&bytes, at), value, "the field at {at}");
     }
-    assert_eq!(bytes[312..316], (-28i32).to_le_bytes());
-    assert_eq!(bytes[316..320], [0; 4]);
+    assert_eq!(bytes[280..284], (-28i32).to_le_bytes());
+    assert_eq!(bytes[284..288], [0; 4]);
     assert_eq!(decode(&bytes), Some(sample()));
 }
 
@@ -119,9 +119,9 @@ fn before_the_first_cut_the_file_has_no_group() {
     let mut status = sample();
     status.shown.cuts = Some(Cuts::default());
     let bytes = encode(&status);
-    assert_eq!(u64_at(&bytes, 320), 0);
-    assert_eq!(u64_at(&bytes, 328), 0);
-    assert_eq!(u64_at(&bytes, 336), 0);
+    assert_eq!(u64_at(&bytes, 288), 0);
+    assert_eq!(u64_at(&bytes, 296), 0);
+    assert_eq!(u64_at(&bytes, 304), 0);
     assert_eq!(decode(&bytes), Some(status));
 }
 
@@ -155,13 +155,10 @@ fn tenth_file() -> Vec<u8> {
     put(tenth::FIRST_WRITE_COPIES, status.first_write_copies);
     put(tenth::START_MS, status.start_ms);
     put(tenth::ZEROES, 4);
+    // The time to the taking, at 1440, stays 0x5a: it is not read.
     let pump = pump_fields(&status.shown.pump);
     for (i, value) in pump.into_iter().enumerate() {
-        if i < 9 {
-            put(tenth::PUMP + 8 * i, value);
-        } else {
-            put(tenth::TAKEN + 8 * (i - 9), value);
-        }
+        put(tenth::PUMP + 8 * i, value);
     }
     let q = status.shown.io_queue.unwrap_or_default();
     for (i, value) in [
@@ -260,7 +257,11 @@ fn files_of_the_eighth_to_the_tenth_version_are_read_without_the_log_store() {
         assert_eq!(value(&lines, "first_write_copies"), Some("11"));
         assert_eq!(value(&lines, "status_write_failures"), Some("10"));
         assert_eq!(value(&lines, "pump_submit_count"), Some("100"));
-        assert_eq!(value(&lines, "pump_taken_other_max_ns"), Some("112"));
+        assert_eq!(value(&lines, "pump_commit_other_max_ns"), Some("108"));
+        assert!(
+            !lines.iter().any(|(key, _)| key.starts_with("pump_taken_")),
+            "version {version}: {lines:?}"
+        );
         assert_eq!(
             lines.iter().any(|(key, _)| key.starts_with("commands_")),
             version >= 10
@@ -275,7 +276,7 @@ fn a_magic_at_another_versions_length_is_an_error() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
     let versions: [(&[u8; 8], usize); 5] = [
-        (b"SKYZST12", 344),
+        (b"SKYZST12", 312),
         (b"SKYZST11", 336),
         (b"SKYZST10", 2032),
         (b"SKYZSTA9", 2008),
@@ -365,17 +366,30 @@ fn the_report_shows_the_cuts_and_the_newest_group_once_there_is_one() {
     assert_eq!(value(&lines, "cut_opens"), None);
 }
 
-/// A file of the eleventh version (336 bytes, `SKYZST11`) is still
-/// read: everything at its place, with the count and the newest cut's
-/// group, and nothing of whether that cut opens as itself, which
-/// `status` does not print for it.
+/// The sample as a file of the eleventh version (336 bytes,
+/// `SKYZST11`): this version's fields up to the end of the pump's times
+/// at the same places, then the four fields of the time to the taking
+/// (0x5a, so that a field read from a wrong place shows), then the
+/// rest 32 bytes later than here, without whether the newest cut opens
+/// as itself.
+fn eleventh_file() -> Vec<u8> {
+    let twelfth = encode(&sample());
+    let mut bytes = vec![0x5au8; 336];
+    bytes[..216].copy_from_slice(&twelfth[..216]);
+    bytes[248..336].copy_from_slice(&twelfth[216..304]);
+    bytes[..8].copy_from_slice(b"SKYZST11");
+    bytes
+}
+
+/// A file of the eleventh version is still read: everything from its
+/// own places, with the count and the newest cut's group, nothing of
+/// the time to the taking, and nothing of whether the newest cut opens
+/// as itself, which `status` does not print for it.
 #[test]
 fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itself() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut eleventh = encode(&sample())[..336].to_vec();
-    eleventh[..8].copy_from_slice(b"SKYZST11");
-    fs::write(&path, &eleventh).expect("write");
+    fs::write(&path, eleventh_file()).expect("write");
     let read = read(&path).expect("read").expect("a status");
     let mut expected = sample();
     expected.version = 11;
@@ -396,6 +410,9 @@ fn a_file_of_the_eleventh_version_is_read_without_whether_the_cut_opens_as_itsel
     assert_eq!(value(&lines, "cuts"), Some("29"));
     assert_eq!(value(&lines, "cut_group"), Some("30"));
     assert_eq!(value(&lines, "cut_opens"), None);
+    assert_eq!(value(&lines, "io_threads"), Some("20"));
+    assert_eq!(value(&lines, "commands_failed"), Some("27"));
+    assert!(!lines.iter().any(|(key, _)| key.starts_with("pump_taken_")));
     assert!(!has_log_store_keys(&lines));
 }
 
@@ -1228,8 +1245,7 @@ fn a_write_still_owed_at_the_stop_is_written_by_the_stop() {
 fn status_prints_the_version_of_the_file_it_read() {
     let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().join(STATUS);
-    let mut eleventh = encode(&sample()).to_vec();
-    // The twelfth whole; the eleventh is its first 336 bytes.
+    let mut twelfth = encode(&sample()).to_vec();
     for (version, magic) in [
         ("8", b"SKYZSTA8"),
         ("9", b"SKYZSTA9"),
@@ -1241,8 +1257,8 @@ fn status_prints_the_version_of_the_file_it_read() {
             "8" => tenth_file()[..1960].to_vec(),
             "9" => tenth_file()[..2008].to_vec(),
             "10" => tenth_file(),
-            "11" => eleventh[..336].to_vec(),
-            _ => std::mem::take(&mut eleventh),
+            "11" => eleventh_file(),
+            _ => std::mem::take(&mut twelfth),
         };
         bytes[..8].copy_from_slice(magic);
         fs::write(&path, &bytes).expect("write");

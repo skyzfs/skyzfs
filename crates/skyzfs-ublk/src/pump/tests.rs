@@ -816,11 +816,12 @@ fn the_last_commits_of_a_stop_are_handed_to_the_driver() {
 }
 
 /// The pump's own times. A write and a read complete together and lie
-/// ready 20 ms before the pump takes them: that is each one's time to
-/// the taking, and its time to the commit holds it. (Until M1.3t-b this
-/// test held a store of 30 ms between the taking and the commit; the
-/// fields that timed it were dropped with the status file's eleventh
-/// version, M2.1.)
+/// ready 20 ms before the pump takes them, in a target that says when
+/// each was ready: each one's time to the commit holds those 20 ms.
+/// (Until M1.3t-b this test held a store of 30 ms between the taking
+/// and the commit; the fields that timed it were dropped with the
+/// status file's eleventh version, M2.1. Until M2.1b the time to the
+/// taking was kept apart as well; it was dropped with the twelfth.)
 #[test]
 fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
     const LAY: std::time::Duration = std::time::Duration::from_millis(20);
@@ -836,13 +837,8 @@ fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
     assert_eq!(timing.to_submit.count, 2, "{timing:?}");
     assert_eq!(timing.read_to_commit.count, 1, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 1, "{timing:?}");
-    for (taken, commit) in [
-        (timing.read_to_taken, timing.read_to_commit),
-        (timing.other_to_taken, timing.other_to_commit),
-    ] {
-        assert_eq!(taken.count, 1, "{timing:?}");
-        assert!(taken.sum_ns >= lay, "{timing:?}");
-        assert!(commit.sum_ns >= taken.sum_ns, "{timing:?}");
+    for commit in [timing.read_to_commit, timing.other_to_commit] {
+        assert!(commit.sum_ns >= lay, "{timing:?}");
     }
 }
 
@@ -850,8 +846,8 @@ fn a_completion_counts_the_time_it_lay_ready_before_the_pump_took_it() {
 /// with FUA completes and is not finished by it (its flush follows);
 /// 20 ms later a read the queue has no buffer for fails without
 /// reaching the target. That read was never ready in the target: its
-/// time to the taking is zero, and not the time since the write's
-/// completion.
+/// time to the commit is within the turns that finished and committed
+/// it, and not the time since the write's completion.
 #[test]
 fn a_request_finished_without_a_completion_has_no_other_requests_ready_time() {
     let mut rig = Rig::new(0, 8, 8);
@@ -868,8 +864,6 @@ fn a_request_finished_without_a_completion_has_no_other_requests_ready_time() {
     assert_eq!(rig.committed(), vec![(2, -EIO)]);
     let timing = rig.pump.timing();
     assert_eq!(timing.read_to_commit.count, 1, "{timing:?}");
-    assert_eq!(timing.read_to_taken.count, 1, "{timing:?}");
-    assert_eq!(timing.read_to_taken.sum_ns, 0, "{timing:?}");
     // Finished and committed inside these two turns of the test.
     assert!(timing.read_to_commit.sum_ns <= within, "{timing:?}");
 }
