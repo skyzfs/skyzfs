@@ -22,8 +22,28 @@
 # Every read of a kernel stack is under a limit of 5 s (a stack read can
 # wait for the task). Needs lim (tests/lib/lim.sh), klog_since (klog.sh)
 # and OUT. ZS_PROC is /proc, or a made-up tree in the tests.
+#
+# The mark (M1.T32). In the stuck state seen on arm64 (runs 43389048554
+# and 43545561531) a zpool command holds the namespace lock while it
+# waits in spa_config_enter, every zpool command after it waits for
+# that lock, and the state lasted to the end of the job. So ZFS on this
+# machine counts as stuck when, at a call (each comes after a zpool
+# command ran out of its limit), a zpool process waits in the kernel in
+# spa_namespace_enter or in spa_config_enter. Any zpool process counts,
+# not only the one whose command ran out. A zpool process waiting
+# elsewhere does not: the rig's own `zpool sync` loop waits in
+# txg_wait_synced on a pool it suspends on purpose, and a command that
+# was only slow is not a stuck ZFS. Then, when ZS_FILE is set, the
+# first such call writes ZS_WHERE (what the rig was doing) and its line
+# to ZS_FILE, which zfs_stuck_since reads; the call is often in a
+# command substitution, so the mark is a file and not a variable.
+# Every call that finds a zpool process waiting in the kernel also adds
+# to ZS_STACKS, when set, the kernel stack of each task waiting in the
+# kernel and of each txg_sync thread, under the time of the call: what
+# holds which lock is then in the artifact, whatever the kernel's
+# hung-task reports said.
 zfs_stuck_say() {
-    local proc=${ZS_PROC:-/proc} p c st fn ns=0 named="" n_d=0 txg="" k n shown run owners
+    local proc=${ZS_PROC:-/proc} p c st fn ns=0 locks=0 named="" n_d=0 txg="" k n shown run owners
     for p in "$proc"/[0-9]*; do
         c=$(cat "$p/comm" 2>/dev/null) || continue
         case $c in zpool|txg_sync) ;; *) continue ;; esac
@@ -33,6 +53,7 @@ zfs_stuck_say() {
         n_d=$((n_d + 1))
         fn=$(lim 5 cat "$p/stack" 2>/dev/null | grep -oE '(spa_namespace_enter|spa_config_enter|txg_wait_synced|spa_vdev_state_enter|zfs_ioc_[a-z_]+)' | head -n 1)
         if [ "$fn" = spa_namespace_enter ]; then ns=$((ns + 1)); else named+="${named:+, }${p##*/} in ${fn:-?}"; fi
+        case $fn in spa_namespace_enter|spa_config_enter) locks=$((locks + 1)) ;; esac
     done
     k="zpool processes waiting in the kernel: $n_d"
     [ "$n_d" = 0 ] || k+=" ($ns for the namespace lock${named:+; $named})"
@@ -48,5 +69,30 @@ zfs_stuck_say() {
             k+="; the kernel log since the mark is lost"
         fi
     fi
+    if [ "$n_d" != 0 ]; then
+        [ -z "${ZS_STACKS:-}" ] || zs_stacks "${ZS_WHERE:-}" >> "$ZS_STACKS" 2>&1
+        if [ "$locks" != 0 ] && [ -n "${ZS_FILE:-}" ] && [ ! -s "$ZS_FILE" ]; then
+            printf '%s\t%s\n' "${ZS_WHERE:-somewhere the rig did not name}" "$k" > "$ZS_FILE"
+        fi
+    fi
     echo "$k"
+}
+# zfs_stuck_since: prints where ZFS was marked stuck and exits 0, or
+# exits 1 when it was not (or when ZS_FILE is not set).
+zfs_stuck_since() {
+    [ -n "${ZS_FILE:-}" ] && [ -s "$ZS_FILE" ] || return 1
+    cut -f1 "$ZS_FILE" | head -n 1
+}
+# zs_stacks [where]: every task waiting in the kernel (state D) and
+# every txg_sync thread, each with its kernel stack (read under 5 s).
+zs_stacks() {
+    local proc=${ZS_PROC:-/proc} p c st
+    echo "== $(date -u +%FT%TZ) ${1:-}"
+    for p in "$proc"/[0-9]*; do
+        c=$(cat "$p/comm" 2>/dev/null) || continue
+        st=$(sed 's/^.*) //' "$p/stat" 2>/dev/null | cut -c1)
+        [ "$st" = D ] || [ "$c" = txg_sync ] || continue
+        echo "-- ${p##*/} $c $st"
+        lim 5 cat "$p/stack" 2>/dev/null || echo "(the stack was not read in 5 s)"
+    done
 }
