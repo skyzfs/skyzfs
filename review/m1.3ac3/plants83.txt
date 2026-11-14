@@ -1,0 +1,57 @@
+P1 the last refused commit of a wait is named
+    -p skyzfs-ublk --lib pump::: rc 0; failed: none
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P2 the refusal is checked before QueueDown
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P3 a failed volume's turn ends on a refused commit
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P4 the refusal checked after the wait's requests are taken, before submit
+    -p skyzfs-ublk --lib pump::: rc 0; failed: none
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P5 an abort is taken for a refusal
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P6 a refused fetch ends the pump too
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P7 a refusal is ignored while the pump drains for a stop
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P8 errno not negated
+    -p skyzfs-ublk --lib pump::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfs-ublk --lib`
+    -p skyzfsd --features test-hooks --lib serve::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfsd --lib`
+P9 a refusal during an asked stop exits 0
+    -p skyzfsd --features test-hooks --lib serve::: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfsd --lib`
+P10 the hook refuses every request of the kind
+    -p skyzfsd --features test-hooks --lib: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfsd --lib`
+P11 the hook also sends the commit with its buffer
+    -p skyzfsd --features test-hooks --lib: rc 101; failed: (build or run error) error: test failed, to rerun pass `-p skyzfsd --lib`
+worktree clean: True
+--- named rerun of the caught plants
+P2 the refusal is checked before QueueDown
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::commands_ended_by_a_wait_that_ends_down_are_counted
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P3 a failed volume's turn ends on a refused commit
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::commands_ended_by_a_wait_that_ends_down_are_counted, pump::tests::commands_the_driver_ended_otherwise_than_ok_are_counted
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P5 an abort is taken for a refusal
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_the_driver_refuses_ends_the_pump_for_a_take_over, pump::tests::commands_the_driver_ended_otherwise_than_ok_are_counted
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P6 a refused fetch ends the pump too
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::commands_the_driver_ended_otherwise_than_ok_are_counted
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P7 a refusal is ignored while the pump drains for a stop
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_the_driver_refuses_ends_the_pump_for_a_take_over
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+P8 errno not negated
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_the_driver_refuses_ends_the_pump_for_a_take_over
+    -p skyzfsd --features test-hooks --lib serve::: rc 101; failed: serve::tests::a_refused_commit_ends_serve_with_8_and_leaves_the_device
+P9 a refusal during an asked stop exits 0
+    -p skyzfsd --features test-hooks --lib serve::: rc 101; failed: serve::tests::a_refused_commit_ends_serve_with_8_and_leaves_the_device
+P10 the hook refuses every request of the kind
+    -p skyzfsd --features test-hooks --lib: rc 101; failed: refuse::tests::the_request_named_has_its_commit_sent_once_with_no_buffer
+P11 the hook also sends the commit with its buffer
+    -p skyzfsd --features test-hooks --lib: rc 101; failed: refuse::tests::the_request_named_has_its_commit_sent_once_with_no_buffer
+worktree clean: True

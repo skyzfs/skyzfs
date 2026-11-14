@@ -1,0 +1,14 @@
+A1 the fetch's code never ioctl-encoded: rc 0; failed: none
+A2 the payload's result 0, not -1: rc 101; failed: queue::tests::a_fetch_names_its_queue_tag_and_address_as_the_driver_reads_them
+A3 the payload names queue 1: rc 101; failed: queue::tests::a_fetch_names_its_queue_tag_and_address_as_the_driver_reads_them
+A4 the user data names a commit: rc 101; failed: queue::tests::a_first_fetch_of_the_bindings_own_is_read_as_a_fetch
+A5 the buffers are not registered first: rc 0; failed: none
+A6 the refused tag names its buffer: rc 101; failed: queue::tests::the_refused_tag_names_no_buffer_and_the_others_their_own
+A7 OWN_FETCH has bit 62 only: rc 101; failed: queue::tests::a_first_fetch_of_the_bindings_own_is_read_as_a_fetch
+A8 the fetches in reverse tag order: rc 101; failed: (build error) error[E0277]: the trait bound `impl Iterator<Item = u16> + Clone: DoubleEndedIterator` is not satisfied
+B1 the sent line is not said: rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said, run::tests::a_refused_first_fetch_is_said_and_the_server_goes_on
+B2 a refused fetch ends the server: rc 101; failed: run::tests::a_refused_first_fetch_is_said_and_the_server_goes_on
+B3 any tag's refused fetch is said: rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said
+B4 the fetch option goes with --delete-after-ms: rc 101; failed: tests::a_server_can_be_told_to_refuse_one_fetch
+B5 the value is not checked against the step: rc 101; failed: tests::a_server_can_be_told_to_refuse_one_fetch
+worktree clean: True
