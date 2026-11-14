@@ -38,7 +38,8 @@
 #   d  a failed volume: what ZFS does, and what the server refuses after
 #   e  one request held RIG_HOLD_S seconds (default 300); a commit the
 #      driver refuses, of a read, a write and a flush, and of a write
-#      held when the server is stopped (the daemon's test hooks)
+#      held when the server is stopped; a first fetch the driver
+#      refuses, at a start and at a take-over (the daemon's test hooks)
 #   g  a disk that fails under the daemon's home image
 # RIG_SERVE_ARGS: options added to every serve. The daemon has one
 #   store since M1.3t, and the rig names none: a build from before it
@@ -151,7 +152,7 @@ course() { # name: 0 if the course may run; 1 when ZFS is stuck, and the course 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
 # functions and in skyzfsd-ref.sh.
-EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5; EXIT_BROKEN_RULE=7; EXIT_COMMIT_REFUSED=8
+EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5; EXIT_BROKEN_RULE=7; EXIT_COMMIT_REFUSED=8; EXIT_START_GIVEN_UP=9
 SERVE_PID=""; BDEV=""; SERVE_RC=""
 vol_create() { lim 60 "$1" create --dir "$2" --size "$VOL_BYTES"; }
 vol_up() { # impl dir [serve arguments]: create a volume and serve it
@@ -660,9 +661,10 @@ kill_test() {
             # once, so the kill fails; wait still gives its status. A 7
             # there is the daemon's word that the driver broke its rule
             # (M1.3ac, #77), an 8 that the driver refused one of its
-            # commits (#83): the next take-over would hide either.
+            # commits (#83), a 9 that serve gave a take-over's start up
+            # (#87): the next take-over would hide any of them.
             if [ -n "$SERVE_PID" ] && ! kill -0 "$SERVE_PID" 2>/dev/null; then wait "$SERVE_PID"; SERVE_RC=$?; SERVE_PID=""; fi
-            if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ]; then
+            if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ] || [ "$SERVE_RC" = "$EXIT_START_GIVEN_UP" ]; then
                 KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
                 KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
             else
@@ -695,14 +697,14 @@ kill_test() {
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
-        # A daemon that ended by itself with exit 7 or 8 between the
+        # A daemon that ended by itself with exit 7, 8 or 9 between the
         # shell's last reaping and the kill (a race; the usual case is
         # the failed kill above): the next serve would take the device
         # over and the status be lost. Any other status is left as it was: the
         # stand-in's serve ends with 1 when its server is killed, and a
         # volume failed while served (3) has the next serve refuse it,
         # which kt_refusal names.
-        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ]; then
+        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ] || [ "$SERVE_RC" = "$EXIT_COMMIT_REFUSED" ] || [ "$SERVE_RC" = "$EXIT_START_GIVEN_UP" ]; then
             KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
             KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
             wait "$watcher"
@@ -829,10 +831,12 @@ medians() {
 kt_refusal() {
     local who="kill $1: the next serve" said
     [ -z "${4:-}" ] || who="before kill $1: the server"
-    said=$(tail -n 1 "$3" 2>/dev/null | cut -c1-300)
+    said=$(tail -n 1 "$3" 2>/dev/null | cut -c1-600)   # a line of 9 runs to about 360
     case $2 in
         "$EXIT_BROKEN_RULE")
             printf "%s ended with exit %s: the driver handed over a tag whose request was still out, by the daemon's word; the device waits for a server, and the next serve should take it over: %s" "$who" "$2" "$said" ;;
+        "$EXIT_START_GIVEN_UP")
+            printf "%s ended with exit %s: serve gave the device's start up (the driver refused a first fetch, or the start or the end of the recovery had no answer within its limit), by the daemon's word; the device waits for a server, and the next serve should take it over: %s" "$who" "$2" "$said" ;;
         "$EXIT_COMMIT_REFUSED")
             printf "%s ended with exit %s: the driver refused one of its answers (a commit), by the daemon's word; the device waits for a server, and the next serve should be handed that request again: %s" "$who" "$2" "$said" ;;
         "$EXIT_FAILED"|"$EXIT_REFUSED_FAILED"|"$EXIT_BUSY")
@@ -1997,6 +2001,7 @@ check_e() {
     hold_test e0 5 "$HOLD_S"; v=$?
     case $v in 0) ctl hold_too_short PASS "$HT_WHY" ;; 1) ctl hold_too_short FAIL "$HT_WHY" ;; *) ctl hold_too_short ERROR "$HT_ERR" ;; esac
     check_e_refused
+    check_e_fetch
 }
 
 # e, a refused commit (M1.T35). A test-hooks build of the daemon sends
@@ -2028,6 +2033,147 @@ check_e_refused() {
     course "e, a refused commit at a stop" || return
     step "e: a held write whose commit is refused, SIGTERM during the hold"
     rc_course e-rc-stop write hold; rc_pin refused_commit_at_a_stop_ends_8 $?
+}
+# e, a refused fetch (M1.T37). A test-hooks build of the daemon sends
+# tag 0's first fetch with no buffer when told `serve --refuse-one-fetch
+# start|recovery`; the driver refuses it, and the start (START_DEV) or
+# the end of the recovery (END_USER_RECOVERY) then waits for that fetch
+# for good (the control rig, M1.T36). serve gives the start up with exit
+# 9 and its line (#87), and the volume is not failed.
+# - At a start the device, which this serve added and never started, is
+#   deleted: the number is free, and the next serve starts. That shows
+#   that a delete answers a START_DEV that waits.
+# - At a take-over the device is left waiting with the pool's I/O held,
+#   and the next serve takes it over and the held I/O completes. That
+#   shows that the end of the process answers an END_USER_RECOVERY that
+#   waits.
+# The stand-in has no hooks: WAITING.
+RF_PINS="refused_fetch_at_a_start_gives_up_9 refused_fetch_at_a_take_over_gives_up_9"
+check_e_fetch() {
+    local p
+    if [ "$IMPL" = reference ]; then
+        for p in $RF_PINS; do pin "$p" WAITING "the stand-in has no test hooks: it cannot send a fetch the driver refuses"; done
+        return
+    fi
+    if course "e, a refused fetch at a start"; then
+        step "e: a first fetch refused by the driver at a start"
+        rf9_start e-rf-start; rc_pin refused_fetch_at_a_start_gives_up_9 $?
+    fi
+    if course "e, a refused fetch at a take-over"; then
+        step "e: a first fetch refused by the driver at a take-over, the pool's I/O held"
+        rf9_take e-rf-take; rc_pin refused_fetch_at_a_take_over_gives_up_9 $?
+    fi
+}
+# The words every line of a 9 ends with (#87).
+RF9_TAIL="exit 9: a supervisor should retry the serve once; a second 9 is for a person"
+# name -> RCT_WHY; 0 PASS, 1 FAIL, 2 the rig's error
+rf9_start() {
+    local name=$1 dir=$WORK/vol-$1 t0 rc said n free st back stop
+    RCT_WHY=""
+    vol_create "$SKYZFSD" "$dir" > /dev/null 2>> "$OUT/$name-create.err" || { RCT_WHY="create failed: $(tail -n 1 "$OUT/$name-create.err")"; return 2; }
+    t0=$(now_ms)
+    serve_start "$SKYZFSD" "$dir" --refuse-one-fetch start; rc=$?
+    if [ "$rc" = 0 ]; then
+        RCT_WHY="serve --refuse-one-fetch start became ready on $BDEV: no start was given up"
+        kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null; vol_detach "$SKYZFSD" "$dir"
+        return 1
+    fi
+    if [ "$rc" != 1 ]; then
+        RCT_WHY="serve neither ended nor became ready: ${SERVE_RC:-}"
+        [ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null
+        vol_detach "$SKYZFSD" "$dir"; return 2
+    fi
+    said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-600)
+    RCT_WHY="serve ended with exit $SERVE_RC after $(( $(now_ms) - t0 )) ms, saying: $said"
+    rc=$SERVE_RC
+    n=$(sed -n 's/.* of device \([0-9][0-9]*\)[ (,:].*/\1/p' <<< "$said" | head -n 1)
+    free=""
+    if [ -n "$n" ]; then
+        for _ in $(seq 1 20); do ublk_number_free "$n" && { free=yes; break; }; sleep 0.25; done
+        if [ -n "$free" ]; then RCT_WHY+="; device $n: its number was free (no node, unknown to the driver) within 5 s"
+        else RCT_WHY+="; device $n: STILL THERE 5 s after ($(find /dev -maxdepth 1 -name "ublk[bc]$n" | tr '\n' ' '))"; fi
+    else
+        RCT_WHY+="; the line names no device"
+    fi
+    st=$(vol_stat "$SKYZFSD" "$dir" state)
+    RCT_WHY+="; the volume's status: ${st:-none}"
+    if serve_start "$SKYZFSD" "$dir"; then
+        lim 30 "$DD" if="$BDEV" of=/dev/null bs=4096 count=1 iflag=direct status=none 2>> "$OUT/$name-dd.err"; back=$?
+        kill -TERM "$SERVE_PID" 2>/dev/null
+        if serve_wait 30; then stop=$SERVE_RC; else stop="none in 30 s"; kill -9 "$SERVE_PID" 2>/dev/null; SERVE_PID=""; fi
+        RCT_WHY+="; the next serve: $(grep 'serving device' "$dir.serve.log" | tail -n 1 | cut -c1-120), a read of its first block exit $back, its stop exit $stop"
+    else
+        back=none; stop=none
+        RCT_WHY+="; the next serve did not become ready (rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" | cut -c1-200))"
+        [ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null
+    fi
+    vol_detach "$SKYZFSD" "$dir"
+    [ "$rc" = "$EXIT_START_GIVEN_UP" ] && [[ $said == *"the kernel refused the first fetch of tag 0"* ]] \
+        && [[ $said == *"which this serve added and never started, is deleted"* ]] && [[ $said == *"the volume is not failed; $RF9_TAIL" ]] \
+        && [ -n "$free" ] && [ "${st:-}" != failed ] && [ "$back" = 0 ] && [ "$stop" = 0 ]
+}
+# The end of a take-over course that went wrong: a server for the device
+# first (a pool on a device with none cannot be exported), then
+# kill_cleanup.
+rf9_cleanup() {
+    if [ -z "$SERVE_PID" ] && [ "$(ublk_state "$bdev")" = QUIESCED ]; then serve_start "$SKYZFSD" "$dir" > /dev/null 2>&1; fi
+    [ -z "${writer:-}" ] || job_end "$writer" 60
+    kill_cleanup "$name"
+}
+rf9_take() {
+    local name=$1 dir=$WORK/vol-$1 pool=skzd-$1 slog t0 rc said st n vst held pst perr wrc took writer="" bdev
+    RCT_WHY=""
+    vol_up "$SKYZFSD" "$dir" || { RCT_WHY="not created or served (serve rc ${SERVE_RC:-none})"; return 2; }
+    bdev=$BDEV; n=${BDEV#/dev/ublkb}
+    slog=$(new_slog "$name")
+    pool_create "$pool" "$bdev" "$slog" > "$OUT/$name-create.log" 2>&1 || { RCT_WHY="zpool create failed"; rf9_cleanup; return 2; }
+    lim 60 zpool sync "$pool" || { RCT_WHY="the first zpool sync failed"; rf9_cleanup; return 2; }
+    kill -9 "$(server_pid "$SKYZFSD" "$dir")" 2>/dev/null
+    serve_wait 30 || { RCT_WHY="the killed server did not end in 30 s"; rf9_cleanup; return 2; }
+    t0=$(now_ms); st=""
+    while [ $(( $(now_ms) - t0 )) -lt 20000 ]; do st=$(ublk_state "$bdev"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
+    [ "$st" = QUIESCED ] || { RCT_WHY="after the kill the device read ${st:-nothing}, not QUIESCED"; rf9_cleanup; return 2; }
+    # The pool's I/O, held: a write synced to the data device (zpool
+    # sync), which no server answers.
+    rm -f "${WORK:?}/${name:?}.wrc"
+    ( t0=$(now_ms); lim 300 "$DD" if=/dev/urandom of="$WORK/mnt/$pool/held" bs=1M count=4 status=none 2>> "$OUT/$name-dd.err" && lim 300 zpool sync "$pool"; echo "$? $(( $(now_ms) - t0 ))" > "$WORK/$name.wrc" ) &
+    writer=$!
+    sleep 3
+    if [ -e "$WORK/$name.wrc" ]; then RCT_WHY="the pool's write and sync ended with no server: $(cat "$WORK/$name.wrc")"; rf9_cleanup; return 2; fi
+    t0=$(now_ms)
+    serve_start "$SKYZFSD" "$dir" --refuse-one-fetch recovery; rc=$?
+    if [ "$rc" = 0 ]; then
+        RCT_WHY="the take-over with --refuse-one-fetch recovery became ready: no start was given up"
+        rf9_cleanup; return 1
+    fi
+    if [ "$rc" != 1 ]; then
+        RCT_WHY="the take-over neither ended nor became ready: ${SERVE_RC:-}"
+        [ -z "$SERVE_PID" ] || kill -9 "$SERVE_PID" 2>/dev/null
+        SERVE_PID=""; rf9_cleanup; return 2
+    fi
+    said=$(tail -n 1 "$dir.serve.log" 2>/dev/null | cut -c1-600)
+    rc=$SERVE_RC
+    RCT_WHY="SIGKILL, then the pool's write and sync held; the take-over ended with exit $rc after $(( $(now_ms) - t0 )) ms, saying: $said"
+    t0=$(now_ms); st=""
+    while [ $(( $(now_ms) - t0 )) -lt 20000 ]; do st=$(ublk_state "$bdev"); [ "$st" = QUIESCED ] && break; sleep 0.25; done
+    vst=$(vol_stat "$SKYZFSD" "$dir" state)
+    if [ -e "$WORK/$name.wrc" ]; then held="had ended ($(cat "$WORK/$name.wrc"))"; else held="still held"; fi
+    RCT_WHY+="; the device then read $(look_word "$st"); the volume's status: ${vst:-none}; the pool's write and sync $held; the pool read $(pool_state "$pool")"
+    if serve_start "$SKYZFSD" "$dir"; then
+        RCT_WHY+="; the next serve: $(grep 'serving device' "$dir.serve.log" | tail -n 1 | cut -c1-120)"
+        if job_end "$writer" 120; then read -r wrc took < "$WORK/$name.wrc" 2>/dev/null || wrc="no status"; else wrc="NO END in 120 s after the take-over"; took=0; fi
+        writer=""
+        pst=$(pool_state "$pool"); perr=$(pool_errors "$pool")
+        RCT_WHY+="; the held write and sync then exited $wrc ($(( ${took:-0} / 1000 )) s in all); the pool $pst, $perr"
+    else
+        wrc=none; pst=none; perr=none
+        RCT_WHY+="; the next serve did not become ready (rc ${SERVE_RC:-none}: $(tail -n 1 "$dir.serve.log" | cut -c1-200))"
+    fi
+    rf9_cleanup
+    [ "$rc" = "$EXIT_START_GIVEN_UP" ] && [[ $said == *"the kernel refused the first fetch of tag 0"* ]] \
+        && [[ $said == *"device $n is left waiting for the next server"* ]] && [[ $said == *"the volume is not failed; $RF9_TAIL" ]] \
+        && [ "$st" = QUIESCED ] && [ "${vst:-}" != failed ] && [ "$held" = "still held" ] \
+        && [ "$wrc" = 0 ] && [ "$pst" = ONLINE ] && [[ $perr == "vdev errors 0 "* ]]
 }
 rc_pin() { case $2 in 0) pin "$1" PASS "$RCT_WHY" ;; 1) pin "$1" FAIL "$RCT_WHY" ;; *) pin "$1" ERROR "$RCT_WHY" ;; esac; }
 # The end of a course that went wrong: the server stopped, the device

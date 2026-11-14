@@ -28,7 +28,8 @@ def cases(impl='reference'):
 
 
 RC = ('pin_refused_read_commit_taken_over', 'pin_refused_write_commit_taken_over',
-      'pin_refused_flush_commit_taken_over', 'pin_refused_commit_at_a_stop_ends_8')
+      'pin_refused_flush_commit_taken_over', 'pin_refused_commit_at_a_stop_ends_8',
+      'pin_refused_fetch_at_a_start_gives_up_9', 'pin_refused_fetch_at_a_take_over_gives_up_9')
 
 
 def as_expected(impl='reference'):
@@ -633,6 +634,29 @@ class KillRefusal(unittest.TestCase):
         self.assertEqual(verdict, 'FAIL')
         self.assertIn('before kill 3: the server ended with exit 8: the driver refused one of its answers', why)
 
+    GAVE_UP = ('skyzfsd: the kernel refused the first fetch of tag 0 on queue 0 of device 7 (Invalid argument (os '
+               'error 22)), and the end of its recovery waits for every tag\'s fetch with no limit: serve gives it up; '
+               'device 7 is left waiting for the next server, as after a kill, with the I/O it holds; the volume is not '
+               'failed; exit 9: a supervisor should retry the serve once; a second 9 is for a person')
+
+    def test_a_planted_9_fails_the_pin_and_says_what_serve_gave_up(self):
+        # M1.3ah (#87): serve gives a take-over's start up with 9 (M1.T37).
+        verdict, why = self.verdict('9', 'pin', self.GAVE_UP)
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn("kill 3: the next serve ended with exit 9: serve gave the device's start up", why)
+        self.assertIn('the next serve should take it over', why)
+        self.assertIn(self.GAVE_UP, why)
+
+    def test_a_9_before_the_kill_fails_the_pin(self):
+        verdict, why = self.verdict('9', 'pin', self.GAVE_UP, 'before')
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn("before kill 3: the server ended with exit 9: serve gave the device's start up", why)
+
+    def test_a_9_in_a_control_stays_the_rigs_error(self):
+        for when in ('', 'before'):
+            verdict, _ = self.verdict('9', '', self.GAVE_UP, when)
+            self.assertEqual(verdict, 'ERROR', when)
+
     def test_an_8_in_a_control_stays_the_rigs_error(self):
         for when in ('', 'before'):
             verdict, _ = self.verdict('8', '', self.REFUSED, when)
@@ -684,6 +708,13 @@ class KillRefusal(unittest.TestCase):
         self.assertEqual(err, 'before kill 1: the server had ended by itself, with exit 8')
         self.assertIn('before kill 1: the server ended with exit 8: the driver refused one of its answers', refused)
         self.assertIn("skyzfsd: the kernel refused serve's answer on tag 0", refused)
+
+    def test_the_kill_loop_reads_a_9_from_a_server_that_ended_before_the_kill(self):
+        err, refused, rc = self.loop('echo "skyzfsd: the end of the recovery of device 9 had no answer within 30 s"; exit 9')
+        self.assertEqual(rc, '9')
+        self.assertEqual(err, 'before kill 1: the server had ended by itself, with exit 9')
+        self.assertIn("before kill 1: the server ended with exit 9: serve gave the device's start up", refused)
+        self.assertIn('the end of the recovery of device 9 had no answer within 30 s', refused)
 
     def test_the_kill_loop_names_another_status_as_the_rigs_error(self):
         err, refused, rc = self.loop('exit 1')
