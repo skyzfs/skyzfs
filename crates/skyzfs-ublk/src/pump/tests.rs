@@ -3,8 +3,8 @@
 //! to them into one list, so that a test can ask in which order things
 //! happened.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -43,6 +43,12 @@ enum Step {
     Down,
 }
 
+thread_local! {
+    /// How many times a fake queue on this thread saw the pump break
+    /// the driver's rule (see [`FakeQueue::commit`]).
+    static RULE_BROKEN: Cell<u64> = const { Cell::new(0) };
+}
+
 struct FakeQueue {
     depth: u16,
     script: VecDeque<Step>,
@@ -54,6 +60,22 @@ struct FakeQueue {
     flush_fails: bool,
     /// The tag the queue has no buffer for.
     no_buf: Option<u16>,
+    /// The tags whose request was handed over and not yet committed,
+    /// as the driver keeps them.
+    out: HashSet<u16>,
+    /// The commits that broke the driver's rule.
+    broken: Vec<String>,
+}
+
+impl FakeQueue {
+    /// Hand over `fetched` as the driver does: each tag is out from now
+    /// until its commit. A script that hands over a tag that is still
+    /// out breaks the driver's own rule, on purpose.
+    fn hand_over(&mut self, fetched: &[Fetched]) {
+        for request in fetched {
+            self.out.insert(request.tag);
+        }
+    }
 }
 
 impl Queue for FakeQueue {
@@ -69,6 +91,7 @@ impl Queue for FakeQueue {
         self.events.borrow_mut().push(Event::Sent);
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
+                self.hand_over(&more);
                 fetched.extend(more);
                 Ok(Wake::Work)
             }
@@ -78,6 +101,7 @@ impl Queue for FakeQueue {
             }
             Some(Step::Nothing) | None => Ok(Wake::Work),
             Some(Step::Stop(more)) => {
+                self.hand_over(&more);
                 fetched.extend(more);
                 Ok(Wake::Stop)
             }
@@ -98,7 +122,16 @@ impl Queue for FakeQueue {
         Some(Buf::filled(blocks, 0x40 + tag as u8))
     }
 
+    /// The driver's rule: a commit names a tag whose request was handed
+    /// over and is not yet committed. Any other commit is recorded as
+    /// broken: a real driver refuses it, or, if the tag's next request
+    /// was handed over meanwhile, takes it as that request's answer.
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
+        if !self.out.remove(&tag) {
+            self.broken
+                .push(format!("tag {tag} committed with no request out"));
+            RULE_BROKEN.with(|n| n.set(n.get() + 1));
+        }
         self.events.borrow_mut().push(Event::Committed(tag, result));
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
@@ -214,8 +247,12 @@ impl PumpTarget for FakeTarget {
     }
 }
 
+/// Every rig holds the driver's rule: a rig without a defect planted
+/// fails its test, when it is dropped, if its pump committed a tag with
+/// no request out. A rig with one is judged by [`caught`].
 struct Rig {
     pump: Pump<FakeQueue, FakeTarget>,
+    mutants: u32,
     events: Events,
 }
 
@@ -232,6 +269,8 @@ impl Rig {
             taken: 0,
             flush_fails: false,
             no_buf: None,
+            out: HashSet::new(),
+            broken: Vec::new(),
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -246,7 +285,16 @@ impl Rig {
         };
         Rig {
             pump: Pump::new(queue, target).with_mutants(mutants),
+            mutants,
             events,
+        }
+    }
+
+    /// Whether the pump kept the driver's rule so far.
+    fn driver_rule(&mut self) -> Outcome {
+        match self.pump.queue().broken.as_slice() {
+            [] => Ok(()),
+            broken => Err(format!("the driver's rule was broken: {broken:?}")),
         }
     }
 
@@ -313,6 +361,16 @@ impl Rig {
     }
 }
 
+impl Drop for Rig {
+    fn drop(&mut self) {
+        if self.mutants == 0 && !std::thread::panicking() {
+            if let Err(why) = self.driver_rule() {
+                panic!("{why}");
+            }
+        }
+    }
+}
+
 fn request(tag: u16, op: u8, flags: u32, block: u64, blocks: u32) -> Fetched {
     Fetched {
         tag,
@@ -342,13 +400,14 @@ fn holds(scenario: fn(u32) -> Outcome) {
     }
 }
 
-/// The scenario holds for the pump as it is and fails with the defect.
+/// The scenario holds for the pump as it is and fails with the defect,
+/// or the defect breaks the driver's rule in it.
 fn caught(scenario: fn(u32) -> Outcome, mutant: u32) {
     holds(scenario);
-    assert!(
-        scenario(mutant).is_err(),
-        "the defect {mutant:#x} was not noticed"
-    );
+    let before = RULE_BROKEN.with(Cell::get);
+    let failed = scenario(mutant).is_err();
+    let broke = RULE_BROKEN.with(Cell::get) > before;
+    assert!(failed || broke, "the defect {mutant:#x} was not noticed");
 }
 
 const BLOCK: i32 = 4096;
@@ -524,6 +583,45 @@ fn a_flush_is_committed_when_the_target_has_flushed() {
         rig.turn();
         expect(rig.committed(), vec![(3, 0)], "committed")?;
         expect(rig.pump.counters().flushes, 1, "counted")
+    }
+    caught(scenario, Mutants::FLUSH_NOT_SUBMITTED);
+}
+
+/// A flush has no place, whatever its sector fields hold. The driver
+/// hands a flush over with `start_sector` u64::MAX and no sectors (the
+/// block layer's own flush request is made with sector -1, and the
+/// daemon's request log shows it on every flush of the direct-write
+/// split probe's run 43455086383, kernel 7.0); the control test program
+/// once panicked on such a flush (M1.3ag). Through the pump it is the
+/// target's flush and is committed with 0, as any other: the
+/// translation returns before it computes a range. A translation that
+/// computed one would refuse both (empty, or not on 4 KiB blocks) and
+/// commit them with an error.
+/// Mutant: a flush is committed without the target's.
+#[test]
+fn a_flush_whose_sector_reads_the_highest_value_is_the_targets_flush() {
+    fn scenario(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 4, 4);
+        let flush = |tag, nr_sectors| Fetched {
+            tag,
+            desc: Desc {
+                op_flags: u32::from(op::FLUSH),
+                nr_sectors,
+                start_sector: u64::MAX,
+            },
+        };
+        rig.fetch(&[flush(1, 0), flush(2, u32::MAX)]);
+        rig.turn();
+        expect(
+            rig.submitted(),
+            vec![(1, "flush"), (2, "flush")],
+            "handed to the target",
+        )?;
+        rig.complete(1);
+        rig.complete(2);
+        rig.turn();
+        expect(rig.committed(), vec![(1, 0), (2, 0)], "committed")?;
+        expect(rig.pump.counters().flushes, 2, "counted")
     }
     caught(scenario, Mutants::FLUSH_NOT_SUBMITTED);
 }
@@ -834,7 +932,7 @@ fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
         expect(rig.fetch(&[write(0, 0)]), None, "the first")?;
         expect(
             rig.fetch(&[write(0, 5)]),
-            Some(Stopped::QueueDown),
+            Some(Stopped::BrokenRule { tag: 0 }),
             "the same tag again",
         )?;
         expect(rig.submitted().len(), 1, "the second reached nothing")?;
@@ -855,6 +953,130 @@ fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
         expect(rig.committed(), vec![], "nothing is committed")
     }
     caught(stray, Mutants::STRAY_IGNORED);
+}
+
+/// One commit per request handed over (M1.3ac): a tag the driver hands
+/// over again while its request is still out ends the pump at the
+/// hand-over, before anything of that wait is submitted or committed.
+/// Here the second request on tag 0 would wait in the backlog behind
+/// tag 1's until tag 0's first request was committed; a guard that
+/// looked only when a request is submitted lets it through then, and
+/// tag 0 is committed twice, which the fake queue's driver rule
+/// records. Defects: the guard at the submit (as before M1.3ac), and
+/// no guard.
+#[test]
+fn a_tag_handed_over_again_while_its_request_is_out_is_not_taken() {
+    fn rehanded(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 1);
+        expect(rig.fetch(&[write(0, 0)]), None, "tag 0")?;
+        expect(rig.fetch(&[write(1, 1)]), None, "tag 1, which waits")?;
+        // The driver breaks its rule: tag 0 again, while its first
+        // request is in the target.
+        let stopped = rig.fetch(&[write(0, 5)]);
+        if stopped.is_none() {
+            // A pump that took it: let everything end.
+            for id in [0, 1, 0] {
+                rig.complete(id);
+                rig.turn();
+            }
+        }
+        rig.driver_rule()?;
+        expect(
+            stopped,
+            Some(Stopped::BrokenRule { tag: 0 }),
+            "tag 0 handed over again",
+        )?;
+        expect(rig.submitted().len(), 1, "only tag 0's first request")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(rehanded, Mutants::GUARD_AT_SUBMIT);
+    caught(rehanded, Mutants::TAG_REUSED);
+    // What notices the guard at the submit is the driver's rule.
+    let before = RULE_BROKEN.with(Cell::get);
+    let _ = rehanded(Mutants::GUARD_AT_SUBMIT);
+    assert!(
+        RULE_BROKEN.with(Cell::get) > before,
+        "the double commit was not recorded"
+    );
+
+    /// A tag twice in one wait.
+    fn twice(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        let stopped = rig.fetch(&[write(2, 0), write(2, 8)]);
+        expect(stopped, Some(Stopped::BrokenRule { tag: 2 }), "tag 2 twice")?;
+        expect(rig.submitted(), vec![], "nothing reached the target")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(twice, Mutants::TAG_REUSED);
+
+    /// A tag twice in one wait after the failure: answered once would
+    /// still be twice.
+    fn failed(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.pump.fail(), 0, "nothing was held")?;
+        let stopped = rig.fetch(&[write(3, 0), write(3, 8)]);
+        rig.driver_rule()?;
+        expect(stopped, Some(Stopped::BrokenRule { tag: 3 }), "tag 3 twice")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(failed, Mutants::TAG_REUSED);
+}
+
+/// A tag the queue does not have breaks the driver's rule as a tag
+/// still out does: the pump ends at the hand-over with the tag named,
+/// and nothing of that wait reaches the target or is committed, not
+/// even the request on a good tag beside it. Distinct from a queue
+/// that went away (below), which is no breach.
+#[test]
+fn a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken() {
+    let mut rig = Rig::new(0, 4, 4);
+    assert_eq!(
+        rig.fetch(&[write(1, 0), write(4, 8)]),
+        Some(Stopped::BrokenRule { tag: 4 })
+    );
+    assert!(rig.submitted().is_empty());
+    assert!(rig.committed().is_empty());
+}
+
+/// After the failure, a tag answered with the plain I/O error is
+/// handed over again, as the driver may once its commit is in: it is
+/// answered again, and the pump goes on. Tag 1 waits in the backlog at
+/// the failure (answered by `fail`); tag 2 arrives after it (answered
+/// by the failed turn). Each must leave its slot idle, or its next
+/// hand-over reads as a broken rule. A tag the queue does not have
+/// ends the failed turn too, with nothing of that wait answered. (From
+/// the review of #77, its test and its suggestion.)
+#[test]
+fn a_tag_answered_after_the_failure_is_taken_again() {
+    let eio = -crate::translate::EIO;
+    let mut rig = Rig::new(0, 8, 1);
+    assert_eq!(rig.fetch(&[write(0, 0)]), None);
+    assert_eq!(rig.fetch(&[write(1, 1)]), None, "tag 1 waits");
+    assert_eq!(
+        rig.pump.fail(),
+        2,
+        "tag 0 in the target, tag 1 in the backlog"
+    );
+    assert_eq!(rig.fetch(&[write(2, 2)]), None, "tag 2 after the failure");
+    assert_eq!(
+        rig.fetch(&[write(1, 3), write(2, 4)]),
+        None,
+        "tags 1 and 2 again"
+    );
+    let after: Vec<_> = rig
+        .committed()
+        .into_iter()
+        .filter(|&(tag, _)| tag != 0)
+        .collect();
+    assert_eq!(after, vec![(1, eio), (2, eio), (1, eio), (2, eio)]);
+
+    let before = rig.committed().len();
+    assert_eq!(
+        rig.fetch(&[write(3, 5), write(8, 6)]),
+        Some(Stopped::BrokenRule { tag: 8 }),
+        "a tag at the queue's depth, after the failure"
+    );
+    assert_eq!(rig.committed().len(), before, "nothing of that wait");
 }
 
 /// When the queue goes away the pump ends and says so.

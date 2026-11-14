@@ -3,7 +3,7 @@
 //! ```text
 //! skyzfsd create --dir DIR --size BYTES [--run-dir DIR]
 //! skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--kernel-has-async-delete]
-//!                [--queues 1] [--depth N] [--io-threads N] [--store in-place]
+//!                [--queues 1] [--depth N] [--io-threads N]
 //! skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
 //! skyzfsd status --dir DIR [--run-dir DIR]
 //! skyzfsd help
@@ -11,10 +11,9 @@
 //!
 //! `--queues` takes only 1: this milestone serves one queue.
 //!
-//! `--store` is what is left of the choice of a store, which M1.3t
-//! removed with the log store: `in-place` is accepted and changes
-//! nothing, and `log` is refused. It goes once the rigs no longer name
-//! it (M1.3t-d).
+//! There is no choice of a store: M1.3t removed the log store, and
+//! M1.3t-d the option `--store` that was left of the choice. Given, it
+//! is an option serve does not have.
 //!
 //! An option is `--name value` or `--name=value`, and is given at most
 //! once. Numbers are decimal. Anything else is a usage error, which is
@@ -92,7 +91,7 @@ const MIB: u64 = 1 << 20;
 pub const USAGE: &str = "usage:
   skyzfsd create --dir DIR --size BYTES [--run-dir DIR] [--zero-fill]
   skyzfsd serve  --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                 [--io-threads N] [--kernel-has-async-delete] [--store in-place]
+                 [--io-threads N] [--kernel-has-async-delete]
                  (one queue is all this version serves)
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
   skyzfsd status --dir DIR [--run-dir DIR]
@@ -174,7 +173,7 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       of that failure stays, and counts for the new volume.
 
   skyzfsd serve --dir DIR [--run-dir DIR] [--acknowledge-failure] [--queues 1] [--depth N]
-                [--io-threads N] [--kernel-has-async-delete] [--store in-place]
+                [--io-threads N] [--kernel-has-async-delete]
       Serve the volume until SIGTERM. When the device serves, one line
       is printed: ready /dev/ublkbN.
       If another instance holds the volume, serve tries again for 2 s
@@ -207,8 +206,6 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
       A volume made by a daemon with a log store (before M1.3t) is
       refused, as is a directory whose file volume is missing or
       damaged: none of these fails the volume. Create it again.
-      --store in-place is accepted and changes nothing; --store log is
-      refused: the log store was removed.
 
   skyzfsd detach --dir DIR [--run-dir DIR] [--kernel-has-async-delete]
       Delete the volume's device if no server serves it. It never stops
@@ -225,7 +222,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,
 another instance or a live server holds the volume; 6 detach deleted
-the device and a client still holds it open.
+the device and a client still holds it open; 7 the kernel's driver broke its rule
+(it handed over a tag the queue does not have, or one whose request
+was still out):
+serve answered nothing more, the volume is not failed, and the device
+waits for the next server, as after a kill.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -247,6 +248,14 @@ pub enum Exit {
     /// 6: `detach` deleted the volume's device and a client still holds
     /// it open: the device keeps its number until the client lets go.
     DeletedHeld,
+    /// 7: `serve` ended because the kernel's driver broke its rule: it
+    /// handed over a tag the queue does not have, or one whose request
+    /// was still out, when a tag is handed over again only after its
+    /// commit (M1.3ac). The
+    /// breach is the driver's: nothing more was answered, the volume is
+    /// not failed, and the device waits for the next server, as after
+    /// a kill.
+    BrokenRule,
 }
 
 impl Exit {
@@ -260,6 +269,7 @@ impl Exit {
             Exit::RefusedFailed => 4,
             Exit::RefusedHeld => 5,
             Exit::DeletedHeld => 6,
+            Exit::BrokenRule => 7,
         }
     }
 
@@ -454,7 +464,6 @@ const SERVE: &[Opt] = &[
     opt(ASYNC_DELETE_OPTION, false, false),
     opt("--queues", true, false),
     opt("--depth", true, false),
-    opt("--store", true, false),
     opt("--io-threads", true, false),
     opt("--unsafe-allow-unlocked-memory", false, false),
     opt("--unsafe-allow-any-filesystem", false, false),
@@ -624,19 +633,6 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     .filter(|n| (1..=most).contains(n))
                     .ok_or(UsageError::Value(name.into(), "out of range"))
             };
-            // What is left of the choice of a store (M1.3t): the one
-            // store there is, named, changes nothing; the log store is
-            // gone.
-            match given.get("--store") {
-                None | Some("in-place") => {}
-                Some("log") => {
-                    return Err(UsageError::Value(
-                        "--store".into(),
-                        "the log store was removed in M1.3t: only in-place",
-                    ))
-                }
-                Some(_) => return Err(UsageError::Value("--store".into(), "expected in-place")),
-            }
             let threads = small("--io-threads", DEFAULT_IO_THREADS, MAX_IO_THREADS)?;
             let in_place_io = IoMode::with_threads(usize::from(threads))
                 .ok_or(UsageError::Value("--io-threads".into(), "out of range"))?;

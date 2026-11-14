@@ -26,7 +26,9 @@ fn serve(line: &str) -> Serve {
 /// The exit statuses are the numbers the rig expects: 0 after SIGTERM,
 /// 1 for anything else, 2 for usage, 3 for a volume that failed while
 /// serving, 4 for one refused because it failed in this boot, 5 for one
-/// another instance holds.
+/// another instance holds, 6 for a detach of a device a client holds,
+/// 7 for a kernel driver that broke its rule. The help's table names
+/// each.
 #[test]
 fn the_exit_statuses_are_the_agreed_numbers() {
     let all = [
@@ -37,10 +39,20 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::RefusedFailed, 4),
         (Exit::RefusedHeld, 5),
         (Exit::DeletedHeld, 6),
+        (Exit::BrokenRule, 7),
     ];
+    let table = HELP
+        .split_once("Exit statuses:")
+        .map(|(_, table)| table)
+        .expect("the help has a table of exit statuses");
     for (exit, status) in all {
         assert_eq!(exit.status(), status);
+        assert!(
+            table.contains(&format!(" {status} ")) || table.contains(&format!("\n{status} ")),
+            "the help's table lacks {status}"
+        );
     }
+    assert!(HELP.contains("7 the kernel's driver broke its rule"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a
@@ -149,40 +161,36 @@ fn serve_has_the_agreed_defaults_and_options() {
     assert_eq!(serve("serve --dir /v/a --depth 4096").depth, 4096);
 }
 
-/// `--store` is what is left of the choice of a store (M1.3t):
-/// `in-place` is accepted and changes nothing, `log` is refused with a
-/// word that the log store was removed, and anything else is a usage
-/// error. The options of the log and its checkpoints, and its hooks,
-/// are options of nothing now: usage errors.
+/// There is no choice of a store (M1.3t-d): `--store` is not an
+/// option of serve, whatever its value, and neither the usage nor the
+/// help offers it. The rigs and the benchmark give an older build
+/// `--store in-place` only when its help offers `[--store`, so a build
+/// that offered it and refused it would end every serve of theirs. The
+/// options of the log and its checkpoints, and its hooks, are options
+/// of nothing either: usage errors.
 #[test]
-fn serve_takes_only_the_in_place_store() {
-    let plain_serve = |line: &str| match plain(line) {
-        Ok(Command::Serve(serve)) => serve,
-        other => panic!("{line}: {other:?}"),
-    };
-    let default = plain_serve("serve --dir /v/a");
-    assert_eq!(plain_serve("serve --dir /v/a --store in-place"), default);
-    assert_eq!(
-        plain_serve("serve --dir /v/a --store=in-place --depth 16"),
-        Serve {
-            depth: 16,
-            ..default
-        }
-    );
-    assert_eq!(
-        plain("serve --dir /v/a --store log"),
-        Err(UsageError::Value(
-            "--store".into(),
-            "the log store was removed in M1.3t: only in-place"
-        ))
-    );
-    for bad in ["inplace", "LOG", "x"] {
+fn serve_has_no_choice_of_store() {
+    for given in [
+        "--store in-place",
+        "--store=in-place",
+        "--store log",
+        "--store=log",
+        "--store x",
+    ] {
+        // An unknown option is named as it was given, value and all
+        // when it came with `=`.
+        let named = given.split(' ').next().unwrap_or(given);
         assert_eq!(
-            plain(&format!("serve --dir /v/a --store {bad}")),
-            Err(UsageError::Value("--store".into(), "expected in-place")),
-            "{bad}"
+            plain(&format!("serve --dir /v/a {given}")),
+            Err(UsageError::Unknown(named.into())),
+            "{given}"
         );
     }
+    for text in [USAGE, HELP, HOOKS_USAGE] {
+        assert!(!text.contains("--store"), "{text}");
+    }
+    // The daemon and replay rigs look for it in this file's source.
+    assert!(!include_str!("../cli.rs").contains("[--store"));
     for gone in [
         "--log-high 4",
         "--log-low 1",
@@ -220,23 +228,18 @@ fn serve_takes_only_the_in_place_store() {
 #[test]
 fn the_in_place_store_does_direct_io_on_its_threads() {
     use skyzfs_local::inplace::IoMode;
-    let default = serve("serve --dir /v/a --store in-place").in_place_io;
+    let default = serve("serve --dir /v/a").in_place_io;
     assert_eq!(default, IoMode::default());
     assert!(default.direct());
     assert_eq!(default.threads(), 8);
     for n in [1, 32, 64] {
-        let io = serve(&format!(
-            "serve --dir /v/a --store in-place --io-threads {n}"
-        ))
-        .in_place_io;
+        let io = serve(&format!("serve --dir /v/a --io-threads {n}")).in_place_io;
         assert_eq!(io, IoMode::with_threads(n).unwrap());
         assert!(io.direct());
     }
     for n in [0, 65] {
         assert!(matches!(
-            plain(&format!(
-                "serve --dir /v/a --store in-place --io-threads {n}"
-            )),
+            plain(&format!("serve --dir /v/a --io-threads {n}")),
             Err(UsageError::Value(..))
         ));
     }
@@ -244,7 +247,7 @@ fn the_in_place_store_does_direct_io_on_its_threads() {
         serve("serve --dir /v/a --io-threads 4").in_place_io,
         IoMode::with_threads(4).unwrap()
     );
-    assert!(plain("serve --dir /v/a --store in-place --direct-io").is_err());
+    assert!(plain("serve --dir /v/a --direct-io").is_err());
     assert!(matches!(
         plain("create --dir /v/a --size 1048576 --zero-fill"),
         Ok(Command::Create(Create {
@@ -290,7 +293,7 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             request_log: Some("/tmp/requests.tsv".into()),
         }
     );
-    let named = serve("serve --dir /v/a --store in-place --request-log /tmp/r.tsv");
+    let named = serve("serve --dir /v/a --request-log /tmp/r.tsv");
     assert_eq!(named.hooks.request_log, Some("/tmp/r.tsv".into()));
     let held = |spec: &str| {
         serve(&format!("serve --dir /v/a --hold-one-request {spec}"))

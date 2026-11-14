@@ -187,8 +187,8 @@ there, and the user decides when it merges.
   chooses whether a discarded range is zeroed or left as it was.
   The daemon has one store, the in-place store (the log store was
   removed in M1.3t), and since M1.T31 no rig and not the benchmark
-  names a store; `--store log` in `serve_args` is refused before a
-  serve. A build from before M1.3t (a `daemon_ref` or
+  names a store; a current build has no `--store` at all
+  (M1.3t-d), so any `--store` in `serve_args` is refused. A build from before M1.3t (a `daemon_ref` or
   `TB_SKYZFSD_REF`) defaults to the log store, so when its help offers
   `[--store` it is served with `--store in-place`, and the summary
   says so.

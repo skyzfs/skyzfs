@@ -101,7 +101,8 @@ pin_is() { # name detail test...: PASS if the test holds, else FAIL
     if "$@"; then pin "$name" PASS "$detail"; else pin "$name" FAIL "$detail"; fi
 }
 obs() { rec "obs_$1" "$2"; }
-step() { printf '\n######## %s\n' "$*"; }
+# shellcheck disable=SC2034  # ZS_WHERE: where zfs_stuck_say's mark says the rig was
+step() { ZS_WHERE=$*; printf '\n######## %s\n' "$*"; }
 # A limit that holds even when the command cannot be killed.
 # shellcheck source=tests/lib/lim.sh
 . "$HERE/../lib/lim.sh"
@@ -126,6 +127,23 @@ now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
 # What holds ZFS when a zpool command has run out: zfs_stuck_say.
 # shellcheck source=tests/kernel/zfs-stuck.sh
 . "$HERE/zfs-stuck.sh"
+# Once ZFS on this machine is stuck (zfs-stuck.sh), every zpool command
+# waits behind the same lock to the end of the job, each for its whole
+# limit, and the lines it leaves say only that (M1.T32). The courses
+# after the mark are not run (`course NAME && FUNCTION`): `course` names
+# them, and the judge reads each line they would have written as ERROR
+# "not run: ZFS on this machine was stuck since STEP". A course already
+# under way ends as it would have; what it judged stays judged.
+ZS_FILE=$OUT/zfs-stuck.tsv; : > "$ZS_FILE"
+ZS_STACKS=$OUT/zfs-stuck-stacks.txt; rm -f "${ZS_STACKS:?}"
+NOT_RUN_COURSES=""
+course() { # name: 0 if the course may run; 1 when ZFS is stuck, and the course is named as not run
+    local since
+    since=$(zfs_stuck_since) || return 0
+    printf '\n######## not run: %s (ZFS on this machine is stuck since "%s")\n' "$1" "$since"
+    NOT_RUN_COURSES+="${NOT_RUN_COURSES:+ / }$1"   # names hold commas
+    return 1
+}
 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
@@ -350,7 +368,8 @@ cleanup() {
     [ -z "${C_MONITOR:-}" ] || kill "$C_MONITOR" 2>/dev/null
     c_watch_back
     local p
-    for p in $(lim 30 zpool list -H -o name 2>/dev/null | grep '^skzd-'); do
+    # A stuck ZFS (zfs-stuck.sh) answers no zpool command.
+    zfs_stuck_since > /dev/null || for p in $(lim 30 zpool list -H -o name 2>/dev/null | grep '^skzd-'); do
         # A suspended pool cannot be exported; trying would block.
         [ "$(pool_state "$p")" = ONLINE ] && lim 60 zpool export -f "$p" 2>/dev/null
     done
@@ -1327,7 +1346,7 @@ return_kept() {
     [ "$(ublk_state "$BDEV")" = LIVE ]
 }
 check_d() {
-    local mark rc n v dir st0 st1 before after
+    local mark rc n v st0 st1 before after
     # d.1, first form: every request answered with a plain I/O error.
     step "d: every request fails with an I/O error (the device stays)"
     mark=$(klog_mark)
@@ -1374,7 +1393,15 @@ check_d() {
         lim 60 ublk del --async -n "${BDEV#/dev/ublkb}" > /dev/null 2>&1
     fi
 
-    # The control: the same wait on a volume that does not fail.
+    course "d, control" && check_d_control
+    course "d.1 with the server under test" && check_d_deleted
+    course d.3 && check_d_shorter
+    course "d, scrub" && check_d_scrub
+    course "d, not held" && check_d_not_held
+}
+# The control: the same wait on a volume that does not fail.
+check_d_control() {
+    local mark
     step "d, control: a volume that does not fail"
     mark=$(klog_mark)
     if fail_setup d0 "$REF"; then
@@ -1387,9 +1414,11 @@ check_d() {
     [ "$(pool_state skzd-d0)" = ONLINE ] && lim 120 zpool export -f skzd-d0
     [ -z "$SERVE_PID" ] || { kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30; }
     vol_detach "$REF" "$WORK/vol-d0"
-
-    # d.1, second form, with the server under test: the log fails, the
-    # daemon deletes its device and exits.
+}
+# d.1, second form, with the server under test: the log fails, the
+# daemon deletes its device and exits.
+check_d_deleted() {
+    local mark dir rc n v
     step "d: the volume fails and its device is deleted"
     mark=$(klog_mark)
     dir=$WORK/vol-d2
@@ -1416,10 +1445,6 @@ check_d() {
         done
     fi
     fail_stop d2
-
-    check_d_shorter
-    check_d_scrub
-    check_d_not_held
 }
 # d.3, an observation: the device comes back holding less than ZFS was told.
 check_d_shorter() {
@@ -1991,12 +2016,12 @@ check_g() {
         return
     fi
     rec g_fs "ext4 without a journal, errors=continue, on /dev/mapper/$G_DM over $G_LOOP ($G_SECTORS sectors)"
-    check_g_start_after_failed_sync
+    course g.3 && check_g_start_after_failed_sync
     # Both leave a suspended pool.
-    check_g_failed_start
-    check_g_sync_fails_while_serving
-    check_g_reason
-    check_g_data_journal
+    course g.2 && check_g_failed_start
+    course g.1 && check_g_sync_fails_while_serving
+    course "g, the failure's reason" && check_g_reason
+    course g.4 && check_g_data_journal
 }
 
 # g.4 (M1.3y): on ext4 mounted data=journal a file's data goes through
@@ -2421,19 +2446,20 @@ check_g_sync_fails_while_serving() {
     fail_stop "$name"
 }
 
-case $CHECKS in *" a "*) check_a; check_a_overlap; check_a_xfs16k ;; esac
-case $CHECKS in *" b "*) check_b ;; esac
-case $CHECKS in *" c "*)
+check_c_all() {
     check_c
     # udev's watch stays off through both passes of the suite.
     c_watch_back
     unflushed_obs c "$(for f in c cd; do
- awk -v p="$f" '$1 == "unflushed" { sub(/^unflushed /, ""); printf "%s/%s; ", p, $0 }' "$OUT/$f-helper.log" 2>/dev/null; done | sed 's|/\([0-9]*\): |\1 |g')" ;;
-esac
-case $CHECKS in *" e "*) check_e ;; esac
+ awk -v p="$f" '$1 == "unflushed" { sub(/^unflushed /, ""); printf "%s/%s; ", p, $0 }' "$OUT/$f-helper.log" 2>/dev/null; done | sed 's|/\([0-9]*\): |\1 |g')"
+}
+case $CHECKS in *" a "*) course a && check_a; course "a, overlapping writes" && check_a_overlap; course "a, XFS with 16 KiB blocks" && check_a_xfs16k ;; esac
+case $CHECKS in *" b "*) course b && check_b ;; esac
+case $CHECKS in *" c "*) course c && check_c_all ;; esac
+case $CHECKS in *" e "*) course e && check_e ;; esac
 # Last: it leaves suspended pools behind.
 case $CHECKS in *" d "*)
-    check_d
+    course d && check_d
     # A volume that fails while the server holds a request: waits for
     # the author's word on what the failure path does then, and for the
     # control rig's figures on a delete under a held request.
@@ -2446,9 +2472,15 @@ case $CHECKS in *" g "*)
         for p in $G_PINS; do pin "$p" WAITING "check g is of the daemon's store; the stand-in has no rule of its own for a failed sync"; done
         ctl g_old_content_after_good_sync WAITING "check g is of the daemon's store"
     else
-        check_g
+        course g && check_g
     fi ;;
 esac
+# ZFS stuck: where, what held it, and the courses not run. The lines of
+# those courses are missing, and the judge names why.
+if since=$(zfs_stuck_since); then
+    rec zfs_stuck "since \"$since\": $(cut -f2- "$ZS_FILE" | head -n 1); courses not run: ${NOT_RUN_COURSES:-none}; every waiting task's kernel stack in zfs-stuck-stacks.txt"
+    zs_stacks "the end of the run" >> "$ZS_STACKS" 2>&1
+fi
 
 # The files a reading needs most often, in the job's log as well: an
 # artifact can be lost (GitHub's upload failed for a run's four jobs on

@@ -366,22 +366,42 @@ mod run {
     }
 
     /// Answer one request from the file.
+    ///
+    /// Only a request with a place (a read, a write, a discard, a write
+    /// of zeros) has its byte computed. A flush has none, whatever its
+    /// sector field holds. The driver hands a flush over with
+    /// `start_sector` u64::MAX and no sectors: the block layer's own
+    /// flush request is made with sector -1 (`blk_rq_init`). The
+    /// daemon's request log shows it on every one of the 330 flushes of
+    /// the direct-write split probe's run 43455086383 (Ubuntu 26.04,
+    /// kernel 7.0, amd64), and the control rig's panic on all three of
+    /// its images shows a field whose byte does not fit in 64 bits. A
+    /// place whose byte does not fit in 64 bits is answered with an I/O
+    /// error, as the daemon answers a request outside its device.
     fn answer(queue: &mut impl Queue, file: &File, f: Fetched, counts: &Counts) {
-        let at = f.desc.start_sector * 512;
+        let at = || {
+            f.desc
+                .start_sector
+                .checked_mul(512)
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EIO))
+        };
         let bytes = u64::from(f.desc.nr_sectors) * 512;
         let blocks = (bytes / BLOCK_SIZE) as usize;
         let (done, buf) = match f.desc.op() {
             op::READ => {
                 counts.reads.fetch_add(1, Ordering::Relaxed);
                 match queue.take_buf(f.tag, blocks) {
-                    Some(mut buf) => (file.read_exact_at(&mut buf, at), Some(buf)),
+                    Some(mut buf) => (
+                        at().and_then(|at| file.read_exact_at(&mut buf, at)),
+                        Some(buf),
+                    ),
                     None => (Err(io::Error::from_raw_os_error(libc::EIO)), None),
                 }
             }
             op::WRITE => {
                 counts.writes.fetch_add(1, Ordering::Relaxed);
                 match queue.take_buf(f.tag, blocks) {
-                    Some(buf) => (file.write_all_at(&buf, at), Some(buf)),
+                    Some(buf) => (at().and_then(|at| file.write_all_at(&buf, at)), Some(buf)),
                     None => (Err(io::Error::from_raw_os_error(libc::EIO)), None),
                 }
             }
@@ -391,7 +411,8 @@ mod run {
             }
             op::DISCARD | op::WRITE_ZEROES => {
                 counts.trims.fetch_add(1, Ordering::Relaxed);
-                (file.write_all_at(&vec![0u8; bytes as usize], at), None)
+                let zeroed = at().and_then(|at| file.write_all_at(&vec![0u8; bytes as usize], at));
+                (zeroed, None)
             }
             _ => {
                 counts.others.fetch_add(1, Ordering::Relaxed);
@@ -1086,6 +1107,121 @@ mod run {
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 8);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
             assert!(!counts.refused.load(Ordering::SeqCst));
+        }
+
+        fn flush(tag: u16, start_sector: u64) -> Fetched {
+            Fetched {
+                tag,
+                desc: Desc {
+                    op_flags: u32::from(op::FLUSH),
+                    nr_sectors: 0,
+                    start_sector,
+                },
+            }
+        }
+
+        /// A flush has no place, whatever its sector field holds (the
+        /// driver hands a flush over with u64::MAX there: see
+        /// `answer`). It is answered as any flush, with a sync of the
+        /// file and the result 0, and the server goes on. The control
+        /// rig's take-over of a refused flush is handed such a flush
+        /// again.
+        #[test]
+        fn a_flush_is_answered_whatever_its_sector_reads() {
+            let turns: Vec<Turn> = vec![
+                (
+                    vec![flush(0, u64::MAX), read(1, 0)],
+                    Vec::new(),
+                    Ok(Woken::Work),
+                ),
+                (
+                    vec![flush(2, 0), flush(3, 1 << 60)],
+                    Vec::new(),
+                    Ok(Woken::Work),
+                ),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, lines, counts) = run(turns, Plan::default());
+            assert_eq!(
+                queue.commits,
+                vec![(0, 0, false), (1, 4096, true), (2, 0, false), (3, 0, false)]
+            );
+            assert!(lines.is_empty());
+            assert_eq!(counts.flushes.load(Ordering::SeqCst), 3);
+            assert_eq!(counts.failed.load(Ordering::SeqCst), 0);
+        }
+
+        /// The flush of the control rig's course: refused with no
+        /// buffer by the first server, handed over again to the next
+        /// one with `start_sector` u64::MAX, and answered by it.
+        #[test]
+        fn a_refused_flush_handed_over_again_is_answered() {
+            let plan = Plan {
+                refuse: Some(What::Flush),
+                ..Plan::default()
+            };
+            let first: Vec<Turn> = vec![
+                (vec![flush(4, u64::MAX)], Vec::new(), Ok(Woken::Work)),
+                (
+                    Vec::new(),
+                    vec![ended(4, Command::Commit, -libc::EINVAL)],
+                    Ok(Woken::Work),
+                ),
+            ];
+            let (queue, _, counts) = run(first, plan);
+            assert_eq!(queue.no_buffer, vec![(4, -libc::EIO)]);
+            assert!(counts.refused.load(Ordering::SeqCst));
+            let next: Vec<Turn> = vec![
+                (vec![flush(4, u64::MAX)], Vec::new(), Ok(Woken::Work)),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, lines, counts) = run(next, Plan::default());
+            assert_eq!(queue.commits, vec![(4, 0, false)]);
+            assert!(lines.is_empty());
+            assert_eq!(counts.flushes.load(Ordering::SeqCst), 1);
+        }
+
+        /// A request with a place whose byte does not fit in 64 bits is
+        /// answered with an I/O error, as the daemon answers a request
+        /// outside the device, and the server goes on. The driver never
+        /// hands one over for a device of a real size; the program must
+        /// not end on it if it did.
+        #[test]
+        fn a_place_beyond_64_bits_is_answered_with_an_error() {
+            let far = |tag, op_code: u8| Fetched {
+                tag,
+                desc: Desc {
+                    op_flags: u32::from(op_code),
+                    nr_sectors: 8,
+                    start_sector: u64::MAX - 7,
+                },
+            };
+            let turns: Vec<Turn> = vec![
+                (
+                    vec![
+                        far(0, op::READ),
+                        far(1, op::WRITE),
+                        far(2, op::DISCARD),
+                        far(3, op::WRITE_ZEROES),
+                        read(4, 0),
+                    ],
+                    Vec::new(),
+                    Ok(Woken::Work),
+                ),
+                (Vec::new(), Vec::new(), Ok(Woken::Stop)),
+            ];
+            let (queue, _, counts) = run(turns, Plan::default());
+            assert_eq!(
+                queue.commits,
+                vec![
+                    (0, -libc::EIO, true),
+                    (1, -libc::EIO, true),
+                    (2, -libc::EIO, false),
+                    (3, -libc::EIO, false),
+                    (4, 4096, true),
+                ]
+            );
+            assert_eq!(counts.failed.load(Ordering::SeqCst), 4);
         }
     }
 }

@@ -147,6 +147,16 @@ fn no_wake_is_lost_between_a_threads_look_and_its_wait() {
 
 /// How many wakes of four waiting threads found nothing to do, over
 /// eight jobs pushed one at a time, with `mutants`.
+///
+/// A thread is counted as waiting under the lock, just before its wait
+/// lets go of the lock and puts it to sleep. A job pushed in that gap
+/// finds the thread not yet asleep, and the thread returns from its
+/// wait as well as the one the push woke: a wake for nothing that the
+/// pool did not ask for. So each push, the first one included, comes a
+/// while after the last thread was counted, when all four are asleep.
+/// The 20 ms is a margin, not a proof: a thread held up for longer than
+/// that between being counted and being asleep would still be woken
+/// for nothing, and the test would fail.
 fn futile_wakes(mutants: u32) -> u64 {
     let disk = SimDisk::new(4);
     let pool = Pool::start(files(&disk, 4), false, None, Mutants(mutants)).unwrap();
@@ -154,6 +164,8 @@ fn futile_wakes(mutants: u32) -> u64 {
     let mut done = Vec::new();
     for n in 0..8 {
         until(|| shared.lock().waiting == 4, "every thread waits");
+        // Time for the threads counted to be asleep.
+        std::thread::sleep(Duration::from_millis(20));
         pool.push(read(n as u64));
         while done.len() <= n {
             pool.take(&mut done, WAIT);
