@@ -1,0 +1,178 @@
+//! REST API tests (design §12.1) including instant snapshot publication
+//! through the registry sync task (design §7.1 — the S3 scenario's core
+//! assertion, in-process).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use skynbd_api::{ApiState, VolumeHandle};
+use skynbd_engine::{Engine, EngineConfig};
+use skynbd_nbd::{spawn_registry_sync, DynEngine, Export, ExportRegistry, VolumeBinding};
+use skynbd_refs::{MemoryRefStore, RefStore};
+use skynbd_store::{MemoryStore, ObjectStore};
+use skynbd_types::VolumeId;
+use tokio::sync::{Mutex, RwLock};
+use tower::ServiceExt;
+
+const VOL_BYTES: u64 = 128 * 1024;
+
+async fn fixture() -> (axum::Router, Arc<ApiState>, Arc<RwLock<DynEngine>>) {
+    let store: Arc<dyn ObjectStore> = Arc::new(MemoryStore::new());
+    let refs: Arc<dyn RefStore> = Arc::new(MemoryRefStore::new());
+    let vol_id = VolumeId(ulid::Ulid::new());
+    let engine: DynEngine = Engine::create_volume(
+        Arc::clone(&store),
+        Arc::clone(&refs),
+        vol_id,
+        VOL_BYTES,
+        EngineConfig::default(),
+    )
+    .await
+    .unwrap();
+    let engine = Arc::new(RwLock::new(engine));
+
+    let registry = Arc::new(ExportRegistry::new());
+    registry
+        .register(
+            "vol1/head",
+            Export {
+                engine: Arc::clone(&engine),
+                read_only: false,
+                size: VOL_BYTES,
+            },
+        )
+        .await;
+    spawn_registry_sync(
+        Arc::clone(&registry),
+        VolumeBinding {
+            vol_id,
+            vol_name: "vol1".into(),
+            store: Arc::clone(&store),
+            refs: Arc::clone(&refs),
+            cfg: EngineConfig::default(),
+        },
+    );
+
+    let state = Arc::new(ApiState {
+        auth: skynbd_api::ApiAuth::Disabled,
+        enroll: None,
+        provisioner: None,
+        snap_requests: Default::default(),
+        volumes: skynbd_api::static_volumes(HashMap::from([(
+            "vol1".to_string(),
+            VolumeHandle {
+                vol_id,
+                size: VOL_BYTES,
+                engine: Arc::clone(&engine),
+                store: Arc::clone(&store),
+                refs: Arc::clone(&refs),
+                cfg: EngineConfig::default(),
+                lease_holder: None,
+                prepared: Arc::new(Mutex::new(Default::default())),
+            },
+        )])),
+        registry,
+    });
+    (skynbd_api::router(Arc::clone(&state)), state, engine)
+}
+
+async fn call(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(match body {
+            Some(v) => Body::from(v.to_string()),
+            None => Body::empty(),
+        })
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, json)
+}
+
+async fn snapshot(router: &axum::Router, engine: &Arc<RwLock<DynEngine>>, name: &str, byte: u8) {
+    engine.write().await.write(0, &[byte; 4096]).unwrap();
+    let (st, body) = call(
+        router,
+        "POST",
+        "/v1/volumes/vol1/snapshots",
+        Some(serde_json::json!({ "name": name })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+}
+
+/// A repoint that returned 200 with `served` = the target must still
+/// serve the target once the sync task has had every chance to settle.
+/// Waiting does not heal a stale swap: only a later `snap/` event does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repoint_stays_served_after_the_sync_task_settles() {
+    let (router, _state, engine) = fixture().await;
+    snapshot(&router, &engine, "g1", 0xB1).await;
+    let (st, body) = call(&router, "POST", "/v1/volumes/vol1/origin", Some(serde_json::json!({}))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["served"], "snap/g1");
+    // Let the sync task finish g1's event before the race.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    snapshot(&router, &engine, "g2", 0xC2).await;
+    // Let the sync task read the pointer row for g2's event first.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let (st, body) = call(
+        &router,
+        "POST",
+        "/v1/volumes/vol1/origin",
+        Some(serde_json::json!({"ref": "snap/g2"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["served"], "snap/g2", "the repoint's own answer");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (_, body) = call(&router, "GET", "/v1/volumes/vol1/origin", None).await;
+    assert_eq!(body["ref"], "snap/g2");
+    assert_eq!(body["served"], "snap/g2", "500 ms after the repoint");
+}
+
+/// The same race many times with no plant: how often does the sync
+/// task's reconcile of a new generation undo the repoint that follows?
+#[tokio::test(flavor = "multi_thread")]
+async fn repoint_race_rate_with_no_plant() {
+    let (router, _state, engine) = fixture().await;
+    snapshot(&router, &engine, "g1", 1).await;
+    let (st, _) = call(&router, "POST", "/v1/volumes/vol1/origin", Some(serde_json::json!({}))).await;
+    assert_eq!(st, StatusCode::OK);
+    let rounds: u64 = std::env::var("RACE_ROUNDS").ok().and_then(|v| v.parse().ok()).unwrap_or(200);
+    let mut stale = Vec::new();
+    for n in 2..2 + rounds {
+        let name = format!("g{n}");
+        snapshot(&router, &engine, &name, n as u8).await;
+        let (st, body) = call(
+            &router,
+            "POST",
+            "/v1/volumes/vol1/origin",
+            Some(serde_json::json!({"ref": format!("snap/{name}")})),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let (_, body) = call(&router, "GET", "/v1/volumes/vol1/origin", None).await;
+        if body["served"] != format!("snap/{name}").as_str() {
+            stale.push(format!("{name}: served {}", body["served"]));
+        }
+    }
+    println!("RACE: {} of {} rounds stale: {:?}", stale.len(), rounds, stale);
+}
