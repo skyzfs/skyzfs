@@ -27,3 +27,23 @@ should. `review-posted.md`.
   shellcheck is not installed here.
 - To do: the daemon rig (43555391150), the replay rig and the control
   dispatch with cd0e763 (43555427037) when they finish.
+
+## The control with cd0e763 (dispatch 43555427037, job 132327252123)
+
+Served with `--store in-place` ("the in-place store: the volume has failed"
+in its log), checks g, ubuntu-24.04. Exactly the five expected lines
+differ (pin_start_serves_what_the_disk_holds, pin_failed_start_fails_volume,
+pin_failed_start_suspends_pool, pin_failure_reason_is_the_images,
+pin_data_journal_refused); ctl_g_old_content_after_good_sync FAILs as
+expected; the other g pins PASS; the judge exits 1. As a negative control
+should.
+
+## 11aa321 (testing's answers to the five suggestions)
+
+All five answered in code. plants73b.py / plants73b.txt: ten plants in
+kt_refusal, kill_verdict and skz_settle; nine caught. K5 (KT_REFUSED not
+reset between kill tests) is not caught; the reset sits beside KT_ERR's on
+one line, which no test holds either. Not asked for.
+
+ci.yml `lint` red at 11aa321 (job 132331920595): shellcheck SC2329 on
+test_copy_limit.sh:164-166, the directive names SC2317 only. Told testing.

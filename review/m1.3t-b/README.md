@@ -24,3 +24,11 @@ Head e41e193 on 09959c2. Review posted on 2026-11-14 (issue comment
 - The first plant run misread cargo's "test failed" as a build error
   and ran D1 on the binary target (no tests); fixed and run again.
 - To do: the daemon rig's tables on this head; Codex.
+
+## Second look at 952c695 (posted: issuecomment-6872115861)
+
+Blocking: does not build on today's base (a7853c9, #71 merged). #71's
+control program implements `Queue::pause` (skyzfs-ublk-control.rs:868),
+which this pull request removes from the trait. Textual merge clean;
+ci.yml lint/test/unit-arm64 fail with E0407 (run 43556985568). Fix: merge
+the base, drop the method. 952c695's doc commit answers point 2.

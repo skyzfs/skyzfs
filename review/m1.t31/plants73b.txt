@@ -1,0 +1,11 @@
+K1 the pin branch of kill_verdict gone (x1): judge rc 1 ['FAIL: test_a_planted_refusal_fails_the_pin_with_its_reason (__main__.KillRefusal.test_a_planted_refusal_fails_the_pin_with_its_reason)']; bench rc 0 []
+K2 exit 4 not a refusal (x1): judge rc 1 ['FAIL: test_a_planted_refusal_fails_the_pin_with_its_reason (__main__.KillRefusal.test_a_planted_refusal_fails_the_pin_with_its_reason)']; bench rc 0 []
+K3 any exit a refusal (x1): judge rc 1 ['FAIL: test_a_serve_that_never_answered_is_the_rigs_error (__main__.KillRefusal.test_a_serve_that_never_answered_is_the_rigs_error)']; bench rc 0 []
+K4 the pin branch after the error (x1): judge rc 1 ['FAIL: test_a_planted_refusal_fails_the_pin_with_its_reason (__main__.KillRefusal.test_a_planted_refusal_fails_the_pin_with_its_reason)']; bench rc 0 []
+K5 KT_REFUSED not reset between kill tests (x1): judge rc 0 []; bench rc 0 []
+K6 check_b judged plainly (x2): judge rc 1 ['FAIL: test_the_kill_test_pins_ask_for_it (__main__.KillRefusal.test_the_kill_test_pins_ask_for_it)']; bench rc 0 []
+B1 absent keys at rest with a request held (x1): judge rc 0 []; bench rc 1 ['FAIL a request held: never at rest']
+B2 an unreadable status at rest (x1): judge rc 0 []; bench rc 1 ['FAIL a status that cannot be read: never at rest']
+B3 absent step taken only as none (x1): judge rc 0 []; bench rc 1 ['FAIL no log keys, nothing held, writes still: at rest']
+B4 a step under way at rest (x1): judge rc 0 []; bench rc 1 ['FAIL a step under way: never at rest']
+clean
