@@ -624,7 +624,9 @@ class KillRefusal(unittest.TestCase):
                 with open(os.path.join(d, f), 'w', encoding='utf-8') as fh:
                     fh.write(t)
             script = (f'eval "$(sed -n \'/^EXIT_FAILED=/p\' {rig!r})"; '
-                      f'for fn in now_ms server_pid serve_wait kt_refusal; do eval "$(sed -n "/^$fn() /,/^}}\\$/p; /^$fn() .*}}$/p" {rig!r})"; done; '
+                      # A one-line function is cut at its own line: a range from it
+                      # would run on to the next lone } and eval the rig's lines.
+                      f'for fn in now_ms server_pid serve_wait kt_refusal; do eval "$(sed -n "/^$fn() .*}}\\$/{{p;q}}; /^$fn() /,/^}}\\$/p" {rig!r})"; done; '
                       'vol_stat() { :; }; '
                       'D=$1; WORK=$D; name=kt; impl=x; dir=$D/vol; inflight=$D/inflight; BDEV=/dev/ublkb9; '
                       'KT_ERR=""; KT_REFUSED=""; KT_INFLIGHT=0; '
