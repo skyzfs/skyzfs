@@ -30,6 +30,8 @@ pass() {
     mkdir -p "$OUT" "$work"
     if [ "${4:-1}" = 1 ]; then
         printf 'mono\tpid\trecv\n' > "$work/c60.requests.tsv"
+        # ENDED: more lines of the log, the commands the driver ended.
+        [ -z "${ENDED:-}" ] || printf '%b' "$ENDED" >> "$work/c60.requests.tsv"
         printf 'extents\n' > "$work/c60.extents"
     fi
     if [ "${5:-1}" = 1 ]; then
@@ -74,6 +76,18 @@ check "a change event with the watch off is missing evidence" grep -q 'pass c sa
 
 pass cd 0 FAIL 0 1
 check "a kept pass names only what it kept" grep -q 'kept in the artifact (cd-ftrace.txt.gz)' <<< "$C_EVIDENCE"
+
+# The commands the driver ended (M1.T30): counted from every request
+# log of the pass, the driver's abort (-19) apart from any other result.
+# The counts start unset above: the function takes them as 0.
+C_CMD_LOGS=0; C_CMD_FAILED=0; C_CMD_ABORTED=0; C_CMD_FIRST=""; C_CMD_PASSES=""
+pass c 0 WEAKER
+check "a log with no ended line counts none" test "$C_CMD_LOGS $C_CMD_FAILED $C_CMD_ABORTED" = "1 0 0"
+ENDED='1\t9\tended\t3\tcommit\t-\t-\t-19\n2\t9\tended\t5\tcommit\t-\t-\t-22\n3\t9\tended\t6\tfetch\t-\t-\t-5\n' pass cd 0 WEAKER
+check "an abort apart from two refused commands, summed over the passes" \
+    test "$C_CMD_LOGS $C_CMD_FAILED $C_CMD_ABORTED" = "2 2 1"
+check "the first refused one is named" test "$C_CMD_FIRST" = "pass cd: tag 5, commit, result -22"
+check "and both passes" test "$C_CMD_PASSES" = "c cd "
 
 [ "$FAILS" = 0 ] || { echo "$FAILS failed"; exit 1; }
 echo "all passed"
