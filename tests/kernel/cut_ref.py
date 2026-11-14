@@ -12,8 +12,13 @@ The rule, as the design states it:
     completed, which is after it was applied: its place in the record is
     the moment it counts from.
   - It is a repeat when its transaction group and its root block
-    pointer both equal those of the uberblock write before it. A repeat
-    marks nothing.
+    pointer both equal those of the uberblock that marks the cut to
+    come, or those of the newest cut. A repeat makes no cut and changes
+    no mark. (The second half is for multihost=on: a multihost write
+    that still carries N-1 can be applied after N's uberblock writes.)
+    A stale write that the rule lets through, after the newest cut,
+    makes a cut whose state equals an older cut's and whose group errs
+    low (`stale`); its volume is still a complete pool.
   - A cut is the barrier of the first flush the record holds after an
     uberblock write that marked. Its group N is that write's; its number
     is its place in the count of cuts, from 1.
@@ -47,6 +52,8 @@ Rule variants for the negative controls (`--rule`):
   txg-alone      a repeat is an uberblock whose group was seen before
                  (keyed on the group alone)
   count-repeats  every uberblock write with a group above zero marks
+  previous       the rule before 2026-11-14: a repeat equals the
+                 uberblock write just before it
   early          as `design`, but the instant is the last flush before
                  the uberblock write (one flush early)
 
@@ -140,13 +147,14 @@ def cuts(records, ubs, rule='design'):
     A cut: n (its number in the count), txg, rootbp, ub_record (the
     write that marked it), flush_record and prefix (the records before
     the instant)."""
-    if rule not in ('design', 'txg-alone', 'count-repeats', 'early'):
+    if rule not in ('design', 'txg-alone', 'count-repeats', 'early', 'previous'):
         raise ValueError(f'no rule {rule}')
     by_record = {}
     for u in ubs:
         by_record.setdefault(u['record'], []).append(u)
     out, taken = [], []
-    prev = None                 # (txg, rootbp) of the uberblock write before
+    prev = None                 # (txg, rootbp) of the uberblock write before, for `previous`
+    newest = None               # (txg, rootbp) of the newest cut
     seen = set()                # groups seen, for txg-alone
     mark = None
     last_flush = None           # the prefix of the last flush's barrier, for `early`
@@ -158,6 +166,7 @@ def cuts(records, ubs, rule='design'):
                 prefix = r['i'] if rule != 'early' else mark['early']
                 out.append({'n': len(out) + 1, 'txg': mark['txg'], 'rootbp': mark['rootbp'], 'timestamp': mark['timestamp'],
                             'ub_record': mark['record'], 'flush_record': r['i'], 'prefix': prefix})
+                newest = (mark['txg'], mark['rootbp'])
                 mark = None
             last_flush = r['i']
         for u in by_record.get(r['i'], ()):
@@ -169,7 +178,10 @@ def cuts(records, ubs, rule='design'):
                 u['taken'] = 'marks'
             elif rule == 'txg-alone' and u['txg'] in seen:
                 u['taken'] = 'repeat'
-            elif rule != 'txg-alone' and key == prev:
+            elif rule == 'previous' and key == prev:
+                u['taken'] = 'repeat'
+            elif rule not in ('txg-alone', 'previous') and (
+                    key == newest or (mark is not None and key == (mark['txg'], mark['rootbp']))):
                 u['taken'] = 'repeat'
             else:
                 u['taken'] = 'marks'
@@ -181,6 +193,21 @@ def cuts(records, ubs, rule='design'):
                         'early': last_flush if last_flush is not None else 0}
             taken.append(u)
     return out, taken
+
+
+def stale(cs):
+    """The cuts whose pool state (group and root block pointer) equals that
+    of a cut before the one just before them -> {n: the older cut's n}.
+    Under the design's rule these are multihost writes of an older state
+    applied after a newer cut: the volume is a complete pool at a later
+    group, and the cut's group errs low."""
+    out, first = {}, {}
+    for k, c in enumerate(cs):
+        key = (c['txg'], c['rootbp'])
+        if key in first and first[key] < k - 1:
+            out[c['n']] = cs[first[key]]['n']
+        first.setdefault(key, k)
+    return out
 
 
 def load(index_path, log_path):

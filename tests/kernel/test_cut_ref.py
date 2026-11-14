@@ -138,6 +138,36 @@ class Cuts(Fixture):
         self.assertEqual([c['txg'] for c in cs], [10, 11])
         self.assertEqual([u['taken'] for u in taken if u['mmp']], ['repeat'])
 
+    def test_a_stale_multihost_write_before_the_flush_is_a_repeat_of_the_newest_cut(self):
+        # N-1's state, written by the multihost thread after N's
+        # uberblocks and before N's flush: no cut, and the mark stays N.
+        g11 = group(11, 2)
+        entries = group(10, 1) + g11[:-1] + [('write', slot_at(0, 31), ub(10, 1, mmp=True))] + g11[-1:]
+        cs, _ = self.run_log(entries)
+        self.assertEqual([c['txg'] for c in cs], [10, 11])
+        self.assertEqual(cut_ref.stale(cs), {})
+
+    def test_the_previous_rule_moved_the_mark_back_on_it(self):
+        g11 = group(11, 2)
+        entries = (group(10, 1) + g11[:-1] + [('write', slot_at(0, 31), ub(10, 1, mmp=True))] + g11[-1:]
+                   + [('write', slot_at(0, 31), ub(11, 2, mmp=True)), ('flush',)])
+        cs, _ = self.run_log(entries, rule='previous')
+        self.assertEqual([c['txg'] for c in cs], [10, 10, 11])
+        cs, _ = self.run_log(entries)
+        self.assertEqual([c['txg'] for c in cs], [10, 11])
+
+    def test_a_stale_write_after_the_newest_cut_makes_a_stale_cut(self):
+        # What the rule lets through: N-1 applied after N's flush.
+        entries = group(10, 1) + group(11, 2) + [('write', slot_at(0, 31), ub(10, 1, mmp=True)), ('flush',)] + group(12, 3)
+        cs, _ = self.run_log(entries)
+        self.assertEqual([c['txg'] for c in cs], [10, 11, 10, 12])
+        self.assertEqual(cut_ref.stale(cs), {3: 1})
+
+    def test_the_newest_cut_repeated_later_is_a_repeat(self):
+        entries = group(10, 1) + [('write', slot_at(0, 31), ub(10, 1, mmp=True)), ('flush',)] * 3 + group(11, 2)
+        cs, _ = self.run_log(entries)
+        self.assertEqual([c['txg'] for c in cs], [10, 11])
+
     def test_after_a_rewind_a_used_group_with_a_new_root_is_a_cut(self):
         entries = group(10, 1) + group(11, 2) + group(11, 3) + group(12, 4)
         cs, _ = self.run_log(entries)

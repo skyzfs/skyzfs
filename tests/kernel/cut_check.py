@@ -35,6 +35,12 @@ middle of the count (or the rule's whole list):
                  overlaps a copy of a block the cut reaches is applied
   txg-alone      the cuts by a rule that keys a repeat on the group alone
   count-repeats  the cuts by a rule that counts every uberblock write
+A cut whose state equals an older cut's (cut_ref.stale; under
+multihost=on a multihost write of an older state applied after a newer
+cut) is held to its own rule: the pool opens at its group or a later
+one, never an earlier one, and it is left out of the session check and
+counted (obs_stale_cuts), a measurement the lead asked for.
+
 A control is `caught` when a check fails on it, `missed` when every
 check passes, `same` (the two rules) when its cuts equal the design's,
 and `not built` when the record has no write it needs. The table
@@ -104,7 +110,12 @@ def sessions(records):
 
 
 def session_verdicts(cs, records, kstats):
-    """Cuts, records, {K: committed groups} -> [(K, ok, detail)]."""
+    """Cuts, records, {K: committed groups} -> [(K, ok, detail)].
+
+    A stale cut (cut_ref.stale: the state of an older cut, from a
+    multihost write applied late) is left out of the comparison; the
+    check counts those separately."""
+    skip = cut_ref.stale(cs)
     out = []
     for k, (lo, hi) in sorted(sessions(records).items()):
         if lo is None or hi is None:
@@ -114,7 +125,7 @@ def session_verdicts(cs, records, kstats):
         if not want:
             out.append((k, None, f'session {k}: no committed group in its kstat'))
             continue
-        got = [c['txg'] for c in cs if lo < c['ub_record'] < hi and c['txg'] <= max(want)]
+        got = [c['txg'] for c in cs if lo < c['ub_record'] < hi and c['txg'] <= max(want) and c['n'] not in skip]
         if got == want:
             out.append((k, True, f'session {k}: {len(got)} cuts, groups {want[0]}..{want[-1]} as committed'))
         else:
@@ -222,12 +233,18 @@ class Check:
         finally:
             run(['losetup', '-d', loop])
 
-    def judge(self, cut, kernel=True):
-        """The checks at the image as it is, for this cut -> (failed check or None, detail, bps)."""
+    def judge(self, cut, kernel=True, stale=False):
+        """The checks at the image as it is, for this cut -> (failed check or None, detail, bps).
+
+        A stale cut (cut_ref.stale) carries the group of an older state:
+        the pool may open at a later group, never at an earlier one."""
         g, why = self.group()
         if g is None:
             return 'group', why, []
-        if g != (cut['txg'], cut['timestamp']):
+        low = ''
+        if stale and g[0] > cut['txg']:
+            low = f"stale: the pool opens at group {g[0]}, {g[0] - cut['txg']} above the cut's; "
+        elif g != (cut['txg'], cut['timestamp']):
             return 'group', f"zdb selects group {g[0]} (timestamp {g[1]}), the cut is {cut['txg']} ({cut['timestamp']})", []
         failed, detail, counts, bps = self.copies()
         if failed:
@@ -236,7 +253,7 @@ class Check:
             ok, said = self.kimport()
             if not ok:
                 return 'import', said, bps
-        return None, f"{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies", bps
+        return None, f"{low}{counts.get('blocks', 0)} blocks, {counts.get('copies', 0)} copies", bps
 
 
 def control_verdict(failed):
@@ -271,10 +288,15 @@ def main():
             raise RigError('the reference finds no cut in the record')
         # Every cut, in order, on one image.
         failures, bps_at = [], {}
-        mid = cs[len(cs) // 2]
+        stale = cut_ref.stale(cs)
+        fresh = [c for c in cs if c['n'] not in stale]
+        mid = fresh[len(fresh) // 2]
+        lows = []
         for c in cs:
             ck.advance(c['prefix'])
-            failed, detail, bps = ck.judge(c)
+            failed, detail, bps = ck.judge(c, stale=c['n'] in stale)
+            if c['n'] in stale and not failed:
+                lows.append(f"cut {c['n']} (group {c['txg']}, the state of cut {stale[c['n']]}): {detail.split(';')[0]}")
             if failed:
                 failures.append(c)
                 put(f"cut_{c['n']}", 'FAIL', f"group {c['txg']} at record {c['prefix']}: {failed}: {detail}")
@@ -282,6 +304,8 @@ def main():
                 bps_at['mid'] = bps
         put('cuts', 'PASS' if not failures else 'FAIL',
             f"{len(cs) - len(failures)} of {len(cs)} cuts: the group, every copy, the read-only import")
+        put('obs_stale_cuts', str(len(stale)), '; '.join(lows[:6]) if lows else
+            'no cut carries the state of an older cut')
         if failures:
             rc = 1
         # The sessions against the kstat.

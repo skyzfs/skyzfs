@@ -29,7 +29,8 @@ def rec(i, flags=(), offset=0, nbytes=0, mark=None):
 
 
 def cut(n, txg, ub_record, prefix=None):
-    return {'n': n, 'txg': txg, 'ub_record': ub_record, 'prefix': prefix if prefix is not None else ub_record + 1}
+    return {'n': n, 'txg': txg, 'ub_record': ub_record, 'prefix': prefix if prefix is not None else ub_record + 1,
+            'rootbp': (n,)}
 
 
 class Kstat(unittest.TestCase):
@@ -60,6 +61,21 @@ class Sessions(unittest.TestCase):
         cs = [cut(1, 4, 1), cut(2, 9, 7)]
         v = cut_check.session_verdicts(cs, self.records, {1: [4, 5], 2: [9]})
         self.assertFalse(v[0][1])
+
+    def test_a_stale_cut_is_left_out(self):
+        cs = [cut(1, 4, 1), cut(2, 5, 2), cut(3, 9, 7), cut(4, 10, 8)]
+        for c, root in zip(cs, (1, 2, 3, 1)):
+            c['rootbp'] = (root,)
+        cs[3]['txg'] = 9
+        cs[2]['rootbp'] = (5,)
+        cs[3]['rootbp'] = (5,)
+        cs.insert(3, cut(9, 10, 7))
+        cs[3]['rootbp'] = (6,)
+        # cuts: 4/r1, 5/r2, 9/r5, 10/r6, 9/r5 (stale: the state of the third)
+        for k, c in enumerate(cs):
+            c['n'] = k + 1
+        v = cut_check.session_verdicts(cs, self.records, {1: [4, 5], 2: [9, 10]})
+        self.assertEqual([ok for _, ok, _ in v], [True, True])
 
     def test_no_kstat_is_the_rigs(self):
         v = cut_check.session_verdicts([], self.records, {1: [4]})
