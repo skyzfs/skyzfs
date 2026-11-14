@@ -211,9 +211,9 @@ impl<Q: Queue> Queue for Delayed<Q> {
 
     /// The end of a stop: what still waits here is given on, and then
     /// sent.
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         self.release(true);
-        self.inner.flush()
+        self.inner.flush(unfetched)
     }
 }
 
@@ -257,7 +257,7 @@ mod tests {
             self.committed.push(tag);
             self.results.push(result);
         }
-        fn flush(&mut self) -> Result<(), QueueDown> {
+        fn flush(&mut self, _unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
             self.flushes += 1;
             Ok(())
         }

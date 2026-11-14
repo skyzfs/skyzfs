@@ -61,6 +61,8 @@ struct FakeQueue {
     taken: u32,
     /// The queue cannot hand its commits over at a flush.
     flush_fails: bool,
+    /// What the driver ended otherwise than OK at the flush.
+    flush_unfetched: Vec<Unfetched>,
     /// The tag the queue has no buffer for.
     no_buf: Option<u16>,
     /// The tags whose request was handed over and not yet committed,
@@ -147,8 +149,9 @@ impl Queue for FakeQueue {
         }
     }
 
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         self.events.borrow_mut().push(Event::Sent);
+        unfetched.append(&mut self.flush_unfetched);
         if self.flush_fails {
             return Err(QueueDown);
         }
@@ -277,6 +280,7 @@ impl Rig {
             returned: HashMap::new(),
             taken: 0,
             flush_fails: false,
+            flush_unfetched: Vec::new(),
             no_buf: None,
             out: HashSet::new(),
             broken: Vec::new(),
@@ -1428,6 +1432,7 @@ fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
                 unfetched(3, Command::Commit, ABORTED),
                 unfetched(0, Command::Commit, -22),
                 unfetched(1, Command::Fetch, -5),
+                unfetched(3, Command::Commit, -16),
             ],
         ));
         expect(
@@ -1446,7 +1451,24 @@ fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
             "submitted after the refusal",
         )?;
         let c = rig.pump.counters();
-        expect((c.commands_aborted, c.commands_failed), (1, 2), "counted")?;
+        expect((c.commands_aborted, c.commands_failed), (1, 3), "counted")?;
+        expect(c.in_flight, 1, "in flight: tag 1, not tag 2")?;
+
+        // A tag handed over against the rule in the same wait: the
+        // refusal is seen first, before the hand-over is taken.
+        let mut rig = Rig::new(mutants, 4, 4);
+        rig.fetch(&[write(0, 0), write(1, 1)]);
+        rig.complete(0);
+        rig.turn();
+        rig.pump.queue().script.push_back(Step::FetchAndUnfetched(
+            vec![write(1, 5)],
+            vec![unfetched(0, Command::Commit, -22)],
+        ));
+        expect(
+            rig.pump.turn(),
+            Some(Stopped::CommitRefused { tag: 0, errno: 22 }),
+            "a refusal with a broken rule",
+        )?;
 
         // While it drains for a stop.
         let mut rig = Rig::new(mutants, 4, 4);
@@ -1468,4 +1490,53 @@ fn a_commit_the_driver_refuses_ends_the_pump_for_a_take_over() {
         expect(rig.committed(), vec![(0, BLOCK)], "committed in the stop")
     }
     caught(scenario, Mutants::COMMIT_REFUSAL_IGNORED);
+}
+
+/// The last commits of a stop go to the driver at the pump's flush, and
+/// a commit the driver refuses there ends the pump with it as well: the
+/// stop left a request unanswered and is not orderly (reading 4 of
+/// M1.3ac part 3). What else the flush brings (an abort, a refused
+/// fetch) is counted, and the stop is orderly. Mutant: what the flush
+/// hands on is not looked at.
+#[test]
+fn a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it() {
+    fn scenario(mutants: u32) -> Outcome {
+        for (at_flush, end) in [
+            (
+                vec![
+                    unfetched(2, Command::Fetch, ABORTED),
+                    unfetched(1, Command::Commit, -22),
+                ],
+                Stopped::CommitRefused { tag: 1, errno: 22 },
+            ),
+            (
+                vec![
+                    unfetched(2, Command::Fetch, ABORTED),
+                    unfetched(3, Command::Fetch, -5),
+                ],
+                Stopped::Orderly,
+            ),
+        ] {
+            let mut rig = Rig::new(mutants, 4, 4);
+            rig.fetch(&[write(0, 0), write(1, 1)]);
+            rig.complete(0);
+            rig.turn();
+            rig.pump.queue().script.push_back(Step::Stop(Vec::new()));
+            expect(rig.pump.turn(), None, "draining")?;
+            // Tag 1 completes in the stop's last turn: its commit goes
+            // out at the flush.
+            rig.complete(1);
+            rig.pump.queue().flush_unfetched = at_flush;
+            expect(rig.pump.turn(), Some(end), "how the stop ended")?;
+            expect(
+                rig.committed(),
+                vec![(0, BLOCK), (1, BLOCK)],
+                "committed in the stop",
+            )?;
+            let c = rig.pump.counters();
+            expect((c.commands_aborted, c.commands_failed), (1, 1), "counted")?;
+        }
+        Ok(())
+    }
+    caught(scenario, Mutants::FLUSH_UNREAD);
 }

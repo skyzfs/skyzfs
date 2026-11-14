@@ -661,16 +661,28 @@ impl Queue for KernelQueue<'_> {
         }
     }
 
-    /// One submit of what the ring holds, with no wait. A fetch that
-    /// completes in it belongs to a request nobody serves any more: it
-    /// stays with the kernel and is issued again to the next instance.
-    /// A command that the driver ends otherwise than OK in it is not
-    /// handed on either: this is the pump's last call, at a stop, and
-    /// no turn follows that would count it. At a stop the driver ends
-    /// each tag's last command with its abort.
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    /// One submit of what the ring holds, with no wait, and a reap of
+    /// what completed. A fetch that completes in it belongs to a
+    /// request nobody serves any more: it stays with the kernel and is
+    /// issued again to the next instance. A command that the driver
+    /// ends otherwise than OK in it is handed on in `unfetched`, as at
+    /// a wait. A commit the driver refuses, it refuses when the commit
+    /// is submitted, before it changes anything (`-EINVAL`, read in
+    /// `ublk_drv.c`), and io_uring posts that completion before the
+    /// submit returns: so the refusal of a commit this flush sends is
+    /// among what it reaps. At a stop the driver ends each tag's last
+    /// command with its abort.
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         for _ in 0..FLUSH_TRIES {
-            match self.queue.flush_and_wake_io_tasks(|_, _, _| {}, 0) {
+            let flushed = self.queue.flush_and_wake_io_tasks(
+                |user_data, done, _last| {
+                    if let Some(Err(command)) = ended(user_data, done.result()) {
+                        unfetched.push(command);
+                    }
+                },
+                0,
+            );
+            match flushed {
                 Ok(_) => return Ok(()),
                 Err(UblkError::IOError(e)) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(UblkError::UringIOError(n)) if n.abs() == libc::EINTR => {}

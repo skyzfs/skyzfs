@@ -12,6 +12,8 @@ struct Scripted {
     /// returns.
     ends: VecDeque<Vec<Unfetched>>,
     flush_fails: bool,
+    /// What the flush hands on as ended otherwise than OK.
+    flush_ends: Vec<Unfetched>,
     /// A record to read as each wait or flush begins: its last line then
     /// goes to `last_before`.
     peek: Option<std::path::PathBuf>,
@@ -55,9 +57,10 @@ impl Queue for Scripted {
     fn commit(&mut self, tag: u16, result: i32, _buf: Option<Buf>) {
         self.committed.push((tag, result));
     }
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         self.note_last_line();
         self.flushes += 1;
+        unfetched.append(&mut self.flush_ends);
         if self.flush_fails {
             Err(QueueDown)
         } else {
@@ -120,7 +123,7 @@ fn the_record_has_each_request_and_its_answer() {
     got.clear();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Ok(Wake::Work));
     queue.commit(0, -5, None);
-    assert_eq!(queue.flush(), Ok(()));
+    assert_eq!(queue.flush(&mut Vec::new()), Ok(()));
     let p = pid();
     assert_eq!(
         lines(&path),
@@ -166,7 +169,7 @@ fn the_send_line_is_written_before_the_commits_go() {
     queue.commit(0, 4096, None);
     let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(0, 4096, None);
-    let _ = queue.flush();
+    let _ = queue.flush(&mut Vec::new());
     let p = pid();
     assert_eq!(
         queue.inner.last_before,
@@ -194,7 +197,7 @@ fn the_times_are_monotonic() {
     let mut got = Vec::new();
     let _ = queue.wait(&mut got, &mut Vec::new());
     queue.commit(3, 0, None);
-    let _ = queue.flush();
+    let _ = queue.flush(&mut Vec::new());
     let after = mono_ns();
     let times: Vec<u128> = std::fs::read_to_string(&path)
         .expect("the record")
@@ -241,9 +244,9 @@ fn a_failed_wait_or_flush_says_the_commits_may_not_have_gone() {
     let mut got = Vec::new();
     assert_eq!(queue.wait(&mut got, &mut Vec::new()), Err(QueueDown));
     queue.commit(3, -5, None);
-    assert_eq!(queue.flush(), Err(QueueDown));
+    assert_eq!(queue.flush(&mut Vec::new()), Err(QueueDown));
     // Nothing committed since: no line.
-    assert_eq!(queue.flush(), Err(QueueDown));
+    assert_eq!(queue.flush(&mut Vec::new()), Err(QueueDown));
     let p = pid();
     assert_eq!(
         lines(&path),
@@ -277,7 +280,7 @@ fn a_second_instance_appends_to_the_same_record() {
     got.clear();
     let _ = second.wait(&mut got, &mut Vec::new());
     second.commit(3, 4096, None);
-    let _ = second.flush();
+    let _ = second.flush(&mut Vec::new());
     let p = pid();
     assert_eq!(
         lines(&path),
@@ -305,7 +308,7 @@ fn without_a_file_every_call_passes_through() {
     assert_eq!(got, [fetched(1, op::READ, 0, 8)]);
     assert!(queue.take_buf(1, 2).is_some_and(|buf| buf.len() == 8192));
     queue.commit(1, 4096, None);
-    assert_eq!(queue.flush(), Ok(()));
+    assert_eq!(queue.flush(&mut Vec::new()), Ok(()));
     assert_eq!(queue.inner.committed, [(1, 4096)]);
     assert_eq!(queue.depth(), 4);
 }
@@ -320,7 +323,8 @@ fn a_record_that_cannot_be_opened_is_an_error() {
 
 /// A command the driver ended otherwise than OK has an `ended` line
 /// when the wait that returned it ends, before that wait's requests:
-/// its tag, the command, the result. Also when the wait fails, and the
+/// its tag, the command, the result. Also when the wait fails, and at
+/// the last flush (a commit refused when the flush sent it), and the
 /// pump is handed every one of them.
 #[test]
 fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
@@ -360,6 +364,22 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
     queue.commit(0, 8192, None);
     assert_eq!(queue.wait(&mut got, &mut ended), Err(QueueDown));
     assert_eq!(ended.len(), 4);
+    queue.inner.flush_ends = vec![Unfetched {
+        tag: 2,
+        command: Command::Commit,
+        result: -22,
+    }];
+    queue.commit(2, 0, None);
+    let mut at_flush = Vec::new();
+    assert_eq!(queue.flush(&mut at_flush), Ok(()));
+    assert_eq!(
+        at_flush,
+        [Unfetched {
+            tag: 2,
+            command: Command::Commit,
+            result: -22,
+        }]
+    );
     let p = pid();
     assert_eq!(
         lines(&path),
@@ -376,6 +396,10 @@ fn a_command_the_driver_ended_otherwise_than_ok_has_its_line() {
             format!("{p}\tended\t0\tcommit\t-\t-\t-19"),
             format!("{p}\tended\t2\tfetch\t-\t-\t-19"),
             format!("{p}\tended\t3\tcmd35\t-\t-\t1"),
+            format!("{p}\tcommit\t2\t-\t-\t-\t0"),
+            format!("{p}\tsend\t-\t-\t-\t-\t1"),
+            format!("{p}\tsent\t-\t-\t-\t-\t1"),
+            format!("{p}\tended\t2\tcommit\t-\t-\t-22"),
         ]
     );
 }

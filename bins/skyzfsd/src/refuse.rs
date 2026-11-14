@@ -112,8 +112,8 @@ impl<Q: NoBuffer> Queue for Refusing<Q> {
         self.inner.commit(tag, result, buf);
     }
 
-    fn flush(&mut self) -> Result<(), QueueDown> {
-        self.inner.flush()
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
+        self.inner.flush(unfetched)
     }
 }
 
@@ -155,7 +155,7 @@ mod tests {
         fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
             self.committed.push((tag, result, buf.is_some()));
         }
-        fn flush(&mut self) -> Result<(), QueueDown> {
+        fn flush(&mut self, _unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
             self.flushes += 1;
             Ok(())
         }
@@ -218,7 +218,7 @@ mod tests {
         queue.commit(2, 4096, Some(Buf::zeroed(1)));
         assert_eq!(queue.inner.no_buffer.len(), 1, "only once");
         assert_eq!(queue.inner.committed.last(), Some(&(2, 4096, true)));
-        assert!(queue.flush().is_ok());
+        assert!(queue.flush(&mut Vec::new()).is_ok());
         assert_eq!(queue.inner.flushes, 1);
 
         // A flush, named so.

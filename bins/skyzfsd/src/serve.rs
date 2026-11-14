@@ -1394,7 +1394,10 @@ mod tests {
             Some(skyzfs_blk::Buf::zeroed(blocks))
         }
         fn commit(&mut self, _tag: u16, _result: i32, _buf: Option<skyzfs_blk::Buf>) {}
-        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+        fn flush(
+            &mut self,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
     }
@@ -1488,7 +1491,10 @@ mod tests {
         fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
             self.committed.lock().expect("lock").push((tag, result));
         }
-        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+        fn flush(
+            &mut self,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
     }
@@ -1531,7 +1537,10 @@ mod tests {
         fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
             self.committed.lock().expect("lock").push((tag, result));
         }
-        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+        fn flush(
+            &mut self,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
     }
@@ -1635,7 +1644,10 @@ mod tests {
         fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
             self.committed.lock().expect("lock").push((tag, result));
         }
-        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+        fn flush(
+            &mut self,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
     }

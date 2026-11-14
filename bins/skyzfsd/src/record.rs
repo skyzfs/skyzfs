@@ -54,8 +54,9 @@
 //! - `down`: that wait or flush failed; those commits may or may not
 //!   have reached the kernel.
 //! - `ended`: a command of the queue that the driver ended with a result
-//!   other than OK, as the queue's wait returned it (after that wait's
-//!   `sent` or `down`, before its `recv` lines): its tag, the command in
+//!   other than OK, as the queue's wait or its last flush returned it
+//!   (after that wait's or flush's `sent` or `down`, before a wait's
+//!   `recv` lines): its tag, the command in
 //!   the op column (`fetch`, `commit`, or `cmd<N>` for another code), and
 //!   the result. `-19` (`-ENODEV`) is the driver's abort: the queue is
 //!   being stopped, and each tag's last command ends so. Any other
@@ -86,11 +87,9 @@
 //!
 //! - **Handed to the kernel is not taken by the driver** until the
 //!   driver says so: a commit it refuses has an `ended` line, at the
-//!   queue's next wait, and until then looks here like one it took. The
-//!   kernel's own trace (`block_rq_complete`, `block_rq_requeue`) is the
-//!   other side of it.
-//! - **A command the driver ends in the queue's last flush** (at a stop)
-//!   has no `ended` line: that flush hands nothing on.
+//!   queue's next wait or at its last flush, and until then looks here
+//!   like one it took. The kernel's own trace (`block_rq_complete`,
+//!   `block_rq_requeue`) is the other side of it.
 //! - **At a stop** (not at a kill), once the library has seen an abort
 //!   it puts no more commits on its ring, while its commit still
 //!   returns as done: such a commit has its `commit`, `send` and `sent`
@@ -227,6 +226,21 @@ impl<Q: Queue> Recorded<Q> {
         self.unsent = 0;
         self.line(&columns(event, "-", None, &count));
     }
+
+    /// An `ended` line for each command of `ended`.
+    fn ended(&mut self, ended: &[Unfetched]) {
+        for &Unfetched {
+            tag,
+            command,
+            result,
+        } in ended
+        {
+            self.line(&format!(
+                "ended\t{tag}\t{}\t-\t-\t{result}",
+                command_name(command)
+            ));
+        }
+    }
 }
 
 impl<Q: Queue> Queue for Recorded<Q> {
@@ -244,17 +258,7 @@ impl<Q: Queue> Queue for Recorded<Q> {
         self.send();
         let woken = self.inner.wait(fetched, unfetched);
         self.sent(woken.is_ok());
-        for Unfetched {
-            tag,
-            command,
-            result,
-        } in unfetched.get(ended_before..).unwrap_or_default().to_vec()
-        {
-            self.line(&format!(
-                "ended\t{tag}\t{}\t-\t-\t{result}",
-                command_name(command)
-            ));
-        }
+        self.ended(unfetched.get(ended_before..).unwrap_or_default());
         for Fetched { tag, desc } in fetched.get(before..).unwrap_or_default().to_vec() {
             if let Some(slot) = self.held.get_mut(usize::from(tag)) {
                 *slot = Some(desc);
@@ -280,10 +284,12 @@ impl<Q: Queue> Queue for Recorded<Q> {
         self.inner.commit(tag, result, buf);
     }
 
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
+        let ended_before = unfetched.len();
         self.send();
-        let flushed = self.inner.flush();
+        let flushed = self.inner.flush(unfetched);
         self.sent(flushed.is_ok());
+        self.ended(unfetched.get(ended_before..).unwrap_or_default());
         flushed
     }
 }

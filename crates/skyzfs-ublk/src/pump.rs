@@ -77,7 +77,9 @@
 //!   it (the control rig, on a read, a write and a flush). So nothing
 //!   more is answered on the queue, nothing of the wait that brought
 //!   the refusal is taken, and the volume is not failed: the refusal
-//!   says nothing against the store. A refused fetch and any other
+//!   says nothing against the store. The last commits of a stop go to
+//!   the driver at the queue's flush, which hands their refusals on as
+//!   a wait does: a stop with one is not orderly. A refused fetch and any other
 //!   command refused are counted and change nothing else. A pump whose
 //!   volume failed only counts a refused commit too: the device is
 //!   being deleted, and the delete answers the refused request with an
@@ -221,7 +223,14 @@ pub trait Queue {
     /// A request whose commit never reached the driver is issued again
     /// to the next instance: safe, but not what an orderly stop says
     /// it did. `Err` if they could not be handed over.
-    fn flush(&mut self) -> Result<(), QueueDown>;
+    ///
+    /// Each command that the driver ended otherwise than OK among what
+    /// the flush reaps is added to `unfetched`, as at a wait: a commit
+    /// the driver refused when the flush sent it is one, and the pump
+    /// ends with it ([`Stopped::CommitRefused`]) and not as an orderly
+    /// stop. A request handed over in the flush is not: it is the next
+    /// server's.
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown>;
 }
 
 /// What the pump needs of a target beyond the contract.
@@ -263,8 +272,10 @@ pub enum Stopped {
     },
     /// The driver refused a commit: the first of the wait that brought
     /// the refusal, if it brought several (M1.3ac part 3), also while the
-    /// pump drains for a stop: that stop is not orderly, and an orderly
-    /// end would say that nothing was left unanswered. The commit
+    /// pump drains for a stop, and also among the last commits of a
+    /// stop, which the queue's flush sends and whose refusals it hands
+    /// on: that stop is not orderly, and an orderly end would say that
+    /// nothing was left unanswered. The commit
     /// took no effect, so the request it answered, if any, is still the
     /// server's in the driver's eyes and goes to the next server.
     /// Nothing of that wait was taken, nothing more is answered on this
@@ -449,6 +460,9 @@ impl Mutants {
     /// A commit the driver refused is only counted and the pump goes
     /// on, as before M1.3ac part 3.
     pub(crate) const COMMIT_REFUSAL_IGNORED: u32 = 1 << 22;
+    /// What the last flush of a stop hands on is not looked at: a
+    /// commit the driver refused there is neither counted nor seen.
+    pub(crate) const FLUSH_UNREAD: u32 = 1 << 23;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -687,7 +701,9 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         }
         if woken == Wake::Stop {
             // No wait follows that would send the commits.
-            let _ = self.queue.flush();
+            let mut unfetched = Vec::new();
+            let _ = self.queue.flush(&mut unfetched);
+            self.count_unfetched(&unfetched);
             return Some(Stopped::Failed);
         }
         None
@@ -774,8 +790,23 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         // would send them: the queue hands them over now. A stop whose
         // commits could not be handed over completed nothing in the
         // kernel's eyes and is not orderly.
-        if !self.mutants.has(Mutants::STOP_UNSENT) && self.queue.flush().is_err() {
+        if self.mutants.has(Mutants::STOP_UNSENT) {
+            return Some(Stopped::Orderly);
+        }
+        let mut unfetched = Vec::new();
+        let flushed = self.queue.flush(&mut unfetched);
+        if self.mutants.has(Mutants::FLUSH_UNREAD) {
+            unfetched.clear();
+        }
+        self.count_unfetched(&unfetched);
+        if flushed.is_err() {
             return Some(Stopped::QueueDown);
+        }
+        // A commit the driver refused when the flush sent it left its
+        // request unanswered: the stop is not orderly, as for a refusal
+        // that a wait brings.
+        if let Some(refused) = self.refused_commit(&unfetched) {
+            return Some(refused);
         }
         Some(Stopped::Orderly)
     }
