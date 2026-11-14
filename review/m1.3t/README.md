@@ -109,3 +109,14 @@ look: the answers, and the rigs' tables at the head.
   their last column, and one reader worked on wrong rows.
 - A test that holds planted defects can itself depend on thread
   timing. Run such a test alone and on one CPU, not only in the suite.
+
+### The daemon rig's tables at ffde7bf (run 43528323582)
+
+Read after the review was posted, for the next look. On ubuntu-24.04,
+26.04 and 26.04-arm: 42 PASS, 13 NA, 1 WAITING
+(`pin_failed_volume_while_a_request_is_held`), 17 observations, and
+the five controls FAIL as expected; no pin ERROR or FAIL. Against the
+in-place run on 26.04 at the base (pull request 70's job 132234680729)
+the 61 judged lines have the same verdict, line for line: the NA lines
+are those of the log (checkpoints, the log's bound, `unstored`,
+`write_zeroes_through_a_checkpoint`, the delay pass of c).
