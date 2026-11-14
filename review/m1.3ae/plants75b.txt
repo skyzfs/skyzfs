@@ -1,0 +1,6 @@
+S2 a hole in a file of its own rewrites the disk block: rc 101; build errors []; failed ['inplace::pool::tests::a_job_wakes_one_waiting_thread', 'sim::tests::a_hole_in_a_file_of_its_own_rewrites_its_own_block']; ['test result: FAILED. 137 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.72s']
+R1 goes with the name: a rename onto the name takes the old file's: rc 101; build errors []; failed ['sim::tests::a_file_keeps_its_own_file_system_under_another_name']; ['test result: FAILED. 138 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.08s']
+R2 renamed, the file loses its own: rc 101; build errors []; failed ['sim::tests::a_file_keeps_its_own_file_system_under_another_name']; ['test result: FAILED. 138 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 45.67s']
+R3 the power cut drops the per-file sizes: rc 101; build errors []; failed ['sim::tests::a_file_keeps_its_own_file_system_under_another_name']; ['test result: FAILED. 138 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.82s']
+R4 no housekeeping: rc 0; build errors []; failed []; ['test result: ok. 139 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 41.96s']
+clean

@@ -17,3 +17,9 @@ M1.3t review's finding on the untested check.
   (fs.rs:610): per-file by construction. The real directory opens with
   std::fs::OpenOptions, which follows a symlink.
 - To do: the rigs on this head.
+
+## Second look at 6fe1aba (posted: issuecomment-6872362561)
+
+Both points settled. Plants (plants75b.*): S2, R1, R2, R3 caught; R4 inert
+(inode numbers are not reused). Can merge once daemon rig 43559205689 reads
+as expected; ci, coverage, e2e, control rig, replay through skyzfsd green.
