@@ -890,7 +890,7 @@ refused_fetch() {
     local img=$WORK/$name.img
     RF_OUT=$WORK/$name.out; : > "$RF_OUT"; RF_VERDICT=FAIL
     t0=$(now_ms)
-    "$CTL" "$st" "$n" --file "$img" "$@" > "$RF_OUT" 2>> "$OUT/control.err" &
+    "$CTL" "$st" "$n" --file "$img" "$@" > "$RF_OUT" 2> "$WORK/$name.err" &
     pid=$!
     # The start's line comes at its command's return, or at the
     # program's own limit of 10 s; a plain serve says `live after`.
@@ -925,9 +925,16 @@ refused_fetch() {
     RF_SAID+="; the device then read $state; a read of its first block through /dev/ublkb$n: $rd"
     # The end: SIGTERM, then a kill -9; a process in the driver's wait
     # may end with neither, and is left behind with its stacks written down.
-    kill -TERM "$pid" 2>/dev/null
+    # A program that has ended by itself is not signalled; the shell may
+    # have reaped it already, and wait still gives its status.
     ended=""
-    for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || { ended=SIGTERM; break; }; sleep 0.1; done
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid" 2>/dev/null
+        ended="itself, with exit $?, before the rig signalled it (its last words on stderr: '$(grep -v '^ *$' "$WORK/$name.err" | tail -n 2 | tr '\n' ' ' | cut -c1-240)')"
+    else
+        kill -TERM "$pid" 2>/dev/null
+        for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || { ended=SIGTERM; break; }; sleep 0.1; done
+    fi
     if [ -z "$ended" ]; then
         kill -9 "$pid" 2>/dev/null
         for _ in $(seq 1 100); do kill -0 "$pid" 2>/dev/null || { ended="kill -9 (SIGTERM did not end it in 10 s)"; break; }; sleep 0.1; done
@@ -941,7 +948,7 @@ refused_fetch() {
     fi
     later=$(awk -F'\t' '($1 == "start" || $1 == "end-recovery") { print $3 }' "$RF_OUT" | tail -n 1)
     [ -z "$later" ] || [ "$later" = "${start#*: }" ] || RF_SAID+="; the start's last line: '$later'"
-    cat "$RF_OUT" >> "$OUT/steps.log"
+    cat "$RF_OUT" >> "$OUT/steps.log"; cat "$WORK/$name.err" >> "$OUT/control.err"
     info "$n"; RF_SAID+="; the device then read $STATE"
     if [ "$sent" = "sent on tag 0" ] && [[ $said == refused:* ]]; then RF_VERDICT=PASS; fi
 }
