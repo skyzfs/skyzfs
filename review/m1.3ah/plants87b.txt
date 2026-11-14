@@ -1,0 +1,13 @@
+gate fmt --all --check rc 0 [] []
+gate clippy -q -p skyzfsd --all-targets -- -D warnings rc 0 [] []
+gate clippy -q -p skyzfsd --features test-hooks --all-targets -- -D warnings rc 0 [] []
+gate test -q -p skyzfsd --lib rc 0 ['ok. 55 passed; 0 failed; 0 ignored; 0'] []
+gate test -q -p skyzfsd --features test-hooks --lib rc 0 ['ok. 68 passed; 0 failed; 0 ignored; 0'] []
+R1: no look at the failure before the delete: rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R2: no look at the failure after the stop: rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R3: the stop before the delete (the old order): rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R4: the store dropped before the line: rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R5: a failure first, but the queue never stopped: rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R6: delete_unstarted deletes before the note (Q8): rc 101; failed: nothing ['FAILED. 14 passed; 1 failed; 0 ignore'] ['error: test failed, to rerun pass `-p skyzfsd --lib`']
+R7: run() does not stop the queue in the no-answer branch: rc 0; failed: nothing ['ok. 15 passed; 0 failed; 0 ignored; 0'] []
+clean: True
