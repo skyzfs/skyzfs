@@ -222,7 +222,11 @@ pub const HELP: &str = "skyzfsd: one volume of the local store, served as a ublk
 Exit statuses: 0 done; 1 an error; 2 the command line is wrong;
 3 the volume failed while it was served, or at its start; 4 refused, the volume failed in this boot; 5 refused,
 another instance or a live server holds the volume; 6 detach deleted
-the device and a client still holds it open.
+the device and a client still holds it open; 7 the kernel's driver broke its rule
+(it handed over a tag the queue does not have, or one whose request
+was still out):
+serve answered nothing more, the volume is not failed, and the device
+waits for the next server, as after a kill.
 After a detach only 0 says that nothing of the volume is left attached
 on this node.";
 
@@ -244,6 +248,14 @@ pub enum Exit {
     /// 6: `detach` deleted the volume's device and a client still holds
     /// it open: the device keeps its number until the client lets go.
     DeletedHeld,
+    /// 7: `serve` ended because the kernel's driver broke its rule: it
+    /// handed over a tag the queue does not have, or one whose request
+    /// was still out, when a tag is handed over again only after its
+    /// commit (M1.3ac). The
+    /// breach is the driver's: nothing more was answered, the volume is
+    /// not failed, and the device waits for the next server, as after
+    /// a kill.
+    BrokenRule,
 }
 
 impl Exit {
@@ -257,6 +269,7 @@ impl Exit {
             Exit::RefusedFailed => 4,
             Exit::RefusedHeld => 5,
             Exit::DeletedHeld => 6,
+            Exit::BrokenRule => 7,
         }
     }
 
