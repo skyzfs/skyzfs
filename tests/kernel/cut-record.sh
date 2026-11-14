@@ -146,6 +146,7 @@ cleanup() {
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
     for l in "$VLOOP" "$LLOOP" "$MLOOP" "$SLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
+    [ -z "$MH_SAVED" ] || mmp_restore
     exit "$rc"
 }
 trap cleanup EXIT
@@ -280,10 +281,23 @@ rec_rewindf() {
         n=$((n + 1))
     done
     printf 'zeroed %s copies of the root block of group %s: %s\n' "$n" "$(awk '$1 == "txg" { print $3; exit }' <<< "$ub")" "${dvas[*]}" > "$RDIR/rewind-f.txt"
+    # What zpool import sees, and the kernel's account of each attempt
+    # (run 43638676548: -F refused the pool as "one or more devices is
+    # currently unavailable" and nothing said why): -F, then -FX.
+    { echo "== zpool import -d (the listing)"; timeout 120 zpool import -d "$DEV" 2>&1; } >> "$RDIR/rewind-f.txt"
+    echo 1 > /sys/module/zfs/parameters/zfs_dbgmsg_enable
     session_begin
-    if ! timeout 300 zpool import -d "$DEV" -o cachefile=none -F "$POOL" >> "$RDIR/rewind-f.txt" 2>&1; then
-        rig_error "zpool import -F failed: $(tail -n 3 "$RDIR/rewind-f.txt" | tr '\n' ' ')"
-    fi
+    local how="" opt
+    for opt in -F -FX; do
+        echo 0 > /proc/spl/kstat/zfs/dbgmsg
+        echo "== zpool import $opt" >> "$RDIR/rewind-f.txt"
+        if timeout 300 zpool import -d "$DEV" -o cachefile=none "$opt" "$POOL" >> "$RDIR/rewind-f.txt" 2>&1; then how=$opt; fi
+        grep -E 'spa_load|mmp|rewind|txg|error|fail' /proc/spl/kstat/zfs/dbgmsg | tail -n 60 > "$RDIR/dbgmsg$opt.txt"
+        [ -z "$how" ] || break
+    done
+    echo 0 > /sys/module/zfs/parameters/zfs_dbgmsg_enable
+    [ -n "$how" ] || rig_error "zpool import -F and -FX failed: $(grep -v '^==' "$RDIR/rewind-f.txt" | tail -n 3 | tr '\n' ' ')"
+    echo "imported with $how" >> "$RDIR/rewind-f.txt"
     mark "session-$SESSION-ready"
     committed | tail -n 3 | tr '\n' ' ' | sed 's/^/groups committed after the import: /' >> "$RDIR/rewind-f.txt"
     load 3
@@ -318,7 +332,30 @@ print(k)
     losetup -d "$SLOOP"; SLOOP=""
     rm -f "$WORK/slog.img"
 }
+# MMP's timings for the multihost recording, and the old values for the
+# cleanup to put back. ZFS 2.4 imports a pool with multihost=on that was
+# not exported only after an activity check of fail_intervals x interval
+# x 2 (20 s at the defaults) and a claim of 10 intervals (10 s), read
+# only or not: the check imports every cut. A 100 ms interval with no
+# failure intervals (the pool never suspends itself) and one import
+# interval make that about 2 s, and give MMP ten writes a second.
+MH_SAVED=""
+mmp_fast() {
+    local p v
+    for p in zfs_multihost_interval=100 zfs_multihost_fail_intervals=0 zfs_multihost_import_intervals=1; do
+        v=$(cat "/sys/module/zfs/parameters/${p%%=*}") || return 1
+        MH_SAVED+=" ${p%%=*}=$v"
+        echo "${p#*=}" > "/sys/module/zfs/parameters/${p%%=*}" || return 1
+    done
+    echo "MMP for this recording:${MH_SAVED/#/ was} (now 100 ms, 0 failure intervals, 1 import interval)" > "$RDIR/mmp.txt"
+}
+mmp_restore() {
+    local p
+    for p in $MH_SAVED; do echo "${p#*=}" > "/sys/module/zfs/parameters/${p%%=*}"; done
+    MH_SAVED=""
+}
 rec_multihost() {
+    mmp_fast || rig_error "could not set MMP's timings"
     create_pool -o multihost=on
     local t0=$SECONDS
     while [ $((SECONDS - t0)) -lt 20 ]; do load 1; sleep 1; done

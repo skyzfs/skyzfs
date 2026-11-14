@@ -19,12 +19,12 @@ DEV = (8 << 20) + 100 * 1024     # not a multiple of 256 KiB: the back labels mo
 SLOT = 4096
 
 
-def ub(txg, root, order='<', mmp=False, slot=SLOT):
+def ub(txg, root, order='<', mmp=False, slot=SLOT, mmp_delay=0):
     """An uberblock slot as ZFS writes one: the struct, zeros, an embedded checksum at its end."""
     rootbp = [root * 1000 + k for k in range(16)]
     head = struct.pack(order + '5Q', cut_ref.UB_MAGIC, 5000, txg, 77, 1700000000 + txg)
     body = struct.pack(order + '16Q', *rootbp)
-    tail = struct.pack(order + '6Q', 5000, cut_ref.MMP_MAGIC if mmp else 0, 0, 0, 0, 0)
+    tail = struct.pack(order + '6Q', 5000, cut_ref.MMP_MAGIC if mmp else 0, mmp_delay, 0, 0, 0)
     raw = head + body + tail
     return raw.ljust(slot - 40, b'\0') + struct.pack('<Q', 0x210da7ab10c7a11) + b'\x11' * 32
 
@@ -83,6 +83,15 @@ class Labels(unittest.TestCase):
         for order, name in (('<', 'le'), ('>', 'be')):
             u = cut_ref.parse_uberblock(ub(42, 3, order, mmp=True))
             self.assertEqual((u['order'], u['txg'], u['mmp'], u['rootbp'][0]), (name, 42, True, 3000))
+
+    def test_mmp_delay_says_multihost(self):
+        # Every uberblock of 2.x carries the MMP magic; a delay that is
+        # not 0 is what multihost=on writes (the check imports such a
+        # pool from a writable copy, for the claim).
+        self.assertEqual(cut_ref.parse_uberblock(ub(42, 3, mmp=True))['mmp_delay'], 0)
+        for order in ('<', '>'):
+            self.assertEqual(cut_ref.parse_uberblock(ub(42, 3, order, mmp=True, mmp_delay=123456))['mmp_delay'], 123456)
+        self.assertEqual(cut_ref.parse_uberblock(ub(42, 3, mmp_delay=99))['mmp_delay'], 0)
 
     def test_no_magic_no_uberblock(self):
         self.assertIsNone(cut_ref.parse_uberblock(bytes(4096)))

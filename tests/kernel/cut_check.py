@@ -244,6 +244,13 @@ class Check:
         self.name, self.rdir, self.log, self.base, self.dev = name, rdir, log, base, dev_bytes
         self.logdev = logdev
         self.last_import = None
+        # A pool with multihost=on: ZFS 2.4 imports one that was not
+        # exported only after a claim, uberblocks it writes and reads
+        # back, read-only import or not (spa_activity_check_claim). On a
+        # read-only device the claim fails and the import is refused as
+        # "imported on host '<unknown>' (hostid=0)" (run 43638676548), so
+        # such a pool is imported from a writable copy of the image.
+        self.multihost = False
         self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
@@ -321,7 +328,13 @@ class Check:
         rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', POOL], 60)
         if rc == 0:
             raise RigError(f'a pool named {POOL} is still imported')
-        rc, out, _ = run(['losetup', '-r', '--find', '--show', self.image])
+        image = self.image
+        if self.multihost:
+            image = os.path.join(self.work, 'claim.img')
+            rc, out, _ = run(['cp', '--sparse=always', self.image, image])
+            if rc:
+                raise RigError(f'copying the image for the claim failed: {out.strip()}')
+        rc, out, _ = run(['losetup'] + ([] if self.multihost else ['-r']) + ['--find', '--show', image])
         if rc:
             raise RigError(f'losetup: {out.strip()}')
         loop = out.strip()
@@ -436,6 +449,7 @@ def main():
                 about += '\n' + open(p).read().strip().replace('\n', ', ')
         about += f'\nkernel {os.uname().release} {os.uname().machine}'
         cs, taken = cut_ref.write_fixture(os.path.join(rdir, 'fixture'), ck.idx, ck.read, about)
+        ck.multihost = any(u.get('mmp_delay') for u in taken)
         put('records', 'INFO', f"{len(ck.records)}, of which {sum(1 for u in taken if u['taken'] == 'marks')} "
             f"uberblock writes mark, of {len(taken)}")
         if not cs:

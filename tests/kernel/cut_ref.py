@@ -103,7 +103,8 @@ def parse_uberblock(buf):
     tail = struct.unpack_from(order + '5Q', buf, 168)
     return {'order': 'le' if order == '<' else 'be', 'version': w[1], 'txg': w[2], 'guid_sum': w[3],
             'timestamp': w[4], 'rootbp': rootbp, 'software_version': tail[0],
-            'mmp': tail[1] == MMP_MAGIC, 'checkpoint_txg': tail[4]}
+            'mmp': tail[1] == MMP_MAGIC, 'mmp_delay': tail[2] if tail[1] == MMP_MAGIC else 0,
+            'checkpoint_txg': tail[4]}
 
 
 def uberblocks_in(offset, data, labels):
