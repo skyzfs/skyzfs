@@ -354,7 +354,7 @@ fn inplace_kill_test_child() {
     };
     let mut store = start(&dir).unwrap();
     // The reports go to standard error, which the test harness does not
-    // write to (as in `store_real.rs`).
+    // write to.
     let stderr = std::io::stderr();
     let say = |line: String| {
         let mut out = stderr.lock();
@@ -373,9 +373,9 @@ fn inplace_kill_test_child() {
     }
 }
 
-/// Process kill, for real (rule R9), and the lock with it, as the log
-/// store's test in `store_real.rs` does: a child process serves a
-/// writer from the in-place store and reports each acknowledged write;
+/// Process kill, for real (rule R9), and the lock with it: a child
+/// process serves a writer from the in-place store and reports each
+/// acknowledged write;
 /// the parent kills it with SIGKILL at a moment drawn from a printed
 /// seed, starts the store, and finds in every block the last write
 /// that was acknowledged for it, or the one write that was in flight

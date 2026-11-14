@@ -8,7 +8,7 @@
 //! the name on its own.
 //!
 //! Files are created readable and writable by their owner only (mode
-//! 0600 on Unix): the log's superblock holds the log's key.
+//! 0600 on Unix): a volume's image holds its client's data.
 //!
 //! [`File::read_device_at`] is a read through a second descriptor opened
 //! with `O_DIRECT`, on Linux only. It is opened together with the file,
@@ -1058,7 +1058,7 @@ mod tests {
     }
 
     /// Real files: a new file can be read and written by its owner
-    /// only, since one of the log's files holds the log's key.
+    /// only, since a volume's image holds its client's data.
     #[cfg(unix)]
     #[test]
     fn real_files_are_private_to_their_owner() {

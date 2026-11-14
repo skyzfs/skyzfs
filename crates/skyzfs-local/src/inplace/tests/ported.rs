@@ -141,6 +141,9 @@ fn a_flush_with_nothing_to_do_does_not_meet_a_failing_disk() {
 enum Failing {
     Sync,
     Write,
+    /// Two writes on the threads at once, both failing: the failure is
+    /// met twice.
+    Writes,
     Now,
     Halted,
 }
@@ -180,6 +183,25 @@ fn observed(how: Option<Failing>, mutants: u32) -> (u64, bool) {
             disk.fail_write(0, false);
             assert!(write(&mut store, 5, 0x55).is_err());
         }
+        Some(Failing::Writes) => {
+            disk.fail_write(0, true);
+            for block in [5, 6] {
+                let data = Buf::filled(1, 0x55);
+                submit(
+                    &mut store,
+                    block,
+                    Op::Write {
+                        offset: block * BLOCK,
+                        data,
+                    },
+                );
+            }
+            let mut done = Vec::new();
+            while done.len() < 2 {
+                store.wait(&mut done, WAIT);
+            }
+            assert!(done.iter().all(|c| c.result.is_err()), "{done:?}");
+        }
         Some(Failing::Now) => {
             store.fail_now();
             store.fail_now();
@@ -190,6 +212,10 @@ fn observed(how: Option<Failing>, mutants: u32) -> (u64, bool) {
         }
     }
     assert_eq!(store.is_failed(), how.is_some());
+    if how.is_some() {
+        // A request after the failure meets it again.
+        assert!(write(&mut store, 7, 0x77).is_err());
+    }
     drop(store);
     (
         calls.load(Ordering::SeqCst),
@@ -197,7 +223,8 @@ fn observed(how: Option<Failing>, mutants: u32) -> (u64, bool) {
     )
 }
 
-/// The volume's owner is told of a failure once, when it happens, and
+/// The volume's owner is told of a failure once, when it happens (also
+/// when two writes meet it, and for a request after it), and
 /// before the marker is in the directory (design §4.2: the failure is
 /// announced first; the marker may take minutes on a sick disk). A
 /// volume that does not fail never tells it. The defect that begins the
@@ -208,7 +235,14 @@ fn observed(how: Option<Failing>, mutants: u32) -> (u64, bool) {
 #[test]
 fn the_failure_is_told_before_the_marker() {
     assert_eq!(observed(None, 0), (0, false));
-    for how in [Failing::Sync, Failing::Write, Failing::Now, Failing::Halted] {
+    let ways = [
+        Failing::Sync,
+        Failing::Write,
+        Failing::Writes,
+        Failing::Now,
+        Failing::Halted,
+    ];
+    for how in ways {
         for mutants in [0, Mutants::MARKER_INLINE] {
             assert_eq!(
                 observed(Some(how), mutants),
@@ -511,49 +545,65 @@ fn a_create_with_parameters_of_no_volume_makes_nothing() {
 /// `a_store_is_refused_where_pages_are_larger_than_the_write_unit`.)
 #[test]
 fn create_and_open_hold_the_system_to_the_write_unit() {
-    let unit = 4096;
+    let unit: u32 = 4096;
+    let u = u64::from(unit);
+    // How the system differs, the defect that leaves its check out, and
+    // whether a refusal says it. Twice the unit is the smallest block
+    // in which a write rewrites a neighbour.
+    type Shape = Box<dyn Fn(&SimDisk)>;
+    type Says = Box<dyn Fn(&OpenError) -> bool>;
+    let mut shapes: Vec<(String, Shape, u32, Says)> = Vec::new();
+    for block in [2 * u, 4 * u, 1 << 20] {
+        shapes.push((
+            format!("blocks of {block}"),
+            Box::new(move |disk: &SimDisk| disk.set_block_size(Some(block))),
+            Mutants::ANY_BLOCKS,
+            Box::new(move |e: &OpenError| {
+                matches!(e, OpenError::Blocks { block: b, unit: n, .. } if (*b, *n) == (block, u))
+            }),
+        ));
+    }
+    shapes.push((
+        "no block size".into(),
+        Box::new(|disk: &SimDisk| disk.set_block_size(None)),
+        Mutants::ANY_BLOCKS,
+        Box::new(|e: &OpenError| matches!(e, OpenError::BlocksUnknown { .. })),
+    ));
+    for page in [2 * u, 4 * u] {
+        shapes.push((
+            format!("pages of {page}"),
+            Box::new(move |disk: &SimDisk| disk.set_page_size(page)),
+            Mutants::ANY_PAGES,
+            Box::new(move |e: &OpenError| {
+                matches!(e, OpenError::Pages { page: p, unit: n } if (*p, *n) == (page, u))
+            }),
+        ));
+    }
     // The create.
-    let larger_block = |disk: &SimDisk| disk.set_block_size(Some(4 * 4096));
-    let no_block = |disk: &SimDisk| disk.set_block_size(None);
-    let larger_page = |disk: &SimDisk| disk.set_page_size(4 * 4096);
-    type Shape = fn(&SimDisk);
-    let shapes: [(Shape, u32, &str); 3] = [
-        (larger_block, Mutants::ANY_BLOCKS, "blocks"),
-        (no_block, Mutants::ANY_BLOCKS, "no block size"),
-        (larger_page, Mutants::ANY_PAGES, "pages"),
-    ];
-    for (shape, check, what) in shapes {
-        let disk = bare(33, unit);
+    for (what, shape, check, says) in &shapes {
+        let disk = bare(33, u);
         shape(&disk);
-        let refused = create(&disk, &config(1, 4096));
-        let expected = match what {
-            "blocks" => matches!(
-                refused,
-                Err(OpenError::Blocks {
-                    what: Under::Directory,
-                    ..
-                })
-            ),
-            "no block size" => matches!(refused, Err(OpenError::BlocksUnknown { .. })),
-            _ => matches!(refused, Err(OpenError::Pages { .. })),
-        };
-        assert!(expected, "{what}: {refused:?}");
+        let refused = create(&disk, &config(1, unit)).map(|_| ());
+        assert!(matches!(&refused, Err(e) if says(e)), "{what}: {refused:?}");
+        if let Err(OpenError::Blocks { what: under, .. }) = &refused {
+            assert_eq!(*under, Under::Directory, "{what}");
+        }
         assert!(disk.list().unwrap().is_empty(), "{what}: made something");
         assert_eq!(disk.stats().writes, 0, "{what}");
-        let disk = bare(33, unit);
+        let disk = bare(33, u);
         shape(&disk);
         assert!(
-            start::create_with(&disk, &config(1, 4096), Mutants(check)).is_ok(),
+            start::create_with(&disk, &config(1, unit), Mutants(*check)).is_ok(),
             "{what}: the defect is not noticed at the create"
         );
     }
     // The open of a volume made where everything fitted.
-    for (shape, check, what) in shapes {
+    for (what, shape, check, says) in &shapes {
         let disk = created(34, 0);
         shape(&disk);
         let (names, stats) = (disk.list().unwrap(), disk.stats());
-        let refused = opened(&disk, false, IoMode::default());
-        assert!(refused.is_err(), "{what}");
+        let refused = opened(&disk, false, IoMode::default()).map(|_| ());
+        assert!(matches!(&refused, Err(e) if says(e)), "{what}: {refused:?}");
         assert_eq!(disk.list().unwrap(), names, "{what}");
         assert_eq!(
             (disk.stats().writes, disk.stats().syncs),
@@ -561,12 +611,12 @@ fn create_and_open_hold_the_system_to_the_write_unit() {
             "{what}"
         );
         assert!(
-            started(&disk, OpenOptions::default(), check).is_ok(),
+            started(&disk, OpenOptions::default(), *check).is_ok(),
             "{what}: the defect is not noticed at the open"
         );
         disk.kill();
-        disk.set_block_size(Some(unit));
-        disk.set_page_size(unit);
+        disk.set_block_size(Some(u));
+        disk.set_page_size(u);
         assert!(start(&disk, 0, false).is_ok(), "{what}: not again");
     }
 }
@@ -860,9 +910,13 @@ fn woken(wakes: &AtomicU64, than: u64) -> bool {
     true
 }
 
-/// The owner's waker is called when the threads have made a completion
-/// ready and when a thread dies: the owner then takes what is ready
-/// without waiting on the store. The simulated disk's sync calls no
+/// The owner's waker is called for every completion the threads make
+/// ready, and when a thread dies: the owner then takes what is ready
+/// without waiting on the store. The pump only polls and relies on the
+/// wake: a completion that woke nobody waits for the kernel's next
+/// request, which at a depth of one never comes. So each of several
+/// writes, one after another, must wake the owner, on one thread (which
+/// then does them all) and on the default eight. The simulated disk's sync calls no
 /// waker (it is asked), so the waker at the end of a sync on the file's
 /// helper is held on real files (`tests/inplace_real.rs`). (Stands in
 /// for the waker's part of
@@ -880,13 +934,26 @@ fn the_waker_is_called_for_what_the_threads_make_ready() {
             wakes.fetch_add(1, Ordering::SeqCst);
         })
     };
+    let one = IoMode::with_threads(1).unwrap();
+    for io in [one, IoMode::default()] {
+        let disk = created(40, 0);
+        let mut store = opened(&disk, false, io)
+            .unwrap()
+            .start(Some(waker.clone()))
+            .unwrap();
+        for n in 0..4u64 {
+            let before = wakes.load(Ordering::SeqCst);
+            write(&mut store, 4 + n, 0x44).unwrap();
+            assert!(
+                woken(&wakes, before),
+                "{io:?}: write {n} on the threads woke nobody"
+            );
+        }
+    }
     let mut store = opened(&disk, false, IoMode::default())
         .unwrap()
         .start(Some(waker))
         .unwrap();
-    let before = wakes.load(Ordering::SeqCst);
-    write(&mut store, 4, 0x44).unwrap();
-    assert!(woken(&wakes, before), "a write on the threads woke nobody");
     let before = wakes.load(Ordering::SeqCst);
     disk.panic_in_direct_io(0);
     submit(

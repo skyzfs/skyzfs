@@ -423,6 +423,12 @@ pub struct InPlace<D: Dir> {
     /// [`Mutants::ACK_BEFORE_WRITE`]. Such a write's end completes
     /// nothing.
     acked_early: (BTreeSet<RequestId>, u64),
+    /// Those writes not yet handed to the threads, by the client's id:
+    /// each goes at the first submit, poll or wait after its
+    /// acknowledgement was handed out, so that a kill that comes right
+    /// after the client took it finds the write not begun, however the
+    /// threads are scheduled. Only under the defect.
+    held_early: Vec<(RequestId, Job)>,
     /// The failure marker: not yet needed, being written on a thread
     /// of its own, or tried. Whether it was written is not kept: a start
     /// that does not find it goes by the daemon's failure note.
@@ -634,6 +640,7 @@ impl<D: Dir> InPlace<D> {
         }
         self.busy.clear();
         self.deferred.clear();
+        self.held_early.clear();
     }
 }
 
@@ -643,6 +650,9 @@ impl<D: Dir> Drop for InPlace<D> {
         // the caller's thread: what waits is executed once what it waits
         // for has ended. Then the threads end, before the lock is gone.
         while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+            // Under the defect, a write that waited behind another is
+            // held back when it is begun here: hand it over each time.
+            self.release_early(true);
             self.collect(Duration::from_millis(10));
         }
         self.pool = None;
@@ -706,6 +716,7 @@ impl<D: Dir> InPlace<D> {
             deferred: VecDeque::new(),
             queue: IoQueue::default(),
             acked_early: (BTreeSet::new(), 0),
+            held_early: Vec::new(),
             marker: Marker::new(parts.marker, mutants),
         };
         // What the instance before this one wrote by direct I/O may be
@@ -1055,6 +1066,7 @@ impl<D: Dir> InPlace<D> {
     /// Hand `job` to the threads; `range` is its bytes and whether it
     /// writes.
     fn on_thread(&mut self, id: RequestId, range: (u64, u64, bool), job: Job) {
+        let mut held = false;
         let (key, job) = match job {
             Job::Write { offset, data, .. } if self.mutants.has(Mutants::ACK_BEFORE_WRITE) => {
                 let (early, count) = &mut self.acked_early;
@@ -1062,6 +1074,7 @@ impl<D: Dir> InPlace<D> {
                 let key = RequestId(u64::MAX - *count);
                 early.insert(key);
                 self.complete(id, Ok(()), Some(data.clone()));
+                held = true;
                 (
                     key,
                     Job::Write {
@@ -1075,8 +1088,29 @@ impl<D: Dir> InPlace<D> {
         };
         self.busy.insert(key, range);
         self.queue.in_flight_max = self.queue.in_flight_max.max(self.busy.len() as u64);
-        if let Some(pool) = &self.pool {
+        if held {
+            self.held_early.push((id, job));
+        } else if let Some(pool) = &self.pool {
             pool.push(job);
+        }
+    }
+
+    /// Under [`Mutants::ACK_BEFORE_WRITE`], hand to the threads the
+    /// early-acknowledged writes whose acknowledgement was handed out
+    /// (or, with `all`, every one).
+    fn release_early(&mut self, all: bool) {
+        if self.held_early.is_empty() {
+            return;
+        }
+        let ready: BTreeSet<RequestId> = self.ready.iter().map(|c| c.id).collect();
+        for (client, job) in std::mem::take(&mut self.held_early) {
+            if all || !ready.contains(&client) {
+                if let Some(pool) = &self.pool {
+                    pool.push(job);
+                }
+            } else {
+                self.held_early.push((client, job));
+            }
         }
     }
 
@@ -1281,6 +1315,13 @@ impl<D: Dir> InPlace<D> {
                 self.busy.remove(&id);
                 self.complete(id, Err(BlkError::Failed), Some(buf));
             }
+            // Under the defect: the writes held back were answered
+            // already, and no thread is to begin them now.
+            for (_, job) in std::mem::take(&mut self.held_early) {
+                let (key, _, _) = job.into_parts();
+                self.busy.remove(&key);
+                self.acked_early.0.remove(&key);
+            }
         }
         for Done {
             id,
@@ -1362,6 +1403,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// a mutation is file I/O, a flush begins a sync and returns. The
     /// completion is handed out by the next [`BlockTarget::poll`].
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
+        self.release_early(false);
         let kind = if self.ids.contains(&request.id) {
             Some(SubmitErrorKind::DuplicateId)
         } else if self.ids.len() >= self.geometry.queue_depth() as usize {
@@ -1380,6 +1422,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// Hands out what is complete. Looks whether the sync under way has
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        self.release_early(false);
         self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
@@ -1393,6 +1436,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// The daemon's pump calls only `poll`, and is woken by the file's
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        self.release_early(false);
         self.collect(Duration::ZERO);
         self.settle(false);
         if self.ready.is_empty() && !timeout.is_zero() {
@@ -1405,6 +1449,9 @@ impl<D: Dir> BlockTarget for InPlace<D> {
             // with it, but under the defect, where a write's end
             // completes nothing: wait on, as for a request behind it.
             while self.mutants.has(Mutants::ACK_BEFORE_WRITE) && self.ready.is_empty() {
+                // Nothing is ready, so every write held back has had
+                // its acknowledgement taken: the threads may have it.
+                self.release_early(false);
                 if self.busy.is_empty() {
                     self.settle(true);
                     break;

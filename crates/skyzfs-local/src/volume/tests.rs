@@ -92,7 +92,7 @@ fn no_file_is_missing_and_a_log_superblock_is_legacy() {
     assert_eq!(Volume::read(&disk), Err(VolumeError::Legacy));
     let said = VolumeError::Legacy.to_string();
     assert!(
-        said.contains("log store") && said.contains("create the volume again"),
+        said.contains("log store") && said.contains("another directory"),
         "{said}"
     );
 }
@@ -149,6 +149,21 @@ fn a_damaged_or_unknown_file_is_refused_by_reason() {
         ..sample()
     };
     assert!(matches!(write(&odd.encode()), Err(VolumeError::Damaged(_))));
+    // A block size other than the contract's is not served in blocks
+    // of 4096 bytes: the file is refused.
+    for block_size in [512, 8192] {
+        let other = Volume {
+            block_size,
+            ..sample()
+        };
+        assert_eq!(
+            write(&other.encode()),
+            Err(VolumeError::Damaged(
+                "the block size is not the one this version has"
+            )),
+            "{block_size}"
+        );
+    }
 }
 
 /// A second create is refused and leaves the first; a file left under

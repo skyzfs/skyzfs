@@ -81,7 +81,8 @@ pub enum VolumeError {
     /// The directory holds the log store's superblock.
     #[error(
         "the directory holds a volume created by a daemon with a log store (before M1.3t), \
-         which this daemon does not serve; create the volume again"
+         which this daemon does not serve and does not convert; create a new volume in another \
+         directory, or remove this one's files first (its data is lost then)"
     )]
     Legacy,
     /// A volume file of a version this daemon does not know.
@@ -135,10 +136,15 @@ impl Volume {
                 "the write unit is not one a volume has",
             ));
         }
-        if self.block_size == 0
-            || self.size == 0
-            || !self.size.is_multiple_of(u64::from(self.block_size))
-        {
+        // This version has one block size, the contract's: a file that
+        // says another is not one it wrote, and it does not guess
+        // (a later version that has others says so in its magic).
+        if u64::from(self.block_size) != skyzfs_blk::BLOCK_SIZE {
+            return Err(VolumeError::Damaged(
+                "the block size is not the one this version has",
+            ));
+        }
+        if self.size == 0 || !self.size.is_multiple_of(u64::from(self.block_size)) {
             return Err(VolumeError::Damaged(
                 "the size is not a whole number of blocks",
             ));

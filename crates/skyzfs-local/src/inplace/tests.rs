@@ -1913,6 +1913,12 @@ fn the_open_refuses_a_volume_that_does_not_hold_together() {
     use crate::io::File as _;
     use crate::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
     let io = IoMode::default();
+    let unmarked = |disk: &SimDisk, what: &str| {
+        assert!(
+            !disk.list().unwrap().iter().any(|name| name == MARKER_NAME),
+            "{what}: the refusal marked the volume"
+        );
+    };
     let disk = created(7, 0);
     let mut home = disk.open(HOME_NAME).unwrap();
     let len = home.len().unwrap();
@@ -1922,26 +1928,26 @@ fn the_open_refuses_a_volume_that_does_not_hold_together() {
         matches!(opened(&disk, false, io), Err(OpenError::Damaged(why)) if why.contains("size")),
         "a home image of another size"
     );
+    unmarked(&disk, "a home image of another size");
     disk.remove(HOME_NAME).unwrap();
     assert!(
         matches!(opened(&disk, false, io), Err(OpenError::Damaged(why)) if why.contains("no home image")),
         "no home image"
     );
+    unmarked(&disk, "no home image");
     let disk = created(8, 0);
     disk.remove(VOLUME_NAME).unwrap();
     assert!(matches!(
         opened(&disk, false, io),
         Err(OpenError::Volume(VolumeError::Missing))
     ));
+    unmarked(&disk, "no volume file");
     drop(disk.create(LEGACY_NAME).unwrap());
     assert!(matches!(
         opened(&disk, false, io),
         Err(OpenError::Volume(VolumeError::Legacy))
     ));
-    assert!(
-        !disk.list().unwrap().iter().any(|name| name == MARKER_NAME),
-        "a refusal marked the volume"
-    );
+    unmarked(&disk, "a log store's directory");
 }
 
 /// A cut inside a create leaves either a whole volume or none. The power
