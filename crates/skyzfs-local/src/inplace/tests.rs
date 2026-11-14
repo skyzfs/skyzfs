@@ -187,7 +187,14 @@ fn the_in_place_store_passes_the_conformance_suite() {
 /// the cases named for it: a flush that makes nothing durable, a failed
 /// sync tried again, a failed write that does not fail the volume, a
 /// start that does not drop the kernel's cache where something wrote
-/// through it. (A
+/// through it. A failed sync tried again shows only where a sync is
+/// under way when the failure comes; the harness makes that so for a
+/// third of the seeds (`harness::settles_at_failure`), so that the
+/// defect is noticed in every run, also when this test runs alone
+/// (M1.3ad: before, it was noticed by
+/// `reopened_failed_volume_holds_what_was_flushed` only when the I/O
+/// threads had written before the failure, which on an idle machine
+/// they had not). (A
 /// flush that joins a sync begun
 /// before a write it must cover needs a cut to land between the two at a
 /// sector the write changed; the suite's programs do not reliably make
