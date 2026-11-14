@@ -3222,11 +3222,17 @@ check_g_sync_fails_while_serving() {
         rw+="; status held '${held:-not said}' 60 s after the pool's wait ended"
         if [ "$wrc" = 124 ] || [[ ${held:-0} =~ ^[1-9][0-9]*$ ]]; then
             pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended, with a request held on the failed disk; $rw"
-        elif [ "$wrc" != 0 ] && grep -q 'failed to open' "$OUT/g1-rig-write.err" 2>/dev/null; then
-            pin sync_failure_fails_volume ERROR "serve was still running 60 s after the pool's wait ended, but the rig's own write could not be issued (the device would not open), so nothing that could fail is known to have reached the daemon: the premise of g.1 did not happen; $rw"
+        # The device would not open: usually it is gone because the daemon
+        # failed the volume and deleted it. Only with the counters as at
+        # the switch, nothing held and no failure line in the serve log is
+        # nothing known to have reached the daemon (review of #72).
+        elif [ "$wrc" != 0 ] && grep -q 'failed to open' "$OUT/g1-rig-write.err" 2>/dev/null \
+            && [[ "$w0$w1$f0$f1" =~ ^[0-9]+$ ]] && [ "$w1" = "$w0" ] && [ "$f1" = "$f0" ] && [ "${held:-}" = 0 ] \
+            && ! grep -q 'the volume failed' "$dir.serve.log" 2>/dev/null; then
+            pin sync_failure_fails_volume ERROR "serve was still running 60 s after the pool's wait ended, but the rig's own write could not be issued (the device would not open), the counters did not move, nothing was held and the serve logged no failure: nothing that could fail reached the daemon, the premise of g.1 did not happen; $rw"
             G1_PREMISE=missed
         else
-            pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended, though the rig's write was answered; $rw"
+            pin sync_failure_fails_volume FAIL "serve was still running 60 s after the pool's wait ended, though a request reached it (the rig's write answered or not issued, with the counters moved, a request held or a failure logged); $rw"
         fi
         kill -TERM "$SERVE_PID" 2>/dev/null; serve_wait 30
     fi

@@ -659,7 +659,13 @@ class G1Premise(unittest.TestCase):
     def test_only_a_write_that_could_not_be_issued_is_an_error(self):
         body = self.body()
         branch = body[body.index('elif [ "$wrc" != 0 ] && grep -q \'failed to open\''):]
-        self.assertTrue(branch.split('\n')[1].lstrip().startswith('pin sync_failure_fails_volume ERROR'))
+        condition = branch[:branch.index('; then')]
+        # The device gone is the common case (the daemon failed the volume
+        # and deleted it): the error needs every sign that nothing reached it.
+        for sign in ('[ "$w1" = "$w0" ]', '[ "$f1" = "$f0" ]', '[ "${held:-}" = 0 ]',
+                     "! grep -q 'the volume failed' \"$dir.serve.log\""):
+            self.assertIn(sign, condition)
+        self.assertTrue(branch[branch.index('; then') + 7:].lstrip().startswith('pin sync_failure_fails_volume ERROR'))
         # A write not answered, or a request held, is judged before it, and FAILs.
         held = body.index('[ "$wrc" = 124 ] || [[ ${held:-0}')
         self.assertLess(held, body.index('pin sync_failure_fails_volume ERROR'))
