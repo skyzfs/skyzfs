@@ -2949,6 +2949,9 @@ check_g_data_journal() {
     # Each file's digest: the image must be as it was; any other file a
     # refused start rewrote is named, not judged.
     before=$(gj_digests "$mnt/vol")
+    # The digest read the whole image through the cache: evicted, so that
+    # what the cache holds after the serve is the server's (Codex, #72).
+    cache+="on data=journal, before the serve: $(lim 30 python3 -I "$HERE/cachestat.py" --drop "$mnt/vol/home.img" 2>&1 | head -n 1); "
     serve_start "$SKYZFSD" "$link"; rc=$?
     said=$(grep -m 1 'no direct I/O' "$link.serve.log" | sed 's/^skyzfsd: //' | cut -c1-240)
     if [ $rc = 0 ]; then
