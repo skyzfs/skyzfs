@@ -1,0 +1,102 @@
+rustc 1.100.0 (0ef1bc386 2026-11-09)
+=== fmt
+rc 0
+=== clippy workspace
+rc 0
+=== clippy test-hooks
+rc 0
+=== tests skyzfsd plain
+rc 0
+binaries 4 passed 62 failed 0
+=== tests skyzfsd test-hooks
+rc 0
+binaries 4 passed 75 failed 0
+/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr91/look2/tests-plain.log:3
+/tmp/claude-0/-home-user-skyzfs/45f99004-c74b-52a4-9cb9-2e7f809c97dd/scratchpad/pr91/look2/tests-hooks.log:3
+=== repeats of the three new tests: 30 alone, then 30 with every CPU busy
+     30 ok
+nproc 4
+     30 ok
+=== plants
+U0 none: rc 0; failed: nothing; ['ok. 19 passed; 0 failed']
+U1a each command waits the whole limit (recv_timeout(limit)), the not-sent check kept: rc 101; failed: ['serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 17 passed; 2 failed']
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (4691) panicked at bins/skyzfsd/src/serve.rs:3351:13:
+    a failure before the delete: the give-up took 1.500645419s with a limit of 1s
+    thread 'serve::tests::the_give_ups_commands_share_one_limit' (4725) panicked at bins/skyzfsd/src/serve.rs:3148:13:
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U1b a deadline per command (let left = self.limit): rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 15 passed; 4 failed']
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (4897) panicked at bins/skyzfsd/src/serve.rs:2905:9:
+    left: ["delete 3", "info 3", "stopped"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it' (4898) panicked at bins/skyzfsd/src/serve.rs:3374:9:
+    left: ["delete 3", "info 3", "stopped"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (4912) panicked at bins/skyzfsd/src/serve.rs:3349:13:
+    left: ["holds 3", "delete 3", "info 3", "stopped"]
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U2 a second deadline for the failure's way after the stop: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for']; ['FAILED. 17 passed; 2 failed']
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (5134) panicked at bins/skyzfsd/src/serve.rs:2916:9:
+    left: ["delete 3", "stopped", "holds 3", "delete 3"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (5149) panicked at bins/skyzfsd/src/serve.rs:3352:13:
+    a failure after the stop: the give-up took 1.500920184s with a limit of 1s
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U3 commands sent after the deadline: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 16 passed; 3 failed']
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (5363) panicked at bins/skyzfsd/src/serve.rs:2915:9:
+    left: ["delete 3", "stopped", "info 3", "holds 3", "delete 3"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (5378) panicked at bins/skyzfsd/src/serve.rs:3349:13:
+    left: ["delete 3", "stopped", "holds 3", "delete 3", "info 3"]
+    right: ["delete 3", "stopped", "holds 3"]
+    thread 'serve::tests::the_give_ups_commands_share_one_limit' (5412) panicked at bins/skyzfsd/src/serve.rs:3169:22:
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U4 the deadline counted from the first command sent, not from new: rc 101; failed: ['serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for']; ['FAILED. 18 passed; 1 failed']
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (5629) panicked at bins/skyzfsd/src/serve.rs:3353:13:
+    a failure after a take-over's stop: the give-up took 1.50041854s with a limit of 1s
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U5 the open not bounded: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::a_start_with_no_answer_is_given_up_in_order', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 15 passed; 4 failed']
+    thread 'serve::tests::a_start_with_no_answer_is_given_up_in_order' (5882) panicked at bins/skyzfsd/src/serve.rs:2865:13:
+    left: ["unbounded holds 3", "delete 3", "stopped"]
+    right: ["holds 3", "delete 3", "stopped"]
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (5854) panicked at bins/skyzfsd/src/serve.rs:2914:9:
+    left: ["delete 3", "stopped", "unbounded holds 3"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (5869) panicked at bins/skyzfsd/src/serve.rs:3348:13:
+    left: ["unbounded holds 3", "delete 3", "stopped"]
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U6 the info not bounded: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 15 passed; 4 failed']
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (6077) panicked at bins/skyzfsd/src/serve.rs:2903:9:
+    left: ["delete 3", "unbounded info 3", "stopped"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it' (6078) panicked at bins/skyzfsd/src/serve.rs:3372:9:
+    left: ["delete 3", "unbounded info 3", "stopped"]
+    right: ["delete 3", "stopped"]
+    thread 'serve::tests::the_give_ups_commands_share_one_limit' (6126) panicked at bins/skyzfsd/src/serve.rs:3146:13:
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6092) panicked at bins/skyzfsd/src/serve.rs:3347:13:
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U7 a delete with no answer reads as done: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 16 passed; 3 failed']
+    thread 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it' (6307) panicked at bins/skyzfsd/src/serve.rs:3400:9:
+    left: "the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is deleted; the volume is not failed; exit 9: a supervisor should retry the serve once; a sec
+    right: "the start of device 3 had no answer within 30 s: serve gives it up; device 3, which this serve added and never started, is to be deleted: device 3 could not be deleted (DEL_DEV_ASYNC of device 3 had no answer wit
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (6306) panicked at bins/skyzfsd/src/serve.rs:2934:44:
+    thread 'serve::tests::the_give_ups_commands_share_one_limit' (6355) panicked at bins/skyzfsd/src/serve.rs:3159:22:
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+U8 the answer waited for with no limit: rc 101; failed: ['serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up', 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it', 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for', 'serve::tests::the_give_ups_commands_share_one_limit']; ['FAILED. 15 passed; 4 failed']
+    thread 'serve::tests::a_delete_with_no_answer_does_not_hold_a_start_given_up' (6536) panicked at bins/skyzfsd/src/serve.rs:2831:14:
+    thread 'serve::tests::a_delete_with_no_answer_gives_9_and_a_line_that_names_it' (6537) panicked at bins/skyzfsd/src/serve.rs:3236:14:
+    thread '<unnamed>' (6556) panicked at bins/skyzfsd/src/serve.rs:3236:14:
+    thread '<unnamed>' (6552) panicked at bins/skyzfsd/src/serve.rs:3236:14:
+    thread '<unnamed>' (6554) panicked at bins/skyzfsd/src/serve.rs:3236:14:
+    thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6551) panicked at bins/skyzfsd/src/serve.rs:3348:62:
+    thread 'serve::tests::the_give_ups_commands_share_one_limit' (6585) panicked at bins/skyzfsd/src/serve.rs:3147:18:
+    error: test failed, to rerun pass `-p skyzfsd --lib`
+worktree: clean
+=== U3 against the five ways alone, 10 runs
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6771) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "stopped", "holds 3", "delete 3"] | right: ["delete 3", "stopped", "holds 3"]
+4 passes
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6845) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "stopped", "holds 3", "delete 3", "info 3"] | right: ["delete 3", "stopped", "holds 3"]
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6882) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "info 3", "stopped", "holds 3", "info 3"] | right: ["delete 3", "info 3", "stopped", "holds 3"]
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6920) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "info 3", "stopped", "holds 3", "delete 3"] | right: ["delete 3", "info 3", "stopped", "holds 3"]
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (6957) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "stopped", "holds 3", "info 3", "delete 3"] | right: ["delete 3", "stopped", "holds 3"]
+1 fails: thread 'serve::tests::a_start_given_up_ends_within_one_limit_whatever_its_commands_wait_for' (7068) panicked at bins/skyzfsd/src/serve.rs:3349:13: | left: ["delete 3", "stopped", "holds 3", "info 3"] | right: ["delete 3", "stopped", "holds 3"]
+restored: True
