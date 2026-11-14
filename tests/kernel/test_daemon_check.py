@@ -755,6 +755,10 @@ class ZfsStuck(unittest.TestCase):
             for c in courses:
                 self.assertRegex(body, r'course (\S+|"[^"]+") && ' + c + r'\n', c)
             self.assertEqual(re.findall(r'^    (check_[a-z0-9_]+)\s*$', body, re.M), [], fn)
+        # The cleanup asks a stuck ZFS for no pools: each zpool command
+        # there would wait out its limit and export nothing.
+        cleanup = re.search(r'^cleanup\(\) \{\n(.*?)^\}', text, re.S | re.M).group(1)
+        self.assertIn("    zfs_stuck_since > /dev/null || for p in $(lim 30 zpool list -H -o name", cleanup)
 
 
 class G1Premise(unittest.TestCase):

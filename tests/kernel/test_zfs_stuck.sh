@@ -108,6 +108,22 @@ if zfs_stuck_since > /dev/null; then echo "FAIL an empty mark reads as stuck"; f
 out=$(ZS_WHERE="a: the first course" zfs_stuck_say)
 is "a zpool that sleeps leaves no mark" "$(cat "$ZS_FILE")" ""
 is "and no stacks" "$([ -e "$ZS_STACKS" ] && echo there || echo none)" none
+# The rig's own zpool sync on a pool it suspended waits in
+# txg_wait_synced: no mark, though its stacks are kept.
+task 401000 zpool D txg_wait_synced
+out=$(ZS_WHERE="d: the pool suspends" zfs_stuck_say)
+is "a zpool that waits for a sync leaves no mark" "$(cat "$ZS_FILE")" ""
+is "  its stacks are kept" "$(grep -c '^-- 401000 zpool D$' "$ZS_STACKS")" 1
+# Nor does a zpool waiting in another ioctl's path (the clear of run
+# 43545561531, in vdev_reopen under zfs_ioc_clear) on its own.
+task 394977 zpool D zfs_ioc_clear
+out=$(ZS_WHERE="d: the pool suspends" zfs_stuck_say)
+is "nor one in zfs_ioc_clear alone" "$(cat "$ZS_FILE")" ""
+# Namespace waiters alone mark it.
+task 407787 zpool D spa_namespace_enter
+out=$(ZS_WHERE="d: a namespace waiter" zfs_stuck_say)
+is "a zpool waiting for the namespace lock marks it" "$(zfs_stuck_since)" "d: a namespace waiter"
+: > "$ZS_FILE"; rm -rf "${T:?}/proc/407787"
 task 394984 zpool D spa_config_enter
 out=$(ZS_WHERE="d: the kept device answers again" zfs_stuck_say)
 is "the mark's place" "$(zfs_stuck_since)" "d: the kept device answers again"
