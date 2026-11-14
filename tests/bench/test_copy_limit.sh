@@ -158,7 +158,7 @@ check "anything but row numbers is refused" '( TB_LABEL=x; TB_EARLIER_FAILED="1;
 # be read never counts.
 settle() { # status lines -> rc; what it said in $tt/settle-said
     printf '%s\n' "$@" > "$tt/status"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
-    # shellcheck disable=SC2317  # the stand-ins are called by skz_settle
+    # shellcheck disable=SC2317,SC2329  # the stand-ins are called by skz_settle
     (
         TOPO=t
         skz_status() { cat "$tt/status"; }
