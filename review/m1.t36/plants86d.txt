@@ -1,0 +1,6 @@
+none: rc 0; 37 ok; nothing fails
+F5: the verdict does not look at 'sent on tag 0': rc 1; 36 ok; FAIL the pin: a refusal of a fetch sent on another tag is not one: got 'PASS', want 'FAIL'
+H1: the pin passes on the start's word alone: rc 1; 35 ok; FAIL the pin: a program that sent no bad fetch at the take-over: got 'PASS', want 'FAIL'; FAIL the pin: a step that did not run is the rig's error: got 'PASS', want 'ERROR'
+H2: a step that did not run is a FAIL, not the rig's error: rc 1; 36 ok; FAIL the pin: a step that did not run is the rig's error: got 'FAIL', want 'ERROR'
+H3: the take-over's words never recorded: rc 0; 37 ok; nothing fails
+clean: True
