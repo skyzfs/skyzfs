@@ -1,0 +1,11 @@
+R1 the byte of the sent line is not checked: table rc 0 []; refused rc 1 ["FAIL a refusal of another read: got 'PASS', want 'FAIL'"]
+R2 the driver's answer is not checked: table rc 0 []; refused rc 0 []
+R3 the program's own end is not checked: table rc 0 []; refused rc 1 ["FAIL a refusal after which the program does not end: got 'PASS', want 'FAIL'"]
+R4 the served line is not checked: table rc 0 []; refused rc 0 []
+R5 the reader is not checked: table rc 0 []; refused rc 1 ["FAIL a refusal with the reader ended: got 'PASS', want 'FAIL'"]
+R6 the device's state is not checked: table rc 0 []; refused rc 1 ["FAIL a refusal that leaves the device live: got 'PASS', want 'FAIL'"]
+R7 rc_reader ignores the data: table rc 0 []; refused rc 1 ["FAIL other data: got '0 exit 0 after 12 ms; its data is NOT what the file holds', want '1 "]
+R8 rc_reader ignores the exit: table rc 0 []; refused rc 1 ["FAIL an error: got '0', want '1'"]
+R9 the table lacks the abort pin: table rc 1 ['test_every_line_the_rig_names_is_in_the_table']; refused rc 0 []
+R10 the add's answer is not checked: table rc 0 []; refused rc 1 ["FAIL an add that failed is the rig's error: got 'FAIL', want 'ERROR'", "FAIL   says why: 'the add under 51 answered: taken' not in 'the program said 'nothing', th"]
+clean

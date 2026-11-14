@@ -16,3 +16,6 @@ caught() accepts the rule alone.
   failed with each.
 - `gates77d.txt`, `plants77d.py`: gates and plants P1-P8, Q1-Q5 at
   6ff9b08; all caught.
+- e410d46 (words only, status 7 names both breaches): fmt, clippy with
+  the hooks and skyzfsd's lib tests pass; noted on the PR
+  (https://github.com/skyzfs/skyzfs/pull/77#issuecomment-6873320505).
