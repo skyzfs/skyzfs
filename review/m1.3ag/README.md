@@ -17,3 +17,7 @@
   all with sector 18446744073709551615 and 0 sectors; 321 answers, all
   0. Counted with awk over the `recv` and `commit` lines (columns 5, 6,
   7 and 8).
+- Next look at 3ece817 (comments only; no line outside a comment
+  differs from a0318b6): the measurement is cited with its scope, and
+  the pump test's comment names the refusals right. Verdict unchanged
+  (https://github.com/skyzfs/skyzfs/pull/81#issuecomment-6873881733).
