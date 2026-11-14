@@ -60,10 +60,11 @@
 //! tag's first fetch has arrived, and it waits for them with no limit
 //! of its own (testing's M1.T36, on every image: the command's io_uring
 //! worker waits in the driver's `ublk_wait_dev_ready_and_lock`, run
-//! 43591915443). A fetch it refused never arrives. So the main thread does not send the start: a thread
-//! of its own does, and the main thread waits for its answer for at
-//! most [`START_LIMIT`] (30 s), looking every 50 ms whether the volume
-//! has failed and whether the queue's thread has ended, in that order.
+//! 43591915443). A fetch it refused never arrives. So the main thread
+//! does not send the start: a thread of its own does, and the main
+//! thread waits for its answer for at most [`START_LIMIT`] (30 s),
+//! looking every 50 ms whether the volume has failed and whether the
+//! queue's thread has ended, in that order.
 //!
 //! - A volume that fails meanwhile goes the way of a failure (exit 3),
 //!   as one that fails later: the failure comes first.
@@ -79,6 +80,15 @@
 //!   to stop and waited for two seconds at most. A failure flagged
 //!   before the delete or by the end of that wait takes the failure's
 //!   way (exit 3), as everywhere.
+//! - Each command that a start given up for want of an answer sends
+//!   about the device (the delete, the reading of its info, the open
+//!   that asks whether a client holds it) is sent from a thread of its
+//!   own, and all of them are waited for [`GIVE_UP_LIMIT`] (10 s) at
+//!   most, all told. On such a kernel, with a disk under the store that
+//!   stopped answering, the delete would wait behind the mutex for
+//!   good. A command with no answer by then is left with the driver,
+//!   which may still carry it out, and nothing more is sent: the line
+//!   says that the device could not be deleted and names the command.
 //!
 //! When serve gives the start up, it says why on one line, and ends
 //! with status 9:
@@ -100,14 +110,14 @@
 //! A `SIGTERM` or `SIGINT` that arrives during the wait is acted on
 //! when the wait ends: after a start that answered, it stops serve as
 //! usual; after a start given up, serve ends with 9 all the same, since
-//! nothing was served. So a stop is late by [`START_LIMIT`], a third
-//! of systemd's default stop timeout (90 s), plus the two seconds for
-//! the queue's thread, plus the delete at a start. That delete waits
-//! for the device's mutex. On a kernel whose START_DEV reads the
-//! partition table holding that mutex, it waits as long as the disk
-//! that read goes to: the queue's thread still answers then, so not
-//! for good. A supervisor whose stop timeout is shorter may kill serve
-//! during a start: the device is then as after any kill.
+//! nothing was served. So a stop is late by at most [`START_LIMIT`],
+//! plus the two seconds for the queue's thread, plus [`GIVE_UP_LIMIT`]
+//! for the kernel's commands: 42 s, under half of systemd's default
+//! stop timeout (90 s). Whether the process's end then waits for the
+//! driver to let go of a command it holds (the start's, or one with no
+//! answer) is the kernel's, and not shown here. A supervisor whose stop
+//! timeout is shorter may kill serve during a start: the device is then
+//! as after any kill.
 //!
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted with the image's
@@ -964,6 +974,8 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             // end, so that the store is dropped after the line.
             let (exit, _kept) = give_up_unanswered(
                 &mut kernel,
+                KernelCommands,
+                GIVE_UP_LIMIT,
                 &mut records,
                 number,
                 took_over,
@@ -1370,10 +1382,183 @@ fn give_up_start<C: Control, R: Records>(
     (!took_over).then(|| lifecycle::delete_unstarted(control, records, number))
 }
 
+/// How long a start given up for want of an answer waits, all told,
+/// for the kernel's commands that it sends about the device: the
+/// delete, the reading of its info, and the open that asks whether a
+/// client holds it (M1.3ah, after #87's review and the lead's word on
+/// it). The design gives no figure; this is the daemon's reading.
+///
+/// Such a command can wait in the driver for as long as the start did.
+/// On a kernel whose START_DEV reads the partition table holding the
+/// device's mutex, and whose disk under the store stopped answering,
+/// the read never ends, and the delete waits behind the mutex for good.
+/// By the same reading GET_PARAMS waits for that mutex, and the open of
+/// the block device for the disk's open mutex, which the scan holds.
+/// None of this is shown on a kernel here.
+///
+/// An asynchronous delete returns once it is under way: testing's
+/// early look saw the whole of a start given up, its delete included,
+/// end 82 ms after the start began. 10 s is more than a hundred times
+/// that, and keeps the whole of a start given up, 30 s and 2 s and
+/// this, under half of systemd's default stop timeout (90 s).
+pub const GIVE_UP_LIMIT: Duration = Duration::from_secs(10);
+
+/// The kernel's commands that a start given up sends about the device,
+/// as functions of its number alone, so that each can be sent from a
+/// thread of its own and waited for within a limit ([`Bounded`]).
+/// [`KernelCommands`] sends them to the driver.
+trait Commands: Clone + Send + 'static {
+    /// [`Control::delete`].
+    fn delete(&self, number: u32) -> io::Result<()>;
+    /// [`Control::info`].
+    fn info(&self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>>;
+    /// [`Control::client_holds`].
+    fn client_holds(&self, number: u32) -> Option<bool>;
+}
+
+/// The driver's commands, as [`Kernel`] sends them.
+#[derive(Debug, Clone, Copy)]
+struct KernelCommands;
+
+impl Commands for KernelCommands {
+    fn delete(&self, number: u32) -> io::Result<()> {
+        skyzfs_ublk_sys::raw::delete(number)
+    }
+    fn info(&self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
+        skyzfs_ublk_sys::control::info(number)
+    }
+    fn client_holds(&self, number: u32) -> Option<bool> {
+        skyzfs_ublk_sys::control::client_holds(number)
+    }
+}
+
+/// The lifecycle's control for a start given up: the delete, the
+/// reading of the device's info and the open that asks whether a
+/// client holds it are each sent from a thread of their own, and waited
+/// for until a deadline, [`GIVE_UP_LIMIT`] after this was made.
+///
+/// - A command with no answer by the deadline answers an error that
+///   names it (`TimedOut`). It stays with the driver, which may still
+///   carry it out, and its thread is not waited for: it ends with the
+///   process, as the start's thread does. Whether the process's end
+///   waits for the driver to let go of such a command is the kernel's,
+///   and not shown here.
+/// - Once the deadline has passed, nothing more is sent: each command
+///   answers at once with an error that says so. A command sent after
+///   one that had no answer would wait behind the same mutex.
+/// - A client's hold that cannot be asked is unknown (`None`), as when
+///   the open does not tell.
+///
+/// The give-up sends no other command; the others are `inner`'s.
+struct Bounded<'k, C, K> {
+    inner: &'k mut C,
+    commands: K,
+    limit: Duration,
+    deadline: Instant,
+}
+
+impl<'k, C, K: Commands> Bounded<'k, C, K> {
+    fn new(inner: &'k mut C, commands: K, limit: Duration) -> Self {
+        Self {
+            inner,
+            commands,
+            limit,
+            deadline: Instant::now() + limit,
+        }
+    }
+
+    /// `command`, named `name`, sent from a thread of its own and
+    /// waited for until the deadline.
+    fn send<T: Send + 'static>(
+        &self,
+        number: u32,
+        name: &str,
+        command: impl FnOnce(&K) -> T + Send + 'static,
+    ) -> io::Result<T> {
+        let limit = said_limit(self.limit);
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "{name} of device {number} was not sent: the {limit} that a start given up \
+                     waits for the kernel's commands had run out"
+                ),
+            ));
+        }
+        let (answered, answer) = mpsc::channel();
+        let commands = self.commands.clone();
+        std::thread::Builder::new()
+            .name("skyzfsd-command".into())
+            .spawn(move || {
+                let _ = answered.send(command(&commands));
+            })?;
+        match answer.recv_timeout(left) {
+            Ok(answer) => Ok(answer),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "{name} of device {number} had no answer within the {limit} that a start \
+                     given up waits for the kernel's commands: it stays with the driver, which \
+                     may still carry it out"
+                ),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(format!(
+                "{name} of device {number}: its thread ended with no answer"
+            ))),
+        }
+    }
+}
+
+impl<C: Control, K: Commands> Control for Bounded<'_, C, K> {
+    fn features(&mut self) -> io::Result<Option<u64>> {
+        self.inner.features()
+    }
+    fn release(&mut self) -> io::Result<String> {
+        self.inner.release()
+    }
+    fn info(&mut self, number: u32) -> io::Result<Option<lifecycle::DeviceInfo>> {
+        self.send(number, "GET_DEV_INFO and GET_PARAMS", move |k| {
+            k.info(number)
+        })?
+    }
+    fn add(&mut self, number: u32, shape: &lifecycle::Shape) -> Result<(), lifecycle::AddError> {
+        self.inner.add(number, shape)
+    }
+    fn disown(&mut self, number: u32) {
+        self.inner.disown(number);
+    }
+    fn delete(&mut self, number: u32) -> io::Result<()> {
+        self.send(number, "DEL_DEV_ASYNC", move |k| k.delete(number))?
+    }
+    fn begin_recovery(&mut self, number: u32) -> io::Result<()> {
+        self.inner.begin_recovery(number)
+    }
+    fn client_holds(&mut self, number: u32) -> Option<bool> {
+        let name = format!("the exclusive open of {}", block_device(number));
+        self.send(number, &name, move |k| k.client_holds(number))
+            .ok()
+            .flatten()
+    }
+}
+
+/// A limit as the lines say it: whole seconds as such, anything else
+/// in milliseconds.
+fn said_limit(limit: Duration) -> String {
+    if limit.subsec_nanos() == 0 {
+        format!("{} s", limit.as_secs())
+    } else {
+        format!("{} ms", limit.as_millis())
+    }
+}
+
 /// The start of device `number` had no answer within [`START_LIMIT`]:
 /// serve gives it up, and says so, or takes the failure's way. `stop`
 /// stops the queue's thread, waits for it a stated time, and hands back
 /// what that thread handed back (the store among it) if it ended.
+/// Every command sent to the kernel about the device goes through
+/// [`Bounded`], with `commands` and `limit` ([`GIVE_UP_LIMIT`]), so that
+/// none of them holds serve without a limit.
 ///
 /// The order:
 /// 1. A failure already flagged takes the failure's way: its note,
@@ -1383,7 +1568,9 @@ fn give_up_start<C: Control, R: Records>(
 ///    the partition table holding the device's mutex, a stopped queue
 ///    would leave that read unanswered, and the delete waiting behind
 ///    the mutex for good (#87's review). At a take-over nothing is
-///    deleted.
+///    deleted. A delete with no answer within the limit is said as a
+///    delete that failed: the device "could not be deleted", with the
+///    command named, and exit 9.
 /// 3. The queue's thread is stopped.
 /// 4. A failure flagged by then also takes the failure's way, and not
 ///    9 with "the volume is not failed" (#87's review, Codex's P1). At
@@ -1393,14 +1580,19 @@ fn give_up_start<C: Control, R: Records>(
 ///    without an error is read from it, not shown here. Were it to
 ///    answer with one, the failure's line would say that the device
 ///    could not be deleted, which sends a person to look: the
-///    conservative reading.
+///    conservative reading. After a delete with no answer, nothing more
+///    is sent: the failure note is written, and the line says the
+///    device could not be deleted.
 /// 5. Otherwise the line, and exit 9.
 ///
 /// What the queue's thread handed back is handed to the caller and not
 /// dropped here: dropping the store waits for its I/O with no limit, so
 /// it comes after the line, as on serve's other ends.
-fn give_up_unanswered<C: Control, R: Records, S>(
+#[allow(clippy::too_many_arguments)]
+fn give_up_unanswered<C: Control, R: Records, K: Commands, S>(
     kernel: &mut C,
+    commands: K,
+    limit: Duration,
     records: &mut R,
     number: u32,
     took_over: bool,
@@ -1408,6 +1600,7 @@ fn give_up_unanswered<C: Control, R: Records, S>(
     failed: impl Fn() -> bool,
     stop: impl FnOnce() -> Option<S>,
 ) -> (Exit, Option<S>) {
+    let kernel = &mut Bounded::new(kernel, commands, limit);
     if failed() {
         let exit = failed_at_end(kernel, records, number, identity);
         return (exit, stop());
@@ -2491,11 +2684,16 @@ mod tests {
         log.lock().expect("the log").clone()
     }
 
-    /// A kernel that logs each delete, and whether the device's note
-    /// under `run` was still there when the delete came.
+    /// A kernel that logs each command a start given up sends, and
+    /// whether the device's note under `run` was still there when the
+    /// delete came. As the lifecycle's control it logs "unbounded ..."
+    /// for each of them: the give-up sends none that way. As the bounded
+    /// commands, its delete never answers unless `answers`.
+    #[derive(Clone)]
     struct Logged {
         log: Log,
         run: std::path::PathBuf,
+        answers: bool,
     }
 
     impl skyzfs_ublk::lifecycle::Control for Logged {
@@ -2505,7 +2703,8 @@ mod tests {
         fn release(&mut self) -> io::Result<String> {
             Ok("7.0.0".into())
         }
-        fn info(&mut self, _number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+        fn info(&mut self, number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+            logged(&self.log, format!("unbounded info {number}"));
             Ok(None)
         }
         fn add(
@@ -2519,6 +2718,20 @@ mod tests {
         }
         fn disown(&mut self, _number: u32) {}
         fn delete(&mut self, number: u32) -> io::Result<()> {
+            logged(&self.log, format!("unbounded delete {number}"));
+            Ok(())
+        }
+        fn begin_recovery(&mut self, _number: u32) -> io::Result<()> {
+            Err(io::Error::other("not in this test"))
+        }
+        fn client_holds(&mut self, number: u32) -> Option<bool> {
+            logged(&self.log, format!("unbounded holds {number}"));
+            None
+        }
+    }
+
+    impl Commands for Logged {
+        fn delete(&self, number: u32) -> io::Result<()> {
             let noted = records::note_path(&self.run, number).exists();
             logged(
                 &self.log,
@@ -2527,12 +2740,21 @@ mod tests {
                     if noted { " (note there)" } else { "" }
                 ),
             );
+            if !self.answers {
+                // A delete that never answers: the thread waits for
+                // good, as the driver's would behind the mutex.
+                loop {
+                    std::thread::park();
+                }
+            }
             Ok(())
         }
-        fn begin_recovery(&mut self, _number: u32) -> io::Result<()> {
-            Err(io::Error::other("not in this test"))
+        fn info(&self, number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+            logged(&self.log, format!("info {number}"));
+            Ok(None)
         }
-        fn client_holds(&mut self, _number: u32) -> Option<bool> {
+        fn client_holds(&self, number: u32) -> Option<bool> {
+            logged(&self.log, format!("holds {number}"));
             None
         }
     }
@@ -2546,25 +2768,21 @@ mod tests {
         }
     }
 
-    /// A start with no answer within the limit is given up in this
-    /// order (M1.3ah, after #87's review):
-    /// - at a start, the device is deleted, its note first, while the
-    ///   queue's thread still answers, and only then is that thread
-    ///   stopped;
-    /// - at a take-over, the thread is stopped and nothing deleted;
-    /// - a failure comes first: one seen before the delete, or after
-    ///   the stop, takes the failure's way (its note, the delete,
-    ///   exit 3) and not 9;
-    /// - what the queue's thread handed back, the store, is handed to
-    ///   the caller and not dropped: its drop waits for its I/O with no
-    ///   limit, and comes after the line.
-    #[test]
-    fn a_start_with_no_answer_is_given_up_in_order() {
-        use skyzfs_ublk::lifecycle::Records;
-        // `fails_at` is the look at the failure flag that first sees
-        // it set, if any: the first is before the delete, the second
-        // after the stop.
-        let given_up = |took_over: bool, fails_at: Option<u32>| {
+    /// How a start given up in a test ended: its exit, the log before
+    /// and after the caller's drop of what it was handed, whether the
+    /// device's note is still there, whether a failure note is, and how
+    /// long it took.
+    type GivenUp = (Exit, Vec<String>, Vec<String>, bool, bool, Duration);
+
+    /// A start with no answer given up with [`Logged`] for a device 3
+    /// with its note. `fails_at` is the look at the failure flag that
+    /// first sees it set, if any: the first is before the delete, the
+    /// second after the stop. Run on a thread of its own, so that a
+    /// limit not kept fails the test instead of hanging it.
+    fn given_up(took_over: bool, fails_at: Option<u32>, answers: bool, limit: Duration) -> GivenUp {
+        let (done, outcome) = mpsc::channel();
+        std::thread::spawn(move || {
+            use skyzfs_ublk::lifecycle::Records;
             let keep = tempfile::tempdir().expect("a directory");
             let (volume, run) = (keep.path().join("volume"), keep.path().join("run"));
             std::fs::create_dir(&volume).expect("the volume's directory");
@@ -2576,14 +2794,19 @@ mod tests {
             let mut kernel = Logged {
                 log: log.clone(),
                 run: run.clone(),
+                answers,
             };
+            let commands = kernel.clone();
             let looks = std::cell::Cell::new(0);
             let failed = || {
                 looks.set(looks.get() + 1);
                 fails_at.is_some_and(|at| looks.get() >= at)
             };
+            let began = Instant::now();
             let (exit, kept) = give_up_unanswered(
                 &mut kernel,
+                commands,
+                limit,
                 &mut records,
                 3,
                 took_over,
@@ -2594,42 +2817,65 @@ mod tests {
                     Some(Kept(log.clone()))
                 },
             );
+            let took = began.elapsed();
             let before_the_drop = read(&log);
             drop(kept);
             let after = read(&log);
             let noted = records.note(3).ok().flatten().is_some();
             let failure = records.failure().ok().flatten().is_some();
-            (exit, before_the_drop, after, noted, failure)
-        };
-        let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            let _ = done.send((exit, before_the_drop, after, noted, failure, took));
+        });
+        outcome
+            .recv_timeout(limit * 20 + Duration::from_secs(5))
+            .expect("a start given up ends within its limits")
+    }
 
-        let (exit, log, after, noted, failure) = given_up(false, None);
+    /// A start with no answer within the limit is given up in this
+    /// order (M1.3ah, after #87's review):
+    /// - at a start, the device is deleted, its note first, while the
+    ///   queue's thread still answers, and only then is that thread
+    ///   stopped;
+    /// - at a take-over, the thread is stopped and nothing deleted;
+    /// - a failure comes first: one seen before the delete, or after
+    ///   the stop, takes the failure's way (its note, the delete,
+    ///   exit 3) and not 9;
+    /// - what the queue's thread handed back, the store, is handed to
+    ///   the caller and not dropped: its drop waits for its I/O with no
+    ///   limit, and comes after the line;
+    /// - every command goes to the kernel through the bounded commands,
+    ///   none through the lifecycle's control itself.
+    #[test]
+    fn a_start_with_no_answer_is_given_up_in_order() {
+        let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let limit = Duration::from_secs(10);
+
+        let (exit, log, after, noted, failure, _) = given_up(false, None, true, limit);
         assert_eq!(exit, Exit::NotStarted, "at a start");
         assert_eq!(log, strings(&["delete 3", "stopped"]), "at a start");
         assert_eq!(after.last().map(String::as_str), Some("store dropped"));
         assert!(!noted && !failure, "at a start");
 
-        let (exit, log, _, noted, failure) = given_up(true, None);
+        let (exit, log, _, noted, failure, _) = given_up(true, None, true, limit);
         assert_eq!(exit, Exit::NotStarted, "at a take-over");
         assert_eq!(log, strings(&["stopped"]), "at a take-over");
         assert!(noted && !failure, "at a take-over");
 
         for took_over in [false, true] {
-            let (exit, log, _, noted, failure) = given_up(took_over, Some(1));
+            let (exit, log, _, noted, failure, _) = given_up(took_over, Some(1), true, limit);
             assert_eq!(exit, Exit::Failed, "failed before the delete");
             assert_eq!(
                 log,
-                strings(&["delete 3", "stopped"]),
+                strings(&["holds 3", "delete 3", "stopped"]),
                 "failed before the delete, at a take-over: {took_over}"
             );
             assert!(!noted && failure, "failed before the delete");
 
-            let (exit, log, after, noted, failure) = given_up(took_over, Some(2));
+            let (exit, log, after, noted, failure, _) = given_up(took_over, Some(2), true, limit);
             assert_eq!(exit, Exit::Failed, "failed after the stop");
             let expected: &[&str] = if took_over {
-                &["stopped", "delete 3"]
+                &["stopped", "holds 3", "delete 3"]
             } else {
-                &["delete 3", "stopped", "delete 3"]
+                &["delete 3", "stopped", "holds 3", "delete 3"]
             };
             assert_eq!(
                 log,
@@ -2639,6 +2885,95 @@ mod tests {
             assert_eq!(after.last().map(String::as_str), Some("store dropped"));
             assert!(!noted && failure, "failed after the stop");
         }
+    }
+
+    /// A delete that has no answer does not hold a start given up past
+    /// its limit (M1.3ah, the lead's word on #87's review): on a kernel
+    /// whose START_DEV reads the partition table under the device's
+    /// mutex from a disk that stopped answering, it would wait for
+    /// good. Serve ends with 9 and a line that names the delete, or,
+    /// with a failure, with 3; after the limit nothing more is sent;
+    /// the device's note is not put back, since nothing more can be
+    /// asked of the device.
+    #[test]
+    fn a_delete_with_no_answer_does_not_hold_a_start_given_up() {
+        let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let limit = Duration::from_millis(200);
+
+        let (exit, log, _, noted, failure, took) = given_up(false, None, false, limit);
+        assert_eq!(exit, Exit::NotStarted);
+        assert_eq!(
+            log,
+            strings(&["delete 3", "stopped"]),
+            "nothing after the delete"
+        );
+        assert!(!noted && !failure);
+        assert!(took >= limit && took < limit * 10, "{took:?}");
+
+        let (exit, log, after, noted, failure, took) = given_up(false, Some(2), false, limit);
+        assert_eq!(exit, Exit::Failed, "a failure after the stop is still one");
+        assert_eq!(
+            log,
+            strings(&["delete 3", "stopped"]),
+            "nothing after the delete"
+        );
+        assert_eq!(after.last().map(String::as_str), Some("store dropped"));
+        assert!(!noted && failure, "the failure note is written");
+        assert!(took < limit * 10, "{took:?}");
+
+        // What the bounded control answers, and the line serve says.
+        let keep = tempfile::tempdir().expect("a directory");
+        let log = Log::default();
+        let mut inner = Logged {
+            log: log.clone(),
+            run: keep.path().to_path_buf(),
+            answers: false,
+        };
+        let commands = inner.clone();
+        let mut bounded = Bounded::new(&mut inner, commands, limit);
+        let unanswered = bounded.delete(3).expect_err("no answer");
+        assert_eq!(unanswered.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            unanswered.to_string(),
+            "DEL_DEV_ASYNC of device 3 had no answer within the 200 ms that a start given up \
+             waits for the kernel's commands: it stays with the driver, which may still carry it \
+             out"
+        );
+        let unsent = bounded.info(3).expect_err("not sent");
+        assert_eq!(
+            unsent.to_string(),
+            "GET_DEV_INFO and GET_PARAMS of device 3 was not sent: the 200 ms that a start given \
+             up waits for the kernel's commands had run out"
+        );
+        assert_eq!(bounded.client_holds(3), None);
+        assert_eq!(
+            read(&log),
+            strings(&["delete 3"]),
+            "nothing sent after the limit"
+        );
+        assert_eq!(
+            gave_up_said(
+                3,
+                false,
+                &GaveUp::NoAnswer,
+                Some(&Err(Undeleted::NoNote(unanswered)))
+            ),
+            format!(
+                "the start of device 3 had no answer within {} s: serve gives it up; device 3, \
+                 which this serve added and never started, is to be deleted: device 3 could not \
+                 be deleted (DEL_DEV_ASYNC of device 3 had no answer within the 200 ms that a \
+                 start given up waits for the kernel's commands: it stays with the driver, which \
+                 may still carry it out) and is left without its note, which was not put back: \
+                 deleting it by hand, or a reboot, resolves it; the volume is not failed; exit 9: \
+                 a supervisor should retry the serve once; a second 9 is for a person",
+                START_LIMIT.as_secs()
+            )
+        );
+        assert_eq!(said_limit(GIVE_UP_LIMIT), "10 s");
+        assert!(
+            START_LIMIT + ANSWER_LOOK * ANSWER_LOOKS + GIVE_UP_LIMIT <= Duration::from_secs(45),
+            "a start given up stays under half of systemd's stop timeout"
+        );
     }
 
     /// A target that takes requests and never answers one: a store
