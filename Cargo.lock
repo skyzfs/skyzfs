@@ -4215,6 +4215,7 @@ name = "skyzfs-local"
 version = "0.0.1"
 dependencies = [
  "crc32c",
+ "flate2",
  "getrandom 0.4.3",
  "libc",
  "proptest",
