@@ -116,6 +116,10 @@ EXPECTED = {
 # until the new history's groups pass the abandoned ones (run
 # 43631961753, design §5.2 "Whether a cut opens as itself"); a stale
 # multihost cut does not either.
+# Stale cuts come from the multihost thread alone (design §5.2; ZFS writes
+# no uberblock of an older state without multihost=on, mmp.c): anywhere
+# else one is something the design does not expect (review of #94, S4).
+EXPECTED_STALE = dict({r: 'none' for r in RECS}, multihost='any')
 EXPECTED_OPENS = dict({r: 'all' for r in RECS}, rewind='not all', rewindsync='not all', rewindf=('all', 'not all'),
                       multihost=('all', 'not all'))
 
@@ -204,6 +208,49 @@ def session_verdicts(cs, records, kstats):
     return out
 
 
+LOADED_RE = re.compile(r'spa_load\(' + POOL + r', [^)]*\): using uberblock with txg=(\d+)')
+DBGMSG = '/proc/spl/kstat/zfs/dbgmsg'
+DBGMSG_ON = '/sys/module/zfs/parameters/zfs_dbgmsg_enable'
+
+
+def loaded_txg(dbgmsg):
+    """The group of the uberblock the kernel's last load of the pool used,
+    from its debug messages, or None. -T allows an extreme rewind: a load
+    at the group that fails goes on to older uberblocks (spa_load_best),
+    and in that recovery mode zpool prints no "returned to its state" line
+    (the rewind info is kept only outside it), so the kernel's own account
+    is what says which state came up (review of #94, S1)."""
+    found = LOADED_RE.findall(dbgmsg)
+    return int(found[-1]) if found else None
+
+
+def outside_kstat(cs, records, kstats):
+    """The order check where the kstat does not reach -> (cuts the kstat
+    covered, [failure]). The session check compares the cuts inside each
+    kstat's window; the create's first group, the export's groups (after
+    the end mark) and a group an import writes before its history begins
+    (rewindf's -FX) are outside it (review of #94, S2). From one
+    session's begin mark to the next one's, the groups of the cuts that
+    are not stale must still increase strictly: a state counted twice, or
+    a group counted again, is a group that does not."""
+    skip = cut_ref.stale(cs)
+    spans = sessions(records)
+    begins = sorted(lo for lo, _ in spans.values() if lo is not None)
+    covered, bad = 0, []
+    for k, (lo, hi) in sorted(spans.items()):
+        if lo is None:
+            continue
+        nxt = next((b for b in begins if b > lo), float('inf'))
+        want = kstats.get(k) or []
+        span = [c for c in cs if lo < c['ub_record'] < nxt and c['n'] not in skip]
+        covered += sum(1 for c in span if hi is not None and c['ub_record'] < hi and want
+                       and min(want) <= c['txg'] <= max(want))
+        for a, b in zip(span, span[1:]):
+            if b['txg'] <= a['txg']:
+                bad.append(f"session {k}: cut {b['n']} (group {b['txg']}) after cut {a['n']} (group {a['txg']})")
+    return covered, bad
+
+
 def overlaps(rec, bps):
     """Does a write or discard overlap a copy of one of these blocks?"""
     a, b = rec['offset'], rec['offset'] + rec['bytes']
@@ -240,10 +287,12 @@ def rule_same(cs, rcs, stale):
     same state with it or without it (multihost, run 43647779663:
     txg-alone dropped cuts 10 and 27). It is left out here as in the
     session check."""
-    key = [(c['txg'], c['prefix']) for c in rcs]
-    if key == [(c['txg'], c['prefix']) for c in cs]:
+    def k(c):
+        return c['txg'], c['rootbp'], c['prefix']
+    key = [k(c) for c in rcs]
+    if key == [k(c) for c in cs]:
         return f'{len(rcs)} cuts, as the design rule'
-    fresh = [(c['txg'], c['prefix']) for c in cs if c['n'] not in stale]
+    fresh = [k(c) for c in cs if c['n'] not in stale]
     if key == fresh:
         return f'{len(rcs)} cuts, as the design rule but for its {len(cs) - len(fresh)} stale cuts, which it does not count'
     return None
@@ -301,6 +350,8 @@ class Check:
         # Such a pool is imported writable, from a copy of the cut's
         # image, and the line obs_multihost_import says so.
         self.multihost = False
+        # zfs_dbgmsg_enable as it was before a -T import turned it on.
+        self.dbgmsg_was = None
         self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
@@ -375,7 +426,8 @@ class Check:
 
     def kimport(self, txg=None):
         """A read-only import (at txg with -T; writable from a copy for a
-        multihost pool, see __init__) -> (ok, what zpool said)."""
+        multihost pool, see __init__) -> (ok, what zpool said). With -T the
+        kernel's load must have used an uberblock of that group."""
         rc, out, _ = run(['zpool', 'list', '-H', '-o', 'name', POOL], 60)
         if rc == 0:
             raise RigError(f'a pool named {POOL} is still imported')
@@ -389,6 +441,13 @@ class Check:
         if rc:
             raise RigError(f'losetup: {out.strip()}')
         loop = out.strip()
+        if txg:
+            with open(DBGMSG_ON) as f:
+                self.dbgmsg_was = self.dbgmsg_was if self.dbgmsg_was is not None else f.read().strip()
+            with open(DBGMSG_ON, 'w') as f:
+                f.write('1')
+            with open(DBGMSG, 'w') as f:
+                f.write('0')
         try:
             rc, out, _ = run(['zpool', 'import', '-d', loop] + ([] if self.multihost else ['-o', 'readonly=on'])
                              + ['-o', 'cachefile=none', '-N', '-f',
@@ -404,6 +463,13 @@ class Check:
                 erc, eout, _ = run(['zpool', 'export', POOL], 120)
                 if erc:
                     raise RigError(f'zpool export after the import: {eout.strip()[-300:]}')
+            if rc == 0 and txg:
+                with open(DBGMSG) as f:
+                    at = loaded_txg(f.read())
+                if at != txg:
+                    return False, (f'zpool import -T {txg} succeeded, but the kernel loaded '
+                                   + (f'group {at}: an older uberblock' if at is not None else
+                                      'no uberblock it named in its debug messages'))
             return rc == 0, said
         finally:
             run(['losetup', '-d', loop])
@@ -551,9 +617,11 @@ def main():
         if logdev:
             put('obs_zdb_with_log_device_copy', str(ck.with_logdev),
                 'zdb calls that did not open the data device alone and opened it with the log device\'s copy beside it')
-        put('obs_stale_cuts', str(len(stale)), ', '.join(f"cut {n} (the state of cut {m})" for n, m in stale.items())
-            or 'no cut carries the state of an older cut')
-        if failures or not ok:
+        stale_ok = bool(stale) <= (EXPECTED_STALE.get(name) == 'any')
+        put('obs_stale_cuts', str(len(stale)), (', '.join(f"cut {n} (the state of cut {m})" for n, m in stale.items())
+                                                 or 'no cut carries the state of an older cut')
+            + f" (expected: {EXPECTED_STALE.get(name)}{'' if stale_ok else '; DIFFERS'})")
+        if failures or not ok or not stale_ok:
             rc = 1
         # The sessions against the kstat.
         kstats = {}
@@ -566,7 +634,12 @@ def main():
         if any(ok is None for _, ok, _ in sv):
             raise RigError('; '.join(d for _, ok, d in sv if ok is None))
         bad = [d for _, ok, d in sv if not ok]
-        put('sessions', 'PASS' if not bad else 'FAIL', '; '.join(bad) if bad else f'{len(sv)} sessions as committed')
+        covered, order = outside_kstat(cs, ck.records, kstats)
+        bad += order[:5]
+        put('sessions', 'PASS' if not bad else 'FAIL', '; '.join(bad) if bad else
+            f'{len(sv)} sessions as committed: {covered} of {len(cs) - len(stale)} cuts that are not stale within '
+            f'the kstats\' windows, the other {len(cs) - len(stale) - covered} (the create\'s first group, the exports\', '
+            'a group an import wrote before its history) in strictly increasing groups')
         if bad:
             rc = 1
         # A writable create or import syncs a group, with its flush,
@@ -639,7 +712,8 @@ def main():
                 got[rule] = ('same', same)
                 continue
             rsv = session_verdicts(rcs, ck.records, kstats)
-            rbad = [d for _, ok, d in rsv if not ok] + dropped_states(cs, rcs, op)[:3]
+            rbad = ([d for _, ok, d in rsv if not ok] + outside_kstat(rcs, ck.records, kstats)[1][:3]
+                    + dropped_states(cs, rcs, op)[:3])
             got[rule] = ('caught' if rbad else 'missed', f'{len(rcs)} cuts against {len(cs)}: '
                          + ('; '.join(rbad) if rbad else 'every session as committed'))
         for ctl, (verdict, detail) in got.items():
@@ -653,6 +727,10 @@ def main():
         put('rig', 'ERROR', str(e))
         rc = 2
     finally:
+        ck_ = locals().get('ck')
+        if ck_ is not None and ck_.dbgmsg_was is not None:
+            with open(DBGMSG_ON, 'w') as f:
+                f.write(ck_.dbgmsg_was)
         shutil.rmtree(os.path.join(rdir, 'work'), ignore_errors=True)
         with open(res, 'a') as f:
             f.write('\n'.join(lines) + '\n')

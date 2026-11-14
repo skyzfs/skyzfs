@@ -19,10 +19,10 @@ DEV = (8 << 20) + 100 * 1024     # not a multiple of 256 KiB: the back labels mo
 SLOT = 4096
 
 
-def ub(txg, root, order='<', mmp=False, slot=SLOT, mmp_delay=0):
+def ub(txg, root, order='<', mmp=False, slot=SLOT, mmp_delay=0, later=0):
     """An uberblock slot as ZFS writes one: the struct, zeros, an embedded checksum at its end."""
     rootbp = [root * 1000 + k for k in range(16)]
-    head = struct.pack(order + '5Q', cut_ref.UB_MAGIC, 5000, txg, 77, 1700000000 + txg)
+    head = struct.pack(order + '5Q', cut_ref.UB_MAGIC, 5000, txg, 77, 1700000000 + txg + later)
     body = struct.pack(order + '16Q', *rootbp)
     tail = struct.pack(order + '6Q', 5000, cut_ref.MMP_MAGIC if mmp else 0, mmp_delay, 0, 0, 0)
     raw = head + body + tail
@@ -217,6 +217,41 @@ class Cuts(Fixture):
         self.assertEqual([(c['txg'], op[c['n']]['itself'], op[c['n']]['txg']) for c in cs],
                          [(10, True, 10), (14, True, 14), (11, False, 14), (12, False, 14), (15, True, 15)])
 
+    def test_a_multihost_copy_of_the_cut_with_a_later_timestamp_is_the_cut_itself(self):
+        # MMP writes the best group's uberblock again, to another slot,
+        # with a later timestamp: the same state, and the newest.
+        entries = group(10, 1) + [('write', slot_at(0, 20), ub(10, 1, mmp=True, later=7)), ('flush',)]
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs + [dict(cs[0], n=2, prefix=len(entries))])
+        self.assertEqual([c['txg'] for c in cs], [10])
+        self.assertTrue(op[1]['itself'])
+        self.assertEqual((op[2]['itself'], op[2]['timestamp']), (True, 1700000000 + 10 + 7))
+
+    def test_another_state_of_the_cuts_group_later_or_tied_is_not_the_cut(self):
+        # Another root under the cut's group with a later timestamp is
+        # the best, and it is not the cut's state.
+        for later in (5, 0):
+            g = group(10, 1)
+            # after the group's data and its flush, before its own
+            # uberblock writes: a mark the cut's own replaces
+            entries = g[:2] + [('write', slot_at(0, 20), ub(10, 2, later=later))] + g[2:]
+            cs, _ = self.run_log(entries)
+            op = cut_ref.opens(self.idx['records'], self.read, DEV, cs)
+            self.assertEqual([(c['txg'], c['rootbp'][0]) for c in cs], [(10, 1000)])
+            # a tie (later 0) is not the cut's either: ZFS's choice then
+            # follows the order it reads the slots in
+            self.assertFalse(op[1]['itself'], later)
+            self.assertEqual(op[1]['rootbp'][0], 2000, later)
+
+    def test_the_best_is_by_group_then_timestamp(self):
+        # A higher group with an older timestamp beats a lower group's
+        # newer one: the group first.
+        entries = group(10, 1) + [('write', slot_at(0, 20), ub(9, 4, later=100))] + [('flush',)]
+        cs, _ = self.run_log(entries)
+        op = cut_ref.opens(self.idx['records'], self.read, DEV, cs + [dict(cs[0], n=2, prefix=len(entries))])
+        self.assertTrue(op[2]['itself'])
+        self.assertEqual(op[2]['txg'], 10)
+
     def test_a_discard_or_an_overwrite_clears_a_slot(self):
         entries = group(10, 1) + group(14, 9) + [('discard', slot_at(k, 14), SLOT) for k in range(4)] + group(11, 5)
         cs, _ = self.run_log(entries)
@@ -297,6 +332,24 @@ class Fixtures(unittest.TestCase):
                 ubs = cut_ref.read_tsv(os.path.join(d, 'uberblocks.tsv'))
                 self.assertEqual([[str(u['record']), str(u['label']), str(u['slot']), u['order'], str(u['txg']),
                                    str(int(u['mmp'])), u['taken'], cut_ref.rootbp_hex(u['rootbp'])] for u in taken], ubs)
+                # and the rings' best at each cut, which M2.1b's test reads as
+                # whether the cut opens as itself
+                op = cut_ref.opens(records, read, dev, cs)
+                opens = cut_ref.read_tsv(os.path.join(d, 'opens.tsv'))
+                self.assertEqual([[str(c['n']), str(op[c['n']]['txg']), str(int(op[c['n']]['itself']))] for c in cs],
+                                 [[o[0], o[4], o[5]] for o in opens])
+
+    def test_a_fixture_of_another_version_is_refused(self):
+        d = os.path.join(self.ROOT, self.dirs()[0])
+        with tempfile.TemporaryDirectory() as t:
+            with gzip.open(os.path.join(d, 'requests.tsv.gz'), 'rt') as f:
+                text = f.read()
+            self.assertIn(f'# skyzfs cut fixture, version {cut_ref.FIXTURE_VERSION}\n', text)
+            for head in (f'# skyzfs cut fixture, version {cut_ref.FIXTURE_VERSION + 1}\n', ''):
+                with gzip.open(os.path.join(t, 'requests.tsv.gz'), 'wt') as f:
+                    f.write(text.replace(f'# skyzfs cut fixture, version {cut_ref.FIXTURE_VERSION}\n', head))
+                with self.assertRaises(ValueError):
+                    cut_ref.read_fixture(t)
 
     def test_opens_names_every_cut_and_the_check_passed_them(self):
         for name in self.dirs():

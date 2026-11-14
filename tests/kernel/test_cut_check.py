@@ -90,9 +90,49 @@ class Sessions(unittest.TestCase):
         c['flush_record'] = 3.5
         self.assertEqual(cut_check.synced_before_ready([c], records)[0][1], 0)
 
+    def test_outside_the_kstat_groups_must_increase(self):
+        # session 1: cuts at 4 (the create's first group, below the kstat),
+        # 5, and 6 after the end mark (the export's); session 2: 9
+        records = [rec(0, mark='session-1-begin'), rec(1), rec(2), rec(3), rec(4, mark='session-1-end'),
+                   rec(5), rec(6, mark='session-2-begin'), rec(7), rec(8), rec(9, mark='session-2-end')]
+        cs = [cut(1, 4, 1), cut(2, 5, 2), cut(3, 6, 5), cut(4, 9, 7)]
+        for k, c in enumerate(cs):
+            c['rootbp'] = (k,)
+        covered, bad = cut_check.outside_kstat(cs, records, {1: [5], 2: [9]})
+        self.assertEqual((covered, bad), (2, []))
+        # the export's group counted twice (another cut of group 6) is caught
+        dup = cs[:3] + [dict(cut(9, 6, 5), rootbp=(9,))] + cs[3:]
+        dup[3]['ub_record'] = 5.5
+        covered, bad = cut_check.outside_kstat(dup, records, {1: [5], 2: [9]})
+        self.assertEqual(len(bad), 1)
+        self.assertIn('(group 6) after cut 3 (group 6)', bad[0])
+        # a new session may begin lower (a rewind import)
+        cs2 = cs[:3] + [cut(4, 3, 7)]
+        self.assertEqual(cut_check.outside_kstat(cs2, records, {1: [5], 2: [3]})[1], [])
+
     def test_no_kstat_is_the_rigs(self):
         v = cut_check.session_verdicts([], self.records, {1: [4]})
         self.assertIsNone(v[1][1])
+
+
+class Loaded(unittest.TestCase):
+    # from rewindf's dbgmsg in run 43645075993: a load that failed at 43,
+    # then the rewind's load at 34
+    TEXT = """1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load($import, config trusted): LOADING
+1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load($import, config untrusted): using uberblock with txg=43
+1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=43
+1794693469   ff36 spa_misc.c:417:spa_load_failed(): spa_load(skzcut, config untrusted): FAILED: unable to open rootbp in dsl_pool_init [error=5]
+1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): spa_load_retry: rewind, max txg: 42
+1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config untrusted): using uberblock with txg=34
+1794693469   ff36 spa_misc.c:431:spa_load_note(): spa_load(skzcut, config trusted): LOADED
+"""
+
+    def test_the_last_load_of_the_pool_counts(self):
+        self.assertEqual(cut_check.loaded_txg(self.TEXT), 34)
+        self.assertEqual(cut_check.loaded_txg(self.TEXT.split('FAILED')[0]), 43)
+        self.assertIsNone(cut_check.loaded_txg('nothing here'))
+        # another pool's load (the tryimport's name) is not this one's
+        self.assertIsNone(cut_check.loaded_txg(self.TEXT.splitlines()[1]))
 
 
 class Picks(unittest.TestCase):
@@ -161,6 +201,11 @@ class RuleSame(unittest.TestCase):
         self.assertIn('but for its 1 stale cuts', cut_check.rule_same(cs, dropped, {3: 1}))
         # a fresh cut dropped is not the same, stale cuts or not
         self.assertIsNone(cut_check.rule_same(cs, [cs[0], cs[3]], {3: 1}))
+        # the same groups at other instants, or with other roots, are not the same list
+        moved = [dict(c, prefix=c['prefix'] + 1) for c in cs]
+        self.assertIsNone(cut_check.rule_same(cs, moved, {}))
+        other = [dict(c, rootbp=(99,)) for c in cs]
+        self.assertIsNone(cut_check.rule_same(cs, other, {}))
 
 
 class Expected(unittest.TestCase):
@@ -168,6 +213,10 @@ class Expected(unittest.TestCase):
         self.assertTrue(cut_check.as_expected('same', ('same', 'caught')))
         self.assertFalse(cut_check.as_expected('missed', ('same', 'caught')))
         self.assertTrue(cut_check.as_expected('caught', 'caught'))
+
+    def test_stale_cuts_are_expected_of_multihost_alone(self):
+        self.assertEqual(set(cut_check.EXPECTED_STALE), set(cut_check.RECS))
+        self.assertEqual({r for r, v in cut_check.EXPECTED_STALE.items() if v != 'none'}, {'multihost'})
 
     def test_every_control_has_every_recording(self):
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cut-record.sh')) as f:
@@ -178,7 +227,9 @@ class Expected(unittest.TestCase):
         for ctl, table in cut_check.EXPECTED.items():
             self.assertEqual(set(table), recs, ctl)
             for v in table.values():
-                self.assertTrue(set(v if isinstance(v, tuple) else (v,)) <= {'caught', 'same', 'not built', 'missed'}, ctl)
+                # no control may be expected to be missed: that would be a
+                # check that does not catch what it is there for
+                self.assertTrue(set(v if isinstance(v, tuple) else (v,)) <= {'caught', 'same', 'not built'}, ctl)
 
 
 if __name__ == '__main__':

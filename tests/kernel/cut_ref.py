@@ -216,7 +216,8 @@ def opens(records, read, dev_bytes, cs):
     label's ring, the timestamp breaking a tie (vdev_uberblock_compare).
     The ring is followed through the record: a write over a slot leaves
     the uberblock it carries there, or none, and a discard none. A cut
-    opens as itself when that best uberblock is the cut's own state;
+    opens as itself when the greatest uberblock of its own state is
+    greater than every uberblock of another (a tie is not; M2.1b's rule);
     after a rewind import the ring still holds the abandoned history's
     higher groups (run 43631961753), and until the new history's pass
     them a cut does not (design §5.2, "Whether a cut opens as itself")."""
@@ -227,12 +228,23 @@ def opens(records, read, dev_bytes, cs):
     for c in cs:
         by_prefix.setdefault(c['prefix'], []).append(c)
 
+    def order(u):
+        return (u['txg'], u['timestamp'])
+
     def note(prefix):
         for c in by_prefix.get(prefix, ()):
-            best = max(slots.values(), key=lambda u: (u['txg'], u['timestamp']), default=None)
+            # The greatest of the cut's own state against the greatest of
+            # any other: ZFS reads the slots in no fixed order and keeps a
+            # new best only when it compares greater, so a tie with another
+            # state is not the cut's (M2.1b's rule; review of #94, S3).
+            own = [u for u in slots.values() if (u['txg'], u['rootbp']) == (c['txg'], c['rootbp'])]
+            other = [u for u in slots.values() if (u['txg'], u['rootbp']) != (c['txg'], c['rootbp'])]
+            best_own = max(own, key=order, default=None)
+            best_other = max(other, key=order, default=None)
+            itself = best_own is not None and (best_other is None or order(best_other) < order(best_own))
+            best = best_own if itself else best_other or best_own
             out[c['n']] = {'txg': best['txg'] if best else None, 'timestamp': best['timestamp'] if best else None,
-                           'rootbp': best['rootbp'] if best else None,
-                           'itself': bool(best) and (best['txg'], best['rootbp']) == (c['txg'], c['rootbp'])}
+                           'rootbp': best['rootbp'] if best else None, 'itself': itself}
     for r in records:
         note(r['i'])
         a, b = r.get('offset', 0), r.get('offset', 0) + r.get('bytes', 0)
@@ -348,10 +360,12 @@ def read_fixture(dirname):
     """A fixture's requests.tsv.gz -> (records, a reader of a label write's data, dev_bytes), as the
     record the fixture was written from would give them to scan and cuts. Only the label writes
     carry their data: what the reference reads."""
-    records, data, dev = [], {}, None
+    records, data, dev, version = [], {}, None, None
     with gzip.open(os.path.join(dirname, 'requests.tsv.gz'), 'rt') as f:
         for line in f:
             line = line.rstrip('\n')
+            if line.startswith('# skyzfs cut fixture, version '):
+                version = line.rsplit(' ', 1)[1]
             if line.startswith('# dev_bytes '):
                 dev = int(line.split()[2])
             if not line or line.startswith('#'):
@@ -373,6 +387,8 @@ def read_fixture(dirname):
                 if payload != '-':
                     data[r['i']] = bytes.fromhex(payload)
             records.append(r)
+    if version != str(FIXTURE_VERSION):
+        raise ValueError(f'{dirname}: fixture version {version}, not {FIXTURE_VERSION}')
     if dev is None:
         raise ValueError(f'{dirname}: no dev_bytes line')
 
