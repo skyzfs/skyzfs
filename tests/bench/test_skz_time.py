@@ -9,20 +9,36 @@ import skz_time as st  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STATUS_RS = os.path.join(HERE, '..', '..', 'crates', 'skyzfs-ublk', 'src', 'status.rs')
+# The time_* keys of status versions 8 to 10, frozen when version 11
+# removed them: the module still reads an older build's rows.
+KEYS_V10 = os.path.join(HERE, 'status-time-keys-v10.txt')
 
 
 def status_keys():
-    """The time_* keys as the daemon's source lists them."""
+    """The time_* keys of a daemon of status version 10, in the order its source listed them."""
+    with open(KEYS_V10) as f:
+        return [ln.strip() for ln in f if ln.strip() and not ln.startswith('#')]
+
+
+def source_keys(prefix):
+    """The keys the daemon's source lists in a constant array, those that begin with `prefix`, in order."""
     keys, inside = [], False
     with open(STATUS_RS) as f:
-        lines = f.readlines()
-    for line in lines:
-        if line.strip().startswith('"time_'):
-            keys.append(line.strip().strip(',').strip('"'))
-            inside = True
-        elif inside and line.strip().startswith('];'):
-            break
+        for line in f:
+            if line.strip().startswith('"' + prefix):
+                keys.append(line.strip().strip(',').strip('"'))
+                inside = True
+            elif inside and line.strip().startswith('];'):
+                break
     return keys
+
+
+def eleventh(scale, pid='100'):
+    """A reading of a daemon of status version 11: the pump's times under pump_*, no time_* key."""
+    r = {'pid': pid, 'state': 'serving', 'status_version': '11', 'cuts': '3', 'cut_group': '40'}
+    for i, key in enumerate(st.PUMP_KEYS):
+        r[key] = str(scale * (i + 1))
+    return r
 
 
 def reading(scale, pid='100'):
@@ -139,6 +155,91 @@ class Delta(unittest.TestCase):
         t = st.delta(reading(1), a)
         self.assertFalse(t['ok'])
         self.assertIn('in one reading only', t['why'])
+
+
+class Eleventh(unittest.TestCase):
+    """Status version 11 (M2.1): the pump's times under pump_*, and no time_* key."""
+
+    def test_the_daemons_source_is_one_the_module_reads(self):
+        # Before version 11 the source lists the frozen time_* keys;
+        # from it, the pump's keys and no time_* key. Anything else is a
+        # change of the status that this module has not been taught.
+        times, pump = source_keys('time_'), source_keys('pump_')
+        if times:
+            self.assertEqual(times, status_keys(), 'the source lists time_* keys other than the frozen ones')
+            self.assertEqual(pump, [])
+        else:
+            self.assertEqual(pump, list(st.PUMP_KEYS), "the source's pump keys are not the module's")
+
+    def test_the_pump_keys_are_the_time_pump_keys_of_before(self):
+        self.assertEqual(len(st.PUMP_KEYS), 13)
+        for key in st.PUMP_KEYS:
+            self.assertIn('time_' + key, status_keys())
+
+    def test_a_reading_is_read_as_the_pumps_times(self):
+        t = st.delta(eleventh(1), eleventh(3), 0, 10 ** 9)
+        self.assertTrue(t['ok'], t['why'])
+        self.assertEqual(t['version'], 11)
+        i = st.PUMP_KEYS.index('pump_commit_read_ns')
+        self.assertEqual(t['delta']['time_pump_commit_read_ns'], 2 * (i + 1))
+        j = st.PUMP_KEYS.index('pump_submit_max_ns')
+        self.assertEqual(t['end']['time_pump_submit_max_ns'], 3 * (j + 1))
+        self.assertEqual(len(t['delta']) + len(t['end']), 13)
+        self.assertFalse(st.has_store_times(t['delta']))
+        self.assertTrue(st.has_store_times(st.delta(reading(1), reading(3))['delta']))
+
+    def test_the_time_pump_key_of_a_reading_wins(self):
+        r = dict(reading(1), pump_submit_count='999999')
+        self.assertEqual(st.times_of(r)['time_pump_submit_count'], reading(1)['time_pump_submit_count'])
+
+    def test_a_reading_without_either_says_so(self):
+        t = st.delta({'pid': '1', 'status_version': '11'}, eleventh(3))
+        self.assertFalse(t['ok'])
+        self.assertIn('no time_* or pump_* keys', t['why'])
+
+    def test_the_status_of_an_older_file_through_the_newer_binary(self):
+        # A version 11 binary prints a version 10 file's pump times as
+        # pump_* and says the file's version: the same reading.
+        b, a = dict(eleventh(1), status_version='10'), dict(eleventh(3), status_version='10')
+        t = st.delta(b, a)
+        self.assertTrue(t['ok'], t['why'])
+        self.assertEqual(len(t['delta']) + len(t['end']), 13)
+
+    def test_a_daemon_of_each_kind_across_the_window_is_doubtful(self):
+        t = st.delta(reading(1), eleventh(3))
+        self.assertFalse(t['ok'])
+        self.assertIn('keys are in one reading only', t['why'])
+
+    def test_render_gives_the_pumps_table_and_not_the_stores(self):
+        b, a = eleventh(1), eleventh(1)
+        for k, v in (('submit_count', 4000), ('submit_ns', 8_000_000), ('commit_read_count', 1000),
+                     ('commit_read_ns', 30_000_000), ('taken_read_ns', 20_000_000), ('commit_other_count', 500),
+                     ('commit_other_ns', 6_000_000), ('taken_other_ns', 3_000_000), ('commit_read_max_ns', 2_500_000)):
+            a['pump_' + k] = str(int(b['pump_' + k]) + v if not k.endswith('max_ns') else v)
+        new = {'label': 'skyzfsd', 'workload': 'tpcb', 'tps': 3800.0, 'time': st.delta(b, a, 0, 64 * 10 ** 9),
+               'duration_s': 60}
+        old = {'label': 'skyzfsd@old', 'workload': 'tpcb', 'tps': 3700.0, 'time': st.delta(reading(1), reading(3), 0, 10 ** 9),
+               'duration_s': 60}
+        text = '\n'.join(st.render([new, old]))
+        self.assertNotIn('NO TIMES', text)
+        row = next(ln for ln in text.splitlines() if ln.startswith('| tpcb | skyzfsd |') and '4000' in ln)
+        cells = [c.strip() for c in row.strip('|').split('|')]
+        # submitted: 4000, 2 µs each; reads: 1000, 30 µs, 20 taken, 2.5 ms longest; others: 500, 12 µs, 6 taken
+        self.assertEqual(cells[2:4], ['4000', '2.0'])
+        self.assertEqual(cells[5:9], ['1000', '30.0', '20.0', '2.500'])
+        self.assertEqual(cells[9:12], ['500', '12.0', '6.0'])
+        self.assertIn("in the pump's table alone: tpcb skyzfsd.", text)
+        # the store's tables have the older row only
+        life = text[text.index("A read's life"):]
+        self.assertIn('| tpcb | skyzfsd@old |', life)
+        self.assertNotIn('| tpcb | skyzfsd |', life)
+
+    def test_render_of_version_11_rows_alone_prints_no_store_table(self):
+        text = '\n'.join(st.render([{'label': 'skyzfsd', 'workload': 'tpcb', 'tps': 1.0,
+                                     'time': st.delta(eleventh(1), eleventh(3)), 'duration_s': 60}]))
+        self.assertIn("The pump's times", text)
+        self.assertNotIn("A read's life", text)
+        self.assertNotIn('The identities', text)
 
 
 class Tables(unittest.TestCase):
