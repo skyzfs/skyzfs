@@ -39,8 +39,8 @@ use skyzfs_ublk::translate::{op, Desc, SECTOR};
 
 use crate::cli::{Held, Hold};
 
-/// Whether `desc` is the request `what` waits for.
-fn is_held(what: Held, desc: &Desc) -> bool {
+/// Whether `desc` is the request `what` names.
+pub(crate) fn is_held(what: Held, desc: &Desc) -> bool {
     let covers = |byte: u64| {
         let start = desc.start_sector.saturating_mul(SECTOR);
         let end = start.saturating_add(u64::from(desc.nr_sectors).saturating_mul(SECTOR));
@@ -211,9 +211,9 @@ impl<Q: Queue> Queue for Delayed<Q> {
 
     /// The end of a stop: what still waits here is given on, and then
     /// sent.
-    fn flush(&mut self) -> Result<(), QueueDown> {
+    fn flush(&mut self, unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
         self.release(true);
-        self.inner.flush()
+        self.inner.flush(unfetched)
     }
 }
 
@@ -257,7 +257,7 @@ mod tests {
             self.committed.push(tag);
             self.results.push(result);
         }
-        fn flush(&mut self) -> Result<(), QueueDown> {
+        fn flush(&mut self, _unfetched: &mut Vec<Unfetched>) -> Result<(), QueueDown> {
             self.flushes += 1;
             Ok(())
         }
