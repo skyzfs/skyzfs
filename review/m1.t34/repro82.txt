@@ -1,0 +1,5 @@
+a server that ends by itself with 7 before the kill: SERVE_RC=unread; KT_ERR='kill 1: kill -9 2729 failed'; KT_REFUSED=''; verdict ERROR
+   the status bash still holds for the server: 7
+a server that ends by itself with 1 before the kill: SERVE_RC=unread; KT_ERR='kill 1: kill -9 2735 failed'; KT_REFUSED=''; verdict ERROR
+   the status bash still holds for the server: 1
+a server alive at the kill: SERVE_RC=137; KT_ERR=''; KT_REFUSED=''; verdict PASS

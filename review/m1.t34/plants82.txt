@@ -1,0 +1,24 @@
+P1 the help probe never finds [--store: rc 1; 4 failed
+    FAIL a build from before M1.3t-d, no options: --store in-place is added: got '0 0', want '0 1'
+    FAIL   and with other options: got '0 0', want '0 1'
+    FAIL a build from before M1.3t-d, --store in-place: got '1 0', want '0 0'
+    FAIL   --store=in-place: got '1 0', want '0 0'
+P2 the value of --store is not checked: rc 1; 5 failed
+    FAIL   --store log: got '0 0', want '1 0'
+    FAIL   says why: got '', want '--store log is of the log store, which M1.3t removed'
+    FAIL   --store with no value: got '0 0', want '1 0'
+    FAIL   --store=log: got '0 0', want '1 0'
+P3 a log option is matched only without =VALUE: rc 1; 10 failed
+    FAIL   --log-high=N, on a current build: got '0 0', want '1 0'
+    FAIL   --log-low=N, on a current build: got '0 0', want '1 0'
+    FAIL   --writeback-kib=N, on a current build: got '0 0', want '1 0'
+    FAIL   --home-writeback-kib=N, on a current build: got '0 0', want '1 0'
+P4 a named --store in-place is not remembered: rc 1; 2 failed
+    FAIL a build from before M1.3t-d, --store in-place: got '0 1', want '0 0'
+    FAIL   --store=in-place: got '0 1', want '0 0'
+P5 the replay rig's check comes after its trap and modprobe: rc 1; 1 failed
+    FAIL no caller ran anything: got 'modprobe ublk_drv
+P6 the hole rig ends with 64, not its own error 2: rc 1; 1 failed
+    FAIL the hole rig: the rig's own error: got '64', want '2'
+P7 the bench's early check removed: rc 1; 1 failed
+    FAIL   and says why: 'TB_SKYZFSD_ARGS (--store,in-place): --store in-place: this build of skyzfsd' not in 'unknown topology: no-such-topology'
