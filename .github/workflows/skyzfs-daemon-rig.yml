@@ -30,11 +30,13 @@ name: skyzfs-daemon-rig
 # Check g's negative control (M1.T23): the input `daemon_ref` builds the
 # daemon from another commit under this checkout's rig. With
 # cd0e76360b4a3e8597c8ac5d68182b9e05c077e3 (before #46: no cache drop at
-# a start), `checks: g`, the job must fail with four lines that differ:
+# a start), `checks: g`, the job must fail with five lines that differ:
 # pin_start_serves_what_the_disk_holds, pin_failed_start_fails_volume,
-# pin_failed_start_suspends_pool (run 43397129438), and since M1.T26
+# pin_failed_start_suspends_pool (run 43397129438), since M1.T26
 # pin_failure_reason_is_the_images (a daemon from before #55 names the
-# log). That is how to show again that check g catches what it is for.
+# log), and since M1.T30 pin_data_journal_refused (a daemon from before
+# direct I/O serves on ext4 data=journal, run 43526201758). That is how
+# to show again that check g catches what it is for.
 on:
   workflow_dispatch:
     inputs:

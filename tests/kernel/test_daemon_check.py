@@ -45,6 +45,10 @@ def as_expected(impl='reference'):
         r['pin_serve_on_zfs_refused'] = 'PASS: seen'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: seen'
         r['pin_volume_on_larger_blocks'] = 'PASS: seen'
+        # The commands the driver ended (M1.3aa): counted by the daemon only.
+        for name in ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+                     'pin_c_commands_failed_zero'):
+            r[name] = 'PASS: seen'
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
@@ -161,6 +165,9 @@ class Cases(unittest.TestCase):
         r['pin_serve_on_zfs_refused'] = 'PASS: refused'
         r['pin_write_zeroes_through_a_checkpoint'] = 'PASS: zeros'
         r['pin_volume_on_larger_blocks'] = 'PASS: refused and served'
+        for name in ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+                     'pin_c_commands_failed_zero'):
+            r[name] = 'PASS: commands_failed 0'
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks'):
             r[name] = 'PASS: seen'
@@ -562,6 +569,108 @@ class CheckG(unittest.TestCase):
         r = in_place()
         del r['obs_g_failed_sync']
         self.assertTrue(any('obs_g_failed_sync' in e for e in dc.judge(r, ALL, impl='daemon', store='in-place')[2]))
+
+
+class CommandsFailed(unittest.TestCase):
+    """M1.3aa: no command of the queues ended with a result other than OK or the driver's abort."""
+    PINS = ('pin_commands_failed_zero_a', 'pin_commands_failed_zero_b', 'pin_commands_failed_zero_e',
+            'pin_c_commands_failed_zero')
+
+    def daemon(self):
+        return in_place()
+
+    def test_a_command_the_driver_refused_differs(self):
+        for name in self.PINS:
+            r = self.daemon()
+            r[name] = 'FAIL: status says commands_failed 1, the last with the result -22'
+            _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+            self.assertEqual((len(differs), errors), (1, []), name)
+
+    def test_waiting_is_the_stand_ins_answer_only(self):
+        for name in self.PINS:
+            self.assertEqual(dc.EXPECTED[name][4], 'WAITING', name)
+            self.assertNotIn(name, dc.NOT_FOR_IN_PLACE, name)
+            r = self.daemon()
+            r[name] = 'WAITING: the stand-in keeps no request log'
+            _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+            self.assertEqual(len(errors), 1, name)
+
+    def test_a_build_without_the_count_is_a_rig_error(self):
+        r = self.daemon()
+        r['pin_c_commands_failed_zero'] = 'ERROR: this build of the daemon predates M1.3aa'
+        _, differs, errors = dc.judge(r, ALL, impl='daemon', store='in-place')
+        self.assertEqual((differs, len(errors)), ([], 1))
+
+    def test_the_rig_writes_each_pin(self):
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        for check in ('a', 'b', 'e'):
+            self.assertIn(f'pin_commands_failed {check} "$dir"', text, check)
+        # Check b with no server at its end still writes the line.
+        self.assertIn('pin_commands_failed b ""', text)
+        body = text[text.index('\ncheck_c() {'):text.index('\ncheck_c_delay() {')]
+        self.assertEqual(body.count('    pin_c_commands_failed\n'), 1)
+
+
+class DataJournalFiles(unittest.TestCase):
+    """g.4 (M1.T30): what a refused start may leave changed in the volume's directory."""
+
+    def judged(self, new, gone):
+        import subprocess
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        script = (f'eval "$(sed -n \'/^GJ_MAY_CHANGE=/,/^GJ_ALLOWED_UNTIL_M13T=/p\' {rig!r})"; '
+                  f'eval "$(sed -n \'/^gj_files_judged() {{$/,/^}}$/p\' {rig!r})"; gj_files_judged "$1" "$2"')
+        return subprocess.run(['bash', '-c', script, '_', new, gone], capture_output=True, text=True, check=True).stdout
+
+    def test_the_log_files_are_allowed_until_m13t(self):
+        self.assertEqual(self.judged('log.000000 log.super ', 'log.000000 log.super '), '')
+
+    def test_the_status_file_may_change(self):
+        self.assertEqual(self.judged('status ', 'status '), '')
+
+    def test_the_image_and_the_identity_file_may_not(self):
+        self.assertEqual(self.judged('home.img ', 'home.img '), 'home.img changed; ')
+        self.assertEqual(self.judged('volume ', 'volume '), 'volume changed; ')
+
+    def test_a_failure_marker_may_not_appear_or_go(self):
+        self.assertIn('log.failed appeared', self.judged('log.failed ', ''))
+        self.assertIn('volume.failed removed', self.judged('', 'volume.failed '))
+
+    def test_any_other_file_is_named(self):
+        self.assertEqual(self.judged('lock x.tmp ', 'lock '), 'lock rewritten; x.tmp rewritten; ')
+
+
+class G1Premise(unittest.TestCase):
+    """g.1 (M1.T30, review of #72): a daemon that holds a request after the disk failed is a FAIL, not a rig error."""
+
+    def body(self):
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        return text[text.index('\ncheck_g_sync_fails_while_serving() {'):text.index('\ncase $CHECKS in *" a "*)')]
+
+    def test_the_serve_is_waited_for_before_any_error(self):
+        body = self.body()
+        error = body.index('pin sync_failure_fails_volume ERROR')
+        self.assertLess(body.index('if serve_wait 60; then'), error)
+        self.assertEqual(body.count('pin sync_failure_fails_volume ERROR'), 1)
+
+    def test_only_a_write_that_could_not_be_issued_is_an_error(self):
+        body = self.body()
+        branch = body[body.index('elif [ "$wrc" != 0 ] && grep -q \'failed to open\''):]
+        condition = branch[:branch.index('; then')]
+        # The device gone is the common case (the daemon failed the volume
+        # and deleted it): the error needs every sign that nothing reached it.
+        for sign in ('[ "$w1" = "$w0" ]', '[ "$f1" = "$f0" ]', '[ "${held:-}" = 0 ]',
+                     "! grep -q 'the volume failed' \"$dir.serve.log\""):
+            self.assertIn(sign, condition)
+        self.assertTrue(branch[branch.index('; then') + 7:].lstrip().startswith('pin sync_failure_fails_volume ERROR'))
+        # A write not answered, or a request held, is judged before it, and FAILs.
+        held = body.index('[ "$wrc" = 124 ] || [[ ${held:-0}')
+        self.assertLess(held, body.index('pin sync_failure_fails_volume ERROR'))
+        self.assertIn('FAIL "serve was still running 60 s after the pool\'s wait ended, with a request held',
+                      body[held:held + 400])
 
 
 class Main(unittest.TestCase):
