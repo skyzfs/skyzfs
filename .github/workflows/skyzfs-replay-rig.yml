@@ -328,7 +328,8 @@ jobs:
           # Options only: letters, digits and - = . , : / and spaces.
           [[ $SERVE_ARGS =~ ^[A-Za-z0-9=.,:/\ -]*$ ]] || { echo "::error::serve_args: only options, letters, digits and - = . , : /"; exit 64; }
           # A build from before M1.3t defaults to the log store.
-          if [ -n "$DAEMON_REF" ] && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
+          if [ -n "$DAEMON_REF" ] && [[ " $SERVE_ARGS " != *" --store "* && " $SERVE_ARGS " != *" --store="* ]] \
+              && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
             SERVE_ARGS="--store in-place${SERVE_ARGS:+ $SERVE_ARGS}"
             echo "The build of \`$DAEMON_REF\` has a choice of store, and is served with \`--store in-place\`." >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -435,7 +436,8 @@ jobs:
           # A build from before M1.3t defaults to the log store, whose
           # first record of a block's data would be the log's, not the
           # home image's.
-          if [ -n "$DAEMON_REF" ] && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
+          if [ -n "$DAEMON_REF" ] && [[ " $SERVE_ARGS " != *" --store "* && " $SERVE_ARGS " != *" --store="* ]] \
+              && grep -q -F '[--store' "$RUNNER_TEMP/daemon-src/bins/skyzfsd/src/cli.rs"; then
             SERVE_ARGS="--store in-place${SERVE_ARGS:+ $SERVE_ARGS}"
             echo "The build of \`$DAEMON_REF\` has a choice of store, and is served with \`--store in-place\`." >> "$GITHUB_STEP_SUMMARY"
           fi

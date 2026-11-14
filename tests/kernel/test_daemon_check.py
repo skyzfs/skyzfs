@@ -381,9 +381,12 @@ class NotOnTheDaemon(unittest.TestCase):
         self.assertTrue(any('ctl_delay_before_apply' in d for d in differs), differs)
 
     def test_the_log_stores_pins_are_gone(self):
-        # M1.3t: they checked nothing on either server any more (WAITING
-        # on the stand-in, NA on the daemon). A line of one is the rig's
-        # error, a table and a rig that have come apart.
+        # M1.3t: they checked nothing on either server any more: NA on
+        # the daemon, and on the stand-in WAITING, or PASS on what holds
+        # nothing there (the stand-in's own `unstored 0`, and its
+        # re-serves after a kill, now judged in pin_kill_under_load). A
+        # line of one is the rig's error, a table and a rig that have
+        # come apart.
         for name in ('pin_takeover_time_does_not_grow', 'pin_log_stays_below_high_mark',
                      'pin_kills_inside_steps_lose_nothing', 'pin_c_suite_with_low_marks',
                      'pin_write_zeroes_through_a_checkpoint', 'pin_unstored_zero_a', 'pin_unstored_zero_b',
@@ -547,6 +550,62 @@ class DataJournalFiles(unittest.TestCase):
 
     def test_any_other_file_is_named(self):
         self.assertEqual(self.judged('lock x.tmp ', 'lock '), 'lock rewritten; x.tmp rewritten; ')
+
+
+class KillRefusal(unittest.TestCase):
+    """A serve after a kill -9 that the server refuses (M1.T31): a FAIL of the kill test's pins, the rig's ERROR for a control."""
+
+    def verdict(self, serve_rc, kind, log_line='skyzfsd: the volume is marked as failed'):
+        import subprocess
+        import tempfile
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, 'vol-b.serve.log')
+            with open(log, 'w', encoding='utf-8') as f:
+                f.write('ready\n' + log_line + '\n')
+            # What kill_test sets when the serve after kill 3 did not come back.
+            script = (f'eval "$(sed -n \'/^EXIT_FAILED=/p\' {rig!r})"; '
+                      f'eval "$(sed -n \'/^kt_refusal() {{$/,/^}}$/p\' {rig!r})"; '
+                      f'eval "$(sed -n \'/^kill_verdict() {{/,/^}}$/p\' {rig!r})"; '
+                      'KT_ERR="kill 3: serve did not come back (rc 1, serve exit $1)"; '
+                      'KT_REFUSED=$(kt_refusal 3 "$1" "$2"); KT_DONE=2; KT_INFLIGHT=2; KT_FAILED_WRITES=0; '
+                      'KT_STATE=ONLINE; KT_VDEV="vdev errors 0 x"; KT_SCRUB="vdev errors 0 with 0 errors"; KT_FILES=ok; '
+                      'kill_verdict $3; printf "%s\\n%s\\n" "$KT_VERDICT" "$KT_WHY"')
+            out = subprocess.run(['bash', '-c', script, '_', serve_rc, log, kind],
+                                 capture_output=True, text=True, check=True).stdout
+        verdict, why = out.split('\n', 1)
+        return verdict, why.strip()
+
+    def test_a_planted_refusal_fails_the_pin_with_its_reason(self):
+        for rc in ('3', '4', '5'):
+            verdict, why = self.verdict(rc, 'pin')
+            self.assertEqual(verdict, 'FAIL', rc)
+            self.assertIn(f'kill 3: the next serve refused the volume with exit {rc}', why)
+            self.assertIn('the volume is marked as failed', why)
+
+    def test_for_a_control_it_stays_the_rigs_error(self):
+        # A control whose kills did not all happen has shown nothing,
+        # and its expected result is FAIL: a refusal must not read so.
+        verdict, why = self.verdict('4', '')
+        self.assertEqual(verdict, 'ERROR')
+        self.assertIn('serve did not come back', why)
+
+    def test_a_serve_that_never_answered_is_the_rigs_error(self):
+        # No exit status of the daemon's own: it ran out, or never began.
+        for rc in ('', '124', '1', '2'):
+            verdict, _ = self.verdict(rc, 'pin')
+            self.assertEqual(verdict, 'ERROR', rc)
+
+    def test_the_kill_test_pins_ask_for_it(self):
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        self.assertIn('KT_REFUSED=$(kt_refusal "$n" "${SERVE_RC:-}" "$dir.serve.log")', text)
+        # kill_under_load, kill_under_load_applied_unacknowledged and
+        # device_waits_for_a_server; the two controls stay plain.
+        import re
+        self.assertEqual(len(re.findall(r'^    kill_verdict pin\b', text, re.M)), 3)
+        self.assertIn('SKZ_REF_REISSUE=0 kill_test "$REF" b0 5\n    kill_verdict; ', text)
 
 
 class G1Premise(unittest.TestCase):

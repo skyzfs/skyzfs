@@ -605,7 +605,7 @@ kill_test() {
     local tk impl=$1 name=$2 kills=$3 dir=$WORK/vol-$2 pool=skzd-$2 mnt slog n i w pid inflight rc st ms t0 watcher live gone looks saw mark states hw klog
     KT_WAITED=""; KT_WAIT_BAD=0; LK_VERDICT=""; LK_WHY=""; LK_SAID=""
     mnt=$WORK/mnt/$pool
-    KT_ERR=""; KT_DONE=0; KT_INFLIGHT=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_MS=""; KT_QUIESCE=""
+    KT_ERR=""; KT_REFUSED=""; KT_DONE=0; KT_INFLIGHT=0; KT_FAILED_WRITES=""; KT_VDEV=""; KT_SCRUB=""; KT_FILES=""; KT_ROUNDS=""; KT_MS=""; KT_QUIESCE=""
     # What each new server found applied and not acknowledged (status
     # key recovered_unacknowledged): the sum, and how many did not say.
     KT_RECOVERED=0; KT_RECOVERED_UNSAID=0
@@ -704,7 +704,11 @@ kill_test() {
         KT_ROUNDS+="kill $n: ${w:-0} writes in flight, $st, served again rc $rc in $ms ms; last seen LIVE with the dead server at $live ms, first seen otherwise at $gone ms ($saw, $looks looks); "
         KT_QUIESCE+="${live:--1}:${gone:--1} "
         [ $rc != 0 ] || KT_MS+="$ms "
-        [ $rc = 0 ] || { KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"; break; }
+        if [ $rc != 0 ]; then
+            KT_ERR="kill $n: serve did not come back (rc $rc, serve exit ${SERVE_RC:-none})"
+            KT_REFUSED=$(kt_refusal "$n" "${SERVE_RC:-}" "$dir.serve.log")
+            break
+        fi
         KT_DONE=$n
         sleep 2
     done
@@ -762,9 +766,25 @@ medians() {
     last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
     echo "$# take-overs; median of the first five $first ms, of the last five $last ms; all, in order: $*"
 }
+# kill exit serve-log -> why, or nothing: the serve after a kill ran and
+# refused the volume by its own exit status (failed, refused as failed,
+# busy). That is a false alarm that suspends a healthy pool, a verdict
+# against the server and not the rig's failure. A serve that never
+# started or ran out (no such status) is not one.
+kt_refusal() {
+    case $2 in
+        "$EXIT_FAILED"|"$EXIT_REFUSED_FAILED"|"$EXIT_BUSY")
+            printf 'kill %s: the next serve refused the volume with exit %s: %s' "$1" "$2" "$(tail -n 1 "$3" 2>/dev/null | cut -c1-300)" ;;
+    esac
+}
 # The four judgments of a kill test, as pins or as one control line.
-kill_verdict() { # -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
+# `kill_verdict pin`: a serve after a kill that the server refused by
+# its own exit status is a FAIL of the pin. For a control it stays the
+# rig's ERROR: a control whose kills did not all happen has not shown
+# that the check fails, whatever it reads.
+kill_verdict() { # [pin] -> KT_VERDICT PASS | FAIL | ERROR, the reason in KT_WHY
     KT_WHY=""; KT_VERDICT=""
+    if [ "${1:-}" = pin ] && [ -n "$KT_REFUSED" ]; then KT_WHY=$KT_REFUSED; KT_VERDICT=FAIL; return; fi
     if [ -n "$KT_ERR" ]; then KT_WHY=$KT_ERR; KT_VERDICT=ERROR; return; fi
     # A kill with no write in flight tests a restart and not the
     # reissue of requests, so a run in which more than one kill in ten
@@ -1031,7 +1051,7 @@ check_b_delay() {
     KT_SERVE_EXTRA=(--commit-delay-ms "$ms")
     kill_test "$SKYZFSD" bd "$kills"
     KT_SERVE_EXTRA=()
-    kill_verdict; v=$KT_VERDICT
+    kill_verdict pin; v=$KT_VERDICT
     # The daemon's store keeps no record of what it applied, so a new
     # server cannot count writes applied and not acknowledged. The kills
     # still land, by the delay, between a write's apply and its
@@ -1077,7 +1097,7 @@ check_b() {
     local dir=$WORK/vol-b pool=skzd-b v pid0 pid1 rc st i num before after
     step "b: kill -9 under load, $KILLS times"
     kill_test "$SKYZFSD" b "$KILLS"
-    kill_verdict; v=$KT_VERDICT
+    kill_verdict pin; v=$KT_VERDICT
     pin kill_under_load "$v" "${KT_WHY:-writes were in flight just before $KT_INFLIGHT of $KT_DONE kills: no application write failed, no error on the vdev, scrub clean, $KT_FILES}"
     # How long each take-over took, in order, and the medians of the
     # first five and the last five. The pin that bounded their growth
@@ -1191,7 +1211,7 @@ check_b() {
     # Here it waits 300 s under a pool, and is then taken over.
     step "b, observation: a killed server's device waits ${RIG_WAIT_S:-300} s for the next"
     KT_WAIT_S=${RIG_WAIT_S:-300} kill_test "$SKYZFSD" bw 1
-    kill_verdict
+    kill_verdict pin
     if [ "${RIG_WAIT_S:-300}" -lt 100 ]; then
         # A shorter wait was asked for than the pin is about. Not a
         # verdict.

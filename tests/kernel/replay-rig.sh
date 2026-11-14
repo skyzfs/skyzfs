@@ -464,7 +464,10 @@ if [ -n "${RIG_RECORD_ONLY:-}" ]; then log "recorded only, as asked: $WORK"; exi
 if [ -n "$SKYZFSD" ]; then
     # No log, so no step: there is no cut inside one to look for. A
     # status that still counts steps must count none; one that no
-    # longer has the key is the same.
+    # longer has the key is the same, but only if the status was read:
+    # its count of writes is in every status.
+    awk '$1 == "writes" && $2 ~ /^[0-9]+$/ { f = 1 } END { exit !f }' "$OUT/status-after-recording.txt" \
+        || rig_error "the daemon's status after recording could not be read (no count of writes): $(head -c 300 "$OUT/status-after-recording.txt")"
     [ -z "${STEPS:-}" ] || [ "$STEPS" = 0 ] || rig_error "the daemon reports $STEPS checkpoint steps, and its store has no log"
     STEPS="none: the daemon's store has no log"
     PHASE=check

@@ -21,10 +21,10 @@ check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 tt=$(mktemp -d)
 trap 'rm -rf -- "$tt"' EXIT
 # The functions, each from its first line to the "}" that ends it.
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
     awk -v f="$f" '$0 ~ "^" f "\\(\\) \\{" { on = 1 } on { print } on && /^}/ { exit }' "$script"
 done > "$tt/funcs.sh"
-for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat; do
+for f in skz_create skz_hang_evidence skz_copy skz_copy_repeat skz_low_bytes skz_settle; do
     grep -q "^$f() {" "$tt/funcs.sh" || { echo "FAIL $f not found in $script"; exit 1; }
 done
 
@@ -150,5 +150,33 @@ check "one failed row" '[ "$(label_for cur 2)" = "cur; after failed row 2" ]'
 check "two failed rows" '[ "$(label_for cur "2 5")" = "cur; after failed rows 2,5" ]'
 check "no label of its own" '[ "$(label_for "" 3)" = "after failed row 3" ]'
 check "anything but row numbers is refused" '( TB_LABEL=x; TB_EARLIER_FAILED="1;x"; . "$tt/label.sh" ) 2> /dev/null; [ $? = 64 ]'
+
+# 7. The settle after the copy (skz_settle), on a status in a file. The
+# clock moves 10 s a call and sleep does nothing, so 600 s pass at once.
+# Since M1.3t the status may have no log keys: absent counts as at rest,
+# but only with held 0 and the write count still; a status that cannot
+# be read never counts.
+settle() { # status lines -> rc; what it said in $tt/settle-said
+    printf '%s\n' "$@" > "$tt/status"; echo 0 > "$tt/clock"; : > "$tt/log"; : > "$OUT/t.skzinfo"
+    # shellcheck disable=SC2317  # the stand-ins are called by skz_settle
+    (
+        TOPO=t
+        skz_status() { cat "$tt/status"; }
+        sleep() { :; }
+        date() { local n; n=$(( $(cat "$tt/clock") + 10 )); echo "$n" > "$tt/clock"; echo "$n"; }
+        skz_settle
+    ) 2> "$tt/settle-said"
+}
+setup; SKYZFSD_ARGS=""
+settle "writes 7" "held 0"; rc=$?
+check "no log keys, nothing held, writes still: at rest" '[ "$rc" = 0 ] && grep -q "the status has no log" "$OUT/t.skzinfo"'
+settle "writes 7" "held 0" "checkpoint_step none" "unstored 0" "log_live 0"; rc=$?
+check "the log keys at rest: at rest, under the low mark" '[ "$rc" = 0 ] && grep -q "log_live 0 under the low mark" "$OUT/t.skzinfo"'
+settle "writes 7" "held 1"; rc=$?
+check "a request held: never at rest" '[ "$rc" = 1 ] && grep -q "did not come to rest" "$tt/settle-said"'
+settle "writes 7" "held 0" "checkpoint_step under way" "unstored 0" "log_live 0"; rc=$?
+check "a step under way: never at rest" '[ "$rc" = 1 ]'
+settle ""; rc=$?
+check "a status that cannot be read: never at rest" '[ "$rc" = 1 ] && grep -q "did not come to rest" "$tt/settle-said"'
 
 if [ "$fails" = 0 ]; then echo "all passed"; else echo "$fails failed"; exit 1; fi

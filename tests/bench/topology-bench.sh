@@ -221,7 +221,7 @@
 #                           ("--io-threads,4"). The daemon has one store
 #                           since M1.3t and the row names none, but for
 #                           a build from before it (TB_SKYZFSD_REF), whose
-#                           help offers --store: that one is served with
+#                           help offers [--store: that one is served with
 #                           --store in-place. The log store's options and
 #                           --store log are refused
 #   TB_SKYZFSD_MEM=         cgroup v2 memory.max for the daemon (e.g. 1G).
@@ -1563,7 +1563,7 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     # The daemon has one store since M1.3t (the log store is removed).
     # Its options, and a --store other than in-place, are the row's
     # mistake and end it before a serve. A build from before M1.3t
-    # (TB_SKYZFSD_REF of an older commit), whose help offers --store,
+    # (TB_SKYZFSD_REF of an older commit), whose usage offers [--store,
     # defaults to the log store: it is served with --store in-place, so
     # that every row runs the store the benchmark is about. A build from
     # before the option has only the log store and is served as it was.
@@ -1581,7 +1581,7 @@ skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
         esac
     done
     if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
-        && "$SKYZFSD" help 2>&1 | grep -q -- '--store'; then
+        && "$SKYZFSD" help 2>&1 | grep -q -F -- '[--store'; then
         args=(--store in-place "${args[@]}")
     fi
     SKZ_SERVE_ARGS="${args[*]}"
