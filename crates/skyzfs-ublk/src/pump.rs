@@ -349,11 +349,6 @@ pub struct Counters {
     pub refused: u64,
     /// Requests fetched and not committed yet.
     pub in_flight: u64,
-    /// Always 0 since M1.3t-b, which removed the record of what was
-    /// acknowledged: completions that waited because the position could
-    /// not be stored. Kept so that the status file keeps its field, and
-    /// what reads it reads on, until the file's next version.
-    pub unstored: u64,
     /// Commands the driver ended with its abort ([`ABORTED`]): the queue
     /// is being stopped. Each tag's last command ends so.
     pub commands_aborted: u64,
@@ -401,13 +396,6 @@ pub struct PumpTiming {
     pub read_to_taken: Spent,
     /// The same for every other request.
     pub other_to_taken: Spent,
-    /// Always zero since M1.3t-b: the storing of the acknowledged
-    /// position. Kept, as [`Counters::unstored`] is, for the status
-    /// file's fields.
-    pub store: Spent,
-    /// Always 0 since M1.3t-b: the completions committed behind those
-    /// stores.
-    pub behind_store: u64,
 }
 
 /// What the pump notes for a tag in flight.

@@ -6,12 +6,12 @@ use std::path::PathBuf;
 
 use skyzfs_blk::Base;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{Opened, VolumeConfig};
+use skyzfs_local::inplace::{Cut, Cuts, Opened, VolumeConfig};
 use skyzfs_ublk::lifecycle::{
     AddError, Attachment, DeviceInfo, DeviceState, Failure, Held, Reason, Records, Shape,
 };
 use skyzfs_ublk::pump::Counters;
-use skyzfs_ublk::status::Status;
+use skyzfs_ublk::status::{Status, StoreShown};
 
 use super::*;
 
@@ -180,15 +180,23 @@ fn sample() -> Status {
             write_zeroes: 9,
             refused: 0,
             in_flight: 2,
-            unstored: 0,
             commands_aborted: 0,
             commands_failed: 0,
             last_command_failure: 0,
         },
         failures: 0,
         first_write_copies: 0,
-        recovered_unacknowledged: 0,
-        log: None,
+        start_ms: 0,
+        shown: StoreShown {
+            cuts: Some(Cuts {
+                count: 3,
+                newest: Some(Cut {
+                    number: 3,
+                    group: 12,
+                }),
+            }),
+            ..StoreShown::default()
+        },
     }
 }
 
@@ -245,14 +253,27 @@ fn status_prints_one_key_and_value_per_line_as_the_rig_reads_them() {
         ("discards", "8"),
         ("write_zeroes", "9"),
         ("held", "2"),
-        ("unstored", "0"),
         ("first_write_copies", "0"),
-        ("recovered_unacknowledged", "0"),
+        ("cuts", "3"),
+        ("cut_group", "12"),
         ("pid", "4242"),
         ("age_ms", "250"),
     ] {
         assert_eq!(value(&output.out, key), Some(wanted), "{key}");
     }
+    // None of the log store's keys (M2.1).
+    for gone in [
+        "unstored",
+        "recovered_unacknowledged",
+        "log_live",
+        "checkpoint_steps",
+        "checkpoint_syncs",
+        "checkpoint_step",
+        "replayed_bytes",
+    ] {
+        assert_eq!(value(&output.out, gone), None, "{gone}");
+    }
+    assert!(!output.out.contains("time_"), "{}", output.out);
 
     // The server is gone: no pid to kill, and the counters are said to
     // be left behind.

@@ -92,11 +92,11 @@ impl Drop for Releases<'_> {
     }
 }
 
-fn harnesses(mutants: u32) -> Vec<InPlaceHarness> {
+fn harnesses(mutants: u64) -> Vec<InPlaceHarness> {
     harnesses_io(mutants, IoMode::default())
 }
 
-fn harnesses_io(mutants: u32, io: IoMode) -> Vec<InPlaceHarness> {
+fn harnesses_io(mutants: u64, io: IoMode) -> Vec<InPlaceHarness> {
     [(1, 0), (16, 0), (16, 3)]
         .into_iter()
         .map(|(queue_depth, sync_delay)| InPlaceHarness {
@@ -209,7 +209,7 @@ fn the_suite_notices_the_defects() {
     // The cases that must notice each defect: for a flush that syncs
     // nothing, the cases of the power cut, which the harness's cut
     // alone can fail (the failure cases notice it too).
-    let cases: [(u32, &[&str]); 5] = [
+    let cases: [(u64, &[&str]); 5] = [
         (
             Mutants::FLUSH_WITHOUT_SYNC,
             &[
@@ -288,13 +288,13 @@ fn created_at(seed: u64, sync_delay: u64, page: u64) -> SimDisk {
 }
 
 /// Start on `disk`: the open under the lock, then the start.
-fn start(disk: &SimDisk, mutants: u32, acknowledge: bool) -> Result<InPlace<SimDisk>, OpenError> {
+fn start(disk: &SimDisk, mutants: u64, acknowledge: bool) -> Result<InPlace<SimDisk>, OpenError> {
     start_io(disk, mutants, acknowledge, IoMode::default())
 }
 
 fn start_io(
     disk: &SimDisk,
-    mutants: u32,
+    mutants: u64,
     acknowledge: bool,
     io: IoMode,
 ) -> Result<InPlace<SimDisk>, OpenError> {
@@ -385,7 +385,7 @@ fn the_start_makes_what_the_instance_before_wrote_durable() {
 /// kernel's count of the page cache does not see a device's volatile
 /// cache: without the sync, nothing else stands between them and the
 /// cut.
-fn kept_after_a_start_and_a_cut(seed: u64, mutants: u32) -> bool {
+fn kept_after_a_start_and_a_cut(seed: u64, mutants: u64) -> bool {
     let disk = created(seed, 0);
     let mut store = start(&disk, 0, false).unwrap();
     for block in 4..12 {
@@ -1144,7 +1144,7 @@ enum Ending {
 /// every block of the window: each block must be explained by the
 /// volatile-cache disk ([`volatile_cache_explains`]). Whether the
 /// volume had failed when the program ended.
-fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool, String> {
+fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u64) -> Result<bool, String> {
     volatile_cache_holds_with(seed, ending, mutants, 4096, IoMode::default())
 }
 
@@ -1152,7 +1152,7 @@ fn volatile_cache_holds(seed: u64, ending: Ending, mutants: u32) -> Result<bool,
 fn volatile_cache_holds_at(
     seed: u64,
     ending: Ending,
-    mutants: u32,
+    mutants: u64,
     page: u64,
 ) -> Result<bool, String> {
     volatile_cache_holds_with(seed, ending, mutants, page, IoMode::default())
@@ -1162,7 +1162,7 @@ fn volatile_cache_holds_at(
 fn volatile_cache_holds_io(
     seed: u64,
     ending: Ending,
-    mutants: u32,
+    mutants: u64,
     io: IoMode,
 ) -> Result<bool, String> {
     volatile_cache_holds_with(seed, ending, mutants, 4096, io)
@@ -1173,7 +1173,7 @@ fn volatile_cache_holds_io(
 fn volatile_cache_holds_with(
     seed: u64,
     ending: Ending,
-    mutants: u32,
+    mutants: u64,
     page: u64,
     io: IoMode,
 ) -> Result<bool, String> {
@@ -1683,7 +1683,7 @@ fn a_volume_of_small_pages_is_refused_on_large_pages() {
 #[test]
 fn an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks() {
     let unit = 4096;
-    let open = |disk: &SimDisk, mutants: u32| {
+    let open = |disk: &SimDisk, mutants: u64| {
         Opened::open_with(
             disk.clone(),
             lock(disk).expect("free"),
@@ -1745,7 +1745,7 @@ fn an_open_refuses_a_home_image_on_a_file_system_with_larger_blocks() {
 /// cut that keeps nothing unsynced: the two must be the same. A failed
 /// sync can leave a page marked clean that the disk never got; a start
 /// that served it from the cache would show what the cut then takes.
-fn shown_survives(seed: u64, mutants: u32, io: IoMode) -> Result<bool, String> {
+fn shown_survives(seed: u64, mutants: u64, io: IoMode) -> Result<bool, String> {
     let e = |e: BlkError| e.to_string();
     let disk = created(seed, 0);
     let mut store = start_io(&disk, mutants, false, io).map_err(|e| e.to_string())?;
@@ -1797,7 +1797,7 @@ fn every_start_serves_only_what_the_disk_holds() {
 }
 
 /// Open and start the in-place store, as a daemon would.
-fn enter(disk: &SimDisk, mutants: u32) -> Result<InPlace<SimDisk>, StartError> {
+fn enter(disk: &SimDisk, mutants: u64) -> Result<InPlace<SimDisk>, StartError> {
     opened(disk, false, IoMode::default())
         .unwrap()
         .start_with(None, Mutants(mutants))
@@ -2106,4 +2106,5 @@ fn a_create_with_zeros_makes_the_volume_only_once_they_are_written() {
     assert_eq!(read(&mut store, 9).unwrap(), vec![0u8; BLOCK_USIZE]);
 }
 
+mod cuts;
 mod ported;

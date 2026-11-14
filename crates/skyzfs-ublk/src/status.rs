@@ -7,7 +7,7 @@
 //! # The file
 //!
 //! [`STATUS`] under the volume's run directory
-//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 2032
+//! ([`records::volume_run_dir`](crate::records::volume_run_dir)). 336
 //! bytes, little endian. It is replaced whole (made under another name
 //! and renamed) and never synced.
 //!
@@ -18,42 +18,26 @@
 //! reader of `status` and nothing else. The failure note
 //! ([`records`](crate::records)) is kept the same way.
 //!
-//! This is the file's tenth version. The ninth (`SKYZSTA9`, 2008
-//! bytes) ended before the queues' commands that the driver ended
-//! otherwise than OK, from offset 2008 on; a file of that version is
-//! still read, with those at zero, and `status` shows none of them. The
-//! eighth (`SKYZSTA8`, 1960
-//! bytes) ended before the in-place store's I/O threads' queue, from
-//! offset 1960 on; a file of that version is still read, with that
-//! queue absent (the log store has none, and shows the same). The
-//! seventh (`SKYZSTA7`, 1856
-//! bytes) ended before the worker's sixteenth activity (waiting for
-//! the helper's report of a step's home-image sync), the waits by it
-//! and the helper's account, from offset 1856 on; a file of that
-//! version is still read, with those at zero. The worker's first
-//! fifteen activities, and the requests' waits by them, are where
-//! they were: the sixteenth of each comes after the fields of the
-//! seventh version. The sixth (`SKYZSTA6`, 1584
-//! bytes) ended before the hint that starts writeback early and the
-//! syncs' backlogs, from offset 1584 on; a file of that version is
-//! still read, with those at zero. The fifth (`SKYZSTA5`, 1424
-//! bytes) had fourteen activities of the store's worker where this
-//! one has fifteen, so the fields from offset 536 on lie elsewhere,
-//! and ended before the barriers', the reader's and the checked
-//! reads' fields; a file of that version is still read, with those at
-//! zero, and its reads' times are the worker's (before the reads left
-//! the worker, design §5.1). The fourth (`SKYZSTA4`, 200
-//! bytes) ended before offset 200, where the times begin; a file of
-//! that version is still read, without them. The third (`SKYZSTA3`, 192
-//! bytes) ended before offset 192; a file of that version is still
-//! read, and says nothing of how write-zeroes are applied. The second
-//! (`SKYZSTA2`, 144 bytes) ended before the log's fields, from offset
-//! 144 on; a file of that version is still read, without them. The
-//! first (`SKYZSTA1`, 128 bytes) is read as no status.
+//! This is the file's eleventh version (M2.1). It has none of the
+//! fields that only the log store filled, which the tenth still
+//! carried as zeros after the log store was removed (M1.3t): the
+//! log's length, its checkpoint steps and syncs, what a start
+//! replayed and recovered beyond what was acknowledged, the store's
+//! worker's and reader's times, the hint that started writeback early,
+//! the syncs by kind, and the record of the acknowledged position. It
+//! adds the count of cuts and the newest cut's group (design §5.2).
+//!
+//! The tenth (`SKYZST10`, 2032 bytes), the ninth (`SKYZSTA9`, 2008
+//! bytes) and the eighth (`SKYZSTA8`, 1960 bytes) are still read: what
+//! this version keeps lies at the same places in all three, the ninth
+//! has nothing of the commands the driver ended otherwise than OK (from
+//! offset 2008 of the tenth), and the eighth nothing of the I/O
+//! threads' queue (from offset 1960). None of them has cuts. A file of
+//! an older version, from a daemon before M1.3m, is read as no status.
 //!
 //! | Offset | Bytes | Field |
 //! |---|---|---|
-//! | 0 | 8 | magic `SKYZST10` |
+//! | 0 | 8 | magic `SKYZST11` |
 //! | 8 | 4 | the daemon's process id |
 //! | 12 | 2 | queues |
 //! | 14 | 2 | depth of each queue |
@@ -67,57 +51,24 @@
 //! | 88 | 8 | write-zeroes committed |
 //! | 96 | 8 | requests refused by the translation |
 //! | 104 | 8 | `held`: requests fetched and not committed yet |
-//! | 112 | 8 | `unstored`: completions waiting because the acknowledged position could not be stored. Always 0 since M1.3t-b, which removed that record; the field stays for what reads it |
-//! | 120 | 8 | writes of this file that failed |
-//! | 128 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
-//! | 136 | 8 | `recovered_unacknowledged`: operations this daemon's start found in the log beyond the acknowledged position (a lower bound: see `Store::recovered_unacknowledged`) |
-//! | 144 | 8 | `log_live`: the bytes of the log from its start to its end, which the next start replays |
-//! | 152 | 8 | `checkpoint_steps`: the steps the store's checkpoint rule has taken since this daemon started serving |
-//! | 160 | 8 | 1 while such a step is under way, else 0; a step begins with the rule's own sync of the log when it needs one, and is under way while its home image's sync is with the helper, until the worker has taken it up again |
-//! | 168 | 8 | `start_ms`: how long this daemon's start took until the device served |
-//! | 176 | 8 | `replayed_bytes`: the bytes of log that start replayed |
-//! | 184 | 8 | `checkpoint_syncs`: the syncs of the log the store's worker issued for its steps since this daemon started serving. They are nobody's request and are not among the flushes committed |
-//! | 192 | 8 | `zeroes_applied`: how write-zeroes reach the home image, by a checkpoint of the log store or by the in-place store. 0: none applied since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate; 3: zeros are written, because the file system's blocks are larger than the store's write unit, or it does not say; 4: zeros are written by direct I/O (the in-place store). Any other value is read as "not said" |
-//! | 200 | 200 | the requests' times, five fields of 8 bytes for each kind in the order read, write, flush, discard, write-zeroes: the requests of that kind the store completed; their summed wait, from the request's submission to the store until the store's worker began it (for reads, the store's reader); the longest such wait; the summed time of the store's call for them; the longest such call |
-//! | 400 | 112 | the checkpoint steps' times, a sum and a longest for each part in the order: reading the log to choose the batch; saving the neighbours of what the step writes; writing and deallocating in the home image; the home image's sync (the worker's part in it: the whole sync where the worker makes it, handing it over where a step of the rule gives it to the helper); the log's new start; the index letting go; and, not a part of a step, the rule's own sync of the log before one (`checkpoint_syncs` counts those) |
-//! | 512 | 24 | the gate at the high mark: the turns of the worker in which a request waited and none was taken because the log was at the high mark; the summed time of the steps taken in those turns, which is a share of the parts above and not more time; the longest |
-//! | 536 | 120 | the worker's whole time by what it did, fifteen fields in the order: idle; the call of a read (none since the reads have a reader of their own), a write, a flush (the log's sync), a discard, a write-zeroes; a step's six parts in the order above; the rule's own sync; anything else; a step waiting at one of its two barriers for the readers under way. They follow each other with no gap, so their sum is the time served |
-//! | 656 | 600 | for each kind of request, in the order above: fifteen fields, its summed wait by what was done meanwhile, in the order of the worker's time. A kind's fifteen add up to its summed wait. For reads it is what the reader did: idle (its wake-up), the calls of reads before it, anything else; the other twelve are zero |
-//! | 1256 | 40 | for each kind: of its longest wait, which of the fifteen took the largest part, as a number from 0 |
-//! | 1296 | 40 | for each kind: how long that part was |
-//! | 1336 | 24 | the pump, before the store has a request: how many requests it submitted; their summed time from the queue's wait returning with the request to the store having it; the longest |
-//! | 1360 | 24 | the pump, after the store is done with a read: how many reads it committed; their summed time from the store's completion being ready to the commit; the longest |
-//! | 1384 | 24 | the same for every other request |
-//! | 1408 | 24 | the acknowledged position: how often it was stored; the summed time of that; the longest. Always 0 since M1.3t-b, as `unstored` |
-//! | 1432 | 8 | the completions that were committed behind those stores. Always 0 since M1.3t-b |
-//! | 1440 | 16 | of the reads' time from ready to the commit, the first part: from the store's completion being ready to the pump taking it, summed, and the longest. As many as the reads committed |
-//! | 1456 | 16 | the same for every other request |
-//! | 1472 | 48 | the step's barriers: before the home image is written, how many (one per batch), their summed wait for the readers under way, the longest; the same before a segment file the step freed can be used again. This wait is the worker's activity `step_barrier` above and in none of the step's parts |
-//! | 1520 | 24 | the reader's whole time: idle, in the calls of reads, anything else. They follow each other with no gap |
-//! | 1544 | 24 | the reads that found a record of the log that was not durable yet, whose whole payload the reader read and checked against its checksum: how many; the bytes they read beyond those asked for; how many records did not match (each failed the volume) |
-//! | 1568 | 16 | up to when the worker's activities are complete, and the same for the reader's, in nanoseconds since the store began to be served: the moment of the look for a thread that waits for work, whose wait is counted as idle up to then; the end of its last span for a thread that is doing something. Between two files the worker's sixteen activities (the fifteen here and the one at offset 1856) sum to the difference of the first exactly, the reader's three to that of the second, and no sum goes down |
-//! | 1584 | 80 | the hint that hands a file's writes to the device before their sync (`skyzfs_local::writeback`): for the log's segment files, and then for the home image, how many calls handed writes over, the bytes of the writes they handed over, the time of all calls, 1 if the file system answered "unsupported" and the hint was switched off (else 0), and how many calls the system declined this time (short of memory, interrupted, busy) while the volume went on. The time lies inside the activity the hint was made from: the call of a write, a write-zeroes or a discard for the log's, a step's apply for the home image's |
-//! | 1664 | 192 | the syncs, by kind: a client's flush, the checkpoint rule's own sync of the log, a sync of the log that makes room for a write, a step's sync of the home image, of the preimage file, of the log's superblock. For each: how many, their time, the bytes written to the file since the sync before each, and of those how many the hint had handed over. A step's sync of the home image that the helper made counts from its hand-over to the worker's taking the report |
-//! | 1856 | 8 | the worker's sixteenth activity: waiting for the helper's report of a step's home-image sync (at the high mark, before an explicit checkpoint, a change of the hold, room in a full log, and the end). With it the worker's sixteen activities follow each other with no gap |
-//! | 1864 | 40 | for each kind of request, in the order above: its summed wait while the worker waited for that report. A kind's sixteen add up to its summed wait |
-//! | 1904 | 24 | the home image's syncs that steps handed to the helper: how many, their summed time from the hand-over to the worker taking the report, the longest. Not the worker's time: it served meanwhile |
-//! | 1928 | 24 | the worker's waits for that report: how many, their summed time, the longest |
-//! | 1952 | 8 | the requests the worker completed while a sync was with the helper |
-//! | 1960 | 8 | the in-place store's I/O threads: how many (0 for the log store, which has none, and for a build that does the I/O on the caller's thread) |
-//! | 1968 | 8 | reads and writes on those threads now: handed to a thread and not yet taken back |
-//! | 1976 | 8 | requests waiting now for a thread, in their order, because one on the threads overlaps them or a flush is behind a write still there, and everything received after the first of them |
-//! | 1984 | 8 | the requests that waited so since the store began (only grows) |
-//! | 1992 | 8 | the most reads and writes on the threads at once since the store began |
-//! | 2000 | 8 | the most requests waiting at once since the store began |
-//! | 2008 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
-//! | 2016 | 8 | `commands_failed`: the queues' commands that ended with any other result than OK: a commit or a fetch the driver refused, or one io_uring could not hand to it. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
-//! | 2024 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
+//! | 112 | 8 | writes of this file that failed |
+//! | 120 | 8 | `first_write_copies`: first writes of a tag that were copied from the transport's own buffer since this daemon started serving (at most the depth) |
+//! | 128 | 8 | `start_ms`: how long this daemon's start took until the device served |
+//! | 136 | 8 | `zeroes_applied`: how write-zeroes reach the home image. 0: none since this daemon started serving; 1: their ranges are deallocated; 2: zeros are written, because the file system cannot deallocate (both only in a test build's I/O through the kernel's cache); 4: zeros are written by direct I/O. Any other value (3 was the log store's) is read as "not said" |
+//! | 144 | 72 | the pump, before the store has a request: how many requests it submitted, their summed time from the queue's wait returning with the request to the store having it, the longest; the same after the store is done, from the request being finished to its commit, for reads and then for every other request |
+//! | 216 | 32 | of that time after the store, the first part, from the store's completion being ready to the pump taking it: for reads the summed time and the longest, then the same for every other request. As many as the commits above |
+//! | 248 | 48 | the store's I/O threads: how many (0 for a test build that does the I/O on the caller's thread); reads and writes on them now; requests waiting now for a thread, in their order, because one on the threads overlaps them or a flush is behind a write still there, and everything received after the first of them; the requests that waited so since the store began (only grows); the most reads and writes on the threads at once; the most requests waiting at once |
+//! | 296 | 8 | `commands_aborted`: the queues' commands the driver ended with its abort (`-ENODEV`): the queue is being stopped. Each tag's last command ends so |
+//! | 304 | 8 | `commands_failed`: the queues' commands that ended with any other result than OK: a commit or a fetch the driver refused, or one io_uring could not hand to it. Nothing is done about them but this count and the request log's line (see [`Queue::wait`](crate::pump::Queue::wait)) |
+//! | 312 | 8 | `last_command_failure`: the result of the last of those, a negated error number, in the first 4 bytes as a signed number; 0 before the first |
+//! | 320 | 8 | `cuts`: the cuts the store has counted since this daemon started serving (design §5.2). Not kept across a start: each daemon counts from 0 |
+//! | 328 | 8 | `cut_group`: the newest cut's transaction group; 0 before the first cut |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
 //! difference of two looks for a window; a longest time is of the whole
 //! time served and has no difference. What each number means exactly
-//! is at [`skyzfs_local::store::Timing`].
+//! is at [`PumpTiming`].
 //!
 //! # The rules
 //!
@@ -136,9 +87,8 @@
 //!   thread does not wake while nothing changes: it waits for a change
 //!   without a time limit.
 //! - **At most one write per interval**, however fast the counters
-//!   move, **except when a checkpoint step begins or ends**: that is
-//!   written at once ([`Board::post_log`] with `at_once`), so that
-//!   whoever watches the file sees a step while it is under way.
+//!   move, **except a write asked for again** ([`Board::write_again`]),
+//!   which is made at once.
 //! - When the daemon stops in order, the last counters are written
 //!   before [`Board::publish`] returns, whatever the interval.
 //!
@@ -158,287 +108,38 @@ use std::time::{Duration, Instant};
 use crate::lifecycle::{DeviceState, Held, Located, Whose};
 use crate::pump::{Counters, PumpTiming};
 use crate::records::StoredFailure;
-use skyzfs_local::inplace::IoQueue;
-use skyzfs_local::store::{RequestTiming, Spent, Synced, Timing, ACTIVITIES};
-use skyzfs_local::writeback::Hinted;
+use skyzfs_local::inplace::{Cut, Cuts, IoQueue};
+use skyzfs_local::store::Spent;
 
 /// The file's name under the volume's run directory.
 pub const STATUS: &str = "status";
 
-const MAGIC: &[u8; 8] = b"SKYZST10";
+const MAGIC: &[u8; 8] = b"SKYZST11";
 /// The version this crate writes.
-pub const VERSION: u32 = 10;
-const LEN: usize = 2032;
+pub const VERSION: u32 = 11;
+const LEN: usize = 336;
 
-/// The ninth version: nothing of the commands the driver ended
-/// otherwise than OK (offset 2008). A file of it is still read, with
-/// those at zero.
+/// The tenth version, the last with the log store's fields. A file of
+/// it is still read, without them and without cuts.
+const TENTH_MAGIC: &[u8; 8] = b"SKYZST10";
+const TENTH_LEN: usize = 2032;
+/// The ninth version: the tenth without the commands the driver ended
+/// otherwise than OK (offset 2008), which are read as zero.
 const NINTH_MAGIC: &[u8; 8] = b"SKYZSTA9";
 const NINTH_LEN: usize = 2008;
-
-/// The eighth version: nothing from the I/O threads' queue on (offset
-/// 1960). A file of it is still read, with that queue absent.
+/// The eighth version: the ninth without the I/O threads' queue (offset
+/// 1960), which is read as absent.
 const EIGHTH_MAGIC: &[u8; 8] = b"SKYZSTA8";
 const EIGHTH_LEN: usize = 1960;
-const SEVENTH_MAGIC: &[u8; 8] = b"SKYZSTA7";
-const SEVENTH_LEN: usize = 1856;
-/// The sixth version: nothing from the hint on.
-const SIXTH_MAGIC: &[u8; 8] = b"SKYZSTA6";
-const SIXTH_LEN: usize = 1584;
-/// The fifth version: fourteen activities, and nothing from the
-/// barriers on.
-const FIFTH_MAGIC: &[u8; 8] = b"SKYZSTA5";
-const FIFTH_LEN: usize = 1424;
-/// The fourth version: without the times from offset 200 on.
-const FOURTH_MAGIC: &[u8; 8] = b"SKYZSTA4";
-const FOURTH_LEN: usize = 200;
-/// The third version: without the field at offset 192.
-const THIRD_MAGIC: &[u8; 8] = b"SKYZSTA3";
-const THIRD_LEN: usize = 192;
-/// The second version: without the fields from offset 144 on.
-const SECOND_MAGIC: &[u8; 8] = b"SKYZSTA2";
-const SECOND_LEN: usize = 144;
-/// The first version: read as no status.
-const OLD_MAGIC: &[u8; 8] = b"SKYZSTA1";
-const OLD_LEN: usize = 128;
-
-/// The keys of the times in `status`, in the file's order. All values
-/// are nanoseconds but the counts and the five `*_longest_wait_cause`,
-/// which name what the worker did
-/// ([`skyzfs_local::store::ACTIVITIES`]). A key ending in `_max_ns` is the
-/// longest since the daemon started serving; every other value only
-/// grows, and a script takes the difference of two looks.
-pub const TIME_KEYS: [&str; TIME_FIELDS] = [
-    "time_read_count",
-    "time_read_wait_ns",
-    "time_read_wait_max_ns",
-    "time_read_call_ns",
-    "time_read_call_max_ns",
-    "time_write_count",
-    "time_write_wait_ns",
-    "time_write_wait_max_ns",
-    "time_write_call_ns",
-    "time_write_call_max_ns",
-    "time_flush_count",
-    "time_flush_wait_ns",
-    "time_flush_wait_max_ns",
-    "time_flush_call_ns",
-    "time_flush_call_max_ns",
-    "time_discard_count",
-    "time_discard_wait_ns",
-    "time_discard_wait_max_ns",
-    "time_discard_call_ns",
-    "time_discard_call_max_ns",
-    "time_zeroes_count",
-    "time_zeroes_wait_ns",
-    "time_zeroes_wait_max_ns",
-    "time_zeroes_call_ns",
-    "time_zeroes_call_max_ns",
-    "time_step_walk_ns",
-    "time_step_walk_max_ns",
-    "time_step_save_ns",
-    "time_step_save_max_ns",
-    "time_step_apply_ns",
-    "time_step_apply_max_ns",
-    "time_step_home_sync_ns",
-    "time_step_home_sync_max_ns",
-    "time_step_log_start_ns",
-    "time_step_log_start_max_ns",
-    "time_step_end_ns",
-    "time_step_end_max_ns",
-    "time_step_own_sync_ns",
-    "time_step_own_sync_max_ns",
-    "time_gate_count",
-    "time_gate_ns",
-    "time_gate_max_ns",
-    "time_worker_idle_ns",
-    "time_worker_read_ns",
-    "time_worker_write_ns",
-    "time_worker_flush_ns",
-    "time_worker_discard_ns",
-    "time_worker_zeroes_ns",
-    "time_worker_step_walk_ns",
-    "time_worker_step_save_ns",
-    "time_worker_step_apply_ns",
-    "time_worker_step_home_sync_ns",
-    "time_worker_step_log_start_ns",
-    "time_worker_step_end_ns",
-    "time_worker_own_sync_ns",
-    "time_worker_other_ns",
-    "time_worker_step_barrier_ns",
-    "time_read_wait_by_idle_ns",
-    "time_read_wait_by_read_ns",
-    "time_read_wait_by_write_ns",
-    "time_read_wait_by_flush_ns",
-    "time_read_wait_by_discard_ns",
-    "time_read_wait_by_zeroes_ns",
-    "time_read_wait_by_step_walk_ns",
-    "time_read_wait_by_step_save_ns",
-    "time_read_wait_by_step_apply_ns",
-    "time_read_wait_by_step_home_sync_ns",
-    "time_read_wait_by_step_log_start_ns",
-    "time_read_wait_by_step_end_ns",
-    "time_read_wait_by_own_sync_ns",
-    "time_read_wait_by_other_ns",
-    "time_read_wait_by_step_barrier_ns",
-    "time_write_wait_by_idle_ns",
-    "time_write_wait_by_read_ns",
-    "time_write_wait_by_write_ns",
-    "time_write_wait_by_flush_ns",
-    "time_write_wait_by_discard_ns",
-    "time_write_wait_by_zeroes_ns",
-    "time_write_wait_by_step_walk_ns",
-    "time_write_wait_by_step_save_ns",
-    "time_write_wait_by_step_apply_ns",
-    "time_write_wait_by_step_home_sync_ns",
-    "time_write_wait_by_step_log_start_ns",
-    "time_write_wait_by_step_end_ns",
-    "time_write_wait_by_own_sync_ns",
-    "time_write_wait_by_other_ns",
-    "time_write_wait_by_step_barrier_ns",
-    "time_flush_wait_by_idle_ns",
-    "time_flush_wait_by_read_ns",
-    "time_flush_wait_by_write_ns",
-    "time_flush_wait_by_flush_ns",
-    "time_flush_wait_by_discard_ns",
-    "time_flush_wait_by_zeroes_ns",
-    "time_flush_wait_by_step_walk_ns",
-    "time_flush_wait_by_step_save_ns",
-    "time_flush_wait_by_step_apply_ns",
-    "time_flush_wait_by_step_home_sync_ns",
-    "time_flush_wait_by_step_log_start_ns",
-    "time_flush_wait_by_step_end_ns",
-    "time_flush_wait_by_own_sync_ns",
-    "time_flush_wait_by_other_ns",
-    "time_flush_wait_by_step_barrier_ns",
-    "time_discard_wait_by_idle_ns",
-    "time_discard_wait_by_read_ns",
-    "time_discard_wait_by_write_ns",
-    "time_discard_wait_by_flush_ns",
-    "time_discard_wait_by_discard_ns",
-    "time_discard_wait_by_zeroes_ns",
-    "time_discard_wait_by_step_walk_ns",
-    "time_discard_wait_by_step_save_ns",
-    "time_discard_wait_by_step_apply_ns",
-    "time_discard_wait_by_step_home_sync_ns",
-    "time_discard_wait_by_step_log_start_ns",
-    "time_discard_wait_by_step_end_ns",
-    "time_discard_wait_by_own_sync_ns",
-    "time_discard_wait_by_other_ns",
-    "time_discard_wait_by_step_barrier_ns",
-    "time_zeroes_wait_by_idle_ns",
-    "time_zeroes_wait_by_read_ns",
-    "time_zeroes_wait_by_write_ns",
-    "time_zeroes_wait_by_flush_ns",
-    "time_zeroes_wait_by_discard_ns",
-    "time_zeroes_wait_by_zeroes_ns",
-    "time_zeroes_wait_by_step_walk_ns",
-    "time_zeroes_wait_by_step_save_ns",
-    "time_zeroes_wait_by_step_apply_ns",
-    "time_zeroes_wait_by_step_home_sync_ns",
-    "time_zeroes_wait_by_step_log_start_ns",
-    "time_zeroes_wait_by_step_end_ns",
-    "time_zeroes_wait_by_own_sync_ns",
-    "time_zeroes_wait_by_other_ns",
-    "time_zeroes_wait_by_step_barrier_ns",
-    "time_read_longest_wait_cause",
-    "time_write_longest_wait_cause",
-    "time_flush_longest_wait_cause",
-    "time_discard_longest_wait_cause",
-    "time_zeroes_longest_wait_cause",
-    "time_read_longest_wait_cause_ns",
-    "time_write_longest_wait_cause_ns",
-    "time_flush_longest_wait_cause_ns",
-    "time_discard_longest_wait_cause_ns",
-    "time_zeroes_longest_wait_cause_ns",
-    "time_pump_submit_count",
-    "time_pump_submit_ns",
-    "time_pump_submit_max_ns",
-    "time_pump_commit_read_count",
-    "time_pump_commit_read_ns",
-    "time_pump_commit_read_max_ns",
-    "time_pump_commit_other_count",
-    "time_pump_commit_other_ns",
-    "time_pump_commit_other_max_ns",
-    "time_pump_store_count",
-    "time_pump_store_ns",
-    "time_pump_store_max_ns",
-    "time_pump_store_completions",
-    "time_pump_taken_read_ns",
-    "time_pump_taken_read_max_ns",
-    "time_pump_taken_other_ns",
-    "time_pump_taken_other_max_ns",
-    "time_barrier_home_count",
-    "time_barrier_home_ns",
-    "time_barrier_home_max_ns",
-    "time_barrier_reuse_count",
-    "time_barrier_reuse_ns",
-    "time_barrier_reuse_max_ns",
-    "time_reader_idle_ns",
-    "time_reader_read_ns",
-    "time_reader_other_ns",
-    "time_read_unflushed_count",
-    "time_read_unflushed_extra_bytes",
-    "time_read_unflushed_mismatched",
-    "time_worker_as_of_ns",
-    "time_reader_as_of_ns",
-    "time_writeback_log_count",
-    "time_writeback_log_bytes",
-    "time_writeback_log_ns",
-    "time_writeback_log_off",
-    "time_writeback_log_refused",
-    "time_writeback_home_count",
-    "time_writeback_home_bytes",
-    "time_writeback_home_ns",
-    "time_writeback_home_off",
-    "time_writeback_home_refused",
-    "time_sync_flush_count",
-    "time_sync_flush_ns",
-    "time_sync_flush_bytes",
-    "time_sync_flush_handed",
-    "time_sync_own_sync_count",
-    "time_sync_own_sync_ns",
-    "time_sync_own_sync_bytes",
-    "time_sync_own_sync_handed",
-    "time_sync_room_count",
-    "time_sync_room_ns",
-    "time_sync_room_bytes",
-    "time_sync_room_handed",
-    "time_sync_home_count",
-    "time_sync_home_ns",
-    "time_sync_home_bytes",
-    "time_sync_home_handed",
-    "time_sync_preimage_count",
-    "time_sync_preimage_ns",
-    "time_sync_preimage_bytes",
-    "time_sync_preimage_handed",
-    "time_sync_superblock_count",
-    "time_sync_superblock_ns",
-    "time_sync_superblock_bytes",
-    "time_sync_superblock_handed",
-    "time_worker_step_report_ns",
-    "time_read_wait_by_step_report_ns",
-    "time_write_wait_by_step_report_ns",
-    "time_flush_wait_by_step_report_ns",
-    "time_discard_wait_by_step_report_ns",
-    "time_zeroes_wait_by_step_report_ns",
-    "time_helper_count",
-    "time_helper_ns",
-    "time_helper_max_ns",
-    "time_step_report_count",
-    "time_step_report_ns",
-    "time_step_report_max_ns",
-    "time_helper_requests",
-];
 
 /// What the file holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Status {
-    /// The version of the file it was read from: 2 to [`VERSION`]. A
+    /// The version of the file it was read from: 8 to [`VERSION`]. A
     /// file is always written as [`VERSION`], whatever this says.
     /// `status` prints it (`status_version`), so that whoever reads
-    /// the times can tell the zeros of a field an older file did not
-    /// have from a zero the daemon counted.
+    /// it can tell a field an older file did not have from a zero the
+    /// daemon counted.
     pub version: u32,
     /// The daemon's process id.
     pub pid: u32,
@@ -459,73 +160,44 @@ pub struct Status {
     /// First writes of a tag that were copied once more, from the
     /// transport's own buffer, since this daemon started serving.
     pub first_write_copies: u64,
-    /// Operations this daemon's start found in the log beyond the
-    /// acknowledged position: applied by the daemon before it and never
-    /// answered. A lower bound.
-    pub recovered_unacknowledged: u64,
-    /// The log and the start, which the third version added. `None`
-    /// in a file of the second version.
-    pub log: Option<LogStatus>,
-}
-
-/// What the file says of the log and of the daemon's start.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LogStatus {
-    /// The log as the store shows it.
-    pub shown: LogShown,
     /// How long the start took until the device served, in
     /// milliseconds.
     pub start_ms: u64,
-    /// The bytes of log the start replayed.
-    pub replayed_bytes: u64,
+    /// The store and the pump as the queue thread posts them.
+    pub shown: StoreShown,
 }
 
-/// The log as the queue thread posts it.
+/// The store and the pump as the queue thread posts them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct LogShown {
-    /// The bytes from the log's start to its end.
-    pub live: u64,
-    /// The checkpoint steps taken since the daemon started serving.
-    pub steps: u64,
-    /// Whether a step is under way.
-    pub stepping: bool,
-    /// The syncs of the log the worker issued for its steps: its own,
-    /// apart from the flushes clients asked for.
-    pub own_syncs: u64,
-    /// How a checkpoint applies write-zeroes to the home image.
+pub struct StoreShown {
+    /// How write-zeroes reach the home image.
     pub zeroes: ZeroesShown,
-    /// Where the store's time went. `None` in a file of a version
-    /// before the fifth.
-    pub timing: Option<Timing>,
-    /// Where the pump's time went. `None` in a file of a version
-    /// before the fifth.
-    pub pump: Option<PumpTiming>,
-    /// The in-place store's I/O threads' queue. `None` in a file of a
-    /// version before the ninth, and from the log store (which has no
-    /// threads); a reader tells them apart by nothing, and the report
-    /// shows the queue only where there are threads.
+    /// Where the pump's time went.
+    pub pump: PumpTiming,
+    /// The store's I/O threads' queue. `None` in a file of the eighth
+    /// version.
     pub io_queue: Option<IoQueue>,
+    /// The count of cuts and the newest cut. `None` in a file of a
+    /// version before the eleventh.
+    pub cuts: Option<Cuts>,
 }
 
-/// How write-zeroes reach the home image, as the status file says it:
-/// by a checkpoint of the log store, or by the in-place store.
+/// How write-zeroes reach the home image, as the status file says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ZeroesShown {
-    /// The file does not say: it is of a version before the fourth, or
-    /// holds a value this version does not know.
+    /// The file does not say: it holds a value this version does not
+    /// know (3 was the log store's, for blocks larger than its write
+    /// unit).
     #[default]
     Unsaid,
-    /// No checkpoint has applied one since the daemon started serving.
+    /// None has been applied since the daemon started serving.
     Untried,
-    /// Their ranges are deallocated: nothing is written for them.
+    /// Their ranges are deallocated: nothing is written for them. Only
+    /// a test build's I/O through the kernel's cache.
     Deallocated,
-    /// Zeros are written: the file system cannot deallocate.
+    /// Zeros are written through the kernel's cache: the file system
+    /// cannot deallocate. Only a test build's I/O through the cache.
     Written,
-    /// Zeros are written: the file system's blocks are larger than the
-    /// store's write unit, or their size could not be read. No store
-    /// says this any more: one is not opened on such a file system
-    /// (M1.3g). The value stays readable.
-    WrittenForBlocks,
     /// Zeros are written by direct I/O: the in-place store, where a
     /// deallocated range would make the next writes to it allocate
     /// again.
@@ -538,7 +210,6 @@ impl ZeroesShown {
             Self::Untried => 0,
             Self::Deallocated => 1,
             Self::Written => 2,
-            Self::WrittenForBlocks => 3,
             Self::WrittenDirect => 4,
             Self::Unsaid => u64::MAX,
         }
@@ -549,7 +220,6 @@ impl ZeroesShown {
             0 => Self::Untried,
             1 => Self::Deallocated,
             2 => Self::Written,
-            3 => Self::WrittenForBlocks,
             4 => Self::WrittenDirect,
             _ => Self::Unsaid,
         }
@@ -559,20 +229,14 @@ impl ZeroesShown {
     fn said(self) -> Option<&'static str> {
         match self {
             Self::Unsaid => None,
-            Self::Untried => {
-                Some("not yet: no checkpoint has applied one since this daemon started serving")
-            }
-            Self::Deallocated => Some("deallocated in the home image: nothing is written for them"),
-            Self::Written => Some(
-                "written as zeros: the file system of the volume's directory cannot deallocate, \
-                 so a log of write-zeroes is worked off at the pace of that writing, and \
-                 requests wait for it",
+            Self::Untried => Some("not yet: none applied since this daemon started serving"),
+            Self::Deallocated => Some(
+                "deallocated in the home image: nothing is written for them (a test build's \
+                 I/O through the kernel's cache)",
             ),
-            Self::WrittenForBlocks => Some(
-                "written as zeros: the blocks of the volume's file system are larger than the \
-                 store's write unit, or their size could not be read, so a range is not \
-                 deallocated there; a log of write-zeroes is worked off at the pace of that \
-                 writing, and requests wait for it",
+            Self::Written => Some(
+                "written as zeros through the kernel's cache: the file system of the volume's \
+                 directory cannot deallocate (a test build's I/O through the cache)",
             ),
             Self::WrittenDirect => Some(
                 "written as zeros by direct I/O: the in-place store does not deallocate, since \
@@ -581,6 +245,52 @@ impl ZeroesShown {
             ),
         }
     }
+}
+
+/// The keys of the pump's times in `status`, in the file's order. All
+/// are nanoseconds but the three counts. A key ending in `_max_ns` is
+/// the longest since the daemon started serving; every other value only
+/// grows, and a script takes the difference of two looks. They begin
+/// with `pump_`, not `time_`: the benchmark reads the `time_` keys as
+/// those of the log store's versions, which the in-place store never
+/// printed.
+pub const PUMP_KEYS: [&str; PUMP_FIELDS] = [
+    "pump_submit_count",
+    "pump_submit_ns",
+    "pump_submit_max_ns",
+    "pump_commit_read_count",
+    "pump_commit_read_ns",
+    "pump_commit_read_max_ns",
+    "pump_commit_other_count",
+    "pump_commit_other_ns",
+    "pump_commit_other_max_ns",
+    "pump_taken_read_ns",
+    "pump_taken_read_max_ns",
+    "pump_taken_other_ns",
+    "pump_taken_other_max_ns",
+];
+
+/// The number of 8-byte fields the pump's times take.
+const PUMP_FIELDS: usize = 13;
+
+/// The pump's times in the file's order: see the table at the top.
+fn pump_fields(pump: &PumpTiming) -> [u64; PUMP_FIELDS] {
+    let mut fields = [0u64; PUMP_FIELDS];
+    let mut at = 0;
+    let mut put = |value: u64| {
+        fields[at] = value;
+        at += 1;
+    };
+    for spent in [pump.to_submit, pump.read_to_commit, pump.other_to_commit] {
+        put(spent.count);
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
+    for spent in [pump.read_to_taken, pump.other_to_taken] {
+        put(spent.sum_ns);
+        put(spent.max_ns);
+    }
+    fields
 }
 
 fn u64_at(bytes: &[u8], at: usize) -> u64 {
@@ -598,7 +308,9 @@ fn encode(status: &Status) -> [u8; LEN] {
     bytes[16..32].copy_from_slice(&status.boot);
     bytes[32..48].copy_from_slice(&status.identity);
     let c = &status.counters;
-    let log = status.log.unwrap_or_default();
+    let shown = &status.shown;
+    let q = shown.io_queue.unwrap_or_default();
+    let cuts = shown.cuts.unwrap_or_default();
     let fields = [
         status.written_ms,
         c.reads,
@@ -608,396 +320,146 @@ fn encode(status: &Status) -> [u8; LEN] {
         c.write_zeroes,
         c.refused,
         c.in_flight,
-        c.unstored,
         status.failures,
         status.first_write_copies,
-        status.recovered_unacknowledged,
-        log.shown.live,
-        log.shown.steps,
-        u64::from(log.shown.stepping),
-        log.start_ms,
-        log.replayed_bytes,
-        log.shown.own_syncs,
-        log.shown.zeroes.code(),
+        status.start_ms,
+        shown.zeroes.code(),
     ];
-    let times = time_fields(
-        &log.shown.timing.unwrap_or_default(),
-        &log.shown.pump.unwrap_or_default(),
-    );
-    for (i, field) in fields.iter().chain(&times).enumerate() {
-        bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
-    }
-    // The ninth version's I/O threads' queue, from offset 1960.
-    let q = log.shown.io_queue.unwrap_or_default();
-    for (i, field) in [
+    let after = [
         q.threads,
         q.in_flight,
         q.waiting,
         q.waited,
         q.in_flight_max,
         q.waiting_max,
-    ]
-    .iter()
-    .enumerate()
-    {
-        bytes[EIGHTH_LEN + 8 * i..EIGHTH_LEN + 8 + 8 * i].copy_from_slice(&field.to_le_bytes());
+        c.commands_aborted,
+        c.commands_failed,
+        // The last command's failure, in the field's first 4 bytes.
+        u64::from(u32::from_le_bytes(c.last_command_failure.to_le_bytes())),
+        cuts.count,
+        cuts.newest.map_or(0, |cut| cut.group),
+    ];
+    let pump = pump_fields(&shown.pump);
+    for (i, field) in fields.iter().chain(&pump).chain(&after).enumerate() {
+        bytes[48 + 8 * i..56 + 8 * i].copy_from_slice(&field.to_le_bytes());
     }
-    // The tenth version's commands the driver ended otherwise than OK,
-    // from offset 2008.
-    bytes[NINTH_LEN..NINTH_LEN + 8].copy_from_slice(&c.commands_aborted.to_le_bytes());
-    bytes[NINTH_LEN + 8..NINTH_LEN + 16].copy_from_slice(&c.commands_failed.to_le_bytes());
-    bytes[NINTH_LEN + 16..NINTH_LEN + 20].copy_from_slice(&c.last_command_failure.to_le_bytes());
     bytes
 }
 
-/// The number of 8-byte fields the times take.
-const TIME_FIELDS: usize = 220;
-
-/// The activities of the worker whose fields lie where the seventh
-/// version had them; the sixteenth comes after that version's fields.
-const SEVENTH_ACTIVITIES: usize = 15;
-
-/// Where the five fields begin that name an activity: the largest
-/// cause of each kind's longest wait.
-const CAUSE_FIELDS: std::ops::Range<usize> = 132..137;
-
-/// The times in the file's order: see the table at the top.
-fn time_fields(timing: &Timing, pump: &PumpTiming) -> [u64; TIME_FIELDS] {
-    let mut fields = [0u64; TIME_FIELDS];
-    let mut at = 0;
-    let mut put = |value: u64| {
-        fields[at] = value;
-        at += 1;
-    };
-    for kind in &timing.requests {
-        for value in [
-            kind.wait.count,
-            kind.wait.sum_ns,
-            kind.wait.max_ns,
-            kind.call.sum_ns,
-            kind.call.max_ns,
-        ] {
-            put(value);
-        }
-    }
-    for part in [
-        timing.step_walk,
-        timing.step_save,
-        timing.step_apply,
-        timing.step_home_sync,
-        timing.step_start,
-        timing.step_end,
-        timing.step_own_sync,
-    ] {
-        put(part.sum_ns);
-        put(part.max_ns);
-    }
-    put(timing.gate.count);
-    put(timing.gate.sum_ns);
-    put(timing.gate.max_ns);
-    for value in &timing.worker[..SEVENTH_ACTIVITIES] {
-        put(*value);
-    }
-    for value in timing
-        .wait_by
-        .iter()
-        .flat_map(|kind| &kind[..SEVENTH_ACTIVITIES])
-    {
-        put(*value);
-    }
-    for value in timing.longest_wait_cause {
-        put(value);
-    }
-    for value in timing.longest_wait_cause_ns {
-        put(value);
-    }
-    for spent in [
-        pump.to_submit,
-        pump.read_to_commit,
-        pump.other_to_commit,
-        pump.store,
-    ] {
-        put(spent.count);
-        put(spent.sum_ns);
-        put(spent.max_ns);
-    }
-    put(pump.behind_store);
-    for spent in [pump.read_to_taken, pump.other_to_taken] {
-        put(spent.sum_ns);
-        put(spent.max_ns);
-    }
-    for spent in [timing.barrier_home, timing.barrier_reuse] {
-        put(spent.count);
-        put(spent.sum_ns);
-        put(spent.max_ns);
-    }
-    for value in timing.reader.iter().chain(&timing.read_unflushed) {
-        put(*value);
-    }
-    put(timing.worker_as_of_ns);
-    put(timing.reader_as_of_ns);
-    for hinted in timing.writeback {
-        put(hinted.count);
-        put(hinted.bytes);
-        put(hinted.ns);
-        put(u64::from(hinted.off));
-        put(hinted.refused);
-    }
-    for synced in timing.syncs {
-        put(synced.count);
-        put(synced.sum_ns);
-        put(synced.bytes);
-        put(synced.handed);
-    }
-    for value in timing.worker[SEVENTH_ACTIVITIES..].iter().chain(
-        timing
-            .wait_by
-            .iter()
-            .flat_map(|kind| &kind[SEVENTH_ACTIVITIES..]),
-    ) {
-        put(*value);
-    }
-    for spent in [timing.helper, timing.step_report] {
-        put(spent.count);
-        put(spent.sum_ns);
-        put(spent.max_ns);
-    }
-    put(timing.helper_requests);
-    fields
+/// Where the fields this version keeps lie in a file of the eighth,
+/// ninth or tenth version.
+mod tenth {
+    pub(super) const FAILURES: usize = 120;
+    pub(super) const FIRST_WRITE_COPIES: usize = 128;
+    pub(super) const START_MS: usize = 168;
+    pub(super) const ZEROES: usize = 192;
+    /// The pump's times before the store: three times three fields.
+    pub(super) const PUMP: usize = 1336;
+    /// The first part of the times after the store.
+    pub(super) const TAKEN: usize = 1440;
+    pub(super) const IO_QUEUE: usize = 1960;
+    pub(super) const COMMANDS: usize = 2008;
 }
 
-/// The pump's times of a file of the sixth version, or of the fifth.
-fn pump_at(bytes: &[u8], fifth: bool) -> PumpTiming {
-    let base = if fifth { 1288 } else { 1336 };
-    let mut at = base;
-    let mut spent = || {
-        let fields = [
-            u64_at(bytes, at),
-            u64_at(bytes, at + 8),
-            u64_at(bytes, at + 16),
-        ];
-        at += 24;
-        Spent {
-            count: fields[0],
-            sum_ns: fields[1],
-            max_ns: fields[2],
-        }
+/// The pump's times from `fields`, in the order of [`pump_fields`].
+fn pump_of(fields: &[u64; PUMP_FIELDS]) -> PumpTiming {
+    let spent = |at: usize| Spent {
+        count: fields[at],
+        sum_ns: fields[at + 1],
+        max_ns: fields[at + 2],
     };
-    let (to_submit, read_to_commit, other_to_commit, store) = (spent(), spent(), spent(), spent());
+    let (read_to_commit, other_to_commit) = (spent(3), spent(6));
     // The file has no count for these: each is counted with a commit.
     let taken = |at: usize, count: u64| Spent {
         count,
-        sum_ns: u64_at(bytes, at),
-        max_ns: u64_at(bytes, at + 8),
+        sum_ns: fields[at],
+        max_ns: fields[at + 1],
     };
     PumpTiming {
-        to_submit,
+        to_submit: spent(0),
         read_to_commit,
         other_to_commit,
-        read_to_taken: taken(base + 104, read_to_commit.count),
-        other_to_taken: taken(base + 120, other_to_commit.count),
-        store,
-        behind_store: u64_at(bytes, base + 96),
+        read_to_taken: taken(9, read_to_commit.count),
+        other_to_taken: taken(11, other_to_commit.count),
     }
-}
-
-/// The times of a file of the seventh version, the sixth or the fifth.
-/// What the file does not hold is filled in where another field says
-/// it (the count of a request's calls is that of its waits) and left
-/// zero where none does (how many batches a step's parts were measured
-/// over; in the fifth version, the fifteenth activity and everything
-/// from the barriers on; in the sixth, the hint and the syncs).
-fn timing_at(bytes: &[u8], fifth: bool, seventh: bool, eighth: bool) -> Timing {
-    let activities = if fifth { 14 } else { SEVENTH_ACTIVITIES };
-    let mut at = 200;
-    let mut take = || {
-        let value = u64_at(bytes, at);
-        at += 8;
-        value
-    };
-    let mut timing = Timing::default();
-    for kind in &mut timing.requests {
-        let count = take();
-        let wait = Spent {
-            count,
-            sum_ns: take(),
-            max_ns: take(),
-        };
-        let call = Spent {
-            count,
-            sum_ns: take(),
-            max_ns: take(),
-        };
-        *kind = RequestTiming { wait, call };
-    }
-    let mut part = || Spent {
-        count: 0,
-        sum_ns: take(),
-        max_ns: take(),
-    };
-    timing.step_walk = part();
-    timing.step_save = part();
-    timing.step_apply = part();
-    timing.step_home_sync = part();
-    timing.step_start = part();
-    timing.step_end = part();
-    timing.step_own_sync = part();
-    timing.gate = Spent {
-        count: take(),
-        sum_ns: take(),
-        max_ns: take(),
-    };
-    for value in &mut timing.worker[..activities] {
-        *value = take();
-    }
-    for kind in &mut timing.wait_by {
-        for value in &mut kind[..activities] {
-            *value = take();
-        }
-    }
-    for value in &mut timing.longest_wait_cause {
-        *value = take();
-    }
-    for value in &mut timing.longest_wait_cause_ns {
-        *value = take();
-    }
-    if !fifth {
-        let mut at = 1472;
-        let mut take = || {
-            let value = u64_at(bytes, at);
-            at += 8;
-            value
-        };
-        for barrier in [&mut timing.barrier_home, &mut timing.barrier_reuse] {
-            *barrier = Spent {
-                count: take(),
-                sum_ns: take(),
-                max_ns: take(),
-            };
-        }
-        for value in timing
-            .reader
-            .iter_mut()
-            .chain(timing.read_unflushed.iter_mut())
-        {
-            *value = take();
-        }
-        timing.worker_as_of_ns = take();
-        timing.reader_as_of_ns = take();
-    }
-    if seventh {
-        let mut at = 1584;
-        let mut take = || {
-            let value = u64_at(bytes, at);
-            at += 8;
-            value
-        };
-        for hinted in &mut timing.writeback {
-            *hinted = Hinted {
-                count: take(),
-                bytes: take(),
-                ns: take(),
-                off: take() != 0,
-                refused: take(),
-            };
-        }
-        for synced in &mut timing.syncs {
-            *synced = Synced {
-                count: take(),
-                sum_ns: take(),
-                bytes: take(),
-                handed: take(),
-            };
-        }
-    }
-    if eighth {
-        let mut at = SEVENTH_LEN;
-        let mut take = || {
-            let value = u64_at(bytes, at);
-            at += 8;
-            value
-        };
-        for value in timing.worker[SEVENTH_ACTIVITIES..].iter_mut().chain(
-            timing
-                .wait_by
-                .iter_mut()
-                .flat_map(|kind| &mut kind[SEVENTH_ACTIVITIES..]),
-        ) {
-            *value = take();
-        }
-        for spent in [&mut timing.helper, &mut timing.step_report] {
-            *spent = Spent {
-                count: take(),
-                sum_ns: take(),
-                max_ns: take(),
-            };
-        }
-        timing.helper_requests = take();
-    }
-    timing
 }
 
 fn decode(bytes: &[u8]) -> Option<Status> {
-    let tenth = bytes.len() == LEN && &bytes[..8] == MAGIC;
-    let ninth = tenth || (bytes.len() == NINTH_LEN && &bytes[..8] == NINTH_MAGIC);
-    let eighth = ninth || (bytes.len() == EIGHTH_LEN && &bytes[..8] == EIGHTH_MAGIC);
-    let seventh = eighth || (bytes.len() == SEVENTH_LEN && &bytes[..8] == SEVENTH_MAGIC);
-    let sixth = seventh || (bytes.len() == SIXTH_LEN && &bytes[..8] == SIXTH_MAGIC);
-    let only_fifth = bytes.len() == FIFTH_LEN && &bytes[..8] == FIFTH_MAGIC;
-    let fifth = sixth || only_fifth;
-    let fourth = fifth || (bytes.len() == FOURTH_LEN && &bytes[..8] == FOURTH_MAGIC);
-    let third = bytes.len() == THIRD_LEN && &bytes[..8] == THIRD_MAGIC;
-    let second = bytes.len() == SECOND_LEN && &bytes[..8] == SECOND_MAGIC;
-    if !fourth && !third && !second {
+    let is = |len: usize, magic: &[u8; 8]| bytes.len() == len && &bytes[..8] == magic;
+    let version = if is(LEN, MAGIC) {
+        11
+    } else if is(TENTH_LEN, TENTH_MAGIC) {
+        10
+    } else if is(NINTH_LEN, NINTH_MAGIC) {
+        9
+    } else if is(EIGHTH_LEN, EIGHTH_MAGIC) {
+        8
+    } else {
         return None;
-    }
-    let log = (fourth || third).then(|| LogStatus {
-        shown: LogShown {
-            live: u64_at(bytes, 144),
-            steps: u64_at(bytes, 152),
-            stepping: u64_at(bytes, 160) != 0,
-            own_syncs: u64_at(bytes, 184),
-            zeroes: if fourth {
-                ZeroesShown::of(u64_at(bytes, 192))
-            } else {
-                ZeroesShown::Unsaid
-            },
-            timing: fifth.then(|| timing_at(bytes, only_fifth, seventh, eighth)),
-            pump: fifth.then(|| pump_at(bytes, only_fifth)),
-            io_queue: ninth.then(|| IoQueue {
-                threads: u64_at(bytes, 1960),
-                in_flight: u64_at(bytes, 1968),
-                waiting: u64_at(bytes, 1976),
-                waited: u64_at(bytes, 1984),
-                in_flight_max: u64_at(bytes, 1992),
-                waiting_max: u64_at(bytes, 2000),
-            }),
-        },
-        start_ms: u64_at(bytes, 168),
-        replayed_bytes: u64_at(bytes, 176),
-    });
+    };
     let mut boot = [0u8; 16];
     boot.copy_from_slice(&bytes[16..32]);
     let mut identity = [0u8; 16];
     identity.copy_from_slice(&bytes[32..48]);
-    let version = if tenth {
-        10
-    } else if ninth {
-        9
-    } else if eighth {
-        8
-    } else if seventh {
-        7
-    } else if sixth {
-        6
-    } else if fifth {
-        5
-    } else if fourth {
-        4
-    } else if third {
-        3
+    // Up to the counters, every version has the same places.
+    let mut counters = Counters {
+        reads: u64_at(bytes, 56),
+        writes: u64_at(bytes, 64),
+        flushes: u64_at(bytes, 72),
+        discards: u64_at(bytes, 80),
+        write_zeroes: u64_at(bytes, 88),
+        refused: u64_at(bytes, 96),
+        in_flight: u64_at(bytes, 104),
+        ..Counters::default()
+    };
+    let field = |at: usize| u64_at(bytes, at);
+    let failure_at =
+        |at: usize| i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let (failures, first_write_copies, start_ms, shown) = if version == 11 {
+        let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| field(144 + 8 * i));
+        counters.commands_aborted = field(296);
+        counters.commands_failed = field(304);
+        counters.last_command_failure = failure_at(312);
+        let count = field(320);
+        let cuts = Cuts {
+            count,
+            newest: (count > 0).then(|| Cut {
+                number: count,
+                group: field(328),
+            }),
+        };
+        let shown = StoreShown {
+            zeroes: ZeroesShown::of(field(136)),
+            pump: pump_of(&pump),
+            io_queue: Some(io_queue_at(bytes, 248)),
+            cuts: Some(cuts),
+        };
+        (field(112), field(120), field(128), shown)
     } else {
-        2
+        let pump: [u64; PUMP_FIELDS] = std::array::from_fn(|i| {
+            if i < 9 {
+                field(tenth::PUMP + 8 * i)
+            } else {
+                field(tenth::TAKEN + 8 * (i - 9))
+            }
+        });
+        if version == 10 {
+            counters.commands_aborted = field(tenth::COMMANDS);
+            counters.commands_failed = field(tenth::COMMANDS + 8);
+            counters.last_command_failure = failure_at(tenth::COMMANDS + 16);
+        }
+        let shown = StoreShown {
+            zeroes: ZeroesShown::of(field(tenth::ZEROES)),
+            pump: pump_of(&pump),
+            io_queue: (version >= 9).then(|| io_queue_at(bytes, tenth::IO_QUEUE)),
+            cuts: None,
+        };
+        (
+            field(tenth::FAILURES),
+            field(tenth::FIRST_WRITE_COPIES),
+            field(tenth::START_MS),
+            shown,
+        )
     };
     Some(Status {
         version,
@@ -1006,41 +468,54 @@ fn decode(bytes: &[u8]) -> Option<Status> {
         depth: u16::from_le_bytes([bytes[14], bytes[15]]),
         boot,
         identity,
-        written_ms: u64_at(bytes, 48),
-        counters: Counters {
-            reads: u64_at(bytes, 56),
-            writes: u64_at(bytes, 64),
-            flushes: u64_at(bytes, 72),
-            discards: u64_at(bytes, 80),
-            write_zeroes: u64_at(bytes, 88),
-            refused: u64_at(bytes, 96),
-            in_flight: u64_at(bytes, 104),
-            unstored: u64_at(bytes, 112),
-            commands_aborted: if tenth { u64_at(bytes, 2008) } else { 0 },
-            commands_failed: if tenth { u64_at(bytes, 2016) } else { 0 },
-            last_command_failure: if tenth {
-                i32::from_le_bytes([bytes[2024], bytes[2025], bytes[2026], bytes[2027]])
-            } else {
-                0
-            },
-        },
-        failures: u64_at(bytes, 120),
-        first_write_copies: u64_at(bytes, 128),
-        recovered_unacknowledged: u64_at(bytes, 136),
-        log,
+        written_ms: field(48),
+        counters,
+        failures,
+        first_write_copies,
+        start_ms,
+        shown,
     })
 }
 
-/// Read the file at `path`. `Ok(None)` if there is none, or one of the
-/// first version. Any other file that is not a whole record is an
-/// error.
+/// The I/O threads' queue, six fields from `at`.
+fn io_queue_at(bytes: &[u8], at: usize) -> IoQueue {
+    IoQueue {
+        threads: u64_at(bytes, at),
+        in_flight: u64_at(bytes, at + 8),
+        waiting: u64_at(bytes, at + 16),
+        waited: u64_at(bytes, at + 24),
+        in_flight_max: u64_at(bytes, at + 32),
+        waiting_max: u64_at(bytes, at + 40),
+    }
+}
+
+/// Whether `bytes` are a whole file of a version before the eighth,
+/// which is read as no status: by its length and its magic.
+fn is_older(bytes: &[u8]) -> bool {
+    const OLDER: [(usize, &[u8; 8]); 7] = [
+        (1856, b"SKYZSTA7"),
+        (1584, b"SKYZSTA6"),
+        (1424, b"SKYZSTA5"),
+        (200, b"SKYZSTA4"),
+        (192, b"SKYZSTA3"),
+        (144, b"SKYZSTA2"),
+        (128, b"SKYZSTA1"),
+    ];
+    OLDER
+        .iter()
+        .any(|(len, magic)| bytes.len() == *len && &bytes[..8] == *magic)
+}
+
+/// Read the file at `path`. `Ok(None)` if there is none, or one of a
+/// version before the eighth. Any other file that is not a whole record
+/// is an error.
 pub fn read(path: &Path) -> io::Result<Option<Status>> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    if bytes.len() == OLD_LEN && &bytes[..8] == OLD_MAGIC {
+    if is_older(&bytes) {
         return Ok(None);
     }
     decode(&bytes)
@@ -1190,9 +665,9 @@ impl Pace {
 #[derive(Debug, Default)]
 struct Posted {
     counters: Counters,
-    log: LogShown,
-    /// The log as posted is to be written without waiting for the
-    /// interval.
+    store: StoreShown,
+    /// What is posted is to be written without waiting for the
+    /// interval ([`Board::write_again`]).
     at_once: bool,
     stop: bool,
     /// How often [`Board::publish`] has tried to write the file, done
@@ -1248,15 +723,13 @@ impl Board {
         }
     }
 
-    /// Put the log's state up, as [`Board::post`] does the counters.
-    /// With `at_once` it is written without waiting for the interval:
-    /// for the begin and the end of a checkpoint step.
-    pub fn post_log(&self, log: LogShown, at_once: bool) {
+    /// Put the store's and the pump's state up, as [`Board::post`] does
+    /// the counters.
+    pub fn post_store(&self, shown: StoreShown) {
         let mut posted = self.lock();
-        if posted.log != log {
-            posted.log = log;
-            posted.at_once |= at_once;
-            if at_once || posted.awaits_change || posted.every_post_wakes {
+        if posted.store != shown {
+            posted.store = shown;
+            if posted.awaits_change || posted.every_post_wakes {
                 self.changed.notify_all();
             }
         }
@@ -1327,47 +800,46 @@ impl Board {
         pace: Pace,
         mut write: impl FnMut(&Counters, u64) -> io::Result<()>,
     ) -> u64 {
-        self.publish_with_log(pace, |counters, _, failures| write(counters, failures))
+        self.publish_with_store(pace, |counters, _, failures| write(counters, failures))
     }
 
-    /// [`Board::publish`] for a `write` that is also given the log's
-    /// state as posted ([`Board::post_log`]). A change of the log is
-    /// written as a change of the counters is, and at once if it was
-    /// posted so.
-    pub fn publish_with_log(
+    /// [`Board::publish`] for a `write` that is also given the store's
+    /// state as posted ([`Board::post_store`]). A change of it is
+    /// written as a change of the counters is.
+    pub fn publish_with_store(
         &self,
         mut pace: Pace,
-        mut write: impl FnMut(&Counters, &LogShown, u64) -> io::Result<()>,
+        mut write: impl FnMut(&Counters, &StoreShown, u64) -> io::Result<()>,
     ) -> u64 {
         let started = Instant::now();
         let now = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let mut failures = 0u64;
-        let mut written_log = LogShown::default();
+        let mut written_store = StoreShown::default();
         // A write that was asked for at once and has not succeeded
-        // yet. Neither the counters nor the log say that it is owed:
-        // both may equal what was written last.
+        // yet. Neither the counters nor the store's state say that it
+        // is owed: both may equal what was written last.
         let mut owed = false;
         let mut posted = self.lock();
         posted.every_post_wakes = pace.mutants.has(Mutants::WOKEN_BY_EVERY_POST);
         loop {
             let mut due = pace.due(&posted.counters, now());
-            if due == Due::Never && (posted.log != written_log || owed) {
+            if due == Due::Never && (posted.store != written_store || owed) {
                 due = pace.due_changed(now());
             }
             let last = posted.stop;
             if posted.at_once || matches!(due, Due::Now) || (last && due != Due::Never) {
-                let (counters, log) = (posted.counters, posted.log);
+                let (counters, store) = (posted.counters, posted.store);
                 owed |= posted.at_once && !pace.mutants.has(Mutants::OWED_FORGOTTEN);
                 posted.at_once = false;
                 drop(posted);
-                let written = write(&counters, &log, failures);
+                let written = write(&counters, &store, failures);
                 posted = self.lock();
                 posted.attempts += 1;
                 self.changed.notify_all();
                 match written {
                     Ok(()) => {
                         owed = false;
-                        written_log = log;
+                        written_store = store;
                         pace.wrote(counters, now());
                     }
                     Err(_) => {
@@ -1448,6 +920,13 @@ pub enum Noted {
 /// `pid` is there while the kernel shows a live server for this
 /// volume's device: the process that wrote the file.
 ///
+/// `cuts` is the count of cuts the serving daemon's store has made
+/// (design §5.2) and `cut_group` the newest one's transaction group,
+/// from a file of the eleventh version. The count is the daemon's own:
+/// it starts at 0 with each daemon. A pool made on a partition of the
+/// volume, not on the whole device, makes no cuts: its uberblocks are
+/// not where the store looks for them.
+///
 /// A failure note of this boot decides the state, and is printed after
 /// everything else: its boot, whether a client held the device, why,
 /// and how long ago; then what became of the volume's device
@@ -1523,7 +1002,6 @@ pub fn report(
             ("write_zeroes", c.write_zeroes),
             ("refused", c.refused),
             ("held", c.in_flight),
-            ("unstored", c.unstored),
         ] {
             lines.push((key, value.to_string()));
         }
@@ -1539,61 +1017,39 @@ pub fn report(
         }
         for (key, value) in [
             ("first_write_copies", s.first_write_copies),
-            ("recovered_unacknowledged", s.recovered_unacknowledged),
             ("status_write_failures", s.failures),
             ("age_ms", uptime_ms.saturating_sub(s.written_ms)),
             ("status_version", u64::from(s.version)),
+            ("start_ms", s.start_ms),
         ] {
             lines.push((key, value.to_string()));
         }
-        if let Some(log) = &s.log {
+        let shown = &s.shown;
+        if let Some(said) = shown.zeroes.said() {
+            lines.push(("zeroes_applied", said.to_string()));
+        }
+        // The count of cuts and the newest cut's group, from a file
+        // that holds them; `cut_group` once there is a cut.
+        if let Some(cuts) = shown.cuts {
+            lines.push(("cuts", cuts.count.to_string()));
+            if let Some(newest) = cuts.newest {
+                lines.push(("cut_group", newest.group.to_string()));
+            }
+        }
+        for (key, value) in PUMP_KEYS.iter().zip(pump_fields(&shown.pump)) {
+            lines.push((key, value.to_string()));
+        }
+        // The store's I/O threads' queue, where there are threads.
+        if let Some(q) = shown.io_queue.filter(|q| q.threads > 0) {
             for (key, value) in [
-                ("log_live", log.shown.live.to_string()),
-                ("checkpoint_steps", log.shown.steps.to_string()),
-                ("checkpoint_syncs", log.shown.own_syncs.to_string()),
-                (
-                    "checkpoint_step",
-                    if log.shown.stepping {
-                        "under way"
-                    } else {
-                        "none"
-                    }
-                    .to_string(),
-                ),
-                ("start_ms", log.start_ms.to_string()),
-                ("replayed_bytes", log.replayed_bytes.to_string()),
+                ("io_threads", q.threads),
+                ("io_in_flight", q.in_flight),
+                ("io_waiting", q.waiting),
+                ("io_waited", q.waited),
+                ("io_in_flight_max", q.in_flight_max),
+                ("io_waiting_max", q.waiting_max),
             ] {
-                lines.push((key, value));
-            }
-            if let Some(said) = log.shown.zeroes.said() {
-                lines.push(("zeroes_applied", said.to_string()));
-            }
-            if let (Some(timing), Some(pump)) = (&log.shown.timing, &log.shown.pump) {
-                let fields = time_fields(timing, pump);
-                for (at, (key, value)) in TIME_KEYS.iter().zip(fields).enumerate() {
-                    // A cause is said by its name; a number this
-                    // version has no name for is printed as it is.
-                    let name = usize::try_from(value)
-                        .ok()
-                        .filter(|_| CAUSE_FIELDS.contains(&at))
-                        .and_then(|cause| ACTIVITIES.get(cause));
-                    let said = name.map_or_else(|| value.to_string(), |name| (*name).to_string());
-                    lines.push((key, said));
-                }
-            }
-            // The in-place store's I/O threads' queue, where there are
-            // threads (the log store has none, and shows nothing).
-            if let Some(q) = log.shown.io_queue.filter(|q| q.threads > 0) {
-                for (key, value) in [
-                    ("io_threads", q.threads),
-                    ("io_in_flight", q.in_flight),
-                    ("io_waiting", q.waiting),
-                    ("io_waited", q.waited),
-                    ("io_in_flight_max", q.in_flight_max),
-                    ("io_waiting_max", q.waiting_max),
-                ] {
-                    lines.push((key, value.to_string()));
-                }
+                lines.push((key, value.to_string()));
             }
         }
         let live = ours.is_some_and(|l| l.state == DeviceState::Live);

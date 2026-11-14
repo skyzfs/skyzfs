@@ -192,7 +192,10 @@ use skyzfs_blk::{
 
 use crate::io::{Dir, File, NotBegun};
 use crate::store::{FailureObserver, Zeroes};
+use cuts::CutRule;
 use pool::{Done, Job, Pool};
+
+pub use cuts::{Cut, Cuts};
 
 pub use start::{
     create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
@@ -201,87 +204,107 @@ pub use start::{
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Mutants(pub(crate) u32);
+pub(crate) struct Mutants(pub(crate) u64);
 
 impl Mutants {
     /// A flush that arrives while a sync is under way joins it even
     /// when something was written since the sync began.
-    pub(crate) const FLUSH_JOINS_ANY_SYNC: u32 = 1 << 0;
+    pub(crate) const FLUSH_JOINS_ANY_SYNC: u64 = 1 << 0;
     /// After a failed sync the volume is not failed: the next flush
     /// tries again.
-    pub(crate) const SYNC_RETRIED: u32 = 1 << 2;
+    pub(crate) const SYNC_RETRIED: u64 = 1 << 2;
     /// A flush with no sync under way completes at once whatever was
     /// written since the last sync.
-    pub(crate) const FLUSH_WITHOUT_SYNC: u32 = 1 << 3;
+    pub(crate) const FLUSH_WITHOUT_SYNC: u64 = 1 << 3;
     /// A failed write does not fail the volume.
-    pub(crate) const WRITE_ERROR_PASSES: u32 = 1 << 4;
+    pub(crate) const WRITE_ERROR_PASSES: u64 = 1 << 4;
     /// A discard is not counted as a change: a flush behind it alone
     /// does not sync.
-    pub(crate) const DISCARD_UNCHANGED: u32 = 1 << 5;
+    pub(crate) const DISCARD_UNCHANGED: u64 = 1 << 5;
     /// No thread is started for the failure marker: it is written on
     /// the caller's thread when the volume fails.
-    pub(crate) const MARKER_INLINE: u32 = 1 << 6;
+    pub(crate) const MARKER_INLINE: u64 = 1 << 6;
     /// The start does not drop the home image's cache.
-    pub(crate) const CACHE_NOT_DROPPED: u32 = 1 << 7;
+    pub(crate) const CACHE_NOT_DROPPED: u64 = 1 << 7;
     /// The start does not check that the cache is gone.
-    pub(crate) const CACHE_NOT_CHECKED: u32 = 1 << 8;
+    pub(crate) const CACHE_NOT_CHECKED: u64 = 1 << 8;
     /// The start does not show that the count sees the file.
-    pub(crate) const CACHE_SIGHT_UNCHECKED: u32 = 1 << 9;
+    pub(crate) const CACHE_SIGHT_UNCHECKED: u64 = 1 << 9;
     /// The start shows that the count sees the file before the drop,
     /// not after it.
-    pub(crate) const LOOK_BEFORE_DROP: u32 = 1 << 10;
+    pub(crate) const LOOK_BEFORE_DROP: u64 = 1 << 10;
     /// A thread's death is taken for an I/O error of the job it held:
     /// the volume goes on, and the jobs that wait for the threads are
     /// left to them.
-    pub(crate) const DEATH_IGNORED: u32 = 1 << 11;
+    pub(crate) const DEATH_IGNORED: u64 = 1 << 11;
     /// A flush does not wait for the writes on the threads.
-    pub(crate) const FLUSH_PASSES_WRITES: u32 = 1 << 12;
+    pub(crate) const FLUSH_PASSES_WRITES: u64 = 1 << 12;
     /// A request does not wait for an overlapping one on the threads.
-    pub(crate) const OVERLAP_UNORDERED: u32 = 1 << 13;
+    pub(crate) const OVERLAP_UNORDERED: u64 = 1 << 13;
     /// The start does not sync the home image.
-    pub(crate) const START_UNSYNCED: u32 = 1 << 14;
+    pub(crate) const START_UNSYNCED: u64 = 1 << 14;
     /// The failure observer is told after the marker is begun, not
     /// before.
-    pub(crate) const OBSERVE_AFTER_MARKER: u32 = 1 << 15;
+    pub(crate) const OBSERVE_AFTER_MARKER: u64 = 1 << 15;
     /// The failure marker is made without the directory's sync, so a
     /// power cut can take it back.
-    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 16;
+    pub(crate) const MARKER_UNSYNCED: u64 = 1 << 16;
     /// A failed read fails the volume (the log store's rule, which the
     /// in-place store does not have).
-    pub(crate) const READ_ERROR_FAILS: u32 = 1 << 17;
+    pub(crate) const READ_ERROR_FAILS: u64 = 1 << 17;
     /// Create and open do not hold the file systems' blocks to the
     /// write unit.
-    pub(crate) const ANY_BLOCKS: u32 = 1 << 18;
+    pub(crate) const ANY_BLOCKS: u64 = 1 << 18;
     /// Create and open do not hold the system's page to the write unit.
-    pub(crate) const ANY_PAGES: u32 = 1 << 19;
+    pub(crate) const ANY_PAGES: u64 = 1 << 19;
     /// A job pushed to the I/O threads wakes every waiting thread, not
     /// one.
-    pub(crate) const POOL_WAKES_ALL: u32 = 1 << 20;
+    pub(crate) const POOL_WAKES_ALL: u64 = 1 << 20;
     /// An I/O thread looks at the queue and waits under two holds of
     /// its lock: a job pushed between them wakes nobody.
-    pub(crate) const POOL_WAKE_LOST: u32 = 1 << 21;
+    pub(crate) const POOL_WAKE_LOST: u64 = 1 << 21;
     /// At the end the I/O threads end without doing the jobs queued.
-    pub(crate) const POOL_ENDS_QUEUED: u32 = 1 << 22;
+    pub(crate) const POOL_ENDS_QUEUED: u64 = 1 << 22;
     /// An I/O thread that ends a job waits to be woken before it looks
     /// at the queue again.
-    pub(crate) const POOL_WAITS_FIRST: u32 = 1 << 23;
+    pub(crate) const POOL_WAITS_FIRST: u64 = 1 << 23;
     /// Where a thread cannot be started, the threads started before it
     /// are left waiting.
-    pub(crate) const POOL_LEAVES_STARTED: u32 = 1 << 24;
+    pub(crate) const POOL_LEAVES_STARTED: u64 = 1 << 24;
     /// A write handed to the threads is acknowledged at once, before a
     /// thread has written it: a kill can lose it.
-    pub(crate) const ACK_BEFORE_WRITE: u32 = 1 << 25;
+    pub(crate) const ACK_BEFORE_WRITE: u64 = 1 << 25;
     /// A failure writes no marker: the next start serves the volume.
-    pub(crate) const FAIL_UNMARKED: u32 = 1 << 26;
+    pub(crate) const FAIL_UNMARKED: u64 = 1 << 26;
     /// The start's look reads with the kernel's read-ahead, which the
     /// next start's drop cannot take while it is under I/O.
-    pub(crate) const LOOK_READS_AHEAD: u32 = 1 << 27;
+    pub(crate) const LOOK_READS_AHEAD: u64 = 1 << 27;
     /// The open holds the directory's file system to the write unit and
     /// not the home image's: an image on a file system of its own (a
     /// mount point, a link elsewhere) goes unchecked.
-    pub(crate) const HOME_ANY_BLOCKS: u32 = 1 << 28;
+    pub(crate) const HOME_ANY_BLOCKS: u64 = 1 << 28;
+    /// An uberblock write marks when the store receives it, not once
+    /// it is applied: a flush received while it is being written
+    /// carries a cut (design §5.2).
+    pub(crate) const MARK_AT_RECEIPT: u64 = 1 << 29;
+    /// A repeat marks: every applied uberblock is followed by a cut.
+    pub(crate) const REPEAT_COUNTED: u64 = 1 << 30;
+    /// An uberblock whose group is 0 (a new label's) marks.
+    pub(crate) const GROUP_ZERO_COUNTED: u64 = 1 << 31;
+    /// A cut is counted as its flush is received, not at the flush's
+    /// barrier.
+    pub(crate) const CUT_AT_RECEIPT: u64 = 1 << 32;
+    /// A repeat is told by its group alone, not by its group and root
+    /// block pointer: after a rewind import a new state under a group
+    /// already used makes no cut.
+    pub(crate) const REPEAT_BY_GROUP: u64 = 1 << 33;
+    /// A repeat is compared with the uberblock applied before it alone,
+    /// not with the mark and the newest cut: under multihost a stale
+    /// copy of the group before, applied after the group's own
+    /// uberblocks, moves the mark back (design §5.2).
+    pub(crate) const STALE_MOVES_MARK: u64 = 1 << 34;
 
-    pub(crate) fn has(self, flag: u32) -> bool {
+    pub(crate) fn has(self, flag: u64) -> bool {
         self.0 & flag != 0
     }
 }
@@ -437,6 +460,8 @@ pub struct InPlace<D: Dir> {
     /// of its own, or tried. Whether it was written is not kept: a start
     /// that does not find it goes by the daemon's failure note.
     marker: Marker,
+    /// The count of cuts (`cuts.rs`).
+    cuts: CutRule,
 }
 
 /// Writes the failure marker, on whichever thread runs it.
@@ -722,6 +747,7 @@ impl<D: Dir> InPlace<D> {
             acked_early: (BTreeSet::new(), 0),
             held_early: Vec::new(),
             marker: Marker::new(parts.marker, mutants),
+            cuts: CutRule::new(parts.geometry.size_bytes(), mutants),
         };
         // What the instance before this one wrote by direct I/O may be
         // in the device's volatile cache only: this sync makes it
@@ -938,6 +964,11 @@ impl<D: Dir> InPlace<D> {
         self.ids.len()
     }
 
+    /// The count of cuts, and the newest cut (design §5.2; `cuts.rs`).
+    pub fn cuts(&self) -> Cuts {
+        self.cuts.cuts()
+    }
+
     /// The I/O threads' queue: what is on them, what waits for them,
     /// and the counts since the store began.
     pub fn io_queue(&self) -> IoQueue {
@@ -983,6 +1014,7 @@ impl<D: Dir> InPlace<D> {
     }
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {
+        self.cuts.ended(id);
         self.ready.push(Completion { id, result, buf });
     }
 
@@ -1047,6 +1079,9 @@ impl<D: Dir> InPlace<D> {
                     self.home.write_at(offset, &data)
                 };
                 let result = self.mutated(written);
+                if result.is_ok() {
+                    self.cuts.applied(id);
+                }
                 self.complete(id, result, Some(data));
             }
             Op::WriteZeroes { offset, len } => {
@@ -1166,7 +1201,11 @@ impl<D: Dir> InPlace<D> {
         crate::store::write_zeros(&mut self.home, offset, len)
     }
 
+    /// Flush `id` at its barrier: every request received before it has
+    /// taken effect, and none received after it has begun. A cut it
+    /// carries is counted here (`cuts.rs`).
     fn flush(&mut self, id: RequestId) {
+        self.cuts.barrier(id);
         match &mut self.syncing {
             Some(covered) => {
                 // A sync under way covers what was written before it
@@ -1279,6 +1318,7 @@ impl<D: Dir> InPlace<D> {
     /// Execute `request` now, or let it wait behind what waits already
     /// or behind a request on the threads it must not run beside.
     fn accept(&mut self, request: Request) {
+        self.cuts.received(request.id, &request.op);
         if !self.deferred.is_empty() || self.must_wait(&request.op) {
             self.deferred.push_back(request);
             self.queue.waited += 1;
@@ -1356,6 +1396,9 @@ impl<D: Dir> InPlace<D> {
             } else {
                 result.map_err(|e| BlkError::Io(e.kind()))
             };
+            if write && result.is_ok() {
+                self.cuts.applied(id);
+            }
             self.complete(id, result, Some(buf));
         }
         while let Some(front) = self.deferred.front() {
@@ -1531,6 +1574,7 @@ impl<D: Dir> InPlace<D> {
     }
 }
 
+mod cuts;
 #[cfg(test)]
 pub(crate) mod harness;
 mod pool;
