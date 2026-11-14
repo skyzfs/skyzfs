@@ -1351,6 +1351,9 @@ mod run {
                     vec![ended(5, Command::Fetch, -libc::EINVAL)],
                     Ok(Woken::Work),
                 ),
+                // Tag 0's next request, after the one its fetch with no
+                // buffer brought: answered as any other, and not said.
+                (vec![read(0, 8192)], Vec::new(), Ok(Woken::Work)),
                 (
                     Vec::new(),
                     vec![ended(0, Command::Commit, ABORTED)],
@@ -1367,11 +1370,11 @@ mod run {
             );
             assert_eq!(
                 queue.commits,
-                vec![(0, -libc::EIO, false)],
-                "answered with an error, the file not touched"
+                vec![(0, -libc::EIO, false), (0, 4096, true)],
+                "the first answered with an error, the file not touched; the next as any other"
             );
             assert_eq!(counts.failed.load(Ordering::SeqCst), 1);
-            assert_eq!(counts.reads.load(Ordering::SeqCst), 0);
+            assert_eq!(counts.reads.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_failed.load(Ordering::SeqCst), 1);
             assert_eq!(counts.commands_aborted.load(Ordering::SeqCst), 1);
             let aborted: Vec<Turn> = vec![(
@@ -1407,8 +1410,14 @@ mod run {
             assert_eq!(syscall_name("999999 0x0"), "syscall 999999");
             assert_eq!(syscall_name("running\n"), "running");
             assert_eq!(syscall_name(""), "unknown");
+            // This thread reads its own files while it is in `read`, so
+            // its call is that one, by number.
             let tid = own_tid().expect("this thread's id");
-            assert!(waits_in(tid).contains("(wchan "), "{}", waits_in(tid));
+            let here = waits_in(tid);
+            assert!(
+                here.starts_with(&format!("syscall {} (wchan ", libc::SYS_read)),
+                "{here}"
+            );
         }
 
         /// A commit with no buffer that the library will not send is
