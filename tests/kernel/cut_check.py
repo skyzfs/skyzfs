@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The check of the reference's cuts on a recorded pool (M2.T1).
 
-    cut_check.py NAME DIR LOG BASE DEV_BYTES
+    cut_check.py NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]
 
 cut-record.sh runs it after each recording: LOG is the dm-log-writes
 record, BASE the device before it (zeros), DIR where the recording's
@@ -25,6 +25,15 @@ And for each session of the pool (cut-record.sh's marks): the groups of
 the cuts whose uberblock write falls in the session equal, in order, the
 groups the pool's `txgs` kstat says were committed in it (those up to
 the kstat's last; the export's own come after it was read).
+
+With LOG_DEVICE_IMAGE (the recording `slog`, the product's layout of
+design §6.1: a log device on another device, not recorded), every
+import is of the data device alone with -m, as a restore would make it;
+zdb, which cannot open the pool without a log device, has that image
+(the log device's labels after the create, no intent log) beside it.
+At the middle cut the check also says what zdb makes of the data device
+alone and what the import with the log device missing said and showed
+(obs_zdb_data_device_alone, obs_import_missing_log).
 
 The fixture for the daemon's parser (M2.1) is written to DIR/fixture
 (cut_ref.py fixture; its format in tests/fixtures/pools/README.md).
@@ -74,7 +83,7 @@ POOL = 'skzcut'
 # where the record has nothing that tells them from the design's: no
 # flush between copies of an uberblock (count-repeats) and no group
 # written twice (txg-alone).
-RECS = ('life', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full')
+RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config', 'stray', 'autotrim', 'full')
 EXPECTED = {
     'early': {r: 'caught' for r in RECS},
     'withheld': {r: 'caught' for r in RECS},
@@ -222,14 +231,28 @@ def later_candidates(cs, mid):
 
 
 class Check:
-    def __init__(self, name, rdir, log, base, dev_bytes):
+    def __init__(self, name, rdir, log, base, dev_bytes, logdev=None):
         self.name, self.rdir, self.log, self.base, self.dev = name, rdir, log, base, dev_bytes
+        self.logdev = logdev
+        self.last_import = None
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
         self.image = os.path.join(self.imgdir, 'cut.img')
         self.alt = os.path.join(self.work, 'alt')
         os.makedirs(self.imgdir, exist_ok=True)
         os.makedirs(self.alt, exist_ok=True)
+        # The product's layout: zdb cannot open the pool without a log
+        # device, so the log device as it was after the create (its
+        # labels, no intent log) stands beside the data device for zdb.
+        # The kernel's import takes the data device alone, with -m, as a
+        # restore would; the directory `alone` holds it alone for zdb.
+        self.alone = os.path.join(self.work, 'alone')
+        if logdev:
+            rc, out, _ = run(['cp', '--sparse=always', logdev, os.path.join(self.imgdir, 'log-device.img')])
+            if rc:
+                raise RigError(f'copying the log device failed: {out.strip()}')
+            os.makedirs(self.alone, exist_ok=True)
+            os.symlink(self.image, os.path.join(self.alone, 'cut.img'))
         self.idx = logwrites.index(log, dev_bytes)
         self.records = self.idx['records']
         _, self.read = cut_ref.load_from(self.idx, log)
@@ -283,10 +306,14 @@ class Check:
         loop = out.strip()
         try:
             rc, out, _ = run(['zpool', 'import', '-d', loop, '-o', 'readonly=on', '-o', 'cachefile=none', '-N', '-f',
-                              '-R', self.alt] + (['-T', str(txg)] if txg else []) + [POOL], 180)
+                              '-R', self.alt] + (['-m'] if self.logdev else []) + (['-T', str(txg)] if txg else [])
+                             + [POOL], 180)
             said = out.strip()[-300:]
             if rc in replay_check.RIG_RC:
                 raise RigError(f'zpool import: {replay_check.stage("import", rc)}')
+            if rc == 0 and self.logdev:
+                _, st, _ = run(['zpool', 'status', '-v', POOL], 60)
+                self.last_import = (out.strip(), st.strip())
             if rc == 0:
                 erc, eout, _ = run(['zpool', 'export', POOL], 120)
                 if erc:
@@ -343,14 +370,33 @@ class Check:
         return None, f'{note}; at its own group (zdb -t, import -T): {detail}', bps, seen
 
 
+def alone_at_mid(ck, c, put):
+    """The product's layout, at the middle cut: zdb on the data device
+    alone, and what the kernel's import with the log device missing (-m)
+    said and showed."""
+    rc, out, _ = run(['zdb', '-e', '-p', ck.alone, '-u', POOL], 120)
+    t = UB_TXG_RE.search(out)
+    said = [ln.strip() for ln in out.splitlines() if ln.strip()][-2:]
+    put('obs_zdb_data_device_alone', 'INFO', f"cut {c['n']} (group {c['txg']}): zdb -e -u on the data device alone: exit {rc}, "
+        + (f"group {t.group(1)}" if t and not rc else 'no group') + f"; it said: {' | '.join(said)[:300]}")
+    if ck.last_import:
+        imp, st = ck.last_import
+        flat = ' | '.join(ln.strip() for ln in (imp + '\n' + st).splitlines() if ln.strip())
+        put('obs_import_missing_log', 'INFO', f"cut {c['n']}: zpool import -m -o readonly=on of the data device alone said, "
+            f"and zpool status -v then showed: {flat[:1500]}")
+    else:
+        put('obs_import_missing_log', 'INFO', f"cut {c['n']}: no import with -m succeeded at this cut")
+
+
 def control_verdict(failed):
     return 'caught' if failed else 'missed'
 
 
 def main():
-    if len(sys.argv) != 6:
+    if len(sys.argv) not in (6, 7):
         sys.exit(__doc__)
     name, rdir, log, base, dev = sys.argv[1:5] + [int(sys.argv[5])]
+    logdev = sys.argv[6] if len(sys.argv) == 7 else None
     t0 = time.monotonic()
     res = os.path.join(rdir, 'results.tsv')
     lines = []
@@ -361,7 +407,7 @@ def main():
 
     rc = 0
     try:
-        ck = Check(name, rdir, log, base, dev)
+        ck = Check(name, rdir, log, base, dev, logdev)
         about = f'recording {name} (tests/kernel/cut-record.sh)'
         for f in ('zfs-version.txt',):
             p = os.path.join(os.path.dirname(rdir), f)
@@ -391,6 +437,8 @@ def main():
                 put(f"cut_{c['n']}", 'FAIL', f"group {c['txg']} at record {c['prefix']}: {failed}: {detail}")
             if c is mid:
                 bps_at['mid'] = bps
+                if logdev:
+                    alone_at_mid(ck, c, put)
         with open(os.path.join(rdir, 'fixture', 'opens.tsv'), 'w') as f:
             f.write('# what real ZFS made of each reference cut (cut_check.py): zdb_txg the group zdb -e -u selected\n'
                     '# at the cut\'s instant, ring_txg the best uberblock in the labels by the reference, itself 1 when\n'

@@ -30,6 +30,13 @@
 #              MOS's objset, all its copies) overwritten with zeros
 #              through the recorded device, `zpool import -F`, load,
 #              export; OUT/NAME/rewind-f.txt says what the import said
+#   slog       the product's layout (design §6.1): the data device
+#              recorded, a log device of 256 MiB on another loop file
+#              (not recorded); after the create an export, a copy of
+#              the log device (its labels, no intent log: what a restore
+#              can place beside the data device for zdb) and an import;
+#              then load with synchronous writes going on (dd
+#              oflag=sync, 4 KiB at a time, into the intent log), export
 #   multihost  multihost=on (the host id is 5eed1234 for every
 #              recording), load for 20 s, so that MMP writes uberblocks
 #              of its own
@@ -54,7 +61,7 @@
 # Knobs: CUT_VDEV_MB=512 (the pool's device), CUT_LOG_MB=8192 (the
 # record's device, sparse), CUT_FILES=6 (files per sync of the load).
 # After each recording, CUT_CHECK (default: the check, cut_check.py)
-# runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES`; CUT_CHECK=none
+# runs as `$CUT_CHECK NAME DIR LOG BASE DEV_BYTES [LOG_DEVICE_IMAGE]`; CUT_CHECK=none
 # records only. Exit: 0 when every recording was made and checked, 1
 # when a check gave a verdict against a cut, 2 for the rig's own error.
 #
@@ -68,7 +75,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 OUT=${1:?usage: cut-record.sh OUT [WORK] [RECORDING...]}
 WORK=${2:-/mnt/skz-cut}
 shift $(( $# >= 2 ? 2 : 1 ))
-ALL="life rewind rewindsync rewindf multihost config stray autotrim full"
+ALL="life slog rewind rewindsync rewindf multihost config stray autotrim full"
 RECS=${*:-$ALL}
 [ "$(id -u)" = 0 ] || { echo "needs root" >&2; exit 64; }
 mkdir -p "$OUT" "$WORK"
@@ -85,7 +92,7 @@ for v in "$VDEV_MB" "$LOG_MB" "$FILES"; do [[ $v =~ ^[0-9]+$ ]] || { echo "not a
 for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there are: $ALL)" >&2; exit 64; }; done
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
-VLOOP=""; LLOOP=""; MLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""
+VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""
 rig_error() { log "the rig's own error in $NAME: $*"; echo "$NAME	rig error	$*" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
     local secs=$1; shift
@@ -138,7 +145,7 @@ cleanup() {
     timeout 120 zpool export -f "$POOL" 2>/dev/null
     dmsetup remove "$LW" 2>/dev/null
     [ -z "$LOWER_UP" ] || dmsetup remove "$LOWER" 2>/dev/null
-    for l in "$VLOOP" "$LLOOP" "$MLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
+    for l in "$VLOOP" "$LLOOP" "$MLOOP" "$SLOOP"; do [ -z "$l" ] || losetup -d "$l" 2>/dev/null; done
     exit "$rc"
 }
 trap cleanup EXIT
@@ -194,7 +201,10 @@ end() {
     [ "$CHECK" = none ] && return 0
     local rc=0
     # shellcheck disable=SC2086 # CHECK is a command line
-    $CHECK "$NAME" "$RDIR" "$WORK/log.img" "$WORK/base.img" $((VDEV_MB << 20)) || rc=$?
+    local logdev=()
+    [ ! -e "$WORK/slog-base.img" ] || logdev=("$WORK/slog-base.img")
+    $CHECK "$NAME" "$RDIR" "$WORK/log.img" "$WORK/base.img" $((VDEV_MB << 20)) "${logdev[@]}" || rc=$?
+    rm -f "$WORK/slog-base.img"
     echo "$NAME	checked	exit $rc" >> "$OUT/recordings.tsv"
     WORST=$(( rc > WORST ? rc : WORST ))
 }
@@ -277,6 +287,35 @@ rec_rewindf() {
     committed | tail -n 3 | tr '\n' ' ' | sed 's/^/groups committed after the import: /' >> "$RDIR/rewind-f.txt"
     load 3
     export_pool
+}
+rec_slog() {
+    : > "$WORK/slog.img"; truncate -s 256M "$WORK/slog.img"
+    SLOOP=$(losetup --find --show "$WORK/slog.img")
+    session_begin
+    z 120 zpool create -f -o ashift=12 -o cachefile=none -O mountpoint="$MNT" -O atime=off -O compression=off \
+        "$POOL" "$DEV" log "$SLOOP"
+    mark "session-$SESSION-ready"
+    export_pool
+    cp --sparse=always "$WORK/slog.img" "$WORK/slog-base.img"
+    session_begin
+    z 120 zpool import -d "$DEV" -d "$SLOOP" -o cachefile=none "$POOL"
+    mark "session-$SESSION-ready"
+    python3 -c '
+import os, sys, time
+fd = os.open(sys.argv[1] + "/synced", os.O_WRONLY | os.O_CREAT | os.O_SYNC, 0o644)
+k = 0
+while not os.path.exists(sys.argv[2]):
+    os.write(fd, os.urandom(4096)); k += 1
+    time.sleep(0.005)
+print(k)
+' "$MNT" "$WORK/sync.stop" > "$RDIR/sync-writes.txt" &
+    STRAY=$!
+    load 6
+    touch "$WORK/sync.stop"; wait "$STRAY"; STRAY=""; rm -f "$WORK/sync.stop"
+    zpool iostat -v "$POOL" > "$RDIR/iostat.txt" 2>&1 || true
+    export_pool
+    losetup -d "$SLOOP"; SLOOP=""
+    rm -f "$WORK/slog.img"
 }
 rec_multihost() {
     create_pool -o multihost=on
