@@ -38,3 +38,15 @@ the switch, `held` 0 and no failure line in the serve log; anything
 else still serving FAILs. Settled by reading; test_daemon_check.py 68
 OK, `bash -n` clean. To do: the daemon rig's tables at 0d150d9, then
 the verdict on the pull request.
+
+## Third look (issue comment 6869519286): can merge once f79e794's rig is green
+
+The daemon rig at 0d150d9 (run 43537703005), read line by line: on
+24.04, 26.04 and 26.04-arm, 47 PASS, 13 NA (the in-place store's, as at
+the base), 1 WAITING, the five controls FAIL, no pin ERROR or FAIL. g.1
+passed with the rig's write finding the device gone each time (ZFS's
+writes failed the volume first). g.4 refused by reason; only log.000000
+and log.super changed. commands_failed 0 in a, b, e; c: 122 logs, 2944
+aborts, nothing else. Stand-ins: WAITING on the nine new lines.
+f79e794 (Codex: the digest read the image through the cache before the
+data=journal serve; `cachestat.py --drop` evicts it): right.

@@ -1,0 +1,3 @@
+alone: passed 12 of 12, failed 0
+one-cpu: passed 12 of 12, failed 0
+whole-suite: passed 12 of 12, failed 0

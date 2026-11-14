@@ -14,6 +14,11 @@ PLANTS = {
     'F1 finish_threads also ends the sync it began': [(INP,
         "            self.collect(Duration::from_millis(10));\n        }\n    }\n}\n",
         "            self.collect(Duration::from_millis(10));\n        }\n        self.settle(true);\n    }\n}\n")],
+    'F1b finish_threads ends the sync it began, with no hold': [(INP,
+        "            self.collect(Duration::from_millis(10));\n        }\n    }\n}\n",
+        "            self.collect(Duration::from_millis(10));\n        }\n        self.settle(true);\n    }\n}\n"),
+        (HAR, "            target.disk.hold_syncs_of(HOME_NAME);\n", ""),
+        (HAR, "        if settle {\n            target.disk.release_syncs();\n        }\n", "")],
     'F2 fail_log holds no sync around finish_threads': [
         (HAR, "            target.disk.hold_syncs_of(HOME_NAME);\n", ""),
         (HAR, "        if settle {\n            target.disk.release_syncs();\n        }\n", "")],
@@ -43,7 +48,11 @@ def run():
     ok = 0
     why = set()
     for _ in range(RUNS):
-        r = subprocess.run([exe, '--exact', T], cwd=W, capture_output=True, text=True, timeout=900)
+        try:
+            r = subprocess.run([exe, '--exact', T], cwd=W, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            why.add('HANGS (no end in 600 s)')
+            continue
         if r.returncode == 0:
             ok += 1
         else:
