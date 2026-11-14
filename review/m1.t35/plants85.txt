@@ -1,0 +1,3 @@
+R1 the client's exit not checked: rc 0; nothing fails
+R2 the next stop's exit not checked: rc 0; nothing fails
+worktree clean: True
