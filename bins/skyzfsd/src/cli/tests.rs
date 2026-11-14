@@ -41,6 +41,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::DeletedHeld, 6),
         (Exit::BrokenRule, 7),
         (Exit::CommitRefused, 8),
+        (Exit::NotStarted, 9),
     ];
     let table = HELP
         .split_once("Exit statuses:")
@@ -55,6 +56,8 @@ fn the_exit_statuses_are_the_agreed_numbers() {
     }
     assert!(HELP.contains("7 the kernel's driver broke its rule"));
     assert!(HELP.contains("8 the kernel's driver refused an answer of serve's"));
+    assert!(HELP.contains("9 serve gave the device's start up"));
+    assert!(HELP.contains("retry the serve once; a second 9 is for a person"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a
@@ -275,13 +278,14 @@ fn the_io_threads_default_is_the_stores() {
 /// fails after N requests; one request is held, a read or a write that
 /// covers a byte or a flush; the boot id comes from a file; the commits
 /// are delayed; the requests are written down; one request's commit is
-/// sent with no buffer, for the driver to refuse.
+/// sent with no buffer, for the driver to refuse; one first fetch is
+/// sent with no buffer, at a start or at a take-over.
 #[test]
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
          --boot-id-file /tmp/boot --commit-delay-ms 20 --request-log /tmp/requests.tsv \
-         --refuse-one-commit write:8192",
+         --refuse-one-commit write:8192 --refuse-one-fetch recovery",
     )
     .hooks;
     assert_eq!(
@@ -296,8 +300,23 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             commit_delay_ms: Some(20),
             request_log: Some("/tmp/requests.tsv".into()),
             refuse: Some(Held::Write(8192)),
+            refuse_fetch: Some(FetchRefusal::Recovery),
         }
     );
+    let fetch = |spec: &str| hooked(&format!("serve --dir /v/a --refuse-one-fetch {spec}"));
+    assert!(matches!(
+        fetch("start"),
+        Ok(Command::Serve(Serve {
+            hooks: Hooks {
+                refuse_fetch: Some(FetchRefusal::Start),
+                ..
+            },
+            ..
+        }))
+    ));
+    for bad in ["begin", "Start", "start:0", "recovery,start", "0"] {
+        assert!(matches!(fetch(bad), Err(UsageError::Value(..))), "{bad:?}");
+    }
     let refused = |spec: &str| {
         serve(&format!("serve --dir /v/a --refuse-one-commit {spec}"))
             .hooks
@@ -359,6 +378,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --commit-delay-ms 20",
         "serve --dir /v/a --request-log /tmp/r.tsv",
         "serve --dir /v/a --refuse-one-commit flush",
+        "serve --dir /v/a --refuse-one-fetch start",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(

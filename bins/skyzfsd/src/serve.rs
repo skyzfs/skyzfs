@@ -29,6 +29,7 @@
 //! | the queue went away, or the target did | 1 |
 //! | the kernel's driver broke its rule: it handed over a tag the queue does not have, or one whose request was still out ([`Stopped::BrokenRule`]) | 7 |
 //! | the kernel's driver refused one of serve's answers, a commit ([`Stopped::CommitRefused`]) | 8 |
+//! | serve gave the device's start up: the driver refused a first fetch of the queue ([`Stopped::FetchRefused`]), or the start, or the end of the recovery, had no answer within [`START_LIMIT`] | 9 |
 //!
 //! After a broken rule nothing more is answered on the queue, since an
 //! answer could complete the wrong request. The breach is the
@@ -51,6 +52,53 @@
 //! while the volume has failed is only
 //! counted, and serve ends as a failed volume (3): the device is
 //! deleted, which answers the refused request.
+//!
+//! # A start that is given up (M1.3ah)
+//!
+//! The driver answers the device's start (START_DEV), and the end of
+//! its recovery at a take-over (END_USER_RECOVERY), only once every
+//! tag's first fetch has arrived, and it waits for them with no limit
+//! of its own (testing's M1.T36, on every image: the command's io_uring
+//! worker waits in the driver's `ublk_wait_dev_ready_and_lock`, run
+//! 43591915443). A fetch it refused never arrives. So the main thread does not send the start: a thread
+//! of its own does, and the main thread waits for its answer for at
+//! most [`START_LIMIT`] (30 s), looking every 50 ms whether the volume
+//! has failed and whether the queue's thread has ended, in that order.
+//!
+//! - A volume that fails meanwhile goes the way of a failure (exit 3),
+//!   as one that fails later: the failure comes first.
+//! - A queue's thread that ended because the driver refused a first
+//!   fetch ([`Stopped::FetchRefused`]) gives the start up at once: it
+//!   can never be answered. Any other end of the queue ends serve as it
+//!   would after the start (the table above).
+//! - No answer within the limit gives the start up too. The queue's
+//!   thread is told to stop and waited for two seconds at most.
+//!
+//! When serve gives the start up, it says why on one line, and ends
+//! with status 9:
+//!
+//! - at a start, the device holds no pool: serve added it and never
+//!   started it. It is deleted, with its note, under the volume's lock,
+//!   and the line says whether the delete was sent.
+//! - at a take-over, the device holds the pool's requests. It is left
+//!   as after a kill: it waits for the next server, which is handed
+//!   again what it holds.
+//! - the volume is not failed and no failure note is written: neither
+//!   a refused fetch nor a start that does not answer says anything
+//!   against the store.
+//!
+//! A supervisor should retry the serve once: what kept the start from
+//! being answered may not be there the next time. A second 9 in a row
+//! is for a person (`skyzfsd --help` says the same).
+//!
+//! A `SIGTERM` or `SIGINT` that arrives during the wait is acted on
+//! when the wait ends: after a start that answered, it stops serve as
+//! usual; after a start given up, serve ends with 9 all the same, since
+//! nothing was served. So a stop is late by at most [`START_LIMIT`]
+//! plus the two seconds for the queue's thread, a third of systemd's
+//! default stop timeout (90 s). A supervisor whose stop timeout is
+//! shorter may kill serve during a start: the device is then as after
+//! any kill.
 //!
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted with the image's
@@ -94,18 +142,26 @@
 //!   whose sync of the image meets the failed disk: the volume has
 //!   failed, and it goes the way of a failure while served (the notes,
 //!   the delete, exit 3).
+//! - The design gives no figure for how long a start may take. 30 s
+//!   ([`START_LIMIT`]) is this daemon's, from the rigs' times (its doc
+//!   gives them), and stays under a supervisor's usual stop timeout.
+//! - The start's thread is not waited for once the start is given up.
+//!   Its command is in the kernel, and the process's end ends it. That
+//!   a delete answers a START_DEV that waits, and that the process's
+//!   end answers an END_USER_RECOVERY that waits, is read from the
+//!   driver and not shown here: testing's rig is to show it.
 
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use skyzfs_local::fs::FsDir;
 use skyzfs_local::inplace::{InPlace, OpenOptions, StartError};
 use skyzfs_local::store::{FailureObserver, Waker, Zeroes};
 use skyzfs_local::volume::{VolumeError, LEGACY_NAME, VOLUME_NAME};
-use skyzfs_ublk::lifecycle::{self, Reason, Stop, Wanted};
+use skyzfs_ublk::lifecycle::{self, Control, Reason, Records, Stop, Undeleted, Wanted};
 use skyzfs_ublk::pump::{Pump, Stopped};
 use skyzfs_ublk::records::{self, Files};
 use skyzfs_ublk::status::{self, Board, LogShown, LogStatus, Pace, Status, ZeroesShown};
@@ -141,6 +197,25 @@ pub const STATUS_INTERVAL_MS: u64 = 100;
 /// How long `ready` waits at most for the status thread's first write
 /// of this instance.
 const READY_WAITS_FOR_STATUS: Duration = Duration::from_secs(5);
+
+/// How long serve waits for the device's start (START_DEV, or the end
+/// of a recovery at a take-over) to answer before it gives the start up
+/// with status 9 (M1.3ah). The driver answers a start only once every
+/// tag's first fetch has arrived, with no limit of its own (testing's
+/// M1.T36): without one here a fetch the driver lost would hold serve,
+/// and its device, for good.
+///
+/// In two runs of the daemon rig (43581985630 and 43585843902, three
+/// images each) the start took at most 12 ms (90 starts) and the end of
+/// a recovery at most 1 ms (54). In the replay rig's daemon jobs
+/// (43585843885) the whole of a serve, from its launch to `ready`, took
+/// at most 0.2 s (243 serves). 30 s is more than two thousand times the
+/// longest start seen, and leaves room for a start whose partition scan
+/// reads from a slow disk.
+/// It stays a third of systemd's default stop timeout (90 s): a SIGTERM
+/// during the start is acted on when this wait ends, so it is never
+/// late by more than this.
+pub const START_LIMIT: Duration = Duration::from_secs(30);
 
 /// How long the main thread sleeps between two looks at the queue's
 /// thread and the failure flag when no signal arrives.
@@ -727,33 +802,49 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let hold = serve.hooks.hold;
     #[cfg(feature = "test-hooks")]
     let refuse = serve.hooks.refuse;
-    let serving = device
-        .serve(&wake, !serve.allow_unlocked_memory, {
-            let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
-            move |queue| {
-                let again = wake.clone();
-                // Next to the kernel: the one commit sent with no
-                // buffer, for the driver to refuse.
-                #[cfg(feature = "test-hooks")]
-                let queue = crate::refuse::Refusing::new(queue, refuse);
-                // Below the delays: the record says what the kernel
-                // handed over and what it was given.
-                #[cfg(feature = "test-hooks")]
-                let queue = crate::record::Recorded::new(queue, request_log, number);
-                let queue = Delayed::new(queue, delay, hold, move || wake.wake());
-                // The store goes back to the main thread with the
-                // outcome: the volume's lock is held until the main
-                // thread lets go of it.
-                pumped(Pump::new(queue, served), |pump, ended| {
-                    answer_if_failed(pump, &flags, &|| again.wake());
-                    post(&board, pump);
-                    if !ended {
-                        faults(pump, &flags, &mut fail_after);
-                    }
-                })
-            }
+    let locked = !serve.allow_unlocked_memory;
+    let body = {
+        let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
+        queue_body(move |queue| {
+            let again = wake.clone();
+            // Next to the kernel: the one commit sent with no
+            // buffer, for the driver to refuse.
+            #[cfg(feature = "test-hooks")]
+            let queue = crate::refuse::Refusing::new(queue, refuse);
+            // Below the delays: the record says what the kernel
+            // handed over and what it was given.
+            #[cfg(feature = "test-hooks")]
+            let queue = crate::record::Recorded::new(queue, request_log, number);
+            let queue = Delayed::new(queue, delay, hold, move || wake.wake());
+            // The store goes back to the main thread with the
+            // outcome: the volume's lock is held until the main
+            // thread lets go of it.
+            pumped(Pump::new(queue, served), |pump, ended| {
+                answer_if_failed(pump, &flags, &|| again.wake());
+                post(&board, pump);
+                if !ended {
+                    faults(pump, &flags, &mut fail_after);
+                }
+            })
         })
-        .map_err(|e| format!("the queue of device {number}: {e}"))?;
+    };
+    // The test build's refused fetch (`--refuse-one-fetch`): tag 0's
+    // first fetch is sent with no buffer, at the kind of start named.
+    #[cfg(feature = "test-hooks")]
+    let serving = {
+        let (tag, said) =
+            crate::refuse::fetch_to_refuse(serve.hooks.refuse_fetch, took_over, number);
+        if let Some(said) = said {
+            say(said);
+        }
+        match tag {
+            Some(tag) => device.serve_with_fetch_refused_for_tests(&wake, locked, tag, body),
+            None => device.serve(&wake, locked, body),
+        }
+    };
+    #[cfg(not(feature = "test-hooks"))]
+    let serving = device.serve(&wake, locked, body);
+    let serving = serving.map_err(|e| format!("the queue of device {number}: {e}"))?;
     let stopper = serving.stopper();
     // How long the start took: known once the device serves, 0 until then.
     let start_ms = Arc::new(AtomicU64::new(0));
@@ -802,78 +893,150 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         ));
     };
 
-    let start_began = std::time::Instant::now();
-    if let Err(e) = device.start() {
-        stopper.stop();
-        let _ = serving.join();
-        finish(&board);
-        return Err(format!("starting device {number}: {e}"));
-    }
-    let started = std::time::Instant::now();
-    // The start's time is known only now, after the status thread's
-    // first write: it is written without a post, which would replace
-    // the counters the queue's thread has put up.
-    start_ms.store(
-        u64::try_from((started - began).as_millis()).unwrap_or(u64::MAX),
-        Ordering::SeqCst,
+    // The start, from a thread of its own, waited for at most
+    // START_LIMIT (M1.3ah): the driver answers it only once every tag's
+    // first fetch has arrived, and a fetch it refused never arrives.
+    // The start's thread is not waited for once the start is given up:
+    // its command ends with the process.
+    let start_began = Instant::now();
+    let device = Arc::new(device);
+    let (answered, answer) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("skyzfsd-start".into())
+        .spawn({
+            let device = device.clone();
+            move || {
+                let _ = answered.send(device.start());
+            }
+        })
+        .map_err(|e| format!("the start's thread: {e}"))?;
+    let waited = wait_for_start(
+        &answer,
+        || serving.is_finished(),
+        || flags.failed.load(Ordering::SeqCst),
+        START_LIMIT,
     );
-    board.write_again();
-    // The order of a start: the status thread starts and writes the
-    // file at once with what the board holds (zeros, or what the
-    // queue's thread has posted by then); the device starts; the
-    // queue's thread posts its counters after every turn, and each
-    // post replaces the board's with newer ones of its own; `ready`
-    // follows the first write. Only the queue's thread posts, but for
-    // the store's state at the start, which the main thread put on the
-    // board before either thread existed.
-    //
-    // `ready` only after this instance's first status write was tried,
-    // done or failed: until then the status file is the one the
-    // instance before left, and `status` would name that instance's
-    // pid and counters as the serving daemon's. The device is live
-    // already and its clients are served meanwhile. The wait is
-    // bounded, so that a status thread that never writes holds `ready`
-    // for a stated time and not for good.
-    if !board.first_write_tried(READY_WAITS_FOR_STATUS) {
-        say(format_args!(
-            "warning: the status file was not written within {} s of the start: `status` \
+    let failed_at_start = match waited {
+        StartWait::Answered(Ok(())) => false,
+        StartWait::Answered(Err(e)) => {
+            stopper.stop();
+            let _ = serving.join();
+            finish(&board);
+            return Err(format!("starting device {number}: {e}"));
+        }
+        StartWait::Failed => true,
+        StartWait::QueueEnded => {
+            let (stopped, _store) = joined(serving, number);
+            finish(&board);
+            if flags.failed.load(Ordering::SeqCst) {
+                return Ok(failed_at_end(&mut kernel, &mut records, number, identity));
+            }
+            return match stopped? {
+                Stopped::FetchRefused { tag, errno } => {
+                    let deleted = give_up_start(&mut kernel, &mut records, number, took_over);
+                    say(gave_up_said(
+                        number,
+                        took_over,
+                        &GaveUp::FetchRefused { tag, errno },
+                        deleted.as_ref(),
+                    ));
+                    Ok(Exit::NotStarted)
+                }
+                other => ended(number, false, other),
+            };
+        }
+        StartWait::NoAnswer => {
+            // The queue's thread ends at its stop: it holds no request
+            // before the start. It is waited for a stated time and no
+            // longer, as everything after a start that does not answer.
+            stopper.stop();
+            for _ in 0..ANSWER_LOOKS {
+                if serving.is_finished() {
+                    break;
+                }
+                std::thread::sleep(ANSWER_LOOK);
+            }
+            if serving.is_finished() {
+                let _ = serving.join();
+            }
+            finish(&board);
+            let deleted = give_up_start(&mut kernel, &mut records, number, took_over);
+            say(gave_up_said(
+                number,
+                took_over,
+                &GaveUp::NoAnswer,
+                deleted.as_ref(),
+            ));
+            return Ok(Exit::NotStarted);
+        }
+    };
+    if !failed_at_start {
+        let started = Instant::now();
+        // The start's time is known only now, after the status thread's
+        // first write: it is written without a post, which would replace
+        // the counters the queue's thread has put up.
+        start_ms.store(
+            u64::try_from((started - began).as_millis()).unwrap_or(u64::MAX),
+            Ordering::SeqCst,
+        );
+        board.write_again();
+        // The order of a start: the status thread starts and writes the
+        // file at once with what the board holds (zeros, or what the
+        // queue's thread has posted by then); the device starts; the
+        // queue's thread posts its counters after every turn, and each
+        // post replaces the board's with newer ones of its own; `ready`
+        // follows the first write. Only the queue's thread posts, but for
+        // the store's state at the start, which the main thread put on the
+        // board before either thread existed.
+        //
+        // `ready` only after this instance's first status write was tried,
+        // done or failed: until then the status file is the one the
+        // instance before left, and `status` would name that instance's
+        // pid and counters as the serving daemon's. The device is live
+        // already and its clients are served meanwhile. The wait is
+        // bounded, so that a status thread that never writes holds `ready`
+        // for a stated time and not for good.
+        if !board.first_write_tried(READY_WAITS_FOR_STATUS) {
+            say(format_args!(
+                "warning: the status file was not written within {} s of the start: `status` \
              may show the instance before",
-            READY_WAITS_FOR_STATUS.as_secs()
-        ));
-    }
-    // A `ready` that cannot be written (the starter is gone) does not
-    // stop the serve: the device is live and its clients are served.
-    crate::to_stdout(&format!("ready {}\n", block_device(number)));
-    // Where the start's time went. `devices` is everything between the
-    // store's open and the device being this instance's: the records,
-    // the notes, the waiting while the device was still shown as live
-    // (`live`, a part of it) and the begin of a recovery (`begin`, a
-    // part of it, with the driver's busy answers). `queue` is the
-    // device's open and the queue's fetches; `start` is the start, or
-    // the end of the recovery.
-    let ms = |d: Duration| d.as_millis();
-    let devices = to_device.saturating_sub(volume.lock + volume.position + volume.recovery);
-    say(format_args!(
-        "serving device {number} ({}) after {} ms: lock {} ms, position {} ms, recovery {} ms \
+                READY_WAITS_FOR_STATUS.as_secs()
+            ));
+        }
+        // A `ready` that cannot be written (the starter is gone) does not
+        // stop the serve: the device is live and its clients are served.
+        crate::to_stdout(&format!("ready {}\n", block_device(number)));
+        // Where the start's time went. `devices` is everything between the
+        // store's open and the device being this instance's: the records,
+        // the notes, the waiting while the device was still shown as live
+        // (`live`, a part of it) and the begin of a recovery (`begin`, a
+        // part of it, with the driver's busy answers). `queue` is the
+        // device's open and the queue's fetches; `start` is the start, or
+        // the end of the recovery.
+        let ms = |d: Duration| d.as_millis();
+        let devices = to_device.saturating_sub(volume.lock + volume.position + volume.recovery);
+        say(format_args!(
+            "serving device {number} ({}) after {} ms: lock {} ms, position {} ms, recovery {} ms \
          of a log of {log_bytes} bytes and {log_records} operations, devices {} ms (live {} ms, \
          begin {} ms with {} busy answers), queue {} ms, start {} ms; \
          recovered_unacknowledged {recovered}",
-        if took_over { "taken over" } else { "added" },
-        ms(started - began),
-        ms(volume.lock),
-        ms(volume.position),
-        ms(volume.recovery),
-        ms(devices),
-        ms(kernel.live),
-        ms(kernel.begin),
-        kernel.inner.busy_answers(),
-        ms(queue_began.elapsed().saturating_sub(start_began.elapsed())),
-        ms(start_began.elapsed().saturating_sub(started.elapsed())),
-    ));
-    // Nothing is posted from here: the queue's thread is running and
-    // the board holds its counters. (The publishing thread writes the
-    // file once when it starts, whatever is posted then, and after
-    // that whenever the queue's thread posts a change.)
+            if took_over { "taken over" } else { "added" },
+            ms(started - began),
+            ms(volume.lock),
+            ms(volume.position),
+            ms(volume.recovery),
+            ms(devices),
+            ms(kernel.live),
+            ms(kernel.begin),
+            kernel.inner.busy_answers(),
+            ms(queue_began.elapsed().saturating_sub(start_began.elapsed())),
+            ms(start_began.elapsed().saturating_sub(started.elapsed())),
+        ));
+        // Nothing is posted from here: the queue's thread is running and
+        // the board holds its counters. (The publishing thread writes the
+        // file once when it starts, whatever is posted then, and after
+        // that whenever the queue's thread posts a change.)
+    }
 
     #[derive(PartialEq)]
     enum Why {
@@ -881,20 +1044,26 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         Failed,
         Ended,
     }
-    let why = loop {
-        if flags.failed.load(Ordering::SeqCst) {
-            break Why::Failed;
-        }
-        if serving.is_finished() {
-            break Why::Ended;
-        }
-        match signals::wait(LOOK) {
-            Some(Signal::Stop) => break Why::Stop,
-            Some(Signal::User) => {
-                flags.user.store(true, Ordering::SeqCst);
-                wake.wake();
+    // A volume that failed during the start goes the failure's way, as
+    // one that fails later: the failure comes first (M1.3ah).
+    let why = if failed_at_start {
+        Why::Failed
+    } else {
+        loop {
+            if flags.failed.load(Ordering::SeqCst) {
+                break Why::Failed;
             }
-            None => {}
+            if serving.is_finished() {
+                break Why::Ended;
+            }
+            match signals::wait(LOOK) {
+                Some(Signal::Stop) => break Why::Stop,
+                Some(Signal::User) => {
+                    flags.user.store(true, Ordering::SeqCst);
+                    wake.wake();
+                }
+                None => {}
+            }
         }
     };
     if why == Why::Failed {
@@ -978,37 +1147,66 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     // `_lock` holds it past the failure's cleanup below also when the
     // queue's thread panicked outside the pump or the queue was never
     // made, and the store was dropped there.
-    let (stopped, _store) = match serving.join() {
+    let (stopped, _store) = joined(serving, number);
+    finish(&board);
+    // A failure can arrive with the queue's end.
+    if flags.failed.load(Ordering::SeqCst) {
+        return Ok(failed_at_end(&mut kernel, &mut records, number, identity));
+    }
+    ended(number, why == Why::Stop, stopped?)
+}
+
+/// The body of the queue's thread, as the binding takes it: for every
+/// lifetime of the queue it is given. A closure made apart from the
+/// call that takes it is not inferred so without this.
+fn queue_body<R, F>(body: F) -> F
+where
+    F: for<'q> FnOnce(skyzfs_ublk_sys::queue::KernelQueue<'q>) -> R + Send + 'static,
+{
+    body
+}
+
+/// The queue's thread of device `number` joined: how its pump ended,
+/// or why that is not known, and the store if it came back.
+fn joined<S>(
+    serving: skyzfs_ublk_sys::queue::Serving<(Option<Stopped>, S)>,
+    number: u32,
+) -> (Result<Stopped, String>, Option<S>) {
+    match serving.join() {
         Ok((Some(stopped), store)) => (Ok(stopped), Some(store)),
         Ok((None, store)) => (
             Err(format!("the queue's thread of device {number} panicked")),
             Some(store),
         ),
         Err(e) => (Err(e.to_string()), None),
-    };
-    finish(&board);
-    // A failure can arrive with the queue's end.
-    if flags.failed.load(Ordering::SeqCst) {
-        let (failure, written) =
-            lifecycle::note_failure(&mut kernel, &mut records, number, identity, FAILURE);
-        let deleted = lifecycle::delete_failed(&mut kernel, &mut records, number);
-        say(format_args!(
-            "the volume failed while it was served ({}){}{}. Note: {}",
-            failure.reason,
-            if written {
-                ""
-            } else {
-                "; the failure note could not be written"
-            },
-            match &deleted {
-                Ok(()) => String::new(),
-                Err(undeleted) => format!("; {}", undeleted.said(number)),
-            },
-            status::POOL_WARNING
-        ));
-        return Ok(Exit::Failed);
     }
-    ended(number, why == Why::Stop, stopped?)
+}
+
+/// A failure that came with the queue's end: the failure note, the
+/// device's note and the device, and the line; exit 3.
+fn failed_at_end<C: Control, R: Records>(
+    kernel: &mut C,
+    records: &mut R,
+    number: u32,
+    identity: [u8; 16],
+) -> Exit {
+    let (failure, written) = lifecycle::note_failure(kernel, records, number, identity, FAILURE);
+    let deleted = lifecycle::delete_failed(kernel, records, number);
+    say(format_args!(
+        "the volume failed while it was served ({}){}{}. Note: {}",
+        failure.reason,
+        if written {
+            ""
+        } else {
+            "; the failure note could not be written"
+        },
+        match &deleted {
+            Ok(()) => String::new(),
+            Err(undeleted) => format!("; {}", undeleted.said(number)),
+        },
+        status::POOL_WARNING
+    ));
+    Exit::Failed
 }
 
 /// How serve ends once the queue's thread of device `number` has ended
@@ -1027,6 +1225,10 @@ fn ended(number: u32, asked_to_stop: bool, stopped: Stopped) -> Result<Exit, Str
         Stopped::CommitRefused { tag, errno } => {
             say(commit_refused_said(number, tag, errno));
             Ok(Exit::CommitRefused)
+        }
+        Stopped::FetchRefused { tag, errno } => {
+            say(fetch_refused_said(number, tag, errno));
+            Ok(Exit::NotStarted)
         }
         other => Err(format!("the queue of device {number} ended: {other:?}")),
     }
@@ -1050,6 +1252,153 @@ fn commit_refused_said(number: u32, tag: u16, errno: i32) -> String {
          next server, which is handed again what was not answered",
         io::Error::from_raw_os_error(errno)
     )
+}
+
+/// What serve says to a supervisor at every exit 9.
+const NOT_STARTED_ADVICE: &str =
+    "exit 9: a supervisor should retry the serve once; a second 9 is for a person";
+
+/// What serve says when the kernel's driver refused a fetch of a queue
+/// that was serving: nothing does that once the queue's fetches have
+/// all arrived, which the start waits for, so the device is left as it
+/// is.
+fn fetch_refused_said(number: u32, tag: u16, errno: i32) -> String {
+    format!(
+        "the kernel refused the fetch of tag {tag} on queue 0 of device {number} ({}): nothing \
+         more is answered on this queue, the volume is not failed, and device {number} is left \
+         as it is; {NOT_STARTED_ADVICE}",
+        io::Error::from_raw_os_error(errno)
+    )
+}
+
+/// What ended serve's wait for the device's start.
+#[derive(Debug)]
+enum StartWait {
+    /// The start returned, with what it answered.
+    Answered(io::Result<()>),
+    /// The volume failed before the start answered. A failure is a
+    /// failure: it goes the failure's way (exit 3) and not that of a
+    /// start given up.
+    Failed,
+    /// The queue's thread ended before the start answered: a fetch the
+    /// driver refused, or another end of the queue.
+    QueueEnded,
+    /// No answer within the limit.
+    NoAnswer,
+}
+
+/// Wait for the start's `answer`, sent from the start's own thread,
+/// for at most `limit`, looking every [`LOOK`] whether the volume has
+/// `failed` and whether the queue has `ended`, in that order. An answer
+/// that came is taken first, whatever else holds.
+fn wait_for_start(
+    answer: &mpsc::Receiver<io::Result<()>>,
+    ended: impl Fn() -> bool,
+    failed: impl Fn() -> bool,
+    limit: Duration,
+) -> StartWait {
+    let until = Instant::now() + limit;
+    loop {
+        match answer.try_recv() {
+            Ok(answered) => return StartWait::Answered(answered),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                return StartWait::Answered(Err(io::Error::other(
+                    "the start's thread ended with no answer",
+                )))
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if failed() {
+            return StartWait::Failed;
+        }
+        if ended() {
+            return StartWait::QueueEnded;
+        }
+        let now = Instant::now();
+        if now >= until {
+            return StartWait::NoAnswer;
+        }
+        match answer.recv_timeout(LOOK.min(until - now)) {
+            Ok(answered) => return StartWait::Answered(answered),
+            Err(mpsc::RecvTimeoutError::Disconnected | mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+/// Why serve gave the device's start up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GaveUp {
+    /// The driver refused the first fetch of `tag`.
+    FetchRefused { tag: u16, errno: i32 },
+    /// The start had no answer within [`START_LIMIT`].
+    NoAnswer,
+}
+
+/// What becomes of the device when serve gives its start up: a device
+/// this serve added was never started and holds no pool, and is deleted,
+/// its note first; one it took over holds the pool's waiting I/O, which
+/// a delete would fail, and is left waiting for the next server, as
+/// after a kill. `None` when nothing was deleted.
+///
+/// The start's thread may still be waiting in START_DEV, and libublk
+/// holds the device's control object locked for the whole of it. The
+/// delete does not wait behind that: `control` is the lifecycle's,
+/// which sends the delete through the binding's own open of the
+/// control device and its own ring (`raw::delete`), never through the
+/// device's control object.
+fn give_up_start<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+    took_over: bool,
+) -> Option<Result<(), Undeleted>> {
+    (!took_over).then(|| lifecycle::delete_unstarted(control, records, number))
+}
+
+/// What serve says when it gives the start of device `number` up:
+/// why, what became of the device (`deleted`, from [`give_up_start`]),
+/// that the volume is not failed, and what a supervisor should do.
+fn gave_up_said(
+    number: u32,
+    took_over: bool,
+    why: &GaveUp,
+    deleted: Option<&Result<(), Undeleted>>,
+) -> String {
+    let why = match why {
+        GaveUp::FetchRefused { tag, errno } => format!(
+            "the kernel refused the first fetch of tag {tag} on queue 0 of device {number} ({}), \
+             and {} waits for every tag's fetch with no limit: serve gives it up",
+            io::Error::from_raw_os_error(*errno),
+            if took_over {
+                "the end of its recovery"
+            } else {
+                "the device's start"
+            }
+        ),
+        GaveUp::NoAnswer => format!(
+            "{} of device {number} had no answer within {} s: serve gives it up",
+            if took_over {
+                "the end of the recovery"
+            } else {
+                "the start"
+            },
+            START_LIMIT.as_secs()
+        ),
+    };
+    let device = match deleted {
+        None => format!(
+            "device {number} is left waiting for the next server, as after a kill, with the I/O \
+             it holds"
+        ),
+        Some(Ok(())) => {
+            format!("device {number}, which this serve added and never started, is deleted")
+        }
+        Some(Err(undeleted)) => format!(
+            "device {number}, which this serve added and never started, is to be deleted: {}",
+            undeleted.said(number)
+        ),
+    };
+    format!("{why}; {device}; the volume is not failed; {NOT_STARTED_ADVICE}")
 }
 
 /// What a start refused for the kernel says. The check comes before
@@ -1752,6 +2101,304 @@ mod tests {
             ended(3, false, Stopped::BrokenRule { tag: 0 }),
             Ok(Exit::BrokenRule)
         );
+    }
+
+    /// A queue whose first wait brings the driver's refusal of tag 0's
+    /// first fetch, with a write handed over on tag 1, and nothing after.
+    #[derive(Default)]
+    struct FetchRefusing {
+        waits: u32,
+        committed: Arc<std::sync::Mutex<Vec<(u16, i32)>>>,
+    }
+
+    impl skyzfs_ublk::pump::Queue for FetchRefusing {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+            unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            use skyzfs_ublk::pump::{Command, Fetched, Unfetched};
+            use skyzfs_ublk::translate::{op, Desc};
+            self.waits += 1;
+            if self.waits == 1 {
+                unfetched.push(Unfetched {
+                    tag: 0,
+                    command: Command::Fetch,
+                    result: -22,
+                });
+                fetched.push(Fetched {
+                    tag: 1,
+                    desc: Desc {
+                        op_flags: u32::from(op::WRITE),
+                        nr_sectors: 8,
+                        start_sector: 8,
+                    },
+                });
+            }
+            Ok(skyzfs_ublk::pump::Wake::Work)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
+            self.committed.lock().expect("lock").push((tag, result));
+        }
+        fn flush(
+            &mut self,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    /// A fetch the driver refuses ends the queue's thread, run as serve
+    /// runs it, with the refusal, before anything reaches the store or
+    /// is committed, and with the volume not failed (M1.3ah). Serve then
+    /// gives the device's start up with status 9 and a line that names
+    /// the queue, the tag and the error, says what becomes of the device
+    /// (deleted at a start, left waiting at a take-over) and that the
+    /// volume is not failed, and tells a supervisor what to do. A start
+    /// that had no answer within the limit is given up with 9 too, with
+    /// a line of its own.
+    #[test]
+    fn a_refused_fetch_ends_the_queue_and_serve_gives_the_start_up_with_9() {
+        let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queue = FetchRefusing {
+            committed: committed.clone(),
+            ..FetchRefusing::default()
+        };
+        let queue = Delayed::new(queue, None, None, || {});
+        let flags = Flags::default();
+        let (stopped, store) = pumped(Pump::new(queue, Answering::default()), |pump, _| {
+            answer_if_failed(pump, &flags, &|| {});
+        });
+        let refused = Stopped::FetchRefused { tag: 0, errno: 22 };
+        assert_eq!(stopped, Some(refused));
+        assert!(
+            committed.lock().expect("lock").is_empty(),
+            "nothing committed"
+        );
+        assert!(store.handed.is_empty(), "the write on tag 1 is not taken");
+        assert!(
+            !flags.failed.load(Ordering::SeqCst),
+            "the volume is not failed"
+        );
+        assert_eq!(ended(3, false, refused), Ok(Exit::NotStarted));
+        assert_eq!(ended(3, true, refused), Ok(Exit::NotStarted));
+
+        let fetch = GaveUp::FetchRefused { tag: 0, errno: 22 };
+        let common = [
+            "the volume is not failed",
+            "exit 9: a supervisor should retry the serve once; a second 9 is for a person",
+        ];
+        let at_start = gave_up_said(3, false, &fetch, Some(&Ok(())));
+        for words in [
+            "the kernel refused the first fetch of tag 0 on queue 0 of device 3",
+            "Invalid argument",
+            "the device's start waits for every tag's fetch",
+            "device 3, which this serve added and never started, is deleted",
+        ]
+        .iter()
+        .chain(&common)
+        {
+            assert!(at_start.contains(words), "{at_start}");
+        }
+        let at_take_over = gave_up_said(3, true, &fetch, None);
+        for words in [
+            "the end of its recovery waits for every tag's fetch",
+            "device 3 is left waiting for the next server, as after a kill",
+        ]
+        .iter()
+        .chain(&common)
+        {
+            assert!(at_take_over.contains(words), "{at_take_over}");
+        }
+        assert!(!at_take_over.contains("deleted"), "{at_take_over}");
+        // Whole lines, so that what joins the parts is held too.
+        assert_eq!(
+            at_start,
+            "the kernel refused the first fetch of tag 0 on queue 0 of device 3 (Invalid \
+             argument (os error 22)), and the device's start waits for every tag's fetch with \
+             no limit: serve gives it up; device 3, which this serve added and never started, \
+             is deleted; the volume is not failed; exit 9: a supervisor should retry the serve \
+             once; a second 9 is for a person"
+        );
+        assert_eq!(
+            at_take_over,
+            "the kernel refused the first fetch of tag 0 on queue 0 of device 3 (Invalid \
+             argument (os error 22)), and the end of its recovery waits for every tag's fetch \
+             with no limit: serve gives it up; device 3 is left waiting for the next server, as \
+             after a kill, with the I/O it holds; the volume is not failed; exit 9: a \
+             supervisor should retry the serve once; a second 9 is for a person"
+        );
+        assert_eq!(
+            fetch_refused_said(3, 5, 22),
+            "the kernel refused the fetch of tag 5 on queue 0 of device 3 (Invalid argument (os \
+             error 22)): nothing more is answered on this queue, the volume is not failed, and \
+             device 3 is left as it is; exit 9: a supervisor should retry the serve once; a \
+             second 9 is for a person"
+        );
+        let undeleted = Err(Undeleted::NotePutBack(io::Error::from_raw_os_error(16)));
+        let kept = gave_up_said(3, false, &fetch, Some(&undeleted));
+        assert!(
+            kept.contains(&format!(
+                "device 3, which this serve added and never started, is to be deleted: {}; the \
+                 volume is not failed",
+                Undeleted::NotePutBack(io::Error::from_raw_os_error(16)).said(3)
+            )),
+            "{kept}"
+        );
+        let limit = START_LIMIT.as_secs();
+        let silent = gave_up_said(3, false, &GaveUp::NoAnswer, Some(&Ok(())));
+        assert!(
+            silent.contains(&format!(
+                "the start of device 3 had no answer within {limit} s"
+            )),
+            "{silent}"
+        );
+        let silent = gave_up_said(3, true, &GaveUp::NoAnswer, None);
+        assert!(
+            silent.contains(&format!(
+                "the end of the recovery of device 3 had no answer within {limit} s"
+            )),
+            "{silent}"
+        );
+    }
+
+    /// The wait for the device's start ends with its answer; with the
+    /// volume's failure, which comes before the queue's end (a failure
+    /// is a failure, exit 3); with the queue's end (a refused fetch);
+    /// or with no answer once the limit has run out. An answer that
+    /// came is taken whatever else holds: the failure is then the
+    /// main loop's to see. The limit stays well under a supervisor's
+    /// usual stop timeout (systemd's 90 s), since a SIGTERM during the
+    /// start is acted on when the wait ends, and the help gives it.
+    #[test]
+    fn the_start_is_waited_for_within_its_limit() {
+        let limit = Duration::from_millis(200);
+        let (no, yes) = (|| false, || true);
+        let answered = || {
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(Ok(())).expect("send");
+            rx
+        };
+        assert!(matches!(
+            wait_for_start(&answered(), no, no, limit),
+            StartWait::Answered(Ok(()))
+        ));
+        assert!(matches!(
+            wait_for_start(&answered(), yes, yes, limit),
+            StartWait::Answered(Ok(()))
+        ));
+        let (_tx, rx) = std::sync::mpsc::channel::<io::Result<()>>();
+        let began = Instant::now();
+        assert!(matches!(
+            wait_for_start(&rx, yes, no, limit),
+            StartWait::QueueEnded
+        ));
+        assert!(began.elapsed() < limit, "the queue's end is seen at once");
+        assert!(matches!(
+            wait_for_start(&rx, yes, yes, limit),
+            StartWait::Failed
+        ));
+        assert!(matches!(
+            wait_for_start(&rx, no, yes, limit),
+            StartWait::Failed
+        ));
+        // The wait with no answer runs aside, so that a limit not kept
+        // fails the test instead of hanging it.
+        let (waited, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let began = Instant::now();
+            let ended = wait_for_start(&rx, || false, || false, limit);
+            let _ = waited.send((matches!(ended, StartWait::NoAnswer), began.elapsed()));
+            drop(_tx);
+        });
+        let (no_answer, took) = wait
+            .recv_timeout(limit * 20)
+            .expect("the wait with no answer ends within its limit");
+        assert!(no_answer, "the wait with no answer says so");
+        assert!(took >= limit, "{took:?}");
+        let (tx, rx) = std::sync::mpsc::channel::<io::Result<()>>();
+        drop(tx);
+        assert!(matches!(
+            wait_for_start(&rx, no, no, limit),
+            StartWait::Answered(Err(_))
+        ));
+        assert!(
+            START_LIMIT * 3 <= Duration::from_secs(90),
+            "{START_LIMIT:?}"
+        );
+        assert!(
+            crate::cli::HELP.contains(&format!("within {} s", START_LIMIT.as_secs())),
+            "the help gives the limit"
+        );
+    }
+
+    /// A kernel that keeps what it was asked to delete.
+    #[derive(Default)]
+    struct Deletes(Vec<u32>);
+
+    impl skyzfs_ublk::lifecycle::Control for Deletes {
+        fn features(&mut self) -> io::Result<Option<u64>> {
+            Ok(Some(u64::MAX))
+        }
+        fn release(&mut self) -> io::Result<String> {
+            Ok("7.0.0".into())
+        }
+        fn info(&mut self, _number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+            Ok(None)
+        }
+        fn add(
+            &mut self,
+            _number: u32,
+            _shape: &skyzfs_ublk::lifecycle::Shape,
+        ) -> Result<(), skyzfs_ublk::lifecycle::AddError> {
+            Err(skyzfs_ublk::lifecycle::AddError::Other(io::Error::other(
+                "not in this test",
+            )))
+        }
+        fn disown(&mut self, _number: u32) {}
+        fn delete(&mut self, number: u32) -> io::Result<()> {
+            self.0.push(number);
+            Ok(())
+        }
+        fn begin_recovery(&mut self, _number: u32) -> io::Result<()> {
+            Err(io::Error::other("not in this test"))
+        }
+        fn client_holds(&mut self, _number: u32) -> Option<bool> {
+            None
+        }
+    }
+
+    /// A start given up deletes the device when this serve added it
+    /// (it was never started and holds no pool), its note first, as
+    /// every delete of the lifecycle; a device taken over holds a
+    /// pool's waiting I/O, which a delete would fail, and is left with
+    /// its note, as after a kill.
+    #[test]
+    fn a_start_given_up_deletes_a_device_this_serve_added_and_leaves_one_it_took_over() {
+        use skyzfs_ublk::lifecycle::Records;
+        let keep = tempfile::tempdir().expect("a directory");
+        let (volume, run) = (keep.path().join("volume"), keep.path().join("run"));
+        std::fs::create_dir(&volume).expect("the volume's directory");
+        std::fs::create_dir(&run).expect("the run directory");
+        let mut records = Files::new(&volume, &run, [1; 16], Duration::ZERO).expect("records");
+        records.create_run_dirs().expect("the run directories");
+        records.write_note(3, &[9; 16]).expect("a note");
+        let mut kernel = Deletes::default();
+        assert!(give_up_start(&mut kernel, &mut records, 3, true).is_none());
+        assert!(kernel.0.is_empty(), "nothing deleted at a take-over");
+        assert_eq!(records.note(3).ok().flatten(), Some([9; 16]));
+        assert!(matches!(
+            give_up_start(&mut kernel, &mut records, 3, false),
+            Some(Ok(()))
+        ));
+        assert_eq!(kernel.0, [3], "deleted at a start");
+        assert_eq!(records.note(3).ok().flatten(), None, "its note first");
     }
 
     /// A target that takes requests and never answers one: a store

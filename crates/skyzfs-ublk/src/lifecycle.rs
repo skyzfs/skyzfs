@@ -1403,6 +1403,18 @@ pub fn delete_failed<C: Control, R: Records>(
     delete(control, records, number, Mutants::default())
 }
 
+/// Delete a device that this instance added and never started, its
+/// note first, without waiting: the start given up (M1.3ah). The device
+/// holds no request and no pool, and its number comes free once the
+/// process that opened it has gone.
+pub fn delete_unstarted<C: Control, R: Records>(
+    control: &mut C,
+    records: &mut R,
+    number: u32,
+) -> Result<(), Undeleted> {
+    delete(control, records, number, Mutants::default())
+}
+
 pub(crate) fn fail_serving_with<C: Control, R: Records>(
     control: &mut C,
     records: &mut R,
