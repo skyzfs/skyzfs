@@ -1,0 +1,15 @@
+........................................................
+test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.80s
+
+fmt-ok
+clippy-ok
+N1 at a stop's end the refusal comes before QueueDown
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N2 what a failed flush reaps is not counted
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+N3 a failed volume's last flush is not counted
+    -p skyzfs-ublk --lib pump::: rc 101; failed: pump::tests::a_commit_refused_at_the_last_flush_of_a_stop_ends_the_pump_with_it
+    -p skyzfsd --features test-hooks --lib serve::: rc 0; failed: none
+worktree clean: True

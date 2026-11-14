@@ -1,0 +1,10 @@
+C1 own_control_ring makes nothing: rc 101; failed: queue::tests::a_thread_that_did_not_open_the_device_makes_its_own_control_ring
+C2 own_control_ring always makes a new ring: rc 101; failed: queue::tests::a_thread_that_did_not_open_the_device_makes_its_own_control_ring
+C3 the program's start thread calls start(), not the entry point: rc 0; failed: none
+C4 futex and io_uring_enter swapped: rc 101; failed: run::tests::a_threads_wait_is_named_by_its_system_call
+C5 taken answered as any other (the old code): rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said
+C6 taken not counted as failed: rc 101; failed: run::tests::a_first_fetch_with_no_buffer_that_is_taken_or_aborted_is_said
+C7 the start thread's id never sent: rc 0; failed: none
+C8 waits_in reads stat, not syscall: rc 0; failed: none
+C9 taken answered with EIO but the tag kept as refused (said again): rc 0; failed: none
+worktree clean: True
