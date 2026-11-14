@@ -196,6 +196,19 @@ EXPECTED = {
     'pin_refused_flush_commit_taken_over': ('e', 'PASS', WAITING,
                                             'the same for a flush: the client\'s fsync returns after the take-over, '
                                             'and its write reads back and is in the home image (§4.2)', 'WAITING'),
+    # M1.T37: the driver refuses tag 0's first fetch (the daemon's test hook, #87). The stand-in has no hooks.
+    'pin_refused_fetch_at_a_start_gives_up_9': ('e', 'PASS', WAITING,
+                                                'a first fetch the driver refuses at a start: serve gives the start '
+                                                'up with 9 and its line, the device it added is deleted and its '
+                                                'number free (a delete answers a START_DEV that waits), the volume '
+                                                'is not failed, and the next serve starts and reads (§4.2)', 'WAITING'),
+    'pin_refused_fetch_at_a_take_over_gives_up_9': ('e', 'PASS', WAITING,
+                                                    'the same at a take-over, with a pool on the device and its write '
+                                                    'and sync held: serve gives the end of the recovery up with 9 '
+                                                    '(the process\'s end answers an END_USER_RECOVERY that waits), '
+                                                    'the device is left QUIESCED with the I/O still held, the volume '
+                                                    'is not failed, and the next serve takes it over: the held I/O '
+                                                    'completes, the pool ONLINE with no vdev error (§4.2)', 'WAITING'),
     'pin_refused_commit_at_a_stop_ends_8': ('e', 'PASS', WAITING,
                                             'a held write whose commit the driver refuses when SIGTERM stops the '
                                             'server during the hold: the stop\'s last commits are checked, so serve '
