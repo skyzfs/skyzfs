@@ -1,0 +1,38 @@
+# A look at a pull request's daemon on a kernel, for the testing
+# session's next package: tests/adhoc/m1t37-look.sh. Scratch branch only;
+# never merged.
+name: skyzfs-adhoc-look
+on:
+  push:
+    branches: ['skyzfs-testing-m1.t37-try']
+    paths:
+      - .github/workflows/skyzfs-adhoc-look.yml
+      - tests/adhoc/**
+permissions:
+  contents: read
+jobs:
+  look:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package mirrors
+        run: bash tests/lib/apt-fallback.sh
+      - name: Build skyzfsd with its test hooks
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libdevmapper-dev libudev-dev libclang-dev
+          cargo build --release --locked -p skyzfsd --features test-hooks
+      - name: Look
+        run: sudo bash tests/adhoc/m1t37-look.sh "$PWD/target/release/skyzfsd" "$PWD/look-out"
+      - name: Summary
+        if: always()
+        run: |
+          sudo chmod -R a+rX look-out 2>/dev/null || true
+          { echo '```'; cat look-out/look.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: adhoc-look
+          path: look-out/
+          retention-days: 30
