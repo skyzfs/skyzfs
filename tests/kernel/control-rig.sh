@@ -941,13 +941,19 @@ refused_fetch() {
     fi
     if [ -n "$ended" ]; then
         wait "$pid" 2>/dev/null
-        RF_SAID+="; the program ended by $ended, its last line: '$(awk -F'\t' '$1 == "served" { print $3 }' "$RF_OUT" | tail -n 1 | cut -c1-120)'"
+        RF_SAID+="; the program ended by $ended, its last line: '$(awk -F'\t' '$1 == "served" { print $3 }' "$RF_OUT" | tail -n 1 | cut -c1-400)'"
     else
         stacks=$(for t in /proc/"$pid"/task/*; do printf '%s: %s; ' "${t##*/}" "$(lim 5 cat "$t/stack" 2>/dev/null | awk '{ print $2 }' | head -n 4 | tr '\n' ' ')"; done)
         RF_SAID+="; THE PROGRAM DID NOT END in 10 s after kill -9 and is left behind; its threads' kernel stacks: $stacks"
     fi
     later=$(awk -F'\t' '($1 == "start" || $1 == "end-recovery") { print $3 }' "$RF_OUT" | tail -n 1)
     [ -z "$later" ] || [ "$later" = "${start#*: }" ] || RF_SAID+="; the start's last line: '$later'"
+    # What the program said of the fetch can come late: `taken` when a
+    # request reaches tag 0 (the read above, on a driver that took the
+    # fetch), `aborted` at the stop. It is read again at the end, and the
+    # verdict below rests on the last word.
+    later=$(rf_line refuse-fetch 2)
+    if [ "$later" != "$said" ]; then RF_SAID+="; by the program's end it said of the fetch: '${later:-nothing}'"; said=$later; fi
     cat "$RF_OUT" >> "$OUT/steps.log"; cat "$WORK/$name.err" >> "$OUT/control.err"
     info "$n"; RF_SAID+="; the device then read $STATE"
     if [ "$sent" = "sent on tag 0" ] && [[ $said == refused:* ]]; then RF_VERDICT=PASS; fi

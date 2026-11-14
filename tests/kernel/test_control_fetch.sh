@@ -53,15 +53,16 @@ case $step in
 esac
 # serve or take-over
 c=start; [ "$what" = recovery ] && c=end-recovery
-trap 'printf "served\t%s\tended by a signal; handed 0 reads\n" "$n"; [ -e "$T/started.$n" ] && state waiting; exit 0' TERM
+# As the real program: `aborted` comes at the stop, `taken` when a
+# request reaches tag 0 (here: the reader's read).
+trap '[ "$SCENARIO" != aborted ] || printf "refuse-fetch\t%s\taborted\n" "$n"; printf "served\t%s\tended by a signal; handed 0 reads 0 writes 0 flushes 0 discards 0 others 0 failed 0 held 0 first_write_copies 0 commands_aborted 0 commands_failed 1\n" "$n"; [ -e "$T/started.$n" ] && state waiting; exit 0' TERM
 [ "$SCENARIO" = ignores_term ] && trap '' TERM
 if [ -z "$what" ]; then
     state live; : > "$T/started.$n"; printf '%s\t%s\tlive after 3 ms; handed before the start: 0\n' "$step" "$n"
 else
     printf 'refuse-fetch\t%s\tsent on tag 0\n' "$n"
     case $SCENARIO in
-        aborted) printf 'refuse-fetch\t%s\taborted\n' "$n" ;;
-        taken) printf 'refuse-fetch\t%s\ttaken\n' "$n" ;;
+        aborted|taken) ;;
         *) printf 'refuse-fetch\t%s\trefused: errno 22 (Invalid argument)\n' "$n" ;;
     esac
     case $SCENARIO in
@@ -72,7 +73,11 @@ else
         start_late) sleep 1; printf '%s\t%s\tno answer after 10000 ms\n' "$c" "$n"; sleep 1.5; state live; : > "$T/started.$n"; printf '%s\t%s\treturned after 12500 ms: ok\n' "$c" "$n" ;;
     esac
 fi
-while [ ! -e "$T/stop" ]; do sleep 0.1; done
+said=""
+while [ ! -e "$T/stop" ]; do
+    if [ "$SCENARIO" = taken ] && [ -z "$said" ] && [ -e "$T/read.$n" ]; then printf 'refuse-fetch\t%s\ttaken\n' "$n"; said=1; fi
+    sleep 0.1
+done
 CTLEOF
 chmod +x "$CTL"
 # The reader of the device: it reads when the device is live, waits
@@ -83,7 +88,7 @@ cat > "$DD" <<'DDEOF'
 dev=""
 for a in "$@"; do case $a in if=/dev/ublkb*) dev=${a#if=/dev/ublkb} ;; esac; done
 [ -n "$dev" ] || exec dd "$@"
-[ "$(cat "$T/state.$dev" 2>/dev/null)" = live ] && exit 0
+[ "$(cat "$T/state.$dev" 2>/dev/null)" = live ] && { : > "$T/read.$dev"; exit 0; }
 while [ ! -e "$T/stop" ]; do sleep 0.1; done
 DDEOF
 chmod +x "$DD"
@@ -131,8 +136,11 @@ is "  read as a refusal" "$RF_VERDICT" PASS
 
 watch aborted 75 serve --refuse-one-fetch start
 is "an aborted fetch is not a refusal" "$RF_VERDICT" FAIL
+has "  the word at the stop is recorded" "$RF_SAID" "by the program's end it said of the fetch: 'aborted'"
 watch taken 76 serve --refuse-one-fetch start
 is "a taken fetch is not a refusal" "$RF_VERDICT" FAIL
+has "  the word at the probe's read is recorded" "$RF_SAID" "by the program's end it said of the fetch: 'taken'"
+has "  and the whole last line" "$RF_SAID" "commands_aborted 0 commands_failed 1'"
 
 watch start_ok 77 serve
 is "the control: a plain serve" "$RF_VERDICT" FAIL
