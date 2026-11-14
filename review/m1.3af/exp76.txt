@@ -1,0 +1,8 @@
+== idle
+REVIEW gap 0 ms: 42 of 2000 starts had a wake for nothing
+REVIEW gap 20 ms: 0 of 2000 starts had a wake for nothing
+== under load: 8 busy loops on 4 CPUs
+REVIEW gap 0 ms: 0 of 2000 starts had a wake for nothing
+REVIEW gap 20 ms: 0 of 2000 starts had a wake for nothing
+REVIEW #76's test under load: 0 of 200 failed
+load stopped

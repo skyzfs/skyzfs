@@ -23,3 +23,7 @@ M1.3t review's finding on the untested check.
 Both points settled. Plants (plants75b.*): S2, R1, R2, R3 caught; R4 inert
 (inode numbers are not reused). Can merge once daemon rig 43559205689 reads
 as expected; ci, coverage, e2e, control rig, replay through skyzfsd green.
+
+Merged (#75). Daemon rig at 6fe1aba (run 43559205689), rebuilt and judged:
+exit 0 on 24.04, 26.04, 26.04-arm, in-place; tables identical to 75c32a7's
+(rig-6fe1aba/).
