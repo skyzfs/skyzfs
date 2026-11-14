@@ -117,7 +117,7 @@ class Table(unittest.TestCase):
         # The pin after a take-over, chosen by kind in refused_course.
         for name in ('refused_read_issued_again', 'refused_write_lands_after_take_over',
                      'refused_flush_completes_after_take_over'):
-            self.assertIn(f') pin={name} ;;', text)
+            self.assertIn(f') pin={name}; count=', text)
             self.assertIn(f'pin_{name}', cc.EXPECTED)
         self.assertEqual(sorted(n for n in named if n not in cc.EXPECTED and n not in cc.OBSERVED), [])
         # The refused-commit lines are named by kind: one course of each, and each kind's lines in the table.

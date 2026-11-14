@@ -21,7 +21,7 @@ has() { # name got part
 }
 
 # The rig's functions, as the rig has them.
-for f in rec say info wait_state serve_bg srv_kill srv_end refused_commit rc_block rc_said rc_client refused_course; do
+for f in rec say info wait_state serve_bg srv_kill srv_end refused_commit rc_block rc_said rc_client rc_panic refused_course; do
     eval "$(sed -n "/^$f() {/,/^}\$/p" "$RIG")"
     declare -F "$f" > /dev/null || { echo "FAIL the rig has no function $f"; exit 2; }
 done
@@ -57,17 +57,32 @@ case $step in
         state live; echo "$file" > "$T/img.$n"
         printf 'take-over\t%s\tlive after 2 ms; handed before the start: 0; busy answers: 0\n' "$n"
         : > "$T/served.$n"
-        # The test program's queue thread panicking at the reissued request.
-        if [ "$SCENARIO" = take_over_dies ]; then rm -f "$T/served.$n"; state waiting; echo "the queue's thread panicked" >&2; exit 1; fi
-        trap 'printf "served\t%s\tended by a signal; handed 1 reads\n" "$n"; state waiting; exit 0' TERM
+        # The test program's queue thread panicking at the reissued
+        # request, as in run 43568776419; or ending with no word of why.
+        case $SCENARIO in
+            take_over_dies) rm -f "$T/served.$n"; state waiting
+                printf '%s\n' "thread 'skyzfsd-queue' (16288) panicked at crates/skyzfs-ublk-sys/src/bin/skyzfs-ublk-control.rs:370:18:" \
+                    "attempt to multiply with overflow" "note: run with \`RUST_BACKTRACE=1\` environment variable to display a backtrace" \
+                    "the queue's thread panicked" >&2
+                exit 1 ;;
+            take_over_dies_quietly) rm -f "$T/served.$n"; state waiting; exit 1 ;;
+        esac
+        # What it was handed: the refused request issued again, and for
+        # extra_flush and extra_write one more of its kind.
+        r=0; w=0; f=0
+        case $(cat "$T/kind.$n" 2>/dev/null) in read) r=1 ;; write) w=1 ;; flush) f=1 ;; esac
+        [ "$SCENARIO" != extra_flush ] || f=2
+        [ "$SCENARIO" != extra_write ] || w=2
+        counts="handed $((r + w + f)) reads $r writes $w flushes $f discards 0 others 0 failed 0 held 0"
+        trap 'printf "served\t%s\tended by a signal; %s\n" "$n" "$counts"; state waiting; exit 0' TERM
         while [ ! -e "$T/stop" ]; do sleep 0.1; done ;;
     serve)
-        state live; echo "$file" > "$T/img.$n"
+        state live; echo "$file" > "$T/img.$n"; echo "${what%%:*}" > "$T/kind.$n"
         printf 'serve\t%s\tlive after 3 ms\n' "$n"
         sleep 0.5
         sent="refuse-commit\t$n\tsent for $req on tag 3\n"
         case $SCENARIO in
-            refused|refused_reader_ended|refused_stays_live|refused_hangs|refused_other_read|lost_write|stale_device|image_lost|writer_fails|take_over_dies)
+            refused|refused_reader_ended|refused_stays_live|refused_hangs|refused_other_read|lost_write|stale_device|image_lost|writer_fails|take_over_dies*|extra_*)
                 # another read refused: one the kernel or udev sent at a start
                 [ "$SCENARIO" = refused_other_read ] && sent="refuse-commit\t$n\tsent for a read at byte 0 on tag 1\n"
                 printf "$sent"
@@ -201,6 +216,9 @@ is "other data" "$r $RC_CLIENT" "1 exit 0 after 12 ms; its data is NEITHER the o
 head -c 4096 /dev/zero > "$RC_RD.bin"; echo "exit 1 after 12 ms: dd: error reading" > "$RC_RD.rc"
 if rc_client 1; then r=0; else r=1; fi
 is "an error" "$r" 1
+: > "$RC_RD.bin"
+if rc_client 1; then r=0; else r=1; fi
+is "an error with nothing read" "$r $RC_CLIENT" "1 exit 1 after 12 ms: dd: error reading; it read no data"
 RC_KIND='write'; echo "exit 0 after 12 ms" > "$RC_RD.rc"
 if rc_client 1; then r=0; else r=1; fi
 is "a writer that succeeded" "$r $RC_CLIENT" "0 exit 0 after 12 ms"
@@ -225,6 +243,7 @@ has "  with its data" "$(line pin_refused_read_issued_again)" "its data is the o
 has "write: lands after the take-over" "$(line pin_refused_write_lands_after_take_over)" "PASS: "
 has "  through the device and in the image" "$(line pin_refused_write_lands_after_take_over)" "the range read back through the device: the written data; from the image after the take-over ended: the written data"
 has "flush: completes after the take-over" "$(line pin_refused_flush_completes_after_take_over)" "PASS: "
+has "  the take-over handed the one flush" "$(line pin_refused_flush_completes_after_take_over)" "writes 0 flushes 1 discards"
 for kind in read write flush; do
     has "$kind, deleted: the client gets an I/O error" "$(line "obs_refused_${kind}_then_delete")" "client held by the refused commit: exit 1 after"
     has "  and the number is free" "$(line "obs_refused_${kind}_then_delete")" "the device then read nothing"
@@ -240,7 +259,27 @@ SCENARIO=take_over_dies; : > "$R"
 refused_course flush 84 85 > /dev/null 2>&1
 has "a take-over that ended by itself fails" "$(line pin_refused_flush_completes_after_take_over)" "FAIL: "
 has "  and is named, with its error" "$(line pin_refused_flush_completes_after_take_over)" "THE TAKE-OVER HAD ENDED BY ITSELF, with exit 1"
-has "  and the program's own error" "$(line pin_refused_flush_completes_after_take_over)" "the queue's thread panicked"
+has "  the client is not waited for past it" "$(line pin_refused_flush_completes_after_take_over)" "still waiting after the server had ended"
+has "  and where the program panicked, and why" "$(line pin_refused_flush_completes_after_take_over)" "on the program's standard error: thread 'skyzfsd-queue' (16288) panicked at crates/skyzfs-ublk-sys/src/bin/skyzfs-ublk-control.rs:370:18: attempt to multiply with overflow )"
+# One that ends with no word: nothing of an earlier server is quoted.
+SCENARIO=take_over_dies_quietly; : > "$R"
+printf '%s\n' "thread 'skyzfsd-queue' (1) panicked at an earlier server:1:1:" "an earlier panic" "the last line before" >> "$OUT/control.err"
+refused_course flush 86 87 > /dev/null 2>&1
+has "a take-over that ended with no word fails" "$(line pin_refused_flush_completes_after_take_over)" "FAIL: "
+has "  and quotes no earlier panic" "$(line pin_refused_flush_completes_after_take_over)" "on the program's standard error: nothing)"
+# The take-over handed two of the kind: another was refused, and the
+# client's own came after it.
+SCENARIO=extra_flush; : > "$R"
+refused_course flush 88 89 > /dev/null 2>&1
+has "a take-over handed two flushes fails" "$(line pin_refused_flush_completes_after_take_over)" "FAIL: "
+has "  and says so" "$(line pin_refused_flush_completes_after_take_over)" "THE TAKE-OVER WAS HANDED 2 flushes, where the refused one issued again is 1"
+SCENARIO=extra_write; : > "$R"
+refused_course write 90 91 > /dev/null 2>&1
+has "a take-over handed two writes fails" "$(line pin_refused_write_lands_after_take_over)" "THE TAKE-OVER WAS HANDED 2 writes"
+# A client that ended before the take-over: the take-over is not judged by it.
+SCENARIO=refused_reader_ended; : > "$R"
+refused_course read 92 93 > /dev/null 2>&1
+has "a client that ended before the take-over fails the take-over's pin" "$(line pin_refused_read_issued_again)" "FAIL: not judged: the read client had ended before the take-over (exit 1 after"
 SCENARIO=stale_device; : > "$R"
 refused_course write 78 79 > /dev/null 2>&1
 has "a write the device does not read back fails" "$(line pin_refused_write_lands_after_take_over)" "FAIL: "

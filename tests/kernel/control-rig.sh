@@ -687,6 +687,7 @@ refused_commit() {
     local name=$1 n=$2 secs=$3 srv out sent said served ended rd state ms want; shift 3
     RC_KIND=$1; shift
     RC_IMG=$WORK/$name.img; RC_RD=$WORK/$name.rd; RC_VERDICT=ERROR
+    rm -f "$RC_RD.rc" "$RC_RD.bin"      # a client's end is read from these
     truncate -s "$SIZE" "$RC_IMG"
     "$DD" if=/dev/urandom of="$RC_IMG" bs=4k count=1 seek=$((RC_AT / 4096)) conv=notrunc status=none
     RC_OLD=$(rc_block "$RC_IMG")
@@ -738,46 +739,75 @@ rc_block() {
 rc_said() {
     case $1 in "$RC_OLD") echo "the old block" ;; "$RC_NEW") echo "the written data" ;; *) echo "NEITHER the old block nor the written data" ;; esac
 }
-# rc_client SECONDS: wait for refused_commit's client -> RC_CLIENT, what
-# it got; 0 when it ended with 0 (and a reader read the image's block)
+# rc_client SECONDS [PID]: wait for refused_commit's client, or until the
+# server PID has ended (and half a second more) -> RC_CLIENT, what it
+# got; 0 when it ended with 0 (and a reader read the image's block)
 rc_client() {
-    local got
-    for _ in $(seq 1 $(($1 * 10))); do [ -e "$RC_RD.rc" ] && break; sleep 0.1; done
-    if [ ! -e "$RC_RD.rc" ]; then RC_CLIENT="still waiting after $1 s more"; return 1; fi
+    local got gone=""
+    for _ in $(seq 1 $(($1 * 10))); do
+        [ -e "$RC_RD.rc" ] && break
+        if [ -n "${2:-}" ] && ! kill -0 "$2" 2>/dev/null; then
+            [ -n "$gone" ] && break; gone=yes; sleep 0.4
+        fi
+        sleep 0.1
+    done
+    if [ ! -e "$RC_RD.rc" ]; then
+        if [ -n "$gone" ]; then RC_CLIENT="still waiting after the server had ended"; else RC_CLIENT="still waiting after $1 s more"; fi
+        return 1
+    fi
     RC_CLIENT=$(cat "$RC_RD.rc")
     if [ "$RC_KIND" = read ]; then
         got=$(sha256sum < "$RC_RD.bin" 2>/dev/null | cut -d' ' -f1)
-        RC_CLIENT+="; its data is $(rc_said "$got")"
+        if [ -s "$RC_RD.bin" ]; then RC_CLIENT+="; its data is $(rc_said "$got")"; else RC_CLIENT+="; it read no data"; fi
         [[ $(cat "$RC_RD.rc") == "exit 0 "* ]] && [ "$got" = "$RC_OLD" ]
     else
         [[ $(cat "$RC_RD.rc") == "exit 0 "* ]]
     fi
 }
 
+# rc_panic FROM: what the test program said on its standard error from
+# line FROM of control.err on: where it panicked and why when it did
+# (the `panicked at` line and the one after), else its last line
+rc_panic() {
+    local said
+    said=$(tail -n +"$1" "$OUT/control.err" 2>/dev/null | grep -A1 'panicked at' | tail -n 2 | tr '\n' ' ')
+    [ -n "$said" ] || said=$(tail -n +"$1" "$OUT/control.err" 2>/dev/null | tail -n 1)
+    printf '%s' "${said:-nothing}" | cut -c1-300
+}
+
 # refused_course KIND N_TAKE N_DELETE: the take-over course and the delete course of one kind
 refused_course() {
-    local kind=$1 nt=$2 nd=$3 what pin r dev img v ms t0 before
+    local kind=$1 nt=$2 nd=$3 what pin r dev img v ms t0 before errs count n_kind
     what=$kind; [ "$kind" = flush ] || what="$kind:$RC_AT"
-    case $kind in                      # the pin after the take-over
-        read) pin=refused_read_issued_again ;;
-        write) pin=refused_write_lands_after_take_over ;;
-        *) pin=refused_flush_completes_after_take_over ;;
+    # The pin after the take-over. For a write or a flush, the take-over
+    # must be handed one request of that kind, the refused one issued
+    # again: two would mean that another was refused and the client's
+    # own came after it (review of #80). A read through the device to
+    # check a write is a read, so reads are not counted.
+    case $kind in
+        read) pin=refused_read_issued_again; count="" ;;
+        write) pin=refused_write_lands_after_take_over; count=writes ;;
+        *) pin=refused_flush_completes_after_take_over; count=flushes ;;
     esac
 
     step "a $kind committed with no buffer, then a take-over"
     refused_commit "refused_${kind}_take_over" "$nt" 30 "$kind" --refuse-one-commit "$what"
     pin "refused_${kind}_ends_the_server" "$RC_VERDICT" "$RC_WHY"
+    errs=$(( $(wc -l < "$OUT/control.err" 2>/dev/null || echo 0) + 1 ))
     if [ "$RC_VERDICT" = ERROR ]; then
         pin "$pin" ERROR "$RC_WHY"
+    elif [ -e "$RC_RD.rc" ]; then
+        # The client's end would be read as the take-over's doing.
+        pin "$pin" FAIL "not judged: the $kind client had ended before the take-over ($(cat "$RC_RD.rc"))"
     elif serve_bg "refused_${kind}_take_over-2" take-over "$nt" --file "$RC_IMG"; then
-        if rc_client 60; then r=PASS; else r=FAIL; fi
+        if rc_client 60 "$SRV_PID"; then r=PASS; else r=FAIL; fi
         # A take-over that ended by itself before it was told to (a
         # panic of the test program, say) is named: its device waits
         # again, and the client's wait says nothing of the kernel.
         if ! kill -0 "$SRV_PID" 2>/dev/null; then
             wait "$SRV_PID" 2>/dev/null; v=$?
             r=FAIL
-            RC_CLIENT+="; THE TAKE-OVER HAD ENDED BY ITSELF, with exit $v (its own last lines: $(tail -n +2 "$SRV_OUT" | cut -f3- | tr '\n' ' ' | cut -c1-160); the last line on the program's standard error: $(tail -n 1 "$OUT/control.err" 2>/dev/null | cut -c1-200))"
+            RC_CLIENT+="; THE TAKE-OVER HAD ENDED BY ITSELF, with exit $v (its own last lines: $(tail -n +2 "$SRV_OUT" | cut -f3- | tr '\n' ' ' | cut -c1-160); on the program's standard error: $(rc_panic "$errs"))"
         fi
         # A write: the range read back through the device while the
         # take-over serves, then from the image once it has ended.
@@ -787,6 +817,12 @@ refused_course() {
             img=$(rc_block "$RC_IMG")
             [ "$dev" = "$RC_NEW" ] && [ "$img" = "$RC_NEW" ] || r=FAIL
             RC_CLIENT+="; the range read back through the device: $(rc_said "$dev"); from the image after the take-over ended: $(rc_said "$img")"
+        fi
+        if [ -n "$count" ]; then
+            n_kind=$(printf '%s\n' "$SRV_SERVED" | sed -n "s/.* $count \([0-9][0-9]*\).*/\1/p")
+            if [ "$n_kind" != 1 ]; then
+                r=FAIL; RC_CLIENT+="; THE TAKE-OVER WAS HANDED ${n_kind:-an unknown number of} $count, where the refused one issued again is 1"
+            fi
         fi
         pin "$pin" "$r" "after the take-over ($SRV_LINE) the $kind client held by the refused commit: $RC_CLIENT; the take-over's last line: $(printf '%s' "$SRV_SERVED" | cut -c1-160)"
     else
