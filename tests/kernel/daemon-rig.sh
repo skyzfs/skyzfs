@@ -2855,6 +2855,30 @@ check_g() {
 # pages), and what serve does when the image alone journals its data
 # (chattr +j on data=ordered).
 GJ_MIB=16
+# What a refused start may leave changed in the volume's directory (the
+# lead, M1.T30): nothing but the status file. The image and the volume's
+# identity file (`volume`, from M1.3t) are byte-identical, and no
+# failure marker appears (log.failed, volume.failed). One allowance:
+# the log store's checkpoint at the entry into the in-place store
+# rewrites log.super and a segment before the start checks direct I/O,
+# until M1.3t removes the log store. Every changed file is named in the
+# line, allowed or not.
+GJ_MAY_CHANGE='^status$'
+GJ_ALLOWED_UNTIL_M13T='^log\.(super|[0-9]+)$'
+# new-or-rewritten gone-or-rewritten -> what is wrong ("" when nothing)
+gj_files_judged() {
+    local f out=""
+    for f in $1 $2; do
+        case $f in
+            home.img|volume) [[ $out == *"$f changed"* ]] || out+="$f changed; " ;;
+            log.failed|volume.failed)
+                if [[ " $1 " == *" $f "* ]]; then [[ $out == *"$f appeared"* ]] || out+="a failure marker $f appeared or was rewritten; "
+                else [[ $out == *"$f removed"* ]] || out+="a failure marker $f removed; "; fi ;;
+            *) [[ $f =~ $GJ_MAY_CHANGE || $f =~ $GJ_ALLOWED_UNTIL_M13T ]] || [[ $out == *"$f rewritten"* ]] || out+="$f rewritten; " ;;
+        esac
+    done
+    printf '%s' "$out"
+}
 check_g_data_journal() {
     local img=$WORK/g-journal.img mnt=$WORK/g-journal loop="" link=$WORK/vol-gj a="" bad="" rc said before after mode
     local cache="" attr j="" changed gone
@@ -2931,8 +2955,8 @@ check_g_data_journal() {
         after=$(cd "$mnt/vol" && sha256sum -- * 2>&1 | sort -k2)
         changed=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^> [0-9a-f]*  //p' | tr '\n' ' ')
         gone=$(diff <(echo "$before") <(echo "$after") | sed -n 's/^< [0-9a-f]*  //p' | tr '\n' ' ')
-        a+="the image after it: $([[ " $changed $gone " == *" home.img "* ]] && echo 'CHANGED' || echo 'as before'); other files of the volume new or rewritten: ${changed:-none}, gone or rewritten: ${gone:-none}; "
-        [[ " $changed $gone " != *" home.img "* ]] || bad+="the image changed; "
+        a+="files of the volume new or rewritten: ${changed:-none}; gone or rewritten: ${gone:-none}; "
+        bad+=$(gj_files_judged "$changed" "$gone")
     fi
     lim 60 umount "$mnt" >> "$OUT/gj-setup.log" 2>&1
     # 3: not failed: the control, after

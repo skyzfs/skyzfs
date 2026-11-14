@@ -613,6 +613,34 @@ class CommandsFailed(unittest.TestCase):
         self.assertEqual(body.count('    pin_c_commands_failed\n'), 1)
 
 
+class DataJournalFiles(unittest.TestCase):
+    """g.4 (M1.T30): what a refused start may leave changed in the volume's directory."""
+
+    def judged(self, new, gone):
+        import subprocess
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        script = (f'eval "$(sed -n \'/^GJ_MAY_CHANGE=/,/^GJ_ALLOWED_UNTIL_M13T=/p\' {rig!r})"; '
+                  f'eval "$(sed -n \'/^gj_files_judged() {{$/,/^}}$/p\' {rig!r})"; gj_files_judged "$1" "$2"')
+        return subprocess.run(['bash', '-c', script, '_', new, gone], capture_output=True, text=True, check=True).stdout
+
+    def test_the_log_files_are_allowed_until_m13t(self):
+        self.assertEqual(self.judged('log.000000 log.super ', 'log.000000 log.super '), '')
+
+    def test_the_status_file_may_change(self):
+        self.assertEqual(self.judged('status ', 'status '), '')
+
+    def test_the_image_and_the_identity_file_may_not(self):
+        self.assertEqual(self.judged('home.img ', 'home.img '), 'home.img changed; ')
+        self.assertEqual(self.judged('volume ', 'volume '), 'volume changed; ')
+
+    def test_a_failure_marker_may_not_appear_or_go(self):
+        self.assertIn('log.failed appeared', self.judged('log.failed ', ''))
+        self.assertIn('volume.failed removed', self.judged('', 'volume.failed '))
+
+    def test_any_other_file_is_named(self):
+        self.assertEqual(self.judged('lock x.tmp ', 'lock '), 'lock rewritten; x.tmp rewritten; ')
+
+
 class Main(unittest.TestCase):
     def test_exit_statuses(self):
         import contextlib
