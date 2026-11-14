@@ -183,6 +183,25 @@ EXPECTED = {
                                    'for M3)'),
     'pin_commands_failed_zero_e': ('e', 'PASS', WAITING, 'the same after a request was held for minutes', 'WAITING'),
     'ctl_hold_too_short': ('e', 'FAIL', SERVER, 'control: a request held 5 s is not accepted as one held for minutes'),
+    # M1.T35: the driver refuses one commit of the daemon's (its test hook, #83). The stand-in has no hooks.
+    'pin_refused_read_commit_taken_over': ('e', 'PASS', WAITING,
+                                           'a read whose commit the driver refused: serve ends with 8 and its line, '
+                                           'the device waits for a server and the read with it, and the next serve '
+                                           'is handed the read again and completes it with what was written (§4.2)',
+                                           'WAITING'),
+    'pin_refused_write_commit_taken_over': ('e', 'PASS', WAITING,
+                                            'the same for a write: after the take-over the client\'s write returns, '
+                                            'reads back through the device, and is in the home image after the '
+                                            'next stop (§4.2)', 'WAITING'),
+    'pin_refused_flush_commit_taken_over': ('e', 'PASS', WAITING,
+                                            'the same for a flush: the client\'s fsync returns after the take-over, '
+                                            'and its write reads back and is in the home image (§4.2)', 'WAITING'),
+    'pin_refused_commit_at_a_stop_ends_8': ('e', 'PASS', WAITING,
+                                            'a held write whose commit the driver refuses when SIGTERM stops the '
+                                            'server during the hold: the stop\'s last commits are checked, so serve '
+                                            'ends with 8 and not 0, and the take-over completes the write. A build '
+                                            'whose stop drops what its last flush reaps (before 343dd01) ends 0: the '
+                                            'negative control, by dispatch', 'WAITING'),
 
     # Check g (M1.T23): the disk under the home image fails for real (dm-error under an ext4 without a
     # journal), with the daemon's in-place store. The stand-in has no rule of its own here: WAITING.

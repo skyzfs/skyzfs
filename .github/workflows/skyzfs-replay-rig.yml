@@ -35,7 +35,8 @@ name: skyzfs-replay-rig
 #     25 minutes a job: every required prefix and every deep check, the
 #     light check on an even sample of the flush boundaries);
 #   - by dispatch: the input `server`, and for the daemon the input
-#     `daemon_budget` (full: every record prefix, about 45 minutes a job).
+#     `daemon_budget` (full: every record prefix, about 45 minutes a job
+#     on 26.04 and 100 to 105 on 24.04, which gets 180 minutes).
 # The daemon has one store since M1.3t (the log store is removed), and
 # the jobs name none. A build of `daemon_ref` from before M1.3t, whose
 # help offers `[--store`, is served with `--store in-place` put first,
@@ -262,8 +263,12 @@ jobs:
     needs: plan
     if: needs.plan.outputs.daemon == 'true'
     runs-on: ${{ matrix.image }}
-    # The full budget checks every record prefix (about 670 at 2.4 s).
-    timeout-minutes: 120
+    # The full budget checks every record prefix. On the 24.04 images it
+    # took 100 and 105 minutes a job (run 43582992305: about 2600
+    # prefixes at 2.2 to 2.4 s, with zdb 2.2.2), so a full run there has
+    # 180 minutes and a slow runner cannot cut it before its summary.
+    # Any other run keeps 120.
+    timeout-minutes: ${{ (needs.plan.outputs.budget == 'full' && startsWith(matrix.image, 'ubuntu-24.04')) && 180 || 120 }}
     # arm64 (M1.T21) by dispatch only (input images).
     strategy:
       fail-fast: false
