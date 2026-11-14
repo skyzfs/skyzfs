@@ -19,12 +19,13 @@ DEV = (8 << 20) + 100 * 1024     # not a multiple of 256 KiB: the back labels mo
 SLOT = 4096
 
 
-def ub(txg, root, order='<', mmp=False, slot=SLOT, mmp_delay=0, later=0):
+def ub(txg, root, order='<', mmp=False, slot=SLOT, mmp_delay=0, later=0, seq=None):
     """An uberblock slot as ZFS writes one: the struct, zeros, an embedded checksum at its end."""
     rootbp = [root * 1000 + k for k in range(16)]
     head = struct.pack(order + '5Q', cut_ref.UB_MAGIC, 5000, txg, 77, 1700000000 + txg + later)
     body = struct.pack(order + '16Q', *rootbp)
-    tail = struct.pack(order + '6Q', 5000, cut_ref.MMP_MAGIC if mmp else 0, mmp_delay, 0, 0, 0)
+    config = 0 if seq is None else (seq << 32) | 0x02
+    tail = struct.pack(order + '6Q', 5000, cut_ref.MMP_MAGIC if mmp else 0, mmp_delay, config, 0, 0)
     raw = head + body + tail
     return raw.ljust(slot - 40, b'\0') + struct.pack('<Q', 0x210da7ab10c7a11) + b'\x11' * 32
 
@@ -242,6 +243,20 @@ class Cuts(Fixture):
             # follows the order it reads the slots in
             self.assertFalse(op[1]['itself'], later)
             self.assertEqual(op[1]['rootbp'][0], 2000, later)
+
+    def test_the_mmp_sequence_breaks_a_tie_of_group_and_timestamp(self):
+        g = group(10, 1)
+        for seq, own, itself in ((5, None, False), (5, 9, True), (5, 5, False), (None, None, False)):
+            # another root under group 10 with the same timestamp; the
+            # cut's own copy written by MMP with sequence `own`
+            entries = (g[:2] + [('write', slot_at(0, 20), ub(10, 2, mmp=True, seq=seq))] + g[2:]
+                       + [('write', slot_at(1, 21), ub(10, 1, mmp=True, seq=own)), ('flush',)])
+            cs, _ = self.run_log(entries)
+            op = cut_ref.opens(self.idx['records'], self.read, DEV, cs + [dict(cs[0], n=2, prefix=len(entries))])
+            self.assertEqual(op[2]['itself'], itself, (seq, own))
+        # a sequence is read only where its valid bit is set
+        self.assertEqual(cut_ref.parse_uberblock(ub(10, 1, mmp=True, seq=7))['mmp_seq'], 7)
+        self.assertEqual(cut_ref.parse_uberblock(ub(10, 1, mmp=False, seq=7))['mmp_seq'], 0)
 
     def test_the_best_is_by_group_then_timestamp(self):
         # A higher group with an older timestamp beats a lower group's

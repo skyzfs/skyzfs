@@ -104,6 +104,9 @@ def parse_uberblock(buf):
     return {'order': 'le' if order == '<' else 'be', 'version': w[1], 'txg': w[2], 'guid_sum': w[3],
             'timestamp': w[4], 'rootbp': rootbp, 'software_version': tail[0],
             'mmp': tail[1] == MMP_MAGIC, 'mmp_delay': tail[2] if tail[1] == MMP_MAGIC else 0,
+            # MMP_SEQ when MMP_VALID and MMP_SEQ_VALID, else 0, as
+            # vdev_uberblock_compare reads it (uberblock_impl.h)
+            'mmp_seq': (tail[3] >> 32) & 0xFFFF if tail[1] == MMP_MAGIC and tail[3] & 0x02 else 0,
             'checkpoint_txg': tail[4]}
 
 
@@ -213,7 +216,8 @@ def opens(records, read, dev_bytes, cs):
     -> {n: {'txg', 'timestamp', 'rootbp', 'itself'}}.
 
     ZFS opens a pool at the uberblock with the highest group in any
-    label's ring, the timestamp breaking a tie (vdev_uberblock_compare).
+    label's ring, then the latest timestamp, then the highest MMP sequence
+    (vdev_uberblock_compare).
     The ring is followed through the record: a write over a slot leaves
     the uberblock it carries there, or none, and a discard none. A cut
     opens as itself when the greatest uberblock of its own state is
@@ -229,7 +233,8 @@ def opens(records, read, dev_bytes, cs):
         by_prefix.setdefault(c['prefix'], []).append(c)
 
     def order(u):
-        return (u['txg'], u['timestamp'])
+        # vdev_uberblock_compare: the group, the timestamp, the MMP sequence
+        return (u['txg'], u['timestamp'], u.get('mmp_seq', 0))
 
     def note(prefix):
         for c in by_prefix.get(prefix, ()):
