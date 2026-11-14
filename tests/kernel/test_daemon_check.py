@@ -555,7 +555,10 @@ class DataJournalFiles(unittest.TestCase):
 class KillRefusal(unittest.TestCase):
     """A serve after a kill -9 that the server refuses (M1.T31): a FAIL of the kill test's pins, the rig's ERROR for a control."""
 
-    def verdict(self, serve_rc, kind, log_line='skyzfsd: the volume is marked as failed'):
+    BROKEN = ('skyzfsd: the kernel handed over tag 3 of device 7, which the queue does not have or whose '
+              'request was still out, against the driver\'s rule')
+
+    def verdict(self, serve_rc, kind, log_line='skyzfsd: the volume is marked as failed', when=''):
         import subprocess
         import tempfile
         rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
@@ -568,10 +571,10 @@ class KillRefusal(unittest.TestCase):
                       f'eval "$(sed -n \'/^kt_refusal() {{$/,/^}}$/p\' {rig!r})"; '
                       f'eval "$(sed -n \'/^kill_verdict() {{/,/^}}$/p\' {rig!r})"; '
                       'KT_ERR="kill 3: serve did not come back (rc 1, serve exit $1)"; '
-                      'KT_REFUSED=$(kt_refusal 3 "$1" "$2"); KT_DONE=2; KT_INFLIGHT=2; KT_FAILED_WRITES=0; '
+                      'KT_REFUSED=$(kt_refusal 3 "$1" "$2" $4); KT_DONE=2; KT_INFLIGHT=2; KT_FAILED_WRITES=0; '
                       'KT_STATE=ONLINE; KT_VDEV="vdev errors 0 x"; KT_SCRUB="vdev errors 0 with 0 errors"; KT_FILES=ok; '
                       'kill_verdict $3; printf "%s\\n%s\\n" "$KT_VERDICT" "$KT_WHY"')
-            out = subprocess.run(['bash', '-c', script, '_', serve_rc, log, kind],
+            out = subprocess.run(['bash', '-c', script, '_', serve_rc, log, kind, when],
                                  capture_output=True, text=True, check=True).stdout
         verdict, why = out.split('\n', 1)
         return verdict, why.strip()
@@ -582,6 +585,41 @@ class KillRefusal(unittest.TestCase):
             self.assertEqual(verdict, 'FAIL', rc)
             self.assertIn(f'kill 3: the next serve refused the volume with exit {rc}', why)
             self.assertIn('the volume is marked as failed', why)
+
+    def test_a_planted_7_fails_the_pin_and_says_what_the_driver_did(self):
+        # M1.3ac (#77): the daemon ends with 7 when the driver hands over
+        # a tag whose request is still out (lead's ruling on M1.T34).
+        verdict, why = self.verdict('7', 'pin', self.BROKEN)
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn('kill 3: the next serve ended with exit 7: the driver handed over a tag whose request was '
+                      'still out', why)
+        self.assertIn('the next serve should take it over', why)
+        self.assertIn(self.BROKEN, why)
+
+    def test_a_7_before_the_kill_fails_the_pin(self):
+        # The server a kill was for had ended so by itself.
+        verdict, why = self.verdict('7', 'pin', self.BROKEN, 'before')
+        self.assertEqual(verdict, 'FAIL')
+        self.assertIn('before kill 3: the server ended with exit 7: the driver handed over a tag', why)
+
+    def test_a_7_in_a_control_stays_the_rigs_error(self):
+        for when in ('', 'before'):
+            verdict, _ = self.verdict('7', '', self.BROKEN, when)
+            self.assertEqual(verdict, 'ERROR', when)
+
+    def test_the_kill_loop_looks_for_a_7_between_kills(self):
+        # The kill of a server that ended by itself succeeds (its process
+        # is not reaped yet), so the loop reads its status after the
+        # wait; a 7 there would otherwise be lost to the next take-over.
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        self.assertIn('[ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null\n'
+                      '        # A daemon that had ended by itself with exit 7', text)
+        self.assertIn('        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then\n'
+                      '            KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)\n'
+                      '            KT_ERR="before kill $n: ', text)
+        self.assertIn('EXIT_BUSY=5; EXIT_BROKEN_RULE=7\n', text)
 
     def test_for_a_control_it_stays_the_rigs_error(self):
         # A control whose kills did not all happen has shown nothing,

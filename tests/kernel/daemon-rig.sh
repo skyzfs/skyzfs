@@ -148,7 +148,7 @@ course() { # name: 0 if the course may run; 1 when ZFS is stuck, and the course 
 # --------------------------------------------- the server, by its command line
 # Everything that depends on the daemon's command line is in these
 # functions and in skyzfsd-ref.sh.
-EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5
+EXIT_FAILED=3; EXIT_REFUSED_FAILED=4; EXIT_BUSY=5; EXIT_BROKEN_RULE=7
 SERVE_PID=""; BDEV=""; SERVE_RC=""
 vol_create() { lim 60 "$1" create --dir "$2" --size "$VOL_BYTES"; }
 vol_up() { # impl dir [serve arguments]: create a volume and serve it
@@ -678,6 +678,18 @@ kill_test() {
         watcher=$!
         [ "${w:-0}" -gt 0 ] && KT_INFLIGHT=$((KT_INFLIGHT + 1))
         [ -z "$SERVE_PID" ] || serve_wait 30 || kill -9 "$SERVE_PID" 2>/dev/null
+        # A daemon that had ended by itself with exit 7 before the kill
+        # (the kill of its unreaped process succeeds): the next serve
+        # would take the device over and the 7 be lost. Any other status
+        # is left as it was: the stand-in's serve ends with 1 when its
+        # server is killed, and a volume failed while served (3) has the
+        # next serve refuse it, which kt_refusal names.
+        if [ "$SERVE_RC" = "$EXIT_BROKEN_RULE" ]; then
+            KT_REFUSED=$(kt_refusal "$n" "$SERVE_RC" "$dir.serve.log" before)
+            KT_ERR="before kill $n: the server had ended by itself, with exit $SERVE_RC"
+            wait "$watcher"
+            break
+        fi
         # KT_WAIT_S: after the first kill no server comes for that long.
         if [ "${KT_WAIT_S:-0}" -gt 0 ] && [ "$n" = 1 ]; then
             mark=$(klog_mark); i=$(wc -l < "$WORK/$name.record"); states=""; t0=$(now_ms)
@@ -785,15 +797,26 @@ medians() {
     last=$(printf '%s\n' "${@: -5}" | sort -n | sed -n 3p)
     echo "$# take-overs; median of the first five $first ms, of the last five $last ms; all, in order: $*"
 }
-# kill exit serve-log -> why, or nothing: the serve after a kill ran and
-# refused the volume by its own exit status (failed, refused as failed,
-# busy). That is a false alarm that suspends a healthy pool, a verdict
-# against the server and not the rig's failure. A serve that never
-# started or ran out (no such status) is not one.
+# kill exit serve-log [before] -> why, or nothing: the serve after a
+# kill ran and refused the volume by its own exit status (failed,
+# refused as failed, busy). That is a false alarm that
+# suspends a healthy pool, a verdict against the server and not the
+# rig's failure. So is exit 7 (M1.3ac, #77): the daemon says that the
+# kernel's driver handed over a tag whose request was still out, and
+# leaves the device waiting for the next serve, which the kill test
+# does not start; `before`: the server that a kill was for had ended so
+# by itself. That the driver broke its rule is the daemon's word, and
+# the pins hold that it does not (lead's ruling on M1.T34). A serve that
+# never started or ran out (no such status) is not one.
 kt_refusal() {
+    local who="kill $1: the next serve" said
+    [ -z "${4:-}" ] || who="before kill $1: the server"
+    said=$(tail -n 1 "$3" 2>/dev/null | cut -c1-300)
     case $2 in
+        "$EXIT_BROKEN_RULE")
+            printf "%s ended with exit %s: the driver handed over a tag whose request was still out, by the daemon's word; the device waits for a server, and the next serve should take it over: %s" "$who" "$2" "$said" ;;
         "$EXIT_FAILED"|"$EXIT_REFUSED_FAILED"|"$EXIT_BUSY")
-            printf 'kill %s: the next serve refused the volume with exit %s: %s' "$1" "$2" "$(tail -n 1 "$3" 2>/dev/null | cut -c1-300)" ;;
+            printf '%s refused the volume with exit %s: %s' "$who" "$2" "$said" ;;
     esac
 }
 # The four judgments of a kill test, as pins or as one control line.
