@@ -26,7 +26,9 @@ fn serve(line: &str) -> Serve {
 /// The exit statuses are the numbers the rig expects: 0 after SIGTERM,
 /// 1 for anything else, 2 for usage, 3 for a volume that failed while
 /// serving, 4 for one refused because it failed in this boot, 5 for one
-/// another instance holds.
+/// another instance holds, 6 for a detach of a device a client holds,
+/// 7 for a kernel driver that broke its rule. The help's table names
+/// each.
 #[test]
 fn the_exit_statuses_are_the_agreed_numbers() {
     let all = [
@@ -37,10 +39,20 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::RefusedFailed, 4),
         (Exit::RefusedHeld, 5),
         (Exit::DeletedHeld, 6),
+        (Exit::BrokenRule, 7),
     ];
+    let table = HELP
+        .split_once("Exit statuses:")
+        .map(|(_, table)| table)
+        .expect("the help has a table of exit statuses");
     for (exit, status) in all {
         assert_eq!(exit.status(), status);
+        assert!(
+            table.contains(&format!(" {status} ")) || table.contains(&format!("\n{status} ")),
+            "the help's table lacks {status}"
+        );
     }
+    assert!(HELP.contains("7 the kernel's driver broke its rule"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a

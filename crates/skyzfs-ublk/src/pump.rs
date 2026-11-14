@@ -84,8 +84,8 @@ use crate::translate::{Action, Desc, Plan, Translator};
 pub struct Fetched {
     /// The queue's tag for the request: below [`Queue::depth`], and not
     /// reused until the request is committed. A queue that breaks this
-    /// ends the pump at the hand-over ([`Stopped::QueueDown`]), so that
-    /// a tag is never committed twice for one request.
+    /// ends the pump at the hand-over ([`Stopped::BrokenRule`]), so
+    /// that a tag is never committed twice for one request.
     pub tag: u16,
     /// What is asked.
     pub desc: Desc,
@@ -226,11 +226,21 @@ pub enum Stopped {
     /// completed and committed, and the commits were handed to the
     /// driver ([`Queue::flush`]).
     Orderly,
-    /// The queue went away, or handed over a tag it does not have or
-    /// one whose request is still out. Completions that waited are not
-    /// committed: there is no queue to commit them to, or none that
-    /// keeps its rule.
+    /// The queue went away. Completions that waited are not committed:
+    /// there is no queue to commit them to.
     QueueDown,
+    /// The driver broke its rule that a tag is handed over again only
+    /// after its commit: it handed over `tag`, which the queue does not
+    /// have or whose request is still out. Nothing of that wait was
+    /// submitted or committed, and nothing more is answered on this
+    /// queue: an answer could complete the wrong request. Completions
+    /// that waited are not committed. The breach is the driver's, not
+    /// the store's: the volume is not failed, and the device is left
+    /// for the next server as after a kill (M1.3ac).
+    BrokenRule {
+        /// The tag handed over against the rule.
+        tag: u16,
+    },
     /// The target can complete nothing more. Nothing was committed
     /// after that was seen, not even completions that waited.
     TargetGone,
@@ -697,7 +707,7 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
     /// Take what the queue handed over at a wait: each tag must be one
     /// the queue has and have no request out, or the driver broke its
     /// rule that a tag is handed over again only after its commit, and
-    /// the pump ends (`QueueDown`) before anything of this wait is
+    /// the pump ends ([`Stopped::BrokenRule`]) before anything of this wait is
     /// submitted or committed. Checked here, at the hand-over, and not
     /// when the request is submitted: a request that waits in the
     /// backlog until its tag's first request was committed would get
@@ -706,16 +716,17 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         let unguarded = self.mutants.has(Mutants::TAG_REUSED);
         let at_submit = self.mutants.has(Mutants::GUARD_AT_SUBMIT);
         for request in fetched {
-            let Some(slot) = self.slots.get_mut(usize::from(request.tag)) else {
+            let tag = request.tag;
+            let Some(slot) = self.slots.get_mut(usize::from(tag)) else {
                 // A tag the queue does not have: nothing can be
                 // committed for it.
-                return Err(Stopped::QueueDown);
+                return Err(Stopped::BrokenRule { tag });
             };
             match slot {
                 Slot::Idle if !at_submit => *slot = Slot::Waiting,
                 Slot::Idle => {}
                 _ if unguarded || at_submit => {}
-                _ => return Err(Stopped::QueueDown),
+                _ => return Err(Stopped::BrokenRule { tag }),
             }
         }
         Ok(())
@@ -791,10 +802,10 @@ impl<Q: Queue, T: PumpTarget> Pump<Q, T> {
         let Fetched { tag, desc } = fetched;
         let Some(slot) = self.slots.get(usize::from(tag)) else {
             // Not reached: `take_over` let no such tag in.
-            return Err(Stopped::QueueDown);
+            return Err(Stopped::BrokenRule { tag });
         };
         if self.mutants.has(Mutants::GUARD_AT_SUBMIT) && !matches!(slot, Slot::Idle) {
-            return Err(Stopped::QueueDown);
+            return Err(Stopped::BrokenRule { tag });
         }
         let plan = match self.translator.translate(desc) {
             Ok(plan) => plan,

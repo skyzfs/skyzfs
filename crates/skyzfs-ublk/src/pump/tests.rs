@@ -893,7 +893,7 @@ fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
         expect(rig.fetch(&[write(0, 0)]), None, "the first")?;
         expect(
             rig.fetch(&[write(0, 5)]),
-            Some(Stopped::QueueDown),
+            Some(Stopped::BrokenRule { tag: 0 }),
             "the same tag again",
         )?;
         expect(rig.submitted().len(), 1, "the second reached nothing")?;
@@ -942,7 +942,11 @@ fn a_tag_handed_over_again_while_its_request_is_out_is_not_taken() {
             }
         }
         rig.driver_rule()?;
-        expect(stopped, Some(Stopped::QueueDown), "tag 0 handed over again")?;
+        expect(
+            stopped,
+            Some(Stopped::BrokenRule { tag: 0 }),
+            "tag 0 handed over again",
+        )?;
         expect(rig.submitted().len(), 1, "only tag 0's first request")?;
         expect(rig.committed(), vec![], "nothing is committed")
     }
@@ -960,7 +964,7 @@ fn a_tag_handed_over_again_while_its_request_is_out_is_not_taken() {
     fn twice(mutants: u32) -> Outcome {
         let mut rig = Rig::new(mutants, 8, 8);
         let stopped = rig.fetch(&[write(2, 0), write(2, 8)]);
-        expect(stopped, Some(Stopped::QueueDown), "tag 2 twice")?;
+        expect(stopped, Some(Stopped::BrokenRule { tag: 2 }), "tag 2 twice")?;
         expect(rig.submitted(), vec![], "nothing reached the target")?;
         expect(rig.committed(), vec![], "nothing is committed")
     }
@@ -973,10 +977,26 @@ fn a_tag_handed_over_again_while_its_request_is_out_is_not_taken() {
         expect(rig.pump.fail(), 0, "nothing was held")?;
         let stopped = rig.fetch(&[write(3, 0), write(3, 8)]);
         rig.driver_rule()?;
-        expect(stopped, Some(Stopped::QueueDown), "tag 3 twice")?;
+        expect(stopped, Some(Stopped::BrokenRule { tag: 3 }), "tag 3 twice")?;
         expect(rig.committed(), vec![], "nothing is committed")
     }
     caught(failed, Mutants::TAG_REUSED);
+}
+
+/// A tag the queue does not have breaks the driver's rule as a tag
+/// still out does: the pump ends at the hand-over with the tag named,
+/// and nothing of that wait reaches the target or is committed, not
+/// even the request on a good tag beside it. Distinct from a queue
+/// that went away (below), which is no breach.
+#[test]
+fn a_tag_the_queue_does_not_have_ends_the_pump_with_the_rule_broken() {
+    let mut rig = Rig::new(0, 4, 4);
+    assert_eq!(
+        rig.fetch(&[write(1, 0), write(4, 8)]),
+        Some(Stopped::BrokenRule { tag: 4 })
+    );
+    assert!(rig.submitted().is_empty());
+    assert!(rig.committed().is_empty());
 }
 
 /// When the queue goes away the pump ends and says so.

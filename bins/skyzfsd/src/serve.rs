@@ -27,6 +27,14 @@
 //! | a stop was asked and everything accepted was completed | 0 |
 //! | the volume failed while it was served, or at its start | 3 |
 //! | the queue went away, or the target did | 1 |
+//! | the kernel's driver broke its rule: it handed over a tag whose request was still out ([`Stopped::BrokenRule`]) | 7 |
+//!
+//! After a broken rule nothing more is answered on the queue, since an
+//! answer could complete the wrong request. The breach is the
+//! driver's, not the store's: the volume is not failed, no note is
+//! written, and the device is neither stopped nor deleted, so that it
+//! waits for the next server as after a kill, and the kernel issues
+//! again what was not answered (M1.3ac).
 //!
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted with the image's
@@ -978,10 +986,32 @@ fn run(serve: &Serve) -> Result<Exit, String> {
         ));
         return Ok(Exit::Failed);
     }
-    match stopped? {
-        Stopped::Orderly if why == Why::Stop => Ok(Exit::Done),
+    ended(number, why == Why::Stop, stopped?)
+}
+
+/// How serve ends once the queue's thread of device `number` has ended
+/// with `stopped` and no failure came with it: 0 after an asked stop
+/// that ended in order; 7, with its line, when the kernel's driver
+/// broke its rule (the device is left as it is, waiting for the next
+/// server); an error otherwise.
+fn ended(number: u32, asked_to_stop: bool, stopped: Stopped) -> Result<Exit, String> {
+    match stopped {
+        Stopped::Orderly if asked_to_stop => Ok(Exit::Done),
+        Stopped::BrokenRule { tag } => {
+            say(broken_rule_said(number, tag));
+            Ok(Exit::BrokenRule)
+        }
         other => Err(format!("the queue of device {number} ended: {other:?}")),
     }
+}
+
+/// What serve says when the kernel's driver broke its rule.
+fn broken_rule_said(number: u32, tag: u16) -> String {
+    format!(
+        "the kernel handed over tag {tag} of device {number} while its request was still out, \
+         against the driver's rule: nothing more is answered on this queue, the volume is not \
+         failed, and device {number} waits for the next server, as after a kill"
+    )
 }
 
 /// What a start refused for the kernel says. The check comes before
@@ -1423,6 +1453,98 @@ mod tests {
         fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
             Ok(())
         }
+    }
+
+    /// A queue that hands over tag 0 at its first wait and tag 0 again
+    /// at its second, while the first request is still out: a driver
+    /// that breaks its rule.
+    #[derive(Default)]
+    struct Rehanded {
+        waits: u32,
+        committed: Arc<std::sync::Mutex<Vec<(u16, i32)>>>,
+    }
+
+    impl skyzfs_ublk::pump::Queue for Rehanded {
+        fn depth(&self) -> u16 {
+            4
+        }
+        fn wait(
+            &mut self,
+            fetched: &mut Vec<skyzfs_ublk::pump::Fetched>,
+            _unfetched: &mut Vec<skyzfs_ublk::pump::Unfetched>,
+        ) -> Result<skyzfs_ublk::pump::Wake, skyzfs_ublk::pump::QueueDown> {
+            use skyzfs_ublk::translate::{op, Desc};
+            self.waits += 1;
+            if self.waits <= 2 {
+                fetched.push(skyzfs_ublk::pump::Fetched {
+                    tag: 0,
+                    desc: Desc {
+                        op_flags: u32::from(op::WRITE),
+                        nr_sectors: 8,
+                        start_sector: 0,
+                    },
+                });
+            }
+            Ok(skyzfs_ublk::pump::Wake::Work)
+        }
+        fn take_buf(&mut self, _tag: u16, blocks: usize) -> Option<skyzfs_blk::Buf> {
+            Some(skyzfs_blk::Buf::zeroed(blocks))
+        }
+        fn commit(&mut self, tag: u16, result: i32, _buf: Option<skyzfs_blk::Buf>) {
+            self.committed.lock().expect("lock").push((tag, result));
+        }
+        fn flush(&mut self) -> Result<(), skyzfs_ublk::pump::QueueDown> {
+            Ok(())
+        }
+    }
+
+    /// A driver that breaks its rule ends serve with status 7, on the
+    /// path that leaves the device for the next server (M1.3ac, the
+    /// lead's two conditions). The queue's thread, run as serve runs it
+    /// (`pumped`, with the check for a failure at every turn), ends
+    /// with the rule broken and the tag named, has committed nothing,
+    /// and has not marked the volume failed: serve's main thread takes
+    /// the failure's path (its note and the device's delete) only on
+    /// that mark, and stops the device only on a signal, so it does
+    /// neither here. The end then gives status 7 and a line that names
+    /// the cause and says that the device waits for the next server. A
+    /// queue that went away stays an error (1), and an orderly stop 0.
+    #[test]
+    fn a_driver_that_breaks_its_rule_ends_serve_with_7_and_leaves_the_device() {
+        let committed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let queue = Rehanded {
+            committed: committed.clone(),
+            ..Rehanded::default()
+        };
+        let queue = Delayed::new(queue, None, None, || {});
+        let flags = Flags::default();
+        let (stopped, store) = pumped(Pump::new(queue, Silent(Vec::new())), |pump, _| {
+            answer_if_failed(pump, &flags, &|| {});
+        });
+        assert_eq!(stopped, Some(Stopped::BrokenRule { tag: 0 }));
+        assert!(committed.lock().expect("lock").is_empty());
+        assert_eq!(store.0.len(), 1, "only the first request reached the store");
+        assert!(
+            !flags.failed.load(Ordering::SeqCst),
+            "the volume is not failed"
+        );
+        assert!(!flags.answered.load(Ordering::SeqCst));
+
+        assert_eq!(
+            ended(3, false, Stopped::BrokenRule { tag: 0 }),
+            Ok(Exit::BrokenRule)
+        );
+        let said = broken_rule_said(3, 0);
+        for words in [
+            "the kernel handed over tag 0 of device 3",
+            "still out",
+            "nothing more is answered",
+            "waits for the next server",
+        ] {
+            assert!(said.contains(words), "{said}");
+        }
+        assert!(ended(3, false, Stopped::QueueDown).is_err());
+        assert_eq!(ended(3, true, Stopped::Orderly), Ok(Exit::Done));
     }
 
     /// A target that takes requests and never answers one: a store
