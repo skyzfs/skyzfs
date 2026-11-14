@@ -1,0 +1,4 @@
+R1 the client's exit not checked: rc 1; FAIL a take-over that carries the write out and answers an error fails: got '0', want '1'
+R2 the next stop's exit not checked: rc 1; FAIL a last stop that does not end 0 fails: got '0', want '1'
+R3 no write before the flush: rc 1; FAIL a refused flush, then a take-over: PASS: got '1', want '0'; FAIL   the stop and the home image: 'the next stop: exit 0; the home image's block: same' not in 'serve ended with exit 8 after 257 ms, saying: skyzfsd: the kernel refused serve's answer on tag 0 of device 9 (Invalid argument (os error 22)): nothing more is answered on this queue; the device then read QUIESCED; the client still waited 2 s after; after the take-over the client exited 0 (2 s in all); the block read back through the device: DIFFERENT; the next stop: exit 0; the home image's block: DIFFERENT'; FAIL the daemon: pin_refused_flush_commit_taken_over: got 'FAIL', want 'PASS'
+worktree clean: True

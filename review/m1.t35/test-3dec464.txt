@@ -1,0 +1,52 @@
+ok   a refused read, then a take-over: PASS
+ok     serve's exit and line
+ok     and its words
+ok     the device waited
+ok     the client ended after the take-over
+ok     the stop and the home image
+ok   a refused write, then a take-over: PASS
+ok     serve's exit and line
+ok     and its words
+ok     the device waited
+ok     the client ended after the take-over
+ok     the stop and the home image
+ok   a refused flush, then a take-over: PASS
+ok     serve's exit and line
+ok     and its words
+ok     the device waited
+ok     the client ended after the take-over
+ok     the stop and the home image
+ok   the read returns what was written
+ok   a held write refused at a stop: PASS
+ok     says it was stopped while held
+ok   the negative control: a stop that ends 0 fails
+ok     and says so
+ok   a refused request that the server answered all the same fails
+ok     the client did not wait
+ok   an 8 with no line fails
+ok   a device that does not wait fails
+ok     says what it read
+ok   a take-over that loses the write fails
+ok     the block differs
+ok   a take-over that loses the read fails
+ok     the client read something else
+ok   the line with another exit status fails
+ok     says which
+ok   a take-over that carries the write out and answers an error fails
+ok     says what the client got
+ok   a last stop that does not end 0 fails
+ok     says so
+ok   a write not in the home image fails
+ok     says so
+ok   a build without the hook is the rig's error
+ok     and says why
+ok   the daemon: pin_refused_read_commit_taken_over
+ok   the daemon: pin_refused_write_commit_taken_over
+ok   the daemon: pin_refused_flush_commit_taken_over
+ok   the daemon: pin_refused_commit_at_a_stop_ends_8
+ok   the stand-in: pin_refused_read_commit_taken_over
+ok   the stand-in: pin_refused_write_commit_taken_over
+ok   the stand-in: pin_refused_flush_commit_taken_over
+ok   the stand-in: pin_refused_commit_at_a_stop_ends_8
+ok   four pins
+all passed
