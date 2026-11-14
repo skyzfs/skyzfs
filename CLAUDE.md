@@ -188,7 +188,8 @@ there, and the user decides when it merges.
   The daemon has one store, the in-place store (the log store was
   removed in M1.3t), and since M1.T31 no rig and not the benchmark
   names a store; a current build has no `--store` at all
-  (M1.3t-d), so any `--store` in `serve_args` is refused. A build from before M1.3t (a `daemon_ref` or
+  (M1.3t-d), so any `--store` in `serve_args` is refused, as the rig's own error before
+  any serve (M1.T34). A build from before M1.3t (a `daemon_ref` or
   `TB_SKYZFSD_REF`) defaults to the log store, so when its help offers
   `[--store` it is served with `--store in-place`, and the summary
   says so.
@@ -257,7 +258,9 @@ there, and the user decides when it merges.
   (`pin_failure_reason_is_the_images`, M1.T26: the reason the daemon
   gives for a failed image is read in four places). A start that
   the daemon refuses after a `kill -9` is a FAIL of the kill test's
-  pins, not an error of the rig (M1.T31); a refused start may change
+  pins, not an error of the rig (M1.T31), and so is a daemon that
+  ends with status 7, a request handed over twice by the driver
+  (M1.3ac, M1.T34); a refused start may change
   only the status file. Check f was removed with the log store. The summary
   says for each line whether it rests on the kernel, on the server, or
   only shows that the check works. Exit 2 is an error of the rig and

@@ -348,6 +348,9 @@ set -euo pipefail
 # O_DIRECT calls below fail with the Rust coreutils dd. See the helper.
 # shellcheck source=tests/lib/gnu-dd.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gnu-dd.sh"
+# skz_store_args: the serve options of zfs-skyzfsd, as far as the store goes.
+# shellcheck source=tests/lib/skz-store.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/skz-store.sh"
 
 need() { for t in "$@"; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 64; }; done; }
 if [ "${1:-}" != summarize ]; then
@@ -960,6 +963,10 @@ for t in $TOPOLOGIES; do
         zfs-skyzfsd)
             need zpool zfs tar; ANY_ZFS=1; ANY_UBLK=1
             { [ -n "$SKYZFSD" ] && [ -x "$SKYZFSD" ]; } || { echo "zfs-skyzfsd needs TB_SKYZFSD, the skyzfsd binary: '${SKYZFSD}' is not a program" >&2; exit 64; }
+            # A --store this build does not take, or a log store option,
+            # ends the row here, before anything is built (M1.T34).
+            read -r -a SKZ_CHECK_ARGS <<< "${SKYZFSD_ARGS//,/ }"
+            skz_store_args "$SKYZFSD" "${SKZ_CHECK_ARGS[@]}" || { echo "TB_SKYZFSD_ARGS ($SKYZFSD_ARGS): $SKZ_STORE_WHY" >&2; exit 64; }
             ;;
         *) echo "unknown topology: $t" >&2; exit 64 ;;
     esac
@@ -1560,30 +1567,20 @@ skz_low_bytes() {
 skz_start() { # serve in the background; SKZ_DEV is the device it says is ready
     local i args=()
     [ -z "$SKYZFSD_ARGS" ] || read -r -a args <<< "${SKYZFSD_ARGS//,/ }"
-    # The daemon has one store since M1.3t (the log store is removed).
-    # Its options, and a --store other than in-place, are the row's
-    # mistake and end it before a serve. A build from before M1.3t
-    # (TB_SKYZFSD_REF of an older commit), whose usage offers [--store,
-    # defaults to the log store: it is served with --store in-place, so
-    # that every row runs the store the benchmark is about. A build from
-    # before the option has only the log store and is served as it was.
-    local o i
-    for ((i = 0; i < ${#args[@]}; i++)); do
-        o=${args[i]}
-        case $o in
-            --store=in-place) continue ;;
-            --store) [ "${args[i + 1]:-}" != in-place ] || { i=$((i + 1)); continue; } ;;
-        esac
-        case ${o%%=*} in
-            --store|--log-high|--log-low|--writeback-kib|--home-writeback-kib|--readers|--step-pause-ms|--step-pause-until|--step-pause-at|--refuse-holes)
-                log "TB_SKYZFSD_ARGS: $o is of the log store, which M1.3t removed"
-                return 64 ;;
-        esac
-    done
-    if [[ " ${args[*]} " != *" --store "* && " ${args[*]} " != *" --store="* ]] \
-        && "$SKYZFSD" help 2>&1 | grep -q -F -- '[--store'; then
-        args=(--store in-place "${args[@]}")
+    # The daemon has one store since M1.3t, and no option --store since
+    # M1.3t-d. The log store's options, and a --store that this build
+    # does not take, are the row's mistake and end it before a serve
+    # (also checked at the start, before anything is built). A build
+    # from before M1.3t-d (TB_SKYZFSD_REF of an older commit), whose
+    # usage offers [--store, defaults to the log store: it is served
+    # with --store in-place, so that every row runs the store the
+    # benchmark is about. A build from before the option has only the
+    # log store and is served as it was.
+    if ! skz_store_args "$SKYZFSD" "${args[@]}"; then
+        log "TB_SKYZFSD_ARGS: $SKZ_STORE_WHY"
+        return 64
     fi
+    [ "$SKZ_STORE_ADD" = 0 ] || args=(--store in-place "${args[@]}")
     SKZ_SERVE_ARGS="${args[*]}"
     : > "$WORK/skyzfsd.ready"
     # A cgroup of the daemon's own, with or without a limit: its file

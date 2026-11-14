@@ -54,6 +54,9 @@ jobs:
         run: bash tests/lib/apt-fallback.sh
       - run: bash tests/lib/test_apt_fallback.sh
       - run: bash tests/lib/test_lim.sh
+      # As root: the rigs refuse to start without it before they reach
+      # the check it tests. Their tools are made up; nothing is set up.
+      - run: sudo bash tests/lib/test_skz_store.sh
       - run: bash tests/bench/test_copy_limit.sh
       - run: bash tests/kernel/test_zfs_stuck.sh
       - run: python3 tests/bench/test_skz_time.py
