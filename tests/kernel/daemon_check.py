@@ -12,6 +12,11 @@ a pin was written twice with two results, an observation says it did
 not run, or nothing was checked at all. A rig error is never a verdict
 on the server.
 
+When ZFS on the machine got stuck (the line `zfs_stuck`, M1.T32), the
+rig ran no course after it, and a line missing then reads ERROR "not
+run: ZFS on this machine was stuck since STEP". The lines written before
+are judged as always: the mark changes no verdict and no exit status.
+
 Changing what the rig catches means changing EXPECTED on purpose.
 """
 import argparse
@@ -352,9 +357,19 @@ WAITS_FOR_THE_DAEMON = {
 }
 
 
+def stuck_since(results):
+    """'not run: ZFS on this machine was stuck since "STEP"' when the run has the line zfs_stuck, else None."""
+    line = results.get('zfs_stuck')
+    if line is None:
+        return None
+    m = re.match(r'since "([^"]*)"', line)
+    return f'not run: ZFS on this machine was stuck since "{m.group(1) if m else line}"'
+
+
 def judge(results, checks, impl='reference'):
     """-> (rows, differs, rig_errors). A row is (name, expected, got, detail, basis, claim)."""
     rows, differs, errors = [], [], []
+    stuck = stuck_since(results)
     for name, (check, want, basis, claim, *on_stand_in) in EXPECTED.items():
         if check not in checks:
             continue
@@ -370,6 +385,10 @@ def judge(results, checks, impl='reference'):
             if name in NOT_ON_THE_DAEMON:
                 want, basis = 'NA', f"not taken with the daemon's store: {NOT_ON_THE_DAEMON[name]}"
         value = results.get(name)
+        if value is None and stuck:
+            errors.append(f'{name}: {stuck}')
+            rows.append((name, want, 'ERROR', stuck, basis, claim))
+            continue
         if value is None:
             errors.append(f'{name}: no result')
             rows.append((name, want, 'missing', '', basis, claim))
@@ -387,7 +406,7 @@ def judge(results, checks, impl='reference'):
         if name not in results and impl == 'reference' and name in DAEMON_ONLY_OBSERVED:
             continue
         if name not in results:
-            errors.append(f'{name}: no observation')
+            errors.append(f'{name}: {stuck or "no observation"}')
         elif NOT_RUN.search(results[name]):
             errors.append(f'{name}: {results[name]}')
     # A pin or a control the table does not know is not judged by
@@ -400,7 +419,7 @@ def judge(results, checks, impl='reference'):
         elif name.startswith(('pin_', 'ctl_')) and EXPECTED[name][0] not in checks:
             errors.append(f"{name}: a result of check {EXPECTED[name][0]}, which was not asked for: {results[name]}")
     if 'c' in checks:
-        judge_cases(results, rows, differs, errors, impl)
+        judge_cases(results, rows, differs, errors, impl, stuck)
     if not rows and not errors:
         errors.append('the run has no row to judge: nothing was checked')
     return rows, differs, errors
@@ -411,15 +430,15 @@ def tally(words):
     return ', '.join(f'{w} {sum(1 for x in words if x == w)}' for w in C_RESULTS[:3])
 
 
-def judge_cases(results, rows, differs, errors, impl='reference'):
+def judge_cases(results, rows, differs, errors, impl='reference', stuck=None):
     """Check c: each case of the conformance suite against what the suite declares."""
     basis = SERVER if impl == 'reference' else f'measured on the {impl}'
     run = results.get('c_run')
     if run is None or not run.startswith('ok'):
-        errors.append(f"c_run: {run or 'the suite did not run'}")
+        errors.append(f"c_run: {run or stuck or 'the suite did not run'}")
     declared = results.get('c_declared')
     if declared is None:
-        errors.append('c_declared: missing')
+        errors.append(f"c_declared: {stuck or 'missing'}")
     elif declared != C_DECLARED[impl]:
         differs.append(f'the suite declares {declared}; the table C_DECLARED has {C_DECLARED[impl]}')
     cases = {k[len('case_'):]: v for k, v in results.items() if k.startswith('case_')}
@@ -445,6 +464,8 @@ def render(results, rows, differs, errors, checks):
     out = [f"## Daemon rig: {results.get('impl', 'unknown server')}", '',
            f"Kernel {results.get('kernel', '?')}, {results.get('os', '?')}, ZFS {results.get('zfs', '?')}, "
            f"zed {results.get('zed', '?')}; {results.get('ublk_server', '')}. Checks run: {' '.join(sorted(checks))}.", '']
+    if 'zfs_stuck' in results:
+        out += [f"**ZFS on this machine got stuck**, and the courses after it were not run: {results['zfs_stuck']}", '']
     if errors:
         out += ['**The rig failed. This is not a verdict on the server.**', ''] + [f'- {e}' for e in errors] + ['']
     if differs:
