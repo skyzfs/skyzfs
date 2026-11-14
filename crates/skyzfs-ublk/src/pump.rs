@@ -112,7 +112,9 @@ use crate::translate::{Action, Desc, Plan, Translator};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fetched {
     /// The queue's tag for the request: below [`Queue::depth`], and not
-    /// reused until the request is committed.
+    /// reused until the request is committed. A queue that breaks this
+    /// ends the pump at the hand-over ([`Stopped::QueueDown`]), so that
+    /// a tag is never committed twice for one request.
     pub tag: u16,
     /// What is asked.
     pub desc: Desc,
@@ -279,8 +281,10 @@ pub enum Stopped {
         /// How many completions are left for the next instance.
         left: u64,
     },
-    /// The queue went away. Completions that waited are not committed:
-    /// there is no queue to commit them to.
+    /// The queue went away, or handed over a tag it does not have or
+    /// one whose request is still out. Completions that waited are not
+    /// committed: there is no queue to commit them to, or none that
+    /// keeps its rule.
     QueueDown,
     /// The target can complete nothing more. Nothing was committed
     /// after that was seen, not even completions that waited.
@@ -424,7 +428,7 @@ impl Mutants {
     pub(crate) const GONE_UNNOTICED: u32 = 1 << 10;
     /// A target that is gone is looked for only after submitting.
     pub(crate) const GONE_AFTER_SUBMIT: u32 = 1 << 11;
-    /// A tag that is still in flight is taken again.
+    /// A tag that is still in flight is taken again: no guard at all.
     pub(crate) const TAG_REUSED: u32 = 1 << 12;
     /// A completion nobody waits for is ignored.
     pub(crate) const STRAY_IGNORED: u32 = 1 << 13;
@@ -449,6 +453,12 @@ impl Mutants {
     /// At the failure, a write that waits for its flush to be
     /// submitted is not answered.
     pub(crate) const FAILED_SKIPS_FLUSH_WAITERS: u32 = 1 << 20;
+    /// The guard against a tag handed over again looks at the tag's
+    /// slot when its request is submitted, not when it is handed over
+    /// (as before M1.3ac): a request on a tag still out that waits in
+    /// the backlog until the tag's first request is committed gets
+    /// past it.
+    pub(crate) const GUARD_AT_SUBMIT: u32 = 1 << 21;
 
     fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
@@ -457,8 +467,10 @@ impl Mutants {
 
 /// Where a request is.
 enum Slot {
-    /// No request has this tag.
+    /// No request has this tag: the driver may hand it over.
     Idle,
+    /// Its request was handed over and waits in the backlog.
+    Waiting,
     /// Its operation is in the target.
     Running(Plan),
     /// Its operation succeeded and its flush is waiting for room.
@@ -621,7 +633,8 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                 continue;
             }
             let buf = match std::mem::replace(&mut self.slots[tag], Slot::Idle) {
-                Slot::Idle | Slot::Finished => continue,
+                // A waiting request is answered from the backlog below.
+                Slot::Idle | Slot::Waiting | Slot::Finished => continue,
                 // The buffer is in the target and stays there.
                 Slot::Running(_) => None,
                 Slot::WantsFlush(_, buf) | Slot::Flushing(_, buf) => buf,
@@ -675,7 +688,13 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             Err(QueueDown) => return Some(Stopped::QueueDown),
             Ok(woken) => woken,
         };
+        if let Err(stopped) = self.take_over(&fetched) {
+            return Some(stopped);
+        }
         for Fetched { tag, .. } in fetched {
+            if let Some(slot) = self.slots.get_mut(usize::from(tag)) {
+                *slot = Slot::Idle;
+            }
             self.queue.commit(tag, -crate::translate::EIO, None);
             self.failed_answers += 1;
         }
@@ -715,6 +734,9 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
             return Some(Stopped::Orderly);
         }
         if !self.stopping {
+            if let Err(stopped) = self.take_over(&fetched) {
+                return Some(stopped);
+            }
             self.counters.in_flight += fetched.len() as u64;
             if !fetched.is_empty() {
                 let now = Instant::now();
@@ -782,6 +804,33 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
                 left: self.finished.len() as u64,
             })
         }
+    }
+
+    /// Take what the queue handed over at a wait: each tag must be one
+    /// the queue has and have no request out, or the driver broke its
+    /// rule that a tag is handed over again only after its commit, and
+    /// the pump ends (`QueueDown`) before anything of this wait is
+    /// submitted or committed. Checked here, at the hand-over, and not
+    /// when the request is submitted: a request that waits in the
+    /// backlog until its tag's first request was committed would get
+    /// past a later check, and its tag be committed twice.
+    fn take_over(&mut self, fetched: &[Fetched]) -> Result<(), Stopped> {
+        let unguarded = self.mutants.has(Mutants::TAG_REUSED);
+        let at_submit = self.mutants.has(Mutants::GUARD_AT_SUBMIT);
+        for request in fetched {
+            let Some(slot) = self.slots.get_mut(usize::from(request.tag)) else {
+                // A tag the queue does not have: nothing can be
+                // committed for it.
+                return Err(Stopped::QueueDown);
+            };
+            match slot {
+                Slot::Idle if !at_submit => *slot = Slot::Waiting,
+                Slot::Idle => {}
+                _ if unguarded || at_submit => {}
+                _ => return Err(Stopped::QueueDown),
+            }
+        }
+        Ok(())
     }
 
     fn is_gone(&self) -> bool {
@@ -853,12 +902,10 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     fn submit(&mut self, fetched: Fetched) -> Result<bool, Stopped> {
         let Fetched { tag, desc } = fetched;
         let Some(slot) = self.slots.get(usize::from(tag)) else {
-            // A tag the queue does not have: nothing can be committed
-            // for it.
+            // Not reached: `take_over` let no such tag in.
             return Err(Stopped::QueueDown);
         };
-        if !matches!(slot, Slot::Idle) && !self.mutants.has(Mutants::TAG_REUSED) {
-            // The queue reused a tag that is not committed.
+        if self.mutants.has(Mutants::GUARD_AT_SUBMIT) && !matches!(slot, Slot::Idle) {
             return Err(Stopped::QueueDown);
         }
         let plan = match self.translator.translate(desc) {

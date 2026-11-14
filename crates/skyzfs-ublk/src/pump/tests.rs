@@ -4,7 +4,7 @@
 //! list, so that a test can ask in which order things happened.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -45,6 +45,12 @@ enum Step {
     Down,
 }
 
+thread_local! {
+    /// How many times a fake queue on this thread saw the pump break
+    /// the driver's rule (see [`FakeQueue::commit`]).
+    static RULE_BROKEN: Cell<u64> = const { Cell::new(0) };
+}
+
 struct FakeQueue {
     depth: u16,
     script: VecDeque<Step>,
@@ -60,6 +66,22 @@ struct FakeQueue {
     flush_fails: bool,
     /// The tag the queue has no buffer for.
     no_buf: Option<u16>,
+    /// The tags whose request was handed over and not yet committed,
+    /// as the driver keeps them.
+    out: HashSet<u16>,
+    /// The commits that broke the driver's rule.
+    broken: Vec<String>,
+}
+
+impl FakeQueue {
+    /// Hand over `fetched` as the driver does: each tag is out from now
+    /// until its commit. A script that hands over a tag that is still
+    /// out breaks the driver's own rule, on purpose.
+    fn hand_over(&mut self, fetched: &[Fetched]) {
+        for request in fetched {
+            self.out.insert(request.tag);
+        }
+    }
 }
 
 impl Queue for FakeQueue {
@@ -75,6 +97,7 @@ impl Queue for FakeQueue {
         self.events.borrow_mut().push(Event::Sent);
         match self.script.pop_front() {
             Some(Step::Fetch(more)) => {
+                self.hand_over(&more);
                 fetched.extend(more);
                 Ok(Wake::Work)
             }
@@ -84,6 +107,7 @@ impl Queue for FakeQueue {
             }
             Some(Step::Nothing) | None => Ok(Wake::Work),
             Some(Step::Stop(more)) => {
+                self.hand_over(&more);
                 fetched.extend(more);
                 Ok(Wake::Stop)
             }
@@ -104,7 +128,16 @@ impl Queue for FakeQueue {
         Some(Buf::filled(blocks, 0x40 + tag as u8))
     }
 
+    /// The driver's rule: a commit names a tag whose request was handed
+    /// over and is not yet committed. Any other commit is recorded as
+    /// broken: a real driver refuses it, or, if the tag's next request
+    /// was handed over meanwhile, takes it as that request's answer.
     fn commit(&mut self, tag: u16, result: i32, buf: Option<Buf>) {
+        if !self.out.remove(&tag) {
+            self.broken
+                .push(format!("tag {tag} committed with no request out"));
+            RULE_BROKEN.with(|n| n.set(n.get() + 1));
+        }
         self.events.borrow_mut().push(Event::Committed(tag, result));
         if let Some(buf) = buf {
             self.returned.insert(tag, buf);
@@ -258,8 +291,12 @@ impl AckRecord for FakeAck {
     }
 }
 
+/// Every rig holds the driver's rule: a rig without a defect planted
+/// fails its test, when it is dropped, if its pump committed a tag with
+/// no request out. A rig with one is judged by [`caught`].
 struct Rig {
     pump: Pump<FakeQueue, FakeTarget, FakeAck>,
+    mutants: u32,
     events: Events,
     ack_fails: Rc<Cell<bool>>,
     ack_slow: Rc<Cell<std::time::Duration>>,
@@ -281,6 +318,8 @@ impl Rig {
             heals: None,
             flush_fails: false,
             no_buf: None,
+            out: HashSet::new(),
+            broken: Vec::new(),
         };
         let target = FakeTarget {
             geometry: Geometry::new(8, target_depth, false).unwrap(),
@@ -302,9 +341,18 @@ impl Rig {
         };
         Rig {
             pump: Pump::new(queue, target, ack).with_mutants(mutants),
+            mutants,
             events,
             ack_fails,
             ack_slow,
+        }
+    }
+
+    /// Whether the pump kept the driver's rule so far.
+    fn driver_rule(&mut self) -> Outcome {
+        match self.pump.queue().broken.as_slice() {
+            [] => Ok(()),
+            broken => Err(format!("the driver's rule was broken: {broken:?}")),
         }
     }
 
@@ -371,6 +419,16 @@ impl Rig {
     }
 }
 
+impl Drop for Rig {
+    fn drop(&mut self) {
+        if self.mutants == 0 && !std::thread::panicking() {
+            if let Err(why) = self.driver_rule() {
+                panic!("{why}");
+            }
+        }
+    }
+}
+
 fn request(tag: u16, op: u8, flags: u32, block: u64, blocks: u32) -> Fetched {
     Fetched {
         tag,
@@ -400,13 +458,14 @@ fn holds(scenario: fn(u32) -> Outcome) {
     }
 }
 
-/// The scenario holds for the pump as it is and fails with the defect.
+/// The scenario holds for the pump as it is and fails with the defect,
+/// or the defect breaks the driver's rule in it.
 fn caught(scenario: fn(u32) -> Outcome, mutant: u32) {
     holds(scenario);
-    assert!(
-        scenario(mutant).is_err(),
-        "the defect {mutant:#x} was not noticed"
-    );
+    let before = RULE_BROKEN.with(Cell::get);
+    let failed = scenario(mutant).is_err();
+    let broke = RULE_BROKEN.with(Cell::get) > before;
+    assert!(failed || broke, "the defect {mutant:#x} was not noticed");
 }
 
 const BLOCK: i32 = 4096;
@@ -1088,6 +1147,69 @@ fn a_tag_in_flight_is_not_taken_again_and_a_stray_completion_is_a_fault() {
         expect(rig.committed(), vec![], "nothing is committed")
     }
     caught(stray, Mutants::STRAY_IGNORED);
+}
+
+/// One commit per request handed over (M1.3ac): a tag the driver hands
+/// over again while its request is still out ends the pump at the
+/// hand-over, before anything of that wait is submitted or committed.
+/// Here the second request on tag 0 would wait in the backlog behind
+/// tag 1's until tag 0's first request was committed; a guard that
+/// looked only when a request is submitted lets it through then, and
+/// tag 0 is committed twice, which the fake queue's driver rule
+/// records. Defects: the guard at the submit (as before M1.3ac), and
+/// no guard.
+#[test]
+fn a_tag_handed_over_again_while_its_request_is_out_is_not_taken() {
+    fn rehanded(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 1);
+        expect(rig.fetch(&[write(0, 0)]), None, "tag 0")?;
+        expect(rig.fetch(&[write(1, 1)]), None, "tag 1, which waits")?;
+        // The driver breaks its rule: tag 0 again, while its first
+        // request is in the target.
+        let stopped = rig.fetch(&[write(0, 5)]);
+        if stopped.is_none() {
+            // A pump that took it: let everything end.
+            for (id, position) in [(0, 100), (1, 200), (0, 300)] {
+                rig.complete(id, Some(position));
+                rig.turn();
+            }
+        }
+        rig.driver_rule()?;
+        expect(stopped, Some(Stopped::QueueDown), "tag 0 handed over again")?;
+        expect(rig.submitted().len(), 1, "only tag 0's first request")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(rehanded, Mutants::GUARD_AT_SUBMIT);
+    caught(rehanded, Mutants::TAG_REUSED);
+    // What notices the guard at the submit is the driver's rule.
+    let before = RULE_BROKEN.with(Cell::get);
+    let _ = rehanded(Mutants::GUARD_AT_SUBMIT);
+    assert!(
+        RULE_BROKEN.with(Cell::get) > before,
+        "the double commit was not recorded"
+    );
+
+    /// A tag twice in one wait.
+    fn twice(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        let stopped = rig.fetch(&[write(2, 0), write(2, 8)]);
+        expect(stopped, Some(Stopped::QueueDown), "tag 2 twice")?;
+        expect(rig.submitted(), vec![], "nothing reached the target")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(twice, Mutants::TAG_REUSED);
+
+    /// A tag twice in one wait after the failure: answered once would
+    /// still be twice.
+    fn failed(mutants: u32) -> Outcome {
+        let mut rig = Rig::new(mutants, 8, 8);
+        expect(rig.pump.fail(), 0, "nothing was held")?;
+        let stopped = rig.fetch(&[write(3, 0), write(3, 8)]);
+        rig.driver_rule()?;
+        expect(stopped, Some(Stopped::QueueDown), "tag 3 twice")?;
+        expect(rig.committed(), vec![], "nothing is committed")
+    }
+    caught(failed, Mutants::TAG_REUSED);
 }
 
 /// When the queue goes away the pump ends and says so.
