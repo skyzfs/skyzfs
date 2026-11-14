@@ -71,8 +71,14 @@
 //!   fetch ([`Stopped::FetchRefused`]) gives the start up at once: it
 //!   can never be answered. Any other end of the queue ends serve as it
 //!   would after the start (the table above).
-//! - No answer within the limit gives the start up too. The queue's
-//!   thread is told to stop and waited for two seconds at most.
+//! - No answer within the limit gives the start up too. At a start
+//!   the device is deleted first, while the queue's thread still
+//!   answers: on a kernel whose START_DEV reads the partition table
+//!   holding the device's mutex, a stopped queue would leave the
+//!   delete waiting behind it for good. Then the queue's thread is told
+//!   to stop and waited for two seconds at most. A failure flagged
+//!   before the delete or by the end of that wait takes the failure's
+//!   way (exit 3), as everywhere.
 //!
 //! When serve gives the start up, it says why on one line, and ends
 //! with status 9:
@@ -94,11 +100,14 @@
 //! A `SIGTERM` or `SIGINT` that arrives during the wait is acted on
 //! when the wait ends: after a start that answered, it stops serve as
 //! usual; after a start given up, serve ends with 9 all the same, since
-//! nothing was served. So a stop is late by at most [`START_LIMIT`]
-//! plus the two seconds for the queue's thread, a third of systemd's
-//! default stop timeout (90 s). A supervisor whose stop timeout is
-//! shorter may kill serve during a start: the device is then as after
-//! any kill.
+//! nothing was served. So a stop is late by [`START_LIMIT`], a third
+//! of systemd's default stop timeout (90 s), plus the two seconds for
+//! the queue's thread, plus the delete at a start. That delete waits
+//! for the device's mutex. On a kernel whose START_DEV reads the
+//! partition table holding that mutex, it waits as long as the disk
+//! that read goes to: the queue's thread still answers then, so not
+//! for good. A supervisor whose stop timeout is shorter may kill serve
+//! during a start: the device is then as after any kill.
 //!
 //! After an orderly stop the device stays and waits for the next
 //! server. When the volume fails, the failure is noted with the image's
@@ -149,7 +158,10 @@
 //!   Its command is in the kernel, and the process's end ends it. That
 //!   a delete answers a START_DEV that waits, and that the process's
 //!   end answers an END_USER_RECOVERY that waits, is read from the
-//!   driver and not shown here: testing's rig is to show it.
+//!   driver and not shown by these tests. Testing's early look at this
+//!   change (run 43597163595, one pass on Ubuntu 26.04) saw both: each
+//!   refused start ended with 9 in 82 ms. Its rig is to show it on
+//!   every image.
 
 use std::io;
 use std::path::Path;
@@ -213,8 +225,8 @@ const READY_WAITS_FOR_STATUS: Duration = Duration::from_secs(5);
 /// longest start seen, and leaves room for a start whose partition scan
 /// reads from a slow disk.
 /// It stays a third of systemd's default stop timeout (90 s): a SIGTERM
-/// during the start is acted on when this wait ends, so it is never
-/// late by more than this.
+/// during the start is acted on when this wait ends. What serve does
+/// after it is in the module doc.
 pub const START_LIMIT: Duration = Duration::from_secs(30);
 
 /// How long the main thread sleeps between two looks at the queue's
@@ -946,28 +958,31 @@ fn run(serve: &Serve) -> Result<Exit, String> {
             };
         }
         StartWait::NoAnswer => {
-            // The queue's thread ends at its stop: it holds no request
-            // before the start. It is waited for a stated time and no
-            // longer, as everything after a start that does not answer.
-            stopper.stop();
-            for _ in 0..ANSWER_LOOKS {
-                if serving.is_finished() {
-                    break;
-                }
-                std::thread::sleep(ANSWER_LOOK);
-            }
-            if serving.is_finished() {
-                let _ = serving.join();
-            }
-            finish(&board);
-            let deleted = give_up_start(&mut kernel, &mut records, number, took_over);
-            say(gave_up_said(
+            // The queue's thread ends at its stop. It is waited for a
+            // stated time and no longer, as everything after a start
+            // that does not answer. What it hands back is kept to the
+            // end, so that the store is dropped after the line.
+            let (exit, _kept) = give_up_unanswered(
+                &mut kernel,
+                &mut records,
                 number,
                 took_over,
-                &GaveUp::NoAnswer,
-                deleted.as_ref(),
-            ));
-            return Ok(Exit::NotStarted);
+                identity,
+                || flags.failed.load(Ordering::SeqCst),
+                || {
+                    stopper.stop();
+                    for _ in 0..ANSWER_LOOKS {
+                        if serving.is_finished() {
+                            break;
+                        }
+                        std::thread::sleep(ANSWER_LOOK);
+                    }
+                    let kept = serving.is_finished().then(|| joined(serving, number));
+                    finish(&board);
+                    kept
+                },
+            );
+            return Ok(exit);
         }
     };
     if !failed_at_start {
@@ -1353,6 +1368,62 @@ fn give_up_start<C: Control, R: Records>(
     took_over: bool,
 ) -> Option<Result<(), Undeleted>> {
     (!took_over).then(|| lifecycle::delete_unstarted(control, records, number))
+}
+
+/// The start of device `number` had no answer within [`START_LIMIT`]:
+/// serve gives it up, and says so, or takes the failure's way. `stop`
+/// stops the queue's thread, waits for it a stated time, and hands back
+/// what that thread handed back (the store among it) if it ended.
+///
+/// The order:
+/// 1. A failure already flagged takes the failure's way: its note,
+///    the device's note and the device ([`failed_at_end`]), exit 3.
+/// 2. At a start, the device is deleted ([`give_up_start`]) while the
+///    queue's thread still answers. On a kernel whose START_DEV reads
+///    the partition table holding the device's mutex, a stopped queue
+///    would leave that read unanswered, and the delete waiting behind
+///    the mutex for good (#87's review). At a take-over nothing is
+///    deleted.
+/// 3. The queue's thread is stopped.
+/// 4. A failure flagged by then also takes the failure's way, and not
+///    9 with "the volume is not failed" (#87's review, Codex's P1). At
+///    a start that way deletes the device a second time: the note is
+///    gone by then, and a device that is gone reads as deleted. That
+///    the driver answers a second delete of a device it is deleting
+///    without an error is read from it, not shown here. Were it to
+///    answer with one, the failure's line would say that the device
+///    could not be deleted, which sends a person to look: the
+///    conservative reading.
+/// 5. Otherwise the line, and exit 9.
+///
+/// What the queue's thread handed back is handed to the caller and not
+/// dropped here: dropping the store waits for its I/O with no limit, so
+/// it comes after the line, as on serve's other ends.
+fn give_up_unanswered<C: Control, R: Records, S>(
+    kernel: &mut C,
+    records: &mut R,
+    number: u32,
+    took_over: bool,
+    identity: [u8; 16],
+    failed: impl Fn() -> bool,
+    stop: impl FnOnce() -> Option<S>,
+) -> (Exit, Option<S>) {
+    if failed() {
+        let exit = failed_at_end(kernel, records, number, identity);
+        return (exit, stop());
+    }
+    let deleted = give_up_start(kernel, records, number, took_over);
+    let kept = stop();
+    if failed() {
+        return (failed_at_end(kernel, records, number, identity), kept);
+    }
+    say(gave_up_said(
+        number,
+        took_over,
+        &GaveUp::NoAnswer,
+        deleted.as_ref(),
+    ));
+    (Exit::NotStarted, kept)
 }
 
 /// What serve says when it gives the start of device `number` up:
@@ -2243,28 +2314,35 @@ mod tests {
         );
         let undeleted = Err(Undeleted::NotePutBack(io::Error::from_raw_os_error(16)));
         let kept = gave_up_said(3, false, &fetch, Some(&undeleted));
-        assert!(
-            kept.contains(&format!(
-                "device 3, which this serve added and never started, is to be deleted: {}; the \
-                 volume is not failed",
+        assert_eq!(
+            kept,
+            format!(
+                "the kernel refused the first fetch of tag 0 on queue 0 of device 3 (Invalid \
+                 argument (os error 22)), and the device's start waits for every tag's fetch \
+                 with no limit: serve gives it up; device 3, which this serve added and never \
+                 started, is to be deleted: {}; the volume is not failed; exit 9: a supervisor \
+                 should retry the serve once; a second 9 is for a person",
                 Undeleted::NotePutBack(io::Error::from_raw_os_error(16)).said(3)
-            )),
-            "{kept}"
+            )
         );
         let limit = START_LIMIT.as_secs();
-        let silent = gave_up_said(3, false, &GaveUp::NoAnswer, Some(&Ok(())));
-        assert!(
-            silent.contains(&format!(
-                "the start of device 3 had no answer within {limit} s"
-            )),
-            "{silent}"
+        assert_eq!(
+            gave_up_said(3, false, &GaveUp::NoAnswer, Some(&Ok(()))),
+            format!(
+                "the start of device 3 had no answer within {limit} s: serve gives it up; \
+                 device 3, which this serve added and never started, is deleted; the volume is \
+                 not failed; exit 9: a supervisor should retry the serve once; a second 9 is for \
+                 a person"
+            )
         );
-        let silent = gave_up_said(3, true, &GaveUp::NoAnswer, None);
-        assert!(
-            silent.contains(&format!(
-                "the end of the recovery of device 3 had no answer within {limit} s"
-            )),
-            "{silent}"
+        assert_eq!(
+            gave_up_said(3, true, &GaveUp::NoAnswer, None),
+            format!(
+                "the end of the recovery of device 3 had no answer within {limit} s: serve gives \
+                 it up; device 3 is left waiting for the next server, as after a kill, with the \
+                 I/O it holds; the volume is not failed; exit 9: a supervisor should retry the \
+                 serve once; a second 9 is for a person"
+            )
         );
     }
 
@@ -2399,6 +2477,168 @@ mod tests {
         ));
         assert_eq!(kernel.0, [3], "deleted at a start");
         assert_eq!(records.note(3).ok().flatten(), None, "its note first");
+    }
+
+    /// What happened, in order, across a fake kernel, the queue's
+    /// thread and a store.
+    type Log = Arc<std::sync::Mutex<Vec<String>>>;
+
+    fn logged(log: &Log, what: impl Into<String>) {
+        log.lock().expect("the log").push(what.into());
+    }
+
+    fn read(log: &Log) -> Vec<String> {
+        log.lock().expect("the log").clone()
+    }
+
+    /// A kernel that logs each delete, and whether the device's note
+    /// under `run` was still there when the delete came.
+    struct Logged {
+        log: Log,
+        run: std::path::PathBuf,
+    }
+
+    impl skyzfs_ublk::lifecycle::Control for Logged {
+        fn features(&mut self) -> io::Result<Option<u64>> {
+            Ok(Some(u64::MAX))
+        }
+        fn release(&mut self) -> io::Result<String> {
+            Ok("7.0.0".into())
+        }
+        fn info(&mut self, _number: u32) -> io::Result<Option<skyzfs_ublk::lifecycle::DeviceInfo>> {
+            Ok(None)
+        }
+        fn add(
+            &mut self,
+            _number: u32,
+            _shape: &skyzfs_ublk::lifecycle::Shape,
+        ) -> Result<(), skyzfs_ublk::lifecycle::AddError> {
+            Err(skyzfs_ublk::lifecycle::AddError::Other(io::Error::other(
+                "not in this test",
+            )))
+        }
+        fn disown(&mut self, _number: u32) {}
+        fn delete(&mut self, number: u32) -> io::Result<()> {
+            let noted = records::note_path(&self.run, number).exists();
+            logged(
+                &self.log,
+                format!(
+                    "delete {number}{}",
+                    if noted { " (note there)" } else { "" }
+                ),
+            );
+            Ok(())
+        }
+        fn begin_recovery(&mut self, _number: u32) -> io::Result<()> {
+            Err(io::Error::other("not in this test"))
+        }
+        fn client_holds(&mut self, _number: u32) -> Option<bool> {
+            None
+        }
+    }
+
+    /// What the queue's thread hands back: its drop is logged.
+    struct Kept(Log);
+
+    impl Drop for Kept {
+        fn drop(&mut self) {
+            logged(&self.0, "store dropped");
+        }
+    }
+
+    /// A start with no answer within the limit is given up in this
+    /// order (M1.3ah, after #87's review):
+    /// - at a start, the device is deleted, its note first, while the
+    ///   queue's thread still answers, and only then is that thread
+    ///   stopped;
+    /// - at a take-over, the thread is stopped and nothing deleted;
+    /// - a failure comes first: one seen before the delete, or after
+    ///   the stop, takes the failure's way (its note, the delete,
+    ///   exit 3) and not 9;
+    /// - what the queue's thread handed back, the store, is handed to
+    ///   the caller and not dropped: its drop waits for its I/O with no
+    ///   limit, and comes after the line.
+    #[test]
+    fn a_start_with_no_answer_is_given_up_in_order() {
+        use skyzfs_ublk::lifecycle::Records;
+        // `fails_at` is the look at the failure flag that first sees
+        // it set, if any: the first is before the delete, the second
+        // after the stop.
+        let given_up = |took_over: bool, fails_at: Option<u32>| {
+            let keep = tempfile::tempdir().expect("a directory");
+            let (volume, run) = (keep.path().join("volume"), keep.path().join("run"));
+            std::fs::create_dir(&volume).expect("the volume's directory");
+            std::fs::create_dir(&run).expect("the run directory");
+            let mut records = Files::new(&volume, &run, [1; 16], Duration::ZERO).expect("records");
+            records.create_run_dirs().expect("the run directories");
+            records.write_note(3, &[9; 16]).expect("a note");
+            let log = Log::default();
+            let mut kernel = Logged {
+                log: log.clone(),
+                run: run.clone(),
+            };
+            let looks = std::cell::Cell::new(0);
+            let failed = || {
+                looks.set(looks.get() + 1);
+                fails_at.is_some_and(|at| looks.get() >= at)
+            };
+            let (exit, kept) = give_up_unanswered(
+                &mut kernel,
+                &mut records,
+                3,
+                took_over,
+                [1; 16],
+                failed,
+                || {
+                    logged(&log, "stopped");
+                    Some(Kept(log.clone()))
+                },
+            );
+            let before_the_drop = read(&log);
+            drop(kept);
+            let after = read(&log);
+            let noted = records.note(3).ok().flatten().is_some();
+            let failure = records.failure().ok().flatten().is_some();
+            (exit, before_the_drop, after, noted, failure)
+        };
+        let strings = |all: &[&str]| all.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        let (exit, log, after, noted, failure) = given_up(false, None);
+        assert_eq!(exit, Exit::NotStarted, "at a start");
+        assert_eq!(log, strings(&["delete 3", "stopped"]), "at a start");
+        assert_eq!(after.last().map(String::as_str), Some("store dropped"));
+        assert!(!noted && !failure, "at a start");
+
+        let (exit, log, _, noted, failure) = given_up(true, None);
+        assert_eq!(exit, Exit::NotStarted, "at a take-over");
+        assert_eq!(log, strings(&["stopped"]), "at a take-over");
+        assert!(noted && !failure, "at a take-over");
+
+        for took_over in [false, true] {
+            let (exit, log, _, noted, failure) = given_up(took_over, Some(1));
+            assert_eq!(exit, Exit::Failed, "failed before the delete");
+            assert_eq!(
+                log,
+                strings(&["delete 3", "stopped"]),
+                "failed before the delete, at a take-over: {took_over}"
+            );
+            assert!(!noted && failure, "failed before the delete");
+
+            let (exit, log, after, noted, failure) = given_up(took_over, Some(2));
+            assert_eq!(exit, Exit::Failed, "failed after the stop");
+            let expected: &[&str] = if took_over {
+                &["stopped", "delete 3"]
+            } else {
+                &["delete 3", "stopped", "delete 3"]
+            };
+            assert_eq!(
+                log,
+                strings(expected),
+                "failed after the stop, at a take-over: {took_over}"
+            );
+            assert_eq!(after.last().map(String::as_str), Some("store dropped"));
+            assert!(!noted && failure, "failed after the stop");
+        }
     }
 
     /// A target that takes requests and never answers one: a store
