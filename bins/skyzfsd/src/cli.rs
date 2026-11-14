@@ -105,7 +105,8 @@ pub const HOOKS_USAGE: &str = "test hooks of this build (feature test-hooks):
   skyzfsd create ... [--base-pattern SEED]
   skyzfsd serve  ... [--fail-log-after N] [--hold-one-request SECONDS:read|write:OFFSET]
                  [--hold-one-request SECONDS:flush] [--boot-id-file PATH]
-                 [--commit-delay-ms N] [--request-log PATH]";
+                 [--commit-delay-ms N] [--request-log PATH]
+                 [--refuse-one-commit read|write:OFFSET] [--refuse-one-commit flush]";
 
 /// What a usage error prints: [`USAGE`], and in a build with the test
 /// hooks [`HOOKS_USAGE`] after it.
@@ -373,6 +374,9 @@ pub struct Hooks {
     pub commit_delay_ms: Option<u64>,
     /// Where the requests and their answers are written down.
     pub request_log: Option<PathBuf>,
+    /// The request whose commit is sent with no buffer, for the driver
+    /// to refuse: the first of its kind ([`crate::refuse`]).
+    pub refuse: Option<Held>,
 }
 
 /// One request to hold for a while.
@@ -482,6 +486,7 @@ const SERVE: &[Opt] = &[
     opt("--boot-id-file", true, true),
     opt("--commit-delay-ms", true, true),
     opt("--request-log", true, true),
+    opt("--refuse-one-commit", true, true),
 ];
 
 const VOLUME: &[Opt] = &[opt("--dir", true, false), opt("--run-dir", true, false)];
@@ -590,6 +595,22 @@ fn hold(text: &str) -> Result<Hold, UsageError> {
     Ok(Hold { seconds, what })
 }
 
+/// `--refuse-one-commit`: `read:OFFSET`, `write:OFFSET` or `flush`.
+fn refuse(text: &str) -> Result<Held, UsageError> {
+    let name = "--refuse-one-commit";
+    let bad = UsageError::Value(name.into(), "expected read:OFFSET, write:OFFSET or flush");
+    let (kind, offset) = match text.split_once(':') {
+        Some((kind, offset)) => (kind, Some(number(name, offset).map_err(|_| bad.clone())?)),
+        None => (text, None),
+    };
+    match (kind, offset) {
+        ("read", Some(offset)) => Ok(Held::Read(offset)),
+        ("write", Some(offset)) => Ok(Held::Write(offset)),
+        ("flush", None) => Ok(Held::Flush),
+        _ => Err(bad),
+    }
+}
+
 fn run_dir(given: &Given) -> PathBuf {
     given
         .get("--run-dir")
@@ -662,6 +683,7 @@ fn parse_with(args: impl IntoIterator<Item = String>, hooks: bool) -> Result<Com
                     boot_id_file: given.get("--boot-id-file").map(PathBuf::from),
                     commit_delay_ms: given.number("--commit-delay-ms")?,
                     request_log: given.get("--request-log").map(PathBuf::from),
+                    refuse: given.get("--refuse-one-commit").map(refuse).transpose()?,
                 },
             }))
         }

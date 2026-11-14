@@ -39,8 +39,8 @@ use skyzfs_ublk::translate::{op, Desc, SECTOR};
 
 use crate::cli::{Held, Hold};
 
-/// Whether `desc` is the request `what` waits for.
-fn is_held(what: Held, desc: &Desc) -> bool {
+/// Whether `desc` is the request `what` names.
+pub(crate) fn is_held(what: Held, desc: &Desc) -> bool {
     let covers = |byte: u64| {
         let start = desc.start_sector.saturating_mul(SECTOR);
         let end = start.saturating_add(u64::from(desc.nr_sectors).saturating_mul(SECTOR));

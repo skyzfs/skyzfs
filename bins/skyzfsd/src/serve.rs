@@ -45,8 +45,10 @@
 //! completes it (the control rig: a read, a write and a flush; a
 //! delete instead fails it at once). Nothing more is answered on the
 //! queue, and the refusal says nothing against the store, so the
-//! volume is not failed. Also after a signal: the stop was then not
-//! orderly. A refused commit while the volume has failed is only
+//! volume is not failed. Also after a signal, with 8 and not 0: the
+//! stop was then not orderly, and a 0 would tell the next start that
+//! it was clean while a request was left unanswered. A refused commit
+//! while the volume has failed is only
 //! counted, and serve ends as a failed volume (3): the device is
 //! deleted, which answers the refused request.
 //!
@@ -723,13 +725,19 @@ fn run(serve: &Serve) -> Result<Exit, String> {
     let mut fail_after = serve.hooks.fail_log_after;
     let delay = serve.hooks.commit_delay_ms.map(Duration::from_millis);
     let hold = serve.hooks.hold;
+    #[cfg(feature = "test-hooks")]
+    let refuse = serve.hooks.refuse;
     let serving = device
         .serve(&wake, !serve.allow_unlocked_memory, {
             let (board, flags, wake) = (board.clone(), flags.clone(), wake.clone());
             move |queue| {
                 let again = wake.clone();
-                // Next to the kernel, below the delays: the record says
-                // what the kernel handed over and what it was given.
+                // Next to the kernel: the one commit sent with no
+                // buffer, for the driver to refuse.
+                #[cfg(feature = "test-hooks")]
+                let queue = crate::refuse::Refusing::new(queue, refuse);
+                // Below the delays: the record says what the kernel
+                // handed over and what it was given.
                 #[cfg(feature = "test-hooks")]
                 let queue = crate::record::Recorded::new(queue, request_log, number);
                 let queue = Delayed::new(queue, delay, hold, move || wake.wake());

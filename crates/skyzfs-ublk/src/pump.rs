@@ -77,11 +77,17 @@
 //!   it (the control rig, on a read, a write and a flush). So nothing
 //!   more is answered on the queue, nothing of the wait that brought
 //!   the refusal is taken, and the volume is not failed: the refusal
-//!   says nothing against the store. A refused fetch (a tag that then
-//!   gets no requests) and any other command refused are counted and
-//!   change nothing else. A pump whose volume failed only counts a
-//!   refused commit too: the device is being deleted, and the delete
-//!   answers the refused request with an error at once.
+//!   says nothing against the store. A refused fetch and any other
+//!   command refused are counted and change nothing else. A pump whose
+//!   volume failed only counts a refused commit too: the device is
+//!   being deleted, and the delete answers the refused request with an
+//!   error at once.
+//! - **Open: a refused fetch** (M1.3ah). A fetch is sent once per tag,
+//!   at the queue's start. Whether the driver then serves the queue
+//!   with that tag missing, or the device's start and the end of a
+//!   recovery wait for every tag's fetch (a reading of `ublk_drv`, not
+//!   checked), so that the start never ends, is not known. A kernel
+//!   step comes first (M1.T36), and what the daemon does then.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -256,7 +262,9 @@ pub enum Stopped {
         tag: u16,
     },
     /// The driver refused a commit: the first of the wait that brought
-    /// the refusal, if it brought several (M1.3ac part 3). The commit
+    /// the refusal, if it brought several (M1.3ac part 3), also while the
+    /// pump drains for a stop: that stop is not orderly, and an orderly
+    /// end would say that nothing was left unanswered. The commit
     /// took no effect, so the request it answered, if any, is still the
     /// server's in the driver's eyes and goes to the next server.
     /// Nothing of that wait was taken, nothing more is answered on this

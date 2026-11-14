@@ -40,7 +40,10 @@
 //!   the request's operation, sector and count again, and the result
 //!   (bytes, or a negated error number). With `--commit-delay-ms` it is
 //!   written when the delayed answer goes on, so it is what the kernel
-//!   was given, not when the store completed the request.
+//!   was given, not when the store completed the request. The one
+//!   commit that `--refuse-one-commit` sends with no buffer, below this
+//!   record ([`crate::refuse`]), is written as any other; its refusal
+//!   follows as an `ended` line for the tag.
 //! - `send`: a wait or a flush of the queue begins with commits not yet
 //!   handed on (the result column says how many: the `commit` lines
 //!   since the last `sent` or `down`). The queue hands what its ring

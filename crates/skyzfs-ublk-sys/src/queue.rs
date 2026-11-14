@@ -491,7 +491,8 @@ impl<'q> KernelQueue<'q> {
         self.bufs.ranges()
     }
 
-    /// Not API: for the control test program only. Commit the request
+    /// Not API: for the control test program, and for `skyzfsd`'s test
+    /// hook `--refuse-one-commit` (M1.3ac part 3). Commit the request
     /// on `tag` with `result` and no buffer: the driver is told the
     /// address 0. A queue of this binding asks for neither of the
     /// features under which a commit may name no buffer (`NEED_GET_DATA`
