@@ -1,0 +1,132 @@
+diff --git a/crates/skyzfs-local/src/inplace/tests/cuts.rs b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+index d9966f2..74f312b 100644
+--- a/crates/skyzfs-local/src/inplace/tests/cuts.rs
++++ b/crates/skyzfs-local/src/inplace/tests/cuts.rs
+@@ -367,3 +367,127 @@ fn a_watcher_hears_each_write_applied_each_barrier_and_each_cut() {
+         );
+     }
+ }
++
++// ---- Reproducers from the review of M2.1 (not part of the pull request) ----
++
++/// Codex's case: a stray flush received between two label writes of
++/// one uberblock, the second still on a thread. The flush takes the mark
++/// at receipt; the second label write, applied before the flush's
++/// barrier, is compared with no mark and an older newest cut, and marks
++/// the same state again: the next flush cuts it a second time.
++#[test]
++fn review_a_label_write_applied_after_a_flush_took_the_mark_is_a_repeat() {
++    let disk = created(12, 0);
++    let mut store = start(&disk, 0, false).unwrap();
++    assert!(run(&mut store, 1, uberblock_write(0, 5, 50)).result.is_ok());
++    disk.hold_direct_io(1);
++    let _release = Releases(&disk);
++    let request = |id, op| Request {
++        id: RequestId(id),
++        op,
++    };
++    store.submit(request(2, uberblock_write(1, 5, 50))).unwrap();
++    until_held(&disk);
++    store.submit(request(3, Op::Flush)).unwrap();
++    let mut done = Vec::new();
++    store.poll(&mut done);
++    let mut store = release_and_drain(&disk, store, &mut done);
++    assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 2);
++    assert_eq!(counted(&store), (1, Some(5)));
++    assert!(run(&mut store, 4, Op::Flush).result.is_ok());
++    assert_eq!(counted(&store), (1, Some(5)), "one pool state, cut twice");
++}
++
++/// A flush that carries a cut and waits for the next sync, a sync being
++/// under way: its barrier is when it is executed, before a write
++/// received after it is applied, not when its own sync begins.
++#[test]
++fn review_a_flush_behind_a_sync_under_way_has_its_barrier_when_executed() {
++    let disk = created(13, 0);
++    let mut store = start(&disk, 0, false).unwrap();
++    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
++    store.watch(Box::new({
++        let heard = heard.clone();
++        move |seen| heard.lock().expect("lock").push(seen)
++    }));
++    disk.hold_syncs_of(crate::store::HOME_NAME);
++    let submit = |store: &mut InPlace<SimDisk>, id: u64, op: Op| {
++        store
++            .submit(Request {
++                id: RequestId(id),
++                op,
++            })
++            .unwrap()
++    };
++    let mut done = Vec::new();
++    submit(&mut store, 1, other_write());
++    assert!(until_done(&mut store, &mut done, 1));
++    submit(&mut store, 2, Op::Flush);
++    assert!(store.syncing());
++    submit(&mut store, 3, uberblock_write(0, 5, 50));
++    assert!(until_done(&mut store, &mut done, 3));
++    submit(&mut store, 4, Op::Flush);
++    submit(
++        &mut store,
++        5,
++        Op::Write {
++            offset: 40 * KIB,
++            data: Buf::filled(1, 0x55),
++        },
++    );
++    assert!(until_done(&mut store, &mut done, 5));
++    disk.release_syncs();
++    while store.in_flight() > 0 {
++        store.wait(&mut done, Duration::from_millis(10));
++    }
++    assert!(done.iter().all(|c| c.result.is_ok()));
++    let id = RequestId;
++    let cut = Cut {
++        number: 1,
++        group: 5,
++    };
++    assert_eq!(
++        *heard.lock().expect("lock"),
++        [
++            Seen::Applied(id(1)),
++            Seen::Barrier(id(2)),
++            Seen::Applied(id(3)),
++            Seen::Barrier(id(4)),
++            Seen::Cut(id(4), cut),
++            Seen::Applied(id(5)),
++        ]
++    );
++}
++
++/// A flush that carries a cut and joins a sync under way: a stray
++/// flush received while the uberblock write was on a thread began the
++/// sync once the write was applied, and the flush after it, received
++/// after the write was applied, joins it. It has its barrier and its cut.
++#[test]
++fn review_a_flush_that_joins_a_sync_has_its_barrier_and_its_cut() {
++    let disk = created(14, 0);
++    let mut store = start(&disk, 0, false).unwrap();
++    disk.hold_direct_io(1);
++    let _release = Releases(&disk);
++    let request = |id, op| Request {
++        id: RequestId(id),
++        op,
++    };
++    store.submit(request(1, uberblock_write(0, 7, 70))).unwrap();
++    until_held(&disk);
++    store.submit(request(2, Op::Flush)).unwrap();
++    disk.hold_syncs_of(crate::store::HOME_NAME);
++    let mut done = Vec::new();
++    disk.release_direct_io();
++    assert!(until_done(&mut store, &mut done, 1));
++    assert!(store.syncing(), "the stray flush began a sync");
++    store.submit(request(3, Op::Flush)).unwrap();
++    assert_eq!(store.counts().joined, 1, "the flush joined it");
++    let while_syncing = counted(&store);
++    disk.release_syncs();
++    while store.in_flight() > 0 {
++        store.wait(&mut done, Duration::from_millis(10));
++    }
++    assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 3);
++    assert_eq!(while_syncing, (1, Some(7)), "the joined flush's cut");
++}
