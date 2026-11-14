@@ -762,3 +762,49 @@ fn a_rewind_by_f_opens_as_its_first_group_at_once() {
         "the group alone for the order is not noticed"
     );
 }
+
+/// Another state under the group a flush carries, applied between that
+/// flush's receipt and its barrier, is not a repeat of the carried
+/// state: it marks, and the next flush cuts it. Here the abandoned
+/// state of group 12 marks; a write of group 12's new state, as the
+/// first group of a rewind by `-F` writes it, is received and held on a
+/// thread; a flush carries the abandoned state's cut; then the write is
+/// let go before that flush's barrier. The abandoned state's cut does
+/// not open as itself (the new state is later in view), and the new
+/// state's does. A carried state compared by its group alone (the
+/// defect `REPEAT_BY_GROUP`, for the carried comparison) is noticed:
+/// the new state makes no cut (the review of M2.1, its C2).
+#[test]
+fn another_state_under_the_carried_group_marks() {
+    let counts = |mutants: u64| {
+        let disk = created(18, 0);
+        let mut store = start(&disk, mutants, false).unwrap();
+        let write = |label: usize, root: u64, at: u64| Op::Write {
+            offset: ring(label) + 12 * SLOT,
+            data: stamped(12, root, at),
+        };
+        assert!(run(&mut store, 1, write(0, 1, 100)).result.is_ok());
+        disk.hold_direct_io(1);
+        let _release = Releases(&disk);
+        let request = |id, op| Request {
+            id: RequestId(id),
+            op,
+        };
+        store.submit(request(2, write(1, 2, 200))).unwrap();
+        until_held(&disk);
+        store.submit(request(3, Op::Flush)).unwrap();
+        let mut done = Vec::new();
+        store.poll(&mut done);
+        let mut store = release_and_drain(&disk, store, &mut done);
+        assert!(done.iter().all(|c| c.result.is_ok()) && done.len() == 2);
+        let at_the_flush = (store.cuts().count, newest(&store));
+        assert!(run(&mut store, 4, Op::Flush).result.is_ok());
+        (at_the_flush, (store.cuts().count, newest(&store)))
+    };
+    assert_eq!(counts(0), ((1, Some((12, false))), (2, Some((12, true)))));
+    assert_eq!(
+        counts(Mutants::REPEAT_BY_GROUP),
+        ((1, Some((12, false))), (1, Some((12, false)))),
+        "a carried state compared by its group alone is not noticed"
+    );
+}

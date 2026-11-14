@@ -295,7 +295,8 @@ impl Mutants {
     /// barrier.
     pub(crate) const CUT_AT_RECEIPT: u64 = 1 << 32;
     /// A repeat is told by its group alone, not by its group and root
-    /// block pointer: after a rewind import a new state under a group
+    /// block pointer, against the mark, a cut a flush carries and the
+    /// newest cut: after a rewind import a new state under a group
     /// already used makes no cut.
     pub(crate) const REPEAT_BY_GROUP: u64 = 1 << 33;
     /// A repeat is compared with the uberblock applied before it alone,

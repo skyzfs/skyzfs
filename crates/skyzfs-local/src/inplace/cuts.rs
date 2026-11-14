@@ -398,7 +398,11 @@ impl CutRule {
         let mark = self.mark.map(|uberblock| uberblock.state);
         if self.mutants.has(Mutants::REPEAT_BY_GROUP) {
             let same = |other: Option<State>| other.is_some_and(|o| o.txg == state.txg);
-            return !(same(mark) || same(self.newest));
+            let carried = self
+                .carrying
+                .values()
+                .any(|carried| carried.state.txg == state.txg);
+            return !(same(mark) || same(self.newest) || carried);
         }
         let carried = !self.mutants.has(Mutants::REPEAT_WHILE_CARRIED)
             && self
