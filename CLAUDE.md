@@ -189,8 +189,8 @@ there, and the user decides when it merges.
   by dispatch what the input `serve_args` says, and with no `--store`
   there the in-place store too (M1.3t-a): the rigs and the benchmark
   name the store themselves and never rest on the daemon's default.
-  The log store is frozen until M1.3t removes it; only
-  `serve_args: --store log` still reaches it.
+  The log store was removed in M1.3t: `serve_args: --store log`
+  is refused at the start.
   Since M1.T14 the workflow also has the jobs "through skyzfsd", one
   per image (`tests/kernel/replay_daemon.py`): the cut is below the
   daemon, on the disk under its files, and each prefix is checked
@@ -243,12 +243,10 @@ there, and the user decides when it merges.
   request merged with its base as the base was when the pull request
   was last pushed**: after another pull request has merged, the daemon
   they drove is not the one on `zfs-topology`, and the rig is dispatched
-  there after the merge. A green run on the daemon is a verdict on
-  its checkpoints (four pins: the take-over time does not grow, the log
-  stays within its bound, kills inside a step lose nothing, the suite
-  passes with each log left at the high mark so that steps fall inside
-  its cases) but not on a failure with a request held: that one pin is
-  WAITING, and the summary says so. Check g (M1.T23) puts the volume's
+  there after the merge. The pins of the log store's checkpoints read NA since
+  the log store was removed (M1.3t). A green run is not a verdict on a
+  failure with a request held: that one pin is WAITING, and the
+  summary says so. Check g (M1.T23) puts the volume's
   directory on a device-mapper device that the rig switches to the
   `error` target, so a sync of the home image fails in the kernel: it
   pins that the next start serves what the disk holds and not what
