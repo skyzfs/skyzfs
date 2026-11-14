@@ -57,6 +57,8 @@ case $step in
         state live; echo "$file" > "$T/img.$n"
         printf 'take-over\t%s\tlive after 2 ms; handed before the start: 0; busy answers: 0\n' "$n"
         : > "$T/served.$n"
+        # The test program's queue thread panicking at the reissued request.
+        if [ "$SCENARIO" = take_over_dies ]; then rm -f "$T/served.$n"; state waiting; echo "the queue's thread panicked" >&2; exit 1; fi
         trap 'printf "served\t%s\tended by a signal; handed 1 reads\n" "$n"; state waiting; exit 0' TERM
         while [ ! -e "$T/stop" ]; do sleep 0.1; done ;;
     serve)
@@ -65,7 +67,7 @@ case $step in
         sleep 0.5
         sent="refuse-commit\t$n\tsent for $req on tag 3\n"
         case $SCENARIO in
-            refused|refused_reader_ended|refused_stays_live|refused_hangs|refused_other_read|lost_write|stale_device|image_lost|writer_fails)
+            refused|refused_reader_ended|refused_stays_live|refused_hangs|refused_other_read|lost_write|stale_device|image_lost|writer_fails|take_over_dies)
                 # another read refused: one the kernel or udev sent at a start
                 [ "$SCENARIO" = refused_other_read ] && sent="refuse-commit\t$n\tsent for a read at byte 0 on tag 1\n"
                 printf "$sent"
@@ -234,6 +236,11 @@ SCENARIO=lost_write; : > "$R"
 refused_course write 76 77 > /dev/null 2>&1
 has "a write lost at the take-over fails" "$(line pin_refused_write_lands_after_take_over)" "FAIL: "
 has "  says where it is missing" "$(line pin_refused_write_lands_after_take_over)" "the range read back through the device: the old block; from the image after the take-over ended: the old block"
+SCENARIO=take_over_dies; : > "$R"
+refused_course flush 84 85 > /dev/null 2>&1
+has "a take-over that ended by itself fails" "$(line pin_refused_flush_completes_after_take_over)" "FAIL: "
+has "  and is named, with its error" "$(line pin_refused_flush_completes_after_take_over)" "THE TAKE-OVER HAD ENDED BY ITSELF, with exit 1"
+has "  and the program's own error" "$(line pin_refused_flush_completes_after_take_over)" "the queue's thread panicked"
 SCENARIO=stale_device; : > "$R"
 refused_course write 78 79 > /dev/null 2>&1
 has "a write the device does not read back fails" "$(line pin_refused_write_lands_after_take_over)" "FAIL: "

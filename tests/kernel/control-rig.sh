@@ -771,6 +771,14 @@ refused_course() {
         pin "$pin" ERROR "$RC_WHY"
     elif serve_bg "refused_${kind}_take_over-2" take-over "$nt" --file "$RC_IMG"; then
         if rc_client 60; then r=PASS; else r=FAIL; fi
+        # A take-over that ended by itself before it was told to (a
+        # panic of the test program, say) is named: its device waits
+        # again, and the client's wait says nothing of the kernel.
+        if ! kill -0 "$SRV_PID" 2>/dev/null; then
+            wait "$SRV_PID" 2>/dev/null; v=$?
+            r=FAIL
+            RC_CLIENT+="; THE TAKE-OVER HAD ENDED BY ITSELF, with exit $v (its own last lines: $(tail -n +2 "$SRV_OUT" | cut -f3- | tr '\n' ' ' | cut -c1-160); the last line on the program's standard error: $(tail -n 1 "$OUT/control.err" 2>/dev/null | cut -c1-200))"
+        fi
         # A write: the range read back through the device while the
         # take-over serves, then from the image once it has ended.
         [ "$kind" != write ] || dev=$(rc_block "/dev/ublkb$nt")
