@@ -277,10 +277,6 @@ impl<Q: Queue> Queue for Recorded<Q> {
         self.inner.commit(tag, result, buf);
     }
 
-    fn pause(&mut self) {
-        self.inner.pause();
-    }
-
     fn flush(&mut self) -> Result<(), QueueDown> {
         self.send();
         let flushed = self.inner.flush();

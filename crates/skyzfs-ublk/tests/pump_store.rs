@@ -2,13 +2,11 @@
 //! of the test's own: the pair that the binding puts together. What the
 //! fakes in the pump's unit tests stand in for is here for real: the
 //! store's completions from its I/O threads, and its flushes on the
-//! file's helper. The store has no log and reports no acknowledged
-//! position, so the pump stores none: the record is never written
-//! (inert since M1.3t, which removed the log store; the plumbing goes
-//! in M1.3t-b). What the log store's version held of the next open,
-//! that it reaches what the pump stored, is here what the in-place
-//! store promises instead: after a power cut, the next start finds
-//! what the pump's flush covered.
+//! file's helper. What the log store's version held of the next open,
+//! that it reaches what the pump stored as acknowledged (a record
+//! removed in M1.3t-b with the log store's last plumbing), is here what
+//! the in-place store promises instead: after a power cut, the next
+//! start finds what the pump's flush covered.
 
 use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
@@ -16,7 +14,7 @@ use std::time::Duration;
 use skyzfs_blk::{Base, Buf};
 use skyzfs_local::inplace::{create, lock, InPlace, OpenOptions, Opened, VolumeConfig};
 use skyzfs_local::sim::{LoseAll, SimDisk};
-use skyzfs_ublk::pump::{AckRecord, Fetched, Pump, Queue, QueueDown, Stopped, Unfetched, Wake};
+use skyzfs_ublk::pump::{Fetched, Pump, Queue, QueueDown, Stopped, Unfetched, Wake};
 use skyzfs_ublk::translate::{op, Desc};
 
 enum Step {
@@ -70,21 +68,6 @@ impl Queue for ScriptQueue {
     fn flush(&mut self) -> Result<(), QueueDown> {
         Ok(())
     }
-
-    fn pause(&mut self) {}
-}
-
-/// A record that notes each position it is told to store.
-#[derive(Default)]
-struct Noting {
-    stored: Vec<u64>,
-}
-
-impl AckRecord for Noting {
-    fn advance(&mut self, position: u64) -> std::io::Result<()> {
-        self.stored.push(position);
-        Ok(())
-    }
 }
 
 fn request(tag: u16, operation: u8, block: u64, blocks: u32) -> Fetched {
@@ -99,7 +82,7 @@ fn request(tag: u16, operation: u8, block: u64, blocks: u32) -> Fetched {
 }
 
 #[test]
-fn the_pump_serves_the_in_place_store_and_stores_no_position() {
+fn the_pump_serves_the_in_place_store() {
     let disk = SimDisk::new(1);
     let config = VolumeConfig {
         volume: *b"a volume on disk",
@@ -123,8 +106,7 @@ fn the_pump_serves_the_in_place_store_and_stores_no_position() {
         request(1, op::WRITE, 1, 2),
         request(2, op::FLUSH, 0, 0),
     ]));
-    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>, Noting> =
-        Pump::new(queue, store, Noting::default());
+    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>> = Pump::new(queue, store);
     for _ in 0..10_000 {
         if pump.queue().committed.len() == 3 {
             break;
@@ -136,8 +118,8 @@ fn the_pump_serves_the_in_place_store_and_stores_no_position() {
     assert_eq!(results, [(0, 4096), (1, 8192), (2, 0)]);
 
     // The pump's own times: three requests submitted and committed,
-    // none of them a read; no position stored, so no time in the record
-    // and nothing behind it.
+    // none of them a read; the times of a record that is no more stay
+    // zero.
     let timing = pump.timing();
     assert_eq!(timing.to_submit.count, 3, "{timing:?}");
     assert_eq!(timing.other_to_commit.count, 3, "{timing:?}");
@@ -167,7 +149,7 @@ fn the_pump_serves_the_in_place_store_and_stores_no_position() {
     assert!(returned[&4].iter().all(|b| *b == 0x41));
     assert!(returned[&5].iter().all(|b| *b == 0), "never written");
     assert_eq!(pump.counters().in_flight, 0);
-    assert!(pump.ack().stored.is_empty(), "{:?}", pump.ack().stored);
+    assert_eq!(pump.counters().unstored, 0);
 
     // The power is cut after the stop: the next start finds what the
     // pump's flush covered. The write after it is lost, as the cut
@@ -189,8 +171,7 @@ fn the_pump_serves_the_in_place_store_and_stores_no_position() {
         request(9, op::READ, 5, 1),
     ]));
     queue.script.push_back(Step::Stop);
-    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>, Noting> =
-        Pump::new(queue, store, Noting::default());
+    let mut pump: Pump<ScriptQueue, InPlace<SimDisk>> = Pump::new(queue, store);
     assert_eq!(pump.run(), Stopped::Orderly);
     let returned = &pump.queue().returned;
     assert!(returned[&7].iter().all(|b| *b == 0x40), "flushed");

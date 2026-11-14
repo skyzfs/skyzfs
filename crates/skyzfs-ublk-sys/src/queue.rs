@@ -79,7 +79,6 @@ use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
-use std::time::Duration;
 
 use io_uring::{opcode, types};
 use libublk::ctrl::{UblkCtrl, UblkCtrlBuilder};
@@ -129,9 +128,6 @@ fn ended(user_data: u64, result: i32) -> Option<Result<u16, Unfetched>> {
         result,
     }))
 }
-
-/// How long [`Queue::pause`] sleeps.
-pub const PAUSE: Duration = Duration::from_millis(100);
 
 /// How often [`Queue::flush`] submits again when a signal interrupted
 /// the call.
@@ -659,10 +655,6 @@ impl Queue for KernelQueue<'_> {
             }
         }
         Err(QueueDown)
-    }
-
-    fn pause(&mut self) {
-        std::thread::sleep(PAUSE);
     }
 }
 
