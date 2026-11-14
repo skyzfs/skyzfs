@@ -102,6 +102,22 @@ class Table(unittest.TestCase):
                          f'pin_info_of_{state}_stranger'):
                 self.assertIn(name, cc.EXPECTED)
 
+    def test_every_line_the_rig_names_is_in_the_table(self):
+        # A line the rig writes under a literal name and the table does
+        # not know is a rig error at the first run on a kernel: caught
+        # here instead (M1.T33 added five).
+        import re
+        rig = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'control-rig.sh')
+        with open(rig, encoding='utf-8') as f:
+            text = f.read()
+        kinds = {'pin': 'pin_', 'pin_is': 'pin_', 'ctl': 'ctl_', 'obs': 'obs_'}
+        named = {kinds[k] + n for k, n in re.findall(r'(?:^|[;{(]|then|else|&&|\|\|)\s*(pin_is|pin|ctl|obs) ([a-z][a-z0-9_]+)\b', text, re.M)}
+        for name in ('pin_refused_commit_ends_the_server', 'pin_refused_commit_request_issued_again',
+                     'pin_commands_aborted_at_a_stop', 'ctl_refused_commit_without_a_refusal',
+                     'obs_refused_commit_then_delete'):
+            self.assertIn(name, named)
+        self.assertEqual(sorted(n for n in named if n not in cc.EXPECTED and n not in cc.OBSERVED), [])
+
     def test_only_controls_are_expected_to_fail(self):
         for name, (want, who, row, claim) in cc.EXPECTED.items():
             self.assertEqual(want, 'FAIL' if name.startswith('ctl_') else 'PASS', name)

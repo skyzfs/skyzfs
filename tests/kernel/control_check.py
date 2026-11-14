@@ -179,6 +179,23 @@ EXPECTED = {
         'PASS', RIG, 'The states of a device: live',
         'the server_pid the binding reports of a live device (the driver\'s value, unchanged) is the '
         'pid of the process serving it, for the binding\'s own server and for the reference server'),
+    # A commit the driver refuses (M1.3ac, #71): what the daemon is to do then is the lead's ruling for M1.3ac
+    # (in #64): stop serving and leave the device for a take-over. These lines show what the kernel does.
+    'pin_refused_commit_ends_the_server': (
+        'PASS', RIG, 'M1.3ac: a refused commit',
+        'a read committed with no buffer is refused by the driver ("refused: ..."); the test program ends by the '
+        'refusal, as the daemon is to; the reader is still waiting; the device reads waiting within 5 s'),
+    'pin_refused_commit_request_issued_again': (
+        'PASS', RIG, 'M1.3ac: a refused commit; row: waiting, a server begins a recovery, fetches, and ends it',
+        'after the server ended by a refused commit, a take-over has the kernel issue the read again: it returns '
+        'the file\'s data, with no error'),
+    'pin_commands_aborted_at_a_stop': (
+        'PASS', RIG, 'M1.3aa: the commands the driver ends otherwise than OK',
+        'when the serving program\'s own delete stops a device of depth 8 with nothing held, the driver ends the '
+        'command waiting on each of the 8 tags with its abort (the crate\'s test prints the count; the rig judges it)'),
+    'ctl_refused_commit_without_a_refusal': (
+        'FAIL', RIG, 'control', 'control: the refused-commit step on a server that refuses nothing (the reader is '
+        'answered and the server goes on): the step must not pass'),
     'ctl_add_on_free_number_is_taken': (
         'FAIL', RIG, 'control', 'control: the check that an add answers "taken", made on a free number'),
     'ctl_stranger_deleted_between_looks': (
@@ -228,6 +245,9 @@ OBSERVED = {
                                                    'four commands sent while it waited took: a lookup of the device, '
                                                    'a lookup of a free number, an add under a fresh number, a delete '
                                                    'of an idle device',
+    'obs_refused_commit_then_delete': 'after the server ended by a refused commit, a delete instead of a take-over: '
+                                      'what the delete answered and when, what the reader held by the refusal got, '
+                                      'and whether the number was then free',
     'obs_delete_while_the_server_holds_a_request_then_dies': 'the same with a hold of 60 s, and the server killed 5 s '
                                                              'after the delete was sent: whether the delete then '
                                                              'returns, and what the reader gets',

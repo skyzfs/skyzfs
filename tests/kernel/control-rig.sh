@@ -50,6 +50,7 @@ KTEST=${RIG_KERNEL_TESTS:-}
 # on) the crate's kernel tests. Far from 0, where anything else on the
 # machine would start.
 OWN=40; OWN2=41; OWN3=42; OWN4=43      # and 46 to 49: the idle and the fresh device of each delete under a held request
+RC_TAKE=44; RC_DEL=45; RC_CTL=50       # a commit the driver refuses: then a take-over, then a delete; the control
 S_LIVE=60; S_WAITING=61; S_NEVER=62; S_DELETED=63; S_CTL=64; S_FREE=65
 SIZE=$((64 << 20))
 HOLD_A=$((32 << 20))         # the byte whose read is held across a kill
@@ -249,7 +250,7 @@ cleanup() {
     local n
     [ -z "${H_PID:-}" ] || kill -9 "$H_PID" 2>/dev/null
     pkill -9 -f "$CTL serve" 2>/dev/null; pkill -9 -f "$CTL take-over" 2>/dev/null
-    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
+    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $RC_TAKE $RC_DEL $RC_CTL $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
     command -v ublk > /dev/null && lim 60 ublk del -a --async 2>/dev/null
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -318,6 +319,22 @@ esac
 grep -a -o $'control_[a-z0-9_]*\t.*' "$OUT/kernel-tests.log" >> "$R"
 echo "== the lines taken from it:"
 grep -a -o $'control_[a-z0-9_]*\t.*' "$OUT/kernel-tests.log" | sed 's/^/== /'
+# The aborts at a stop (M1.3ac, #71): the crate's test of the program's
+# own delete, with nothing held, prints how many of the queue's commands
+# the driver ended with its abort. The device has a depth of 8 and the
+# driver aborts the command waiting on every tag (ublk_cancel_dev at
+# v6.11, v6.17 and v7.0), so the count is 8: the daemon's
+# commands_aborted counts what this shows. After SIGTERM the server
+# returns before the driver aborts anything, so a count there is 0 by
+# construction and pins nothing.
+v=$(awk -F'\t' '$1 == "control_commands_aborted_at_stop_detail" { print $2 }' "$R" | tail -n 1)
+if [ -n "$v" ]; then
+    pin_is commands_aborted_at_a_stop "the driver ended $v of the queue's commands with its abort when the program's own delete stopped the device (its depth: 8)" [ "$v" = 8 ]
+elif [ "$KT_RC" = 0 ]; then
+    pin commands_aborted_at_a_stop ERROR "the kernel tests ended with 0, and the rig found no count in their output"
+else
+    pin commands_aborted_at_a_stop FAIL "no count: the kernel tests ended with $KT_RC"
+fi
 
 # ====================================================== its own device
 own_device() {
@@ -622,6 +639,114 @@ step "a delete of a live device whose server holds a request"
 delete_under_a_held_request delete_while_the_server_holds_a_request "$OWN3" 20
 step "the same, and the server is killed while the delete waits"
 delete_under_a_held_request delete_while_the_server_holds_a_request_then_dies "$OWN4" 60 5
+
+# ============================================ a commit the driver refuses
+# M1.3ac (#71). The server commits one request with no buffer, which the
+# driver refuses as malformed before it changes anything (-EINVAL in
+# ublk_drv.c at v6.11, v6.17 and v7.0): the request stays the server's,
+# unanswered. The server then ends at once, as the daemon is to on a
+# refused commit, and leaves the device waiting. A take-over must then
+# have the kernel issue the request again (pinned); a delete shows what
+# becomes of it without one (observed, like the other deletes under a
+# held request). The test program (`--refuse-one-commit read:B`) says
+# under the step `refuse-commit`: `sent for a read at byte B on tag T`,
+# then the driver's answer, `refused: ...`, `aborted` or `taken`; or
+# `not sent for ...: REASON` when the library would not send it, after
+# which the request is answered and nothing here can pass. A reader that
+# ends before the server has gone shows that the kernel took the commit
+# (it ended the request with the commit's -EIO): the program can print
+# `taken` only when the tag is handed its next request, which one
+# reader may never cause, so the step does not wait for that line.
+#
+# refused_commit NAME N SECONDS [SERVE OPTIONS]: device N served with the
+# options, a reader of the block at RC_AT through the block device, and
+# a wait of SECONDS for the server to end by itself (then it is
+# killed). -> RC_VERDICT: PASS when the commit was refused and nothing
+# else happened (the server ended by the refusal, the reader still
+# waits, the device waits within 5 s, the daemon's limit), FAIL when
+# something else did, ERROR when the rig could not set it up; RC_WHY
+# says what was seen. RC_IMG, RC_WANT and RC_RD (the stem of the
+# reader's files) are for the step that follows.
+RC_AT=$HOLD_A
+refused_commit() {
+    local name=$1 n=$2 secs=$3 srv out sent said served ended rd state ms; shift 3
+    RC_IMG=$WORK/$name.img; RC_RD=$WORK/$name.rd; RC_VERDICT=ERROR
+    truncate -s "$SIZE" "$RC_IMG"
+    "$DD" if=/dev/urandom of="$RC_IMG" bs=4k count=1 seek=$((RC_AT / 4096)) conv=notrunc status=none
+    RC_WANT=$("$DD" if="$RC_IMG" bs=4k count=1 skip=$((RC_AT / 4096)) status=none | sha256sum | cut -d' ' -f1)
+    say add "$n" --depth 8
+    if [ "$ANSWER" != added ] && [[ $ANSWER != added\ * ]]; then RC_WHY="the add under $n answered: ${ANSWER:-nothing}"; return; fi
+    if ! serve_bg "$name-1" serve "$n" --file "$RC_IMG" "$@"; then
+        RC_WHY="the device $n was not served: ${SRV_LINE:-no answer}"; kill -9 "$SRV_PID" 2>/dev/null; return
+    fi
+    srv=$SRV_PID; out=$SRV_OUT
+    ( t0=$(now_ms)
+      lim 180 "$DD" if="/dev/ublkb$n" of="$RC_RD.bin" bs=4k count=1 skip=$((RC_AT / 4096)) iflag=direct status=none 2> "$RC_RD.err"
+      r=$?; echo "exit $r after $(( $(now_ms) - t0 )) ms$([ -s "$RC_RD.err" ] && echo ": $(head -n 1 "$RC_RD.err" | cut -c1-120)")" > "$RC_RD.rc" ) &
+    for _ in $(seq 1 $((secs * 10))); do kill -0 "$srv" 2>/dev/null || break; sleep 0.1; done
+    if kill -0 "$srv" 2>/dev/null; then ended="NO: it was still serving after $secs s, and was killed"; srv_kill "$srv"
+    else ended=yes; wait "$srv" 2>/dev/null; fi
+    cat "$out" >> "$OUT/steps.log"
+    sent=$(awk -F'\t' '$1 == "refuse-commit" { print $3; exit }' "$out")
+    said=$(awk -F'\t' '$1 == "refuse-commit" { if (++k == 2) { print $3; exit } }' "$out")
+    served=$(awk -F'\t' '$1 == "served" { print $3 }' "$out" | tail -n 1)
+    wait_state "$n" waiting 5; state=$STATE; ms=$WAITED_MS
+    if [ -e "$RC_RD.rc" ]; then rd="ENDED: $(cat "$RC_RD.rc")"; else rd=waiting; fi
+    RC_WHY="the program said '${sent:-nothing}', then '${said:-nothing}'; it ended by itself: $ended; its last line: '$(printf '%s' "$served" | cut -c1-160)'; the reader: $rd; the device read $state $ms ms after"
+    if [[ $sent == "sent for a read at byte $RC_AT on tag "* ]] && [[ $said == refused:* ]] && [ "$ended" = yes ] \
+        && [[ $served == "ended by the refused commit"* ]] && [ "$rd" = waiting ] && [ "$state" = waiting ]; then
+        RC_VERDICT=PASS
+    else
+        RC_VERDICT=FAIL
+    fi
+}
+# rc_reader SECONDS: wait for refused_commit's reader -> RC_READ (what it got)
+rc_reader() {
+    local got
+    for _ in $(seq 1 $(($1 * 10))); do [ -e "$RC_RD.rc" ] && break; sleep 0.1; done
+    if [ ! -e "$RC_RD.rc" ]; then RC_READ="still waiting after $1 s more"; return 1; fi
+    got=$(sha256sum < "$RC_RD.bin" 2>/dev/null | cut -d' ' -f1)
+    RC_READ="$(cat "$RC_RD.rc"); its data $([ "$got" = "$RC_WANT" ] && echo 'is what the file holds' || echo 'is NOT what the file holds')"
+    [[ $(cat "$RC_RD.rc") == "exit 0 "* ]] && [ "$got" = "$RC_WANT" ]
+}
+
+step "a commit the driver refuses, then a take-over"
+refused_commit refused_commit_take_over "$RC_TAKE" 30 --refuse-one-commit "read:$RC_AT"
+pin refused_commit_ends_the_server "$RC_VERDICT" "$RC_WHY"
+if [ "$RC_VERDICT" = ERROR ]; then
+    pin refused_commit_request_issued_again ERROR "$RC_WHY"
+elif serve_bg refused_commit_take_over-2 take-over "$RC_TAKE" --file "$RC_IMG"; then
+    if rc_reader 60; then r=PASS; else r=FAIL; fi
+    kill -TERM "$SRV_PID"; srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
+    pin refused_commit_request_issued_again "$r" "after the take-over ($SRV_LINE) the reader held by the refused commit: $RC_READ; the take-over's last line: $(printf '%s' "$SRV_SERVED" | cut -c1-160)"
+else
+    pin refused_commit_request_issued_again FAIL "the take-over of the device left by the refused commit did not go live: ${SRV_LINE:-no answer}"
+    kill -9 "$SRV_PID" 2>/dev/null
+fi
+lim 20 "$CTL" delete "$RC_TAKE" > /dev/null 2>&1
+rc_reader 30 > /dev/null
+
+step "a commit the driver refuses, then a delete"
+refused_commit refused_commit_delete "$RC_DEL" 30 --refuse-one-commit "read:$RC_AT"
+if [ "$RC_VERDICT" = ERROR ]; then
+    obs refused_commit_then_delete "not run: $RC_WHY"
+else
+    t0=$(now_ms); say delete "$RC_DEL"; v=$ANSWER; ms=$(( $(now_ms) - t0 ))
+    rc_reader 60
+    info "$RC_DEL"; before=$STATE
+    wait_state "$RC_DEL" nothing 10
+    obs refused_commit_then_delete "the delete answered: ${v:-nothing}, after $ms ms by the rig's clock; the reader held by the refused commit: $RC_READ; the device then read $before, and $STATE after $WAITED_MS ms more. The refusal itself ($RC_VERDICT): $RC_WHY"
+fi
+lim 20 "$CTL" delete "$RC_DEL" > /dev/null 2>&1
+
+# The control: the same step on a server that refuses nothing. The
+# reader is answered at once and the server goes on: the step must say
+# FAIL, or a PASS above shows nothing.
+step "control: the refused-commit step on a server that refuses nothing"
+refused_commit refused_commit_control "$RC_CTL" 5
+ctl refused_commit_without_a_refusal "$RC_VERDICT" "$RC_WHY"
+lim 20 "$CTL" delete "$RC_CTL" > /dev/null 2>&1
+rc_reader 30 > /dev/null
 
 step "own: a delete of a waiting device nobody holds"
 truncate -s "$SIZE" "$WORK/own2.img"
