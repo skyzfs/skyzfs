@@ -1,0 +1,4 @@
+G1: the fetch's word not read again at the end: rc 1; FAIL   the word at the stop is recorded: 'by the program's end it said of the fetch: 'aborted'' not in 'the pr; FAIL   the word at the probe's read is recorded: 'by the program's end it said of the fetch: 'taken'' not in '
+G2: the last line cut at 120 again: rc 1; FAIL   and the whole last line: 'commands_aborted 0 commands_failed 1'' not in 'the program said: 'sent on tag
+G3: the late word recorded but the verdict on the first: rc 0; nothing fails
+clean: True
