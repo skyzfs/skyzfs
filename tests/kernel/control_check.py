@@ -180,15 +180,33 @@ EXPECTED = {
         'the server_pid the binding reports of a live device (the driver\'s value, unchanged) is the '
         'pid of the process serving it, for the binding\'s own server and for the reference server'),
     # A commit the driver refuses (M1.3ac, #71): what the daemon is to do then is the lead's ruling for M1.3ac
-    # (in #64): stop serving and leave the device for a take-over. These lines show what the kernel does.
-    'pin_refused_commit_ends_the_server': (
+    # (in #64): stop serving and leave the device for a take-over. These lines show what the kernel does, for a
+    # read, a write and a flush: the stop rests on the take-over issuing the refused request again.
+    'pin_refused_read_issued_again': (
+        'PASS', RIG, 'M1.3ac: a refused commit; row: waiting, a server begins a recovery, fetches, and ends it',
+        'after the server ended by a refused commit of a read, a take-over has the kernel issue the read again: it '
+        'returns the file\'s data, with no error'),
+    'pin_refused_write_lands_after_take_over': (
+        'PASS', RIG, 'M1.3ac: a refused commit; row: waiting, a server begins a recovery, fetches, and ends it',
+        'after the server ended by a refused commit of a write, a take-over has the kernel issue the write again: '
+        'the writer gets success, and the range holds the written data read back through the device and from the '
+        'image'),
+    'pin_refused_flush_completes_after_take_over': (
+        'PASS', RIG, 'M1.3ac: a refused commit; row: waiting, a server begins a recovery, fetches, and ends it',
+        'after the server ended by a refused commit of a flush, a take-over has the kernel issue the flush again: '
+        'the caller\'s fsync of the device returns 0'),
+    'pin_refused_read_ends_the_server': (
         'PASS', RIG, 'M1.3ac: a refused commit',
         'a read committed with no buffer is refused by the driver ("refused: ..."); the test program ends by the '
-        'refusal, as the daemon is to; the reader is still waiting; the device reads waiting within 5 s'),
-    'pin_refused_commit_request_issued_again': (
-        'PASS', RIG, 'M1.3ac: a refused commit; row: waiting, a server begins a recovery, fetches, and ends it',
-        'after the server ended by a refused commit, a take-over has the kernel issue the read again: it returns '
-        'the file\'s data, with no error'),
+        'refusal, as the daemon is to; the read client is still waiting; the device reads waiting within 5 s'),
+    'pin_refused_write_ends_the_server': (
+        'PASS', RIG, 'M1.3ac: a refused commit',
+        'a write committed with no buffer is refused by the driver ("refused: ..."); the test program ends by the '
+        'refusal, as the daemon is to; the write client is still waiting; the device reads waiting within 5 s'),
+    'pin_refused_flush_ends_the_server': (
+        'PASS', RIG, 'M1.3ac: a refused commit',
+        'a flush committed with no buffer is refused by the driver ("refused: ..."); the test program ends by the '
+        'refusal, as the daemon is to; the flush client is still waiting; the device reads waiting within 5 s'),
     'pin_commands_aborted_at_a_stop': (
         'PASS', RIG, 'M1.3aa: the commands the driver ends otherwise than OK',
         'when the serving program\'s own delete stops a device of depth 8 with nothing held, the driver ends the '
@@ -245,9 +263,15 @@ OBSERVED = {
                                                    'four commands sent while it waited took: a lookup of the device, '
                                                    'a lookup of a free number, an add under a fresh number, a delete '
                                                    'of an idle device',
-    'obs_refused_commit_then_delete': 'after the server ended by a refused commit, a delete instead of a take-over: '
-                                      'what the delete answered and when, what the reader held by the refusal got, '
-                                      'and whether the number was then free',
+    'obs_refused_read_then_delete': 'after the server ended by a refused commit of a read, a delete instead of '
+                                     'a take-over: what the delete answered and when, what the read client got '
+                                     'and whether the number was then free',
+    'obs_refused_write_then_delete': 'after the server ended by a refused commit of a write, a delete instead of '
+                                     'a take-over: what the delete answered and when, what the write client got, what the image then holds, '
+                                     'and whether the number was then free',
+    'obs_refused_flush_then_delete': 'after the server ended by a refused commit of a flush, a delete instead of '
+                                     'a take-over: what the delete answered and when, what the flush client got '
+                                     'and whether the number was then free',
     'obs_delete_while_the_server_holds_a_request_then_dies': 'the same with a hold of 60 s, and the server killed 5 s '
                                                              'after the delete was sent: whether the delete then '
                                                              'returns, and what the reader gets',

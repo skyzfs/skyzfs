@@ -50,7 +50,8 @@ KTEST=${RIG_KERNEL_TESTS:-}
 # on) the crate's kernel tests. Far from 0, where anything else on the
 # machine would start.
 OWN=40; OWN2=41; OWN3=42; OWN4=43      # and 46 to 49: the idle and the fresh device of each delete under a held request
-RC_TAKE=44; RC_DEL=45; RC_CTL=50       # a commit the driver refuses: then a take-over, then a delete; the control
+# A commit the driver refuses, of a read, a write and a flush: then a take-over, or a delete; and the control.
+RC_READ=44; RC_READ_DEL=45; RC_WRITE=51; RC_WRITE_DEL=52; RC_FLUSH=53; RC_FLUSH_DEL=54; RC_CTL=50
 S_LIVE=60; S_WAITING=61; S_NEVER=62; S_DELETED=63; S_CTL=64; S_FREE=65
 SIZE=$((64 << 20))
 HOLD_A=$((32 << 20))         # the byte whose read is held across a kill
@@ -250,7 +251,7 @@ cleanup() {
     local n
     [ -z "${H_PID:-}" ] || kill -9 "$H_PID" 2>/dev/null
     pkill -9 -f "$CTL serve" 2>/dev/null; pkill -9 -f "$CTL take-over" 2>/dev/null
-    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $RC_TAKE $RC_DEL $RC_CTL $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
+    for n in $OWN $OWN2 $OWN3 $OWN4 46 47 48 49 $RC_READ $RC_READ_DEL $RC_WRITE $RC_WRITE_DEL $RC_FLUSH $RC_FLUSH_DEL $RC_CTL $S_NEVER $S_FREE; do [ -z "$CTL" ] || lim 20 "$CTL" delete "$n" > /dev/null 2>&1; done
     command -v ublk > /dev/null && lim 60 ublk del -a --async 2>/dev/null
     dmesg > "$OUT/dmesg.txt" 2>/dev/null
     chmod -R a+rX "$OUT"
@@ -646,34 +647,61 @@ delete_under_a_held_request delete_while_the_server_holds_a_request_then_dies "$
 # ublk_drv.c at v6.11, v6.17 and v7.0): the request stays the server's,
 # unanswered. The server then ends at once, as the daemon is to on a
 # refused commit, and leaves the device waiting. A take-over must then
-# have the kernel issue the request again (pinned); a delete shows what
-# becomes of it without one (observed, like the other deletes under a
-# held request). The test program (`--refuse-one-commit read:B`) says
-# under the step `refuse-commit`: `sent for a read at byte B on tag T`,
-# then the driver's answer, `refused: ...`, `aborted` or `taken`; or
-# `not sent for ...: REASON` when the library would not send it, after
-# which the request is answered and nothing here can pass. A reader that
-# ends before the server has gone shows that the kernel took the commit
-# (it ended the request with the commit's -EIO): the program can print
-# `taken` only when the tag is handed its next request, which one
-# reader may never cause, so the step does not wait for that line.
+# have the kernel issue the request again, and the request must do what
+# it was for (pinned): the daemon's stop on a refused commit rests on
+# that, and a write is where a request not issued again loses data. A
+# delete instead shows what becomes of it without a take-over (observed,
+# like the other deletes under a held request). One course of each for
+# a read, a write and a flush.
 #
-# refused_commit NAME N SECONDS [SERVE OPTIONS]: device N served with the
-# options, a reader of the block at RC_AT through the block device, and
-# a wait of SECONDS for the server to end by itself (then it is
-# killed). -> RC_VERDICT: PASS when the commit was refused and nothing
-# else happened (the server ended by the refusal, the reader still
+# The test program (`--refuse-one-commit read:B`, `write:B` or `flush`)
+# says under the step `refuse-commit`: `sent for a read at byte B on tag
+# T` (a write, or `a flush`), then the driver's answer, `refused: ...`,
+# `aborted` or `taken`; or `not sent for ...: REASON` when the library
+# would not send it, after which the request is answered and nothing
+# here can pass. A client that ends before the server has gone shows
+# that the kernel took the commit (it ended the request with the
+# commit's -EIO): the program can print `taken` only when the tag is
+# handed its next request, which one client may never cause, so the
+# step does not wait for that line.
+#
+# The client of each kind, through the block device: a reader of the
+# 4 KiB block at RC_AT (O_DIRECT); a writer of 4 KiB of new data there
+# (O_DIRECT); an fsync of the device with nothing to write, which the
+# kernel sends on as a flush (the device has a volatile write cache,
+# UBLK_ATTR_VOLATILE_CACHE).
+#
+# refused_commit NAME N SECONDS KIND [SERVE OPTIONS]: device N served
+# with the options, the client of KIND (read, write or flush), and a
+# wait of SECONDS for the server to end by itself (then it is killed).
+# -> RC_VERDICT: PASS when the commit was refused and nothing else
+# happened (the program said it sent the commit for that request, the
+# driver refused it, the program ended by the refusal, the client still
 # waits, the device waits within 5 s, the daemon's limit), FAIL when
 # something else did, ERROR when the rig could not set it up; RC_WHY
-# says what was seen. RC_IMG, RC_WANT and RC_RD (the stem of the
-# reader's files) are for the step that follows.
+# says what was seen. RC_IMG, RC_OLD (the digest of the image's block at
+# RC_AT before), RC_NEW (that of the writer's data), RC_RD (the stem of
+# the client's files) and RC_KIND are for the step that follows.
 RC_AT=$HOLD_A
 refused_commit() {
-    local name=$1 n=$2 secs=$3 srv out sent said served ended rd state ms; shift 3
+    local name=$1 n=$2 secs=$3 srv out sent said served ended rd state ms want; shift 3
+    RC_KIND=$1; shift
     RC_IMG=$WORK/$name.img; RC_RD=$WORK/$name.rd; RC_VERDICT=ERROR
     truncate -s "$SIZE" "$RC_IMG"
     "$DD" if=/dev/urandom of="$RC_IMG" bs=4k count=1 seek=$((RC_AT / 4096)) conv=notrunc status=none
-    RC_WANT=$("$DD" if="$RC_IMG" bs=4k count=1 skip=$((RC_AT / 4096)) status=none | sha256sum | cut -d' ' -f1)
+    RC_OLD=$(rc_block "$RC_IMG")
+    "$DD" if=/dev/urandom of="$RC_RD.data" bs=4k count=1 status=none
+    RC_NEW=$(sha256sum < "$RC_RD.data" | cut -d' ' -f1)
+    local client=()
+    case $RC_KIND in
+        read) client=("$DD" if="/dev/ublkb$n" of="$RC_RD.bin" bs=4k count=1 skip=$((RC_AT / 4096)) iflag=direct status=none)
+              want="sent for a read at byte $RC_AT on tag " ;;
+        write) client=("$DD" if="$RC_RD.data" of="/dev/ublkb$n" bs=4k count=1 seek=$((RC_AT / 4096)) oflag=direct "conv=nocreat,notrunc" status=none)
+               want="sent for a write at byte $RC_AT on tag " ;;
+        flush) client=("$DD" if=/dev/null of="/dev/ublkb$n" "conv=fsync,nocreat,notrunc" status=none)
+               want="sent for a flush on tag " ;;
+        *) RC_WHY="no client of kind $RC_KIND"; return ;;
+    esac
     say add "$n" --depth 8
     if [ "$ANSWER" != added ] && [[ $ANSWER != added\ * ]]; then RC_WHY="the add under $n answered: ${ANSWER:-nothing}"; return; fi
     if ! serve_bg "$name-1" serve "$n" --file "$RC_IMG" "$@"; then
@@ -681,7 +709,7 @@ refused_commit() {
     fi
     srv=$SRV_PID; out=$SRV_OUT
     ( t0=$(now_ms)
-      lim 180 "$DD" if="/dev/ublkb$n" of="$RC_RD.bin" bs=4k count=1 skip=$((RC_AT / 4096)) iflag=direct status=none 2> "$RC_RD.err"
+      lim 180 "${client[@]}" 2> "$RC_RD.err"
       r=$?; echo "exit $r after $(( $(now_ms) - t0 )) ms$([ -s "$RC_RD.err" ] && echo ": $(head -n 1 "$RC_RD.err" | cut -c1-120)")" > "$RC_RD.rc" ) &
     for _ in $(seq 1 $((secs * 10))); do kill -0 "$srv" 2>/dev/null || break; sleep 0.1; done
     if kill -0 "$srv" 2>/dev/null; then ended="NO: it was still serving after $secs s, and was killed"; srv_kill "$srv"
@@ -692,61 +720,101 @@ refused_commit() {
     served=$(awk -F'\t' '$1 == "served" { print $3 }' "$out" | tail -n 1)
     wait_state "$n" waiting 5; state=$STATE; ms=$WAITED_MS
     if [ -e "$RC_RD.rc" ]; then rd="ENDED: $(cat "$RC_RD.rc")"; else rd=waiting; fi
-    RC_WHY="the program said '${sent:-nothing}', then '${said:-nothing}'; it ended by itself: $ended; its last line: '$(printf '%s' "$served" | cut -c1-160)'; the reader: $rd; the device read $state $ms ms after"
-    if [[ $sent == "sent for a read at byte $RC_AT on tag "* ]] && [[ $said == refused:* ]] && [ "$ended" = yes ] \
+    RC_WHY="the program said '${sent:-nothing}', then '${said:-nothing}'; it ended by itself: $ended; its last line: '$(printf '%s' "$served" | cut -c1-160)'; the $RC_KIND client: $rd; the device read $state $ms ms after"
+    if [[ $sent == "$want"* ]] && [[ $said == refused:* ]] && [ "$ended" = yes ] \
         && [[ $served == "ended by the refused commit"* ]] && [ "$rd" = waiting ] && [ "$state" = waiting ]; then
         RC_VERDICT=PASS
     else
         RC_VERDICT=FAIL
     fi
 }
-# rc_reader SECONDS: wait for refused_commit's reader -> RC_READ (what it got)
-rc_reader() {
+# rc_block PATH: the digest of the 4 KiB at RC_AT, read with O_DIRECT from a device
+rc_block() {
+    local direct=()
+    [ -b "$1" ] && direct=(iflag=direct)
+    lim 30 "$DD" if="$1" bs=4k count=1 skip=$((RC_AT / 4096)) "${direct[@]}" status=none 2>/dev/null | sha256sum | cut -d' ' -f1
+}
+# rc_said DIGEST: what a block holds, against the image's old block and the writer's data
+rc_said() {
+    case $1 in "$RC_OLD") echo "the old block" ;; "$RC_NEW") echo "the written data" ;; *) echo "NEITHER the old block nor the written data" ;; esac
+}
+# rc_client SECONDS: wait for refused_commit's client -> RC_CLIENT, what
+# it got; 0 when it ended with 0 (and a reader read the image's block)
+rc_client() {
     local got
     for _ in $(seq 1 $(($1 * 10))); do [ -e "$RC_RD.rc" ] && break; sleep 0.1; done
-    if [ ! -e "$RC_RD.rc" ]; then RC_READ="still waiting after $1 s more"; return 1; fi
-    got=$(sha256sum < "$RC_RD.bin" 2>/dev/null | cut -d' ' -f1)
-    RC_READ="$(cat "$RC_RD.rc"); its data $([ "$got" = "$RC_WANT" ] && echo 'is what the file holds' || echo 'is NOT what the file holds')"
-    [[ $(cat "$RC_RD.rc") == "exit 0 "* ]] && [ "$got" = "$RC_WANT" ]
+    if [ ! -e "$RC_RD.rc" ]; then RC_CLIENT="still waiting after $1 s more"; return 1; fi
+    RC_CLIENT=$(cat "$RC_RD.rc")
+    if [ "$RC_KIND" = read ]; then
+        got=$(sha256sum < "$RC_RD.bin" 2>/dev/null | cut -d' ' -f1)
+        RC_CLIENT+="; its data is $(rc_said "$got")"
+        [[ $(cat "$RC_RD.rc") == "exit 0 "* ]] && [ "$got" = "$RC_OLD" ]
+    else
+        [[ $(cat "$RC_RD.rc") == "exit 0 "* ]]
+    fi
 }
 
-step "a commit the driver refuses, then a take-over"
-refused_commit refused_commit_take_over "$RC_TAKE" 30 --refuse-one-commit "read:$RC_AT"
-pin refused_commit_ends_the_server "$RC_VERDICT" "$RC_WHY"
-if [ "$RC_VERDICT" = ERROR ]; then
-    pin refused_commit_request_issued_again ERROR "$RC_WHY"
-elif serve_bg refused_commit_take_over-2 take-over "$RC_TAKE" --file "$RC_IMG"; then
-    if rc_reader 60; then r=PASS; else r=FAIL; fi
-    kill -TERM "$SRV_PID"; srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
-    pin refused_commit_request_issued_again "$r" "after the take-over ($SRV_LINE) the reader held by the refused commit: $RC_READ; the take-over's last line: $(printf '%s' "$SRV_SERVED" | cut -c1-160)"
-else
-    pin refused_commit_request_issued_again FAIL "the take-over of the device left by the refused commit did not go live: ${SRV_LINE:-no answer}"
-    kill -9 "$SRV_PID" 2>/dev/null
-fi
-lim 20 "$CTL" delete "$RC_TAKE" > /dev/null 2>&1
-rc_reader 30 > /dev/null
+# refused_course KIND N_TAKE N_DELETE: the take-over course and the delete course of one kind
+refused_course() {
+    local kind=$1 nt=$2 nd=$3 what pin r dev img v ms t0 before
+    what=$kind; [ "$kind" = flush ] || what="$kind:$RC_AT"
+    case $kind in                      # the pin after the take-over
+        read) pin=refused_read_issued_again ;;
+        write) pin=refused_write_lands_after_take_over ;;
+        *) pin=refused_flush_completes_after_take_over ;;
+    esac
 
-step "a commit the driver refuses, then a delete"
-refused_commit refused_commit_delete "$RC_DEL" 30 --refuse-one-commit "read:$RC_AT"
-if [ "$RC_VERDICT" = ERROR ]; then
-    obs refused_commit_then_delete "not run: $RC_WHY"
-else
-    t0=$(now_ms); say delete "$RC_DEL"; v=$ANSWER; ms=$(( $(now_ms) - t0 ))
-    rc_reader 60
-    info "$RC_DEL"; before=$STATE
-    wait_state "$RC_DEL" nothing 10
-    obs refused_commit_then_delete "the delete answered: ${v:-nothing}, after $ms ms by the rig's clock; the reader held by the refused commit: $RC_READ; the device then read $before, and $STATE after $WAITED_MS ms more. The refusal itself ($RC_VERDICT): $RC_WHY"
-fi
-lim 20 "$CTL" delete "$RC_DEL" > /dev/null 2>&1
+    step "a $kind committed with no buffer, then a take-over"
+    refused_commit "refused_${kind}_take_over" "$nt" 30 "$kind" --refuse-one-commit "$what"
+    pin "refused_${kind}_ends_the_server" "$RC_VERDICT" "$RC_WHY"
+    if [ "$RC_VERDICT" = ERROR ]; then
+        pin "$pin" ERROR "$RC_WHY"
+    elif serve_bg "refused_${kind}_take_over-2" take-over "$nt" --file "$RC_IMG"; then
+        if rc_client 60; then r=PASS; else r=FAIL; fi
+        # A write: the range read back through the device while the
+        # take-over serves, then from the image once it has ended.
+        [ "$kind" != write ] || dev=$(rc_block "/dev/ublkb$nt")
+        kill -TERM "$SRV_PID"; srv_end "$SRV_PID" "$SRV_OUT" 30 || kill -9 "$SRV_PID" 2>/dev/null
+        if [ "$kind" = write ]; then
+            img=$(rc_block "$RC_IMG")
+            [ "$dev" = "$RC_NEW" ] && [ "$img" = "$RC_NEW" ] || r=FAIL
+            RC_CLIENT+="; the range read back through the device: $(rc_said "$dev"); from the image after the take-over ended: $(rc_said "$img")"
+        fi
+        pin "$pin" "$r" "after the take-over ($SRV_LINE) the $kind client held by the refused commit: $RC_CLIENT; the take-over's last line: $(printf '%s' "$SRV_SERVED" | cut -c1-160)"
+    else
+        pin "$pin" FAIL "the take-over of the device left by the refused commit did not go live: ${SRV_LINE:-no answer}"
+        kill -9 "$SRV_PID" 2>/dev/null
+    fi
+    lim 20 "$CTL" delete "$nt" > /dev/null 2>&1
+    rc_client 30
+
+    step "a $kind committed with no buffer, then a delete"
+    refused_commit "refused_${kind}_delete" "$nd" 30 "$kind" --refuse-one-commit "$what"
+    if [ "$RC_VERDICT" = ERROR ]; then
+        obs "refused_${kind}_then_delete" "not run: $RC_WHY"
+    else
+        t0=$(now_ms); say delete "$nd"; v=$ANSWER; ms=$(( $(now_ms) - t0 ))
+        rc_client 60
+        [ "$kind" != write ] || RC_CLIENT+="; the image's block afterwards: $(rc_said "$(rc_block "$RC_IMG")")"
+        info "$nd"; before=$STATE
+        wait_state "$nd" nothing 10
+        obs "refused_${kind}_then_delete" "the delete answered: ${v:-nothing}, after $ms ms by the rig's clock; the $kind client held by the refused commit: $RC_CLIENT; the device then read $before, and $STATE after $WAITED_MS ms more. The refusal itself ($RC_VERDICT): $RC_WHY"
+    fi
+    lim 20 "$CTL" delete "$nd" > /dev/null 2>&1
+    rc_client 30
+}
+refused_course read "$RC_READ" "$RC_READ_DEL"
+refused_course write "$RC_WRITE" "$RC_WRITE_DEL"
+refused_course flush "$RC_FLUSH" "$RC_FLUSH_DEL"
 
 # The control: the same step on a server that refuses nothing. The
 # reader is answered at once and the server goes on: the step must say
 # FAIL, or a PASS above shows nothing.
 step "control: the refused-commit step on a server that refuses nothing"
-refused_commit refused_commit_control "$RC_CTL" 5
+refused_commit refused_commit_control "$RC_CTL" 5 read
 ctl refused_commit_without_a_refusal "$RC_VERDICT" "$RC_WHY"
 lim 20 "$CTL" delete "$RC_CTL" > /dev/null 2>&1
-rc_reader 30 > /dev/null
+rc_client 30
 
 step "own: a delete of a waiting device nobody holds"
 truncate -s "$SIZE" "$WORK/own2.img"
