@@ -87,11 +87,20 @@ RECS = ('life', 'slog', 'rewind', 'rewindsync', 'rewindf', 'multihost', 'config'
 EXPECTED = {
     'early': {r: 'caught' for r in RECS},
     'withheld': {r: 'caught' for r in RECS},
-    'later': {r: 'caught' for r in RECS},
+    # A later write over a block a cut reaches comes only when ZFS reuses
+    # space a cut reached: in the nearly full pool and with autotrim's
+    # discards; never in the short recordings on a mostly empty pool
+    # (runs 43631961753 and 43637989615, every candidate cut).
+    'later': dict({r: 'not built' for r in RECS}, autotrim='caught', full='caught',
+                  multihost=('not built', 'caught'), rewindf=('not built', 'caught')),
     # A rewind import with -T writes the new history under groups the
     # abandoned one used (run 43631961753); -F is thought to count on
     # from the failed group, which the recording shows.
-    'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindsync='caught', rewindf=('same', 'caught')),
+    # It differs only where the new history writes a group the abandoned
+    # one used: in rewind group 51 (both runs); in rewindsync the syncs
+    # outran it and group 51 wrote nothing (run 43637989615).
+    'txg-alone': dict({r: 'same' for r in RECS}, rewind='caught', rewindsync=('same', 'caught'),
+                      rewindf=('same', 'caught')),
     # In `stray` the back labels' writes are held 20 ms, so the flusher
     # falls between a group's uberblock copies (none did without it, run
     # 43631961753).
@@ -235,6 +244,7 @@ class Check:
         self.name, self.rdir, self.log, self.base, self.dev = name, rdir, log, base, dev_bytes
         self.logdev = logdev
         self.last_import = None
+        self.with_logdev = 0
         self.work = os.path.join(rdir, 'work')
         self.imgdir = os.path.join(self.work, 'img')
         self.image = os.path.join(self.imgdir, 'cut.img')
@@ -273,7 +283,18 @@ class Check:
         self.at = n
 
     def zdb(self, args, txg=None, timeout=120):
-        return run(['zdb', '-e', '-p', self.imgdir] + (['-t', str(txg)] if txg else []) + args + [POOL], timeout)
+        """zdb on the volume. In the product's layout on the data device
+        alone first, as a restore has it; only where that does not open
+        (run 43637989615: the create's groups, zdb exit 1, I/O error)
+        with the log device's copy beside it, and the count says so."""
+        res = None
+        for d in ([self.alone, self.imgdir] if self.logdev else [self.imgdir]):
+            res = run(['zdb', '-e', '-p', d] + (['-t', str(txg)] if txg else []) + args + [POOL], timeout)
+            if res[0] == 0:
+                if d == self.imgdir and self.logdev:
+                    self.with_logdev += 1
+                return res
+        return res
 
     def group(self, txg=None):
         """zdb's choice of uberblock (the highest group, or the highest
@@ -458,6 +479,9 @@ def main():
         put('opens_as_itself', verdict, f"{n_self} of {len(cs)} cuts open as themselves"
             + (f"; the others: {'; '.join(notself[:8])}" if notself else '')
             + f" (expected: {' or '.join(want) if isinstance(want, tuple) else want}{'' if ok else '; DIFFERS'})")
+        if logdev:
+            put('obs_zdb_with_log_device_copy', str(ck.with_logdev),
+                'zdb calls that did not open the data device alone and opened it with the log device\'s copy beside it')
         put('obs_stale_cuts', str(len(stale)), ', '.join(f"cut {n} (the state of cut {m})" for n, m in stale.items())
             or 'no cut carries the state of an older cut')
         if failures or not ok:

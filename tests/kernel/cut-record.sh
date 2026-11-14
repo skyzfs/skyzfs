@@ -270,7 +270,8 @@ rec_rewindf() {
     export_pool
     ub=$(newest_ub)
     echo "$ub" > "$RDIR/newest-before-damage.txt"
-    mapfile -t dvas < <(sed -n 's/^[[:space:]]*rootbp = //p' <<< "$ub" | grep -o 'DVA\[[0-9]\]=<[0-9]*:[0-9a-f]*:[0-9a-f]*>')
+    # zdb 2.4 prints the root block pointer as `bp = DVA[0]=<...> ...`.
+    mapfile -t dvas < <(sed -n 's/^[[:space:]]*\(root\)\{0,1\}bp = //p' <<< "$ub" | grep -o 'DVA\[[0-9]\]=<[0-9]*:[0-9a-f]*:[0-9a-f]*>')
     [ "${#dvas[@]}" -ge 1 ] || rig_error "zdb gave no root block pointer: $(head -c 300 <<< "$ub")"
     mark "damage"
     for d in "${dvas[@]}"; do
@@ -386,10 +387,18 @@ rec_full() {
 WORST=0
 : > "$OUT/recordings.tsv"
 zfs version > "$OUT/zfs-version.txt" 2>&1 || true
+# Each recording in a subshell with its own cleanup: the rig's error in
+# one (exit 2) is that recording's, and the next one still runs.
 for r in $RECS; do
-    if [ "$r" = stray ]; then begin "$r" delay-end; else begin "$r"; fi
-    "rec_$r"
-    end
+    rc=0
+    (
+        trap cleanup EXIT
+        if [ "$r" = stray ]; then begin "$r" delay-end; else begin "$r"; fi
+        "rec_$r"
+        end
+        exit "$WORST"
+    ) || rc=$?
+    WORST=$(( rc > WORST ? rc : WORST ))
 done
 log "done: worst exit $WORST"
 exit "$WORST"
