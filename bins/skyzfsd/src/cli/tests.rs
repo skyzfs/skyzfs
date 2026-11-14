@@ -40,6 +40,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         (Exit::RefusedHeld, 5),
         (Exit::DeletedHeld, 6),
         (Exit::BrokenRule, 7),
+        (Exit::CommitRefused, 8),
     ];
     let table = HELP
         .split_once("Exit statuses:")
@@ -53,6 +54,7 @@ fn the_exit_statuses_are_the_agreed_numbers() {
         );
     }
     assert!(HELP.contains("7 the kernel's driver broke its rule"));
+    assert!(HELP.contains("8 the kernel's driver refused an answer of serve's"));
 }
 
 /// `create --dir DIR --size BYTES`: the size is in bytes, decimal, a
@@ -272,12 +274,14 @@ fn the_io_threads_default_is_the_stores() {
 /// The fault hooks of the rig, in a build that has them: the volume
 /// fails after N requests; one request is held, a read or a write that
 /// covers a byte or a flush; the boot id comes from a file; the commits
-/// are delayed; the requests are written down.
+/// are delayed; the requests are written down; one request's commit is
+/// sent with no buffer, for the driver to refuse.
 #[test]
 fn the_test_hooks_are_parsed_in_a_test_build() {
     let hooks = serve(
         "serve --dir /v/a --fail-log-after 100 --hold-one-request 300:read:4096 \
-         --boot-id-file /tmp/boot --commit-delay-ms 20 --request-log /tmp/requests.tsv",
+         --boot-id-file /tmp/boot --commit-delay-ms 20 --request-log /tmp/requests.tsv \
+         --refuse-one-commit write:8192",
     )
     .hooks;
     assert_eq!(
@@ -291,8 +295,25 @@ fn the_test_hooks_are_parsed_in_a_test_build() {
             boot_id_file: Some("/tmp/boot".into()),
             commit_delay_ms: Some(20),
             request_log: Some("/tmp/requests.tsv".into()),
+            refuse: Some(Held::Write(8192)),
         }
     );
+    let refused = |spec: &str| {
+        serve(&format!("serve --dir /v/a --refuse-one-commit {spec}"))
+            .hooks
+            .refuse
+    };
+    assert_eq!(refused("read:0"), Some(Held::Read(0)));
+    assert_eq!(refused("flush"), Some(Held::Flush));
+    for bad in [
+        "5:flush", "flush:0", "read", "write:", "trim:0", "read:0:1", ":flush", "5:read:0",
+    ] {
+        let line = format!("serve --dir /v/a --refuse-one-commit {bad}");
+        assert!(
+            matches!(hooked(&line), Err(UsageError::Value(..))),
+            "{bad:?}"
+        );
+    }
     let named = serve("serve --dir /v/a --request-log /tmp/r.tsv");
     assert_eq!(named.hooks.request_log, Some("/tmp/r.tsv".into()));
     let held = |spec: &str| {
@@ -337,6 +358,7 @@ fn the_test_hooks_are_refused_in_a_default_build() {
         "serve --dir /v/a --boot-id-file /tmp/boot",
         "serve --dir /v/a --commit-delay-ms 20",
         "serve --dir /v/a --request-log /tmp/r.tsv",
+        "serve --dir /v/a --refuse-one-commit flush",
         "create --dir /v/a --size 1048576 --base-pattern 1",
     ] {
         assert!(

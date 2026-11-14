@@ -233,7 +233,7 @@ fn zeros(mut queue: impl Queue) -> u64 {
             answered += 1;
         }
         if woken == Woken::Stop {
-            let _ = queue.flush();
+            let _ = queue.flush(&mut Vec::new());
             return answered;
         }
     }
@@ -401,7 +401,7 @@ fn memory_gathering(
         if woken == Woken::Stop {
             // As the pump does at the end of a stop: the commits above
             // have no wait behind them that would send them.
-            let _ = queue.flush();
+            let _ = queue.flush(&mut Vec::new());
             return longest;
         }
     }
