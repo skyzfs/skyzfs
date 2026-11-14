@@ -154,6 +154,9 @@ fn no_wake_is_lost_between_a_threads_look_and_its_wait() {
 /// wait as well as the one the push woke: a wake for nothing that the
 /// pool did not ask for. So each push, the first one included, comes a
 /// while after the last thread was counted, when all four are asleep.
+/// The 20 ms is a margin, not a proof: a thread held up for longer than
+/// that between being counted and being asleep would still be woken
+/// for nothing, and the test would fail.
 fn futile_wakes(mutants: u32) -> u64 {
     let disk = SimDisk::new(4);
     let pool = Pool::start(files(&disk, 4), false, None, Mutants(mutants)).unwrap();
