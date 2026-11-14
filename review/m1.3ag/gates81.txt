@@ -1,0 +1,20 @@
+== cargo fmt --all -- --check
+rc 0
+== cargo clippy --locked -p skyzfs-ublk-sys -p skyzfs-ublk --all-targets -- -D warnings
+rc 0
+== cargo clippy --locked -p skyzfs-ublk-sys --features control-test-program --all-targets -- -D warnings
+rc 0
+== cargo test --locked -p skyzfs-ublk
+      1 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+      1 test result: ok. 138 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+rc 0
+== cargo test --locked -p skyzfs-ublk-sys --features control-test-program --bin skyzfs-ublk-control
+      1 test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+rc 0
+== cargo test --locked -p skyzfs-ublk-sys
+      1 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 1 passed; 0 failed; 9 ignored; 0 measured; 0 filtered out; finished in 0.00s
+      1 test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+rc 0
