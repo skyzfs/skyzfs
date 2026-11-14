@@ -112,7 +112,8 @@ for r in $RECS; do [[ " $ALL " == *" $r "* ]] || { echo "no recording $r (there 
 
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 VLOOP=""; LLOOP=""; MLOOP=""; SLOOP=""; STRAY=""; SESSION=0; NAME=""; RDIR=""
-rig_error() { log "the rig's own error in $NAME: $*"; echo "$NAME	rig error	$*" >> "$OUT/recordings.tsv"; exit 2; }
+# One line in recordings.tsv whatever the message holds.
+rig_error() { local m; m=$(tr '\t\n' '  ' <<< "$*"); log "the rig's own error in $NAME: $m"; echo "$NAME	rig error	$m" >> "$OUT/recordings.tsv"; exit 2; }
 z() { # SECONDS COMMAND...: a pool command under a limit; its failure is the rig's error
     local secs=$1; shift
     timeout "$secs" "$@" || rig_error "$* failed (status $?)"
@@ -255,7 +256,9 @@ rec_rewind() {
 }
 # The newest uberblock of the exported pool, by zdb: GROUP and the root
 # block pointer's line.
-newest_ub() { timeout 60 zdb -e -p "$DEV" -u "$POOL" 2> /dev/null; }
+# zdb 2.2 (the userland of ubuntu-24.04, beside a 2.4 module) prints the
+# root block pointer at -uuuu only, as `rootbp =`; 2.4 as `bp =`.
+newest_ub() { timeout 60 zdb -e -p "$DEV" -uuuu "$POOL" 2> /dev/null; }
 groups_written() { awk 'NR > 2 && $3 == "C" && $6 > 0 { print $1 }' "/proc/spl/kstat/zfs/$POOL/txgs"; }
 rec_rewindsync() {
     local groups t old k t0 top
@@ -291,7 +294,7 @@ rec_rewindf() {
     ub=$(newest_ub)
     echo "$ub" > "$RDIR/newest-before-damage.txt"
     # zdb 2.4 prints the root block pointer as `bp = DVA[0]=<...> ...`.
-    mapfile -t dvas < <(sed -n 's/^[[:space:]]*\(root\)\{0,1\}bp = //p' <<< "$ub" | grep -o 'DVA\[[0-9]\]=<[0-9]*:[0-9a-f]*:[0-9a-f]*>')
+    mapfile -t dvas < <(sed -n 's/^[[:space:]]*\(root\)\{0,1\}bp = //p' <<< "$ub" | head -n 1 | grep -o 'DVA\[[0-9]\]=<[0-9]*:[0-9a-f]*:[0-9a-f]*>')
     [ "${#dvas[@]}" -ge 1 ] || rig_error "zdb gave no root block pointer: $(head -c 300 <<< "$ub")"
     mark "damage"
     for d in "${dvas[@]}"; do
