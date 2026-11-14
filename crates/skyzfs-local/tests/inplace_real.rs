@@ -28,10 +28,12 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use skyzfs_blk::{Base, BlockTarget, Buf, Completion, Op, Request, RequestId};
-use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::inplace::{InPlace, IoMode};
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig, StoreError, HOME_NAME};
+use skyzfs_local::inplace::{
+    create, lock, InPlace, IoMode, OpenError, OpenOptions, Opened, VolumeConfig,
+};
+use skyzfs_local::store::HOME_NAME;
+use skyzfs_local::volume::system_write_unit;
 
 const BLOCK: u64 = 4096;
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -41,14 +43,12 @@ const KILL_SEED: &str = "SKYZFS_KILL_SEED";
 
 type OnFiles = InPlace<FsDir>;
 
-fn config() -> StoreConfig {
-    StoreConfig {
+fn config() -> VolumeConfig {
+    VolumeConfig {
         volume: *b"in place on disk",
         size_mib: 16,
         base: Base::Empty,
-        align: 64,
-        segment_size: 8 << 20,
-        write_unit: Identity::system_write_unit(),
+        write_unit: system_write_unit(),
     }
 }
 
@@ -133,18 +133,19 @@ fn direct_io_is_offered(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-/// The log store's open, then the in-place store, with `io`.
-fn start_io(dir: &FsDir, io: IoMode) -> Result<OnFiles, StoreError> {
-    let mut options = OpenOptions::default();
-    options.in_place_io = io;
-    let (store, _) = Store::open(dir.clone(), options)?;
-    Ok(store.into_in_place(None).expect("the in-place store"))
+/// The open under the lock, then the start, with `io`.
+fn start_io(dir: &FsDir, io: IoMode) -> Result<OnFiles, OpenError> {
+    let options = OpenOptions {
+        io,
+        ..OpenOptions::default()
+    };
+    let opened = Opened::open(dir.clone(), lock(dir)?, options).map_err(|(e, _)| e)?;
+    Ok(opened.start(None).expect("the in-place store"))
 }
 
-/// The log store's open, then the in-place store.
-fn start(dir: &FsDir) -> Result<OnFiles, StoreError> {
-    let (store, _) = Store::open(dir.clone(), OpenOptions::default())?;
-    Ok(store.into_in_place(None).expect("the in-place store"))
+/// The open under the lock, then the start.
+fn start(dir: &FsDir) -> Result<OnFiles, OpenError> {
+    start_io(dir, IoMode::default())
 }
 
 /// Submit one request and wait for it.
@@ -188,15 +189,15 @@ fn flush(store: &mut OnFiles) {
 }
 
 /// Real files, round trip: a write, a write-zeroes and a discard, a
-/// flush on the file's helper thread, and a start again; and back to
-/// the log store, which reads the same.
+/// flush on the file's helper thread, and a start again, which reads
+/// the same.
 #[test]
 fn the_in_place_store_round_trips_on_real_files() {
     let tmp = tempfile::tempdir().unwrap();
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let mut store = start(&dir).unwrap();
     write(&mut store, 0, Buf::filled(4, 0x11));
     assert_eq!(
@@ -240,26 +241,11 @@ fn the_in_place_store_round_trips_on_real_files() {
     drop(store);
     let mut store = start(&dir).unwrap();
     expect(&read(&mut store, 0, 4));
-    drop(store);
-    let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
-    let mut store = store.serve().unwrap();
-    store
-        .submit(Request {
-            id: RequestId(0),
-            op: Op::Read {
-                offset: 0,
-                buf: Buf::filled(4, 0xEE),
-            },
-        })
-        .unwrap();
-    let mut done = Vec::new();
-    assert_eq!(store.wait(&mut done, TIMEOUT), 1);
-    assert_eq!(done[0].result, Ok(()));
-    expect(done[0].buf.as_deref().unwrap());
 }
 
 /// Direct I/O on real files, on four threads and on the default eight,
-/// and with the image written with zeros first (`fill_home`).
+/// and with the image written with zeros at its creation
+/// (`create_zero_filled`).
 /// Sixty-four writes of two blocks each go out together, then a flush,
 /// and every block reads back, through a start on four threads and
 /// through one with the default.
@@ -269,8 +255,7 @@ fn direct_io_on_threads_round_trips_on_real_files() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
-    skyzfs_local::store::fill_home(&dir).unwrap();
+    skyzfs_local::inplace::create_zero_filled(&dir, &config()).unwrap();
     let io = IoMode::with_threads(4).unwrap();
     let mut store = start_io(&dir, io).unwrap();
     let pattern = |n: u64| (n as u8).wrapping_mul(37) | 1;
@@ -318,7 +303,7 @@ fn every_start_serves_where_the_image_begins_with_a_hole() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let mut store = start(&dir).unwrap();
     write(&mut store, 2, Buf::filled(2, 0x22));
     flush(&mut store);
@@ -326,8 +311,11 @@ fn every_start_serves_where_the_image_begins_with_a_hole() {
     let home = std::fs::File::open(tmp.path().join(HOME_NAME)).unwrap();
     for n in 0..200 {
         rustix::fs::fadvise(&home, 0, None, rustix::fs::Advice::DontNeed).unwrap();
-        let (store, _) = Store::open(dir.clone(), OpenOptions::default()).unwrap();
-        if let Err(e) = store.into_in_place(None) {
+        let options = OpenOptions::default();
+        let opened = Opened::open(dir.clone(), lock(&dir).unwrap(), options)
+            .map_err(|(e, _)| e)
+            .unwrap();
+        if let Err(e) = opened.start(None) {
             panic!("start {n} refused: {e}");
         }
     }
@@ -366,7 +354,7 @@ fn inplace_kill_test_child() {
     };
     let mut store = start(&dir).unwrap();
     // The reports go to standard error, which the test harness does not
-    // write to (as in `store_real.rs`).
+    // write to.
     let stderr = std::io::stderr();
     let say = |line: String| {
         let mut out = stderr.lock();
@@ -385,17 +373,16 @@ fn inplace_kill_test_child() {
     }
 }
 
-/// Process kill, for real (rule R9), and the lock with it, as the log
-/// store's test in `store_real.rs` does: a child process serves a
-/// writer from the in-place store and reports each acknowledged write;
+/// Process kill, for real (rule R9), and the lock with it: a child
+/// process serves a writer from the in-place store and reports each
+/// acknowledged write;
 /// the parent kills it with SIGKILL at a moment drawn from a printed
 /// seed, starts the store, and finds in every block the last write
 /// that was acknowledged for it, or the one write that was in flight
 /// when the child died.
 ///
-/// This rests on the page cache: the kernel keeps what the child wrote
-/// to the file when the child dies, synced or not. And unlike the log
-/// store, the write in flight may be there in part: the in-place store
+/// This rests on the device (see the top of this file). The write in
+/// flight may be there in part: the in-place store
 /// writes its blocks straight to the file, and a process killed in the
 /// middle of a `pwrite` of several blocks leaves the blocks it had
 /// copied. Each block is whole: the kernel copies a page at a time and
@@ -406,7 +393,7 @@ fn acknowledged_writes_survive_kill_9_in_place() {
     let Some(dir) = on_disk(tmp.path()) else {
         return;
     };
-    drop(Store::create(dir.clone(), &config(), OpenOptions::default()).unwrap());
+    create(&dir, &config()).unwrap();
     let exe = std::env::current_exe().unwrap();
     let mut held = vec![None::<u64>; KILL_BLOCKS as usize];
     let mut next = 1u64;
@@ -456,14 +443,10 @@ fn acknowledged_writes_survive_kill_9_in_place() {
                 "round {round}: the child did not open the store"
             );
         }
-        // The in-place store holds the volume's lock as the log store
-        // does.
+        // The in-place store holds the volume's lock.
         assert!(
-            matches!(
-                Store::open(dir.clone(), OpenOptions::default()),
-                Err(StoreError::Locked)
-            ),
-            "round {round}: the store opened under a live instance"
+            matches!(lock(&dir), Err(OpenError::Locked)),
+            "round {round}: the volume was unlocked under a live instance"
         );
         for seen in 0..kill_after {
             assert!(
@@ -522,4 +505,258 @@ fn acknowledged_writes_survive_kill_9_in_place() {
         drop(store);
         next = pending + 1;
     }
+}
+
+// Ported from the log store's tests on real files (`store_real.rs`),
+// when the log store was removed (M1.3t).
+
+/// Offsets beyond 32 bits on real files: a volume of 5 GiB takes writes
+/// above 4 GiB and at its last block, the same offsets modulo 4 GiB are
+/// not touched, all of it through a start again, and the image stays
+/// sparse. (Stands in for `store_real.rs::a_volume_above_four_gib_on_real_files`.)
+#[test]
+fn a_volume_above_four_gib_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    let size: u64 = 5 << 30;
+    create(
+        &dir,
+        &VolumeConfig {
+            size_mib: size >> 20,
+            ..config()
+        },
+    )
+    .unwrap();
+    let four = (4u64 << 30) / BLOCK;
+    let last = size / BLOCK - 1;
+    let mut store = start(&dir).unwrap();
+    write(&mut store, four + 7, Buf::filled(1, 0x47));
+    write(&mut store, last, Buf::filled(1, 0x4F));
+    let check = |store: &mut OnFiles| {
+        assert!(read(store, four + 7, 1).iter().all(|b| *b == 0x47));
+        assert!(read(store, last, 1).iter().all(|b| *b == 0x4F));
+        assert!(read(store, 7, 1).iter().all(|b| *b == 0), "an alias");
+        assert!(
+            read(store, last - four, 1).iter().all(|b| *b == 0),
+            "an alias"
+        );
+    };
+    check(&mut store);
+    flush(&mut store);
+    drop(store);
+    check(&mut start(&dir).unwrap());
+    use std::os::unix::fs::MetadataExt;
+    let home = std::fs::metadata(tmp.path().join(HOME_NAME)).unwrap();
+    assert_eq!(home.len(), size);
+    assert!(home.blocks() * 512 < 1 << 30, "{} blocks", home.blocks());
+}
+
+/// A directory, and a file nobody may open, beside the volume's files
+/// do not refuse an open: the open reads only its own files. (Stands
+/// in for `store_real.rs::a_stranger_in_the_directory_does_not_refuse_an_open`.)
+#[test]
+fn a_stranger_in_the_directory_does_not_refuse_an_open() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let mut store = start(&dir).unwrap();
+    write(&mut store, 5, Buf::filled(1, 0x55));
+    flush(&mut store);
+    drop(store);
+    std::fs::create_dir(tmp.path().join("notes")).unwrap();
+    let closed = tmp.path().join("closed");
+    std::fs::write(&closed, b"not the volume's").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mut store = start(&dir).unwrap();
+    assert!(read(&mut store, 5, 1).iter().all(|b| *b == 0x55));
+}
+
+/// Every file of the directory and what it holds.
+fn snapshot(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    let mut files: Vec<_> = std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| entry.unwrap())
+        .filter(|entry| entry.file_type().unwrap().is_file())
+        .map(|entry| {
+            let name = entry.file_name().into_string().unwrap();
+            (name, std::fs::read(entry.path()).unwrap())
+        })
+        .collect();
+    files.sort();
+    files
+}
+
+/// A second instance on real files is refused while the first lives,
+/// by the lock and by a create over the volume, and neither refusal
+/// changes a byte of the directory; the first serves on, and a start
+/// after it finds what it wrote. (Stands in for
+/// `store_real.rs::a_second_instance_is_refused_on_real_files`.)
+#[test]
+fn a_second_instance_is_refused_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let mut store = start(&dir).unwrap();
+    write(&mut store, 4, Buf::filled(1, 0x44));
+    flush(&mut store);
+    let before = snapshot(tmp.path());
+    assert!(matches!(lock(&dir), Err(OpenError::Locked)));
+    assert!(matches!(create(&dir, &config()), Err(OpenError::Locked)));
+    assert!(
+        snapshot(tmp.path()) == before,
+        "a refusal changed the directory"
+    );
+    write(&mut store, 5, Buf::filled(1, 0x55));
+    flush(&mut store);
+    drop(store);
+    let mut store = start(&dir).unwrap();
+    assert!(read(&mut store, 4, 1).iter().all(|b| *b == 0x44));
+    assert!(read(&mut store, 5, 1).iter().all(|b| *b == 0x55));
+}
+
+/// A share of the volume's lock, taken from the open as the daemon
+/// takes it, holds the volume after the store has gone with a thread
+/// that panicked, until the share is dropped. (Stands in for
+/// `store_real.rs::a_share_of_the_stores_lock_outlives_the_store`.)
+#[test]
+fn a_share_of_the_lock_outlives_a_store_that_panicked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let opened = Opened::open(dir.clone(), lock(&dir).unwrap(), OpenOptions::default())
+        .map_err(|(e, _)| e)
+        .unwrap();
+    let share = opened.share_lock();
+    let store = opened.start(None).unwrap();
+    let ended = std::thread::spawn(move || {
+        let _store = store;
+        panic!("the store's thread panics, as a test means it to");
+    })
+    .join();
+    assert!(ended.is_err());
+    assert!(matches!(lock(&dir), Err(OpenError::Locked)));
+    drop(share);
+    assert!(lock(&dir).is_ok());
+}
+
+/// Many reads in flight at once on four threads, of blocks flushed,
+/// written and not flushed, and never written, each answered with its
+/// own block, round after round, and again through a start with the
+/// default threads. (Stands in for
+/// `store_real.rs::a_served_store_with_four_readers_reads_on_real_files`.)
+#[test]
+fn many_reads_in_flight_on_four_threads_on_real_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let io = IoMode::with_threads(4).unwrap();
+    let mut store = start_io(&dir, io).unwrap();
+    let byte = |block: u64| if block < 40 { block as u8 | 0x80 } else { 0 };
+    for block in 0..20 {
+        write(&mut store, block, Buf::filled(1, byte(block)));
+    }
+    flush(&mut store);
+    for block in 20..40 {
+        write(&mut store, block, Buf::filled(1, byte(block)));
+    }
+    let rounds = |store: &mut OnFiles| {
+        for round in 0..4 {
+            for block in 0..56u64 {
+                store
+                    .submit(Request {
+                        id: RequestId(block),
+                        op: Op::Read {
+                            offset: block * BLOCK,
+                            buf: Buf::filled(1, 0xEE),
+                        },
+                    })
+                    .unwrap();
+            }
+            let mut done = Vec::new();
+            let began = Instant::now();
+            while done.len() < 56 {
+                assert!(began.elapsed() < TIMEOUT, "round {round}: reads unanswered");
+                store.wait(&mut done, TIMEOUT);
+            }
+            for completion in &done {
+                let block = completion.id.0;
+                assert_eq!(completion.result, Ok(()), "round {round}, block {block}");
+                let buf = completion.buf.as_ref().unwrap();
+                assert!(
+                    buf.iter().all(|b| *b == byte(block)),
+                    "round {round}, block {block}"
+                );
+            }
+        }
+    };
+    rounds(&mut store);
+    flush(&mut store);
+    drop(store);
+    rounds(&mut start(&dir).unwrap());
+}
+
+/// The owner's waker is called when a sync that a flush began ends on
+/// the file's helper, with nothing else to wake it: the owner then
+/// takes the flush without waiting on the store. (The simulated disk
+/// calls no waker at a sync's end; the waker of the I/O threads is
+/// held there, in `inplace::tests::ported`.)
+#[test]
+fn the_waker_is_called_when_a_sync_ends_on_real_files() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    let tmp = tempfile::tempdir().unwrap();
+    let Some(dir) = on_disk(tmp.path()) else {
+        return;
+    };
+    create(&dir, &config()).unwrap();
+    let wakes = Arc::new(AtomicU64::new(0));
+    let waker = {
+        let wakes = wakes.clone();
+        skyzfs_local::store::Waker::new(move || {
+            wakes.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let opened = Opened::open(dir.clone(), lock(&dir).unwrap(), OpenOptions::default())
+        .map_err(|(e, _)| e)
+        .unwrap();
+    let mut store = opened.start(Some(waker)).unwrap();
+    let until = |than: u64| {
+        let began = Instant::now();
+        while wakes.load(Ordering::SeqCst) <= than {
+            if began.elapsed() > TIMEOUT {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
+    };
+    write(&mut store, 4, Buf::filled(1, 0x44));
+    // The write's own wake, which may come after its completion was
+    // taken.
+    assert!(until(0), "the write woke nobody");
+    let before = wakes.load(Ordering::SeqCst);
+    store
+        .submit(Request {
+            id: RequestId(9),
+            op: Op::Flush,
+        })
+        .unwrap();
+    assert!(until(before), "the end of the sync woke nobody");
+    let mut done = Vec::new();
+    while done.is_empty() {
+        store.wait(&mut done, TIMEOUT);
+    }
+    assert_eq!(done[0].id, RequestId(9));
+    assert_eq!(done[0].result, Ok(()));
 }

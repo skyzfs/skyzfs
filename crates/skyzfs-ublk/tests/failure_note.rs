@@ -1,7 +1,9 @@
 //! The failure note over the real store and the real files, with a
-//! kernel of the test's own: a log that is marked as failed, the
+//! kernel of the test's own: a volume that is marked as failed, the
 //! operator's acknowledgement, and a failure while a client may hold
-//! the device.
+//! the device. The store's failure itself is the in-place store's
+//! marker, written here as the store writes it (its presence is all):
+//! the store's own tests show that it writes it.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -9,9 +11,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use skyzfs_blk::Base;
-use skyzfs_local::format::Identity;
 use skyzfs_local::fs::FsDir;
-use skyzfs_local::store::{OpenOptions, Store, StoreConfig};
+use skyzfs_local::inplace::{create, OpenOptions, VolumeConfig};
+use skyzfs_local::volume::{system_write_unit, MARKER_NAME};
 use skyzfs_ublk::lifecycle::{
     fail_serving, start, AddError, Control, DeviceInfo, DeviceState, Held, Reason, Shape, Stop,
     Wanted,
@@ -103,24 +105,15 @@ fn a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boo
     let (dir, run) = (keep.path().join("volume"), keep.path().join("run"));
     std::fs::create_dir(&dir).expect("the volume's directory");
     std::fs::create_dir(&run).expect("the run directory");
-    let config = StoreConfig {
+    let config = VolumeConfig {
         volume: *b"a volume on disk",
         size_mib: 8,
         base: Base::Empty,
-        align: 4096,
-        segment_size: 8 << 20,
-        write_unit: Identity::system_write_unit(),
+        write_unit: system_write_unit(),
     };
-    let store = Store::create(
-        FsDir::new(&dir).expect("the directory"),
-        &config,
-        OpenOptions::default(),
-    )
-    .expect("create");
-    // The log fails, with no daemon of this boot attached.
-    let served = store.serve().expect("serve");
-    served.fail_now();
-    drop(served);
+    create(&FsDir::new(&dir).expect("the directory"), &config).expect("create");
+    // The volume failed, with no daemon of this boot attached.
+    std::fs::write(dir.join(MARKER_NAME), b"").expect("the marker");
 
     let mut kernel = Kernel::default();
     let mut records = files(&dir, &run, BOOT);
@@ -146,21 +139,21 @@ fn a_marked_volume_is_acknowledged_once_and_a_failure_while_serving_ends_the_boo
         device.state = DeviceState::Live;
     }
 
-    // The log fails while the volume is served. A client holds the
-    // device, and the kernel cannot say so: the note says unknown, and
-    // the deleted device keeps its number.
+    // The volume fails while it is served. A client holds the device,
+    // and the kernel cannot say so: the note says unknown, and the
+    // deleted device keeps its number. The store's marker comes after
+    // the note, and the lock goes last, as in the daemon.
     kernel.held.push(number);
-    let served = ready.store.serve().expect("serve");
-    served.fail_now();
     let (failure, written, _) = fail_serving(
         &mut kernel,
         &mut records,
         number,
         identity,
-        Reason::LogFailed,
+        Reason::ImageFailed,
     );
     assert!(failure.held == Held::Unknown && written);
-    drop(served);
+    std::fs::write(dir.join(MARKER_NAME), b"").expect("the marker");
+    drop(ready);
     assert_eq!(
         kernel.devices.get(&number).map(|d| d.state),
         Some(DeviceState::Dead)

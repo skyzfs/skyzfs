@@ -1122,17 +1122,23 @@ impl<Q: Queue, T: Positions, A: AckRecord> Pump<Q, T, A> {
     }
 }
 
-impl Positions for skyzfs_local::store::Served {
+/// The in-place store has no log, so no position: the pump commits
+/// without storing one, and the record of what was acknowledged is not
+/// written (inert since M1.3t; the plumbing goes in M1.3t-b). What the
+/// kernel issues again after a lost process is applied again, which
+/// rule R9 allows. It has no thread of its own that could end, and it
+/// keeps no time of when a completion was ready.
+impl<D: skyzfs_local::io::Dir> Positions for skyzfs_local::inplace::InPlace<D> {
     fn acknowledged(&self) -> Option<u64> {
-        skyzfs_local::store::Served::acknowledged(self).map(|position| position.0)
+        None
     }
 
     fn gone(&self) -> bool {
-        skyzfs_local::store::Served::gone(self)
+        false
     }
 
-    fn ready_at(&self, id: RequestId) -> Option<Instant> {
-        skyzfs_local::store::Served::ready_at(self, id)
+    fn ready_at(&self, _id: RequestId) -> Option<Instant> {
+        None
     }
 }
 

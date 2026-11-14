@@ -1,32 +1,34 @@
-//! The lifecycle's [`Volume`] over the real store: the lock as a step
-//! of its own ([`Store::lock_volume`]) and the open under it
-//! ([`Store::open_locked`]).
+//! The lifecycle's [`Volume`] over the in-place store: the lock as a
+//! step of its own ([`skyzfs_local::inplace::lock`]) and the open under
+//! it ([`Opened::open`]), the first phase of a start. The second phase,
+//! [`Opened::start`], is the daemon's, once the device is its.
 //!
 //! # How the store's errors are read
 //!
-//! The lifecycle acts differently on four kinds of failed open, and
+//! The lifecycle acts differently on kinds of failed open, and
 //! [`classify`] sorts the store's errors into them:
 //!
-//! - **The log is shorter than what was acknowledged** ([`OpenError::Short`]):
-//!   the store's own comparison failed, or the valid prefix ends before
-//!   a position the log's superblock says was durable. Both say that
-//!   something the log held is gone. (The second is this module's
-//!   reading: the design names only the comparison.)
-//! - **The recovery failed the log** ([`OpenError::SyncFailed`]): a
-//!   sync or a write of the recovery returned an error, or the log had
-//!   failed already. Never "try again".
-//! - **The volume is marked as failed** ([`OpenError::MarkedFailed`]).
-//! - **Anything else** ([`OpenError::Other`]): a read that failed, a
-//!   directory that holds no log, files that do not fit together. The
-//!   daemon stops and deletes nothing.
+//! - **The volume is marked as failed** ([`OpenError::MarkedFailed`]):
+//!   its failure marker, which the lifecycle may acknowledge.
+//! - **Anything else** ([`OpenError::Other`]): a volume file that is
+//!   missing, damaged, of a version this daemon does not know or of the
+//!   log store; a home image that does not fit it; a file system or a
+//!   page larger than the volume's write unit; a call that failed. The
+//!   daemon stops, deletes nothing, and the volume has not failed.
+//!
+//! Since M1.3t nothing here gives [`OpenError::Short`] or
+//! [`OpenError::SyncFailed`]: they were the log store's (a log shorter
+//! than what was acknowledged, a recovery whose sync failed). The
+//! lifecycle keeps reading them until M1.3t-b. The in-place store has
+//! no log to hold to a position of what was acknowledged
+//! ([`Volume::reaches_positions`] is false): the lifecycle then gives it
+//! none and does not read its record, so an unreadable record no longer
+//! fails the volume (`Reason::PositionUnreadable`, code 5).
 
 use std::path::{Path, PathBuf};
 
-use skyzfs_blk::BlockTarget;
-use skyzfs_local::format::Lsn;
-use skyzfs_local::fs::{CacheCountCall, FsDir, FsLock, WritebackCall};
-use skyzfs_local::log::{Corruption, LogError};
-use skyzfs_local::store::{OpenOptions, Store, StoreError};
+use skyzfs_local::fs::{CacheCountCall, FsDir, FsLock};
+use skyzfs_local::inplace::{self, OpenOptions, Opened};
 
 use crate::lifecycle::{LockError, MustReach, OpenError, Volume};
 
@@ -35,36 +37,24 @@ use crate::lifecycle::{LockError, MustReach, OpenError, Volume};
 pub struct StoreVolume {
     dir: PathBuf,
     options: OpenOptions,
-    writeback: Option<WritebackCall>,
     cache_count: Option<CacheCountCall>,
 }
 
 impl StoreVolume {
-    /// The volume in `dir`, to be opened with `options`. The position
-    /// the log must reach and whether a failure is acknowledged are
-    /// the lifecycle's to give: whatever `options` says about them is
-    /// replaced at the open.
+    /// The volume in `dir`, to be opened with `options`. Whether a
+    /// failure is acknowledged is the lifecycle's to give: whatever
+    /// `options` says about it is replaced at the open.
     pub fn new(dir: &Path, options: OpenOptions) -> Self {
         Self {
             dir: dir.into(),
             options,
-            writeback: None,
             cache_count: None,
         }
     }
 
-    /// The same, whose files start writeback early with `call`
-    /// ([`FsDir::with_writeback`]). Without it the store's hint is off.
-    pub fn with_writeback(self, call: WritebackCall) -> Self {
-        Self {
-            writeback: Some(call),
-            ..self
-        }
-    }
-
     /// The same, whose files count their pages in the kernel's cache
-    /// with `call` ([`FsDir::with_cache_count`]). Without it the
-    /// in-place store refuses to start.
+    /// with `call` ([`FsDir::with_cache_count`]). Without it the start
+    /// refuses the volume.
     pub fn with_cache_count(self, call: CacheCountCall) -> Self {
         Self {
             cache_count: Some(call),
@@ -75,23 +65,19 @@ impl StoreVolume {
 
 /// Which kind of failed open `error` is: see the
 /// [module documentation](self).
-pub fn classify(error: &StoreError) -> OpenError {
+pub fn classify(error: &inplace::OpenError) -> OpenError {
+    use inplace::OpenError as E;
     match error {
-        StoreError::Log(LogError::Short { .. })
-        | StoreError::Log(LogError::Corrupt(Corruption::BelowDurableFloor { .. })) => {
-            OpenError::Short
-        }
-        StoreError::Log(LogError::MarkedFailed) => OpenError::MarkedFailed,
-        StoreError::Log(LogError::Failed) | StoreError::Log(LogError::Io { failed: true, .. }) => {
-            OpenError::SyncFailed
-        }
-        // The volume is not where the store's protection holds: a
-        // refusal that wrote nothing, and no failure of the volume.
-        refused @ (StoreError::Blocks { .. }
-        | StoreError::BlocksUnknown { .. }
-        | StoreError::Pages { .. }) => OpenError::Other(format!(
+        E::MarkedFailed => OpenError::MarkedFailed,
+        // The volume is not one this daemon serves here: a refusal that
+        // wrote nothing, and no failure of the volume.
+        refused @ (E::Volume(_)
+        | E::Damaged(_)
+        | E::Blocks { .. }
+        | E::BlocksUnknown { .. }
+        | E::Pages { .. }) => OpenError::Other(format!(
             "{refused}. Nothing was written and the volume is not failed. A device of this \
-             volume that waits for a server is left as it is; `skyzfsd detach` removes it"
+                 volume that waits for a server is left as it is; `skyzfsd detach` removes it"
         )),
         other => OpenError::Other(other.to_string()),
     }
@@ -99,47 +85,47 @@ pub fn classify(error: &StoreError) -> OpenError {
 
 impl Volume for StoreVolume {
     type Lock = FsLock;
-    type Open = Store<FsDir>;
+    type Open = Opened<FsDir>;
 
     fn lock(&mut self) -> Result<FsLock, LockError> {
         let dir = FsDir::new(&self.dir).map_err(|e| LockError::Other(e.to_string()))?;
-        match Store::<FsDir>::lock_volume(&dir) {
+        match inplace::lock(&dir) {
             Ok(lock) => Ok(lock),
-            Err(StoreError::Locked) => Err(LockError::Locked),
+            Err(inplace::OpenError::Locked) => Err(LockError::Locked),
             Err(other) => Err(LockError::Other(other.to_string())),
         }
     }
 
+    /// The position to reach is ignored: see the
+    /// [module documentation](self).
     fn open(
         &mut self,
         lock: FsLock,
-        must_reach: Option<MustReach>,
+        _must_reach: Option<MustReach>,
         acknowledge_failure: bool,
-    ) -> Result<(Store<FsDir>, u64), (OpenError, FsLock)> {
+    ) -> Result<(Opened<FsDir>, u64), (OpenError, FsLock)> {
         let dir = match FsDir::new(&self.dir) {
-            Ok(dir) => {
-                let dir = match self.writeback {
-                    Some(call) => dir.with_writeback(call),
-                    None => dir,
-                };
-                match self.cache_count {
-                    Some(call) => dir.with_cache_count(call),
-                    None => dir,
-                }
-            }
+            Ok(dir) => match self.cache_count {
+                Some(call) => dir.with_cache_count(call),
+                None => dir,
+            },
             Err(e) => return Err((OpenError::Other(e.to_string()), lock)),
         };
         let mut options = self.options.clone();
         options.acknowledge_failure = acknowledge_failure;
-        options.must_reach = must_reach.map(|m| Lsn(m.position));
-        options.must_reach_identity = must_reach.map(|m| m.identity);
-        match Store::open_locked(dir, lock, options) {
-            Ok((store, _)) => {
-                let size = store.geometry().size_bytes();
-                Ok((store, size))
+        match Opened::open(dir, lock, options) {
+            Ok(opened) => {
+                let size = opened.geometry().size_bytes();
+                Ok((opened, size))
             }
             Err((error, lock)) => Err((classify(&error), lock)),
         }
+    }
+
+    /// The in-place store holds to no position: the lifecycle does not
+    /// read the record of what was acknowledged for it.
+    fn reaches_positions(&self) -> bool {
+        false
     }
 }
 

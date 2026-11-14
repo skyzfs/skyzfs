@@ -4141,7 +4141,6 @@ name = "skynbd-tree"
 version = "0.0.1"
 dependencies = [
  "proptest",
- "skynbd-types",
 ]
 
 [[package]]

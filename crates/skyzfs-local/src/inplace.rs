@@ -1,23 +1,17 @@
-//! The in-place store: the volume's home image, written in place and
-//! synced at a flush, with no write log (work package M1.3r, an
-//! experiment: is the log needed?).
+//! The in-place store: the volume's home image, written in place by
+//! direct I/O and synced at a flush, with no write log (work packages
+//! M1.3r to M1.3t).
 //!
-//! It is entered from an opened log store ([`Store::into_in_place`](crate::store::Store::into_in_place)):
-//! the log store's open recovers the log as always, the whole log is
-//! applied to the home image, the home image is synced, and from then
-//! on the log is empty and is never written. The volume's files stay
-//! those of the log store. **A volume served in place must not be given
-//! back to the log store**: the log store's open does not sync the home
-//! image, and its flushes sync the log alone, so a write this store
-//! acknowledged and no flush covered before its process ended (lost or
-//! stopped: nothing syncs the image at a stop) is
-//! covered by no flush of the log store after it, and a power cut can
-//! take it (rule R7). That is owed (the review of M1.3r, finding A;
-//! the ignored test
-//! `a_flush_on_the_log_store_covers_what_the_in_place_store_wrote`
-//! reproduces it). What the log store keeps for the daemon (the lock, the
-//! identity, the failure marker and the observer that hears of a
-//! failure first) is the log's and stays with it here.
+//! A volume is a directory that holds the volume file
+//! ([`crate::volume`]), which says what the volume is, and the home
+//! image (`home.img`), which holds it. [`create`] makes one; a start
+//! opens it in two phases, [`Opened::open`] under the volume's lock and
+//! [`Opened::start`] once the daemon may serve (the `start` module).
+//! Beside them the directory holds the lock file and, once the volume
+//! has failed, the failure marker (`volume.failed`). Until M1.3t the
+//! store was entered from the log store, whose open applied its log to
+//! the home image first; the log store is gone, and a directory it made
+//! is refused ([`crate::volume::VolumeError::Legacy`]).
 //!
 //! # What it promises: the volatile-cache disk
 //!
@@ -59,11 +53,10 @@
 //!    independently of every other sector and of every other block: a
 //!    later write can survive while an earlier one is lost, and a
 //!    write can be torn at a sector. A start makes what it finds
-//!    durable before it serves ([`Store::into_in_place`](crate::store::Store::into_in_place)):
-//!    its sync of the home image makes durable what the instance before
-//!    it wrote by direct I/O (on the device, perhaps only in its cache)
-//!    and what the log store's checkpoint wrote through the cache when
-//!    the volume entered this store. That sync stays under direct I/O.
+//!    durable before it serves ([`Opened::start`]): its sync of the
+//!    home image makes durable what the instance before it wrote by
+//!    direct I/O (on the device, perhaps only in its cache). A test
+//!    pins it (`a_power_cut_after_a_start_keeps_what_the_instance_before_wrote`).
 //!    The start then serves only what the disk holds: it drops the
 //!    kernel's cache of the home image and checks that no page of it is
 //!    left (`cachestat`), or refuses the volume (design §4.1). A failed
@@ -74,13 +67,12 @@
 //!    an instance that died between a failed sync and its marker, whose
 //!    own sync succeeds because the kernel reports such an error once.
 //!    Under direct I/O the store's own reads and writes leave no page
-//!    in the cache, so such pages come only from a writer through it:
-//!    the log store's checkpoint at the entry into this store, which
-//!    M1.3t removes with the log store, and a file system that accepts
-//!    a direct request, reports an alignment for it and still serves it
-//!    through its cache. The start's check of direct I/O
-//!    (`STATX_DIOALIGN`) cannot tell such a one apart, so the drop stays
-//!    after M1.3t. The design's example, ext4 with `data=journal`, is
+//!    in the cache, so such pages come only from a writer through it: a
+//!    file system that accepts a direct request, reports an alignment
+//!    for it and still serves it through its cache. (Until M1.3t the log
+//!    store's checkpoint at the entry into this store was one too.) The
+//!    start's check of direct I/O (`STATX_DIOALIGN`) cannot tell such a
+//!    file system apart, so the drop stays. The design's example, ext4 with `data=journal`, is
 //!    not one: as read in ext4 and not shown, its `statx` reports no
 //!    direct-I/O alignment for an inode whose data is journalled, so the
 //!    start refuses that volume by reason instead of serving it. No file
@@ -90,8 +82,8 @@
 //! 4. **Failure is final** (rule R11's failure rule). Once a write or
 //!    a sync of the home image has failed, the volume has failed: from
 //!    then on every request fails, reads included, and a later start
-//!    refuses the volume until the failure is acknowledged (the log's
-//!    marker). A failed sync is never tried again: the kernel may have
+//!    refuses the volume until the failure is acknowledged (the failure
+//!    marker, `volume.failed`). A failed sync is never tried again: the kernel may have
 //!    dropped the pages and the error with them. What a completed flush
 //!    covered is intact after a failure; a failed write or sync may
 //!    leave every other block as point 3 leaves it at a power cut,
@@ -111,8 +103,7 @@
 //! acknowledged, and the daemon stores none (`skyzfsd`'s `Target`). At
 //! a start after a lost process nothing can show that the home image
 //! holds less than the kernel was told: the store's promise rests on
-//! the direct write having reached the device for that (point 1),
-//! where the log store checks its log against the stored position.
+//! the direct write having reached the device for that (point 1).
 //!
 //! Where the page or the file system's block is larger than a block
 //! (16 KiB or 64 KiB pages on some arm64 kernels and on Apple silicon),
@@ -135,9 +126,8 @@
 //! which says what that rests on on a real file system). That is the
 //! reason for decision D6.
 //!
-//! The other rules (R1 to R9, R11, R12) hold as for the log store, and
-//! the conformance suite runs on this store with every capability
-//! (`harness.rs`).
+//! The other rules (R1 to R9, R11, R12) hold, and the conformance
+//! suite runs on this store with every capability (`harness.rs`).
 //!
 //! # How it executes
 //!
@@ -189,9 +179,6 @@
 //! [`BlockTarget::submit`], or through the kernel's cache, where a
 //! write-zeroes deallocates the range (`IoMode::for_tests`). Neither is
 //! a mode the store is served in.
-//!
-//! Not in it: an index, a checkpoint, a recovery beyond the log store's
-//! open of an empty log, any count of what the log holds.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -204,9 +191,13 @@ use skyzfs_blk::{
 };
 
 use crate::io::{Dir, File, NotBegun};
-use crate::log::Log;
-use crate::store::Zeroes;
+use crate::store::{FailureObserver, Zeroes};
 use pool::{Done, Job, Pool};
+
+pub use start::{
+    create, create_zero_filled, identity_of, lock, OpenError, OpenOptions, Opened, Under,
+    VolumeConfig,
+};
 
 /// Defects, for the tests that show each rule is tested.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -247,31 +238,60 @@ impl Mutants {
     pub(crate) const FLUSH_PASSES_WRITES: u32 = 1 << 12;
     /// A request does not wait for an overlapping one on the threads.
     pub(crate) const OVERLAP_UNORDERED: u32 = 1 << 13;
+    /// The start does not sync the home image.
+    pub(crate) const START_UNSYNCED: u32 = 1 << 14;
+    /// The failure observer is told after the marker is begun, not
+    /// before.
+    pub(crate) const OBSERVE_AFTER_MARKER: u32 = 1 << 15;
+    /// The failure marker is made without the directory's sync, so a
+    /// power cut can take it back.
+    pub(crate) const MARKER_UNSYNCED: u32 = 1 << 16;
+    /// A failed read fails the volume (the log store's rule, which the
+    /// in-place store does not have).
+    pub(crate) const READ_ERROR_FAILS: u32 = 1 << 17;
+    /// Create and open do not hold the file systems' blocks to the
+    /// write unit.
+    pub(crate) const ANY_BLOCKS: u32 = 1 << 18;
+    /// Create and open do not hold the system's page to the write unit.
+    pub(crate) const ANY_PAGES: u32 = 1 << 19;
+    /// A job pushed to the I/O threads wakes every waiting thread, not
+    /// one.
+    pub(crate) const POOL_WAKES_ALL: u32 = 1 << 20;
+    /// An I/O thread looks at the queue and waits under two holds of
+    /// its lock: a job pushed between them wakes nobody.
+    pub(crate) const POOL_WAKE_LOST: u32 = 1 << 21;
+    /// At the end the I/O threads end without doing the jobs queued.
+    pub(crate) const POOL_ENDS_QUEUED: u32 = 1 << 22;
+    /// An I/O thread that ends a job waits to be woken before it looks
+    /// at the queue again.
+    pub(crate) const POOL_WAITS_FIRST: u32 = 1 << 23;
+    /// Where a thread cannot be started, the threads started before it
+    /// are left waiting.
+    pub(crate) const POOL_LEAVES_STARTED: u32 = 1 << 24;
+    /// A write handed to the threads is acknowledged at once, before a
+    /// thread has written it: a kill can lose it.
+    pub(crate) const ACK_BEFORE_WRITE: u32 = 1 << 25;
+    /// A failure writes no marker: the next start serves the volume.
+    pub(crate) const FAIL_UNMARKED: u32 = 1 << 26;
+    /// The start's look reads with the kernel's read-ahead, which the
+    /// next start's drop cannot take while it is under I/O.
+    pub(crate) const LOOK_READS_AHEAD: u32 = 1 << 27;
 
     pub(crate) fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
     }
 }
 
-/// Why [`Store::into_in_place`](crate::store::Store::into_in_place) did not give an in-place store.
+/// Why the second phase of a start ([`Opened::start`]) did not give
+/// an in-place store.
 #[derive(Debug, thiserror::Error)]
-pub enum IntoInPlaceError {
-    /// The log store has requests queued or in flight.
-    #[error("the store has requests in flight")]
-    InFlight,
-    /// The volume has failed, or failed on the way: the log could not
-    /// be applied or the home image could not be synced. The failure
-    /// marker that says so to the next start may still be to write:
+pub enum StartError {
+    /// The volume has failed: the home image could not be synced. The
+    /// failure marker that says so to the next start is still to write:
     /// [`FailedStart`] writes it when it is finished or dropped, so
     /// that the caller can first say what happened elsewhere.
     #[error("the volume has failed")]
     Failed(FailedStart),
-    /// The log store's helper ended without a report: what it did is
-    /// not known, and the volume is not marked as failed. The next
-    /// open applies the log again, as after the same event while the
-    /// log store serves.
-    #[error("the store's helper ended without a report")]
-    HelperEnded,
     /// The kernel's cache of the home image could not be dropped after
     /// the start's sync, or could not be shown to be gone: a start
     /// serves only what the disk holds (design §4.1), and refuses the
@@ -283,10 +303,6 @@ pub enum IntoInPlaceError {
     /// volume has not failed.
     #[error("the in-place store's I/O: {0}")]
     Io(String),
-    /// The log still holds records after the checkpoint: a hold, or a
-    /// part of it that is not durable.
-    #[error("the log could not be emptied: {0}")]
-    NotEmpty(String),
 }
 
 /// How the in-place store reads and writes the home image: by direct
@@ -361,8 +377,11 @@ impl IoMode {
 /// The store on the home image alone: see the
 /// [module documentation](self).
 pub struct InPlace<D: Dir> {
-    /// The log, empty: for the failure marker and its observer.
-    log: Log<D>,
+    /// The volume's directory: where the I/O threads open their handles
+    /// on the home image.
+    dir: D,
+    /// Who is told of the failure first; taken when it is told.
+    observer: Option<FailureObserver>,
     home: D::File,
     lock: Option<D::Lock>,
     geometry: Geometry,
@@ -398,10 +417,21 @@ pub struct InPlace<D: Dir> {
     /// The queue's counts and highs; the current figures are those of
     /// `busy` and `deferred`.
     queue: IoQueue,
+    /// Writes on the threads acknowledged before a thread wrote them,
+    /// under ids of their own on the threads (the client may use theirs
+    /// again at once), and how many there were: only under the defect
+    /// [`Mutants::ACK_BEFORE_WRITE`]. Such a write's end completes
+    /// nothing.
+    acked_early: (BTreeSet<RequestId>, u64),
+    /// Those writes not yet handed to the threads, by the client's id:
+    /// each goes at the first submit, poll or wait after its
+    /// acknowledgement was handed out, so that a kill that comes right
+    /// after the client took it finds the write not begun, however the
+    /// threads are scheduled. Only under the defect.
+    held_early: Vec<(RequestId, Job)>,
     /// The failure marker: not yet needed, being written on a thread
-    /// of its own, or tried. Whether it was written is not kept: as for
-    /// the log store, a start that does not find it goes by the
-    /// daemon's failure note.
+    /// of its own, or tried. Whether it was written is not kept: a start
+    /// that does not find it goes by the daemon's failure note.
     marker: Marker,
 }
 
@@ -509,7 +539,7 @@ impl Marker {
 const MARKER_STACK: usize = 256 << 10;
 
 /// A start of the in-place store that met the failed disk
-/// ([`IntoInPlaceError::Failed`]): it holds the volume's lock and the
+/// ([`StartError::Failed`]): it holds the volume's lock and the
 /// failure marker still to write. The marker needs the disk that has
 /// just failed and may take minutes or never end, so the caller first
 /// says what happened (the daemon's failure note, the delete of its
@@ -519,53 +549,9 @@ const MARKER_STACK: usize = 256 << 10;
 pub struct FailedStart {
     marker: Marker,
     lock: Option<Box<dyn Send>>,
-    failed: StartFailed,
-}
-
-/// What failed at a start of the in-place store
-/// ([`FailedStart::failed`]), for the daemon's failure note: the two
-/// are told apart there (`skyzfs_ublk::lifecycle::Reason`).
-///
-/// The reason is true to the file that failed, as far as the start can
-/// tell (the lead's ruling for M1.3x). Before the in-place store takes
-/// over, the log store settles, syncs its log and checkpoints it into
-/// the home image (`Store::into_in_place`): where the log held a write
-/// or write-zeroes to apply into the image, a failure there is the log
-/// store's (`Log`); where it held none, nothing of the log store's own
-/// was at stake, and the failure is the image's or the device's under
-/// it (`Image`). A discard counts as nothing to apply: it changes
-/// nothing in the image, and the log store's index does not hold it.
-/// With nothing to apply, a failure of the log file's own sync is so
-/// reported as the image's too: the start cannot tell the two apart,
-/// and the hand-over goes with the log store in M1.3t.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StartFailed {
-    /// The log store, in the hand-over, with a write or write-zeroes in
-    /// its log to apply into the home image: the log store's own
-    /// failure, which its failure path has marked already.
-    Log,
-    /// The home image: the in-place store's own sync of it, or the
-    /// hand-over when the log held nothing to apply.
-    Image,
 }
 
 impl FailedStart {
-    /// A start that failed in the log store's hand-over, with its
-    /// marker already tried; `failed` says which file it is reported
-    /// as ([`StartFailed`]).
-    pub(crate) fn written(failed: StartFailed) -> Self {
-        Self {
-            marker: Marker::Done,
-            lock: None,
-            failed,
-        }
-    }
-
-    /// What failed.
-    pub fn failed(&self) -> StartFailed {
-        self.failed
-    }
-
     /// Write the failure marker, wait for it, and release the lock.
     pub fn finish(mut self) {
         self.write();
@@ -640,12 +626,33 @@ impl<D: Dir> std::fmt::Debug for InPlace<D> {
 /// The store waits for its failure marker when it is dropped, before
 /// the lock is released, so that a start after it finds the marker (or
 /// the failure to write it); a marker never asked for ends its thread.
+impl<D: Dir> InPlace<D> {
+    /// What a kill of the process does to the store, for the tests: the
+    /// requests no thread has begun, and those that wait in the store,
+    /// are dropped undone; the jobs under way on the threads end as the
+    /// kernel ends them, and their results are not taken; nothing
+    /// completes, nothing fails, and no marker is written. A drop,
+    /// instead, does everything submitted before the store goes.
+    #[cfg(test)]
+    pub(crate) fn abandon(mut self) {
+        if let Some(pool) = self.pool.take() {
+            drop(pool.take_back());
+        }
+        self.busy.clear();
+        self.deferred.clear();
+        self.held_early.clear();
+    }
+}
+
 impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
         // What was submitted is done before the store goes, as it is on
         // the caller's thread: what waits is executed once what it waits
         // for has ended. Then the threads end, before the lock is gone.
         while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+            // Under the defect, a write that waited behind another is
+            // held back when it is begun here: hand it over each time.
+            self.release_early(true);
             self.collect(Duration::from_millis(10));
         }
         self.pool = None;
@@ -653,38 +660,42 @@ impl<D: Dir> Drop for InPlace<D> {
     }
 }
 
-/// The parts of a log store an in-place store is made of.
+/// The parts an in-place store is made of ([`Opened::start`]).
 pub(crate) struct Parts<D: Dir> {
-    pub(crate) log: Log<D>,
+    pub(crate) dir: D,
     pub(crate) home: D::File,
     pub(crate) lock: Option<D::Lock>,
     pub(crate) geometry: Geometry,
     pub(crate) identity: [u8; 16],
     pub(crate) zeroes: Zeroes,
-    /// What writes the failure marker ([`Log::marker_writer`]).
+    /// What writes the failure marker.
     pub(crate) marker: MarkerWriter,
+    /// Who is told of the failure first ([`OpenOptions::on_failure`]).
+    pub(crate) observer: Option<FailureObserver>,
     /// How reads and writes are done.
     pub(crate) io: IoMode,
 }
 
 impl<D: Dir> InPlace<D> {
-    /// From the parts of a log store whose log is empty and whose home
-    /// image holds everything: sync the home image, so that what this
-    /// start exposes is durable before the first request. Where the
-    /// sync fails, the volume has failed, and the marker is handed back
-    /// unwritten with the lock ([`FailedStart`]).
+    /// From the parts of an opened volume ([`Opened::start`]): sync the
+    /// home image, so that what this start exposes is durable before
+    /// the first request, drop the kernel's cache of it, and start the
+    /// I/O threads. Where the sync fails, the volume has failed: the
+    /// observer is told, and the marker is handed back unwritten with
+    /// the lock ([`FailedStart`]).
     pub(crate) fn assemble(
         parts: Parts<D>,
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
         mutants: Mutants,
-    ) -> Result<Self, IntoInPlaceError>
+    ) -> Result<Self, StartError>
     where
         D::Lock: Send + 'static,
         D::File: Send + 'static,
     {
         let io = parts.io;
         let mut store = Self {
-            log: parts.log,
+            dir: parts.dir,
+            observer: parts.observer,
             home: parts.home,
             lock: parts.lock,
             geometry: parts.geometry,
@@ -704,28 +715,29 @@ impl<D: Dir> InPlace<D> {
             busy: BTreeMap::new(),
             deferred: VecDeque::new(),
             queue: IoQueue::default(),
+            acked_early: (BTreeSet::new(), 0),
+            held_early: Vec::new(),
             marker: Marker::new(parts.marker, mutants),
         };
-        // The checkpoint that entered this store synced the home image
-        // as well; this sync makes the start's promise rest on nothing
-        // but this store, and costs nothing when nothing is dirty.
+        // What the instance before this one wrote by direct I/O may be
+        // in the device's volatile cache only: this sync makes it
+        // durable before this start serves it (point 3 of the module
+        // documentation), and costs nothing when nothing is dirty.
         store.counts.syncs += 1;
-        if store.home.sync().is_err() {
+        if !store.mutants.has(Mutants::START_UNSYNCED) && store.home.sync().is_err() {
             store.failed = true;
-            store.log.fail_without_marker();
+            if let Some(observer) = store.observer.take() {
+                observer.call();
+            }
             let marker = std::mem::replace(&mut store.marker, Marker::Done);
             let lock = store
                 .lock
                 .take()
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
-            return Err(IntoInPlaceError::Failed(FailedStart {
-                marker,
-                lock,
-                failed: StartFailed::Image,
-            }));
+            return Err(StartError::Failed(FailedStart { marker, lock }));
         }
-        store.empty_cache().map_err(IntoInPlaceError::CacheKept)?;
-        store.set_up_io().map_err(IntoInPlaceError::Io)?;
+        store.empty_cache().map_err(StartError::CacheKept)?;
+        store.set_up_io().map_err(StartError::Io)?;
         Ok(store)
     }
 
@@ -757,10 +769,10 @@ impl<D: Dir> InPlace<D> {
         }
         if self.io.threads > 0 {
             let files = (0..self.io.threads)
-                .map(|_| self.log.dir().open(crate::store::HOME_NAME))
+                .map(|_| self.dir.open(crate::store::HOME_NAME))
                 .collect::<io::Result<Vec<_>>>()
                 .map_err(|e| format!("opening the home image for the threads: {e}"))?;
-            let pool = Pool::start(files, self.io.direct, self.wake.clone())
+            let pool = Pool::start(files, self.io.direct, self.wake.clone(), self.mutants)
                 .map_err(|e| format!("starting a thread: {e}"))?;
             self.pool = Some(pool);
         }
@@ -786,10 +798,9 @@ impl<D: Dir> InPlace<D> {
     ///
     /// Under direct I/O the store's own reads and writes leave no page
     /// in the cache: what the drop still guards is what a writer through
-    /// the cache left before this start, the log store's checkpoint at
-    /// the entry into this store, or a file system that serves direct
-    /// requests through its cache (see the module documentation, point
-    /// 3). It stays after M1.3t removes the log store.
+    /// the cache left before this start: a file system that serves
+    /// direct requests through its cache (see the module documentation,
+    /// point 3).
     fn empty_cache(&mut self) -> Result<(), String> {
         let look = !self.mutants.has(Mutants::CACHE_SIGHT_UNCHECKED);
         let look_first = self.mutants.has(Mutants::LOOK_BEFORE_DROP);
@@ -847,11 +858,23 @@ impl<D: Dir> InPlace<D> {
     /// run, 731 of 1500 starts refused on such an image
     /// (`every_start_serves_where_the_image_begins_with_a_hole` in
     /// `tests/inplace_real.rs`).
+    ///
+    /// After the drop it still left the read-ahead under I/O for the
+    /// next start: a start that came right after one (as that test's
+    /// do, or a daemon's quick restart) found the pages under I/O and
+    /// refused, start 4 of that test's 200 in one CI run. So the look
+    /// reads its block alone ([`File::read_alone_at`], with read-ahead
+    /// off for the file on Linux), and leaves nothing behind but that
+    /// block's page, which the next drop takes
+    /// (`a_start_right_after_a_start_serves`).
     fn count_sees_the_file(&mut self) -> Result<(), String> {
         let mut block = vec![0u8; skyzfs_blk::BLOCK_USIZE];
-        self.home
-            .read_at(0, &mut block)
-            .map_err(|e| format!("reading a block of it failed: {e}"))?;
+        let read = if self.mutants.has(Mutants::LOOK_READS_AHEAD) {
+            self.home.read_at(0, &mut block)
+        } else {
+            self.home.read_alone_at(0, &mut block)
+        };
+        read.map_err(|e| format!("reading a block of it failed: {e}"))?;
         if self.cached_pages()? == 0 {
             return Err(
                 "the file system's cache cannot be observed through this file: a block \
@@ -877,8 +900,7 @@ impl<D: Dir> InPlace<D> {
         }
     }
 
-    /// The store's identity, as the log store's
-    /// ([`Store::identity`](crate::store::Store::identity)).
+    /// The volume's identity ([`crate::volume::Volume::identity`]).
     pub fn identity(&self) -> [u8; 16] {
         self.identity
     }
@@ -894,9 +916,8 @@ impl<D: Dir> InPlace<D> {
     }
 
     /// How write-zeroes reach the home image: written as zeros by direct
-    /// I/O ([`Zeroes::WrittenDirect`]) once one has been applied. Until
-    /// then, what the start's checkpoint of the log did, if it applied
-    /// one, and else [`Zeroes::Untried`]. Through the cache (test builds
+    /// I/O ([`Zeroes::WrittenDirect`]) once one has been applied, and
+    /// [`Zeroes::Untried`] until then. Through the cache (test builds
     /// only): deallocated, or written as zeros where the file system
     /// cannot deallocate.
     pub fn zeroes(&self) -> Zeroes {
@@ -940,16 +961,21 @@ impl<D: Dir> InPlace<D> {
     /// The marker needs the disk that has just failed, and a sync on a
     /// sick disk can take minutes or never return; the caller is the
     /// queue's thread, which must go on answering what it holds with
-    /// the failure. (The log store writes its marker on its worker for
-    /// the same reason.) Where no thread could be started, it is
-    /// written here.
+    /// the failure. Where no thread could be started, it is written
+    /// here.
     fn fail(&mut self) {
         self.failed = true;
-        if self.log.is_failed() {
-            return;
+        // Once: the observer is taken when it is told, and a marker
+        // begun or written is not begun again.
+        if self.mutants.has(Mutants::OBSERVE_AFTER_MARKER) {
+            self.marker.begin();
         }
-        self.log.fail_without_marker();
-        self.marker.begin();
+        if let Some(observer) = self.observer.take() {
+            observer.call();
+        }
+        if !self.mutants.has(Mutants::FAIL_UNMARKED) {
+            self.marker.begin();
+        }
     }
 
     fn complete(&mut self, id: RequestId, result: Result<(), BlkError>, buf: Option<Buf>) {
@@ -987,7 +1013,14 @@ impl<D: Dir> InPlace<D> {
                 } else {
                     self.home.read_at(offset, &mut buf)
                 };
-                let result = read.map_err(|e| BlkError::Io(e.kind()));
+                let result = match read {
+                    Err(_) if self.mutants.has(Mutants::READ_ERROR_FAILS) => {
+                        self.fail();
+                        self.settle_failed();
+                        Err(BlkError::Failed)
+                    }
+                    read => read.map_err(|e| BlkError::Io(e.kind())),
+                };
                 self.complete(id, result, Some(buf));
             }
             Op::Flush => self.flush(id),
@@ -1033,10 +1066,51 @@ impl<D: Dir> InPlace<D> {
     /// Hand `job` to the threads; `range` is its bytes and whether it
     /// writes.
     fn on_thread(&mut self, id: RequestId, range: (u64, u64, bool), job: Job) {
-        self.busy.insert(id, range);
+        let mut held = false;
+        let (key, job) = match job {
+            Job::Write { offset, data, .. } if self.mutants.has(Mutants::ACK_BEFORE_WRITE) => {
+                let (early, count) = &mut self.acked_early;
+                *count += 1;
+                let key = RequestId(u64::MAX - *count);
+                early.insert(key);
+                self.complete(id, Ok(()), Some(data.clone()));
+                held = true;
+                (
+                    key,
+                    Job::Write {
+                        id: key,
+                        offset,
+                        data,
+                    },
+                )
+            }
+            job => (id, job),
+        };
+        self.busy.insert(key, range);
         self.queue.in_flight_max = self.queue.in_flight_max.max(self.busy.len() as u64);
-        if let Some(pool) = &self.pool {
+        if held {
+            self.held_early.push((id, job));
+        } else if let Some(pool) = &self.pool {
             pool.push(job);
+        }
+    }
+
+    /// Under [`Mutants::ACK_BEFORE_WRITE`], hand to the threads the
+    /// early-acknowledged writes whose acknowledgement was handed out
+    /// (or, with `all`, every one).
+    fn release_early(&mut self, all: bool) {
+        if self.held_early.is_empty() {
+            return;
+        }
+        let ready: BTreeSet<RequestId> = self.ready.iter().map(|c| c.id).collect();
+        for (client, job) in std::mem::take(&mut self.held_early) {
+            if all || !ready.contains(&client) {
+                if let Some(pool) = &self.pool {
+                    pool.push(job);
+                }
+            } else {
+                self.held_early.push((client, job));
+            }
         }
     }
 
@@ -1241,6 +1315,13 @@ impl<D: Dir> InPlace<D> {
                 self.busy.remove(&id);
                 self.complete(id, Err(BlkError::Failed), Some(buf));
             }
+            // Under the defect: the writes held back were answered
+            // already, and no thread is to begin them now.
+            for (_, job) in std::mem::take(&mut self.held_early) {
+                let (key, _, _) = job.into_parts();
+                self.busy.remove(&key);
+                self.acked_early.0.remove(&key);
+            }
         }
         for Done {
             id,
@@ -1250,6 +1331,11 @@ impl<D: Dir> InPlace<D> {
         } in done
         {
             self.busy.remove(&id);
+            if self.acked_early.0.remove(&id) {
+                // Acknowledged already, under the defect.
+                let _ = self.mutated(result);
+                continue;
+            }
             let result = if write {
                 let result = self.mutated(result);
                 if self.failed {
@@ -1258,6 +1344,10 @@ impl<D: Dir> InPlace<D> {
                     result
                 }
             } else if self.failed {
+                Err(BlkError::Failed)
+            } else if result.is_err() && self.mutants.has(Mutants::READ_ERROR_FAILS) {
+                self.fail();
+                self.settle_failed();
                 Err(BlkError::Failed)
             } else {
                 result.map_err(|e| BlkError::Io(e.kind()))
@@ -1313,6 +1403,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// a mutation is file I/O, a flush begins a sync and returns. The
     /// completion is handed out by the next [`BlockTarget::poll`].
     fn submit(&mut self, request: Request) -> Result<(), SubmitError> {
+        self.release_early(false);
         let kind = if self.ids.contains(&request.id) {
             Some(SubmitErrorKind::DuplicateId)
         } else if self.ids.len() >= self.geometry.queue_depth() as usize {
@@ -1331,6 +1422,7 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// Hands out what is complete. Looks whether the sync under way has
     /// ended, without waiting for it.
     fn poll(&mut self, out: &mut Vec<Completion>) -> usize {
+        self.release_early(false);
         self.collect(Duration::ZERO);
         self.settle(false);
         self.hand_out(out)
@@ -1344,12 +1436,26 @@ impl<D: Dir> BlockTarget for InPlace<D> {
     /// The daemon's pump calls only `poll`, and is woken by the file's
     /// helper when a sync ends.
     fn wait(&mut self, out: &mut Vec<Completion>, timeout: Duration) -> usize {
+        self.release_early(false);
         self.collect(Duration::ZERO);
         self.settle(false);
         if self.ready.is_empty() && !timeout.is_zero() {
             if self.busy.is_empty() {
                 self.settle(true);
             } else {
+                self.collect(timeout);
+            }
+            // Every end of a job completes something, and a wait ends
+            // with it, but under the defect, where a write's end
+            // completes nothing: wait on, as for a request behind it.
+            while self.mutants.has(Mutants::ACK_BEFORE_WRITE) && self.ready.is_empty() {
+                // Nothing is ready, so every write held back has had
+                // its acknowledgement taken: the threads may have it.
+                self.release_early(false);
+                if self.busy.is_empty() {
+                    self.settle(true);
+                    break;
+                }
                 self.collect(timeout);
             }
         }
@@ -1391,7 +1497,39 @@ pub fn volatile_cache_explains(
 }
 
 #[cfg(test)]
+impl<D: Dir> InPlace<D> {
+    /// For the conformance harness's failure (`harness::fail_log`): let
+    /// every job on the I/O threads end, take its result, and start
+    /// what waited for it, a flush's sync among them. Nothing is handed
+    /// out and no sync is looked at, so a sync begun here is under way
+    /// when this returns, and the completions wait for the next poll:
+    /// as if the threads had been quick and the caller had not looked
+    /// since. A write held back from the threads under the plant
+    /// ACK_BEFORE_WRITE is handed to them on each turn, as the drop
+    /// does: nothing here hands its acknowledgement out.
+    ///
+    /// # Panics
+    ///
+    /// When a job is still on the threads after a minute: a thread that
+    /// never ends its job is a defect, said here rather than met later
+    /// somewhere less telling.
+    pub(crate) fn finish_threads(&mut self) {
+        let began = std::time::Instant::now();
+        while !self.busy.is_empty() {
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "{} jobs did not end on the I/O threads within a minute",
+                self.busy.len()
+            );
+            self.release_early(true);
+            self.collect(Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod harness;
 mod pool;
+mod start;
 #[cfg(test)]
 mod tests;
