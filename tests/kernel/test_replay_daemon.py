@@ -229,8 +229,8 @@ class Pure(unittest.TestCase):
             self.assertIn(why, line.split('**not shown by this run**')[1])
         self.assertIn('not shown by this run (this budget', rd.criterion_line(res(10, 10, True, 0, every=False)))
         # With serve options, the line names the daemon it was shown for.
-        r = dict(res(10, 10, True, 0), serve_args='--store in-place')
-        self.assertIn('shown by this run, for `skyzfsd serve --store in-place`', rd.criterion_line(r))
+        r = dict(res(10, 10, True, 0), serve_args='--io-threads 1')
+        self.assertIn('shown by this run, for `skyzfsd serve --io-threads 1`', rd.criterion_line(r))
 
     def test_the_provider_stages_are_verdicts(self):
         self.assertIn('deep: mount (writable)', rd.JUDGING)

@@ -71,11 +71,13 @@ while [ $# -gt 0 ]; do
         --queues) { [ $# -ge 2 ] && [ "$2" = 1 ]; } || usage; shift 2 ;;
         --depth) { [ $# -ge 2 ] && [ "$2" = 64 ]; } || usage; shift 2 ;;
         --unsafe-allow-unlocked-memory|--unsafe-allow-any-filesystem) shift ;;
-        # The daemon's store, named on every serve of the rig: the
-        # stand-in has one store whatever the name, a file it writes in
-        # place, so it takes either and changes nothing.
-        --store) { [ $# -ge 2 ] && { [ "$2" = log ] || [ "$2" = in-place ]; }; } || usage; shift 2 ;;
-        --store=log|--store=in-place) shift ;;
+        # The rig names no store since M1.3t. A daemon from before it,
+        # built as a negative control, is given --store in-place in
+        # RIG_SERVE_ARGS, which reach the stand-in's controls too: it
+        # takes that name and changes nothing. The log store is gone,
+        # so `log` is refused, as the daemon refuses it.
+        --store) { [ $# -ge 2 ] && [ "$2" = in-place ]; } || usage; shift 2 ;;
+        --store=in-place) shift ;;
         *) usage ;;
     esac
 done
