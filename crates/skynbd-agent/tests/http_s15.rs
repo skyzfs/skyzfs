@@ -103,6 +103,7 @@ async fn start_server_with(
                 cfg: EngineConfig::default(),
                 lease_holder: None,
                 prepared: Arc::new(Mutex::new(Default::default())),
+                term: Default::default(),
             },
         )])),
         registry: Arc::new(ExportRegistry::new()),

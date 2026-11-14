@@ -17,7 +17,9 @@ use std::sync::Arc;
 
 use skynbd_engine::{Engine, EngineConfig};
 use skynbd_nbd::proto::*;
-use skynbd_nbd::{origin, spawn_registry_sync, DynEngine, ExportRegistry, Server, VolumeBinding};
+use skynbd_nbd::{
+    origin, spawn_registry_sync, DynEngine, ExportRegistry, ServeTerm, Server, VolumeBinding,
+};
 use skynbd_refs::{MemoryRefStore, RefOp, RefStore, TxnOutcome};
 use skynbd_store::{MemoryStore, ObjectStore};
 use skynbd_types::{CommitHash, VolumeId};
@@ -75,6 +77,7 @@ impl Fixture {
             store: Arc::clone(&self.store),
             refs: Arc::clone(&self.refs),
             cfg: EngineConfig::default(),
+            term: ServeTerm::default(),
         }
     }
 
@@ -196,21 +199,18 @@ async fn repoint_swaps_under_a_live_connection() {
         "write on the origin export must be refused"
     );
 
-    // The advance's step 4, as the API performs it: row + live swap.
+    // The advance's step 4, as the API performs it: the row, then the
+    // live swap through it.
     f.set_pointer("snap/g1").await;
-    origin::repoint(&registry, &f.binding(), f.g1)
-        .await
-        .unwrap();
+    origin::reconcile(&registry, &f.binding()).await.unwrap();
 
     assert_eq!(
         read(&mut c, 0, CHUNK as u32).await,
         pattern(0xB1),
         "attached connection must serve the new generation after repoint"
     );
-    // Idempotent replay of the same repoint is a no-op.
-    origin::repoint(&registry, &f.binding(), f.g1)
-        .await
-        .unwrap();
+    // Idempotent replay of the same convergence is a no-op.
+    origin::reconcile(&registry, &f.binding()).await.unwrap();
     assert_eq!(f.served_commit(&registry).await, Some(f.g1));
 }
 
@@ -347,11 +347,11 @@ async fn stale_view_matrix() {
         .await
         .unwrap();
     assert_eq!(out, TxnOutcome::Committed);
-    origin::repoint(&restart, &f.binding(), f.g1).await.unwrap();
+    origin::reconcile(&restart, &f.binding()).await.unwrap();
 
     // ---- Window 2, same surfaces. The attached connection follows the
     // swap; a fresh reconnect resolves the new view; the replica that
-    // never saw the repoint call converges on its next reconcile
+    // never saw the API's convergence converges on its next reconcile
     // (startup sync / watch-lag resync) — through the row, never a warm
     // view; a brand-new restart lands directly on g1.
     assert_eq!(

@@ -2,14 +2,15 @@
 //!
 //! `<vol>/origin` is a read-only export serving the generation named by
 //! the volume's `origin` refs meta row (Invariant D). Advancing it never
-//! touches the registry entry or the node's dm table: [`repoint`] swaps
+//! touches the registry entry or the node's dm table: a swap replaces
 //! the engine *inside* the export's existing `Arc<RwLock<..>>`, and since
 //! every attached connection cloned the `Export` at negotiation — sharing
 //! that `Arc` — in-flight requests complete against the old generation
 //! and the very next request resolves the new one (Invariant A).
 //!
 //! Meta writes emit no watch events, so live repoints are driven by the
-//! API handler that wrote the row; [`reconcile`] covers everything else —
+//! API handler that wrote the row, which converges with [`reconcile`]
+//! after its commit; [`reconcile`] covers everything else too —
 //! startup full sync, watch-lag resyncs, and generation refs appearing
 //! or vanishing — which is what makes skynbdd restarts and
 //! `nbd-client -persist` reconnects resolve through the pointer row.
@@ -30,6 +31,20 @@
 //! The API converges after its commit with [`reconcile`] too, not by
 //! swapping to its own target, so two repoints whose swaps would land
 //! out of order both swap to the row as it stands.
+//!
+//! **Release (M1.3aj).** The export belongs to one serving of the
+//! volume, its [`ServeTerm`]. A release's teardown ends the term and
+//! takes the export down in [`retire`], under the swap lock, and
+//! [`reconcile`] reads the term under the same lock and converges
+//! nothing once it has ended. So a convergence that outlives its
+//! serving registers no export bound to the released serving, and
+//! leaves alone the export of a serving that came after it. Two such
+//! convergences: an API repoint that read the row before the release
+//! and commits after it, and a sync task's reconcile still running on
+//! another worker when its task was aborted (an abort takes effect at
+//! the task's next await only). The pointer row and its pin are not
+//! the serving's: they stay as the last commit left them, and the next
+//! serve converges on them.
 
 use std::sync::Arc;
 
@@ -38,7 +53,7 @@ use skynbd_refs::RefStore;
 use skynbd_types::{CommitHash, VolumeId};
 use tokio::sync::RwLock;
 
-use crate::{Export, ExportRegistry, VolumeBinding};
+use crate::{Export, ExportRegistry, ServeTerm, VolumeBinding};
 
 /// The pointer row key (Invariant D): value is a `snap/g<N>` ref name.
 pub const ORIGIN_META_KEY: &str = "origin";
@@ -106,21 +121,20 @@ pub async fn resolve(
     Ok(newest.map(|(_, r)| r))
 }
 
-/// Point `<vol>/origin` at `commit`, creating the export if absent,
-/// under the export's [`ExportRegistry::swap_lock`]. A caller that wrote
-/// the row converges with [`reconcile`] instead, which reads the row
-/// under the same lock: a swap to a commit read before the lock was
-/// taken can be older than the row by the time it lands.
-pub async fn repoint(
-    registry: &ExportRegistry,
-    b: &VolumeBinding,
-    commit: CommitHash,
-) -> Result<(), EngineError> {
-    let _order = registry.swap_lock(&origin_export_name(&b.vol_name)).await;
-    swap(registry, b, commit).await
+/// End `term` and take `<vol>/origin` down with it (M1.3aj, module
+/// doc), under the export's swap lock. A reconcile that holds the lock
+/// finishes its swap first, and the export it swapped is taken down
+/// here; one that takes the lock after this sees the ended term and
+/// converges nothing. A release's teardown calls this.
+pub async fn retire(registry: &ExportRegistry, vol_name: &str, term: &ServeTerm) {
+    let export_name = origin_export_name(vol_name);
+    let _order = registry.swap_lock(&export_name).await;
+    term.end();
+    registry.unregister(&export_name).await;
 }
 
-/// The swap itself, for a caller that holds the export's swap lock. The
+/// Point `<vol>/origin` at `commit`, creating the export if absent, for
+/// a caller that holds the export's swap lock ([`reconcile`]). The
 /// new engine opens *outside* the export's `RwLock` so reads keep
 /// flowing while the committed state loads; the swap itself is one
 /// assignment under the exclusive lock every attached connection
@@ -199,6 +213,12 @@ async fn reconcile_with<F: std::future::Future<Output = ()>>(
     let export_name = origin_export_name(&b.vol_name);
     // Held from the row's reading to the swap (M1.3ai, module doc).
     let _order = registry.swap_lock(&export_name).await;
+    // Read under the lock that `retire` ends it under (M1.3aj): a
+    // serving that has ended converges nothing, not even a removal,
+    // since the export may be a later serving's by now.
+    if b.term.ended() {
+        return Ok(());
+    }
     let has_row = b
         .refs
         .meta_get(b.vol_id, ORIGIN_META_KEY)
@@ -258,8 +278,21 @@ mod tests {
             store,
             refs,
             cfg: EngineConfig::default(),
+            term: ServeTerm::default(),
         };
         (binding, g1, g2)
+    }
+
+    /// A binding of the same volume for a serving after `b`'s.
+    fn next_serving(b: &VolumeBinding) -> VolumeBinding {
+        VolumeBinding {
+            vol_id: b.vol_id,
+            vol_name: b.vol_name.clone(),
+            store: Arc::clone(&b.store),
+            refs: Arc::clone(&b.refs),
+            cfg: b.cfg.clone(),
+            term: ServeTerm::default(),
+        }
     }
 
     async fn point_at(b: &VolumeBinding, ref_name: &str) {
@@ -296,6 +329,12 @@ mod tests {
     /// other is held: unordered, it does (all in memory); ordered, it
     /// cannot. Either way the verdict is the same: the export ends
     /// serving what the row names.
+    ///
+    /// Its seam sits after the lock is taken, so it cannot see where the
+    /// lock is taken: a lock taken after the row is read but before the
+    /// seam passes it. The API's test
+    /// `an_origin_repoint_converges_under_the_swap_lock_through_the_row`
+    /// (`skynbd-api/tests/api.rs`) holds that placement.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_reconcile_that_read_the_row_before_a_repoint_does_not_undo_it() {
         let (binding, g1, g2) = two_generations().await;
@@ -335,6 +374,142 @@ mod tests {
             served(&registry).await,
             Some(g2),
             "the export serves what the row names, not what a reconcile read before it moved"
+        );
+    }
+
+    /// A serving that has ended converges nothing (M1.3aj): `retire`
+    /// takes the export down, a reconcile through the ended binding
+    /// registers none, and once a later serving has registered its own,
+    /// the ended one leaves it alone, though the row has moved.
+    #[tokio::test]
+    async fn a_reconcile_whose_serving_ended_converges_nothing() {
+        let (binding, g1, g2) = two_generations().await;
+        let registry = ExportRegistry::new();
+        point_at(&binding, "snap/g1").await;
+        reconcile(&registry, &binding).await.expect("g1 served");
+        assert_eq!(served(&registry).await, Some(g1));
+
+        retire(&registry, "lin", &binding.term).await;
+        assert!(binding.term.ended());
+        assert_eq!(
+            served(&registry).await,
+            None,
+            "retire takes the export down"
+        );
+        reconcile(&registry, &binding)
+            .await
+            .expect("a reconcile of an ended serving");
+        assert_eq!(
+            served(&registry).await,
+            None,
+            "a serving that has ended registers no export"
+        );
+
+        let later = next_serving(&binding);
+        reconcile(&registry, &later)
+            .await
+            .expect("the later serving's");
+        point_at(&binding, "snap/g2").await;
+        reconcile(&registry, &binding)
+            .await
+            .expect("a reconcile of an ended serving");
+        assert_eq!(
+            served(&registry).await,
+            Some(g1),
+            "a serving that has ended leaves a later serving's export alone"
+        );
+        reconcile(&registry, &later)
+            .await
+            .expect("the later serving's");
+        assert_eq!(served(&registry).await, Some(g2));
+    }
+
+    /// `retire` waits for a reconcile that holds the swap lock, and then
+    /// takes down what it swapped (M1.3aj): the reconcile has read the
+    /// row while its serving lasted and is held before its swap, as a
+    /// sync task's reconcile running on another worker is when its task
+    /// is aborted. A retire that did not take the lock would end the
+    /// term and find nothing to take down, and the held swap would then
+    /// register the export for good.
+    ///
+    /// The retire gets 300 ms while the reconcile is held: without the
+    /// lock it finishes in them. The last state is the verdict either way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retire_waits_for_a_reconcile_that_holds_the_swap_lock() {
+        let (binding, _, _) = two_generations().await;
+        let registry = Arc::new(ExportRegistry::new());
+        point_at(&binding, "snap/g1").await;
+
+        let binding = Arc::new(binding);
+        let (resolved, was_resolved) = tokio::sync::oneshot::channel();
+        let (go, gone) = tokio::sync::oneshot::channel::<()>();
+        let held = tokio::spawn({
+            let (registry, binding) = (Arc::clone(&registry), Arc::clone(&binding));
+            async move {
+                reconcile_with(&registry, &binding, || async move {
+                    let _ = resolved.send(());
+                    let _ = gone.await;
+                })
+                .await
+            }
+        });
+        was_resolved.await.expect("the held reconcile read the row");
+
+        let mut retiring = tokio::spawn({
+            let (registry, term) = (Arc::clone(&registry), binding.term.clone());
+            async move { retire(&registry, "lin", &term).await }
+        });
+        let early =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut retiring).await;
+        let _ = go.send(());
+        held.await.expect("joined").expect("the held reconcile");
+        if early.is_err() {
+            retiring.await.expect("joined");
+        }
+        assert_eq!(
+            served(&registry).await,
+            None,
+            "the export is down once the release's retire is done"
+        );
+        assert!(
+            early.is_err(),
+            "retire finished while a reconcile held the swap lock"
+        );
+    }
+
+    /// A reconcile that waits for the swap lock reads the term once it
+    /// has it (M1.3aj): the test holds the lock as a retire does, ends
+    /// the term and takes the export down, then lets go. A reconcile
+    /// that read the term before it took the lock would still see the
+    /// serving live and register the export.
+    ///
+    /// The reconcile gets 200 ms to reach the lock before the term ends.
+    /// If it were slower, a reconcile that reads the term too early could
+    /// pass; a right one cannot fail.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_reconcile_waiting_for_the_swap_lock_reads_the_term_once_it_has_it() {
+        let (binding, _, _) = two_generations().await;
+        let registry = Arc::new(ExportRegistry::new());
+        point_at(&binding, "snap/g1").await;
+        let binding = Arc::new(binding);
+
+        let retiring = registry.swap_lock("lin/origin").await;
+        let waiting = tokio::spawn({
+            let (registry, binding) = (Arc::clone(&registry), Arc::clone(&binding));
+            async move { reconcile(&registry, &binding).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        binding.term.end();
+        registry.unregister("lin/origin").await;
+        drop(retiring);
+        waiting
+            .await
+            .expect("joined")
+            .expect("a reconcile of an ended serving");
+        assert_eq!(
+            served(&registry).await,
+            None,
+            "a reconcile that waited for the lock registered the export of a serving that ended meanwhile"
         );
     }
 }

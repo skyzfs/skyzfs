@@ -35,6 +35,8 @@ async fn fixture() -> (axum::Router, Arc<ApiState>, Arc<RwLock<DynEngine>>) {
     let engine = Arc::new(RwLock::new(engine));
 
     let registry = Arc::new(ExportRegistry::new());
+    // One serving: the sync task's binding and the handle share it.
+    let term = skynbd_nbd::ServeTerm::default();
     registry
         .register(
             "vol1/head",
@@ -53,6 +55,7 @@ async fn fixture() -> (axum::Router, Arc<ApiState>, Arc<RwLock<DynEngine>>) {
             store: Arc::clone(&store),
             refs: Arc::clone(&refs),
             cfg: EngineConfig::default(),
+            term: term.clone(),
         },
     );
 
@@ -72,6 +75,7 @@ async fn fixture() -> (axum::Router, Arc<ApiState>, Arc<RwLock<DynEngine>>) {
                 cfg: EngineConfig::default(),
                 lease_holder: None,
                 prepared: Arc::new(Mutex::new(Default::default())),
+                term,
             },
         )])),
         registry,
@@ -1309,5 +1313,54 @@ async fn an_origin_repoint_converges_under_the_swap_lock_through_the_row() {
         served().await,
         commit("snap/g2").await,
         "the export serves what the row names"
+    );
+}
+
+/// A repoint whose serving ended before it converged answers 409 and
+/// registers nothing (M1.3aj). This is the narrow window in which the
+/// POST found the volume's handle before a release removed it, and the
+/// release's `retire` took the export's swap lock before the POST's
+/// convergence did. The test makes that state directly: it ends the
+/// serving's term with `retire` and leaves the handle in place. The
+/// POST commits (the row and its pin move), converges nothing, and says
+/// that no export serves the row here, not that it swapped one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repoint_whose_serving_ended_before_it_converged_answers_409() {
+    let (router, state, engine) = fixture().await;
+    engine.write().await.write(0, &[0xA0u8; 4096]).unwrap();
+    let (st, _) = call(
+        &router,
+        "POST",
+        "/v1/volumes/vol1/snapshots",
+        Some(serde_json::json!({"name": "g0"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let (refs, vol_id, term) = {
+        let vols = state.volumes.read().await;
+        let h = &vols["vol1"];
+        (Arc::clone(&h.refs), h.vol_id, h.term.clone())
+    };
+    skynbd_nbd::origin::retire(&state.registry, "vol1", &term).await;
+
+    let (st, body) = call(
+        &router,
+        "POST",
+        "/v1/volumes/vol1/origin",
+        Some(serde_json::json!({})),
+    )
+    .await;
+    assert!(
+        state.registry.get("vol1/origin").await.is_none(),
+        "a repoint registered the export of a serving that had ended"
+    );
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        refs.meta_get(vol_id, skynbd_nbd::origin::ORIGIN_META_KEY)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&b"snap/g0"[..]),
+        "the POST's commit moved the row"
     );
 }

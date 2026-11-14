@@ -43,6 +43,28 @@ struct FlakyRefs {
     inner: Arc<dyn RefStore>,
     fail_next_list: AtomicBool,
     fired: AtomicBool,
+    /// When set, the next transaction that moves the origin row (a
+    /// `set_origin` that has read the row and is about to commit) says
+    /// so on `held` and waits for a permit on `go` (M1.3aj).
+    hold_origin_cas: AtomicBool,
+    held: tokio::sync::Notify,
+    go: tokio::sync::Semaphore,
+}
+
+impl FlakyRefs {
+    async fn hold_if_armed(&self, ops: &[RefOp]) {
+        let moves_the_row = ops.iter().any(
+            |op| matches!(op, RefOp::MetaCas { key, .. } if key == skynbd_nbd::origin::ORIGIN_META_KEY),
+        );
+        if moves_the_row && self.hold_origin_cas.swap(false, Ordering::SeqCst) {
+            self.held.notify_one();
+            self.go
+                .acquire()
+                .await
+                .expect("the gate is never closed")
+                .forget();
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -72,6 +94,7 @@ impl RefStore for FlakyRefs {
         self.inner.watch()
     }
     async fn transact(&self, vol: VolumeId, ops: Vec<RefOp>) -> skynbd_refs::Result<TxnOutcome> {
+        self.hold_if_armed(&ops).await;
         self.inner.transact(vol, ops).await
     }
     async fn transact_as(
@@ -81,6 +104,7 @@ impl RefStore for FlakyRefs {
         holder: &str,
         epoch: u64,
     ) -> skynbd_refs::Result<TxnOutcome> {
+        self.hold_if_armed(&ops).await;
         self.inner.transact_as(vol, ops, holder, epoch).await
     }
     async fn pins(&self, vol: VolumeId, name: &str) -> skynbd_refs::Result<Vec<String>> {
@@ -127,6 +151,14 @@ struct Rig {
     router: axum::Router,
     registry: Arc<ExportRegistry>,
     flaky: Arc<FlakyRefs>,
+    provisioner: Arc<Provisioner>,
+}
+
+impl Rig {
+    /// The refs as they are, under the test's hooks.
+    fn refs(&self) -> &Arc<dyn RefStore> {
+        &self.flaky.inner
+    }
 }
 
 fn rig() -> Rig {
@@ -135,6 +167,9 @@ fn rig() -> Rig {
         inner: Arc::new(ObjectRefStore::new(Arc::clone(&store))),
         fail_next_list: AtomicBool::new(false),
         fired: AtomicBool::new(false),
+        hold_origin_cas: AtomicBool::new(false),
+        held: tokio::sync::Notify::new(),
+        go: tokio::sync::Semaphore::new(0),
     });
     let refs: Arc<dyn RefStore> = Arc::clone(&flaky) as Arc<dyn RefStore>;
     let registry = Arc::new(ExportRegistry::new());
@@ -149,13 +184,14 @@ fn rig() -> Rig {
         registry: Arc::clone(&registry),
         auth: ApiAuth::Disabled,
         enroll: None,
-        provisioner: Some(provisioner),
+        provisioner: Some(Arc::clone(&provisioner)),
         snap_requests: Default::default(),
     });
     Rig {
         router: skynbd_api::router(state),
         registry,
         flaky,
+        provisioner,
     }
 }
 
@@ -181,6 +217,42 @@ async fn call(
             .unwrap(),
     };
     router.clone().oneshot(req).await.unwrap().status()
+}
+
+/// [`call`], with the answer's body.
+async fn call_body(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let req = match body {
+        Some(v) => Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(v.to_string()))
+            .unwrap(),
+        None => Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap(),
+    };
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+        })
+    };
+    (status, json)
 }
 
 /// Create a lineage-shaped volume, publish a generation, initialize the
@@ -322,5 +394,253 @@ async fn serve_without_a_pointer_row_publishes_no_origin() {
         r.registry.get("plain/origin").await.is_none(),
         "no pointer row, no origin export — the pointer moves only by \
          explicit repoint"
+    );
+}
+
+/// Publish a second generation, `g1`, on top of [`establish`]'s g0,
+/// with a block written between them so that the two differ. The
+/// pointer stays on g0.
+async fn publish_g1(r: &Rig) {
+    let head = r.provisioner.volumes.read().await["lin"].engine.clone();
+    head.write()
+        .await
+        .write(0, &[0xB1; 4096])
+        .expect("a write to the head");
+    assert_eq!(
+        call(
+            &r.router,
+            "POST",
+            "/v1/volumes/lin/snapshots",
+            Some(serde_json::json!({"name": "g1"})),
+        )
+        .await,
+        StatusCode::CREATED
+    );
+}
+
+/// Start `POST /origin {"ref": "snap/g1"}` and return once it has read
+/// the row and is held just before its commit.
+async fn a_repoint_held_before_its_commit(
+    r: &Rig,
+) -> tokio::task::JoinHandle<(StatusCode, serde_json::Value)> {
+    r.flaky.hold_origin_cas.store(true, Ordering::SeqCst);
+    let router = r.router.clone();
+    let post = tokio::spawn(async move {
+        call_body(
+            &router,
+            "POST",
+            "/v1/volumes/lin/origin",
+            Some(serde_json::json!({"ref": "snap/g1"})),
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), r.flaky.held.notified())
+        .await
+        .expect("the POST reached its commit");
+    post
+}
+
+async fn served(r: &Rig) -> serde_json::Value {
+    let (status, origin) = call_body(&r.router, "GET", "/v1/volumes/lin/origin", None).await;
+    assert_eq!(status, StatusCode::OK, "{origin}");
+    origin["served"].clone()
+}
+
+/// A release that completes while a repoint is past its row read leaves
+/// no `<vol>/origin` behind (M1.3aj). The POST read the volume's handle
+/// and the row while the volume was served; the release then tears the
+/// serving down; only then does the POST commit and converge. Before
+/// M1.3aj its convergence registered the export again, bound to the
+/// released serving, and nothing removed it until the volume was served
+/// again on this server. The convergence now learns that the serving
+/// ended, and the POST answers 409.
+///
+/// The row and its `origin` pin move together in the POST's commit and
+/// stay (a release is not a delete, and the pointer pins what it names,
+/// Invariant D): no `origin` pin is left on a generation the row does
+/// not name, and the next serve converges the export on the row.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_release_while_a_repoint_is_past_its_row_read_leaves_no_origin_export() {
+    let r = rig();
+    establish(&r).await;
+    publish_g1(&r).await;
+    let post = a_repoint_held_before_its_commit(&r).await;
+
+    assert_eq!(
+        call(&r.router, "POST", "/v1/volumes/lin/release", None).await,
+        StatusCode::NO_CONTENT,
+        "the release completes while the POST is held"
+    );
+    assert!(
+        r.registry.get("lin/origin").await.is_none(),
+        "release tears the export down"
+    );
+    r.flaky.go.add_permits(1);
+    let (status, answer) = tokio::time::timeout(std::time::Duration::from_secs(5), post)
+        .await
+        .expect("the POST answers")
+        .expect("joined");
+    assert!(
+        r.registry.get("lin/origin").await.is_none(),
+        "a repoint that outlived the volume's serving registered lin/origin again"
+    );
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+
+    let vid = skynbd_api::provision::volume_id("lin");
+    let origin = skynbd_nbd::origin::ORIGIN_PIN_HOLDER.to_string();
+    assert_eq!(
+        r.refs()
+            .meta_get(vid, skynbd_nbd::origin::ORIGIN_META_KEY)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(&b"snap/g1"[..]),
+        "the POST's commit moved the row"
+    );
+    assert!(
+        r.refs()
+            .pins(vid, "snap/g1")
+            .await
+            .unwrap()
+            .contains(&origin),
+        "the row's generation holds the origin pin"
+    );
+    assert!(
+        !r.refs()
+            .pins(vid, "snap/g0")
+            .await
+            .unwrap()
+            .contains(&origin),
+        "no origin pin is left on a generation the row does not name"
+    );
+
+    assert_eq!(
+        call(&r.router, "POST", "/v1/volumes/lin/serve", None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        served(&r).await,
+        "snap/g1",
+        "the next serve converges on the row"
+    );
+}
+
+/// A repoint whose serving ended and was followed by another before it
+/// converged converges the serving that is current (M1.3aj). The served
+/// again volume's own serve read the row before the POST committed, so
+/// the export would stay on g0, whose pin the commit moved, unless the
+/// POST converges it. It does so through the current serving, not the
+/// ended one whose handle it began with, and answers 200.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repoint_that_outlives_its_serving_converges_the_one_after_it() {
+    let r = rig();
+    establish(&r).await;
+    publish_g1(&r).await;
+    let post = a_repoint_held_before_its_commit(&r).await;
+
+    assert_eq!(
+        call(&r.router, "POST", "/v1/volumes/lin/release", None).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        call(&r.router, "POST", "/v1/volumes/lin/serve", None).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        served(&r).await,
+        "snap/g0",
+        "the new serving read the row before the commit"
+    );
+    r.flaky.go.add_permits(1);
+    let (status, answer) = tokio::time::timeout(std::time::Duration::from_secs(5), post)
+        .await
+        .expect("the POST answers")
+        .expect("joined");
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["served"], "snap/g1", "{answer}");
+    assert_eq!(
+        served(&r).await,
+        "snap/g1",
+        "the current serving's export follows the row"
+    );
+}
+
+/// A release that comes while a repoint of its serving waits for the
+/// swap lock takes down what that repoint swaps (M1.3aj). The test holds
+/// the origin export's swap lock; the POST commits, finds the volume
+/// still served, and waits for the lock to converge. The release then
+/// has to wait for the lock too: it ends the serving's term under it.
+/// Whichever of the two gets the lock first, no export is left once
+/// both are done. A teardown that only unregistered would finish while
+/// the lock is held, and the POST's swap would then register the export
+/// of a serving that has ended.
+///
+/// The POST gets 300 ms after its commit to reach the lock, and the
+/// release 300 ms to finish while the lock is held. Were the POST
+/// slower, it would find no serving and converge nothing, and a teardown
+/// that does not end the term could pass; a right one cannot fail.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_release_takes_down_what_a_repoint_of_its_serving_swaps_after_it() {
+    let r = rig();
+    establish(&r).await;
+    publish_g1(&r).await;
+    let vid = skynbd_api::provision::volume_id("lin");
+
+    let lock = r.registry.swap_lock("lin/origin").await;
+    let router = r.router.clone();
+    let post = tokio::spawn(async move {
+        call_body(
+            &router,
+            "POST",
+            "/v1/volumes/lin/origin",
+            Some(serde_json::json!({"ref": "snap/g1"})),
+        )
+        .await
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while r
+        .refs()
+        .meta_get(vid, skynbd_nbd::origin::ORIGIN_META_KEY)
+        .await
+        .unwrap()
+        .as_deref()
+        != Some(&b"snap/g1"[..])
+    {
+        assert!(std::time::Instant::now() < deadline, "the POST commits");
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let router = r.router.clone();
+    let mut release =
+        tokio::spawn(async move { call(&router, "POST", "/v1/volumes/lin/release", None).await });
+    let early = tokio::time::timeout(std::time::Duration::from_millis(300), &mut release).await;
+    let released_early = early.is_ok();
+    drop(lock);
+    let (status, answer) = tokio::time::timeout(std::time::Duration::from_secs(5), post)
+        .await
+        .expect("the POST answers")
+        .expect("joined");
+    let released = match early {
+        Ok(done) => done.expect("joined"),
+        Err(_) => tokio::time::timeout(std::time::Duration::from_secs(5), release)
+            .await
+            .expect("the release ends")
+            .expect("joined"),
+    };
+    assert_eq!(released, StatusCode::NO_CONTENT);
+    assert!(
+        r.registry.get("lin/origin").await.is_none(),
+        "a repoint's swap outlived the release of its serving"
+    );
+    // Which of the two took the lock first decides the answer: 200 when
+    // the POST swapped and answered before the release ended the term.
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CONFLICT,
+        "{status}: {answer}"
+    );
+    assert!(
+        !released_early,
+        "the release finished while a repoint of its serving waited to swap"
     );
 }

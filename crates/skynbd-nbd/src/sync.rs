@@ -19,6 +19,33 @@ pub struct VolumeBinding {
     pub store: Arc<dyn ObjectStore>,
     pub refs: Arc<dyn RefStore>,
     pub cfg: EngineConfig,
+    /// The serving this binding belongs to (M1.3aj): the origin export
+    /// is converged through it only while it lasts.
+    pub term: ServeTerm,
+}
+
+/// One serving of a volume on this server, from its serve to its
+/// release (M1.3aj). Every binding and handle of that serving shares
+/// it. It ends once, under the origin export's swap lock, in
+/// [`crate::origin::retire`], which a release's teardown calls; and
+/// [`crate::origin::reconcile`] reads it under the same lock, so a
+/// convergence that outlives its serving registers nothing and leaves
+/// a later serving's export alone. A binding that no release governs
+/// (a config volume served without a provisioner, a test) keeps one
+/// that never ends.
+#[derive(Clone, Debug, Default)]
+pub struct ServeTerm(Arc<std::sync::atomic::AtomicBool>);
+
+impl ServeTerm {
+    /// Whether the serving has been released. Once true, it stays so.
+    pub fn ended(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Only [`crate::origin::retire`] ends a term, under the swap lock.
+    pub(crate) fn end(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Spawn the sync task: initial full sync from `list`, then incremental

@@ -49,6 +49,7 @@ async fn fixture(issuer: &str, explicit_jwks: bool) -> axum::Router {
                 cfg: EngineConfig::default(),
                 lease_holder: None,
                 prepared: Arc::new(Mutex::new(Default::default())),
+                term: Default::default(),
             },
         );
     }

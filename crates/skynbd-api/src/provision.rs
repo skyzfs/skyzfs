@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use skynbd_engine::{Engine, EngineConfig, EngineError};
-use skynbd_nbd::{spawn_registry_sync, DynEngine, Export, ExportRegistry, VolumeBinding};
+use skynbd_nbd::{
+    spawn_registry_sync, DynEngine, Export, ExportRegistry, ServeTerm, VolumeBinding,
+};
 use skynbd_refs::{LeaseConfig, LeaseOutcome, RefOp, RefStore, TxnOutcome};
 use skynbd_store::{ObjectStore, StoreError};
 use skynbd_types::VolumeId;
@@ -202,6 +204,8 @@ pub fn validate_name(name: &str) -> Result<(), ProvisionError> {
 
 struct Serving {
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Shared by the serving's bindings and handle; ended by teardown.
+    term: ServeTerm,
 }
 
 #[derive(Default)]
@@ -824,6 +828,8 @@ impl Provisioner {
         let size = engine.size();
         let engine: Arc<tokio::sync::RwLock<DynEngine>> =
             Arc::new(tokio::sync::RwLock::new(engine));
+        // This serving, until its release (M1.3aj).
+        let term = ServeTerm::default();
 
         // The origin export, reconciled SYNCHRONOUSLY and fallibly —
         // "serve succeeded" must mean "the exports a client will dial
@@ -845,6 +851,7 @@ impl Provisioner {
                 store: Arc::clone(&self.store),
                 refs: Arc::clone(&refs),
                 cfg: cfg.clone(),
+                term: term.clone(),
             },
         )
         .await
@@ -874,6 +881,7 @@ impl Provisioner {
                 store: Arc::clone(&self.store),
                 refs: Arc::clone(&refs),
                 cfg: cfg.clone(),
+                term: term.clone(),
             },
         )];
         if self.rpo_interval_s > 0 {
@@ -912,12 +920,15 @@ impl Provisioner {
             cfg,
             lease_holder,
             prepared: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            term: term.clone(),
         };
         self.volumes
             .write()
             .await
             .insert(spec.name.clone(), handle.clone());
-        inner.serving.insert(spec.name.clone(), Serving { tasks });
+        inner
+            .serving
+            .insert(spec.name.clone(), Serving { tasks, term });
         if dynamic {
             inner.dynamic.insert(spec.name.clone());
         }
@@ -1029,6 +1040,7 @@ impl Provisioner {
                         store: Arc::clone(&existing.store),
                         refs: Arc::clone(&existing.refs),
                         cfg: existing.cfg.clone(),
+                        term: existing.term.clone(),
                     },
                 )
                 .await
@@ -1083,11 +1095,26 @@ impl Provisioner {
     /// Stop serving: abort tasks, drop exports, remove the handle.
     /// Already-attached NBD clients keep their connection (CSI guarantees
     /// unpublish-before-delete); new attaches see an unknown export.
+    ///
+    /// Nothing of the serving registers an export after this returns
+    /// (M1.3aj). An abort takes effect at a task's next await only, so a
+    /// task running on another worker finishes the poll it is in, which
+    /// can publish a snapshot export or swap the origin: each task is
+    /// waited for until it has ended, before anything is unregistered.
+    /// The origin export is then retired with the serving's term, which
+    /// a convergence from outside the tasks (an API repoint under way)
+    /// reads under the same lock.
     async fn teardown(&self, inner: &mut Inner, name: &str) {
         if let Some(s) = inner.serving.remove(name) {
-            for t in s.tasks {
+            for t in &s.tasks {
                 t.abort();
             }
+            for t in s.tasks {
+                // Cancelled, or ended on its own (a panic included): the
+                // task is gone either way.
+                let _ = t.await;
+            }
+            skynbd_nbd::origin::retire(&self.registry, name, &s.term).await;
         }
         inner.dynamic.remove(name);
         self.volumes.write().await.remove(name);
@@ -1188,5 +1215,94 @@ mod tests {
         assert_eq!(volume_id("vol1"), volume_id("vol1"));
         assert_ne!(volume_id("vol1"), volume_id("vol2"));
         assert_ne!(catalog_volume_id(), volume_id("skynbd-catalog"));
+    }
+
+    /// A teardown waits for the tasks it aborted before it unregisters
+    /// (M1.3aj). An abort takes effect at a task's next await only: a
+    /// task in the middle of a poll on another worker finishes that
+    /// poll. The test's task is such a one: it blocks its worker until
+    /// `go`, then publishes an export within the same poll, as the
+    /// sync task's publish or reconcile can when nothing it awaits has
+    /// to wait. A teardown that only aborted would unregister first and
+    /// leave that export behind, bound to a serving that has ended.
+    ///
+    /// The teardown gets 300 ms while the task is held: one that does
+    /// not wait ends in them. The registry is the verdict either way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn a_teardown_waits_for_the_tasks_it_aborted() {
+        let store: Arc<dyn ObjectStore> = Arc::new(skynbd_store::MemoryStore::new());
+        let refs: Arc<dyn RefStore> = Arc::new(skynbd_refs::MemoryRefStore::new());
+        let registry = Arc::new(ExportRegistry::new());
+        let prov = Arc::new(Provisioner::new(
+            Arc::clone(&store),
+            Arc::clone(&refs),
+            Arc::clone(&registry),
+            0,
+        ));
+        let engine: DynEngine = Engine::create_volume(
+            store,
+            refs,
+            volume_id("lin"),
+            64 * 1024,
+            EngineConfig::default(),
+        )
+        .await
+        .expect("a volume");
+        let export = Export {
+            engine: Arc::new(tokio::sync::RwLock::new(engine)),
+            read_only: true,
+            size: 64 * 1024,
+        };
+
+        let (running, is_running) = tokio::sync::oneshot::channel();
+        let (go, gone) = std::sync::mpsc::channel::<()>();
+        let (published, was_published) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn({
+            let registry = Arc::clone(&registry);
+            async move {
+                let _ = running.send(());
+                // Blocks this worker: the task is in the middle of a poll.
+                let _ = gone.recv();
+                registry.register("lin/snap/late", export).await;
+                let _ = published.send(());
+                std::future::pending::<()>().await;
+            }
+        });
+        prov.inner.lock().await.serving.insert(
+            "lin".into(),
+            Serving {
+                tasks: vec![task],
+                term: ServeTerm::default(),
+            },
+        );
+        is_running.await.expect("the task runs");
+
+        let mut tearing = tokio::spawn({
+            let prov = Arc::clone(&prov);
+            async move {
+                let mut inner = prov.inner.lock().await;
+                prov.teardown(&mut inner, "lin").await;
+            }
+        });
+        let early = tokio::time::timeout(std::time::Duration::from_millis(300), &mut tearing).await;
+        let _ = go.send(());
+        tokio::time::timeout(std::time::Duration::from_secs(5), was_published)
+            .await
+            .expect("the task publishes once let go")
+            .expect("the task publishes once let go");
+        if early.is_err() {
+            tokio::time::timeout(std::time::Duration::from_secs(5), tearing)
+                .await
+                .expect("the teardown ends once the task has")
+                .expect("joined");
+        }
+        assert!(
+            registry.get("lin/snap/late").await.is_none(),
+            "an export published by a task the teardown aborted outlived the teardown"
+        );
+        assert!(
+            early.is_err(),
+            "the teardown ended while a task it aborted was still in a poll"
+        );
     }
 }

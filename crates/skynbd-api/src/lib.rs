@@ -18,7 +18,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use skynbd_engine::prepared::{PreparedSession, RangeOp};
 use skynbd_engine::{EngineConfig, EngineError};
-use skynbd_nbd::{DynEngine, ExportRegistry, VolumeBinding};
+use skynbd_nbd::{DynEngine, ExportRegistry, ServeTerm, VolumeBinding};
 use skynbd_refs::RefStore;
 use skynbd_store::ObjectStore;
 use skynbd_types::SnapId;
@@ -49,6 +49,10 @@ pub struct VolumeHandle {
     pub lease_holder: Option<String>,
     /// Active prepared sessions (lazily reopened after restart, §9A.6).
     pub prepared: Arc<Mutex<std::collections::HashMap<String, Arc<Mutex<DynPrepared>>>>>,
+    /// The serving this handle belongs to (M1.3aj): ended by the
+    /// release that tears it down. The origin export is converged
+    /// through it only while it lasts.
+    pub term: ServeTerm,
 }
 
 pub mod auth;
@@ -1001,6 +1005,12 @@ async fn get_origin(
 /// `<vol>/origin` serve the new generation from their next request
 /// (Invariant A — no reload, no reconnect). Idempotent; an empty body
 /// initializes the pointer instead of naming a target.
+///
+/// A release can end the volume's serving while the request is under
+/// way (M1.3aj). The swap then goes through the serving that is
+/// current when the request converges ([`converge_origin`]); when none
+/// is, the row and its pin have still moved, no export is served, and
+/// the answer is a 409 that says so, never a swap that did not happen.
 async fn set_origin(
     State(state): State<Arc<ApiState>>,
     Path(vol): Path<String>,
@@ -1048,13 +1058,6 @@ async fn set_origin(
                 )
             })?,
     };
-    let binding = VolumeBinding {
-        vol_id: h.vol_id,
-        vol_name: vol.clone(),
-        store: Arc::clone(&h.store),
-        refs: Arc::clone(&h.refs),
-        cfg: h.cfg.clone(),
-    };
     // Invariant E: the pointer moves only forward, and the compare and
     // the write are one atomic step (`MetaCas` on the row this attempt
     // read). A conflict means a concurrent writer moved the row — re-read
@@ -1085,8 +1088,10 @@ async fn set_origin(
                         format!("origin pointer on {vol:?} names no resolvable generation"),
                     )
                 })?;
-            skynbd_nbd::origin::reconcile(&state.registry, &binding).await?;
-            let served = origin_served(&state, &vol, &h).await;
+            let Some(current) = converge_origin(&state, &vol).await? else {
+                return Err(released_while_repointing(&vol, &resolved.ref_name));
+            };
+            let served = origin_served(&state, &vol, &current).await;
             return Ok(Json(origin_info(&vol, resolved, served)));
         }
         let mut ops = vec![
@@ -1120,8 +1125,10 @@ async fn set_origin(
                 // before this commit, or a concurrent repoint whose
                 // swap would land after this one, then cannot leave
                 // the export on an older generation than the row names.
-                skynbd_nbd::origin::reconcile(&state.registry, &binding).await?;
-                let served = origin_served(&state, &vol, &h).await;
+                let Some(current) = converge_origin(&state, &vol).await? else {
+                    return Err(released_while_repointing(&vol, &target.ref_name));
+                };
+                let served = origin_served(&state, &vol, &current).await;
                 return Ok(Json(origin_info(
                     &vol,
                     skynbd_nbd::origin::ResolvedOrigin {
@@ -1138,6 +1145,55 @@ async fn set_origin(
         StatusCode::CONFLICT,
         format!("origin pointer on {vol:?} is contended; retry"),
     ))
+}
+
+/// Converge `<vol>/origin` on the row after a `set_origin` wrote or read
+/// it (M1.3ai, M1.3aj), through the serving of the volume that is
+/// current now, not the one whose handle the request began with. A
+/// release may have ended that serving since; and a serving that began
+/// after it read the row at its serve, before this request's commit, so
+/// its export follows the row only if converged here. Returns the
+/// handle of the serving converged, or `None` when no serving of the
+/// volume is left on this server: the next serve converges on the row.
+async fn converge_origin(
+    state: &ApiState,
+    vol: &str,
+) -> std::result::Result<Option<VolumeHandle>, ApiError> {
+    let current = state.volumes.read().await.get(vol).cloned();
+    let Some(h) = current else {
+        return Ok(None);
+    };
+    skynbd_nbd::origin::reconcile(&state.registry, &origin_binding(vol, &h)).await?;
+    // Read after the convergence: a serving that ended before it
+    // converged nothing, and one that ended during it has its export
+    // taken down by the release's `retire`.
+    Ok((!h.term.ended()).then_some(h))
+}
+
+fn origin_binding(vol: &str, h: &VolumeHandle) -> VolumeBinding {
+    VolumeBinding {
+        vol_id: h.vol_id,
+        vol_name: vol.to_string(),
+        store: Arc::clone(&h.store),
+        refs: Arc::clone(&h.refs),
+        cfg: h.cfg.clone(),
+        term: h.term.clone(),
+    }
+}
+
+/// The answer of a `set_origin` whose volume no serving on this server
+/// holds any more (M1.3aj). A 409, as for any request that the
+/// volume's state on this server refuses: the row (and its pin) moved,
+/// but no export serves it here.
+fn released_while_repointing(vol: &str, row: &str) -> ApiError {
+    ApiError::msg(
+        StatusCode::CONFLICT,
+        format!(
+            "volume {vol:?} was released while its origin was being repointed: the pointer \
+             row names {row:?} and its origin pin moved with it, but no origin export is \
+             served here; the next serve of the volume serves what the row names"
+        ),
+    )
 }
 
 /// DELETE /v1/volumes/{vol}/snapshot-requests/{name} — agent completed
