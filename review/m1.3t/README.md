@@ -139,3 +139,17 @@ than what it replaced. Both items of finding 2 block, with finding 1.
   each 66 judged lines (47 PASS, 13 NA, 1 WAITING, the five controls
   FAIL), line for line as pull request 72's 26.04 table at 0d150d9.
   24.04 cancelled by the push of 75c32a7.
+- The daemon rig at 75c32a7 (run 43549273948): `rig-75c32a7/`, one
+  TSV per image and head, made by running `daemon_check.py` on the
+  `results.tsv` each job prints at the end of its log (the step summary
+  is not in the log). All five tables (75c32a7 on three images,
+  a7c20ab on two) have the same verdict on every line: pins 47 PASS,
+  10 NA, 1 WAITING; controls 5 FAIL, 3 NA; suite cases 1 PASS, 13
+  WEAKER, 12 NOT_EXERCISED; nothing differs from `EXPECTED`.
+- The replay rig through skyzfsd at 75c32a7 on 26.04: every mark, 80
+  of 81 flush boundaries, both controls as expected, exit 0; 0.67 s a
+  prefix, nothing to recover at a start.
+- Posted on 2026-11-14 (issue comment 6871233011): can merge.
+  `look2-posted.md`. Left to the lead: the home image's own file
+  system is still untested against the write unit. Not blocking: the
+  call site's `volume.reaches_positions()` is untested.
