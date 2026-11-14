@@ -15,3 +15,13 @@
   `repro82.txt`: its output at abf384d. No kernel, no root.
 - `plants82.py`, `plants82.txt`: P1-P7 on `tests/lib/skz-store.sh` and
   its three callers, with `test_skz_store.sh` run as root; all caught.
+- Next look at e289b26
+  (https://github.com/skyzfs/skyzfs/pull/82#issuecomment-6874376973):
+  the blocker is settled (the fix as proposed; three tests run the
+  loop's own lines). Nothing blocks. `plants82b.py`, `plants82b.txt`:
+  F1 (the old line) and F2 (no wait) are caught; F3 (the race-only
+  check removed) is not, as expected. Suggestion: `loop()`'s sed cut of
+  a one-line function runs on to the next lone `}` and evals 35 more
+  lines of the rig, among them `: > "$OUT/zfs-stuck.tsv"` and
+  `rm -f "$OUT/zfs-stuck-stacks.txt"` with OUT unset (writes at / as
+  root). The tests were run as `nobody` for that reason.

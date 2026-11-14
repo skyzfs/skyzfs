@@ -1,0 +1,3 @@
+F1 the old line: a failed kill is only 'kill -9 failed': rc 1; failed: test_the_kill_loop_names_another_status_as_the_rigs_error, test_the_kill_loop_reads_a_7_from_a_server_that_ended_before_the_kill
+F2 the status is not read when the kill fails: rc 1; failed: test_the_kill_loop_names_another_status_as_the_rigs_error, test_the_kill_loop_reads_a_7_from_a_server_that_ended_before_the_kill
+F3 the check after serve_wait (the race) removed: rc 0; failed: none
