@@ -1,0 +1,12 @@
+# the cut rig's check of this recording (tests/kernel/cut_check.py), run 43647779663
+records	INFO	939, of which 17 uberblock writes mark, of 68
+cuts	PASS	17 of 17 cuts: zdb selects the uberblock the rings hold as the best, and the cut is whole at its group (every copy, the read-only import)
+opens_as_itself	ALL	17 of 17 cuts open as themselves (expected: all)
+obs_stale_cuts	0	no cut carries the state of an older cut
+sessions	PASS	1 sessions as committed
+import_syncs_before_return	PASS	session 1: 2 cuts complete before the command returned (groups 4..5)
+ctl_early	CAUGHT	cut 9 (group 17) at record 502 and not 505: opens: zdb selects group 16 (timestamp 1794695968), the rings' best is 17 (1794695968); the cut is 17 (expected: caught)
+ctl_withheld	CAUGHT	cut 9 without record 500 (8192 bytes at 23851008): copies: 2 of 351 copies do not pass their block's checksum, in 2 blocks, of which 0 have no copy that passes; the first is copy 0 of 3 at byte 23855104: objset 0 object 0 level -1 offset 0x0 DVA[0]=<0:12c0000:1000> DVA[1]=<0:20c0000:1000> DVA[2]=<0:4074000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=17L/17P fill=57 cksum=0000000201ad4b76:000007b5e (expected: caught)
+ctl_later	NOT_BUILT	nothing after the instant overlaps a block that cuts [9, 5, 3, 2, 1] reach (expected: not built)
+ctl_txg-alone	SAME	17 cuts, as the design rule (expected: same)
+ctl_count-repeats	CAUGHT	30 cuts against 17: session 1: the cuts give 27 groups, the kstat 14 committed; first difference at 2: cuts [5, 6, 6, 7, 7], committed [5, 6, 7, 9, 12] (expected: caught)
