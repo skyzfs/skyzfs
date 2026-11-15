@@ -9,9 +9,10 @@ name: skyzfs-nodeb-rig
 # the bucket and nothing else, lists the refs, reads the snapshot's ref
 # into a file, imports the pool read-only without its log device,
 # compares the snapshot's files with the source's, and checks every copy
-# of every block the pool reaches. Four wrong cuts (one group early, a
-# block missing, a later block, a hole where a live block was) must be
-# caught (`EXPECTED` in nodeb_check.py). Exit 1 is a verdict, exit 2 the
+# of every block the pool reaches. Five wrong cuts (a changed digest,
+# one group early, a block missing, a later block, a hole where a live
+# block was) must be caught, each at a stage `EXPECTED` in
+# nodeb_check.py allows. Exit 1 is a verdict, exit 2 the
 # rig's own error. Read the summary's table, not the colour.
 #
 # Runs on a pull request that touches its files (ubuntu-26.04 and
@@ -24,7 +25,7 @@ on:
         description: "a JSON list: amd64 ubuntu-26.04 ubuntu-24.04, arm64 ubuntu-26.04-arm ubuntu-24.04-arm"
         default: '["ubuntu-26.04","ubuntu-24.04","ubuntu-26.04-arm","ubuntu-24.04-arm"]'
       recordings:
-        description: "recordings, separated by spaces (those of cut-record.sh whose first session takes snapshots: life slog rewind rewindsync rewindf multihost config stray autotrim)"
+        description: "recordings, separated by spaces (those of cut-record.sh that take snapshots: life slog rewind rewindsync rewindf config stray autotrim; multihost ends as the rig's error, node B cannot import it read-only yet)"
         default: "life slog"
   pull_request:
     paths:
@@ -45,6 +46,7 @@ on:
     branches: ['skyzfs-testing*']
     paths:
       - tests/kernel/nodeb*
+      - tests/kernel/cut-record.sh
       - bins/skyzfs-nodeb/**
       - .github/workflows/skyzfs-nodeb-rig.yml
 

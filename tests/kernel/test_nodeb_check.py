@@ -105,6 +105,11 @@ class Blocks(unittest.TestCase):
         c = {'txg': 9, 'prefix': 11}
         self.assertEqual(nodeb_check.later_uberblock(ubs, c), 14)
         self.assertIsNone(nodeb_check.later_uberblock(ubs, {'txg': 10, 'prefix': 11}))
+        # A later group's uberblock before the instant (a rewind's
+        # abandoned history) is not after it.
+        ubs = [{'record': 3, 'txg': 20}, {'record': 14, 'txg': 10}]
+        self.assertEqual(nodeb_check.later_uberblock(ubs, c), 14)
+        self.assertIsNone(nodeb_check.later_uberblock(ubs[:1], c))
 
     def test_live_block(self):
         bps = [{'type': 'DMU dnode', 'level': 0, 'dvas': [(0, 0x1000, 0x1000)]},
@@ -114,10 +119,60 @@ class Blocks(unittest.TestCase):
         self.assertIsNone(nodeb_check.live_block(bps[:2]))
 
 
+class Compare(unittest.TestCase):
+    A, B = '0' * 64, '1' * 64
+
+    def test_the_same_files(self):
+        ok, detail = nodeb_check.compare({'f1': self.A, 'f2': self.B}, {'f2': self.B, 'f1': self.A})
+        self.assertTrue(ok, detail)
+
+    def test_each_difference(self):
+        want = {'f1': self.A, 'f2': self.B}
+        for got, part in (({'f1': self.A}, '1 missing'), (dict(want, f3=self.A), '1 extra'),
+                          ({'f1': self.A, 'f2': self.A}, '1 differ')):
+            ok, detail = nodeb_check.compare(want, got)
+            self.assertFalse(ok)
+            self.assertIn(part, detail)
+
+
+class Verdicts(unittest.TestCase):
+    def seen(self, *stages):
+        s = nodeb_check.Seen()
+        for st, ok in stages:
+            s.put(st, ok, f'{st}\nsaid\tthis')
+        return s
+
+    def test_the_first_stage_that_failed(self):
+        s = self.seen(('refs', True), ('content', True), ('import', True), ('snapshot', False), ('copies', True))
+        self.assertEqual(s.failed(), 'snapshot')
+        self.assertEqual(nodeb_check.control_verdict(s, ('snapshot',)), ('caught at snapshot', True))
+        self.assertEqual(nodeb_check.control_verdict(s, ('files',)), ('caught at snapshot', False))
+        self.assertNotIn('\n', s.text())
+        self.assertNotIn('\t', s.text())
+        self.assertTrue(s.ok('copies'))
+        self.assertFalse(s.ok('files'))
+
+    def test_order_is_the_stages_not_the_calls(self):
+        s = self.seen(('copies', False), ('import', False))
+        self.assertEqual(s.failed(), 'import')
+
+    def test_missed(self):
+        s = self.seen(('refs', True), ('import', True), ('copies', True))
+        self.assertEqual(nodeb_check.control_verdict(s, ('import',)), ('missed', False))
+
+    def test_flat(self):
+        self.assertEqual(nodeb_check.flat("cannot import 'p':\n\tI/O error\n"), "cannot import 'p': I/O error")
+
+
 class Expected(unittest.TestCase):
-    def test_every_control_must_be_caught(self):
+    def test_every_control_has_its_stages(self):
         self.assertEqual(set(nodeb_check.EXPECTED), set(nodeb_check.CONTROLS))
-        self.assertEqual(set(nodeb_check.EXPECTED.values()), {'caught'})
+        for ctl, stages in nodeb_check.EXPECTED.items():
+            self.assertTrue(stages and set(stages) <= set(nodeb_check.STAGES), ctl)
+            # A store or a ref that fails is never a control's catch.
+            self.assertFalse({'refs', 'content'} & set(stages), ctl)
+        self.assertEqual(nodeb_check.EXPECTED['early'], ('snapshot',))
+        self.assertEqual(nodeb_check.EXPECTED['digest'], ('files',))
 
 
 if __name__ == '__main__':

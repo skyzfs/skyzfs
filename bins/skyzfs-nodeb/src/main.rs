@@ -22,8 +22,12 @@
 //! - `refs`: lists the volume's refs, one per line: name, commit, generation.
 //! - `get`: reads the ref's content into FILE, sparse where it is zeros.
 //!
-//! Exit 0: done. Exit 3: `get` found no such ref. Exit 2: anything else
-//! (a usage error, the store, the engine), the rig's own error.
+//! Exit 0: done. Exit 3: `get` found no such ref. Exit 4: `get` found
+//! the ref and could not read its content (the engine could not open
+//! its commit or read a range): for the rig a verdict against what put
+//! the volume there, not its own error. Exit 2: anything else (a usage
+//! error, the store before the ref was found, the local file), the
+//! rig's own error.
 
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::ExitCode;
@@ -246,37 +250,53 @@ async fn list(a: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// Node B's read, on any store: the ref's content into `out` -> its
-/// commit and the volume's size, or None when there is no such ref.
+/// What `get` found.
+#[derive(Debug, PartialEq, Eq)]
+enum Got {
+    /// No such ref.
+    Absent,
+    /// The ref's commit and the volume's size; the content is in the file.
+    Read([u8; 32], u64),
+    /// The ref is there and its content could not be read.
+    Unreadable(String),
+}
+
+/// Node B's read, on any store: the ref's content into `out`. Err is
+/// the rig's own error: the store before the ref was found, or the
+/// local file.
 async fn get_ref<S: ObjectStore + Clone + 'static>(
     store: S,
     refs: Arc<ObjectRefStore<S>>,
     vol: VolumeId,
     reference: &str,
     out_path: &str,
-) -> Result<Option<([u8; 32], u64)>, String> {
+) -> Result<Got, String> {
     let Some(rv) = refs
         .get(vol, reference)
         .await
         .map_err(|e| format!("refs: {e}"))?
     else {
-        return Ok(None);
+        return Ok(Got::Absent);
     };
-    let eng = Engine::open_ref(store, refs, vol, reference, EngineConfig::default())
-        .await
-        .map_err(|e| format!("open {reference}: {e}"))?;
+    let eng = match Engine::open_ref(store, refs, vol, reference, EngineConfig::default()).await {
+        Ok(e) => e,
+        Err(e) => return Ok(Got::Unreadable(format!("open {reference}: {e}"))),
+    };
     let size = eng.size();
     let mut out = std::fs::File::create(out_path).map_err(|e| format!("{out_path}: {e}"))?;
     out.set_len(size).map_err(|e| format!("{out_path}: {e}"))?;
     let mut at = 0u64;
     while at < size {
         let n = (size - at).min(READ_CHUNK);
-        let b = eng
-            .read(at, n)
-            .await
-            .map_err(|e| format!("read at {at}: {e}"))?;
+        let b = match eng.read(at, n).await {
+            Ok(b) => b,
+            Err(e) => return Ok(Got::Unreadable(format!("read at {at}: {e}"))),
+        };
         if b.len() as u64 != n {
-            return Err(format!("read at {at}: {} bytes, not {n}", b.len()));
+            return Ok(Got::Unreadable(format!(
+                "read at {at}: {} bytes, not {n}",
+                b.len()
+            )));
         }
         if b.iter().any(|&x| x != 0) {
             out.seek(SeekFrom::Start(at))
@@ -286,17 +306,27 @@ async fn get_ref<S: ObjectStore + Clone + 'static>(
         at += n;
     }
     out.sync_all().map_err(|e| format!("{out_path}: {e}"))?;
-    Ok(Some((rv.commit, size)))
+    Ok(Got::Read(rv.commit, size))
 }
 
-/// -> Ok(false) when the ref does not exist.
-async fn get(a: &Args) -> Result<bool, String> {
+/// -> the exit code.
+async fn get(a: &Args) -> Result<u8, String> {
     let (store, refs) = open(a).await?;
     match get_ref(store, refs, volume_id(&a.volume), &a.reference, &a.out).await? {
-        None => Ok(false),
-        Some((c, size)) => {
+        Got::Absent => {
+            eprintln!(
+                "skyzfs-nodeb: volume {} has no ref {}",
+                a.volume, a.reference
+            );
+            Ok(3)
+        }
+        Got::Unreadable(e) => {
+            eprintln!("skyzfs-nodeb: {} of volume {}: {e}", a.reference, a.volume);
+            Ok(4)
+        }
+        Got::Read(c, size) => {
             println!("read\t{}\t{}\t{size}", a.reference, hex(&c));
-            Ok(true)
+            Ok(0)
         }
     }
 }
@@ -312,19 +342,12 @@ async fn main() -> ExitCode {
         }
     };
     let r = match a.cmd.as_str() {
-        "put" => put(&a).await.map(|()| true),
-        "refs" => list(&a).await.map(|()| true),
+        "put" => put(&a).await.map(|()| 0),
+        "refs" => list(&a).await.map(|()| 0),
         _ => get(&a).await,
     };
     match r {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => {
-            eprintln!(
-                "skyzfs-nodeb: volume {} has no ref {}",
-                a.volume, a.reference
-            );
-            ExitCode::from(3)
-        }
+        Ok(code) => ExitCode::from(code),
         Err(e) => {
             eprintln!("skyzfs-nodeb: {e}");
             ExitCode::from(2)
@@ -437,15 +460,97 @@ mod tests {
         )
         .await
         .expect("get");
-        assert_eq!(got, Some((p.snapshot, size as u64)));
+        assert_eq!(got, Got::Read(p.snapshot, size as u64));
         assert!(
             std::fs::read(&back).expect("read back") == want,
             "the content read back differs"
         );
-        let none = get_ref(store, node_b, vol, "snap/u", back.to_str().expect("path"))
+        let none = get_ref(
+            store.clone(),
+            Arc::clone(&node_b),
+            vol,
+            "snap/u",
+            back.to_str().expect("path"),
+        )
+        .await
+        .expect("get");
+        assert_eq!(none, Got::Absent);
+
+        // The head moves on after the snapshot (review of #97, S6): get
+        // of snap/t still reads the snapshot, and get of head the new state.
+        let mut eng = Engine::open(
+            store.clone(),
+            Arc::clone(&node_b),
+            vol,
+            EngineConfig::default(),
+        )
+        .await
+        .expect("open");
+        eng.write(0, &[0xEEu8; BLOCK]).expect("write");
+        let head = eng.commit(CommitKind::Flush).await.expect("commit");
+        let got = get_ref(
+            store.clone(),
+            Arc::clone(&node_b),
+            vol,
+            "snap/t",
+            back.to_str().expect("path"),
+        )
+        .await
+        .expect("get");
+        assert_eq!(got, Got::Read(p.snapshot, size as u64));
+        assert!(
+            std::fs::read(&back).expect("read back") == want,
+            "snap/t read the head"
+        );
+        let got = get_ref(store, node_b, vol, "head", back.to_str().expect("path"))
             .await
             .expect("get");
-        assert_eq!(none, None);
+        assert_eq!(got, Got::Read(head, size as u64));
+        let mut moved = want.clone();
+        moved[..BLOCK].fill(0xEE);
+        assert!(
+            std::fs::read(&back).expect("read back") == moved,
+            "head is not the new state"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A listed ref whose objects are gone reads as unreadable (exit 4),
+    /// not as the rig's own error.
+    #[tokio::test]
+    async fn a_ref_whose_objects_are_gone_is_unreadable() {
+        let dir = std::env::temp_dir().join(format!("skyzfs-nodeb-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let image = dir.join("in.img");
+        std::fs::write(&image, vec![7u8; 1 << 20]).expect("write image");
+        let store = skynbd_store::MemoryStore::new();
+        let refs = Arc::new(ObjectRefStore::new(store.clone()));
+        let vol = volume_id("vol-gone");
+        put_image(
+            store.clone(),
+            Arc::clone(&refs),
+            vol,
+            image.to_str().expect("path"),
+            &[],
+            "t",
+        )
+        .await
+        .expect("put");
+        let keys = store.list("").await.expect("list");
+        let mut gone = 0;
+        for k in keys
+            .iter()
+            .filter(|k| !k.ends_with("/refs") && !k.contains("/sb/"))
+        {
+            store.delete(k).await.expect("delete");
+            gone += 1;
+        }
+        assert!(gone > 0, "no object to delete among {keys:?}");
+        let out = dir.join("out.img");
+        let got = get_ref(store, refs, vol, "snap/t", out.to_str().expect("path"))
+            .await
+            .expect("get");
+        assert!(matches!(got, Got::Unreadable(_)), "{got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
