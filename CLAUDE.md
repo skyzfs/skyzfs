@@ -400,8 +400,9 @@ there, and the user decides when it merges.
   traced or recorded counts for no ratio. Since M2.T4 an entry's
   `TB_SKYZFSD_REF=<ref>+hooks` builds that daemon with its test hooks,
   and `TB_SKZ_RELEASE=N` runs a releaser beside it
-  (`tests/bench/cut_release.py`) that lets each held cut go once N-1
-  newer ones are taken, as an upload would; without it a daemon with
+  (`tests/bench/cut_release.py`) that releases the cut being uploaded
+  once N-1 newer cuts have been taken, as an upload would (with N > 1
+  the cuts in between are replaced, never uploaded); without it a daemon with
   `--hold-cuts` never releases a cut and the row is the copy path's
   worst case. A release row gives its releases in the window.
   `TB_SKYZFSD_MEM` starts the daemon in a memory cgroup of its own, and
