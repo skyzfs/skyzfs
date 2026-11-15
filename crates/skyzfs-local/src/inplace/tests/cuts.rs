@@ -2561,11 +2561,16 @@ fn committed_one(disk: &SimDisk, mutants: u128, io: IoMode) -> InPlace<SimDisk> 
 /// committed, and not block 5, written before. A second write into the
 /// same region does not sync the map again. The defect that carries no
 /// region leaves block 150 out of the next cut.
+///
+/// The power cut keeps everything, or loses everything no sync covered,
+/// creations no directory sync covered among them: the map that the
+/// first start created is there all the same (D1 of the review of
+/// #106).
 #[test]
 fn after_a_reboot_the_next_cut_holds_the_regions_the_map_names() {
     for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
-        for mutants in [0, Mutants::INTENT_NOT_CARRIED] {
-            let case = format!("{io:?}, mutants {mutants:#x}");
+        for (mutants, lose_all) in [(0, false), (0, true), (Mutants::INTENT_NOT_CARRIED, false)] {
+            let case = format!("{io:?}, mutants {mutants:#x}, losing all unsynced {lose_all}");
             let disk = created(37, 0);
             let mut store = committed_one(&disk, mutants, io);
             let syncs = intent_of(&store).syncs.count;
@@ -2579,7 +2584,11 @@ fn after_a_reboot_the_next_cut_holds_the_regions_the_map_names() {
                 "{case}: named already"
             );
             drop(store);
-            disk.power_cut(crate::sim::KeepAll);
+            if lose_all {
+                disk.power_cut(crate::sim::LoseAll);
+            } else {
+                disk.power_cut(crate::sim::KeepAll);
+            }
             let mut store = start_as(&disk, mutants, &region(), io, AFTER_A_REBOOT);
             assert!(
                 matches!(store.cuts_at_start(), Some(CutsTakenUp::Begun(_))),
@@ -2598,6 +2607,17 @@ fn after_a_reboot_the_next_cut_holds_the_regions_the_map_names() {
             assert!(!map.contains(&5), "{case}: block 5 is as cut 1 holds it");
             assert_eq!(map.contains(&150), mutants == 0, "{case}");
             assert_eq!(map.contains(&128), mutants == 0, "{case}: the whole region");
+            // The start kept the map under its own token: the start
+            // after the next power cut takes it up again (G3 of the
+            // review of #106).
+            drop(store);
+            disk.power_cut(crate::sim::LoseAll);
+            let store = start_as(&disk, mutants, &region(), io, AFTER_A_REBOOT);
+            assert!(
+                matches!(store.intent_at_start(), Some(IntentAtStart::TakenUp { .. })),
+                "{case}: a second start after a power cut: {:?}",
+                store.intent_at_start()
+            );
         }
     }
 }
@@ -2740,6 +2760,166 @@ fn a_write_into_a_clean_region_waits_for_the_map_and_no_other_request_does() {
             "{case}"
         );
     }
+}
+
+/// A store dropped while a write waits for the map's sync ends once the
+/// sync has, and the write is done before it goes, as everything
+/// submitted is (D2 of the review of #106, and Codex's P2 there): the
+/// write alone, and with a read of its block waiting behind it. The
+/// store is dropped on a thread of the test's, so that a drop that does
+/// not end fails the test and does not hang it.
+#[test]
+fn a_store_dropped_while_a_write_waits_for_the_map_does_the_write_first() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        for behind in [false, true] {
+            let case = format!("{io:?}, a read behind the write {behind}");
+            let disk = created(46, 0);
+            let mut store = committed_one(&disk, 0, io);
+            disk.hold_syncs_of(intent::INTENT_NAME);
+            submit(&mut store, 1, write_op(150, 0x66));
+            if behind {
+                submit(&mut store, 2, read_op(150));
+            }
+            let mut done = Vec::new();
+            polled(&mut store, &mut done, 1, Duration::from_millis(50));
+            disk.release_syncs();
+            let (tell, dropped) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                drop(store);
+                let _ = tell.send(());
+            });
+            assert!(done.is_empty(), "{case}: {:?}", ended(&done));
+            assert_eq!(
+                dropped.recv_timeout(DRAIN),
+                Ok(()),
+                "{case}: the drop did not end"
+            );
+            disk.kill();
+            let mut store = start_on(&disk, 0, &region(), io);
+            let block = read(&mut store, 150).unwrap();
+            assert!(
+                block.iter().all(|&b| b == 0x66),
+                "{case}: the write was not done"
+            );
+        }
+    }
+}
+
+/// A flush waits for a write submitted before it that waits for the
+/// map, with nothing waiting between them (G2 of the review of #106):
+/// it covers that write.
+#[test]
+fn a_flush_waits_for_a_write_that_waits_for_the_map() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let case = format!("{io:?}");
+        let disk = created(49, 0);
+        let mut store = committed_one(&disk, 0, io);
+        disk.hold_syncs_of(intent::INTENT_NAME);
+        submit(&mut store, 1, write_op(150, 0x66));
+        submit(&mut store, 2, Op::Flush);
+        let mut done = Vec::new();
+        polled(&mut store, &mut done, 1, Duration::from_millis(100));
+        let early = ended(&done);
+        disk.release_syncs();
+        drop(drained(store, &mut done));
+        assert!(early.is_empty(), "{case}: {early:?}");
+        assert_eq!(ended(&done), [(1, Ok(())), (2, Ok(()))], "{case}");
+    }
+}
+
+/// A write that waited for the map does not begin once the volume has
+/// failed, though the sync it waited for ended well (G4 of the review
+/// of #106). Two writes into one clean region wait for one sync, which
+/// covers them both; the first fails at the image and fails the volume,
+/// and the second fails with it and does not reach the image. On the
+/// caller's thread, where the first write's failure is known before the
+/// second would begin.
+#[test]
+fn a_write_that_waited_does_not_begin_after_the_volume_failed() {
+    let disk = created(47, 0);
+    let mut store = committed_one(&disk, 0, ON_CALLER);
+    disk.hold_syncs_of(intent::INTENT_NAME);
+    submit(&mut store, 1, write_op(150, 0x66));
+    submit(&mut store, 2, write_op(160, 0x77));
+    let mut done = Vec::new();
+    polled(&mut store, &mut done, 1, Duration::from_millis(20));
+    let early = ended(&done);
+    disk.fail_write(0, false);
+    disk.release_syncs();
+    let store = drained(store, &mut done);
+    let failed = store.is_failed();
+    drop(store);
+    assert!(early.is_empty(), "{early:?}");
+    assert!(failed);
+    assert_eq!(
+        ended(&done),
+        [(1, Err(BlkError::Failed)), (2, Err(BlkError::Failed))],
+        "the first write failed at the image, the second with the volume"
+    );
+    disk.kill();
+    disk.clear_faults();
+    let acknowledging = Coming {
+        boot: state::tests::BOOT,
+        acknowledging: true,
+        taken_over: true,
+    };
+    let mut store = start_as(&disk, 0, &region(), ON_CALLER, acknowledging);
+    let block = read(&mut store, 160).unwrap();
+    assert!(
+        block.iter().all(|&b| b == 0),
+        "the second write reached the image"
+    );
+}
+
+/// A write of the map that fails when a commit clears bits fails the
+/// volume, as a failed write of the store does (G4 of the review of
+/// #106).
+#[test]
+fn a_failed_write_of_the_map_at_a_commit_fails_the_volume() {
+    for io in [IoMode::default()].into_iter().chain(OTHER_IO) {
+        let disk = created(48, 0);
+        let mut store = start_on(&disk, 0, &region(), io);
+        write(&mut store, 5, 0x55).unwrap();
+        group(&mut store, 100, 7, 70);
+        assert!(!store.is_failed(), "{io:?}");
+        disk.fail_write_of(intent::INTENT_NAME);
+        store.release_cut(1);
+        assert!(store.is_failed(), "{io:?}");
+    }
+}
+
+/// A start refused for want of direct I/O touches neither the cut state
+/// nor the intent map: it creates no map (the review of #106).
+#[test]
+fn a_start_refused_for_direct_io_creates_no_map() {
+    let disk = created(50, 0);
+    disk.set_direct_align(None);
+    let options = OpenOptions {
+        hold_cuts: Some(HoldCuts {
+            region: CutRegion::Memory(region()),
+            boot: state::tests::BOOT,
+            bound: Some(TEST_BOUND),
+            intent_region: Some(TEST_INTENT_REGION),
+        }),
+        ..OpenOptions::default()
+    };
+    let started = Opened::open(disk.clone(), lock(&disk).expect("the lock"), options)
+        .map_err(|(e, _)| e)
+        .expect("opens")
+        .start_with(None, Mutants::default());
+    assert!(
+        matches!(&started, Err(StartError::Io(why)) if why.contains("no direct I/O")),
+        "{:?}",
+        started.as_ref().map(|_| ())
+    );
+    drop(started);
+    assert_eq!(
+        disk.open(intent::INTENT_NAME)
+            .map(|_| ())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
 /// The writes that come into clean regions while a sync of the map is
@@ -2987,6 +3167,9 @@ fn a_start_that_acknowledges_a_failure_takes_the_map_up() {
 enum IntentStep {
     /// Write a block whole with one byte.
     Write(u64, u8),
+    /// Write zeroes over a block (G1 of the review of #106: a
+    /// write-zeroes asks the map as a write does).
+    Zeroes(u64),
     /// A transaction group: its uberblock to the four labels, then the
     /// flush that cuts.
     Group,
@@ -3006,10 +3189,11 @@ fn intent_program(seed: u64, len: usize) -> Vec<IntentStep> {
     };
     (0..len)
         .map(|_| match below(20) {
-            0..=10 => {
+            0..=8 => {
                 let block = below(VOLUME_BLOCKS);
                 IntentStep::Write(block, 1 + below(250) as u8)
             }
+            9 | 10 => IntentStep::Zeroes(below(VOLUME_BLOCKS)),
             11..=15 => IntentStep::Group,
             _ => IntentStep::Release,
         })
@@ -3027,8 +3211,9 @@ fn volume_now(store: &mut InPlace<SimDisk>) -> Vec<Vec<u8>> {
 struct AfterTheCut {
     /// The disk halted before the program ended.
     halted: bool,
-    /// The start after the cut took the map up and named fewer than
-    /// every region.
+    /// The start after the cut took the map up.
+    taken: bool,
+    /// It took the map up and named fewer than every region.
     narrowed: bool,
 }
 
@@ -3062,6 +3247,17 @@ fn intent_power_cut(
         match step {
             IntentStep::Write(block, byte) => {
                 if write(&mut store, block, byte).is_err() {
+                    halted = true;
+                    break;
+                }
+            }
+            IntentStep::Zeroes(block) => {
+                id += 1;
+                let zeroes = Op::WriteZeroes {
+                    offset: block * BLOCK,
+                    len: BLOCK,
+                };
+                if run(&mut store, id, zeroes).result.is_err() {
                     halted = true;
                     break;
                 }
@@ -3132,6 +3328,7 @@ fn intent_power_cut(
             // The whole volume is the next cut, which holds everything.
             return Ok(AfterTheCut {
                 halted,
+                taken: false,
                 narrowed: false,
             });
         }
@@ -3152,24 +3349,37 @@ fn intent_power_cut(
             ));
         }
     }
-    Ok(AfterTheCut { halted, narrowed })
+    Ok(AfterTheCut {
+        halted,
+        taken: true,
+        narrowed,
+    })
+}
+
+/// How the starts after the power cuts of the store-level test went.
+#[derive(Debug, Default, Clone, Copy)]
+struct Starts {
+    all: u64,
+    taken: u64,
+    narrowed: u64,
 }
 
 /// Every prefix of the program of `seed`: the disk halts after each of
-/// its writes and syncs in turn, then the power is cut. How many runs
-/// narrowed.
-fn intent_every_prefix(seed: u64, mutants: u128, garbage: bool) -> Result<u64, String> {
+/// its writes and syncs in turn, then the power is cut.
+fn intent_every_prefix(seed: u64, mutants: u128, garbage: bool) -> Result<Starts, String> {
     let steps = intent_program(seed, 30);
-    let mut narrowed = 0;
+    let mut starts = Starts::default();
     for halt in 0.. {
         let after = intent_power_cut(seed, &steps, mutants, Some(halt), garbage)
             .map_err(|e| format!("seed {seed}: {e}"))?;
-        narrowed += u64::from(after.narrowed);
+        starts.all += 1;
+        starts.taken += u64::from(after.taken);
+        starts.narrowed += u64::from(after.narrowed);
         if !after.halted {
             break;
         }
     }
-    Ok(narrowed)
+    Ok(starts)
 }
 
 /// M2.3's row on the simulated disk: with the power cut at every prefix
@@ -3180,15 +3390,26 @@ fn intent_every_prefix(seed: u64, mutants: u128, garbage: bool) -> Result<u64, S
 /// file is gone after the power cut, or survives as it was then or as
 /// it was at an earlier group (by seed); the start, in another boot,
 /// takes none of them up (the lead's reading of the row's "state file").
+///
+/// The test also requires that the map does its work in a fair share of
+/// the starts, a third taken up and a tenth narrowed: of 1874, 794 take
+/// it up and 268 of those name fewer than every region. A start before the first commit finds no base, and in
+/// the tests' volume of 1 MiB every region holds a label, which every
+/// group writes. Before the directory was synced after the map's
+/// creation (D1 of the review of #106), a power cut that lost the
+/// creation left no map, and half as many starts took one up.
 #[test]
 fn after_a_power_cut_the_next_cut_holds_every_block_changed_since_the_newest_commit() {
-    let mut narrowed = 0;
+    let mut starts = Starts::default();
     for seed in 0..24 {
-        narrowed += intent_every_prefix(seed, 0, seed % 2 == 1).unwrap_or_else(|e| panic!("{e}"));
+        let seen = intent_every_prefix(seed, 0, seed % 2 == 1).unwrap_or_else(|e| panic!("{e}"));
+        starts.all += seen.all;
+        starts.taken += seen.taken;
+        starts.narrowed += seen.narrowed;
     }
     assert!(
-        narrowed > 0,
-        "no start after a power cut narrowed the new cut"
+        starts.taken * 3 > starts.all && starts.narrowed * 10 > starts.all,
+        "the map did too little: {starts:?}"
     );
 }
 

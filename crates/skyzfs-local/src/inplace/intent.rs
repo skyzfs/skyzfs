@@ -373,6 +373,28 @@ impl IntentMap {
         named
     }
 
+    /// How many regions the map names: [`IntentMap::named`]'s length,
+    /// counted a word at a time and without listing them, for the
+    /// status, which asks at every write of its file (S2 of the review
+    /// of #106).
+    pub(crate) fn named_count(&self) -> u64 {
+        let regions = self.shape.regions();
+        let mut count = 0;
+        let mut region = 0;
+        while region < regions {
+            let (word, bit) = Self::place(region);
+            let whole = bit == 1 && region % PER_PAGE + 64 <= PER_PAGE && region + 64 <= regions;
+            if whole {
+                count += u64::from(self.bits.get(word).map_or(0, |w| w.count_ones()));
+                region += 64;
+            } else {
+                count += u64::from(self.is_set(&self.bits, region));
+                region += 1;
+            }
+        }
+        count
+    }
+
     /// Where region `region`'s bit lies in a vector of bits.
     fn place(region: u64) -> (usize, u64) {
         let page = region / PER_PAGE;

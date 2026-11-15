@@ -891,12 +891,33 @@ impl<D: Dir> Drop for InPlace<D> {
     fn drop(&mut self) {
         // What was submitted is done before the store goes, as it is on
         // the caller's thread: what waits is executed once what it waits
-        // for has ended. Then the threads end, before the lock is gone.
-        while self.pool.is_some() && !(self.busy.is_empty() && self.deferred.is_empty()) {
+        // for has ended, and a request that waits for the intent map
+        // once the map's sync has ended (D2 of the review of #106, and
+        // Codex's P2 there). Then the threads end, before the lock is
+        // gone.
+        loop {
+            let for_map = self
+                .intent
+                .as_ref()
+                .is_some_and(|intent| !intent.waiting.is_empty());
+            let on_threads = self.pool.is_some() && !self.busy.is_empty();
+            if !(on_threads || for_map || !self.deferred.is_empty()) {
+                break;
+            }
             // Under the defect, a write that waited behind another is
             // held back when it is begun here: hand it over each time.
             self.release_early(true);
+            if for_map {
+                if self.intent_syncing() {
+                    self.settle_intent(true);
+                } else if self.failed {
+                    self.settle_failed();
+                } else {
+                    self.begin_intent_sync();
+                }
+            }
             self.collect(Duration::from_millis(10));
+            self.run_deferred();
         }
         self.pool = None;
         self.marker.finish();
@@ -1098,6 +1119,10 @@ impl<D: Dir> InPlace<D> {
                 .map(|lock| Box::new(lock) as Box<dyn Send>);
             return Err(StartError::Failed(FailedStart { marker, lock }));
         }
+        // Before the cut state and the intent map are touched, so that a
+        // start refused for want of direct I/O creates no map (the
+        // review of #106).
+        store.check_direct_io().map_err(StartError::Io)?;
         if let Some(cuts) = parts.cuts {
             store.take_up_cut_state(cuts)?;
         }
@@ -1143,15 +1168,12 @@ impl<D: Dir> InPlace<D> {
         &self.rings_unread
     }
 
-    /// Check what direct I/O asks, and start the threads.
+    /// Check what direct I/O asks, where the store's I/O is direct.
     ///
     /// Direct I/O takes the request's own buffer, which is aligned to a
     /// block ([`Buf::ALIGN`]), at the request's offset, which is a whole
     /// number of blocks: the file system's alignment must divide both.
-    fn set_up_io(&mut self) -> Result<(), String>
-    where
-        D::File: Send + 'static,
-    {
+    fn check_direct_io(&self) -> Result<(), String> {
         if self.io.direct {
             let align = self
                 .home
@@ -1169,6 +1191,14 @@ impl<D: Dir> InPlace<D> {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Start the I/O threads, if the store has any.
+    fn set_up_io(&mut self) -> Result<(), String>
+    where
+        D::File: Send + 'static,
+    {
         if self.io.threads > 0 {
             let files = (0..self.io.threads)
                 .map(|_| self.dir.open(crate::store::HOME_NAME))
@@ -2348,7 +2378,7 @@ impl<D: Dir> InPlace<D> {
         let (map, file) = match (found, file) {
             (Ok(mut map), Some(file)) => {
                 self.intent_at_start = Some(IntentAtStart::TakenUp {
-                    named: map.named().len() as u64,
+                    named: map.named_count(),
                     regions: shape.regions(),
                 });
                 map.kept_by(start);
@@ -2367,6 +2397,11 @@ impl<D: Dir> InPlace<D> {
                     Err(e) => return Err(e),
                 }
                 let file = self.dir.create(intent::INTENT_NAME)?;
+                // The new file's name is durable only once the directory
+                // is synced (D1 of the review of #106): without it a
+                // power cut can leave no map, and the next cut is the
+                // whole volume.
+                self.dir.sync()?;
                 (intent::IntentMap::new(shape, start, self.mutants), file)
             }
         };
@@ -2579,7 +2614,7 @@ impl<D: Dir> InPlace<D> {
             let shape = intent.map.shape();
             IntentFigures {
                 regions: shape.regions(),
-                named: intent.map.named().len() as u64,
+                named: intent.map.named_count(),
                 region_bytes: shape.region_blocks * skyzfs_blk::BLOCK_SIZE,
                 syncs: intent.syncs,
                 waits: intent.waits,
