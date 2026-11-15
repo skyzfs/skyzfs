@@ -90,7 +90,7 @@ pub enum Opened {
     /// what was stored in it.
     Kept,
     /// The region was there with another length, and now has the
-    /// length asked: what it held is not to be trusted as a whole.
+    /// length asked, all zeros: nothing it held is kept.
     Resized,
 }
 
@@ -173,6 +173,7 @@ mod tests {
         let (region, opened) = open_or_panic(&path, 20);
         assert_eq!(opened, Opened::Resized);
         assert_eq!(region.words(), 20);
+        assert_eq!(region.load(3), 0, "a word survived the resize");
         // The file is allocated in full at its new length.
         let Ok(meta) = std::fs::metadata(&path) else {
             panic!("the region's file is gone");
@@ -184,6 +185,31 @@ mod tests {
             std::os::unix::fs::MetadataExt::blocks(&meta),
             20 * WORD
         );
+    }
+
+    /// A region cut short by one open and grown back by another is all
+    /// zeros: no word of the state it held survives, though its length
+    /// is the first again. Two refused opens with another bound and
+    /// then the first would leave that file, and the next open would
+    /// find the length it asks for (the review of #100, N1, and
+    /// Codex). Fails where a file of another length is only cut or
+    /// grown: words 0 to 3 survive.
+    #[test]
+    fn a_region_cut_short_and_grown_back_keeps_nothing() {
+        let dir = temp_dir();
+        let path = dir.path().join("r");
+        let (mut region, _) = open_or_panic(&path, 600);
+        for word in 0..600 {
+            region.store(word, word as u64 + 1);
+        }
+        drop(region);
+        let (region, opened) = open_or_panic(&path, 4);
+        assert_eq!(opened, Opened::Resized);
+        drop(region);
+        let (region, opened) = open_or_panic(&path, 600);
+        assert_eq!(opened, Opened::Resized);
+        let kept: Vec<usize> = (0..600).filter(|&w| region.load(w) != 0).collect();
+        assert!(kept.is_empty(), "words that survived: {kept:?}");
     }
 
     /// A new region of several pages is allocated in full by its open,

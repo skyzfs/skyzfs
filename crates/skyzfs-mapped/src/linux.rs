@@ -64,8 +64,15 @@ fn room(file: &File) -> String {
 impl Mapped {
     /// Open the region named `path` with `words` words, creating it
     /// (all zeros, readable and writable by its owner alone) if there
-    /// is none. A file of another length is given the length asked
-    /// ([`Opened::Resized`]): the caller does not trust what it held.
+    /// is none. A file of another length is emptied and then given the
+    /// length asked ([`Opened::Resized`]): the caller does not trust
+    /// what it held, and no word of it survives. Were it only cut or
+    /// grown, an open of a shorter length that is then refused (at the
+    /// lock, say) would cut the file short and keep its first words,
+    /// and an open of the first length would grow it back with zeros
+    /// after them: the next open would find the length it asks for and
+    /// take the words that survived for a region kept whole (the review
+    /// of #100, N1).
     /// The file is allocated in full, mapped shared, and locked in
     /// memory; an open that cannot do one of them fails, and the error
     /// names the file system's room or the lock's limit when that is
@@ -91,7 +98,8 @@ impl Mapped {
             (true, false) => Opened::Resized,
         };
         if had != len as u64 {
-            file.set_len(len as u64)
+            file.set_len(0)
+                .and_then(|()| file.set_len(len as u64))
                 .map_err(|e| context(e, path, "set the region's length"))?;
         }
         // Every page is allocated before it is mapped: a store never
