@@ -314,7 +314,7 @@ rec_rewindf() {
         echo 0 > /proc/spl/kstat/zfs/dbgmsg
         echo "== zpool import $opt" >> "$RDIR/rewind-f.txt"
         if timeout 300 zpool import -d "$DEV" -o cachefile=none "$opt" "$POOL" >> "$RDIR/rewind-f.txt" 2>&1; then how=$opt; fi
-        grep -E 'spa_load|mmp|rewind|txg|error|fail' /proc/spl/kstat/zfs/dbgmsg | tail -n 60 > "$RDIR/dbgmsg$opt.txt"
+        { grep -E 'spa_load|mmp|rewind|txg|error|fail' /proc/spl/kstat/zfs/dbgmsg || true; } | tail -n 60 > "$RDIR/dbgmsg$opt.txt"
         [ -z "$how" ] || break
     done
     echo 0 > /sys/module/zfs/parameters/zfs_dbgmsg_enable
@@ -447,16 +447,30 @@ WORST=0
 : > "$OUT/recordings.tsv"
 zfs version > "$OUT/zfs-version.txt" 2>&1 || true
 # Each recording in a subshell with its own cleanup: the rig's error in
-# one (exit 2) is that recording's, and the next one still runs.
+# one (exit 2) is that recording's, and the next one still runs. The
+# subshell is not the left side of `||`: there bash ignores errexit in
+# everything it runs, and a failed losetup, dmsetup or mark would let
+# the recording go on.
 for r in $RECS; do
-    rc=0
+    set +e
     (
+        set -e
         trap cleanup EXIT
         if [ "$r" = stray ]; then begin "$r" delay-end; else begin "$r"; fi
         "rec_$r"
         end
         exit "$WORST"
-    ) || rc=$?
+    )
+    rc=$?
+    set -e
+    # A command that failed outside z and rig_error stopped the recording
+    # with its own status and no line: that is the rig's error, not a
+    # verdict.
+    if [ "$rc" -ne 0 ] && ! awk -F '\t' -v r="$r" '$1 == r && ($2 == "rig error" || $2 == "checked") { f = 1 } END { exit !f }' "$OUT/recordings.tsv"; then
+        log "the rig's own error in $r: a command failed (status $rc); the log above names it"
+        printf '%s\trig error\ta command failed (status %s); the job log names it\n' "$r" "$rc" >> "$OUT/recordings.tsv"
+        rc=2
+    fi
     WORST=$(( rc > WORST ? rc : WORST ))
 done
 log "done: worst exit $WORST"

@@ -128,6 +128,26 @@ def as_expected(verdict, want):
     return verdict in want if isinstance(want, tuple) else verdict == want
 UB_TXG_RE = re.compile(r'^\s*txg = (\d+)\s*$', re.M)
 UB_TS_RE = re.compile(r'^\s*timestamp = (\d+)', re.M)
+# zdb -uuuu's root block pointer: `rootbp = ` (2.2, 2.4) or `bp = `.
+UB_ROOT_RE = re.compile(r'^\s*(?:root)?bp = .*?DVA\[0\]=<(\d+):([0-9a-f]+):[0-9a-f]+>'
+                        r'.*?cksum=([0-9a-f]+):([0-9a-f]+):([0-9a-f]+):([0-9a-f]+)', re.M)
+
+
+def root_of(words):
+    """A root block pointer's 16 words (cut_ref) -> (vdev, offset in
+    bytes, checksum): its first copy's place and the checksum of the
+    block it points at, which tell two roots of one group apart."""
+    if not words:
+        return None
+    return words[0] >> 32, (words[1] & ((1 << 63) - 1)) << 9, tuple(words[12:16])
+
+
+def zdb_root(out):
+    """The same of the root block pointer zdb -uuuu printed, or None."""
+    m = UB_ROOT_RE.search(out)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2), 16), tuple(int(m.group(k), 16) for k in range(3, 7))
 
 
 class RigError(Exception):
@@ -407,15 +427,18 @@ class Check:
 
     def group(self, txg=None):
         """zdb's choice of uberblock (the highest group, or the highest
-        at or below txg) -> (txg, timestamp) or a reason it gave none."""
-        rc, out, _ = self.zdb(['-u'], txg)
+        at or below txg) -> (txg, timestamp, root_of its root block
+        pointer) or a reason it gave none. The root tells two states of
+        one group and timestamp apart (Codex on #94): zdb -bbbbb and the
+        import would then check the other one."""
+        rc, out, _ = self.zdb(['-uuuu'], txg)
         if rc in replay_check.RIG_RC:
             raise RigError(f'zdb -u: {replay_check.stage("zdb -u", rc)}')
-        t, ts = UB_TXG_RE.search(out), UB_TS_RE.search(out)
-        if rc or not t or not ts:
+        t, ts, root = UB_TXG_RE.search(out), UB_TS_RE.search(out), zdb_root(out)
+        if rc or not t or not ts or not root:
             said = [ln.strip() for ln in out.splitlines() if ln.strip()][-2:]
-            return None, f'zdb -u exit {rc}: {" | ".join(said)[:300]}'
-        return (int(t.group(1)), int(ts.group(1))), ''
+            return None, f'zdb -uuuu exit {rc}{"" if rc or not t or not ts else ", no root block pointer"}: {" | ".join(said)[:300]}'
+        return (int(t.group(1)), int(ts.group(1)), root), ''
 
     def copies(self, txg=None):
         rc, out, _ = self.zdb(['-bbbbb'], txg, 600)
@@ -502,16 +525,17 @@ class Check:
         if g is None:
             return 'group', why, [], seen
         seen['zdb_txg'] = g[0]
-        if g != (pred['txg'], pred['timestamp']):
-            return ('opens', f"zdb selects group {g[0]} (timestamp {g[1]}), the rings' best is {pred['txg']} "
-                    f"({pred['timestamp']}); the cut is {cut['txg']}", [], seen)
+        if g != (pred['txg'], pred['timestamp'], root_of(pred['rootbp'])):
+            return ('opens', f"zdb selects group {g[0]} (timestamp {g[1]})"
+                    + (', another root block pointer than' if g[:2] == (pred['txg'], pred['timestamp']) else ',')
+                    + f" the rings' best is {pred['txg']} ({pred['timestamp']}); the cut is {cut['txg']}", [], seen)
         if pred['itself']:
             failed, detail, bps = self.whole(cut, None, kernel)
             seen['whole'] = not failed
             return failed, detail, bps, seen
         g2, why = self.group(cut['txg'])
-        if g2 is None or g2 != (cut['txg'], cut['timestamp']):
-            return 'group', f"zdb -t {cut['txg']} selects {g2 or why}, not the cut's uberblock", [], seen
+        if g2 is None or g2 != (cut['txg'], cut['timestamp'], root_of(cut['rootbp'])):
+            return 'group', f"zdb -t {cut['txg']} selects {g2[:2] if g2 else why}, not the cut's uberblock", [], seen
         failed, detail, bps = self.whole(cut, cut['txg'], kernel)
         seen['whole'] = not failed
         if failed:

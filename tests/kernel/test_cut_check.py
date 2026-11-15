@@ -143,6 +143,74 @@ class Loaded(unittest.TestCase):
         self.assertIsNone(cut_check.loaded_txg(self.TEXT.replace('skzcut', 'other')))
 
 
+class Root(unittest.TestCase):
+    # zdb -uuuu after rewindf's export, verbatim, in run 43651302466:
+    # 2.4.1 (ubuntu-26.04) prints `bp =` and `rootbp =`, 2.2.2
+    # (ubuntu-24.04) `rootbp =` alone; and the uberblock's words as
+    # cut_ref read them from the record (uberblocks.tsv).
+    ZDB24 = """Uberblock:
+\tmagic = 0000000000bab10c
+\ttxg = 43
+\ttimestamp = 1794700370 UTC = Sat Nov 14 23:52:50 2026
+\tbp = DVA[0]=<0:6c64000:1000> DVA[1]=<0:215c000:1000> DVA[2]=<0:8041000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=43L/43P fill=68 cksum=00000002d6e930ab:00000ae9827480aa:0014fd6519cb3dd8:1af1e08127438f85
+\tmmp_magic = 00000000a11cea11
+\trootbp = DVA[0]=<0:6c64000:1000> DVA[1]=<0:215c000:1000> DVA[2]=<0:8041000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=43L/43P fill=68 cksum=00000002d6e930ab:00000ae9827480aa:0014fd6519cb3dd8:1af1e08127438f85
+\tcheckpoint_txg = 0
+"""
+    WORDS24 = ('0000000000000008000000000003632000000000000000080000000000010ae000000000000000080000000000040208800b0702000700'
+               '07000000000000000000000000000000000000000000000000000000000000002b000000000000004400000002d6e930ab00000ae98274'
+               '80aa0014fd6519cb3dd81af1e08127438f85')
+    ZDB22 = """Uberblock:
+\tmagic = 0000000000bab10c
+\ttxg = 43
+\ttimestamp = 1794700449 UTC = Sat Nov 14 23:54:09 2026
+\tmmp_magic = 00000000a11cea11
+\trootbp = DVA[0]=<0:6c45000:1000> DVA[1]=<0:214d000:1000> DVA[2]=<0:8045000:1000> [L0 DMU objset] fletcher4 uncompressed unencrypted LE contiguous unique triple size=1000L/1000P birth=43L/43P fill=65 cksum=00000002e2f1669e:00000b190a37c925:00155b499534e141:1b6d8d3db839e4cb
+\tcheckpoint_txg = 0
+"""
+    WORDS22 = ('0000000000000008000000000003622800000000000000080000000000010a6800000000000000080000000000040228800b0702000700'
+               '07000000000000000000000000000000000000000000000000000000000000002b000000000000004100000002e2f1669e00000b190a37'
+               'c92500155b499534e1411b6d8d3db839e4cb')
+
+    @staticmethod
+    def words(h):
+        return tuple(int(h[k:k + 16], 16) for k in range(0, 256, 16))
+
+    def test_zdb_and_the_record_name_the_same_root(self):
+        for out, h in ((self.ZDB24, self.WORDS24), (self.ZDB22, self.WORDS22)):
+            self.assertIsNotNone(cut_check.zdb_root(out))
+            self.assertEqual(cut_check.zdb_root(out), cut_check.root_of(self.words(h)))
+
+    def test_another_root_of_the_group_differs(self):
+        self.assertNotEqual(cut_check.zdb_root(self.ZDB24), cut_check.root_of(self.words(self.WORDS22)))
+        w = list(self.words(self.WORDS24))
+        w[15] ^= 1
+        self.assertNotEqual(cut_check.zdb_root(self.ZDB24), cut_check.root_of(tuple(w)))
+        w = list(self.words(self.WORDS24))
+        w[1] += 8
+        self.assertNotEqual(cut_check.zdb_root(self.ZDB24), cut_check.root_of(tuple(w)))
+
+    def test_no_root_line(self):
+        self.assertIsNone(cut_check.zdb_root(self.ZDB22.replace('rootbp', 'other')))
+        self.assertIsNone(cut_check.root_of(None))
+
+    def test_judge_refuses_a_tie_with_another_root(self):
+        """The pool's group and timestamp, but zdb's root is not the
+        rings' best: the judge says so and checks nothing."""
+        ck = cut_check.Check.__new__(cut_check.Check)
+        ck.group = lambda txg=None: ((43, 1794700370, cut_check.zdb_root(self.ZDB24)), '')
+        cut = {'txg': 43, 'timestamp': 1794700370, 'rootbp': self.words(self.WORDS22)}
+        pred = dict(cut, itself=True)
+        failed, detail, _, seen = ck.judge(cut, pred, kernel=False)
+        self.assertEqual(failed, 'opens')
+        self.assertIn('another root block pointer', detail)
+        self.assertFalse(seen['whole'])
+        # not itself: zdb -t at the cut's group must find the cut's root
+        pred = {'txg': 43, 'timestamp': 1794700370, 'rootbp': self.words(self.WORDS24), 'itself': False}
+        failed, detail, _, _ = ck.judge(cut, pred, kernel=False)
+        self.assertEqual(failed, 'group')
+
+
 class Picks(unittest.TestCase):
     BPS = [{'dvas': [(0, 0x1000, 0x1000), (0, 0x9000, 0x1000)]}]
     OFF = cut_check.replay_check.DVA_OFFSET
