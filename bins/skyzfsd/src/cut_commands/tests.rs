@@ -26,6 +26,7 @@ struct Stand {
     let_go_after: Option<usize>,
     grows_after: Option<usize>,
     released: Vec<u64>,
+    failed: bool,
 }
 
 fn content(number: u64, block: u64) -> u8 {
@@ -93,6 +94,10 @@ impl Cuts for Stand {
             self.released.push(number);
         }
         uploading
+    }
+
+    fn failed(&self) -> bool {
+        self.failed
     }
 }
 
@@ -266,7 +271,7 @@ fn release_lets_only_the_cut_being_uploaded_go() {
 #[test]
 fn write_puts_the_cut_s_map_into_the_file_a_slice_a_turn() {
     let mut rig = Rig::new();
-    // Blocks 0, 2, 4, ... of 700, given out of order: three slices.
+    // Blocks 0, 2, 4, ... of 700, given out of order: two slices.
     let mut map: Vec<u64> = (0..350).map(|n| 2 * n).collect();
     map.reverse();
     let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[]), (4, CutPhase::Waiting, &map)]);
@@ -276,7 +281,7 @@ fn write_puts_the_cut_s_map_into_the_file_a_slice_a_turn() {
     let turns = rig.finish(&mut stand);
     assert_eq!(
         turns, 1,
-        "after the signal's turn: 2 more slices, the last ends it"
+        "after the signal's turn: one more slice, which ends it"
     );
     assert_eq!(rig.reply(), "w ok 350 blocks\n");
     let written = std::fs::read(&image).expect("the image");
@@ -373,8 +378,8 @@ fn a_write_whose_cut_is_let_go_under_it_is_refused() {
     rig.finish(&mut stand);
     assert_eq!(
         rig.reply(),
-        "w refused: cut 3 is no longer held after 299 of 600 blocks: it was let go or abandoned \
-         at the bound\n"
+        "w refused: cut 3 is no longer held after 299 of 600 blocks: it was let go, or abandoned \
+         at the bound or at a copy that could not be made\n"
     );
 }
 
@@ -591,5 +596,59 @@ fn the_in_place_store_without_held_cuts_refuses_the_commands() {
     assert_eq!(
         rig.reply(),
         "h refused: held cuts are off: the daemon was started without --hold-cuts\n"
+    );
+}
+
+/// A turn with no signal reads no command, though the command's file is
+/// still there and no write is under way: a command is carried out
+/// once. Read again, a `release` answered `ok` would be answered again
+/// under the same token, refused, and a `write` would begin again each
+/// time it ended. From the review of #101 (S2, `gaps.py`).
+#[test]
+fn a_turn_with_no_signal_reads_no_command() {
+    let mut rig = Rig::new();
+    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[1]), (4, CutPhase::Waiting, &[2])]);
+    rig.send("s release 3", &mut stand);
+    assert_eq!(rig.reply(), "s ok\n");
+    assert!(!rig.commands.turn(false, &mut stand));
+    assert_eq!(rig.reply(), "s ok\n", "the command is carried out once");
+    assert_eq!(stand.released, [3]);
+}
+
+/// Once the volume has failed no command is carried out: design §5.2
+/// does not trust the cut state of a failed volume. From the review of
+/// #101 (its remark on the commands after a failure).
+#[test]
+fn no_command_is_carried_out_once_the_volume_has_failed() {
+    let mut rig = Rig::new();
+    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[1]), (4, CutPhase::Waiting, &[2])]);
+    stand.failed = true;
+    let refusal = "refused: the volume has failed, and its held cuts are not trusted\n";
+    rig.send("h held", &mut stand);
+    assert_eq!(rig.reply(), format!("h {refusal}"));
+    rig.send("r release 3", &mut stand);
+    assert_eq!(rig.reply(), format!("r {refusal}"));
+    assert!(stand.released.is_empty());
+    let image = rig.image(8);
+    assert!(!rig.send(&format!("w write 4 {}", image.display()), &mut stand));
+    assert_eq!(rig.reply(), format!("w {refusal}"));
+}
+
+/// A write under way when the volume fails is refused at its next
+/// slice, and says how far it came.
+#[test]
+fn a_write_under_way_is_refused_when_the_volume_fails() {
+    let mut rig = Rig::new();
+    let map: Vec<u64> = (0..300).collect();
+    let mut stand = Stand::holding(&[(3, CutPhase::Uploading, &[]), (4, CutPhase::Waiting, &map)]);
+    let image = rig.image(300);
+    assert!(rig.send(&format!("w write 4 {}", image.display()), &mut stand));
+    assert_eq!(rig.reply(), "", "no reply after the first slice");
+    stand.failed = true;
+    assert!(!rig.commands.turn(false, &mut stand));
+    assert_eq!(
+        rig.reply(),
+        "w refused: after 256 of 300 blocks: the volume has failed, and its held cuts are not \
+         trusted\n"
     );
 }

@@ -659,3 +659,40 @@ fn an_applied_line_has_the_hashes_of_the_blocks_the_write_covers() {
     assert_eq!(block_hashes(0, &[]), "-");
     assert_eq!(Contents::default().applied(9), "-");
 }
+
+/// A write away from the volume's labels has its hashes and its bytes in
+/// the record, as one inside them does: one block in the middle of the
+/// volume. Nearly every write of a pool is such a one, and the cut rig
+/// rebuilds the volume from them. From the review of #101 (S1,
+/// `gaps.py`): with the hashes kept only where the record writes a
+/// `label` line, this write's line ends with `-`.
+#[test]
+fn a_write_away_from_the_labels_has_its_hashes_and_its_bytes() {
+    let dir = tempfile::tempdir().expect("dir");
+    let path = dir.path().join("requests.tsv");
+    let data_path = dir.path().join("requests.tsv.data");
+    let mut inner = Scripted::default();
+    inner
+        .waits
+        .push_back(Ok(vec![fetched(0, op::WRITE, SIZE / 2 / 512, 8)]));
+    let file = open(&path).expect("open");
+    let contents = Contents::new(Some(open(&data_path).expect("the data")));
+    let mut watcher = watcher(Lines::another(&file), contents.clone());
+    let mut queue = Recorded::new(inner, Some(file), 0, SIZE, "off", contents);
+    let _ = queue.wait(&mut Vec::new(), &mut Vec::new());
+    let buf = queue.take_buf(0, 1).expect("a buffer");
+    watcher(Seen::Applied(RequestId(0)));
+    let p = pid();
+    let got: Vec<String> = lines(&path)
+        .into_iter()
+        .filter(|line| line.contains("\tapplied\t") || line.contains("\tlabel\t"))
+        .collect();
+    assert_eq!(
+        got,
+        [format!(
+            "{p}\tapplied\t0\twrite\t-\t-\t-\t{}\tdata=0",
+            hex(&Sha256::digest(&buf[..4096])[..8])
+        )]
+    );
+    assert_eq!(std::fs::read(&data_path).expect("the data"), &buf[..]);
+}

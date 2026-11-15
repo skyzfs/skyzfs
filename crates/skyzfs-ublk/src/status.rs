@@ -88,7 +88,7 @@
 //! | 320 | 8 | `cuts_held`: the cuts held now (at most three: the one being uploaded, the one that waits, the one whose flush is under way) |
 //! | 328 | 8 | `cut_copied_bytes`: the bytes the copies of held cuts take now |
 //! | 336 | 8 | `cut_bound_bytes`: the bound on them |
-//! | 344 | 8 | `cuts_abandoned`: the cuts abandoned at the bound, since the state began (kept across a start that takes the state up) |
+//! | 344 | 8 | `cuts_abandoned`: the cuts abandoned at the bound or let go at a copy that could not be made, since the state began (kept across a start that takes the state up) |
 //!
 //! All times are nanoseconds of the monotonic clock, since this daemon
 //! started serving. Sums and counts only grow, so a reader takes the
@@ -237,7 +237,8 @@ pub struct HeldShown {
     pub copied: u64,
     /// The bound on the copies.
     pub bound: u64,
-    /// The cuts abandoned at the bound.
+    /// The cuts abandoned at the bound or let go at a copy that could
+    /// not be made.
     pub abandoned: u64,
 }
 

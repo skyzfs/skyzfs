@@ -40,6 +40,12 @@
 //! Anything else, or a command the store cannot carry out, is answered
 //! `TOKEN refused: REASON` (`- refused: …` when the line has no token).
 //!
+//! **After the volume has failed** every command is refused, and a write
+//! under way is refused at its next slice: design §5.2 does not trust
+//! the cut state of a failed volume, so neither do its commands. That
+//! is a conservative reading of the design, which says it of the next
+//! start; the review of #101 noticed that the commands answered on.
+//!
 //! **One command at a time.** A command that comes while a write is
 //! under way is refused as busy, and that reply is replaced by the
 //! write's when the write ends: the rig waits for each reply before it
@@ -68,6 +74,8 @@ pub const COMMAND: &str = "cut-command";
 pub const REPLY: &str = "cut-reply";
 /// Where the reply is written before it is renamed.
 const REPLY_TEMP: &str = "cut-reply.tmp";
+/// Why a command is refused once the volume has failed.
+const FAILED: &str = "the volume has failed, and its held cuts are not trusted";
 /// The blocks a write takes after each turn of the queue: 1 MiB.
 pub const SLICE: usize = 256;
 
@@ -102,6 +110,8 @@ pub trait Cuts {
     /// Let held cut `number`, the one being uploaded, go: whether it was
     /// that cut.
     fn release(&mut self, number: u64) -> bool;
+    /// Whether the volume has failed.
+    fn failed(&self) -> bool;
 }
 
 impl<D: skyzfs_local::io::Dir> Cuts for skyzfs_local::inplace::InPlace<D> {
@@ -132,6 +142,10 @@ impl<D: skyzfs_local::io::Dir> Cuts for skyzfs_local::inplace::InPlace<D> {
 
     fn release(&mut self, number: u64) -> bool {
         self.release_cut(number)
+    }
+
+    fn failed(&self) -> bool {
+        self.is_failed()
     }
 }
 
@@ -264,6 +278,7 @@ impl Commands {
         };
         let reply = match command {
             Err(why) => refused(&token, &why),
+            Ok(_) if cuts.failed() => refused(&token, FAILED),
             Ok(_) if self.job.is_some() => {
                 let number = self.job.as_ref().map_or(0, |job| job.number);
                 refused(
@@ -380,6 +395,12 @@ fn begin(token: &str, number: u64, path: PathBuf, cuts: &impl Cuts) -> Result<Jo
 
 /// Write the next slice of `job`: its reply when it is done, or failed.
 fn slice(job: &mut Job, cuts: &mut impl Cuts) -> Option<String> {
+    if cuts.failed() {
+        return Some(refused(
+            &job.token,
+            &format!("after {} of {} blocks: {FAILED}", job.next, job.map.len()),
+        ));
+    }
     let end = (job.next + SLICE).min(job.map.len());
     for at in job.next..end {
         let block = job.map[at];
@@ -392,8 +413,8 @@ fn slice(job: &mut Job, cuts: &mut impl Cuts) -> Option<String> {
                 return Some(refused(
                     &job.token,
                     &format!(
-                        "cut {} is no longer held after {at} of {} blocks: it was let go or \
-                         abandoned at the bound",
+                        "cut {} is no longer held after {at} of {} blocks: it was let go, or \
+                         abandoned at the bound or at a copy that could not be made",
                         job.number,
                         job.map.len()
                     ),
