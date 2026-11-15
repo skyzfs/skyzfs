@@ -567,6 +567,9 @@ pub struct InPlace<D: Dir> {
     /// Under [`Mutants::MARK_AFTER_COMPLETION`]: marks recorded only once
     /// the write's completion is handed out.
     marks_after: Vec<(RequestId, State)>,
+    /// The rings the start could not read: each one's offset on the
+    /// volume and the error ([`InPlace::rings_unread`]).
+    rings_unread: Vec<(u64, String)>,
 }
 
 /// Writes the failure marker, on whichever thread runs it.
@@ -861,6 +864,7 @@ impl<D: Dir> InPlace<D> {
             copies: None,
             flushing: BTreeMap::new(),
             marks_after: Vec::new(),
+            rings_unread: Vec::new(),
         };
         // What the instance before this one wrote by direct I/O may be
         // in the device's volatile cache only: this sync makes it
@@ -897,7 +901,8 @@ impl<D: Dir> InPlace<D> {
     /// cache. On a volume that holds no pool they read holes. A ring
     /// that cannot be read stays unknown, and then no cut opens as
     /// itself until every position of that ring has been written again;
-    /// the start goes on, as a failed read fails nothing else.
+    /// the start goes on, as a failed read fails nothing else, and says
+    /// which it could not read ([`InPlace::rings_unread`]).
     fn read_rings(&mut self) {
         for (offset, len) in self.cuts.rings() {
             let mut buf = Buf::zeroed((len / skyzfs_blk::BLOCK_SIZE) as usize);
@@ -906,10 +911,19 @@ impl<D: Dir> InPlace<D> {
             } else {
                 self.home.read_at(offset, &mut buf)
             };
-            if read.is_ok() {
-                self.cuts.read_at_start(offset, &buf);
+            match read {
+                Ok(()) => self.cuts.read_at_start(offset, &buf),
+                Err(e) => self.rings_unread.push((offset, e.to_string())),
             }
         }
+    }
+
+    /// The labels' rings the start could not read, by their offset on
+    /// the volume, with the error: until every position of each has
+    /// been written again, no cut opens as itself (the start's
+    /// `read_rings` says why), and the daemon says so once at the start.
+    pub fn rings_unread(&self) -> &[(u64, String)] {
+        &self.rings_unread
     }
 
     /// Check what direct I/O asks, and start the threads.
